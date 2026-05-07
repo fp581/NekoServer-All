@@ -1,4 +1,4 @@
-# TrueNAS SCALE Home Media Server: Final Edition
+# TrueNAS SCALE Home Media Server: Alpha
 
 Welcome to the complete guide for building a high-performance media server.
 
