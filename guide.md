@@ -66,6 +66,14 @@ own control.
 > [!TIP]
 > Why two SSDs? The apps SSD handles all the small random writes: Immich database, Jellyfin metadata, active torrent pieces. This keeps the HDD mirror doing large sequential reads and writes — what spinning drives do best. The result is snappier apps without wearing out the HDDs.
 
+> [!IMPORTANT]
+> **The apps SSD has no redundancy.** A single drive backed up nightly at 03:00 (see Part 8) means a failure between backups can lose up to 24 hours of state — Immich uploads not yet backed up, Sonarr/Radarr import history, qBittorrent state, Jellyfin watch progress.
+>
+> If that window matters to you, two options:
+>
+> - **Run the backup more often** — change the cron in Part 8 from `0 3 * * *` (3 AM daily) to e.g. `0 */6 * * *` (every 6 hours). Trade-off: more snapshot churn on tank.
+> - **Use a mirrored apps pool** — add a second SSD and create the apps pool as a mirror in Part 3 instead of a single-disk stripe. Trade-off: cost of a second SSD.
+
 ### Every App and What It Does
 
 | **App** | **What it does** | **Think of it as** |
@@ -85,6 +93,12 @@ own control.
 | Zurg | Connects to Real-Debrid, creates virtual media folder | The Real-Debrid bridge |
 | rclone | Mounts the Zurg virtual folder so Jellyfin can see it | The folder translator |
 | ClamAV | Scans downloaded files for viruses | Your download security guard |
+
+> [!NOTE]
+> **ClamAV is the wrong tool for this job and will be replaced in a later revision.**
+> The download datasets already have `noexec`, `nosetuid`, and `nodev` set (Part 4), so a downloaded file cannot run itself even if it tried. Pirated media is `.mkv` / `.mp4`, not executable, and ClamAV signatures lag months behind real malware. The daily 04:30 scan re-reads every completed download for very little real protection.
+>
+> A better approach is to filter at the **grab** stage rather than the **post-download** stage: stop suspicious releases from ever entering the download queue. The plan is to add **Profilarr** to the stack — it syncs custom-format definitions and quality profiles into Sonarr/Radarr so releases with malicious file extensions, scam encoders, or known-bad release groups are rejected before qBittorrent ever sees them. ClamAV (and `scan-downloads.sh` in Part 8) will be removed in that revision.
 
 ### What Is Real-Debrid?
 
@@ -134,6 +148,14 @@ of it as a giant media warehouse in the cloud:
 | Storage | Never deleted automatically — your choice | Never deleted — grows forever |
 | Phone app | Jellyfin app (free) | Symfonium (Android) or Substreamer (iOS) |
 | Port | 8096 | 4533 |
+
+> [!IMPORTANT]
+> **Lidarr's automation depends on the indexers you have access to.**
+>
+> - **Private trackers** (Redacted, Orpheus, etc.) — invitation-only. Excellent music coverage, complete discographies, lossless rips, accurate metadata. This is what Lidarr was designed for and what the Music Pipeline in Part 11 assumes.
+> - **Public trackers** (1337x, RuTracker, etc.) — open to anyone. Coverage is spotty, especially for niche artists, deep catalogue, and lossless. Lidarr will still work but will miss a lot and pull worse-quality rips. You will hand-import more than you'd like.
+>
+> If you do not have access to a private music tracker, Lidarr is still useful as a library manager (file naming, metadata, tagging, monitoring for new releases) — just expect more manual work on the acquisition side. Setting expectations now will save frustration in Part 9.
 
 ## Part 1 — Hardware
 
