@@ -580,10 +580,9 @@ nano /mnt/apps/scripts/config.env
 TZ="Asia/Jerusalem"
 PUID="568"
 PGID="568"
-RENDER_GID=""
+RENDER_GID="107"
 TS_AUTHKEY=""
 QBIT_PASSWORD="ChangeMe_qBit123"
-IMMICH_DB_PASS="ChangeMe_DB456"
 POSTGRES_USER="immich"
 POSTGRES_DB="immich"
 POSTGRES_PASSWORD="ChangeMe_DB456"
@@ -605,17 +604,14 @@ INCOMPLETE_DAYS="14"
 | **Variable** | **What to put here** | **Where to find it** |
 |:---|:---|:---|
 | TZ | Your timezone, e.g. Asia/Jerusalem | Full list at: en.wikipedia.org/wiki/List_of_tz_database_time_zones |
-| RENDER_GID | The GPU render group number | Run: getent group render — use the middle number (e.g. 107) |
+| RENDER_GID | The GPU render group number | The default `107` is correct on most TrueNAS installs. Verify with: `getent group render` — use the middle number if it differs. |
 | TS_AUTHKEY | Your Tailscale auth key | From tailscale.com/settings/keys — starts with tskey-auth-k... |
 | QBIT_PASSWORD | A strong password for qBittorrent | You choose — 12+ characters |
-| IMMICH_DB_PASS + POSTGRES_PASSWORD + DB_PASSWORD | One strong password for all three | You choose — keep all three the same value or Immich breaks |
+| POSTGRES_PASSWORD + DB_PASSWORD | One strong password used in two places | You choose — both must be the **same value**. POSTGRES_PASSWORD configures the Immich Postgres container; DB_PASSWORD is what the Immich app uses to connect. If they differ, Immich cannot reach its own database. |
 | USB_UUID | Leave blank for now | Fill in Part 9 after plugging in a USB drive |
 | WEBHOOK_URL | Leave blank for now | Optional — fill in Part 12 if you want alerts |
 
 5. Press Ctrl+X, then Y, then Enter to save.
-
-> [!WARNING]
-> POSTGRES_PASSWORD, POSTGRES_PASSWORD, and DB_PASSWORD must all be the same value. One is read by the database container and the others by the Immich server container. If they differ, Immich will fail to connect to its own database.
 
 ### Step 6.2 — Create docker-compose.yml
 
@@ -624,17 +620,10 @@ folders they can access, which ports they use, and which containers can
 talk to each other.
 
 > [!IMPORTANT]
-> Hardlink rule: qBittorrent, Sonarr, Radarr, and Lidarr all mount /mnt/tank/data on the host as /data inside the container. This is deliberate — completed downloads and final media are in the same ZFS dataset, so imports are instant hardlinks instead of slow file copies.
-
-> [!NOTE]
-> **Docker subnet note**
-> 
-> The compose file uses explicit 172.31.x.x subnets so Docker does not randomly pick a range that overlaps your home LAN or Tailscale addresses. If your home network already uses 172.31.10.x, 172.31.20.x, 172.31.30.x, or 172.31.40.x, change those subnet numbers before deploying.
-> Never use 172.17.0.0/16 as a custom subnet. That is the Docker default bridge network range and it is almost always already in use. Assigning it to a named network creates invisible routing conflicts that are very hard to debug.
-> 
-> If you need to change the 172.31.x.x ranges, pick something in 172.20.x.x through 172.30.x.x that your home router does not use. Most home routers use 192.168.x.x or 10.x.x.x, so the 172.31.x.x range in the guide is safe for almost everyone.
-> 
-> Tailscale uses the 100.64.x.x range (CGNAT space) and does not conflict with 172.31.x.x.
+> **Hardlink rule (and one full-copy step you should know about).**
+> qBittorrent, Sonarr, Radarr, and Lidarr all mount `/mnt/tank/data` as `/data` inside the container. This is deliberate: when Sonarr/Radarr/Lidarr move a completed download from `/data/downloads/complete/` to `/data/media/`, both paths live in the same `tank/data` ZFS dataset, so the move is an instant hardlink — no copying.
+>
+> **One exception worth knowing:** qBittorrent first writes incomplete downloads to `/mnt/apps/downloads-incomplete/` (apps SSD pool) for fast random writes during torrenting. When the torrent finishes, qBittorrent moves the file to `/mnt/tank/data/downloads/complete/` (tank HDD pool). That move crosses ZFS pools, so it is a **full file copy**, not a hardlink. A 50 GB movie copies 50 GB once at completion. The trade-off is intentional: SSD absorbs the random-write churn while torrenting, and the one-time HDD copy at the end is sequential and fast. After that, the Sonarr/Radarr import to `/data/media/` is the instant hardlink described above.
 
 6. In TrueNAS Shell, open the compose file in nano:
 
@@ -645,35 +634,11 @@ nano /mnt/apps/scripts/docker-compose.yml
    Enter to save.
 
 ```yaml
-version: "3.8"
-
 x-logging: &default-logging
   driver: "json-file"
   options:
     max-size: "10m"
     max-file: "3"
-
-networks:
-  download-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.31.10.0/24
-  media-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.31.20.0/24
-  request-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.31.30.0/24
-  subtitle-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.31.40.0/24
 
 services:
   # ── TAILSCALE ──────────────────────────────────────────────────
@@ -704,7 +669,6 @@ services:
     volumes:
       - /mnt/apps/appdata/zurg:/config
     ports: ["9999:9999"]
-    networks: [download-net]
     logging: *default-logging
 
   # ── DOWNLOADERS ─────────────────────────────────────────────────
@@ -718,7 +682,6 @@ services:
       - /mnt/tank/data:/data
       - /mnt/apps/downloads-incomplete:/downloads/incomplete
     ports: ["8090:8090"]
-    networks: [download-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -730,7 +693,6 @@ services:
       - /mnt/apps/appdata/clamav:/var/lib/clamav
       - /mnt/tank/data/downloads/complete:/scandir
       - /mnt/tank/data/downloads/quarantine:/quarantine
-    networks: [download-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -741,7 +703,6 @@ services:
     env_file: [/mnt/apps/scripts/config.env]
     volumes: ["/mnt/apps/appdata/prowlarr:/config"]
     ports: ["9696:9696"]
-    networks: [download-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -753,7 +714,6 @@ services:
       - /mnt/apps/appdata/sonarr:/config
       - /mnt/tank/data:/data
     ports: ["8989:8989"]
-    networks: [download-net, media-net, subtitle-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -765,7 +725,6 @@ services:
       - /mnt/apps/appdata/radarr:/config
       - /mnt/tank/data:/data
     ports: ["7878:7878"]
-    networks: [download-net, media-net, subtitle-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -777,7 +736,6 @@ services:
       - /mnt/apps/appdata/lidarr:/config
       - /mnt/tank/data:/data
     ports: ["8686:8686"]
-    networks: [download-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -790,7 +748,6 @@ services:
       - /mnt/tank/data/media/movies:/movies
       - /mnt/tank/data/media/tv:/tv
     ports: ["6767:6767"]
-    networks: [subtitle-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -808,7 +765,6 @@ services:
       - /mnt/tank/data/media/tv:/media/tv:ro
       - /mnt/tank/realdebrid:/media/realdebrid:ro
     ports: ["8096:8096"]
-    networks: [media-net, request-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -820,7 +776,6 @@ services:
       - /mnt/apps/appdata/navidrome:/data
       - /mnt/tank/data/media/music:/music:ro
     ports: ["4533:4533"]
-    networks: [media-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -835,7 +790,6 @@ services:
       - /mnt/tank/photos/library:/usr/src/app/upload
     ports: ["2283:2283"]
     depends_on: [immich-db, immich-redis]
-    networks: [media-net, request-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -843,17 +797,16 @@ services:
     image: ghcr.io/immich-app/immich-machine-learning:release
     container_name: immich-machine-learning
     env_file: [/mnt/apps/scripts/config.env]
-    devices: [/dev/dri:/dev/dri]
-    group_add: ["${RENDER_GID}"]
     volumes: ["/mnt/apps/appdata/immich-ml:/cache"]
-    networks: [media-net]
     logging: *default-logging
     restart: unless-stopped
 
   immich-redis:
-    image: redis:6-alpine
+    # Immich switched from Redis to Valkey 8 (drop-in fork) in late 2025.
+    # The service name "immich-redis" is preserved so the REDIS_HOSTNAME
+    # in config.env still resolves.
+    image: docker.io/valkey/valkey:8-bookworm
     container_name: immich-redis
-    networks: [media-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -862,7 +815,6 @@ services:
     container_name: immich-db
     env_file: [/mnt/apps/scripts/config.env]
     volumes: ["/mnt/apps/appdata/immich-db:/var/lib/postgresql/data"]
-    networks: [media-net]
     logging: *default-logging
     restart: unless-stopped
 
@@ -873,7 +825,6 @@ services:
     env_file: [/mnt/apps/scripts/config.env]
     volumes: ["/mnt/apps/appdata/seerr:/app/config"]
     ports: ["5055:5055"]
-    networks: [request-net, media-net]
     logging: *default-logging
     restart: unless-stopped
 ```
@@ -919,7 +870,7 @@ include:
 > [!NOTE]
 > **If TrueNAS blocks a host path (SMB + Apps conflict)**
 > 
-> TrueNAS Electric Eel has a safety feature that blocks an app from using a host path that is also shared via SMB. This is common if you share /mnt/tank/data over SMB so you can drag files from your PC. You will see an error like "Host path is already in use" or "Host Path Safety Check" when deploying the stack.
+> TrueNAS (since 24.10 Electric Eel, still present in 25.10 Goldeye) has a safety feature that blocks an app from using a host path that is also shared via SMB. This is common if you share /mnt/tank/data over SMB so you can drag files from your PC. You will see an error like "Host path is already in use" or "Host Path Safety Check" when deploying the stack.
 > Fix: Apps > Settings > Advanced Settings > uncheck "Enable Host Path Safety Checks" > Save > redeploy media-stack.
 > 
 > This is a conscious choice, not a random click. The folder permissions set in Part 4 keep the data safe. The safety check exists to prevent accidents — disabling it is fine as long as you understand that both SMB and Docker containers will be touching the same folders.
