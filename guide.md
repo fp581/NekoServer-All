@@ -1044,6 +1044,7 @@ long to keep each snapshot), Schedule (how often to take a new one).
 | **Dataset** | **Recursive** | **Schedule** | **Retention** | **Why** |
 |:---|:---|:---|:---|:---|
 | apps/appdata | Yes | Every 4 hours | 7 days | App configs change often — roll back quickly if an update breaks an app |
+| apps/scripts | Yes | Daily at 00:30 | 14 days | `config.env` and all maintenance scripts. Small dataset, easy to lose to a bad edit, cheap to snapshot. |
 | tank/photos | Yes | Daily at 01:00 | 30 days | Photos are precious — long retention |
 | tank/data | Yes | Daily at 01:30 | 14 days | Media and downloads together — keep retention short (see warning above) |
 | tank/backups | Yes | Daily at 02:00 | 30 days | Config tarballs — long retention |
@@ -1053,15 +1054,21 @@ long to keep each snapshot), Schedule (how often to take a new one).
 If something goes wrong — bad import, broken update, accidental
 deletion:
 
-1. Go to Storage \> find the dataset \> click Snapshots.
+1. **Stop the affected app first** in Apps → Installed → media-stack →
+   click the container → Stop. Rolling back a dataset while a
+   container is running can corrupt databases that have open file
+   handles (Postgres especially). For Immich, stop both `immich-server`
+   and `immich-db` before rolling back `apps/appdata`.
 
-2. Find the snapshot from before the problem. Click it.
+2. Go to Storage → find the dataset → click Snapshots.
 
-3. Select Rollback. TrueNAS shows a warning and asks you to confirm by
+3. Find the snapshot from before the problem. Click it.
+
+4. Select Rollback. TrueNAS shows a warning and asks you to confirm by
    typing exactly what it shows in the dialog.
 
-4. The dataset rolls back to that point in time. Restart affected apps
-   from Apps \> Installed.
+5. The dataset rolls back to that point in time. Start the app(s) you
+   stopped in step 1 from Apps → Installed.
 
 > [!WARNING]
 > Rolling back destroys all changes made after that snapshot. Only roll back the specific dataset that has the problem (e.g. apps/appdata), never the entire tank pool unless you truly mean to revert all your media.
