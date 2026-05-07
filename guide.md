@@ -1,49 +1,61 @@
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td style="text-align: center;"><p><strong>YOUR COMPLETE</strong></p>
-<p><strong>TrueNAS SCALE Home Media Server</strong></p>
-<p>Final Edition — Complete Beginner-Friendly Build</p>
-<p>ZFS · Real-Debrid · Tailscale · Self-Healing · Remote Access</p>
-<p><em>Jellyfin · Navidrome · Immich · Sonarr · Radarr · Lidarr · Bazarr
-· Seerr</em></p>
-</tr>
-</tbody>
-</table>
+# TrueNAS SCALE Home Media Server
 
-|  |
-|:---|
-| **🎯 What you will have when you finish this guide** |
-| 🎬 Movies and TV — open Seerr on your phone, tap Request. The movie plays in Jellyfin within 2 minutes via Real-Debrid, and downloads locally in the background. |
-| 🎵 Music — your own private Spotify. Add an artist once in Lidarr, get every album downloaded and available in Symfonium or Substreamer on your phone. |
-| 📷 Photos — your phone photos back up automatically when on WiFi. Search by face, object, or date. Works like Google Photos but on your own drives. |
-| 🌍 Remote access — all apps reachable from anywhere via Tailscale. No port forwarding. No domain name. No monthly cost beyond the NAS itself. |
-| 🛡️ Self-healing — ZFS snapshots, nightly config backups, virus scanning, health checks. Resilient to drive failure and accidental mistakes. |
-| 📱 Plays on phone, Apple TV, Samsung, Android TV, Fire TV, Roku, Chromecast, and any web browser. |
-|  |
+_Final Edition — Complete Beginner-Friendly Build_
 
-|  |
-|:---|
-| **📋 How to use this guide** |
-| 1\. Read one part at a time. Do only the steps in that part. |
-| 2\. Do not skip ahead unless the guide tells you to. |
-| 3\. If a step says "in the TrueNAS Shell" — click the \>\_ icon in the top-right corner of the TrueNAS web page. A black command window opens. |
-| 4\. If a step says "in the TrueNAS web page" — that means clicking buttons in your browser. |
-| 5\. Every code block is safe to copy and paste in full. Do not retype — paste. |
-| 6\. If you feel unsure, stop and re-read the step before pressing anything. Slow is safe. |
-|  |
+ZFS · Real-Debrid · Tailscale · Self-Healing · Remote Access
 
-**Part 0 — Understand What You Are Building**
+*Jellyfin · Navidrome · Immich · Sonarr · Radarr · Lidarr · Bazarr · Seerr*
+
+> [!NOTE]
+> **🎯 What you will have when you finish this guide**
+> 
+> 🎬 Movies and TV — open Seerr on your phone, tap Request. The movie plays in Jellyfin within 2 minutes via Real-Debrid, and downloads locally in the background.
+> 🎵 Music — your own private Spotify. Add an artist once in Lidarr, get every album downloaded and available in Symfonium or Substreamer on your phone.
+> 📷 Photos — your phone photos back up automatically when on WiFi. Search by face, object, or date. Works like Google Photos but on your own drives.
+> 🌍 Remote access — all apps reachable from anywhere via Tailscale. No port forwarding. No domain name. No monthly cost beyond the NAS itself.
+> 🛡️ Self-healing — ZFS snapshots, nightly config backups, virus scanning, health checks. Resilient to drive failure and accidental mistakes.
+> 📱 Plays on phone, Apple TV, Samsung, Android TV, Fire TV, Roku, Chromecast, and any web browser.
+
+> [!NOTE]
+> **How to use this guide**
+> 
+> 1\. Read one part at a time. Do only the steps in that part.
+> 2\. Do not skip ahead unless the guide tells you to.
+> 3\. If a step says "in the TrueNAS Shell" — click the >\_ icon in the top-right corner of the TrueNAS web page. A black command window opens.
+> 4\. If a step says "in the TrueNAS web page" — that means clicking buttons in your browser.
+> 5\. Every code block is safe to copy and paste in full. Do not retype — paste.
+> 6\. If you feel unsure, stop and re-read the step before pressing anything. Slow is safe.
+
+## Contents
+
+- [Part 0 — Understand What You Are Building](#part-0--understand-what-you-are-building)
+- [Part 1 — Hardware](#part-1--hardware)
+- [Part 2 — Install TrueNAS SCALE](#part-2--install-truenas-scale)
+- [Part 3 — Create Storage Pools](#part-3--create-storage-pools)
+- [Part 4 — Create Datasets and Folders](#part-4--create-datasets-and-folders)
+- [Part 5 — Remote Access: Tailscale First](#part-5--remote-access-tailscale-first)
+- [Part 6 — The Docker Stack](#part-6--the-docker-stack)
+- [Part 7 — ZFS Snapshots](#part-7--zfs-snapshots)
+- [Part 8 — Maintenance Scripts](#part-8--maintenance-scripts)
+- [Part 9 — First-Time App Setup](#part-9--first-time-app-setup)
+- [Part 10 — Phone and TV App Setup](#part-10--phone-and-tv-app-setup)
+- [Part 11 — How Everything Works Together](#part-11--how-everything-works-together)
+- [Part 12 — Optional Webhook Alerts](#part-12--optional-webhook-alerts)
+- [Part 13 — Real-Debrid + Zurg + rclone (Phase 2)](#part-13--real-debrid--zurg--rclone-phase-2)
+- [Part 14 — Monthly Update Process](#part-14--monthly-update-process)
+- [Part 15 — Recovery Scenarios](#part-15--recovery-scenarios)
+- [Part 16 — Troubleshooting](#part-16--troubleshooting)
+- [Part 17 — Changing Settings](#part-17--changing-settings)
+- [Part 18 — Quick Reference](#part-18--quick-reference)
+
+## Part 0 — Understand What You Are Building
 
 Before touching any hardware, understand the complete picture. This is a
 server that sits silently at home, giving you the experience of
 Netflix + Spotify + Google Photos — but on your own hardware, under your
 own control.
 
-**The Three Storage Layers**
+### The Three Storage Layers
 
 | **Layer** | **Device** | **Pool / Path** | **Purpose** |
 |:---|:---|:---|:---|
@@ -51,13 +63,10 @@ own control.
 | App data | SSD 2 | apps pool (/mnt/apps/) | App databases, configs, transcode temp, incomplete downloads — fast random I/O |
 | Main storage | 2x 8 TB IronWolf | tank mirror (/mnt/tank/) | Media, photos, completed downloads, backups — large and redundant |
 
-|  |
-|:---|
-| **💡 Tip** |
-| Why two SSDs? The apps SSD handles all the small random writes: Immich database, Jellyfin metadata, active torrent pieces. This keeps the HDD mirror doing large sequential reads and writes — what spinning drives do best. The result is snappier apps without wearing out the HDDs. |
-|  |
+> [!TIP]
+> Why two SSDs? The apps SSD handles all the small random writes: Immich database, Jellyfin metadata, active torrent pieces. This keeps the HDD mirror doing large sequential reads and writes — what spinning drives do best. The result is snappier apps without wearing out the HDDs.
 
-**Every App and What It Does**
+### Every App and What It Does
 
 | **App** | **What it does** | **Think of it as** |
 |:---|:---|:---|
@@ -77,7 +86,7 @@ own control.
 | rclone | Mounts the Zurg virtual folder so Jellyfin can see it | The folder translator |
 | ClamAV | Scans downloaded files for viruses | Your download security guard |
 
-**What Is Real-Debrid?**
+### What Is Real-Debrid?
 
 Real-Debrid costs about €4 per month. Sign up at real-debrid.com. Think
 of it as a giant media warehouse in the cloud:
@@ -93,13 +102,10 @@ of it as a giant media warehouse in the cloud:
 - Next time you watch it, Jellyfin streams from your local drive —
   faster, uses no Real-Debrid quota
 
-|  |
-|:---|
-| **🔴 Important** |
-| Real-Debrid is Phase 2 in this guide. Do the entire Phase 1 first: prove that local media works, Jellyfin plays, and downloads import correctly. Then add Real-Debrid on top in Part 13. |
-|  |
+> [!IMPORTANT]
+> Real-Debrid is Phase 2 in this guide. Do the entire Phase 1 first: prove that local media works, Jellyfin plays, and downloads import correctly. Then add Real-Debrid on top in Part 13.
 
-**How Jellyfin Picks What to Stream — Automatic Priority**
+### How Jellyfin Picks What to Stream — Automatic Priority
 
 | **Priority** | **Source** | **What happens** |
 |:---|:---|:---|
@@ -107,13 +113,10 @@ of it as a giant media warehouse in the cloud:
 | 2nd | Real-Debrid virtual folder (/mnt/tank/realdebrid/) | Streams instantly from Real-Debrid. qBittorrent downloads local copy simultaneously. |
 | 3rd | Torrent download in progress | File appears in Jellyfin once qBittorrent finishes. |
 
-|  |
-|:---|
-| **💡 Tip** |
-| You never choose manually. Local always wins. Real-Debrid fills in what you do not have locally yet. |
-|  |
+> [!TIP]
+> You never choose manually. Local always wins. Real-Debrid fills in what you do not have locally yet.
 
-**The Network Model — What Needs Internet and What Does Not**
+### The Network Model — What Needs Internet and What Does Not
 
 | **Traffic type** | **Needed?** | **Example** | **How this guide handles it** |
 |:---|:---|:---|:---|
@@ -122,7 +125,7 @@ of it as a giant media warehouse in the cloud:
 | Private inbound (remote you) | Yes | Your phone or laptop reaching the NAS when away from home | Tailscale only — encrypted private tunnel |
 | Torrent peer inbound | Optional | Better torrent speeds | Not required — Real-Debrid works outbound only |
 
-**Music and Video Are Completely Separate**
+### Music and Video Are Completely Separate
 
 |  | **VIDEO — Jellyfin** | **MUSIC — Navidrome** |
 |:---|:---|:---|
@@ -132,7 +135,7 @@ of it as a giant media warehouse in the cloud:
 | Phone app | Jellyfin app (free) | Symfonium (Android) or Substreamer (iOS) |
 | Port | 8096 | 4533 |
 
-**Part 1 — Hardware**
+## Part 1 — Hardware
 
 | **Component** | **Role in this build** |
 |:---|:---|
@@ -145,7 +148,7 @@ of it as a giant media warehouse in the cloud:
 | Lian Li SP750 V2 Gold 750 W | Power supply |
 | Wired Ethernet cable | Required — never use Wi-Fi for a NAS |
 
-**Cable Connections**
+### Cable Connections
 
 - SSD 1 → M.2 slot M2_1 on the motherboard (OS drive)
 
@@ -159,63 +162,57 @@ of it as a giant media warehouse in the cloud:
 
 - Keyboard and monitor → connect temporarily for first install only
 
-|  |
-|:---|
-| **⚠ Warning** |
-| Always use a wired Ethernet cable. Wi-Fi causes mysterious transfer failures and timeouts that are very hard to diagnose. |
-|  |
+> [!WARNING]
+> Always use a wired Ethernet cable. Wi-Fi causes mysterious transfer failures and timeouts that are very hard to diagnose.
 
-**Part 2 — Install TrueNAS SCALE**
+## Part 2 — Install TrueNAS SCALE
 
 This part installs the operating system onto SSD 1. You need a keyboard,
 monitor, and a USB drive connected to the NAS for this part only.
 
-**Step 2.1 — Create the USB Installer**
+### Step 2.1 — Create the USB Installer
 
-1.  Download balenaEtcher for free from balena.io/etcher on your regular
-    computer.
+1. Download balenaEtcher for free from balena.io/etcher on your regular
+   computer.
 
-2.  Download the latest TrueNAS SCALE ISO from truenas.com/truenas-scale
-    (about 1.5 GB). Make sure you are on TrueNAS SCALE 24.10 or newer
-    for best Intel Arc iGPU support.
+2. Download the latest TrueNAS SCALE ISO from truenas.com/truenas-scale
+   (about 1.5 GB). Make sure you are on TrueNAS SCALE 24.10 or newer
+   for best Intel Arc iGPU support.
 
-3.  Open balenaEtcher. Click "Flash from file" and select the ISO file.
-    Click "Select target" and choose your USB drive. Click Flash. Wait
-    about 5 minutes, then safely eject.
+3. Open balenaEtcher. Click "Flash from file" and select the ISO file.
+   Click "Select target" and choose your USB drive. Click Flash. Wait
+   about 5 minutes, then safely eject.
 
-|  |
-|:---|
-| **⚠ Warning** |
-| Do not select your SSD or HDD as the flash target. That would erase your drive. |
-|  |
+> [!WARNING]
+> Do not select your SSD or HDD as the flash target. That would erase your drive.
 
-**Step 2.2 — BIOS Setup**
+### Step 2.2 — BIOS Setup
 
 On the MAXSUN iCraft B860M CROSS PRO motherboard, the key to enter BIOS
 is Delete. Press it immediately and repeatedly as soon as the screen
 lights up after powering on — about once per second. If you miss it,
 just power off and try again.
 
-4.  Plug the USB into the NAS and power it on.
+4. Plug the USB into the NAS and power it on.
 
-5.  Press the Delete key repeatedly as soon as the screen lights up. A
-    colourful settings screen appears. This is the BIOS.
+5. Press the Delete key repeatedly as soon as the screen lights up. A
+   colourful settings screen appears. This is the BIOS.
 
-6.  Use arrow keys to navigate. Find the Boot tab. Find "Boot Option
-    \#1" and change it to your USB drive. The drive appears by its brand
-    name.
+6. Use arrow keys to navigate. Find the Boot tab. Find "Boot Option
+   \#1" and change it to your USB drive. The drive appears by its brand
+   name.
 
-7.  Find the Advanced tab. Find CPU Configuration. Find "Intel
-    Virtualization Technology" and set it to Enabled.
+7. Find the Advanced tab. Find CPU Configuration. Find "Intel
+   Virtualization Technology" and set it to Enabled.
 
-8.  In the same area, find "IOMMU" or "Intel VT-d" and set it to
-    Enabled. This lets Docker containers use the Intel graphics chip for
-    video transcoding.
+8. In the same area, find "IOMMU" or "Intel VT-d" and set it to
+   Enabled. This lets Docker containers use the Intel graphics chip for
+   video transcoding.
 
-9.  For best idle power consumption: look for ASPM (PCIe Active State
-    Power Management) and enable it. Look for CPU C-states or Package
-    C-state and set to Auto or Enabled. These settings let the CPU and
-    PCIe devices sleep properly when idle.
+9. For best idle power consumption: look for ASPM (PCIe Active State
+   Power Management) and enable it. Look for CPU C-states or Package
+   C-state and set to Auto or Enabled. These settings let the CPU and
+   PCIe devices sleep properly when idle.
 
 10. Critical for headless use: your NAS will sit in a cupboard with no
     monitor. By default, some motherboards disable the iGPU when no
@@ -228,7 +225,7 @@ just power off and try again.
 
 11. Press F10 to save and exit. The NAS restarts from the USB.
 
-**Step 2.3 — Install TrueNAS**
+### Step 2.3 — Install TrueNAS
 
 The installer is a blue text menu. Use arrow keys to move and Enter to
 select.
@@ -250,7 +247,7 @@ select.
     Reboot. While rebooting, remove the USB drive so TrueNAS boots from
     SSD 1.
 
-**Step 2.4 — First Login**
+### Step 2.4 — First Login
 
 On your regular PC (not the NAS), open a web browser.
 
@@ -268,13 +265,10 @@ On your regular PC (not the NAS), open a web browser.
 
 20. You land on the TrueNAS Dashboard. The NAS is running.
 
-|                                                                    |
-|:-------------------------------------------------------------------|
-| **💡 Tip**                                                         |
-| TrueNAS SCALE is completely free. No license, no trial, no expiry. |
-|                                                                    |
+> [!TIP]
+> TrueNAS SCALE is completely free. No license, no trial, no expiry.
 
-**Part 3 — Create Storage Pools**
+## Part 3 — Create Storage Pools
 
 A pool is a logical storage container that spans one or more physical
 drives. You will create two pools: one on the HDDs for media and data,
@@ -284,7 +278,7 @@ Before you start: write down the serial number from the sticker on the
 back of each IronWolf drive. TrueNAS shows drives by model and serial
 number so you can tell them apart.
 
-**Pool 1: tank — HDD Mirror**
+### Pool 1: tank — HDD Mirror
 
 | **Setting** | **Value** |
 |:---|:---|
@@ -293,32 +287,29 @@ number so you can tell them apart.
 | Layout | Mirror — both drives store identical data. One can fail without losing anything. |
 | Purpose | Media, photos, completed downloads, backups |
 
-21. In TrueNAS, click Storage in the left sidebar.
+1. In TrueNAS, click Storage in the left sidebar.
 
-22. Click Create Pool in the top right corner.
+2. Click Create Pool in the top right corner.
 
-23. In the Name field, type: tank
+3. In the Name field, type: tank
 
-24. Under Available Disks, find both 8 TB IronWolf drives. Tick the
-    checkbox next to each one.
+4. Under Available Disks, find both 8 TB IronWolf drives. Tick the
+   checkbox next to each one.
 
-25. Click Add Vdev, then select Mirror. Both drives move into the mirror
-    vdev area. This is correct — a mirror means both drives store the
-    same data.
+5. Click Add Vdev, then select Mirror. Both drives move into the mirror
+   vdev area. This is correct — a mirror means both drives store the
+   same data.
 
-26. Confirm the layout shows Mirror with both drives inside it.
+6. Confirm the layout shows Mirror with both drives inside it.
 
-27. Click Create Pool. TrueNAS asks you to confirm by typing a word.
-    Type exactly what it asks and confirm. Pool creation takes about 1
-    minute.
+7. Click Create Pool. TrueNAS asks you to confirm by typing a word.
+   Type exactly what it asks and confirm. Pool creation takes about 1
+   minute.
 
-|  |
-|:---|
-| **⚠ Warning** |
-| Creating a pool erases the selected drives. Make sure both IronWolf drives are empty and you have NOT selected the SSDs. |
-|  |
+> [!WARNING]
+> Creating a pool erases the selected drives. Make sure both IronWolf drives are empty and you have NOT selected the SSDs.
 
-**Pool 2: apps — SSD**
+### Pool 2: apps — SSD
 
 | **Setting** | **Value**                                                    |
 |:------------|:-------------------------------------------------------------|
@@ -327,49 +318,46 @@ number so you can tell them apart.
 | Layout      | Single disk — no mirror, but backed up nightly to tank       |
 | Purpose     | App databases, transcode temp, incomplete downloads, scripts |
 
-28. Still in Storage, click Create Pool again.
+8. Still in Storage, click Create Pool again.
 
-29. Name it: apps
+9. Name it: apps
 
-30. Select SSD 2 only. Do not select SSD 1 (TrueNAS is installed there —
+10. Select SSD 2 only. Do not select SSD 1 (TrueNAS is installed there —
     it should not appear in the list at all) and do not select the HDDs.
 
-31. Click Add Vdev, then Stripe. A single-drive pool has no redundancy.
+11. Click Add Vdev, then Stripe. A single-drive pool has no redundancy.
     That is intentional — the apps SSD is backed up to the mirrored tank
     pool every night.
 
-32. Click Create Pool and confirm.
+12. Click Create Pool and confirm.
 
-|  |
-|:---|
-| **ℹ️ Why not use the SSD as ZFS cache?** |
-| A ZFS L2ARC cache only helps when the same blocks are read repeatedly and RAM is already exhausted. For this NAS, the real improvement is putting the Immich database, Jellyfin metadata, active torrent writes, and transcode temp files on SSD — workloads that are random, constant, and small. A separate apps pool gives you this AND keeps app data completely separate from media. |
-|  |
+> [!NOTE]
+> **Why not use the SSD as ZFS cache?**
+> 
+> A ZFS L2ARC cache only helps when the same blocks are read repeatedly and RAM is already exhausted. For this NAS, the real improvement is putting the Immich database, Jellyfin metadata, active torrent writes, and transcode temp files on SSD — workloads that are random, constant, and small. A separate apps pool gives you this AND keeps app data completely separate from media.
 
-|  |
-|:---|
-| **ℹ️ Enable SSD TRIM** |
-| After creating the apps pool, go to Storage \> Disks. Find your app SSD and make sure TRIM is enabled. TRIM tells the SSD which blocks are no longer used, keeping write performance healthy over time as databases and log files change constantly. Without TRIM, the apps SSD can slow down noticeably after months of use. |
-|  |
+> [!NOTE]
+> **Enable SSD TRIM**
+> 
+> After creating the apps pool, go to Storage > Disks. Find your app SSD and make sure TRIM is enabled. TRIM tells the SSD which blocks are no longer used, keeping write performance healthy over time as databases and log files change constantly. Without TRIM, the apps SSD can slow down noticeably after months of use.
 
-**Part 4 — Create Datasets and Folders**
+## Part 4 — Create Datasets and Folders
 
 A dataset is like a special folder with extra powers. It can have its
 own snapshots, permissions, and security settings. You use datasets
 instead of plain folders because TrueNAS can protect and snapshot them
 independently.
 
-|  |
-|:---|
-| **ℹ️ The path rule** |
-| If the pool is named apps and you create a dataset called appdata, the full path is /mnt/apps/appdata. If the pool is named tank and you create a dataset called photos, the full path is /mnt/tank/photos. The pool name is always part of the path. |
-|  |
+> [!NOTE]
+> **The path rule**
+> 
+> If the pool is named apps and you create a dataset called appdata, the full path is /mnt/apps/appdata. If the pool is named tank and you create a dataset called photos, the full path is /mnt/tank/photos. The pool name is always part of the path.
 
 How to create one dataset: In TrueNAS, click Storage, click the
 three-dot menu (⋮) next to the pool name, click Add Dataset, type the
 dataset name, and click Save. Repeat for each dataset below.
 
-**Datasets on the apps pool (SSD)**
+### Datasets on the apps pool (SSD)
 
 | **Dataset path** | **Purpose** |
 |:---|:---|
@@ -379,7 +367,7 @@ dataset name, and click Save. Repeat for each dataset below.
 | apps/transcode | Jellyfin transcoding temp files — heavy I/O belongs on SSD |
 | apps/downloads-incomplete | Active qBittorrent incomplete downloads — constant writes belong on SSD |
 
-**Datasets on the tank pool (HDD mirror)**
+### Datasets on the tank pool (HDD mirror)
 
 | **Dataset path** | **Purpose** |
 |:---|:---|
@@ -388,16 +376,13 @@ dataset name, and click Save. Repeat for each dataset below.
 | tank/realdebrid | rclone/Zurg virtual mount target (Phase 2 — Part 13) |
 | tank/backups | Nightly backups of app configs from the SSD — protects against SSD failure |
 
-|  |
-|:---|
-| **🔴 Important** |
-| tank/data must be ONE dataset. Do not create tank/data/media or tank/data/downloads as separate datasets. |
-| Sonarr and Radarr can only hardlink files inside the same ZFS dataset. A hardlink is an instant file move — no copying, no waiting for a 50 GB file to be duplicated. If downloads are in one dataset and media is in another, every import becomes a slow copy-then-delete. |
-| By keeping /mnt/tank/data/downloads/ and /mnt/tank/data/media/ inside the single tank/data dataset, imports are instant. |
-| Triple-check in TrueNAS: Storage → tank pool. You should see "data" as a dataset. You should NOT see "media" or "downloads" as separate datasets under it. If they exist as datasets, delete them before adding any files. |
-|  |
+> [!IMPORTANT]
+> tank/data must be ONE dataset. Do not create tank/data/media or tank/data/downloads as separate datasets.
+> Sonarr and Radarr can only hardlink files inside the same ZFS dataset. A hardlink is an instant file move — no copying, no waiting for a 50 GB file to be duplicated. If downloads are in one dataset and media is in another, every import becomes a slow copy-then-delete.
+> By keeping /mnt/tank/data/downloads/ and /mnt/tank/data/media/ inside the single tank/data dataset, imports are instant.
+> Triple-check in TrueNAS: Storage → tank pool. You should see "data" as a dataset. You should NOT see "media" or "downloads" as separate datasets under it. If they exist as datasets, delete them before adding any files.
 
-**Dataset Security Settings — Download Folders Only**
+### Dataset Security Settings — Download Folders Only
 
 For the two download datasets, disable the ability for files to execute
 as programs. This means even if a downloaded file is secretly malware,
@@ -412,7 +397,7 @@ Advanced Options. Look for ZFS Exec, ZFS Setuid, ZFS Devices.
 | tank/data | Disabled | Disabled | Disabled | Downloads and completed media stay here — untrusted until imported |
 | All other datasets | Enabled (default) | Disabled | Enabled (default) | App databases and media need normal access |
 
-**Create the Folders**
+### Create the Folders
 
 After datasets exist, create the subfolders. Open TrueNAS Shell (click
 the \>\_ icon in the top-right corner of the TrueNAS web page). A black
@@ -420,177 +405,146 @@ command window opens.
 
 Paste each block and press Enter:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p># App SSD subfolders</p>
-<p>mkdir -p
-/mnt/apps/appdata/{bazarr,clamav,immich-db,immich-ml,jellyfin,lidarr,navidrome,prowlarr,qbittorrent,radarr,rclone,seerr,sonarr,tailscale,zurg}</p>
-<p>mkdir -p
-/mnt/apps/{backups,scripts,transcode/jellyfin,downloads-incomplete}</p>
-<p># Tank HDD subfolders — all under tank/data (one dataset, instant
-hardlinks)</p>
-<p>mkdir -p /mnt/tank/data/media/{movies,tv,music}</p>
-<p>mkdir -p /mnt/tank/data/downloads/complete/{movies,tv,music}</p>
-<p>mkdir -p /mnt/tank/data/downloads/quarantine</p>
-<p># Other tank folders</p>
-<p>mkdir -p /mnt/tank/photos/library</p>
-<p>mkdir -p /mnt/tank/realdebrid/{movies,tv}</p>
-<p>mkdir -p /mnt/tank/backups/configs</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+# App SSD subfolders
+mkdir -p /mnt/apps/appdata/{bazarr,clamav,immich-db,immich-ml,jellyfin,lidarr,navidrome,prowlarr,qbittorrent,radarr,rclone,seerr,sonarr,tailscale,zurg}
+mkdir -p /mnt/apps/{backups,scripts,transcode/jellyfin,downloads-incomplete}
+# Tank HDD subfolders — all under tank/data (one dataset, instant hardlinks)
+mkdir -p /mnt/tank/data/media/{movies,tv,music}
+mkdir -p /mnt/tank/data/downloads/complete/{movies,tv,music}
+mkdir -p /mnt/tank/data/downloads/quarantine
+# Other tank folders
+mkdir -p /mnt/tank/photos/library
+mkdir -p /mnt/tank/realdebrid/{movies,tv}
+mkdir -p /mnt/tank/backups/configs
+```
 
-**Set Permissions**
+### Set Permissions
 
 Apps run as user 568 (the TrueNAS apps user). Give that user ownership
 of the folders so apps can read and write their data. Without this step,
 apps fail with permission errors.
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>chown -R 568:568 /mnt/apps/appdata /mnt/apps/transcode
-/mnt/apps/downloads-incomplete</p>
-<p>chown -R 568:568 /mnt/tank/data /mnt/tank/photos
-/mnt/tank/realdebrid</p>
-<p>chmod -R 775 /mnt/apps/appdata /mnt/apps/transcode
-/mnt/apps/downloads-incomplete</p>
-<p>chmod -R 775 /mnt/tank/data /mnt/tank/photos /mnt/tank/realdebrid</p>
-<p># Scripts folder — owned by the current logged-in user</p>
-<p>SCRIPT_OWNER="$(id -un)"</p>
-<p>chown -R "$SCRIPT_OWNER":568 /mnt/apps/scripts</p>
-<p>chmod -R 775 /mnt/apps/scripts</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+chown -R 568:568 /mnt/apps/appdata /mnt/apps/transcode /mnt/apps/downloads-incomplete
+chown -R 568:568 /mnt/tank/data /mnt/tank/photos /mnt/tank/realdebrid
+chmod -R 775 /mnt/apps/appdata /mnt/apps/transcode /mnt/apps/downloads-incomplete
+chmod -R 775 /mnt/tank/data /mnt/tank/photos /mnt/tank/realdebrid
+# Scripts folder — owned by the current logged-in user
+SCRIPT_OWNER="$(id -un)"
+chown -R "$SCRIPT_OWNER":568 /mnt/apps/scripts
+chmod -R 775 /mnt/apps/scripts
+```
 
-|  |
-|:---|
-| **ℹ️ Immich database exception** |
-| The Immich database container runs internally as user 999, not 568. You must give that user ownership of just the Immich database folder: |
-| chown -R 999:999 /mnt/apps/appdata/immich-db |
-|  |
-| Important: run this command again any time you restore from backup, recreate the folder, or do a broad permission repair. A backup restore can accidentally put the database folder back under user 568, causing Immich to fail with permission errors on the next start. |
-|  |
+> [!NOTE]
+> **Immich database exception**
+> 
+> The Immich database container runs internally as user 999, not 568. You must give that user ownership of just the Immich database folder:
+> chown -R 999:999 /mnt/apps/appdata/immich-db
+> 
+> Important: run this command again any time you restore from backup, recreate the folder, or do a broad permission repair. A backup restore can accidentally put the database folder back under user 568, causing Immich to fail with permission errors on the next start.
 
-|  |
-|:---|
-| **ℹ️ Find the GPU render group ID** |
-| Jellyfin and Immich need to join the GPU render group. Find its number by running this in TrueNAS Shell: |
-| getent group render |
-| \# Output looks like: render:x:107: |
-| \# The number (107 in this example) is your RENDER_GID. |
-| \# Write it down — you will put it in config.env in the next part. |
-|  |
+> [!NOTE]
+> **Find the GPU render group ID**
+> 
+> Jellyfin and Immich need to join the GPU render group. Find its number by running this in TrueNAS Shell:
+> getent group render
+> \# Output looks like: render:x:107:
+> \# The number (107 in this example) is your RENDER_GID.
+> \# Write it down — you will put it in config.env in the next part.
 
-|  |
-|:---|
-| **ℹ️ Verify /dev/dri exists before continuing** |
-| After TrueNAS is installed and running (no USB, no monitor), confirm the Intel Arc iGPU is actually visible to the OS. In TrueNAS Shell: |
-| ls /dev/dri |
-| \# You should see: card0 renderD128 |
-| \# If the output is empty, try the Arrow Lake fix below first, then check BIOS. |
-| \# This is the most common reason Jellyfin hardware transcoding appears to work but does nothing. |
-|  |
+> [!NOTE]
+> **Verify /dev/dri exists before continuing**
+> 
+> After TrueNAS is installed and running (no USB, no monitor), confirm the Intel Arc iGPU is actually visible to the OS. In TrueNAS Shell:
+> ls /dev/dri
+> \# You should see: card0 renderD128
+> \# If the output is empty, try the Arrow Lake fix below first, then check BIOS.
+> \# This is the most common reason Jellyfin hardware transcoding appears to work but does nothing.
 
-|  |
-|:---|
-| **ℹ️ Arrow Lake force_probe — required for Intel Core Ultra (Arrow Lake)** |
-| The Intel Core Ultra 5 225 uses the Arrow Lake architecture. In TrueNAS SCALE 24.10, the Linux kernel may not load the i915 graphics driver automatically for this chip. Even with the correct BIOS settings and /dev/dri absent, the fix is a single kernel parameter. |
-| Step 1 — In TrueNAS: System Settings \> Advanced \> Sysctl \> Add. |
-| Variable: ix_diagnostics_force_probe |
-| Value: 7120 |
-| (7120 is the PCI device ID for Arrow Lake integrated graphics. This tells the i915 driver to probe this device ID even though it is not yet in the official support list.) |
-|  |
-| Step 2 — Reboot the NAS. |
-|  |
-| Step 3 — Verify in TrueNAS Shell: |
-| ls /dev/dri |
-| \# You should now see: card0 renderD128 |
-|  |
-| If that specific value does not work on your board, the fallback is the wildcard: |
-| Variable: ix_diagnostics_force_probe |
-| Value: \* |
-| (The wildcard forces the driver to probe all unknown Intel GPU device IDs. It is broader but safe on a dedicated NAS.) |
-|  |
-| Without this step, /dev/dri may stay empty on Core Ultra hardware regardless of BIOS settings. |
-|  |
+> [!NOTE]
+> **Arrow Lake force_probe — required for Intel Core Ultra (Arrow Lake)**
+> 
+> The Intel Core Ultra 5 225 uses the Arrow Lake architecture. In TrueNAS SCALE 24.10, the Linux kernel may not load the i915 graphics driver automatically for this chip. Even with the correct BIOS settings and /dev/dri absent, the fix is a single kernel parameter.
+> Step 1 — In TrueNAS: System Settings > Advanced > Sysctl > Add.
+> Variable: ix_diagnostics_force_probe
+> Value: 7120
+> (7120 is the PCI device ID for Arrow Lake integrated graphics. This tells the i915 driver to probe this device ID even though it is not yet in the official support list.)
+> 
+> Step 2 — Reboot the NAS.
+> 
+> Step 3 — Verify in TrueNAS Shell:
+> ls /dev/dri
+> \# You should now see: card0 renderD128
+> 
+> If that specific value does not work on your board, the fallback is the wildcard:
+> Variable: ix_diagnostics_force_probe
+> Value: *
+> (The wildcard forces the driver to probe all unknown Intel GPU device IDs. It is broader but safe on a dedicated NAS.)
+> 
+> Without this step, /dev/dri may stay empty on Core Ultra hardware regardless of BIOS settings.
 
-**Part 5 — Remote Access: Tailscale First**
+## Part 5 — Remote Access: Tailscale First
 
 Install Tailscale before anything else. It gives you a secure private
 tunnel from your phone and laptop to the NAS — from anywhere in the
 world — without opening any router ports.
 
-|  |
-|:---|
-| **🔴 Important** |
-| Do not open any router port forwards while building this system. Not for TrueNAS, not for Jellyfin, not for any app. Tailscale provides all remote access. This is the single most important security decision in the guide. |
-|  |
+> [!IMPORTANT]
+> Do not open any router port forwards while building this system. Not for TrueNAS, not for Jellyfin, not for any app. Tailscale provides all remote access. This is the single most important security decision in the guide.
 
-**Step 5.1 — Create a Tailscale Account and Auth Key**
+### Step 5.1 — Create a Tailscale Account and Auth Key
 
-33. Go to tailscale.com and create a free account.
+1. Go to tailscale.com and create a free account.
 
-34. Go to tailscale.com/settings/keys and click "Generate auth key".
+2. Go to tailscale.com/settings/keys and click "Generate auth key".
 
-35. Set it to Reusable and set expiry to No expiry. A home server should
-    not go offline because a key expired while you were away. A
-    one-time-use key will work for the first boot but the NAS will
-    silently lose its Tailscale identity the next time the container is
-    recreated (after a stack update or a TrueNAS upgrade). Reusable +
-    non-expiring means the NAS reconnects automatically every time.
+3. Set it to Reusable and set expiry to No expiry. A home server should
+   not go offline because a key expired while you were away. A
+   one-time-use key will work for the first boot but the NAS will
+   silently lose its Tailscale identity the next time the container is
+   recreated (after a stack update or a TrueNAS upgrade). Reusable +
+   non-expiring means the NAS reconnects automatically every time.
 
-36. Copy the key. It looks like: tskey-auth-kXXXXXXXXXXX. Save it
-    somewhere safe — you will put it in config.env in Part 6.
+4. Copy the key. It looks like: tskey-auth-kXXXXXXXXXXX. Save it
+   somewhere safe — you will put it in config.env in Part 6.
 
-|  |
-|:---|
-| **ℹ️ How Tailscale identity is preserved across restarts** |
-| The Tailscale container stores its authenticated state (its identity on your private network) in the volume mounted at /var/lib/tailscale — which maps to /mnt/apps/appdata/tailscale on your SSD. |
-| As long as that folder exists and has the correct files, the NAS reconnects automatically after any restart, update, or container recreation without needing a new auth key. |
-|  |
-| If you ever delete /mnt/apps/appdata/tailscale or recreate the apps pool, the NAS loses its Tailscale identity and needs the auth key again. That is why the key must be Reusable — so you can re-authenticate without generating a new one. |
-|  |
-| The nightly config backup (Part 8) backs up this folder to the mirrored HDD, so even an apps SSD failure does not permanently lose your Tailscale identity. |
-|  |
+> [!NOTE]
+> **How Tailscale identity is preserved across restarts**
+> 
+> The Tailscale container stores its authenticated state (its identity on your private network) in the volume mounted at /var/lib/tailscale — which maps to /mnt/apps/appdata/tailscale on your SSD.
+> As long as that folder exists and has the correct files, the NAS reconnects automatically after any restart, update, or container recreation without needing a new auth key.
+> 
+> If you ever delete /mnt/apps/appdata/tailscale or recreate the apps pool, the NAS loses its Tailscale identity and needs the auth key again. That is why the key must be Reusable — so you can re-authenticate without generating a new one.
+> 
+> The nightly config backup (Part 8) backs up this folder to the mirrored HDD, so even an apps SSD failure does not permanently lose your Tailscale identity.
 
-**Step 5.2 — Connect Your Phone**
+### Step 5.2 — Connect Your Phone
 
-37. Install the Tailscale app on your phone — free on App Store and
-    Google Play.
+5. Install the Tailscale app on your phone — free on App Store and
+   Google Play.
 
-38. Sign in with the same Tailscale account.
+6. Sign in with the same Tailscale account.
 
-39. Tap the toggle to connect. Leave Tailscale running in the background
-    permanently — it uses almost no battery and connects automatically
-    when you leave home.
+7. Tap the toggle to connect. Leave Tailscale running in the background
+   permanently — it uses almost no battery and connects automatically
+   when you leave home.
 
-**Step 5.3 — Enable MagicDNS (Recommended)**
+### Step 5.3 — Enable MagicDNS (Recommended)
 
 MagicDNS gives your NAS a readable name instead of a number like
 100.64.12.34.
 
-40. Go to tailscale.com/admin/dns in your browser.
+8. Go to tailscale.com/admin/dns in your browser.
 
-41. Click Enable MagicDNS. Your NAS will be reachable as truenas-nas
-    (the hostname you set in the Tailscale container) instead of its IP
-    address.
+9. Click Enable MagicDNS. Your NAS will be reachable as truenas-nas
+   (the hostname you set in the Tailscale container) instead of its IP
+   address.
 
-|  |
-|:---|
-| **💡 Tip** |
-| After setup is complete, your NAS has two addresses: a local IP (e.g. 192.168.1.50) for when you are at home, and a Tailscale IP (e.g. 100.64.12.34 or the MagicDNS name) for when you are away. The apps work the same way at both addresses. |
-|  |
+> [!TIP]
+> After setup is complete, your NAS has two addresses: a local IP (e.g. 192.168.1.50) for when you are at home, and a Tailscale IP (e.g. 100.64.12.34 or the MagicDNS name) for when you are away. The apps work the same way at both addresses.
 
-**Access Model**
+### Access Model
 
 | **App** | **At home (local)** | **Away from home** | **Reasoning** |
 |:---|:---|:---|:---|
@@ -598,69 +552,55 @@ MagicDNS gives your NAS a readable name instead of a number like
 | qBittorrent, Sonarr, Radarr, Prowlarr, etc. | NAS IP | Tailscale IP (admin only) | Management tools — no need to be public |
 | TrueNAS web page | NAS IP | Tailscale IP only | Never expose the storage OS to the internet |
 
-**Part 6 — The Docker Stack**
+## Part 6 — The Docker Stack
 
 The entire app stack is defined in two files: config.env (your personal
 settings) and docker-compose.yml (the app blueprint). You create both
 files, then deploy through the TrueNAS Apps UI.
 
-**Step 6.1 — Create config.env**
+### Step 6.1 — Create config.env
 
 config.env is a plain text file that holds all your settings in one
 place. Every script and every container reads from it so you never type
 the same value twice.
 
-42. Open TrueNAS Shell (click the \>\_ icon in the top-right corner).
+1. Open TrueNAS Shell (click the \>\_ icon in the top-right corner).
 
-43. Paste this to create the scripts folder and open the config file in
-    the nano editor:
+2. Paste this to create the scripts folder and open the config file in
+   the nano editor:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>mkdir -p /mnt/apps/scripts</p>
-<p>nano /mnt/apps/scripts/config.env</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+mkdir -p /mnt/apps/scripts
+nano /mnt/apps/scripts/config.env
+```
 
-44. The nano editor opens. Paste the template below:
+3. The nano editor opens. Paste the template below:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>TZ="Asia/Jerusalem"</p>
-<p>PUID="568"</p>
-<p>PGID="568"</p>
-<p>RENDER_GID=""</p>
-<p>TS_AUTHKEY=""</p>
-<p>QBIT_PASSWORD="ChangeMe_qBit123"</p>
-<p>IMMICH_DB_PASS="ChangeMe_DB456"</p>
-<p>POSTGRES_USER="immich"</p>
-<p>POSTGRES_DB="immich"</p>
-<p>POSTGRES_PASSWORD="ChangeMe_DB456"</p>
-<p>DB_HOSTNAME="immich-db"</p>
-<p>DB_USERNAME="immich"</p>
-<p>DB_DATABASE_NAME="immich"</p>
-<p>DB_PASSWORD="ChangeMe_DB456"</p>
-<p>REDIS_HOSTNAME="immich-redis"</p>
-<p>WAIT_FOR_RD="0"</p>
-<p>ENABLE_USB_BACKUP="1"</p>
-<p>USB_UUID=""</p>
-<p>WEBHOOK_URL=""</p>
-<p>INCOMPLETE_DAYS="14"</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+TZ="Asia/Jerusalem"
+PUID="568"
+PGID="568"
+RENDER_GID=""
+TS_AUTHKEY=""
+QBIT_PASSWORD="ChangeMe_qBit123"
+IMMICH_DB_PASS="ChangeMe_DB456"
+POSTGRES_USER="immich"
+POSTGRES_DB="immich"
+POSTGRES_PASSWORD="ChangeMe_DB456"
+DB_HOSTNAME="immich-db"
+DB_USERNAME="immich"
+DB_DATABASE_NAME="immich"
+DB_PASSWORD="ChangeMe_DB456"
+REDIS_HOSTNAME="immich-redis"
+WAIT_FOR_RD="0"
+ENABLE_USB_BACKUP="1"
+USB_UUID=""
+WEBHOOK_URL=""
+INCOMPLETE_DAYS="14"
+```
 
-45. Now fill in YOUR values by moving the cursor to each line and
-    changing the value:
+4. Now fill in YOUR values by moving the cursor to each line and
+   changing the value:
 
 | **Variable** | **What to put here** | **Where to find it** |
 |:---|:---|:---|
@@ -672,341 +612,326 @@ the same value twice.
 | USB_UUID | Leave blank for now | Fill in Part 9 after plugging in a USB drive |
 | WEBHOOK_URL | Leave blank for now | Optional — fill in Part 12 if you want alerts |
 
-46. Press Ctrl+X, then Y, then Enter to save.
+5. Press Ctrl+X, then Y, then Enter to save.
 
-|  |
-|:---|
-| **⚠ Warning** |
-| POSTGRES_PASSWORD, POSTGRES_PASSWORD, and DB_PASSWORD must all be the same value. One is read by the database container and the others by the Immich server container. If they differ, Immich will fail to connect to its own database. |
-|  |
+> [!WARNING]
+> POSTGRES_PASSWORD, POSTGRES_PASSWORD, and DB_PASSWORD must all be the same value. One is read by the database container and the others by the Immich server container. If they differ, Immich will fail to connect to its own database.
 
-**Step 6.2 — Create docker-compose.yml**
+### Step 6.2 — Create docker-compose.yml
 
 This file is the blueprint that tells Docker which apps to run, which
 folders they can access, which ports they use, and which containers can
 talk to each other.
 
-|  |
-|:---|
-| **🔴 Important** |
-| Hardlink rule: qBittorrent, Sonarr, Radarr, and Lidarr all mount /mnt/tank/data on the host as /data inside the container. This is deliberate — completed downloads and final media are in the same ZFS dataset, so imports are instant hardlinks instead of slow file copies. |
-|  |
+> [!IMPORTANT]
+> Hardlink rule: qBittorrent, Sonarr, Radarr, and Lidarr all mount /mnt/tank/data on the host as /data inside the container. This is deliberate — completed downloads and final media are in the same ZFS dataset, so imports are instant hardlinks instead of slow file copies.
 
-|  |
-|:---|
-| **ℹ️ Docker subnet note** |
-| The compose file uses explicit 172.31.x.x subnets so Docker does not randomly pick a range that overlaps your home LAN or Tailscale addresses. If your home network already uses 172.31.10.x, 172.31.20.x, 172.31.30.x, or 172.31.40.x, change those subnet numbers before deploying. |
-| Never use 172.17.0.0/16 as a custom subnet. That is the Docker default bridge network range and it is almost always already in use. Assigning it to a named network creates invisible routing conflicts that are very hard to debug. |
-|  |
-| If you need to change the 172.31.x.x ranges, pick something in 172.20.x.x through 172.30.x.x that your home router does not use. Most home routers use 192.168.x.x or 10.x.x.x, so the 172.31.x.x range in the guide is safe for almost everyone. |
-|  |
-| Tailscale uses the 100.64.x.x range (CGNAT space) and does not conflict with 172.31.x.x. |
-|  |
+> [!NOTE]
+> **Docker subnet note**
+> 
+> The compose file uses explicit 172.31.x.x subnets so Docker does not randomly pick a range that overlaps your home LAN or Tailscale addresses. If your home network already uses 172.31.10.x, 172.31.20.x, 172.31.30.x, or 172.31.40.x, change those subnet numbers before deploying.
+> Never use 172.17.0.0/16 as a custom subnet. That is the Docker default bridge network range and it is almost always already in use. Assigning it to a named network creates invisible routing conflicts that are very hard to debug.
+> 
+> If you need to change the 172.31.x.x ranges, pick something in 172.20.x.x through 172.30.x.x that your home router does not use. Most home routers use 192.168.x.x or 10.x.x.x, so the 172.31.x.x range in the guide is safe for almost everyone.
+> 
+> Tailscale uses the 100.64.x.x range (CGNAT space) and does not conflict with 172.31.x.x.
 
-47. In TrueNAS Shell, open the compose file in nano:
+6. In TrueNAS Shell, open the compose file in nano:
 
-|                                           |
-|-------------------------------------------|
-| nano /mnt/apps/scripts/docker-compose.yml |
+```bash
+nano /mnt/apps/scripts/docker-compose.yml
+```
+7. Paste the full compose file below. When done, press Ctrl+X → Y →
+   Enter to save.
 
-48. Paste the full compose file below. When done, press Ctrl+X → Y →
-    Enter to save.
+```yaml
+version: "3.8"
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>version: "3.8"</p>
-<p>x-logging: &amp;default-logging</p>
-<p>driver: "json-file"</p>
-<p>options:</p>
-<p>max-size: "10m"</p>
-<p>max-file: "3"</p>
-<p>networks:</p>
-<p>download-net:</p>
-<p>driver: bridge</p>
-<p>ipam:</p>
-<p>config:</p>
-<p>- subnet: 172.31.10.0/24</p>
-<p>media-net:</p>
-<p>driver: bridge</p>
-<p>ipam:</p>
-<p>config:</p>
-<p>- subnet: 172.31.20.0/24</p>
-<p>request-net:</p>
-<p>driver: bridge</p>
-<p>ipam:</p>
-<p>config:</p>
-<p>- subnet: 172.31.30.0/24</p>
-<p>subtitle-net:</p>
-<p>driver: bridge</p>
-<p>ipam:</p>
-<p>config:</p>
-<p>- subnet: 172.31.40.0/24</p>
-<p>services:</p>
-<p># ── TAILSCALE ──────────────────────────────────────────────────</p>
-<p>tailscale:</p>
-<p>image: tailscale/tailscale:latest</p>
-<p>container_name: tailscale</p>
-<p>hostname: truenas-nas</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>environment: [TS_STATE_DIR=/var/lib/tailscale]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/tailscale:/var/lib/tailscale</p>
-<p>- /dev/net/tun:/dev/net/tun</p>
-<p>cap_add: [NET_ADMIN, NET_RAW]</p>
-<p>network_mode: host</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p># ── REAL-DEBRID (Phase 2 — comment out all lines of both
-services</p>
-<p># until Part 13. Add # at the start of each line below.) ─────</p>
-<p>zurg:</p>
-<p>image: ghcr.io/debridmediamanager/zurg-testing:latest</p>
-<p>container_name: zurg</p>
-<p>restart: unless-stopped</p>
-<p># Zurg only needs its config folder and a port to serve WebDAV.</p>
-<p># Do NOT mount /mnt/tank/realdebrid here — rclone-mount.sh
-manages</p>
-<p># that host path. Mounting it from both Zurg and rclone causes a</p>
-<p># FUSE "transport endpoint is not connected" error.</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/zurg:/config</p>
-<p>ports: ["9999:9999"]</p>
-<p>networks: [download-net]</p>
-<p>logging: *default-logging</p>
-<p># ── DOWNLOADERS
-─────────────────────────────────────────────────</p>
-<p>qbittorrent:</p>
-<p>image: lscr.io/linuxserver/qbittorrent:latest</p>
-<p>container_name: qbittorrent</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>environment: [WEBUI_PORT=8090]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/qbittorrent:/config</p>
-<p>- /mnt/tank/data:/data</p>
-<p>- /mnt/apps/downloads-incomplete:/downloads/incomplete</p>
-<p>ports: ["8090:8090"]</p>
-<p>networks: [download-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>clamav:</p>
-<p>image: clamav/clamav:latest</p>
-<p>container_name: clamav</p>
-<p>environment: [CLAMAV_NO_MILTERD=true]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/clamav:/var/lib/clamav</p>
-<p>- /mnt/tank/data/downloads/complete:/scandir</p>
-<p>- /mnt/tank/data/downloads/quarantine:/quarantine</p>
-<p>networks: [download-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p># ── INDEXERS / AUTOMATION
-───────────────────────────────────────</p>
-<p>prowlarr:</p>
-<p>image: lscr.io/linuxserver/prowlarr:latest</p>
-<p>container_name: prowlarr</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>volumes: ["/mnt/apps/appdata/prowlarr:/config"]</p>
-<p>ports: ["9696:9696"]</p>
-<p>networks: [download-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>sonarr:</p>
-<p>image: lscr.io/linuxserver/sonarr:latest</p>
-<p>container_name: sonarr</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/sonarr:/config</p>
-<p>- /mnt/tank/data:/data</p>
-<p>ports: ["8989:8989"]</p>
-<p>networks: [download-net, media-net, subtitle-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>radarr:</p>
-<p>image: lscr.io/linuxserver/radarr:latest</p>
-<p>container_name: radarr</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/radarr:/config</p>
-<p>- /mnt/tank/data:/data</p>
-<p>ports: ["7878:7878"]</p>
-<p>networks: [download-net, media-net, subtitle-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>lidarr:</p>
-<p>image: lscr.io/linuxserver/lidarr:latest</p>
-<p>container_name: lidarr</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/lidarr:/config</p>
-<p>- /mnt/tank/data:/data</p>
-<p>ports: ["8686:8686"]</p>
-<p>networks: [download-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>bazarr:</p>
-<p>image: lscr.io/linuxserver/bazarr:latest</p>
-<p>container_name: bazarr</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/bazarr:/config</p>
-<p>- /mnt/tank/data/media/movies:/movies</p>
-<p>- /mnt/tank/data/media/tv:/tv</p>
-<p>ports: ["6767:6767"]</p>
-<p>networks: [subtitle-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p># ── MEDIA SERVERS
-────────────────────────────────────────────────</p>
-<p>jellyfin:</p>
-<p>image: lscr.io/linuxserver/jellyfin:latest</p>
-<p>container_name: jellyfin</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>devices: [/dev/dri:/dev/dri]</p>
-<p>group_add: ["${RENDER_GID}"]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/jellyfin:/config</p>
-<p>- /mnt/apps/transcode/jellyfin:/transcode</p>
-<p>- /mnt/tank/data/media/movies:/media/movies:ro</p>
-<p>- /mnt/tank/data/media/tv:/media/tv:ro</p>
-<p>- /mnt/tank/realdebrid:/media/realdebrid:ro</p>
-<p>ports: ["8096:8096"]</p>
-<p>networks: [media-net, request-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>navidrome:</p>
-<p>image: deluan/navidrome:latest</p>
-<p>container_name: navidrome</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>volumes:</p>
-<p>- /mnt/apps/appdata/navidrome:/data</p>
-<p>- /mnt/tank/data/media/music:/music:ro</p>
-<p>ports: ["4533:4533"]</p>
-<p>networks: [media-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p># ── PHOTOS
-──────────────────────────────────────────────────────</p>
-<p>immich-server:</p>
-<p>image: ghcr.io/immich-app/immich-server:release</p>
-<p>container_name: immich-server</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>devices: [/dev/dri:/dev/dri]</p>
-<p>group_add: ["${RENDER_GID}"]</p>
-<p>volumes:</p>
-<p>- /mnt/tank/photos/library:/usr/src/app/upload</p>
-<p>ports: ["2283:2283"]</p>
-<p>depends_on: [immich-db, immich-redis]</p>
-<p>networks: [media-net, request-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>immich-machine-learning:</p>
-<p>image: ghcr.io/immich-app/immich-machine-learning:release</p>
-<p>container_name: immich-machine-learning</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>devices: [/dev/dri:/dev/dri]</p>
-<p>group_add: ["${RENDER_GID}"]</p>
-<p>volumes: ["/mnt/apps/appdata/immich-ml:/cache"]</p>
-<p>networks: [media-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>immich-redis:</p>
-<p>image: redis:6-alpine</p>
-<p>container_name: immich-redis</p>
-<p>networks: [media-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p>immich-db:</p>
-<p>image:
-ghcr.io/immich-app/postgres:16-vectorchord0.4.3-pgvectors0.2.0</p>
-<p>container_name: immich-db</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>volumes: ["/mnt/apps/appdata/immich-db:/var/lib/postgresql/data"]</p>
-<p>networks: [media-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p>
-<p># ── REQUESTS
-────────────────────────────────────────────────────</p>
-<p>seerr:</p>
-<p>image: ghcr.io/seerr-team/seerr:latest</p>
-<p>container_name: seerr</p>
-<p>env_file: [/mnt/apps/scripts/config.env]</p>
-<p>volumes: ["/mnt/apps/appdata/seerr:/app/config"]</p>
-<p>ports: ["5055:5055"]</p>
-<p>networks: [request-net, media-net]</p>
-<p>logging: *default-logging</p>
-<p>restart: unless-stopped</p></td>
-</tr>
-</tbody>
-</table>
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
 
-**Step 6.3 — Deploy via TrueNAS Apps UI**
+networks:
+  download-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.10.0/24
+  media-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.20.0/24
+  request-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.30.0/24
+  subtitle-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.40.0/24
+
+services:
+  # ── TAILSCALE ──────────────────────────────────────────────────
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: truenas-nas
+    env_file: [/mnt/apps/scripts/config.env]
+    environment: [TS_STATE_DIR=/var/lib/tailscale]
+    volumes:
+      - /mnt/apps/appdata/tailscale:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add: [NET_ADMIN, NET_RAW]
+    network_mode: host
+    logging: *default-logging
+    restart: unless-stopped
+
+  # ── REAL-DEBRID (Phase 2 — comment out all lines of both services
+  # until Part 13. Add # at the start of each line below.) ─────
+  zurg:
+    image: ghcr.io/debridmediamanager/zurg-testing:latest
+    container_name: zurg
+    restart: unless-stopped
+    # Zurg only needs its config folder and a port to serve WebDAV.
+    # Do NOT mount /mnt/tank/realdebrid here — rclone-mount.sh manages
+    # that host path. Mounting it from both Zurg and rclone causes a
+    # FUSE "transport endpoint is not connected" error.
+    volumes:
+      - /mnt/apps/appdata/zurg:/config
+    ports: ["9999:9999"]
+    networks: [download-net]
+    logging: *default-logging
+
+  # ── DOWNLOADERS ─────────────────────────────────────────────────
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    env_file: [/mnt/apps/scripts/config.env]
+    environment: [WEBUI_PORT=8090]
+    volumes:
+      - /mnt/apps/appdata/qbittorrent:/config
+      - /mnt/tank/data:/data
+      - /mnt/apps/downloads-incomplete:/downloads/incomplete
+    ports: ["8090:8090"]
+    networks: [download-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  clamav:
+    image: clamav/clamav:latest
+    container_name: clamav
+    environment: [CLAMAV_NO_MILTERD=true]
+    volumes:
+      - /mnt/apps/appdata/clamav:/var/lib/clamav
+      - /mnt/tank/data/downloads/complete:/scandir
+      - /mnt/tank/data/downloads/quarantine:/quarantine
+    networks: [download-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  # ── INDEXERS / AUTOMATION ───────────────────────────────────────
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes: ["/mnt/apps/appdata/prowlarr:/config"]
+    ports: ["9696:9696"]
+    networks: [download-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/sonarr:/config
+      - /mnt/tank/data:/data
+    ports: ["8989:8989"]
+    networks: [download-net, media-net, subtitle-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/radarr:/config
+      - /mnt/tank/data:/data
+    ports: ["7878:7878"]
+    networks: [download-net, media-net, subtitle-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/lidarr:/config
+      - /mnt/tank/data:/data
+    ports: ["8686:8686"]
+    networks: [download-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/bazarr:/config
+      - /mnt/tank/data/media/movies:/movies
+      - /mnt/tank/data/media/tv:/tv
+    ports: ["6767:6767"]
+    networks: [subtitle-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  # ── MEDIA SERVERS ────────────────────────────────────────────────
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    env_file: [/mnt/apps/scripts/config.env]
+    devices: [/dev/dri:/dev/dri]
+    group_add: ["${RENDER_GID}"]
+    volumes:
+      - /mnt/apps/appdata/jellyfin:/config
+      - /mnt/apps/transcode/jellyfin:/transcode
+      - /mnt/tank/data/media/movies:/media/movies:ro
+      - /mnt/tank/data/media/tv:/media/tv:ro
+      - /mnt/tank/realdebrid:/media/realdebrid:ro
+    ports: ["8096:8096"]
+    networks: [media-net, request-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/navidrome:/data
+      - /mnt/tank/data/media/music:/music:ro
+    ports: ["4533:4533"]
+    networks: [media-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  # ── PHOTOS ──────────────────────────────────────────────────────
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:release
+    container_name: immich-server
+    env_file: [/mnt/apps/scripts/config.env]
+    devices: [/dev/dri:/dev/dri]
+    group_add: ["${RENDER_GID}"]
+    volumes:
+      - /mnt/tank/photos/library:/usr/src/app/upload
+    ports: ["2283:2283"]
+    depends_on: [immich-db, immich-redis]
+    networks: [media-net, request-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  immich-machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:release
+    container_name: immich-machine-learning
+    env_file: [/mnt/apps/scripts/config.env]
+    devices: [/dev/dri:/dev/dri]
+    group_add: ["${RENDER_GID}"]
+    volumes: ["/mnt/apps/appdata/immich-ml:/cache"]
+    networks: [media-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  immich-redis:
+    image: redis:6-alpine
+    container_name: immich-redis
+    networks: [media-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  immich-db:
+    image: ghcr.io/immich-app/postgres:16-vectorchord0.4.3-pgvectors0.2.0
+    container_name: immich-db
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes: ["/mnt/apps/appdata/immich-db:/var/lib/postgresql/data"]
+    networks: [media-net]
+    logging: *default-logging
+    restart: unless-stopped
+
+  # ── REQUESTS ────────────────────────────────────────────────────
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes: ["/mnt/apps/appdata/seerr:/app/config"]
+    ports: ["5055:5055"]
+    networks: [request-net, media-net]
+    logging: *default-logging
+    restart: unless-stopped
+```
+
+### Step 6.3 — Deploy via TrueNAS Apps UI
 
 Do not use "docker compose up -d" in the Shell as the normal way to run
 the stack. TrueNAS is an appliance and its Apps system should own app
 deployment so it can manage updates and restarts properly.
 
-49. In TrueNAS, click Apps in the left sidebar.
+8. In TrueNAS, click Apps in the left sidebar.
 
-50. Click Discover Apps.
+9. Click Discover Apps.
 
-51. Click the three-dot menu (⋮) in the top-right area of the screen.
+10. Click the three-dot menu (⋮) in the top-right area of the screen.
 
-52. Click "Install via YAML".
+11. Click "Install via YAML".
 
-53. Give it the name: media-stack
+12. Give it the name: media-stack
 
-54. In the YAML box, paste the full contents of the docker-compose.yml
+13. In the YAML box, paste the full contents of the docker-compose.yml
     file you just saved. Or if your TrueNAS version supports it, use
     this simpler YAML instead:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>include:</p>
-<p>- /mnt/apps/scripts/docker-compose.yml</p></td>
-</tr>
-</tbody>
-</table>
+```yaml
+include:
+  - /mnt/apps/scripts/docker-compose.yml
+```
 
-55. Click Save. Wait for TrueNAS to deploy all containers.
+14. Click Save. Wait for TrueNAS to deploy all containers.
 
-56. Go to Apps \> Installed. Confirm media-stack shows all containers as
+15. Go to Apps \> Installed. Confirm media-stack shows all containers as
     Running.
 
-|  |
-|:---|
-| **ℹ️ If TrueNAS complains about RENDER_GID** |
-| Some TrueNAS YAML screens do not apply config.env substitutions at compose-time. If you see an error about \${RENDER_GID}, replace those two instances in the YAML with the actual number (e.g. 107): |
-| group_add: \["107"\] |
-|  |
-| Only replace the two group_add entries — do not change any other variables. |
-|  |
+> [!NOTE]
+> **If TrueNAS complains about RENDER_GID**
+> 
+> Some TrueNAS YAML screens do not apply config.env substitutions at compose-time. If you see an error about \${RENDER_GID}, replace those two instances in the YAML with the actual number (e.g. 107):
+> group_add: ["107"]
+> 
+> Only replace the two group_add entries — do not change any other variables.
 
-|  |
-|:---|
-| **ℹ️ If TrueNAS blocks a host path (SMB + Apps conflict)** |
-| TrueNAS Electric Eel has a safety feature that blocks an app from using a host path that is also shared via SMB. This is common if you share /mnt/tank/data over SMB so you can drag files from your PC. You will see an error like "Host path is already in use" or "Host Path Safety Check" when deploying the stack. |
-| Fix: Apps \> Settings \> Advanced Settings \> uncheck "Enable Host Path Safety Checks" \> Save \> redeploy media-stack. |
-|  |
-| This is a conscious choice, not a random click. The folder permissions set in Part 4 keep the data safe. The safety check exists to prevent accidents — disabling it is fine as long as you understand that both SMB and Docker containers will be touching the same folders. |
-|  |
-| Why you might have SMB enabled: it is useful for copying large files (movies, music) from your PC directly onto the NAS before asking Sonarr or Radarr to manage them. SMB and Docker containers can share the same data folder safely — TrueNAS is just being cautious by default. |
-|  |
+> [!NOTE]
+> **If TrueNAS blocks a host path (SMB + Apps conflict)**
+> 
+> TrueNAS Electric Eel has a safety feature that blocks an app from using a host path that is also shared via SMB. This is common if you share /mnt/tank/data over SMB so you can drag files from your PC. You will see an error like "Host path is already in use" or "Host Path Safety Check" when deploying the stack.
+> Fix: Apps > Settings > Advanced Settings > uncheck "Enable Host Path Safety Checks" > Save > redeploy media-stack.
+> 
+> This is a conscious choice, not a random click. The folder permissions set in Part 4 keep the data safe. The safety check exists to prevent accidents — disabling it is fine as long as you understand that both SMB and Docker containers will be touching the same folders.
+> 
+> Why you might have SMB enabled: it is useful for copying large files (movies, music) from your PC directly onto the NAS before asking Sonarr or Radarr to manage them. SMB and Docker containers can share the same data folder safely — TrueNAS is just being cautious by default.
 
-|  |
-|:---|
-| **ℹ️ Zurg at first launch** |
-| Zurg will fail to start until you create its config file in Part 13. That is expected. Comment out the zurg service (add \# to the start of every line of that section) until you reach Part 13. Everything else should start correctly. |
-|  |
+> [!NOTE]
+> **Zurg at first launch**
+> 
+> Zurg will fail to start until you create its config file in Part 13. That is expected. Comment out the zurg service (add # to the start of every line of that section) until you reach Part 13. Everything else should start correctly.
 
-**Verify the stack started correctly**
+### Verify the stack started correctly
 
 Wait 2-3 minutes after deployment, then check in TrueNAS Apps \>
 Installed \> media-stack. Most containers should show Running. If any
@@ -1015,44 +940,31 @@ UI.
 
 For quick Shell checks (read-only troubleshooting only):
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>docker ps --format "table {{.Names}}\t{{.Status}}"</p>
-<p># Most should show "Up (X minutes)"</p>
-<p># Zurg will show Restarting until Part 13 — that is expected</p>
-<p># If Jellyfin or other apps fail, check logs:</p>
-<p>docker logs jellyfin | tail -30</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+docker ps --format "table {{.Names}}\t{{.Status}}"
+# Most should show "Up (X minutes)"
+# Zurg will show Restarting until Part 13 — that is expected
+# If Jellyfin or other apps fail, check logs:
+docker logs jellyfin | tail -30
+```
 
-**Part 7 — ZFS Snapshots**
+## Part 7 — ZFS Snapshots
 
 Snapshots are save points. TrueNAS takes a photograph of your data
 automatically so you can roll back to any previous state if an update
 breaks something, a file gets accidentally deleted, or an import goes
 wrong.
 
-|  |
-|:---|
-| **🔴 Important** |
-| Snapshot retention warning: ZFS snapshots hold on to old disk blocks even after files are deleted or moved. |
-| If you move a 50 GB movie from downloads to media while a snapshot still remembers the old location, that 50 GB stays on disk until the snapshot expires. |
-| Keep tank/data retention at 14 days or less at first. Long retention can make tank look full even after you have deleted files. |
-| This is normal ZFS behaviour — just keep retention times reasonable. |
-|  |
+> [!IMPORTANT]
+> Snapshot retention warning: ZFS snapshots hold on to old disk blocks even after files are deleted or moved.
+> If you move a 50 GB movie from downloads to media while a snapshot still remembers the old location, that 50 GB stays on disk until the snapshot expires.
+> Keep tank/data retention at 14 days or less at first. Long retention can make tank look full even after you have deleted files.
+> This is normal ZFS behaviour — just keep retention times reasonable.
 
-|  |
-|:---|
-| **⚠ Warning** |
-| Do NOT install sanoid via apt-get or any package manager on TrueNAS SCALE. It is unsupported on the TrueNAS base OS and a system update can break or remove it. Use the built-in UI snapshots below instead. |
-|  |
+> [!WARNING]
+> Do NOT install sanoid via apt-get or any package manager on TrueNAS SCALE. It is unsupported on the TrueNAS base OS and a system update can break or remove it. Use the built-in UI snapshots below instead.
 
-**Create Snapshot Tasks in TrueNAS UI**
+### Create Snapshot Tasks in TrueNAS UI
 
 Go to Data Protection in the left sidebar \> Periodic Snapshot Tasks \>
 Add. Create one task for each row below:
@@ -1068,85 +980,72 @@ long to keep each snapshot), Schedule (how often to take a new one).
 | tank/data | Yes | Daily at 01:30 | 14 days | Media and downloads together — keep retention short (see warning above) |
 | tank/backups | Yes | Daily at 02:00 | 30 days | Config tarballs — long retention |
 
-**How to Roll Back a Snapshot**
+### How to Roll Back a Snapshot
 
 If something goes wrong — bad import, broken update, accidental
 deletion:
 
-57. Go to Storage \> find the dataset \> click Snapshots.
+1. Go to Storage \> find the dataset \> click Snapshots.
 
-58. Find the snapshot from before the problem. Click it.
+2. Find the snapshot from before the problem. Click it.
 
-59. Select Rollback. TrueNAS shows a warning and asks you to confirm by
-    typing exactly what it shows in the dialog.
+3. Select Rollback. TrueNAS shows a warning and asks you to confirm by
+   typing exactly what it shows in the dialog.
 
-60. The dataset rolls back to that point in time. Restart affected apps
-    from Apps \> Installed.
+4. The dataset rolls back to that point in time. Restart affected apps
+   from Apps \> Installed.
 
-|  |
-|:---|
-| **⚠ Warning** |
-| Rolling back destroys all changes made after that snapshot. Only roll back the specific dataset that has the problem (e.g. apps/appdata), never the entire tank pool unless you truly mean to revert all your media. |
-|  |
+> [!WARNING]
+> Rolling back destroys all changes made after that snapshot. Only roll back the specific dataset that has the problem (e.g. apps/appdata), never the entire tank pool unless you truly mean to revert all your media.
 
-**Part 8 — Maintenance Scripts**
+## Part 8 — Maintenance Scripts
 
 Four scripts automate predictable, low-risk maintenance tasks. None of
 them delete your media library. All use "set -Eeuo pipefail" which means
 they fail loudly if something goes wrong instead of silently continuing.
 
-|  |
-|:---|
-| **ℹ️ How to create these scripts** |
-| Each script is created with nano. Open TrueNAS Shell, run the nano command shown, paste the script content, then press Ctrl+X → Y → Enter to save. Then run chmod +x on the file to make it runnable. |
-| \# How to make a script runnable: |
-| chmod +x /mnt/apps/scripts/script-name.sh |
-|  |
-| \# How to test a script immediately: |
-| bash /mnt/apps/scripts/script-name.sh |
-|  |
+> [!NOTE]
+> **How to create these scripts**
+> 
+> Each script is created with nano. Open TrueNAS Shell, run the nano command shown, paste the script content, then press Ctrl+X → Y → Enter to save. Then run chmod +x on the file to make it runnable.
+> \# How to make a script runnable:
+> chmod +x /mnt/apps/scripts/script-name.sh
+> 
+> \# How to test a script immediately:
+> bash /mnt/apps/scripts/script-name.sh
 
-**Script 1: backup-app-config.sh — Nightly SSD Backup**
+### Script 1: backup-app-config.sh — Nightly SSD Backup
 
 This is the most important script. The apps SSD has no redundancy. This
 backs it up to the mirrored HDD pool every night. If the SSD dies, you
 restore from here.
 
-|                                             |
-|---------------------------------------------|
-| nano /mnt/apps/scripts/backup-app-config.sh |
+```bash
+nano /mnt/apps/scripts/backup-app-config.sh
+```
 
 Paste this content:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>#!/usr/bin/env bash</p>
-<p>set -Eeuo pipefail</p>
-<p>SRC="/mnt/apps/appdata"</p>
-<p>SCRIPT_SRC="/mnt/apps/scripts"</p>
-<p>DEST="/mnt/tank/backups/configs"</p>
-<p>DATE="$(date +%F_%H-%M-%S)"</p>
-<p>LOG="/mnt/apps/scripts/backup-app-config.log"</p>
-<p>mkdir -p "$DEST"</p>
-<p>echo "[backup] Starting $DATE" &gt;&gt; "$LOG"</p>
-<p>tar -czf "$DEST/app-config-$DATE.tar.gz" "$SRC" "$SCRIPT_SRC"
-&gt;&gt; "$LOG" 2&gt;&amp;1</p>
-<p>find "$DEST" -name "app-config-*.tar.gz" -type f -mtime +30 -print
--delete &gt;&gt; "$LOG" 2&gt;&amp;1</p>
-<p>echo "[backup] Finished $DATE" &gt;&gt; "$LOG"</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SRC="/mnt/apps/appdata"
+SCRIPT_SRC="/mnt/apps/scripts"
+DEST="/mnt/tank/backups/configs"
+DATE="$(date +%F_%H-%M-%S)"
+LOG="/mnt/apps/scripts/backup-app-config.log"
+mkdir -p "$DEST"
+echo "[backup] Starting $DATE" >> "$LOG"
+tar -czf "$DEST/app-config-$DATE.tar.gz" "$SRC" "$SCRIPT_SRC" >> "$LOG" 2>&1
+find "$DEST" -name "app-config-*.tar.gz" -type f -mtime +30 -print -delete >> "$LOG" 2>&1
+echo "[backup] Finished $DATE" >> "$LOG"
+```
 
-|                                                 |
-|-------------------------------------------------|
-| chmod +x /mnt/apps/scripts/backup-app-config.sh |
+```bash
+chmod +x /mnt/apps/scripts/backup-app-config.sh
+```
 
-**Script 2: photo-backup-usb.sh — USB Drive Photo Backup**
+### Script 2: photo-backup-usb.sh — USB Drive Photo Backup
 
 Creates a physical copy of your photos on a USB drive. The USB is
 unmounted when not in use so it cannot be affected by ransomware or NAS
@@ -1154,184 +1053,137 @@ problems.
 
 First, plug in your USB drive and find its UUID:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>blkid</p>
-<p># Find the line matching your USB drive (small size, type ext4 or
-exfat)</p>
-<p># Copy the UUID value — it looks like:
-a1b2c3d4-e5f6-7890-abcd-123456789012</p>
-<p># Add it to config.env: USB_UUID="your-uuid-here"</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+blkid
+# Find the line matching your USB drive (small size, type ext4 or exfat)
+# Copy the UUID value — it looks like: a1b2c3d4-e5f6-7890-abcd-123456789012
+# Add it to config.env: USB_UUID="your-uuid-here"
+```
 
-|                                            |
-|--------------------------------------------|
-| nano /mnt/apps/scripts/photo-backup-usb.sh |
+```bash
+nano /mnt/apps/scripts/photo-backup-usb.sh
+```
 
 Paste this content:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>#!/usr/bin/env bash</p>
-<p>set -Eeuo pipefail</p>
-<p>source /mnt/apps/scripts/config.env</p>
-<p>[ "${ENABLE_USB_BACKUP:-0}" != "1" ] &amp;&amp; exit 0</p>
-<p>[ -z "${USB_UUID:-}" ] &amp;&amp; exit 0</p>
-<p>MOUNT=/mnt/usb-photo-backup</p>
-<p>mkdir -p "$MOUNT"</p>
-<p>mount UUID="$USB_UUID" "$MOUNT"</p>
-<p>if ! mountpoint -q "$MOUNT"; then</p>
-<p>echo "[photo-backup] USB drive did not mount. Stopping."</p>
-<p>exit 1</p>
-<p>fi</p>
-<p>trap 'umount "$MOUNT" 2&gt;/dev/null || true' EXIT</p>
-<p>rsync -a --ignore-existing --no-perms /mnt/tank/photos/library/
-"$MOUNT/photos/"</p>
-<p>sync</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+source /mnt/apps/scripts/config.env
+[ "${ENABLE_USB_BACKUP:-0}" != "1" ] && exit 0
+[ -z "${USB_UUID:-}" ] && exit 0
+MOUNT=/mnt/usb-photo-backup
+mkdir -p "$MOUNT"
+mount UUID="$USB_UUID" "$MOUNT"
+if ! mountpoint -q "$MOUNT"; then
+echo "[photo-backup] USB drive did not mount. Stopping."
+exit 1
+fi
+trap 'umount "$MOUNT" 2>/dev/null || true' EXIT
+rsync -a --ignore-existing --no-perms /mnt/tank/photos/library/ "$MOUNT/photos/"
+sync
+```
 
-|                                                |
-|------------------------------------------------|
-| chmod +x /mnt/apps/scripts/photo-backup-usb.sh |
+```bash
+chmod +x /mnt/apps/scripts/photo-backup-usb.sh
+```
 
-**Script 3: cleanup-downloads.sh — Daily Junk Removal**
+### Script 3: cleanup-downloads.sh — Daily Junk Removal
 
 Removes torrent junk files from completed downloads and cleans up stale
 incomplete downloads. Does NOT touch your media library.
 
-|                                             |
-|---------------------------------------------|
-| nano /mnt/apps/scripts/cleanup-downloads.sh |
+```bash
+nano /mnt/apps/scripts/cleanup-downloads.sh
+```
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>#!/usr/bin/env bash</p>
-<p>set -Eeuo pipefail</p>
-<p>COMPLETE="/mnt/tank/data/downloads/complete"</p>
-<p>INCOMPLETE="/mnt/apps/downloads-incomplete"</p>
-<p>LOG="/mnt/apps/scripts/cleanup-downloads.log"</p>
-<p>INCOMPLETE_DAYS="${INCOMPLETE_DAYS:-14}"</p>
-<p>echo "[cleanup] Starting $(date)" &gt;&gt; "$LOG"</p>
-<p># Delete torrent junk (NFO, SFV, screenshots, sample clips)</p>
-<p># -not -path '*/.*' skips hidden folders including .zfs snapshot
-directories</p>
-<p>find "$COMPLETE" -not -path '*/.*' -type f \( \</p>
-<p>-iname "*.nfo" -o -iname "*.sfv" -o -iname "*.url" -o \</p>
-<p>-iname "*.txt" -o -iname "*sample*" -o -iname "*featurette*" \</p>
-<p>\) -print -delete &gt;&gt; "$LOG" 2&gt;&amp;1</p>
-<p># Delete stale incomplete downloads</p>
-<p>find "$INCOMPLETE" -not -path '*/.*' -type f -mtime
-+"$INCOMPLETE_DAYS" -print -delete &gt;&gt; "$LOG" 2&gt;&amp;1</p>
-<p># Remove empty folders</p>
-<p>find "$COMPLETE" "$INCOMPLETE" -not -path '*/.*' -type d -empty
--print -delete &gt;&gt; "$LOG" 2&gt;&amp;1</p>
-<p>echo "[cleanup] Finished $(date)" &gt;&gt; "$LOG"</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+COMPLETE="/mnt/tank/data/downloads/complete"
+INCOMPLETE="/mnt/apps/downloads-incomplete"
+LOG="/mnt/apps/scripts/cleanup-downloads.log"
+INCOMPLETE_DAYS="${INCOMPLETE_DAYS:-14}"
+echo "[cleanup] Starting $(date)" >> "$LOG"
+# Delete torrent junk (NFO, SFV, screenshots, sample clips)
+# -not -path '*/.*' skips hidden folders including .zfs snapshot directories
+find "$COMPLETE" -not -path '*/.*' -type f \( \
+-iname "*.nfo" -o -iname "*.sfv" -o -iname "*.url" -o \
+-iname "*.txt" -o -iname "*sample*" -o -iname "*featurette*" \
+\) -print -delete >> "$LOG" 2>&1
+# Delete stale incomplete downloads
+find "$INCOMPLETE" -not -path '*/.*' -type f -mtime +"$INCOMPLETE_DAYS" -print -delete >> "$LOG" 2>&1
+# Remove empty folders
+find "$COMPLETE" "$INCOMPLETE" -not -path '*/.*' -type d -empty -print -delete >> "$LOG" 2>&1
+echo "[cleanup] Finished $(date)" >> "$LOG"
+```
 
-|                                                 |
-|-------------------------------------------------|
-| chmod +x /mnt/apps/scripts/cleanup-downloads.sh |
+```bash
+chmod +x /mnt/apps/scripts/cleanup-downloads.sh
+```
 
-**Script 4: scan-downloads.sh — Scheduled Virus Scan**
+### Script 4: scan-downloads.sh — Scheduled Virus Scan
 
 Runs ClamAV inside its container to scan completed downloads. Scheduled
 daily instead of triggered by qBittorrent — simpler and more reliable.
 
-|                                          |
-|------------------------------------------|
-| nano /mnt/apps/scripts/scan-downloads.sh |
+```bash
+nano /mnt/apps/scripts/scan-downloads.sh
+```
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>#!/usr/bin/env bash</p>
-<p>set -Eeuo pipefail</p>
-<p>LOG="/mnt/apps/scripts/clamav-scan.log"</p>
-<p>echo "[clamav] Starting $(date)" &gt;&gt; "$LOG"</p>
-<p># --exclude-dir skips .zfs snapshot directories</p>
-<p># || true prevents the script from failing when infected files are
-found</p>
-<p># (ClamAV returns exit code 1 when it finds threats — that is
-normal)</p>
-<p>docker exec clamav clamscan --recursive \</p>
-<p>--exclude-dir='(^|/)\.zfs' \</p>
-<p>--move=/quarantine --quiet /scandir &gt;&gt; "$LOG" 2&gt;&amp;1 ||
-true</p>
-<p>echo "[clamav] Finished $(date)" &gt;&gt; "$LOG"</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+LOG="/mnt/apps/scripts/clamav-scan.log"
+echo "[clamav] Starting $(date)" >> "$LOG"
+# --exclude-dir skips .zfs snapshot directories
+# || true prevents the script from failing when infected files are found
+# (ClamAV returns exit code 1 when it finds threats — that is normal)
+docker exec clamav clamscan --recursive \
+--exclude-dir='(^|/)\.zfs' \
+--move=/quarantine --quiet /scandir >> "$LOG" 2>&1 || true
+echo "[clamav] Finished $(date)" >> "$LOG"
+```
 
-|                                              |
-|----------------------------------------------|
-| chmod +x /mnt/apps/scripts/scan-downloads.sh |
+```bash
+chmod +x /mnt/apps/scripts/scan-downloads.sh
+```
 
-**Script 5: health-check.sh — Container Status Log**
+### Script 5: health-check.sh — Container Status Log
 
 Logs which containers are running. This is a read-only helper — it does
 NOT auto-restart anything. The reason: auto-restart hides failures. Logs
 let you see that something keeps crashing so you can investigate.
 
-|                                        |
-|----------------------------------------|
-| nano /mnt/apps/scripts/health-check.sh |
+```bash
+nano /mnt/apps/scripts/health-check.sh
+```
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>#!/usr/bin/env bash</p>
-<p>set -Eeuo pipefail</p>
-<p>LOG="/mnt/apps/scripts/health-check.log"</p>
-<p>WEBHOOK_URL="${WEBHOOK_URL:-}"</p>
-<p>APPS="jellyfin navidrome immich-server immich-db immich-redis
-immich-machine-learning qbittorrent prowlarr sonarr radarr lidarr bazarr
-seerr clamav tailscale"</p>
-<p>echo "[health] Check $(date)" &gt;&gt; "$LOG"</p>
-<p>for app in $APPS; do</p>
-<p>if docker ps --format '{{.Names}}' | grep -qx "$app"; then</p>
-<p>echo "[health] OK: $app" &gt;&gt; "$LOG"</p>
-<p>else</p>
-<p>echo "[health] DOWN: $app" &gt;&gt; "$LOG"</p>
-<p>if [ -n "$WEBHOOK_URL" ]; then</p>
-<p>MSG=$(printf '{"text": "NAS: %s is down"}' "$app")</p>
-<p>curl -sf -X POST "$WEBHOOK_URL" -H "Content-Type: application/json"
--d "$MSG" || true</p>
-<p>fi</p>
-<p>fi</p>
-<p>done</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+LOG="/mnt/apps/scripts/health-check.log"
+WEBHOOK_URL="${WEBHOOK_URL:-}"
+APPS="jellyfin navidrome immich-server immich-db immich-redis immich-machine-learning qbittorrent prowlarr sonarr radarr lidarr bazarr seerr clamav tailscale"
+echo "[health] Check $(date)" >> "$LOG"
+for app in $APPS; do
+if docker ps --format '{{.Names}}' | grep -qx "$app"; then
+echo "[health] OK: $app" >> "$LOG"
+else
+echo "[health] DOWN: $app" >> "$LOG"
+if [ -n "$WEBHOOK_URL" ]; then
+MSG=$(printf '{"text": "NAS: %s is down"}' "$app")
+curl -sf -X POST "$WEBHOOK_URL" -H "Content-Type: application/json" -d "$MSG" || true
+fi
+fi
+done
+```
 
-|                                            |
-|--------------------------------------------|
-| chmod +x /mnt/apps/scripts/health-check.sh |
+```bash
+chmod +x /mnt/apps/scripts/health-check.sh
+```
 
-**Schedule All Scripts**
+### Schedule All Scripts
 
 Go to System Settings \> Advanced Settings \> Cron Jobs \> Add. Create
 one job for each row:
@@ -1349,57 +1201,52 @@ AM.
 | Virus scan | bash /mnt/apps/scripts/scan-downloads.sh | 30 4 \* \* \* | 4:30 AM daily |
 | Photo USB backup | bash /mnt/apps/scripts/photo-backup-usb.sh | 0 6 \* \* \* | 6:00 AM daily |
 
-|  |
-|:---|
-| **ℹ️ Maintenance job schedule rule** |
-| Do not let these jobs overlap. The schedule above keeps them separated: |
-| 03:00 — Config backup (before anything else) |
-| 04:00 — Cleanup downloads (low I/O) |
-| 04:30 — Virus scan (heavy I/O on downloads folder) |
-| 06:00 — USB photo backup (avoids overlapping Immich database jobs) |
-| Schedule Jellyfin and Immich internal scheduled tasks around 04:00 too — put them in the Jellyfin/Immich settings so their database maintenance does not fight the virus scan. |
-|  |
+> [!NOTE]
+> **Maintenance job schedule rule**
+> 
+> Do not let these jobs overlap. The schedule above keeps them separated:
+> 03:00 — Config backup (before anything else)
+> 04:00 — Cleanup downloads (low I/O)
+> 04:30 — Virus scan (heavy I/O on downloads folder)
+> 06:00 — USB photo backup (avoids overlapping Immich database jobs)
+> Schedule Jellyfin and Immich internal scheduled tasks around 04:00 too — put them in the Jellyfin/Immich settings so their database maintenance does not fight the virus scan.
 
-**Part 9 — First-Time App Setup**
+## Part 9 — First-Time App Setup
 
 Set up apps in this order. Each step builds on the previous one. If
 something breaks, you know exactly which app caused it.
 
-|  |
-|:---|
-| **ℹ️ Use the quick reference table (Part 18) for all app URLs** |
-| When the guide says "open qBittorrent", go to http://\[NAS-IP\]:8090 in your browser. Replace \[NAS-IP\] with your actual server IP address, for example 192.168.1.50. |
-|  |
+> [!NOTE]
+> **Use the quick reference table (Part 18) for all app URLs**
+> 
+> When the guide says "open qBittorrent", go to http://[NAS-IP]:8090 in your browser. Replace [NAS-IP] with your actual server IP address, for example 192.168.1.50.
 
-**9.1 — qBittorrent**
+### 9.1 — qBittorrent
 
 What it does: downloads torrent files to /mnt/apps/downloads-incomplete/
 (SSD), then moves completed files to /mnt/tank/data/downloads/complete/
 (HDD).
 
-|  |
-|:---|
-| **🔴 Important** |
-| linuxserver/qbittorrent generates a RANDOM password on first start. You must find it before you can log in. Run this in TrueNAS Shell: |
-| docker logs qbittorrent 2\>&1 \| grep -i password |
-| \# Output: "A temporary password is provided for this session: AbCdEf1234" |
-| \# Copy that password. You will use it to log in now, then change it. |
-|  |
+> [!IMPORTANT]
+> linuxserver/qbittorrent generates a RANDOM password on first start. You must find it before you can log in. Run this in TrueNAS Shell:
+> docker logs qbittorrent 2>&1 | grep -i password
+> \# Output: "A temporary password is provided for this session: AbCdEf1234"
+> \# Copy that password. You will use it to log in now, then change it.
 
-61. Open qBittorrent at http://\[NAS-IP\]:8090. Log in with username
-    admin and the temporary password from the step above.
+1. Open qBittorrent at http://\[NAS-IP\]:8090. Log in with username
+   admin and the temporary password from the step above.
 
-62. Go to Settings (gear icon) \> Web UI \> Authentication. Change the
-    password to your QBIT_PASSWORD from config.env. Save.
+2. Go to Settings (gear icon) \> Web UI \> Authentication. Change the
+   password to your QBIT_PASSWORD from config.env. Save.
 
-63. Go to Settings \> Downloads. Set Default Save Path to:
-    /data/downloads/complete
+3. Go to Settings \> Downloads. Set Default Save Path to:
+   /data/downloads/complete
 
-64. Enable "Keep incomplete torrents in:" and set to:
-    /downloads/incomplete
+4. Enable "Keep incomplete torrents in:" and set to:
+   /downloads/incomplete
 
-65. Save. Then go to Tools \> Torrent Categories \> Add and create these
-    three categories:
+5. Save. Then go to Tools \> Torrent Categories \> Add and create these
+   three categories:
 
 | **Category** | **Save path**                   |
 |:-------------|:--------------------------------|
@@ -1407,20 +1254,20 @@ What it does: downloads torrent files to /mnt/apps/downloads-incomplete/
 | tv           | /data/downloads/complete/tv     |
 | music        | /data/downloads/complete/music  |
 
-**9.2 — Prowlarr**
+### 9.2 — Prowlarr
 
 What it does: a central search engine that manages all your indexers
 (sources for finding movies, TV, and music) and shares them with Sonarr,
 Radarr, and Lidarr.
 
-66. Open Prowlarr at http://\[NAS-IP\]:9696. Complete the setup wizard
-    and create an admin account.
+6. Open Prowlarr at http://\[NAS-IP\]:9696. Complete the setup wizard
+   and create an admin account.
 
-67. Go to Settings \> General \> Authentication. Set Forms-based
-    authentication, enter a username and password, and restart Prowlarr.
+7. Go to Settings \> General \> Authentication. Set Forms-based
+   authentication, enter a username and password, and restart Prowlarr.
 
-68. Add torrent indexers: click Indexers \> Add Indexer. Add these in
-    order:
+8. Add torrent indexers: click Indexers \> Add Indexer. Add these in
+   order:
 
 | **Indexer** | **Priority** | **How to add** | **Notes** |
 |:---|:---|:---|:---|
@@ -1431,22 +1278,19 @@ Radarr, and Lidarr.
 | Orpheus (optional) | 10 | Requires account at orpheus.network. Same process as Redacted. Priority: 10 | Lossless FLAC music |
 | Real-Debrid | 1 | Add in Part 13 after Real-Debrid is set up | Always tried first — instant streaming |
 
-|  |
-|:---|
-| **💡 Tip** |
-| The priority number controls which source is tried first for every download request. Lower number = tried first. Priority 1 (Real-Debrid) is always tried before priority 25 (torrent sites). You add Real-Debrid in Part 13 — for now, the torrent fallbacks above work fine. |
-|  |
+> [!TIP]
+> The priority number controls which source is tried first for every download request. Lower number = tried first. Priority 1 (Real-Debrid) is always tried before priority 25 (torrent sites). You add Real-Debrid in Part 13 — for now, the torrent fallbacks above work fine.
 
-**9.3 — Sonarr**
+### 9.3 — Sonarr
 
 What it does: monitors TV shows, automatically downloads new episodes as
 they air, and moves them to the media library.
 
-69. Open Sonarr at http://\[NAS-IP\]:8989. Go to Settings \> General \>
-    Security \> Authentication Required. Set Forms-based, enter username
-    and password. Restart Sonarr.
+9. Open Sonarr at http://\[NAS-IP\]:8989. Go to Settings \> General \>
+   Security \> Authentication Required. Set Forms-based, enter username
+   and password. Restart Sonarr.
 
-70. Connect to qBittorrent: Settings \> Download Clients \> + \>
+10. Connect to qBittorrent: Settings \> Download Clients \> + \>
     qBittorrent:
 
 | **Field** | **Value** |
@@ -1457,121 +1301,119 @@ they air, and moves them to the media library.
 | Password | your QBIT_PASSWORD |
 | Category | tv |
 
-71. Click Test (should turn green), then Save.
+11. Click Test (should turn green), then Save.
 
-72. Connect to Prowlarr: in Sonarr, go to Settings \> General and copy
+12. Connect to Prowlarr: in Sonarr, go to Settings \> General and copy
     the API Key shown there. Now open Prowlarr \> Settings \> Apps \> +
     \> Sonarr. Paste the Sonarr API key. Click Test, then Save. Prowlarr
     will now push all your indexers to Sonarr automatically.
 
-73. Set root folder: Settings \> Media Management \> Root Folders \> +
+13. Set root folder: Settings \> Media Management \> Root Folders \> +
     \> type /data/media/tv
 
-74. Set naming format: Settings \> Media Management \> Rename Episodes:
+14. Set naming format: Settings \> Media Management \> Rename Episodes:
     ON. Find the "Episode Format" field and type:
 
-|                                                              |
-|--------------------------------------------------------------|
-| {Series Title} - S{season:00}E{episode:00} - {Episode Title} |
+```bash
+{Series Title} - S{season:00}E{episode:00} - {Episode Title}
+```
 
 This creates files like: Breaking Bad - S01E01 - Pilot.mkv — essential
 for correct subtitle matching.
 
-**9.4 — Radarr**
+### 9.4 — Radarr
 
 What it does: same as Sonarr but for movies.
 
-75. Open Radarr at http://\[NAS-IP\]:7878. Same authentication setup as
+15. Open Radarr at http://\[NAS-IP\]:7878. Same authentication setup as
     Sonarr.
 
-76. Same qBittorrent connection — only change the Category to: movies
+16. Same qBittorrent connection — only change the Category to: movies
 
-77. Same Prowlarr sync — copy Radarr API key from Settings \> General,
+17. Same Prowlarr sync — copy Radarr API key from Settings \> General,
     paste into Prowlarr \> Settings \> Apps \> + \> Radarr.
 
-78. Root folder: /data/media/movies
+18. Root folder: /data/media/movies
 
-79. Naming format: Settings \> Media Management \> Rename Movies: ON.
+19. Naming format: Settings \> Media Management \> Rename Movies: ON.
     Movie Format field:
 
-|                                |
-|--------------------------------|
-| {Movie Title} ({Release Year}) |
+```bash
+{Movie Title} ({Release Year})
+```
 
-**9.5 — Lidarr**
+### 9.5 — Lidarr
 
 What it does: follows artists and automatically downloads new albums and
 discographies.
 
-80. Open Lidarr at http://\[NAS-IP\]:8686. Same authentication setup.
+20. Open Lidarr at http://\[NAS-IP\]:8686. Same authentication setup.
 
-81. Same qBittorrent connection — Category: music
+21. Same qBittorrent connection — Category: music
 
-82. Same Prowlarr sync — copy Lidarr API key, add Lidarr in Prowlarr \>
+22. Same Prowlarr sync — copy Lidarr API key, add Lidarr in Prowlarr \>
     Settings \> Apps.
 
-83. Root folder: /data/media/music
+23. Root folder: /data/media/music
 
-84. Naming: Settings \> Media Management \> Artist folder: {Artist Name}
+24. Naming: Settings \> Media Management \> Artist folder: {Artist Name}
     — Album folder: {Album Title} ({Release Year}) — Track format:
 
-|                            |
-|----------------------------|
-| {track:00} - {Track Title} |
-
-85. Create a quality profile: Settings \> Profiles \> Quality Profiles
+```bash
+{track:00} - {Track Title}
+```
+25. Create a quality profile: Settings \> Profiles \> Quality Profiles
     \> +. Name it Lossless. Set FLAC at the top, then MP3 320 kbps. Set
     the cutoff (minimum acceptable quality) to MP3 192 kbps — anything
     worse gets rejected. Save. Use this profile whenever you add an
     artist.
 
-|  |
-|:---|
-| **🎵 How to add music to your library** |
-| 1\. Open Lidarr at http://\[NAS-IP\]:8686 |
-| 2\. Click Artists in the left sidebar |
-| 3\. Click Add New |
-| 4\. Search for any artist name, e.g. Radiohead |
-| 5\. Click the artist from the results |
-| 6\. Set Quality Profile to Lossless |
-| 7\. Set Root Folder to /data/media/music |
-| 8\. Click Add Artist |
-| 9\. Lidarr finds all albums, qBittorrent downloads them, Navidrome picks them up within minutes |
-| 10\. New albums by that artist download automatically on release day — you never need to do anything again |
-|  |
+> [!NOTE]
+> **🎵 How to add music to your library**
+> 
+> 1\. Open Lidarr at http://[NAS-IP]:8686
+> 2\. Click Artists in the left sidebar
+> 3\. Click Add New
+> 4\. Search for any artist name, e.g. Radiohead
+> 5\. Click the artist from the results
+> 6\. Set Quality Profile to Lossless
+> 7\. Set Root Folder to /data/media/music
+> 8\. Click Add Artist
+> 9\. Lidarr finds all albums, qBittorrent downloads them, Navidrome picks them up within minutes
+> 10\. New albums by that artist download automatically on release day — you never need to do anything again
 
-**9.6 — Bazarr**
+### 9.6 — Bazarr
 
 What it does: automatically downloads Hebrew and English subtitles for
 everything Sonarr and Radarr manage.
 
-86. Open Bazarr at http://\[NAS-IP\]:6767.
+26. Open Bazarr at http://\[NAS-IP\]:6767.
 
-87. Connect to Sonarr: Settings \> Sonarr \> Enable. Set Hostname to
+27. Connect to Sonarr: Settings \> Sonarr \> Enable. Set Hostname to
     sonarr (container name), Port to 8989. Copy the API key from Sonarr
     \> Settings \> General and paste it here. Click Test — should turn
     green. Save.
 
-88. Connect to Radarr: Settings \> Radarr \> Enable. Hostname: radarr,
+28. Connect to Radarr: Settings \> Radarr \> Enable. Hostname: radarr,
     Port: 7878. Paste Radarr API key. Test and Save.
 
-89. Add languages: Settings \> Languages \> + \> add Hebrew. + again \>
+29. Add languages: Settings \> Languages \> + \> add Hebrew. + again \>
     add English. Save.
 
-90. Add subtitle provider: Settings \> Providers \> + \>
+30. Add subtitle provider: Settings \> Providers \> + \>
     OpenSubtitles.com. Register for a free account at opensubtitles.com,
     then enter your username and password here. Save.
 
-**9.7 — Jellyfin**
+### 9.7 — Jellyfin
 
 What it does: streams your local media and Real-Debrid content to any
 device. The paths below are container paths — Docker translates them to
 your actual hard drive folders automatically.
 
-91. Open Jellyfin at http://\[NAS-IP\]:8096. The first-time setup wizard
+31. Open Jellyfin at http://\[NAS-IP\]:8096. The first-time setup wizard
     appears. Create an admin account.
 
-92. When the wizard asks for media libraries, add two libraries for now:
+32. When the wizard asks for media libraries, add two libraries for now:
 
     - Type: Movies \> Folder: /media/movies \> Name: Movies
 
@@ -1582,9 +1424,9 @@ map to /mnt/tank/data/media/movies and /mnt/tank/data/media/tv on your
 drives. You will add the Real-Debrid library (/media/realdebrid) in Part
 13 after it is working.
 
-93. Finish the wizard.
+33. Finish the wizard.
 
-94. Enable hardware video transcoding — this uses your Intel Arc
+34. Enable hardware video transcoding — this uses your Intel Arc
     graphics chip to convert video 10x faster than the CPU:
     Administration Dashboard (person icon top-right \> Dashboard) \>
     Playback \> Hardware Acceleration \> select VAAPI from the dropdown
@@ -1592,99 +1434,98 @@ drives. You will add the Real-Debrid library (/media/realdebrid) in Part
     H264, HEVC, VP8, VP9, AV1, MPEG2 \> tick Enable Tone Mapping \>
     Transcoding temp path: /transcode \> Save.
 
-|  |
-|:---|
-| **ℹ️ VA-API vs QuickSync (QSV) for Intel Core Ultra / Arrow Lake** |
-| The guide recommends VA-API, which is the correct choice for Arrow Lake. Here is why: |
-| Arrow Lake uses the xe kernel driver, which is newer than the i915 driver that QuickSync (QSV) was built around. |
-|  |
-| VA-API works through the standard Linux GPU abstraction layer and is fully supported on xe. QuickSync (QSV) on Arrow Lake can be unstable or produce errors like "Failed to create a MFX session". |
-|  |
-| In short: always choose VA-API for this hardware. If you previously selected QSV and transcoding is failing or producing corrupted output, go back to Administration Dashboard \> Playback \> Hardware Acceleration, switch to VAAPI, and save. |
-|  |
-| The /dev/dri/renderD128 device path is correct for both. The only thing changing is the acceleration method in the dropdown. |
-|  |
+> [!NOTE]
+> **VA-API vs QuickSync (QSV) for Intel Core Ultra / Arrow Lake**
+> 
+> The guide recommends VA-API, which is the correct choice for Arrow Lake. Here is why:
+> Arrow Lake uses the xe kernel driver, which is newer than the i915 driver that QuickSync (QSV) was built around.
+> 
+> VA-API works through the standard Linux GPU abstraction layer and is fully supported on xe. QuickSync (QSV) on Arrow Lake can be unstable or produce errors like "Failed to create a MFX session".
+> 
+> In short: always choose VA-API for this hardware. If you previously selected QSV and transcoding is failing or producing corrupted output, go back to Administration Dashboard > Playback > Hardware Acceleration, switch to VAAPI, and save.
+> 
+> The /dev/dri/renderD128 device path is correct for both. The only thing changing is the acceleration method in the dropdown.
 
-95. Install the Playback Reporting plugin: Administration Dashboard \>
+35. Install the Playback Reporting plugin: Administration Dashboard \>
     Plugins \> Catalog \> search "Playback Reporting" \> Install \>
     restart Jellyfin.
 
-96. Schedule Jellyfin internal tasks for quiet hours: Administration
+36. Schedule Jellyfin internal tasks for quiet hours: Administration
     Dashboard \> Scheduled Tasks. Find Database Optimization, Library
     Refresh, and Metadata tasks. Set them to run around 4:00 AM.
 
-**9.8 — Navidrome**
+### 9.8 — Navidrome
 
 What it does: serves your music library. First account you create
 becomes the admin.
 
-97. Open Navidrome at http://\[NAS-IP\]:4533. Create your admin account
+37. Open Navidrome at http://\[NAS-IP\]:4533. Create your admin account
     (first account = admin automatically).
 
-98. Wait a few minutes for the initial music scan to complete. New
+38. Wait a few minutes for the initial music scan to complete. New
     albums added by Lidarr appear within minutes of being imported.
 
-99. Create separate accounts for family members — Settings \> Users \>
+39. Create separate accounts for family members — Settings \> Users \>
     Add User. Never share the admin account.
 
-**9.9 — Immich**
+### 9.9 — Immich
 
 What it does: backs up your phone photos and videos, with AI-powered
 face and object search.
 
-100. Open Immich at http://\[NAS-IP\]:2283. Click Get Started and create
-     your admin account.
+40. Open Immich at http://\[NAS-IP\]:2283. Click Get Started and create
+    your admin account.
 
-101. Go to Administration \> Settings \> Storage Template if you want to
-     organise photos by date.
+41. Go to Administration \> Settings \> Storage Template if you want to
+    organise photos by date.
 
-102. Schedule Immich background jobs for quiet hours: Administration \>
-     Jobs \> Machine Learning, Thumbnail Generation, and Smart Search.
-     Set them around 4:30 AM.
+42. Schedule Immich background jobs for quiet hours: Administration \>
+    Jobs \> Machine Learning, Thumbnail Generation, and Smart Search.
+    Set them around 4:30 AM.
 
-**Set up the Immich phone app**
+### Set up the Immich phone app
 
-103. Install the Immich app on your phone — free on App Store and Google
-     Play.
+43. Install the Immich app on your phone — free on App Store and Google
+    Play.
 
-104. Open the app. Server URL: http://\[TAILSCALE-IP\]:2283 (use
-     Tailscale IP so it works both at home and away).
+44. Open the app. Server URL: http://\[TAILSCALE-IP\]:2283 (use
+    Tailscale IP so it works both at home and away).
 
-105. Log in with your admin username and password.
+45. Log in with your admin username and password.
 
-106. Tap your profile photo in the top-right corner \> Background Backup
-     \> turn it ON \> set to WiFi only. Now every new photo backs up
-     automatically when you are on WiFi.
+46. Tap your profile photo in the top-right corner \> Background Backup
+    \> turn it ON \> set to WiFi only. Now every new photo backs up
+    automatically when you are on WiFi.
 
-107. Create additional Immich accounts for family members from the
-     Immich web UI: Administration \> Users \> + New User. They install
-     the app and log in with their own accounts.
+47. Create additional Immich accounts for family members from the
+    Immich web UI: Administration \> Users \> + New User. They install
+    the app and log in with their own accounts.
 
-**9.10 — Seerr**
+### 9.10 — Seerr
 
 What it does: a friendly request interface. Family members open Seerr on
 their phone, search for any movie or show, tap Request, and it appears
 in Jellyfin within minutes.
 
-108. Open Seerr at http://\[NAS-IP\]:5055. The setup wizard appears.
+48. Open Seerr at http://\[NAS-IP\]:5055. The setup wizard appears.
 
-109. Click "Sign In with Jellyfin". Enter your Jellyfin server URL
-     (http://\[NAS-IP\]:8096) and your Jellyfin admin credentials. Click
-     Connect. Seerr inherits all Jellyfin users.
+49. Click "Sign In with Jellyfin". Enter your Jellyfin server URL
+    (http://\[NAS-IP\]:8096) and your Jellyfin admin credentials. Click
+    Connect. Seerr inherits all Jellyfin users.
 
-110. Settings \> Services \> Radarr \> Add. Server: radarr (container
-     name), Port: 7878, API Key: copy from Radarr \> Settings \>
-     General. Test, then Save.
+50. Settings \> Services \> Radarr \> Add. Server: radarr (container
+    name), Port: 7878, API Key: copy from Radarr \> Settings \>
+    General. Test, then Save.
 
-111. Settings \> Services \> Sonarr \> Add. Server: sonarr, Port: 8989,
-     API Key: from Sonarr \> Settings \> General. Test, then Save.
+51. Settings \> Services \> Sonarr \> Add. Server: sonarr, Port: 8989,
+    API Key: from Sonarr \> Settings \> General. Test, then Save.
 
-112. Phone bookmark: open Seerr in your phone browser at
-     http://\[TAILSCALE-IP\]:5055. iPhone: tap Share \> Add to Home
-     Screen. Android: tap the three-dot menu \> Add to Home Screen. It
-     works like an app from your home screen.
+52. Phone bookmark: open Seerr in your phone browser at
+    http://\[TAILSCALE-IP\]:5055. iPhone: tap Share \> Add to Home
+    Screen. Android: tap the three-dot menu \> Add to Home Screen. It
+    works like an app from your home screen.
 
-**9.11 — Set Passwords on All Apps**
+### 9.11 — Set Passwords on All Apps
 
 | **App** | **Where to set the password** |
 |:---|:---|
@@ -1700,19 +1541,16 @@ in Jellyfin within minutes.
 | Seerr | Uses Jellyfin credentials (set in 9.10) |
 | TrueNAS | Credentials \> Local Users \> your user \> Edit \> Password |
 
-|  |
-|:---|
-| **💡 Tip** |
-| Use a different strong password for each app. Bitwarden (free at bitwarden.com) is an excellent password manager. A passphrase like "correct-horse-battery-staple" is both strong and memorable — 4+ words, 16+ characters. |
-|  |
+> [!TIP]
+> Use a different strong password for each app. Bitwarden (free at bitwarden.com) is an excellent password manager. A passphrase like "correct-horse-battery-staple" is both strong and memorable — 4+ words, 16+ characters.
 
-**Part 10 — Phone and TV App Setup**
+## Part 10 — Phone and TV App Setup
 
 All apps use your Tailscale IP when outside home. At home, use the local
 NAS IP. Keep Tailscale running in the background on your phone at all
 times — almost no battery, connects automatically.
 
-**Movies and TV — Jellyfin**
+### Movies and TV — Jellyfin
 
 | **Setting** | **Value** |
 |:---|:---|
@@ -1723,7 +1561,7 @@ times — almost no battery, connects automatically.
 | Notifications | Tap profile icon \> Notifications \> New Episodes ON |
 | Quality | Settings \> Max Bitrate \> Original for best quality on WiFi |
 
-**Jellyfin on TV — The Big Screen**
+### Jellyfin on TV — The Big Screen
 
 | **TV Platform** | **App name** | **How to set up** |
 |:---|:---|:---|
@@ -1735,13 +1573,13 @@ times — almost no battery, connects automatically.
 | Chromecast | Cast from Jellyfin phone app | No TV app needed. Tap the cast icon in the Jellyfin phone app. |
 | Any computer | http://\[NAS-IP\]:8096 in browser | No app needed — Jellyfin works in any web browser. |
 
-**Music — Symfonium (Android) and Substreamer (iOS)**
+### Music — Symfonium (Android) and Substreamer (iOS)
 
 Navidrome is your music server. Symfonium and Substreamer are the phone
 apps that connect to it — they look and feel like Spotify with album
 art, playlists, and offline downloads.
 
-**Android — Symfonium (~€5 one-time)**
+### Android — Symfonium (~€5 one-time)
 
 | **Step** | **What to do** |
 |:---|:---|
@@ -1752,7 +1590,7 @@ art, playlists, and offline downloads.
 | Offline music | Tap the download icon on any album to save it for offline listening |
 | Playlists | Create playlists in Symfonium — they sync back to Navidrome |
 
-**iOS — Substreamer (free)**
+### iOS — Substreamer (free)
 
 | **Step**        | **What to do**                                         |
 |:----------------|:-------------------------------------------------------|
@@ -1763,7 +1601,7 @@ art, playlists, and offline downloads.
 | 5\. Login       | Your Navidrome username and password. Save.            |
 | Offline         | Long-press any album \> Download for offline listening |
 
-**Photos — Immich App**
+### Photos — Immich App
 
 | **Step** | **What to do** |
 |:---|:---|
@@ -1774,7 +1612,7 @@ art, playlists, and offline downloads.
 | Done | Every new photo backs up automatically when on home WiFi |
 | Family | Create additional accounts in Immich web UI. Others install the app and log in. |
 
-**Requesting Content — Seerr**
+### Requesting Content — Seerr
 
 | **Step** | **What to do** |
 |:---|:---|
@@ -1784,113 +1622,61 @@ art, playlists, and offline downloads.
 | Request a movie | Tap Search \> type the name \> tap Request \> done |
 | It appears | Usually within 1-2 minutes if Real-Debrid has it (after Part 13). Otherwise after the torrent downloads. |
 
-**Part 11 — How Everything Works Together**
+## Part 11 — How Everything Works Together
 
-**The Movie/TV Pipeline — From Request to Playing**
+### The Movie/TV Pipeline — From Request to Playing
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>You open Seerr on your phone and search "Dune Part Two" → tap
-Request</p>
-<p>↓</p>
-<p>Seerr sends the request to Radarr</p>
-<p>↓</p>
-<p>Radarr asks Prowlarr to find the file</p>
-<p>↓</p>
-<p>Prowlarr checks Real-Debrid first (priority 1)</p>
-<p>│</p>
-<p>├─ REAL-DEBRID HAS IT:</p>
-<p>│ File appears in /mnt/tank/realdebrid/ immediately (virtual
-folder)</p>
-<p>│ Jellyfin scans the library and adds it — streamable RIGHT NOW</p>
-<p>│ qBittorrent simultaneously downloads a local copy to
-downloads/complete/</p>
-<p>│ Bazarr downloads Hebrew + English subtitles automatically</p>
-<p>│ When local download finishes → Radarr moves it to
-/data/media/movies/</p>
-<p>│ Jellyfin now streams from local drive (faster, uses no RD
-quota)</p>
-<p>│</p>
-<p>└─ REAL-DEBRID DOES NOT HAVE IT:</p>
-<p>Prowlarr tries 1337x / YTS (priority 25) automatically</p>
-<p>qBittorrent downloads the torrent to /apps/downloads-incomplete/
-(SSD)</p>
-<p>When done → moves to /tank/data/downloads/complete/movies/ (HDD)</p>
-<p>Radarr hardlinks it instantly to /tank/data/media/movies/ (same
-dataset!)</p>
-<p>Jellyfin detects the new file</p>
-<p>Bazarr adds subtitles</p></td>
-</tr>
-</tbody>
-</table>
+```mermaid
+flowchart TD
+    A[Open Seerr, request &quot;Dune Part Two&quot;] --> B[Seerr → Radarr]
+    B --> C[Radarr → Prowlarr]
+    C --> D{Real-Debrid has it?}
 
-**The TV Show Pipeline**
+    D -- Yes --> E[File appears in /mnt/tank/realdebrid/ instantly<br/>virtual folder via Zurg + rclone]
+    E --> F[Jellyfin scans library → streamable RIGHT NOW]
+    E --> G[qBittorrent downloads local copy in parallel]
+    G --> H[On finish → Radarr moves to /data/media/movies/]
+    H --> I[Jellyfin switches to local — uses no RD quota]
+    F --> J[Bazarr fetches subtitles automatically]
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>You add "Severance" in Sonarr (or request via Seerr)</p>
-<p>↓</p>
-<p>Sonarr downloads all existing episodes using the movie pipeline
-above</p>
-<p>↓</p>
-<p>Sonarr MONITORS the show forever via RSS feed</p>
-<p>New episode released on Apple TV+?</p>
-<p>Sonarr detects it within minutes → downloads → appears in Jellyfin
-automatically</p>
-<p>You do nothing — it just appears</p>
-<p>↓</p>
-<p>Bazarr finds subtitles for each new episode automatically</p>
-<p>↓</p>
-<p>Repeat forever for every show you follow</p></td>
-</tr>
-</tbody>
-</table>
+    D -- No --> K[Prowlarr tries 1337x / YTS at priority 25]
+    K --> L[qBittorrent → /apps/downloads-incomplete/ on SSD]
+    L --> M[On finish → /tank/data/downloads/complete/movies/]
+    M --> N[Radarr hardlinks to /tank/data/media/movies/<br/>same dataset = instant]
+    N --> O[Jellyfin detects new file]
+    O --> J
+```
 
-**The Music Pipeline**
+### The TV Show Pipeline
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>You add "Radiohead" in Lidarr</p>
-<p>↓</p>
-<p>Lidarr searches Prowlarr (music indexers Redacted/Orpheus at priority
-10)</p>
-<p>↓</p>
-<p>qBittorrent downloads to /mnt/apps/downloads-incomplete/ (SSD — fast
-writes)</p>
-<p>↓</p>
-<p>Download finishes → file moves to
-/mnt/tank/data/downloads/complete/music/</p>
-<p>↓</p>
-<p>Lidarr hardlinks it instantly to
-/mnt/tank/data/media/music/Radiohead/...</p>
-<p>(hardlink works because downloads and media are in the same tank/data
-dataset)</p>
-<p>↓</p>
-<p>Navidrome detects new albums within minutes</p>
-<p>↓</p>
-<p>Albums appear in Symfonium or Substreamer on your phone</p>
-<p>↓</p>
-<p>New album released? Lidarr detects and downloads automatically</p>
-<p>↓</p>
-<p>Your music library grows forever — never automatically
-deleted</p></td>
-</tr>
-</tbody>
-</table>
+```mermaid
+flowchart TD
+    A[Add &quot;Severance&quot; in Sonarr<br/>or request via Seerr] --> B[Sonarr downloads existing episodes<br/>via the movie pipeline]
+    B --> C[Sonarr monitors the show forever via RSS]
+    C --> D{New episode released?}
+    D -- Yes --> E[Sonarr detects within minutes → downloads]
+    E --> F[Episode appears in Jellyfin automatically]
+    F --> G[Bazarr fetches subtitles for the new episode]
+    G --> C
+    D -- No --> C
+```
 
-**What Runs Automatically Every Night**
+### The Music Pipeline
+
+```mermaid
+flowchart TD
+    A[Add &quot;Radiohead&quot; in Lidarr] --> B[Lidarr searches Prowlarr<br/>Redacted / Orpheus at priority 10]
+    B --> C[qBittorrent → /mnt/apps/downloads-incomplete/<br/>SSD, fast random writes]
+    C --> D[On finish → /mnt/tank/data/downloads/complete/music/]
+    D --> E[Lidarr hardlinks to /mnt/tank/data/media/music/Radiohead/…<br/>same tank/data dataset = instant]
+    E --> F[Navidrome detects new albums]
+    F --> G[Albums appear in Symfonium / Substreamer on phone]
+    G --> H{New album released?}
+    H -- Yes --> B
+    H -- No --> I[Library grows forever — never auto-deleted]
+```
+
+### What Runs Automatically Every Night
 
 | **Time** | **What runs** | **What it does** |
 |:---|:---|:---|
@@ -1904,7 +1690,7 @@ deleted</p></td>
 | 06:00 daily | photo-backup-usb.sh | Copies photos to USB drive. Unmounts USB immediately after. Physical copy stays offline. |
 | Automatic | ClamAV freshclam | ClamAV updates its own virus database internally — no cron needed |
 
-**Part 12 — Optional Webhook Alerts**
+## Part 12 — Optional Webhook Alerts
 
 If you set WEBHOOK_URL in config.env, the health-check.sh script sends
 you a message whenever a container goes down. Works with Discord,
@@ -1917,33 +1703,22 @@ Telegram, Slack, ntfy, and any JSON webhook.
 | Telegram | Create a bot via @BotFather, get the token, URL format: https://api.telegram.org/bot{TOKEN}/sendMessage |
 | Slack | App directory \> Incoming Webhooks \> Add \> choose channel \> Copy URL |
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p># Edit config.env and add your webhook URL:</p>
-<p>nano /mnt/apps/scripts/config.env</p>
-<p># Set: WEBHOOK_URL="https://ntfy.sh/my-nas-alerts-abc123"</p>
-<p># Test it (run in TrueNAS Shell):</p>
-<p>source /mnt/apps/scripts/config.env</p>
-<p>curl -sf "$WEBHOOK_URL" -d "Test alert from NAS"</p>
-<p># You should receive a notification on your phone
-immediately</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+# Edit config.env and add your webhook URL:
+nano /mnt/apps/scripts/config.env
+# Set: WEBHOOK_URL="https://ntfy.sh/my-nas-alerts-abc123"
+# Test it (run in TrueNAS Shell):
+source /mnt/apps/scripts/config.env
+curl -sf "$WEBHOOK_URL" -d "Test alert from NAS"
+# You should receive a notification on your phone immediately
+```
 
-**Part 13 — Real-Debrid + Zurg + rclone (Phase 2)**
+## Part 13 — Real-Debrid + Zurg + rclone (Phase 2)
 
-|  |
-|:---|
-| **🔴 Important** |
-| Only do this after Phase 1 is working. Prove that: Jellyfin streams local media, Sonarr/Radarr import a download correctly, and the nightly config backup succeeds. Then add Real-Debrid on top. |
-|  |
+> [!IMPORTANT]
+> Only do this after Phase 1 is working. Prove that: Jellyfin streams local media, Sonarr/Radarr import a download correctly, and the nightly config backup succeeds. Then add Real-Debrid on top.
 
-**What Is Real-Debrid (Quick Recap)**
+### What Is Real-Debrid (Quick Recap)
 
 Real-Debrid costs about €4 per month. Sign up at real-debrid.com. It is
 a cloud service that has already downloaded and cached millions of
@@ -1957,205 +1732,149 @@ torrent.
 - Get your API key at: real-debrid.com/apitoken (log in, then go to that
   page, copy the long string)
 
-**Step 13.1 — Create the Zurg Config**
+### Step 13.1 — Create the Zurg Config
 
 Zurg is the bridge between your NAS and Real-Debrid. It creates a
 virtual folder containing all your Real-Debrid content.
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>mkdir -p /mnt/apps/appdata/zurg</p>
-<p>nano /mnt/apps/appdata/zurg/config.yml</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+mkdir -p /mnt/apps/appdata/zurg
+nano /mnt/apps/appdata/zurg/config.yml
+```
 
 Paste this content. Replace YOUR_REAL_DEBRID_API_KEY with your actual
 key from real-debrid.com/apitoken:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>token: YOUR_REAL_DEBRID_API_KEY</p>
-<p>port: 9999</p>
-<p>concurrent_workers: 20</p>
-<p>check_for_changes_every_secs: 10</p>
-<p>retain_folder_name_extension: true</p>
-<p>directories:</p>
-<p>movies:</p>
-<p>group_order: 10</p>
-<p>group: media</p>
-<p>filters:</p>
-<p>- regex: ".*"</p>
-<p>shows:</p>
-<p>group_order: 20</p>
-<p>group: media</p>
-<p>filters:</p>
-<p>- regex: ".*"</p></td>
-</tr>
-</tbody>
-</table>
+```yaml
+token: YOUR_REAL_DEBRID_API_KEY
+port: 9999
+concurrent_workers: 20
+check_for_changes_every_secs: 10
+retain_folder_name_extension: true
 
-**Step 13.2 — Create the rclone Config**
+directories:
+  movies:
+    group_order: 10
+    group: media
+    filters:
+      - regex: ".*"
+  shows:
+    group_order: 20
+    group: media
+    filters:
+      - regex: ".*"
+```
+
+### Step 13.2 — Create the rclone Config
 
 rclone mounts the Zurg virtual folder so Jellyfin can see it as a normal
 folder on disk.
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>mkdir -p /mnt/apps/appdata/rclone</p>
-<p>nano /mnt/apps/appdata/rclone/rclone.conf</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+mkdir -p /mnt/apps/appdata/rclone
+nano /mnt/apps/appdata/rclone/rclone.conf
+```
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>[zurg]</p>
-<p>type = webdav</p>
-<p>url = http://localhost:9999/dav</p>
-<p>vendor = other</p></td>
-</tr>
-</tbody>
-</table>
+```ini
+[zurg]
+type = webdav
+url = http://localhost:9999/dav
+vendor = other
+```
 
-|  |
-|:---|
-| **🔴 Important** |
-| The URL must be http://localhost:9999/dav — not http://zurg:9999/dav. |
-| rclone runs as a script on the TrueNAS host, not inside Docker. Host processes cannot resolve Docker container names like "zurg". They can only reach Docker containers through published ports on localhost. |
-|  |
-| Zurg publishes port 9999 to the host (ports: \["9999:9999"\] in the compose). That is how the host-side rclone finds it: localhost:9999. |
-|  |
-| Using http://zurg:9999/dav in rclone.conf causes a "connection refused" or DNS error that is very confusing because the Zurg container IS running correctly — you just cannot reach it by name from outside Docker. |
-|  |
+> [!IMPORTANT]
+> The URL must be http://localhost:9999/dav — not http://zurg:9999/dav.
+> rclone runs as a script on the TrueNAS host, not inside Docker. Host processes cannot resolve Docker container names like "zurg". They can only reach Docker containers through published ports on localhost.
+> 
+> Zurg publishes port 9999 to the host (ports: ["9999:9999"] in the compose). That is how the host-side rclone finds it: localhost:9999.
+> 
+> Using http://zurg:9999/dav in rclone.conf causes a "connection refused" or DNS error that is very confusing because the Zurg container IS running correctly — you just cannot reach it by name from outside Docker.
 
-**Step 13.3 — Enable Zurg in the Compose and Create the Mount**
+### Step 13.3 — Enable Zurg in the Compose and Create the Mount
 
 Zurg runs as a container (in docker-compose.yml). The rclone mount runs
 as a Post Init script so the folder is ready before Docker starts.
 
-113. Open the compose file and remove the \# characters from all lines
-     of the zurg service section (uncomment it):
+1. Open the compose file and remove the \# characters from all lines
+   of the zurg service section (uncomment it):
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>nano /mnt/apps/scripts/docker-compose.yml</p>
-<p># Find the zurg section and remove all # characters from the start of
-each line</p>
-<p># Press Ctrl+X &gt; Y &gt; Enter to save</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+nano /mnt/apps/scripts/docker-compose.yml
+# Find the zurg section and remove all # characters from the start of each line
+# Press Ctrl+X > Y > Enter to save
+```
 
-114. Create the FUSE config pre-init script (enables the mount to be
-     readable by Jellyfin):
+2. Create the FUSE config pre-init script (enables the mount to be
+   readable by Jellyfin):
 
-|                                                   |
-|---------------------------------------------------|
-| nano /mnt/apps/scripts/enable-fuse-allow-other.sh |
+```bash
+nano /mnt/apps/scripts/enable-fuse-allow-other.sh
+```
 
 Paste:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>#!/usr/bin/env bash</p>
-<p>set -Eeuo pipefail</p>
-<p>sed -i 's/#user_allow_other/user_allow_other/'
-/etc/fuse.conf</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+sed -i 's/#user_allow_other/user_allow_other/' /etc/fuse.conf
+```
 
-|                                                       |
-|-------------------------------------------------------|
-| chmod +x /mnt/apps/scripts/enable-fuse-allow-other.sh |
+```bash
+chmod +x /mnt/apps/scripts/enable-fuse-allow-other.sh
+```
+3. Create the rclone mount script:
 
-115. Create the rclone mount script:
-
-|                                        |
-|----------------------------------------|
-| nano /mnt/apps/scripts/rclone-mount.sh |
+```bash
+nano /mnt/apps/scripts/rclone-mount.sh
+```
 
 Paste:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>#!/usr/bin/env bash</p>
-<p>set -Eeuo pipefail</p>
-<p>sleep 10 # Give TrueNAS networking and FUSE time to settle after
-boot</p>
-<p>mkdir -p /mnt/tank/realdebrid</p>
-<p>source /mnt/apps/scripts/config.env</p>
-<p>rclone mount zurg: /mnt/tank/realdebrid \</p>
-<p>--config /mnt/apps/appdata/rclone/rclone.conf \</p>
-<p>--allow-other \</p>
-<p>--uid "${PUID:-568}" \</p>
-<p>--gid "${PGID:-568}" \</p>
-<p>--attr-timeout 10s \</p>
-<p>--dir-cache-time 24h \</p>
-<p>--daemon</p>
-<p># Wait for the mount to become ready (up to 60 seconds)</p>
-<p>for i in $(seq 1 30); do</p>
-<p>if mountpoint -q /mnt/tank/realdebrid; then</p>
-<p>touch /mnt/tank/realdebrid/.mount-test</p>
-<p>echo "Real-Debrid mounted successfully"</p>
-<p>exit 0</p>
-<p>fi</p>
-<p>sleep 2</p>
-<p>done</p>
-<p>echo "Real-Debrid mount did not become ready in time"</p>
-<p>exit 1</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+sleep 10 # Give TrueNAS networking and FUSE time to settle after boot
+mkdir -p /mnt/tank/realdebrid
+source /mnt/apps/scripts/config.env
+rclone mount zurg: /mnt/tank/realdebrid \
+--config /mnt/apps/appdata/rclone/rclone.conf \
+--allow-other \
+--uid "${PUID:-568}" \
+--gid "${PGID:-568}" \
+--attr-timeout 10s \
+--dir-cache-time 24h \
+--daemon
+# Wait for the mount to become ready (up to 60 seconds)
+for i in $(seq 1 30); do
+if mountpoint -q /mnt/tank/realdebrid; then
+touch /mnt/tank/realdebrid/.mount-test
+echo "Real-Debrid mounted successfully"
+exit 0
+fi
+sleep 2
+done
+echo "Real-Debrid mount did not become ready in time"
+exit 1
+```
 
-|                                            |
-|--------------------------------------------|
-| chmod +x /mnt/apps/scripts/rclone-mount.sh |
+```bash
+chmod +x /mnt/apps/scripts/rclone-mount.sh
+```
 
-|  |
-|:---|
-| **ℹ️ rclone on TrueNAS host** |
-| TrueNAS SCALE does not ship with rclone. You need to install it. In TrueNAS Shell: |
-| \# Check if rclone is available: |
-| which rclone |
-|  |
-| \# If not found, install it: |
-| curl https://rclone.org/install.sh \| bash |
-|  |
-| \# Verify: |
-| rclone version |
-|  |
+> [!NOTE]
+> **rclone on TrueNAS host**
+> 
+> TrueNAS SCALE does not ship with rclone. You need to install it. In TrueNAS Shell:
+> \# Check if rclone is available:
+> which rclone
+> 
+> \# If not found, install it:
+> curl https://rclone.org/install.sh | bash
+> 
+> \# Verify:
+> rclone version
 
-116. Register both scripts as Post Init in TrueNAS:
+4. Register both scripts as Post Init in TrueNAS:
 
 - Go to System Settings \> Advanced Settings \> Init/Shutdown Scripts \>
   Add
@@ -2167,276 +1886,215 @@ boot</p>
 - Second script: Type = Script, path =
   /mnt/apps/scripts/rclone-mount.sh, When = Post Init, enable it
 
-117. Redeploy media-stack from TrueNAS Apps \> media-stack \>
-     Update/Redeploy so Zurg starts.
+5. Redeploy media-stack from TrueNAS Apps \> media-stack \>
+   Update/Redeploy so Zurg starts.
 
-118. Verify everything is working:
+6. Verify everything is working:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p># Check Zurg is serving your Real-Debrid library:</p>
-<p>curl http://localhost:9999</p>
-<p># Should show an HTML page listing your Real-Debrid content</p>
-<p># Check rclone mounted the folder:</p>
-<p>ls /mnt/tank/realdebrid</p>
-<p># Should show movie and TV folder names from your Real-Debrid
-library</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+# Check Zurg is serving your Real-Debrid library:
+curl http://localhost:9999
+# Should show an HTML page listing your Real-Debrid content
+# Check rclone mounted the folder:
+ls /mnt/tank/realdebrid
+# Should show movie and TV folder names from your Real-Debrid library
+```
 
-|  |
-|:---|
-| **ℹ️ About the .mount-test marker** |
-| The rclone-mount.sh script creates the file /mnt/tank/realdebrid/.mount-test automatically when it mounts successfully. The Jellyfin wait script and the safety rule checks look for this file. |
-| The file is created by rclone-mount.sh — not by you manually. It does not exist until the script runs successfully for the first time. |
-|  |
-| After TrueNAS boots and the Post Init script runs, verify the marker was created: |
-| ls /mnt/tank/realdebrid/.mount-test |
-| \# If the file exists, the mount is healthy and Jellyfin will start. |
-|  |
-| \# If the file is missing, the mount failed. Check: |
-| cat /var/log/syslog \| grep rclone |
-| \# Or run the script manually to see the error: |
-| bash /mnt/apps/scripts/rclone-mount.sh |
-|  |
-| You never need to create .mount-test by hand. Its absence always means the mount script did not finish successfully — investigate that first. |
-|  |
+> [!NOTE]
+> **About the .mount-test marker**
+> 
+> The rclone-mount.sh script creates the file /mnt/tank/realdebrid/.mount-test automatically when it mounts successfully. The Jellyfin wait script and the safety rule checks look for this file.
+> The file is created by rclone-mount.sh — not by you manually. It does not exist until the script runs successfully for the first time.
+> 
+> After TrueNAS boots and the Post Init script runs, verify the marker was created:
+> ls /mnt/tank/realdebrid/.mount-test
+> \# If the file exists, the mount is healthy and Jellyfin will start.
+> 
+> \# If the file is missing, the mount failed. Check:
+> cat /var/log/syslog | grep rclone
+> \# Or run the script manually to see the error:
+> bash /mnt/apps/scripts/rclone-mount.sh
+> 
+> You never need to create .mount-test by hand. Its absence always means the mount script did not finish successfully — investigate that first.
 
-**Step 13.4 — Set WAIT_FOR_RD=1 and Add Jellyfin Library**
+### Step 13.4 — Set WAIT_FOR_RD=1 and Add Jellyfin Library
 
-119. In config.env, change WAIT_FOR_RD to 1:
+7. In config.env, change WAIT_FOR_RD to 1:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>nano /mnt/apps/scripts/config.env</p>
-<p># Change: WAIT_FOR_RD="0" → WAIT_FOR_RD="1"</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+nano /mnt/apps/scripts/config.env
+# Change: WAIT_FOR_RD="0" → WAIT_FOR_RD="1"
+```
 
-120. Create the Jellyfin wait script. The linuxserver Jellyfin image
-     automatically runs any script placed in /config/custom-cont-init.d/
-     inside the container. Since /config maps to
-     /mnt/apps/appdata/jellyfin on your drive, save the script there
-     directly — no compose volume needed:
+8. Create the Jellyfin wait script. The linuxserver Jellyfin image
+   automatically runs any script placed in /config/custom-cont-init.d/
+   inside the container. Since /config maps to
+   /mnt/apps/appdata/jellyfin on your drive, save the script there
+   directly — no compose volume needed:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p># Create the folder that linuxserver Jellyfin watches for startup
-scripts:</p>
-<p>mkdir -p /mnt/apps/appdata/jellyfin/custom-cont-init.d</p>
-<p>nano
-/mnt/apps/appdata/jellyfin/custom-cont-init.d/wait-for-rd.sh</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+# Create the folder that linuxserver Jellyfin watches for startup scripts:
+mkdir -p /mnt/apps/appdata/jellyfin/custom-cont-init.d
+nano /mnt/apps/appdata/jellyfin/custom-cont-init.d/wait-for-rd.sh
+```
 
 Paste:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>#!/usr/bin/with-contenv bash</p>
-<p>if [ "${WAIT_FOR_RD:-0}" != "1" ]; then exit 0; fi</p>
-<p>for i in $(seq 1 60); do</p>
-<p>if cd /media/realdebrid &amp;&amp; ls .mount-test &gt;/dev/null
-2&gt;&amp;1; then</p>
-<p>exit 0</p>
-<p>fi</p>
-<p>sleep 5</p>
-<p>done</p>
-<p>echo "Real-Debrid mount marker not found. Jellyfin will not
-start."</p>
-<p>exit 1</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+#!/usr/bin/with-contenv bash
+if [ "${WAIT_FOR_RD:-0}" != "1" ]; then exit 0; fi
+for i in $(seq 1 60); do
+if cd /media/realdebrid && ls .mount-test >/dev/null 2>&1; then
+exit 0
+fi
+sleep 5
+done
+echo "Real-Debrid mount marker not found. Jellyfin will not start."
+exit 1
+```
 
-|                                                                       |
-|-----------------------------------------------------------------------|
-| chmod +x /mnt/apps/appdata/jellyfin/custom-cont-init.d/wait-for-rd.sh |
+```bash
+chmod +x /mnt/apps/appdata/jellyfin/custom-cont-init.d/wait-for-rd.sh
+```
 
-|  |
-|:---|
-| **ℹ️ Why this location works** |
-| The linuxserver Jellyfin container runs every executable script it finds in /config/custom-cont-init.d/ before Jellyfin starts. Since the compose file maps /mnt/apps/appdata/jellyfin as /config inside the container, placing the script in /mnt/apps/appdata/jellyfin/custom-cont-init.d/ means it runs automatically on every container start — no compose changes needed. |
-| The old approach (mounting a script via a compose volume) works too, but requires a compose redeploy to update the script. The appdata path approach lets you edit or replace the script at any time without touching the compose file. |
-|  |
+> [!NOTE]
+> **Why this location works**
+> 
+> The linuxserver Jellyfin container runs every executable script it finds in /config/custom-cont-init.d/ before Jellyfin starts. Since the compose file maps /mnt/apps/appdata/jellyfin as /config inside the container, placing the script in /mnt/apps/appdata/jellyfin/custom-cont-init.d/ means it runs automatically on every container start — no compose changes needed.
+> The old approach (mounting a script via a compose volume) works too, but requires a compose redeploy to update the script. The appdata path approach lets you edit or replace the script at any time without touching the compose file.
 
-121. Redeploy media-stack from TrueNAS Apps (the script will be picked
-     up automatically on next start — no compose edit needed).
+9. Redeploy media-stack from TrueNAS Apps (the script will be picked
+   up automatically on next start — no compose edit needed).
 
-122. Add the Real-Debrid library to Jellyfin: Administration Dashboard
-     \> Libraries \> + \> Type: Movies \> Folder:
-     /media/realdebrid/movies. Add another: Type: Shows \> Folder:
-     /media/realdebrid/tv.
+10. Add the Real-Debrid library to Jellyfin: Administration Dashboard
+    \> Libraries \> + \> Type: Movies \> Folder:
+    /media/realdebrid/movies. Add another: Type: Shows \> Folder:
+    /media/realdebrid/tv.
 
-123. In Prowlarr, add Real-Debrid as an indexer: Indexers \> Add Indexer
-     \> search Real-Debrid \> paste your API key from
-     real-debrid.com/apitoken \> Priority: 1 \> Test \> Save.
+11. In Prowlarr, add Real-Debrid as an indexer: Indexers \> Add Indexer
+    \> search Real-Debrid \> paste your API key from
+    real-debrid.com/apitoken \> Priority: 1 \> Test \> Save.
 
-|  |
-|:---|
-| **💡 Tip** |
-| Real-Debrid (priority 1) is now tried before any torrent site for every movie and TV request. If Real-Debrid has the file, it streams instantly. If not, Prowlarr automatically falls back to the torrent indexers at priority 25. |
-|  |
+> [!TIP]
+> Real-Debrid (priority 1) is now tried before any torrent site for every movie and TV request. If Real-Debrid has the file, it streams instantly. If not, Prowlarr automatically falls back to the torrent indexers at priority 25.
 
-**Real-Debrid Mount Safety Rule**
+### Real-Debrid Mount Safety Rule
 
 Any future script that touches /mnt/tank/realdebrid must first verify
 the mount is alive. The folder path exists even when rclone fails, so
 always check for the .mount-test marker:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>if ! mountpoint -q /mnt/tank/realdebrid || ! ls
-/mnt/tank/realdebrid/.mount-test &gt;/dev/null 2&gt;&amp;1; then</p>
-<p>echo "Real-Debrid is not mounted. Stopping."</p>
-<p>exit 1</p>
-<p>fi</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+if ! mountpoint -q /mnt/tank/realdebrid || ! ls /mnt/tank/realdebrid/.mount-test >/dev/null 2>&1; then
+echo "Real-Debrid is not mounted. Stopping."
+exit 1
+fi
+```
 
-**Part 14 — Monthly Update Process**
+## Part 14 — Monthly Update Process
 
 Do not auto-update the whole stack. Apps like Immich and its database
 can have breaking changes. Manual approval is safer and keeps failures
 visible and recoverable.
 
-**Monthly Checklist**
+### Monthly Checklist
 
-124. Read release notes for Immich and any other app you care about
-     (check their GitHub pages).
+1. Read release notes for Immich and any other app you care about
+   (check their GitHub pages).
 
-125. Run the config backup immediately before updating:
+2. Run the config backup immediately before updating:
 
-|                                             |
-|---------------------------------------------|
-| bash /mnt/apps/scripts/backup-app-config.sh |
+```bash
+bash /mnt/apps/scripts/backup-app-config.sh
+```
+3. Confirm the backup file was created: ls -lh
+   /mnt/tank/backups/configs/
 
-126. Confirm the backup file was created: ls -lh
-     /mnt/tank/backups/configs/
+4. Take a manual snapshot of apps/appdata: Storage \> apps/appdata \>
+   Snapshots \> Add.
 
-127. Take a manual snapshot of apps/appdata: Storage \> apps/appdata \>
-     Snapshots \> Add.
+5. In TrueNAS: Apps \> Installed \> media-stack. Use the Update or
+   Redeploy button to pull new images and restart.
 
-128. In TrueNAS: Apps \> Installed \> media-stack. Use the Update or
-     Redeploy button to pull new images and restart.
+6. Check logs for any app: click on it in the TrueNAS Apps screen.
 
-129. Check logs for any app: click on it in the TrueNAS Apps screen.
+7. Open Jellyfin, Immich, Sonarr, and Radarr in a browser and confirm
+   they work normally.
 
-130. Open Jellyfin, Immich, Sonarr, and Radarr in a browser and confirm
-     they work normally.
+8. Keep the snapshot for at least one week before considering the
+   update stable.
 
-131. Keep the snapshot for at least one week before considering the
-     update stable.
+> [!WARNING]
+> Do not update during a scrub job, virus scan, or large import. Pick a quiet hour. Run the backup first, then update.
 
-|  |
-|:---|
-| **⚠ Warning** |
-| Do not update during a scrub job, virus scan, or large import. Pick a quiet hour. Run the backup first, then update. |
-|  |
+## Part 15 — Recovery Scenarios
 
-**Part 15 — Recovery Scenarios**
-
-**If an HDD Fails**
+### If an HDD Fails
 
 The mirror keeps running on one drive — you do not lose data. Stay calm.
 
-132. Check TrueNAS Alerts — it will show a DEGRADED warning with the
-     failed drive's serial number.
+1. Check TrueNAS Alerts — it will show a DEGRADED warning with the
+   failed drive's serial number.
 
-133. Power off, replace the failed HDD with a new one of equal or
-     greater size.
+2. Power off, replace the failed HDD with a new one of equal or
+   greater size.
 
-134. TrueNAS \> Storage \> click the tank pool \> Manage Devices \> find
-     the failed disk \> Replace.
+3. TrueNAS \> Storage \> click the tank pool \> Manage Devices \> find
+   the failed disk \> Replace.
 
-135. Select the new drive. TrueNAS starts resilvering (rebuilding the
-     mirror). Takes several hours for 8 TB.
+4. Select the new drive. TrueNAS starts resilvering (rebuilding the
+   mirror). Takes several hours for 8 TB.
 
-136. Wait for resilver to complete. Pool returns to ONLINE status.
+5. Wait for resilver to complete. Pool returns to ONLINE status.
 
-**If the Apps SSD Fails**
+### If the Apps SSD Fails
 
 Media and photos on the HDD mirror are completely unaffected.
 
-137. Replace SSD 2 with a new one of equal or greater size.
+6. Replace SSD 2 with a new one of equal or greater size.
 
-138. TrueNAS \> Storage \> Create Pool \> name it apps \> select new SSD
-     \> Stripe.
+7. TrueNAS \> Storage \> Create Pool \> name it apps \> select new SSD
+   \> Stripe.
 
-139. Recreate datasets: apps/appdata, apps/transcode,
-     apps/downloads-incomplete, apps/scripts, apps/backups.
+8. Recreate datasets: apps/appdata, apps/transcode,
+   apps/downloads-incomplete, apps/scripts, apps/backups.
 
-140. Run the mkdir and permission commands from Part 4.
+9. Run the mkdir and permission commands from Part 4.
 
-141. Restore the latest config tarball:
+10. Restore the latest config tarball:
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p># Find the latest backup:</p>
-<p>ls -lh /mnt/tank/backups/configs/</p>
-<p># Restore it (replace FILENAME with the actual file):</p>
-<p>cd / &amp;&amp; tar -xzf
-/mnt/tank/backups/configs/app-config-YYYY-MM-DD_HH-MM-SS.tar.gz</p>
-<p># Restore the Immich database permission exception:</p>
-<p>chown -R 999:999 /mnt/apps/appdata/immich-db</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+# Find the latest backup:
+ls -lh /mnt/tank/backups/configs/
+# Restore it (replace FILENAME with the actual file):
+cd / && tar -xzf /mnt/tank/backups/configs/app-config-YYYY-MM-DD_HH-MM-SS.tar.gz
+# Restore the Immich database permission exception:
+chown -R 999:999 /mnt/apps/appdata/immich-db
+```
 
-142. Redeploy media-stack from Apps \> Install via YAML (use the same
-     compose file).
+11. Redeploy media-stack from Apps \> Install via YAML (use the same
+    compose file).
 
-143. Test apps one by one.
+12. Test apps one by one.
 
-**If an App Update Breaks Something**
+### If an App Update Breaks Something
 
-144. Stop the affected app from TrueNAS Apps \> media-stack.
+13. Stop the affected app from TrueNAS Apps \> media-stack.
 
-145. Check logs by clicking on the container in the TrueNAS Apps screen.
+14. Check logs by clicking on the container in the TrueNAS Apps screen.
 
-146. If the app config database is corrupted: Storage \> apps/appdata \>
-     Snapshots. Find the snapshot from before the update. Click
-     Rollback.
+15. If the app config database is corrupted: Storage \> apps/appdata \>
+    Snapshots. Find the snapshot from before the update. Click
+    Rollback.
 
-147. Restart the app from TrueNAS Apps.
+16. Restart the app from TrueNAS Apps.
 
-148. Keep the snapshot until confident the app is working.
+17. Keep the snapshot until confident the app is working.
 
-|  |
-|:---|
-| **⚠ Warning** |
-| Rolling back apps/appdata affects ALL app configs, not just one app. If only one app is broken, try restoring just its subfolder from the config tarball first. |
-|  |
+> [!WARNING]
+> Rolling back apps/appdata affects ALL app configs, not just one app. If only one app is broken, try restoring just its subfolder from the config tarball first.
 
-**Part 16 — Troubleshooting**
+## Part 16 — Troubleshooting
 
 Always check TrueNAS Apps \> Installed \> media-stack first. Use the
 container log buttons there before reaching for Shell commands.
@@ -2454,46 +2112,31 @@ container log buttons there before reaching for Shell commands.
 | Disk space filling up | Check: du -sh /mnt/tank/data/media/\* — run cleanup: bash /mnt/apps/scripts/cleanup-downloads.sh — clear Jellyfin transcode: rm -rf /mnt/apps/transcode/jellyfin/\* |
 | Tailscale remote access fails | Check auth key in config.env. Run: docker logs tailscale. Check tailscale.com/admin shows the NAS as connected. |
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p># Useful read-only Shell checks:</p>
-<p>docker ps --format "table {{.Names}}\t{{.Status}}"</p>
-<p>docker logs jellyfin | tail -50</p>
-<p>docker logs immich-server | tail -50</p>
-<p>docker logs qbittorrent | tail -50</p>
-<p># Storage checks:</p>
-<p>zfs list -t snapshot | grep tank</p>
-<p>du -sh /mnt/tank/data/media/*</p>
-<p>du -sh /mnt/apps/appdata/*</p>
-<p>ls -lh /mnt/tank/backups/configs/</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+# Useful read-only Shell checks:
+docker ps --format "table {{.Names}}\t{{.Status}}"
+docker logs jellyfin | tail -50
+docker logs immich-server | tail -50
+docker logs qbittorrent | tail -50
+# Storage checks:
+zfs list -t snapshot | grep tank
+du -sh /mnt/tank/data/media/*
+du -sh /mnt/apps/appdata/*
+ls -lh /mnt/tank/backups/configs/
+```
 
-**Part 17 — Changing Settings**
+## Part 17 — Changing Settings
 
 All settings live in config.env. Edit the file, then redeploy the stack
 from TrueNAS Apps.
 
-<table>
-<colgroup>
-<col style="width: 100%" />
-</colgroup>
-<tbody>
-<tr>
-<td><p>nano /mnt/apps/scripts/config.env</p>
-<p># Make your changes, then Ctrl+X &gt; Y &gt; Enter to save</p>
-<p># Redeploy from TrueNAS Apps &gt; media-stack &gt;
-Update/Redeploy</p>
-<p># OR restart a specific container only:</p>
-<p>docker restart jellyfin</p></td>
-</tr>
-</tbody>
-</table>
+```bash
+nano /mnt/apps/scripts/config.env
+# Make your changes, then Ctrl+X > Y > Enter to save
+# Redeploy from TrueNAS Apps > media-stack > Update/Redeploy
+# OR restart a specific container only:
+docker restart jellyfin
+```
 
 | **What to change** | **Variable in config.env** |
 |:---|:---|
@@ -2507,9 +2150,9 @@ Update/Redeploy</p>
 | Cleanup grace period | INCOMPLETE_DAYS="14" — days before stale incomplete downloads are deleted |
 | Enable Real-Debrid wait | WAIT_FOR_RD="1" — set this after Part 13 is complete |
 
-**Part 18 — Quick Reference**
+## Part 18 — Quick Reference
 
-**All App Addresses**
+### All App Addresses
 
 | **App** | **Local URL** | **Tailscale URL** |
 |:---|:---|:---|
@@ -2526,7 +2169,7 @@ Update/Redeploy</p>
 | Bazarr | http://\[NAS-IP\]:6767 | Admin only |
 | Zurg status | http://\[NAS-IP\]:9999 | Admin only |
 
-**Key File Paths**
+### Key File Paths
 
 | **What**                   | **Path**                             |
 |:---------------------------|:-------------------------------------|
@@ -2545,7 +2188,7 @@ Update/Redeploy</p>
 | Real-Debrid virtual folder | /mnt/tank/realdebrid/                |
 | Script logs                | /mnt/apps/scripts/\*.log             |
 
-**Final Build Checklist**
+### Final Build Checklist
 
 | **Step** | **Done?** |
 |:---|:---|
@@ -2596,11 +2239,10 @@ Update/Redeploy</p>
 | TEST: request something in Seerr — streams from Real-Debrid instantly | ☐ |
 | No port forwards open on router (verify in router admin page) | ☐ |
 
-|  |
-|:---|
-| **📋 Guide version** |
-| TrueNAS SCALE Home Media Server — Final Edition |
-| Base architecture: v13 (hardlink-optimised tank/data dataset, TrueNAS UI snapshots, rclone mount as Post Init, RENDER_GID, Docker log limits, explicit subnets, Install via YAML) |
-| Additions: full app setup, phone app guide, pipelines, VAAPI details, indexer priorities, naming formats, Bazarr subtitle providers, qBittorrent startup password, BIOS specifics |
-| Intel Core Ultra 5 225 · Netanya, Israel |
-|  |
+> [!NOTE]
+> **Guide version**
+> 
+> TrueNAS SCALE Home Media Server — Final Edition
+> Base architecture: v13 (hardlink-optimised tank/data dataset, TrueNAS UI snapshots, rclone mount as Post Init, RENDER_GID, Docker log limits, explicit subnets, Install via YAML)
+> Additions: full app setup, phone app guide, pipelines, VAAPI details, indexer priorities, naming formats, Bazarr subtitle providers, qBittorrent startup password, BIOS specifics
+> Intel Core Ultra 5 225 · Netanya, Israel
