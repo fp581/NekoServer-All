@@ -10,7 +10,6 @@
 <p>ZFS · Real-Debrid · Tailscale · Self-Healing · Remote Access</p>
 <p><em>Jellyfin · Navidrome · Immich · Sonarr · Radarr · Lidarr · Bazarr
 · Seerr</em></p>
-<p>Intel Core Ultra 5 225 · Netanya, Israel</p></td>
 </tr>
 </tbody>
 </table>
