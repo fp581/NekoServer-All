@@ -2066,25 +2066,36 @@ fi
 
 ## Part 14 — Monthly Update Process
 
-Do not auto-update the whole stack. Apps like Immich and its database
-can have breaking changes. Manual approval is safer and keeps failures
+Do not auto-update the whole stack. Manual approval keeps failures
 visible and recoverable.
+
+> [!IMPORTANT]
+> **Immich reached stable v2.0.0 in September 2025 and now follows semantic versioning.**
+> Within the `v2.x.x` line, server and mobile-app versions are compatible across patch and minor releases — a v2.9 phone app talks to a v2.0 server and vice versa, no schema gymnastics required. The historical "Immich update is a one-way trap" warning no longer applies for in-major-line updates.
+>
+> The thing to still watch for is a **major version bump** (v3.0.0 someday). That would signal database / API changes that aren't backward-compatible. Read the release notes whenever a major number changes — for the current `v2.x.x` line, monthly updates are routine.
 
 ### Monthly Checklist
 
-1. Read release notes for Immich and any other app you care about
-   (check their GitHub pages).
+1. Glance at release notes for Immich, Jellyfin, and any *arr apps you
+   care about. Within a major version line, look for "Breaking" /
+   "Database Migration" headings — usually nothing in 2026 but worth
+   the 30-second skim.
 
 2. Run the config backup immediately before updating:
 
 ```bash
 bash /mnt/apps/scripts/backup-app-config.sh
 ```
-3. Confirm the backup file was created: ls -lh
-   /mnt/tank/backups/configs/
 
-4. Take a manual snapshot of apps/appdata: Storage \> apps/appdata \>
-   Snapshots \> Add.
+3. Confirm the backup file was created: `ls -lh /mnt/tank/backups/configs/`
+
+4. **Optional — take a manually-named snapshot of `apps/appdata`** if
+   you want a snapshot tied clearly to this update event: Storage \>
+   `apps/appdata` \> Snapshots \> Add, name it something like
+   `pre-update-$(date +%F)`. The automatic 4-hour snapshot from Part 7
+   already gives you a recent point-in-time; the manual one is just a
+   clearly-labelled marker that survives the 7-day auto-rotation.
 
 5. In TrueNAS: Apps \> Installed \> media-stack. Use the Update or
    Redeploy button to pull new images and restart.
@@ -2094,11 +2105,14 @@ bash /mnt/apps/scripts/backup-app-config.sh
 7. Open Jellyfin, Immich, Sonarr, and Radarr in a browser and confirm
    they work normally.
 
-8. Keep the snapshot for at least one week before considering the
-   update stable.
+8. If you took the manual snapshot in step 4, keep it for at least one
+   week before considering the update stable.
 
 > [!WARNING]
 > Do not update during a scrub job, virus scan, or large import. Pick a quiet hour. Run the backup first, then update.
+
+> [!TIP]
+> If anything breaks after the update, jump to **Part 15 — Recovery Scenarios**, specifically the "If an App Update Breaks Something" section. The combination of the snapshot (from step 4 or the auto-snapshots) and the tarball backup (from step 2) means recovery is always possible.
 
 ## Part 15 — Recovery Scenarios
 
@@ -2124,23 +2138,31 @@ The mirror keeps running on one drive — you do not lose data. Stay calm.
 
 Media and photos on the HDD mirror are completely unaffected.
 
-6. Replace SSD 2 with a new one of equal or greater size.
+6. Replace the failed SSD with a new one of equal or greater size. If
+   you set up the apps pool as a mirror in Part 3 and only one of the
+   two SSDs failed, your stack kept running on the surviving disk —
+   just replace the failed one and skip to "Mirrored apps pool" below.
 
-7. TrueNAS \> Storage \> Create Pool \> name it apps \> select new SSD
-   \> Stripe.
+7. TrueNAS \> Storage \> Create Pool \> name it `apps` \> select new
+   disk(s). Pick the layout that matches what you set up in Part 3:
+   - **Single-SSD pool**: select the new SSD, layout = Stripe.
+   - **Mirrored apps pool**: select both new SSDs, layout = Mirror.
+     (If only one drive failed and you're recovering an existing
+     mirror, this is the **Replace** flow under Manage Devices, same
+     as the HDD mirror procedure above — not a fresh Create Pool.)
 
-8. Recreate datasets: apps/appdata, apps/transcode,
-   apps/downloads-incomplete, apps/scripts, apps/backups.
+8. Recreate datasets: `apps/appdata`, `apps/transcode`,
+   `apps/downloads-incomplete`, `apps/scripts`, `apps/backups`.
 
 9. Run the mkdir and permission commands from Part 4.
 
 10. Restore the latest config tarball:
 
 ```bash
-# Find the latest backup:
-ls -lh /mnt/tank/backups/configs/
-# Restore it (replace FILENAME with the actual file):
-cd / && tar -xzf /mnt/tank/backups/configs/app-config-YYYY-MM-DD_HH-MM-SS.tar.gz
+# Find and restore the most recent backup automatically:
+LATEST=$(ls -t /mnt/tank/backups/configs/app-config-*.tar.gz | head -1)
+echo "Restoring from: $LATEST"
+cd / && tar -xzf "$LATEST"
 # Restore the Immich database permission exception:
 chown -R 999:999 /mnt/apps/appdata/immich-db
 ```
@@ -2150,22 +2172,59 @@ chown -R 999:999 /mnt/apps/appdata/immich-db
 
 12. Test apps one by one.
 
+### If the Boot SSD Fails
+
+The boot SSD only holds the TrueNAS OS. Your tank pool, apps pool, and
+all data on them are unaffected — ZFS pools are self-describing and can
+be re-attached to a fresh TrueNAS install.
+
+13. Replace the boot SSD with a new one (any 250 GB+ M.2 NVMe).
+
+14. Reinstall TrueNAS Community Edition from a USB stick — same
+    procedure as Part 2. Use the same admin username if you can
+    (`truenas_admin` is the default), and configure the same network
+    settings.
+
+15. After first login, go to **Storage → Import Pool**. Both `tank` and
+    `apps` should appear as importable. Import each one — TrueNAS
+    re-attaches them with all datasets, snapshots, and contents intact.
+
+16. Restore the maintenance scripts and config.env (they live on the
+    apps pool, but the cron jobs are TrueNAS-side and need recreating):
+    re-do **Part 8 → Schedule All Scripts** to register the cron jobs.
+    Re-do **Part 7 → Create Snapshot Tasks** for the periodic
+    snapshots.
+
+17. Re-do **Part 6 → Step 6.3** (Install via YAML) to redeploy
+    media-stack. The compose file is already in `/mnt/apps/scripts/`
+    on the imported pool.
+
+18. If you used Tailscale, re-do **Part 5** to register the new install.
+    The Tailscale state under `/mnt/apps/appdata/tailscale` may carry
+    over — try without re-authenticating first; if that doesn't work,
+    generate a new auth key from the Tailscale admin.
+
 ### If an App Update Breaks Something
 
-13. Stop the affected app from TrueNAS Apps \> media-stack.
+19. Stop the affected app from TrueNAS Apps \> media-stack.
 
-14. Check logs by clicking on the container in the TrueNAS Apps screen.
+20. Check logs by clicking on the container in the TrueNAS Apps screen.
 
-15. If the app config database is corrupted: Storage \> apps/appdata \>
-    Snapshots. Find the snapshot from before the update. Click
-    Rollback.
+21. If the app config database is corrupted: **stop every container
+    that shares the `apps/appdata` dataset first** (in practice, that
+    means stop the entire media-stack from Apps \> Installed \>
+    media-stack). A snapshot rollback while a container is writing
+    to the dataset corrupts open files — Postgres especially.
 
-16. Restart the app from TrueNAS Apps.
+22. Then go to Storage \> `apps/appdata` \> Snapshots. Find the
+    snapshot from before the update. Click Rollback.
 
-17. Keep the snapshot until confident the app is working.
+23. Start the stack from TrueNAS Apps. Verify the affected app first.
+
+24. Keep the snapshot until confident the app is working.
 
 > [!WARNING]
-> Rolling back apps/appdata affects ALL app configs, not just one app. If only one app is broken, try restoring just its subfolder from the config tarball first.
+> Rolling back `apps/appdata` affects ALL app configs, not just one app. Every Sonarr/Radarr/Lidarr import recorded since the snapshot, every Jellyfin watch-progress update, every Immich photo metadata change — all reverted. If only one app is broken, try restoring just its subfolder from the config tarball first (e.g. `tar -xzf <backup> -C / mnt/apps/appdata/sonarr` for just Sonarr).
 
 ## Part 16 — Troubleshooting
 
