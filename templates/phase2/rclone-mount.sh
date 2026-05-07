@@ -39,7 +39,22 @@ done
 curl -fsS http://localhost:9999 >/dev/null 2>&1 || fail "Zurg is not responding on http://localhost:9999"
 
 if mountpoint -q "$MOUNTPOINT"; then
-    log "$MOUNTPOINT is already mounted"
+    if ls "$MOUNTPOINT" >/dev/null 2>&1; then
+        log "$MOUNTPOINT is already mounted"
+    else
+        log "$MOUNTPOINT is mounted but not readable; attempting stale mount cleanup"
+        if command -v fusermount >/dev/null 2>&1; then
+            fusermount -uz "$MOUNTPOINT" >> "$LOG" 2>&1 || true
+        elif command -v fusermount3 >/dev/null 2>&1; then
+            fusermount3 -uz "$MOUNTPOINT" >> "$LOG" 2>&1 || true
+        else
+            umount -l "$MOUNTPOINT" >> "$LOG" 2>&1 || true
+        fi
+    fi
+fi
+
+if mountpoint -q "$MOUNTPOINT"; then
+    log "$MOUNTPOINT is ready"
 else
     log "Starting rclone mount"
     rclone mount zurg: "$MOUNTPOINT" \

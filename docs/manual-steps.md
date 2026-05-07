@@ -57,6 +57,14 @@ Register these in System Settings > Advanced Settings > Init/Shutdown Scripts:
 | `/mnt/apps/scripts/enable-fuse-allow-other.sh` | Script | Post Init |
 | `/mnt/apps/scripts/rclone-mount.sh` | Script | Post Init |
 
+TrueNAS does not ship with rclone. Check and install it on the TrueNAS host if needed:
+
+```bash
+which rclone
+curl https://rclone.org/install.sh | bash
+rclone version
+```
+
 Then run:
 
 ```bash

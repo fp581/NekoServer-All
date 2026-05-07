@@ -6,6 +6,11 @@ ZFS · Real-Debrid · Tailscale · Self-Healing · Remote Access
 
 *Jellyfin · Navidrome · Immich · Sonarr · Radarr · Lidarr · Bazarr · Seerr*
 
+> [!IMPORTANT]
+> **This guide is now reference documentation.**
+>
+> Use the script-first workflow in `README.md` for the actual install files. In particular, do not copy the historical `docker-compose.yml` block in Part 6 for a new setup; the generated `/mnt/apps/scripts/docker-compose.yml` from `install.sh` is the maintained version. This guide remains useful for hardware choices, TrueNAS UI context, and first-time app setup screens.
+
 > [!NOTE]
 > **🎯 What you will have when you finish this guide**
 > 
