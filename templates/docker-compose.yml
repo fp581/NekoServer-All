@@ -1,0 +1,179 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: truenas-nas
+    env_file: [/mnt/apps/scripts/config.env]
+    environment:
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_AUTH_ONCE: "true"
+    volumes:
+      - /mnt/apps/appdata/tailscale:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add: [NET_ADMIN, NET_RAW]
+    network_mode: host
+    logging: *default-logging
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    env_file: [/mnt/apps/scripts/config.env]
+    environment:
+      WEBUI_PORT: "8090"
+    volumes:
+      - /mnt/apps/appdata/qbittorrent:/config
+      - /mnt/tank/data:/data
+      - /mnt/apps/downloads-incomplete:/downloads/incomplete
+    ports: ["8090:8090"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/prowlarr:/config
+    ports: ["9696:9696"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/sonarr:/config
+      - /mnt/tank/data:/data
+    ports: ["8989:8989"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/radarr:/config
+      - /mnt/tank/data:/data
+    ports: ["7878:7878"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/lidarr:/config
+      - /mnt/tank/data:/data
+    ports: ["8686:8686"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/bazarr:/config
+      - /mnt/tank/data/media/movies:/movies
+      - /mnt/tank/data/media/tv:/tv
+    ports: ["6767:6767"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    env_file: [/mnt/apps/scripts/config.env]
+    devices:
+      - /dev/dri:/dev/dri
+    group_add: ["__RENDER_GID__"]
+    volumes:
+      - /mnt/apps/appdata/jellyfin:/config
+      - /mnt/apps/transcode/jellyfin:/transcode
+      - /mnt/tank/data/media/movies:/media/movies:ro
+      - /mnt/tank/data/media/tv:/media/tv:ro
+    ports: ["8096:8096"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/navidrome:/data
+      - /mnt/tank/data/media/music:/music:ro
+    ports: ["4533:4533"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:release
+    container_name: immich-server
+    env_file: [/mnt/apps/scripts/config.env]
+    devices:
+      - /dev/dri:/dev/dri
+    group_add: ["__RENDER_GID__"]
+    volumes:
+      - /mnt/tank/photos/library:/data
+      - /etc/localtime:/etc/localtime:ro
+    ports: ["2283:2283"]
+    depends_on:
+      immich-redis:
+        condition: service_healthy
+      immich-db:
+        condition: service_healthy
+    logging: *default-logging
+    restart: unless-stopped
+
+  immich-machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:release
+    container_name: immich-machine-learning
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/immich-ml:/cache
+    logging: *default-logging
+    restart: unless-stopped
+
+  immich-redis:
+    image: docker.io/valkey/valkey:9-bookworm
+    container_name: immich-redis
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+    logging: *default-logging
+    restart: unless-stopped
+
+  immich-db:
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+    container_name: immich-db
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/immich-db:/var/lib/postgresql/data
+    shm_size: 128mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+    restart: unless-stopped
+
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/seerr:/app/config
+    ports: ["5055:5055"]
+    logging: *default-logging
+    restart: unless-stopped
