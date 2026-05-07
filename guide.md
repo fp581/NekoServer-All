@@ -537,9 +537,15 @@ MagicDNS gives your NAS a readable name instead of a number like
 
 8. Go to tailscale.com/admin/dns in your browser.
 
-9. Click Enable MagicDNS. Your NAS will be reachable as truenas-nas
-   (the hostname you set in the Tailscale container) instead of its IP
-   address.
+9. Click Enable MagicDNS. Your NAS becomes reachable by name instead of
+   IP. There are two name forms — both resolve to the same NAS:
+   - **Short name:** `truenas-nas` (the hostname you set in the
+     Tailscale container). Works in browsers and most apps when the
+     device is using your tailnet's MagicDNS resolver.
+   - **Full FQDN:** `truenas-nas.<your-tailnet>.ts.net`. Works
+     everywhere, including iOS browsers and apps that bypass system
+     DNS. Use this form if a short name fails to resolve. Find your
+     tailnet name at the top of `tailscale.com/admin/machines`.
 
 > [!TIP]
 > After setup is complete, your NAS has two addresses: a local IP (e.g. 192.168.1.50) for when you are at home, and a Tailscale IP (e.g. 100.64.12.34 or the MagicDNS name) for when you are away. The apps work the same way at both addresses.
