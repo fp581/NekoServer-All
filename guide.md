@@ -491,7 +491,7 @@ Paste each block and press Enter:
 
 ```bash
 # App SSD subfolders
-mkdir -p /mnt/apps/appdata/{bazarr,clamav,immich-db,immich-ml,jellyfin,lidarr,navidrome,prowlarr,qbittorrent,radarr,rclone,seerr,sonarr,tailscale,zurg}
+mkdir -p /mnt/apps/appdata/{bazarr,immich-db,immich-ml,jellyfin,lidarr,navidrome,prowlarr,qbittorrent,radarr,rclone,seerr,sonarr,tailscale,zurg}
 mkdir -p /mnt/apps/{backups,scripts,transcode/jellyfin,downloads-incomplete}
 # Tank HDD subfolders — all under tank/data (one dataset, instant hardlinks)
 mkdir -p /mnt/tank/data/media/{movies,tv,music}
@@ -499,8 +499,9 @@ mkdir -p /mnt/tank/data/downloads/complete/{movies,tv,music}
 mkdir -p /mnt/tank/data/downloads/quarantine
 # Other tank folders
 mkdir -p /mnt/tank/photos/library
-mkdir -p /mnt/tank/realdebrid/{movies,tv}
 mkdir -p /mnt/tank/backups/configs
+# Note: /mnt/tank/realdebrid is created in Part 13 by the rclone mount
+# script — do not pre-create subfolders here, the FUSE mount overlays them.
 ```
 
 ### Set Permissions
@@ -521,6 +522,19 @@ chmod -R 775 /mnt/apps/scripts
 ```
 
 > [!NOTE]
+> **Scripts folder ownership is captured at install time**
+>
+> The `chown -R "$SCRIPT_OWNER":568 /mnt/apps/scripts` command snapshots whoever is logged into the shell right now (typically `truenas_admin`). The group is set to `568` (the apps group) so containers can still read the scripts when needed.
+>
+> If you ever change your TrueNAS admin user, log in as a different admin to edit scripts, or delete and recreate the admin account, you may hit "Permission denied" when editing files in `/mnt/apps/scripts`. The fix is one command, run as the new admin in the TrueNAS Shell:
+>
+> ```bash
+> sudo chown -R "$(id -un)":568 /mnt/apps/scripts
+> ```
+>
+> Cron runs as root regardless of file ownership, so scheduled jobs from Part 8 are unaffected — this only matters for hand-editing.
+
+> [!NOTE]
 > **Immich database exception**
 > 
 > The Immich database container runs internally as user 999, not 568. You must give that user ownership of just the Immich database folder:
@@ -539,34 +553,47 @@ chmod -R 775 /mnt/apps/scripts
 
 > [!NOTE]
 > **Verify /dev/dri exists before continuing**
-> 
-> After TrueNAS is installed and running (no USB, no monitor), confirm the Intel Arc iGPU is actually visible to the OS. In TrueNAS Shell:
+>
+> After TrueNAS is installed and running (no USB, no monitor), confirm the Intel iGPU is actually visible to the OS. In TrueNAS Shell:
+>
+> ```bash
 > ls /dev/dri
-> \# You should see: card0 renderD128
-> \# If the output is empty, try the Arrow Lake fix below first, then check BIOS.
-> \# This is the most common reason Jellyfin hardware transcoding appears to work but does nothing.
+> # You should see: card0 renderD128
+> ```
+>
+> If the output is empty, the kernel did not bind a graphics driver to your iGPU. First check BIOS (Step 11 in Part 2 — Primary Display = IGFX/iGPU). If BIOS looks right and `/dev/dri` is still empty, you may need the kernel-args workaround in the next callout.
+>
+> An empty `/dev/dri` is the most common reason Jellyfin hardware transcoding appears to work but does nothing — the container starts, VAAPI is configured, and software transcoding silently takes over.
 
 > [!NOTE]
-> **Arrow Lake force_probe — required for Intel Core Ultra (Arrow Lake)**
-> 
-> The Intel Core Ultra 5 225 uses the Arrow Lake architecture. In TrueNAS SCALE 24.10, the Linux kernel may not load the i915 graphics driver automatically for this chip. Even with the correct BIOS settings and /dev/dri absent, the fix is a single kernel parameter.
-> Step 1 — In TrueNAS: System Settings > Advanced > Sysctl > Add.
-> Variable: ix_diagnostics_force_probe
-> Value: 7120
-> (7120 is the PCI device ID for Arrow Lake integrated graphics. This tells the i915 driver to probe this device ID even though it is not yet in the official support list.)
-> 
-> Step 2 — Reboot the NAS.
-> 
-> Step 3 — Verify in TrueNAS Shell:
+> **i915 / xe `force_probe` — only if `/dev/dri` is empty after BIOS is correct**
+>
+> If you used the **i5-13500 build** from Part 1 (or any 12th–14th gen Intel), this section does not apply — the i915 driver in the TrueNAS 25.10 kernel recognises those iGPUs out of the box.
+>
+> If you used the **Arrow Lake reference build** (Intel Core Ultra on the MAXSUN B860 board) and `/dev/dri` is empty after a clean install, you may need to force the graphics driver to bind to your iGPU's PCI device ID.
+>
+> **First, find your iGPU's device ID** in the TrueNAS Shell:
+>
+> ```bash
+> lspci -nn | grep -i 'vga\|display'
+> # Example output: 00:02.0 VGA compatible controller [0300]: Intel Corporation Device [8086:7d51]
+> # The 4-character hex value after "8086:" is your device ID (e.g. 7d51).
+> ```
+>
+> **Then add a kernel argument** (NOT a sysctl — driver probing happens at boot, before sysctls take effect): in the TrueNAS UI, go to **System Settings → Advanced Settings → Kernel Args → Add**, and set the value to one of:
+>
+> - `i915.force_probe=<your-id>` — for older Intel iGPUs not yet in the i915 driver's PCI ID list (most cases).
+> - `xe.force_probe=<your-id>` — for newer Arrow Lake / Lunar Lake / Battlemage iGPUs that are handled by the new `xe` driver.
+> - `i915.force_probe=*` (wildcard) — last resort if you don't know which driver claims your iGPU. Forces the i915 driver to probe every unknown Intel GPU. Safe on a dedicated NAS.
+>
+> Reboot the NAS, then verify:
+>
+> ```bash
 > ls /dev/dri
-> \# You should now see: card0 renderD128
-> 
-> If that specific value does not work on your board, the fallback is the wildcard:
-> Variable: ix_diagnostics_force_probe
-> Value: *
-> (The wildcard forces the driver to probe all unknown Intel GPU device IDs. It is broader but safe on a dedicated NAS.)
-> 
-> Without this step, /dev/dri may stay empty on Core Ultra hardware regardless of BIOS settings.
+> # Should now show: card0 renderD128
+> ```
+>
+> If neither driver binds, your kernel is older than your CPU's iGPU support. Update TrueNAS to the latest 25.10.x or newer.
 
 ## Part 5 — Remote Access: Tailscale First
 
