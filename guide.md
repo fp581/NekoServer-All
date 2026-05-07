@@ -386,32 +386,44 @@ number so you can tell them apart.
 | **Setting** | **Value**                                                    |
 |:------------|:-------------------------------------------------------------|
 | Pool name   | apps                                                         |
-| Disk        | SSD 2 only                                                   |
-| Layout      | Single disk — no mirror, but backed up nightly to tank       |
+| Disk        | SSD 2 only (single disk) **or** two SSDs in a mirror         |
+| Layout      | Single disk — no redundancy, restored from the nightly tank backup if it fails |
 | Purpose     | App databases, transcode temp, incomplete downloads, scripts |
+
+> [!TIP]
+> **Single SSD or mirrored pair?**
+> The single-disk layout assumes you can tolerate losing up to 24 hours of state if the apps SSD fails (the gap between the most recent nightly backup and the failure). For Immich uploads, Sonarr/Radarr import history, qBittorrent state, and Jellyfin watch progress, that window may or may not matter to you. For better durability, use **two SSDs in a mirror** — the procedure is the same as the tank pool above, just substitute SSDs. This trades the cost of a second SSD for zero data-loss window. See Part 0's apps SSD callout for the full trade-off.
 
 8. Still in Storage, click Create Pool again.
 
 9. Name it: apps
 
-10. Select SSD 2 only. Do not select SSD 1 (TrueNAS is installed there —
-    it should not appear in the list at all) and do not select the HDDs.
+10. Select your apps SSD(s). Do not select the boot SSD (TrueNAS is
+    installed there — it should not appear in the list at all) and do
+    not select the HDDs.
 
-11. Click Add Vdev, then Stripe. A single-drive pool has no redundancy.
-    That is intentional — the apps SSD is backed up to the mirrored tank
-    pool every night.
+11. For a single-SSD pool: click Add Vdev, then Stripe. A single-drive
+    pool has no redundancy — restoration relies on the nightly backup
+    in Part 8. For a two-SSD mirror: click Add Vdev, then Mirror, same
+    as the tank pool.
 
 12. Click Create Pool and confirm.
 
 > [!NOTE]
 > **Why not use the SSD as ZFS cache?**
 > 
-> A ZFS L2ARC cache only helps when the same blocks are read repeatedly and RAM is already exhausted. For this NAS, the real improvement is putting the Immich database, Jellyfin metadata, active torrent writes, and transcode temp files on SSD — workloads that are random, constant, and small. A separate apps pool gives you this AND keeps app data completely separate from media.
+> A ZFS L2ARC (read cache) only helps when the same blocks are read repeatedly *and* RAM is already exhausted. With 32 GB of RAM, ARC handles the cacheable read workload of this stack on its own.
+>
+> SLOG (separate intent log) is a different SSD-on-ZFS use case — and also wrong here. SLOG only accelerates **sync writes** (NFS, iSCSI, databases doing `fsync` over the network). The bulk of this stack does buffered I/O over local volume mounts, so SLOG would sit idle.
+>
+> The real win is putting the Immich database, Jellyfin metadata, active torrent writes, and transcode temp files on SSD as a **separate fast pool** — random, constant, small writes that would otherwise hammer the HDDs. That's what the apps pool above is doing.
 
 > [!NOTE]
-> **Enable SSD TRIM**
+> **TRIM / autotrim is on by default for SSD pools**
 > 
-> After creating the apps pool, go to Storage > Disks. Find your app SSD and make sure TRIM is enabled. TRIM tells the SSD which blocks are no longer used, keeping write performance healthy over time as databases and log files change constantly. Without TRIM, the apps SSD can slow down noticeably after months of use.
+> Recent TrueNAS releases (24.10+) enable `autotrim` automatically when you create a pool on an SSD. Nothing to configure manually for the typical case.
+>
+> If you want to verify: **Storage** → click your apps pool → **Edit** → look for the **Auto TRIM** checkbox. It should already be checked. If you ever need to run TRIM by hand (e.g. after a large delete), the same screen has a **Trim** button.
 
 ## Part 4 — Create Datasets and Folders
 
