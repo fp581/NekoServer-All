@@ -30,7 +30,7 @@ ZFS · Real-Debrid · Tailscale · Self-Healing · Remote Access
 
 - [Part 0 — Understand What You Are Building](#part-0--understand-what-you-are-building)
 - [Part 1 — Hardware](#part-1--hardware)
-- [Part 2 — Install TrueNAS SCALE](#part-2--install-truenas-scale)
+- [Part 2 — Install TrueNAS Community Edition](#part-2--install-truenas-community-edition)
 - [Part 3 — Create Storage Pools](#part-3--create-storage-pools)
 - [Part 4 — Create Datasets and Folders](#part-4--create-datasets-and-folders)
 - [Part 5 — Remote Access: Tailscale First](#part-5--remote-access-tailscale-first)
@@ -189,7 +189,6 @@ of it as a giant media warehouse in the cloud:
 > [!WARNING]
 > Always use a wired Ethernet cable. Wi-Fi causes mysterious transfer failures and timeouts that are very hard to diagnose.
 
-## Part 2 — Install TrueNAS Community Edition
 > [!NOTE]
 > **You don't have to copy this build exactly.**
 > The parts above are a tested, attainable starting point. What actually matters:
@@ -203,9 +202,9 @@ of it as a giant media warehouse in the cloud:
 
 > [!NOTE]
 > **Author's original build — for reference**
-> The first version of this guide was built around an Intel Core Ultra 5 225 (Arrow Lake) on a MAXSUN iCraft B860M CROSS PRO (LGA1851) motherboard. That build still works; the catch is that the i915 graphics driver in TrueNAS 24.10's kernel does not yet recognise the Arrow Lake iGPU device ID, so it requires a kernel parameter workaround (the `ix_diagnostics_force_probe` step in Part 4). The LGA1700 build above does not need any of that.
+> The first version of this guide was built around an Intel Core Ultra 5 225 (Arrow Lake) on a MAXSUN iCraft B860M CROSS PRO (LGA1851) motherboard. That build still works; the catch is that the in-tree graphics driver in TrueNAS 25.10's kernel may not yet recognise the Arrow Lake iGPU device ID on every revision, in which case it needs the `i915.force_probe` / `xe.force_probe` Kernel Args workaround documented in Part 4. The LGA1700 build above does not need any of that.
 
-## Part 2 — Install TrueNAS SCALE
+## Part 2 — Install TrueNAS Community Edition
 
 This part installs the operating system onto the boot SSD. You need a
 keyboard, monitor, and a USB drive connected to the NAS for this part
@@ -2428,7 +2427,7 @@ docker restart jellyfin
 |:---|:---|
 | Timezone | TZ="Asia/Jerusalem" — use a valid tz database string |
 | qBittorrent password | QBIT_PASSWORD="..." |
-| Immich database password | IMMICH_DB_PASS and POSTGRES_PASSWORD and DB_PASSWORD — change all three to the same value |
+| Immich database password | POSTGRES_PASSWORD and DB_PASSWORD — change both to the same value |
 | USB backup on/off | ENABLE_USB_BACKUP="1" or "0" |
 | USB drive UUID | USB_UUID="..." — find with: blkid \| grep -i usb |
 | Webhook alerts URL | WEBHOOK_URL="https://..." |
@@ -2478,7 +2477,7 @@ docker restart jellyfin
 
 | **Step** | **Done?** |
 |:---|:---|
-| TrueNAS SCALE 24.10+ installed on SSD 1 only | ☐ |
+| TrueNAS Community Edition 25.10+ installed on boot SSD only | ☐ |
 | BIOS: Intel VT, IOMMU, ASPM, C-states all configured | ☐ |
 | tank HDD mirror created and confirmed | ☐ |
 | apps SSD pool created | ☐ |
@@ -2494,14 +2493,14 @@ docker restart jellyfin
 | All containers show Running in TrueNAS Apps | ☐ |
 | Tailscale authenticated, IP written down, MagicDNS enabled | ☐ |
 | Phone connected to Tailscale | ☐ |
-| ZFS snapshot tasks created (4 tasks) | ☐ |
+| ZFS snapshot tasks created (5 tasks: apps/appdata, apps/scripts, tank/photos, tank/data, tank/backups) | ☐ |
 | All 5 maintenance scripts created and scheduled | ☐ |
 | qBittorrent: random password found in logs, changed, download paths set, categories created | ☐ |
 | Prowlarr: account created, indexers added with correct priorities | ☐ |
 | Sonarr: qBittorrent connection, Prowlarr sync, root folder, naming format | ☐ |
 | Radarr: same as Sonarr but for movies | ☐ |
 | Lidarr: same pattern, Lossless quality profile created | ☐ |
-| Bazarr: Sonarr/Radarr connections, Hebrew+English, OpenSubtitles | ☐ |
+| Bazarr: Sonarr/Radarr connections, primary language + English, OpenSubtitles | ☐ |
 | Jellyfin: setup wizard, VAAPI enabled, Playback Reporting plugin installed | ☐ |
 | Navidrome: admin account created | ☐ |
 | Immich: admin account, phone app installed, background backup enabled | ☐ |
