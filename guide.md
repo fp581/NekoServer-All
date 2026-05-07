@@ -6,6 +6,11 @@ ZFS · Real-Debrid · Tailscale · Self-Healing · Remote Access
 
 *Jellyfin · Navidrome · Immich · Sonarr · Radarr · Lidarr · Bazarr · Seerr*
 
+> [!IMPORTANT]
+> **This guide is now reference documentation.**
+>
+> Use the script-first workflow in `README.md` for the actual install files. In particular, do not copy the historical `docker-compose.yml` block in Part 6 for a new setup; the generated `/mnt/apps/scripts/docker-compose.yml` from `install.sh` is the maintained version. This guide remains useful for hardware choices, TrueNAS UI context, and first-time app setup screens.
+
 > [!NOTE]
 > **🎯 What you will have when you finish this guide**
 > 
@@ -2390,7 +2395,7 @@ container log buttons there before reaching for Shell commands.
 | Immich database error on start | Run: chown -R 999:999 /mnt/apps/appdata/immich-db — then restart immich-db, immich-redis, immich-server, immich-machine-learning |
 | qBittorrent cannot log in | Find the random startup password: docker logs qbittorrent 2\>&1 \| grep -i password |
 | qBittorrent paths are wrong | Settings \> Downloads: Default Save Path = /data/downloads/complete, Incomplete = /downloads/incomplete, categories as set in 9.1 |
-| Sonarr/Radarr cannot reach qBittorrent | Check hostname is "qbittorrent" (container name), not the NAS IP. Check both are on download-net. |
+| Sonarr/Radarr cannot reach qBittorrent | Check hostname is "qbittorrent" (container name), not the NAS IP. In the script-generated compose, services communicate on the default Compose network. |
 | rclone mount is empty after Part 13 | Check Zurg: curl http://localhost:9999 — should show HTML file listing. If not, Zurg failed to start. If Zurg is fine but rclone is empty, confirm rclone.conf uses url = http://localhost:9999/dav (not http://zurg:9999/dav — container names do not resolve from host scripts). |
 | Real-Debrid library not in Jellyfin | Check .mount-test exists: ls /mnt/tank/realdebrid/.mount-test — if missing, rclone mount failed. Then run: bash /mnt/apps/scripts/rclone-mount.sh |
 | Permission error starting any app | Re-run permissions from Part 4. Remember immich-db needs chown 999:999. |

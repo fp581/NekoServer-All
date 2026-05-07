@@ -1,0 +1,17 @@
+token: YOUR_REAL_DEBRID_API_TOKEN
+port: 9999
+concurrent_workers: 20
+check_for_changes_every_secs: 10
+retain_folder_name_extension: true
+
+directories:
+  movies:
+    group_order: 10
+    group: media
+    filters:
+      - regex: ".*"
+  shows:
+    group_order: 20
+    group: media
+    filters:
+      - regex: ".*"

@@ -1,0 +1,11 @@
+  clamav:
+    image: clamav/clamav:latest
+    container_name: clamav
+    environment:
+      CLAMAV_NO_MILTERD: "true"
+    volumes:
+      - /mnt/apps/appdata/clamav:/var/lib/clamav
+      - /mnt/tank/data/downloads/complete:/scandir
+      - /mnt/tank/data/downloads/quarantine:/quarantine
+    logging: *default-logging
+    restart: unless-stopped

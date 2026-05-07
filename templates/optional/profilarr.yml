@@ -1,0 +1,9 @@
+  profilarr:
+    image: santiagosayshey/profilarr:latest
+    container_name: profilarr
+    env_file: [/mnt/apps/scripts/config.env]
+    volumes:
+      - /mnt/apps/appdata/profilarr:/config
+    ports: ["6868:6868"]
+    logging: *default-logging
+    restart: unless-stopped
