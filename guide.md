@@ -1425,15 +1425,36 @@ Radarr, and Lidarr.
 
 | **Indexer** | **Priority** | **How to add** | **Notes** |
 |:---|:---|:---|:---|
-| 1337x | 25 | Search "1337x" \> click it \> no credentials needed \> Test (green) \> Save | General fallback for movies and TV |
+| 1337x | 25 | Search "1337x" \> click it \> no credentials needed \> Test (green) \> Save | General fallback for movies and TV. Sits behind Cloudflare — see FlareSolverr note below. |
 | YTS | 25 | Search "YTS" \> click \> Test \> Save | Best quality for movies specifically |
 | EZTV | 25 | Search "EZTV" \> click \> Test \> Save | Best for TV shows |
-| Redacted (optional) | 10 | Requires a free account at redacted.ch. Search "Redacted" \> enter credentials \> Priority: 10 \> Test \> Save | Lossless FLAC music |
-| Orpheus (optional) | 10 | Requires account at orpheus.network. Same process as Redacted. Priority: 10 | Lossless FLAC music |
+| Redacted (optional, **invitation only**) | 10 | Not openly available. If you have an account, search "Redacted" \> enter credentials \> Priority: 10 \> Test \> Save. | Lossless FLAC music |
+| Orpheus (optional, **invitation only**) | 10 | Same as Redacted — invite-only, not open signup. If you have access, configure as above. | Lossless FLAC music |
 | Real-Debrid | 1 | Add in Part 13 after Real-Debrid is set up | Always tried first — instant streaming |
 
 > [!TIP]
 > The priority number controls which source is tried first for every download request. Lower number = tried first. Priority 1 (Real-Debrid) is always tried before priority 25 (torrent sites). You add Real-Debrid in Part 13 — for now, the torrent fallbacks above work fine.
+
+> [!IMPORTANT]
+> **Cloudflare-protected indexers need FlareSolverr.**
+> 1337x and many other public trackers in 2026 sit behind Cloudflare's bot challenge. Without FlareSolverr — a small companion container that solves the challenge and proxies the request — Prowlarr's `Test` button returns 403 / "Cloudflare challenge" and the indexer never works.
+>
+> Add FlareSolverr to your `/mnt/apps/scripts/docker-compose.yml`:
+>
+> ```yaml
+>   flaresolverr:
+>     image: ghcr.io/flaresolverr/flaresolverr:latest
+>     container_name: flaresolverr
+>     environment:
+>       - LOG_LEVEL=info
+>     ports: ["8191:8191"]
+>     logging: *default-logging
+>     restart: unless-stopped
+> ```
+>
+> Then in Prowlarr: **Settings → Indexers → Add Indexer Proxy → FlareSolverr → Host: `http://flaresolverr:8191`**. Tag the proxy with a name like `cloudflare`, then on each affected indexer (1337x, etc.) add that same tag — Prowlarr routes those indexer requests through FlareSolverr automatically.
+>
+> If `Test` still fails after this, the indexer is genuinely down (which happens to public trackers regularly).
 
 ### 9.3 — Sonarr
 
@@ -1466,7 +1487,7 @@ they air, and moves them to the media library.
     \> type /data/media/tv
 
 14. Set naming format: Settings \> Media Management \> Rename Episodes:
-    ON. Find the "Episode Format" field and type:
+    ON. Find the "Standard Episode Format" field and type:
 
 ```bash
 {Series Title} - S{season:00}E{episode:00} - {Episode Title}
@@ -1474,6 +1495,10 @@ they air, and moves them to the media library.
 
 This creates files like: Breaking Bad - S01E01 - Pilot.mkv — essential
 for correct subtitle matching.
+
+> [!NOTE]
+> **Anime and Daily formats are separate fields.**
+> The same Media Management screen has two more naming fields below "Standard Episode Format": "Daily Episode Format" (for shows like talk shows or news that air daily — uses dates instead of season/episode) and "Anime Episode Format" (for anime, which uses absolute episode numbering with `{absolute:000}`). If you watch any anime or daily-air content, fill those in too — otherwise Sonarr falls back to a less-useful default. The Anime format is typically `{Series Title} - S{season:00}E{episode:00} - {absolute:000} - {Episode Title}`.
 
 ### 9.4 — Radarr
 
@@ -1493,8 +1518,14 @@ What it does: same as Sonarr but for movies.
     Movie Format field:
 
 ```bash
-{Movie Title} ({Release Year})
+{Movie Title} ({Release Year}) [imdbid-{ImdbId}]
 ```
+
+The `[imdbid-...]` suffix lets Jellyfin match the file to the correct
+TMDB / IMDB entry automatically — important for ambiguous titles
+(remakes, multiple movies sharing a name) so you don't end up with
+wrong posters or descriptions. Folder Format should match the file
+name: `{Movie Title} ({Release Year}) [imdbid-{ImdbId}]`.
 
 ### 9.5 — Lidarr
 
@@ -1517,10 +1548,20 @@ discographies.
 {track:00} - {Track Title}
 ```
 25. Create a quality profile: Settings \> Profiles \> Quality Profiles
-    \> +. Name it Lossless. Set FLAC at the top, then MP3 320 kbps. Set
-    the cutoff (minimum acceptable quality) to MP3 192 kbps — anything
-    worse gets rejected. Save. Use this profile whenever you add an
-    artist.
+    \> +. Name it `Lossless`. Lidarr profiles work in two parts —
+    which formats are *enabled* (ticked checkbox) and what *order*
+    they sit in (drag to rearrange; higher = more preferred):
+    - **Enable**: FLAC, MP3 320, MP3 192. Disable everything else
+      (worse-than-MP3-192 rips and lossless-but-uncommon formats
+      like ALAC / WMA Lossless that public indexers rarely have).
+    - **Order from top to bottom**: FLAC → MP3 320 → MP3 192. Lidarr
+      grabs the highest available; if nothing FLAC exists, falls back
+      to MP3 320, then MP3 192.
+    - **Set the cutoff** (the slider or marker in the same screen)
+      to MP3 192 — once a track meets that quality, Lidarr stops
+      looking for upgrades. Anything below MP3 192 gets rejected
+      because it's not in the enabled list.
+    Save. Use this profile whenever you add an artist.
 
 > [!NOTE]
 > **🎵 How to add music to your library**
@@ -1536,10 +1577,29 @@ discographies.
 > 9\. Lidarr finds all albums, qBittorrent downloads them, Navidrome picks them up within minutes
 > 10\. New albums by that artist download automatically on release day — you never need to do anything again
 
+> [!TIP]
+> **Optional: add Profilarr for quality control across Sonarr/Radarr/Lidarr.**
+> The default Sonarr/Radarr/Lidarr quality profiles are minimal — they cover \"FLAC vs MP3\" and \"1080p vs 4K\" but don't filter out malicious file extensions, scam encoders, low-effort upscales, fake HDR, or known-bad release groups. **Profilarr** ([github.com/Dictionarry-Hub/profilarr](https://github.com/Dictionarry-Hub/profilarr)) is a sidecar that syncs community-maintained custom-format definitions and quality profiles directly into your *arr apps — so suspicious or low-quality releases are rejected at the indexer-search stage, before qBittorrent ever touches them. This is also the planned replacement for ClamAV's daily virus scan in Part 8 (filtering at grab time is more effective than scanning after download).
+>
+> Add to `/mnt/apps/scripts/docker-compose.yml`:
+>
+> ```yaml
+>   profilarr:
+>     image: santiagosayshey/profilarr:latest
+>     container_name: profilarr
+>     env_file: [/mnt/apps/scripts/config.env]
+>     volumes: ["/mnt/apps/appdata/profilarr:/config"]
+>     ports: ["6868:6868"]
+>     logging: *default-logging
+>     restart: unless-stopped
+> ```
+>
+> Then `mkdir -p /mnt/apps/appdata/profilarr && chown -R 568:568 /mnt/apps/appdata/profilarr`, redeploy media-stack, and open Profilarr at `http://[NAS-IP]:6868`. The Profilarr UI walks you through importing the community profile bundles and pushing them into Sonarr/Radarr/Lidarr (it needs the API keys from each).
+
 ### 9.6 — Bazarr
 
-What it does: automatically downloads Hebrew and English subtitles for
-everything Sonarr and Radarr manage.
+What it does: automatically downloads subtitles for everything Sonarr
+and Radarr manage, in the languages you choose.
 
 26. Open Bazarr at http://\[NAS-IP\]:6767.
 
@@ -1551,12 +1611,24 @@ everything Sonarr and Radarr manage.
 28. Connect to Radarr: Settings \> Radarr \> Enable. Hostname: radarr,
     Port: 7878. Paste Radarr API key. Test and Save.
 
-29. Add languages: Settings \> Languages \> + \> add Hebrew. + again \>
-    add English. Save.
+29. Add languages: Settings \> Languages \> + \> add **your primary
+    language**. + again \> add **English** (almost everything has
+    English subtitles, even when your primary language doesn't —
+    a useful fallback). Save. The author originally used Hebrew +
+    English; substitute whatever your household needs.
 
 30. Add subtitle provider: Settings \> Providers \> + \>
     OpenSubtitles.com. Register for a free account at opensubtitles.com,
     then enter your username and password here. Save.
+
+> [!NOTE]
+> **OpenSubtitles.com free-tier limit and adding more providers.**
+> Free OpenSubtitles.com accounts are capped at **20 downloads per day**. For a household with active automation (newly-grabbed episodes + retries for failed matches), that runs out fast. Two ways to soften it:
+>
+> - **Add more providers.** Bazarr supports a dozen others — Subdivx (Spanish), Subscene (legacy mirror), Addic7ed (English TV), Yavkata (Bulgarian), Napiprojekt (Polish), and more. Multiple providers = better hit rate AND distributed quotas. Add them in the same Settings \> Providers screen.
+> - **Pay for VIP** ($3/mo) if OpenSubtitles is your primary provider — lifts the cap to 1000/day.
+>
+> Bazarr already de-duplicates: if one provider supplies a match, it doesn't ask the others.
 
 ### 9.7 — Jellyfin
 
@@ -1580,25 +1652,22 @@ drives. You will add the Real-Debrid library (/media/realdebrid) in Part
 
 33. Finish the wizard.
 
-34. Enable hardware video transcoding — this uses your Intel Arc
-    graphics chip to convert video 10x faster than the CPU:
-    Administration Dashboard (person icon top-right \> Dashboard) \>
-    Playback \> Hardware Acceleration \> select VAAPI from the dropdown
-    \> VA-API Device: /dev/dri/renderD128 \> tick all codec checkboxes:
+34. Enable hardware video transcoding — this uses your Intel iGPU
+    (Quick Sync) to convert video roughly 10× faster than the CPU
+    while using a fraction of the power: Administration Dashboard
+    (person icon top-right \> Dashboard) \> Playback \> Hardware
+    Acceleration \> select **VAAPI** from the dropdown \> VA-API
+    Device: `/dev/dri/renderD128` \> tick all codec checkboxes:
     H264, HEVC, VP8, VP9, AV1, MPEG2 \> tick Enable Tone Mapping \>
-    Transcoding temp path: /transcode \> Save.
+    Transcoding temp path: `/transcode` \> Save.
 
 > [!NOTE]
-> **VA-API vs QuickSync (QSV) for Intel Core Ultra / Arrow Lake**
-> 
-> The guide recommends VA-API, which is the correct choice for Arrow Lake. Here is why:
-> Arrow Lake uses the xe kernel driver, which is newer than the i915 driver that QuickSync (QSV) was built around.
-> 
-> VA-API works through the standard Linux GPU abstraction layer and is fully supported on xe. QuickSync (QSV) on Arrow Lake can be unstable or produce errors like "Failed to create a MFX session".
-> 
-> In short: always choose VA-API for this hardware. If you previously selected QSV and transcoding is failing or producing corrupted output, go back to Administration Dashboard > Playback > Hardware Acceleration, switch to VAAPI, and save.
-> 
-> The /dev/dri/renderD128 device path is correct for both. The only thing changing is the acceleration method in the dropdown.
+> **Why VAAPI over QSV (QuickSync).**
+> Both options end up driving the same Intel iGPU. VAAPI goes through the standard Linux GPU abstraction layer (`libva`) and is the more portable / better-tested path on Linux container deployments. QSV is Intel's direct API and is slightly more efficient on paper, but it has more known failure modes — \"Failed to create a MFX session\" errors, codec-specific quirks, and brittleness on the newer `xe` driver used by Intel Core Ultra (Arrow Lake) chips.
+>
+> Recommendation: start with VAAPI. It just works on every Intel iGPU from Sandy Bridge through current generations. Only switch to QSV if you have a specific reason (benchmarking, an edge case VAAPI can't handle) and are willing to debug.
+>
+> If you previously selected QSV and transcoding is failing or producing corrupted output, go back to Administration Dashboard \> Playback \> Hardware Acceleration, switch to VAAPI, and save. The `/dev/dri/renderD128` device path is correct for both; only the dropdown changes.
 
 35. Install the Playback Reporting plugin: Administration Dashboard \>
     Plugins \> Catalog \> search "Playback Reporting" \> Install \>
@@ -1678,6 +1747,10 @@ in Jellyfin within minutes.
     http://\[TAILSCALE-IP\]:5055. iPhone: tap Share \> Add to Home
     Screen. Android: tap the three-dot menu \> Add to Home Screen. It
     works like an app from your home screen.
+
+> [!TIP]
+> **Optional: Seerr can notify users when their request is available.**
+> Settings \> Notifications has built-in support for Discord, Telegram, Pushover, ntfy, Gotify, Slack, email, and webhooks. The most useful flow for a household: when a user requests a movie and it's later imported into Jellyfin, Seerr fires a "Now available" notification to them on the channel of their choice. Per-user notification preferences are configured under Users \> click the user \> Notifications. Setup mirrors the Part 12 webhook config — same URL formats apply.
 
 ### 9.11 — Set Passwords on All Apps
 
