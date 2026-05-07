@@ -1,0 +1,8 @@
+  zurg:
+    image: ghcr.io/debridmediamanager/zurg-testing:latest
+    container_name: zurg
+    volumes:
+      - /mnt/apps/appdata/zurg:/config
+    ports: ["9999:9999"]
+    logging: *default-logging
+    restart: unless-stopped

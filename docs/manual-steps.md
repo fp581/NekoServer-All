@@ -42,6 +42,61 @@ Deploy `/mnt/apps/scripts/docker-compose.yml` through TrueNAS Apps:
 4. Paste the generated compose file.
 5. Save and wait for containers to start.
 
+## After Running `install.sh --phase realdebrid`
+
+The token file should contain only the Real-Debrid API token from `https://real-debrid.com/apitoken`.
+
+If you did not pass `--realdebrid-token-file`, edit `/mnt/apps/appdata/zurg/config.yml` and replace `YOUR_REAL_DEBRID_API_TOKEN` before starting Zurg.
+
+Redeploy `/mnt/apps/scripts/docker-compose.yml` through TrueNAS Apps so the appended Zurg service starts.
+
+Register these in System Settings > Advanced Settings > Init/Shutdown Scripts:
+
+| Script | Type | When |
+| --- | --- | --- |
+| `/mnt/apps/scripts/enable-fuse-allow-other.sh` | Script | Post Init |
+| `/mnt/apps/scripts/rclone-mount.sh` | Script | Post Init |
+
+Then run:
+
+```bash
+bash /mnt/apps/scripts/enable-fuse-allow-other.sh
+bash /mnt/apps/scripts/rclone-mount.sh
+bash /mnt/apps/scripts/verify-realdebrid.sh
+```
+
+After verification passes:
+
+```bash
+bash /mnt/apps/scripts/enable-realdebrid-wait.sh
+```
+
+Restart or redeploy Jellyfin after enabling the wait.
+
+Add Jellyfin libraries after verification passes:
+
+- Movies: `/media/realdebrid/movies`
+- Shows: `/media/realdebrid/shows`
+
+Add Real-Debrid as a priority `1` indexer in Prowlarr.
+
+### Real-Debrid Readiness
+
+The Phase 2 scripts do not write readiness markers into `/mnt/tank/realdebrid`; that path is the FUSE mount target and can exist even when the mount is broken.
+
+Instead, `/mnt/apps/scripts/rclone-mount.sh` checks Zurg, checks that `/mnt/tank/realdebrid` is an actual mountpoint, then writes `/mnt/apps/appdata/rclone/realdebrid-mounted`. Jellyfin sees that marker through `/realdebrid-status/realdebrid-mounted` when `WAIT_FOR_RD="1"` is enabled.
+
+### Real-Debrid Troubleshooting
+
+| Problem | Check |
+| --- | --- |
+| Zurg fails | Confirm `/mnt/apps/appdata/zurg/config.yml` has a real token, not `YOUR_REAL_DEBRID_API_TOKEN`. |
+| rclone missing | Install rclone on the TrueNAS host, then rerun `/mnt/apps/scripts/verify-realdebrid.sh`. |
+| FUSE error | Run `/mnt/apps/scripts/enable-fuse-allow-other.sh` and confirm `/etc/fuse.conf` contains `user_allow_other`. |
+| Empty mount | Confirm `/mnt/apps/appdata/rclone/rclone.conf` uses `url = http://localhost:9999/dav`, not `http://zurg:9999/dav`. |
+| Mount path exists but is not mounted | Run `mountpoint -q /mnt/tank/realdebrid`; if it fails, run `/mnt/apps/scripts/rclone-mount.sh`. |
+| Jellyfin does not start | If `WAIT_FOR_RD="1"`, run `/mnt/apps/scripts/verify-realdebrid.sh`; Jellyfin waits for the readiness marker before starting. |
+
 ## Snapshot Tasks
 
 Create these in Data Protection > Periodic Snapshot Tasks:

@@ -20,7 +20,13 @@ sudo bash install.sh --with clamav
 
 After installation, follow [docs/manual-steps.md](./docs/manual-steps.md) for TrueNAS UI tasks such as Apps deployment, snapshot tasks, and cron jobs.
 
-Real-Debrid, Zurg, and rclone are not included in Phase 1. See [PHASE2.md](./PHASE2.md) for the deferred Phase 2 scope and implementation notes.
+Real-Debrid, Zurg, and rclone are installed as a separate Phase 2 after local playback and imports work:
+
+```bash
+sudo bash install.sh --phase realdebrid --realdebrid-token-file /root/realdebrid-token
+```
+
+If you omit `--realdebrid-token-file`, edit `/mnt/apps/appdata/zurg/config.yml` before starting Zurg. See [docs/manual-steps.md](./docs/manual-steps.md) for the remaining TrueNAS UI steps.
 
 ## Project Highlights
 * **Hardware:** Intel iGPU-focused TrueNAS media server.
