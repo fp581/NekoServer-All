@@ -1,4 +1,4 @@
-# TrueNAS SCALE Home Media Server
+# TrueNAS SCALE Home Media Server Alpha
 
 Script-first setup files for a TrueNAS Community Edition home media server.
 
