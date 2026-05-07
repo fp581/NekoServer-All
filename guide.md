@@ -1075,7 +1075,7 @@ deletion:
 
 ## Part 8 — Maintenance Scripts
 
-Four scripts automate predictable, low-risk maintenance tasks. None of
+Five scripts automate predictable, low-risk maintenance tasks. None of
 them delete your media library. All use "set -Eeuo pipefail" which means
 they fail loudly if something goes wrong instead of silently continuing.
 
@@ -1095,6 +1095,13 @@ This is the most important script. The apps SSD has no redundancy. This
 backs it up to the mirrored HDD pool every night. If the SSD dies, you
 restore from here.
 
+> [!IMPORTANT]
+> **Backup from a ZFS snapshot, not from live data.**
+>
+> The naive way to back up a running stack is `tar` against `/mnt/apps/appdata` directly. The problem: while `tar` is reading, Postgres (Immich's database) is still writing. The result is a "torn" backup of the database — files captured mid-transaction, possibly unrestorable.
+>
+> The script below uses the most recent **periodic snapshot** of `apps/appdata` (taken every 4 hours per Part 7). A ZFS snapshot is atomic across the whole dataset, so all Postgres files inside it are guaranteed to be a coherent moment in time. The backup runs against the snapshot's read-only view; live writes to the dataset don't affect what `tar` sees.
+
 ```bash
 nano /mnt/apps/scripts/backup-app-config.sh
 ```
@@ -1104,16 +1111,47 @@ Paste this content:
 ```bash
 #!/usr/bin/env bash
 set -Eeuo pipefail
-SRC="/mnt/apps/appdata"
+
+DATASET="apps/appdata"
 SCRIPT_SRC="/mnt/apps/scripts"
 DEST="/mnt/tank/backups/configs"
 DATE="$(date +%F_%H-%M-%S)"
 LOG="/mnt/apps/scripts/backup-app-config.log"
+
 mkdir -p "$DEST"
 echo "[backup] Starting $DATE" >> "$LOG"
-tar -czf "$DEST/app-config-$DATE.tar.gz" "$SRC" "$SCRIPT_SRC" >> "$LOG" 2>&1
+
+# Find the most recent snapshot of apps/appdata (sorted by creation time).
+LATEST_SNAP=$(zfs list -H -t snapshot -o name -s creation -d 1 "$DATASET" 2>/dev/null | tail -1 || true)
+
+if [ -n "$LATEST_SNAP" ]; then
+    SNAP_NAME="${LATEST_SNAP##*@}"
+    APPDATA_SRC="/mnt/apps/appdata/.zfs/snapshot/$SNAP_NAME"
+    echo "[backup] Using snapshot: $SNAP_NAME" >> "$LOG"
+else
+    APPDATA_SRC="/mnt/apps/appdata"
+    echo "[backup] WARNING: no snapshot found, falling back to live data (Postgres may be inconsistent)." >> "$LOG"
+fi
+
+# Build the tarball. --transform rewrites the snapshot path back to the
+# live path so restoration goes to /mnt/apps/appdata/, not into a .zfs dir.
+ARCHIVE="$DEST/app-config-$DATE.tar.gz"
+tar -czf "$ARCHIVE" \
+    --transform "s|^${APPDATA_SRC#/}|mnt/apps/appdata|" \
+    "$APPDATA_SRC" "$SCRIPT_SRC" >> "$LOG" 2>&1
+
+# Verify the tarball is readable end-to-end. A truncated archive will
+# pass `set -e` checks but fail to extract at restore time.
+if ! tar -tzf "$ARCHIVE" >/dev/null 2>>"$LOG"; then
+    echo "[backup] FAILED: archive is corrupt, removing." >> "$LOG"
+    rm -f "$ARCHIVE"
+    exit 1
+fi
+
+# Rotate: keep 30 days.
 find "$DEST" -name "app-config-*.tar.gz" -type f -mtime +30 -print -delete >> "$LOG" 2>&1
-echo "[backup] Finished $DATE" >> "$LOG"
+
+echo "[backup] Finished $DATE OK ($(du -h "$ARCHIVE" | cut -f1))" >> "$LOG"
 ```
 
 ```bash
@@ -1125,6 +1163,10 @@ chmod +x /mnt/apps/scripts/backup-app-config.sh
 Creates a physical copy of your photos on a USB drive. The USB is
 unmounted when not in use so it cannot be affected by ransomware or NAS
 problems.
+
+> [!NOTE]
+> **The script is best-effort and tolerates the USB being unplugged.**
+> The whole offline-protection design relies on you keeping the USB drive *unplugged* between runs. The script exits cleanly (exit 0) if the drive isn't mounted, so the cron job stays quiet on the days the USB isn't connected. Plug it in once a week (or on whatever cadence works), let the next 06:00 run pick it up, and unplug it again. Failures are logged to `photo-backup-usb.log` for review.
 
 First, plug in your USB drive and find its UUID:
 
@@ -1145,18 +1187,32 @@ Paste this content:
 #!/usr/bin/env bash
 set -Eeuo pipefail
 source /mnt/apps/scripts/config.env
-[ "${ENABLE_USB_BACKUP:-0}" != "1" ] && exit 0
-[ -z "${USB_UUID:-}" ] && exit 0
+
+LOG="/mnt/apps/scripts/photo-backup-usb.log"
+echo "[photo-backup] Starting $(date)" >> "$LOG"
+
+[ "${ENABLE_USB_BACKUP:-0}" != "1" ] && { echo "[photo-backup] Disabled in config.env, exiting." >> "$LOG"; exit 0; }
+[ -z "${USB_UUID:-}" ]              && { echo "[photo-backup] No USB_UUID set, exiting." >> "$LOG"; exit 0; }
+
 MOUNT=/mnt/usb-photo-backup
 mkdir -p "$MOUNT"
-mount UUID="$USB_UUID" "$MOUNT"
-if ! mountpoint -q "$MOUNT"; then
-echo "[photo-backup] USB drive did not mount. Stopping."
-exit 1
+
+if ! mount UUID="$USB_UUID" "$MOUNT" 2>>"$LOG"; then
+    echo "[photo-backup] USB drive not present (UUID $USB_UUID). Exiting cleanly." >> "$LOG"
+    exit 0
 fi
+
+if ! mountpoint -q "$MOUNT"; then
+    echo "[photo-backup] USB drive did not mount. Stopping." >> "$LOG"
+    exit 1
+fi
+
 trap 'umount "$MOUNT" 2>/dev/null || true' EXIT
-rsync -a --ignore-existing --no-perms /mnt/tank/photos/library/ "$MOUNT/photos/"
+
+rsync -a --ignore-existing --no-perms /mnt/tank/photos/library/ "$MOUNT/photos/" >> "$LOG" 2>&1
 sync
+
+echo "[photo-backup] Finished $(date) OK" >> "$LOG"
 ```
 
 ```bash
@@ -1168,6 +1224,14 @@ chmod +x /mnt/apps/scripts/photo-backup-usb.sh
 Removes torrent junk files from completed downloads and cleans up stale
 incomplete downloads. Does NOT touch your media library.
 
+> [!WARNING]
+> **Skip this script if you seed torrents.**
+> Deleting `.nfo` / `.sfv` / `.url` files from a torrent's directory makes qBittorrent's "this torrent is complete with these files" state diverge from reality. On the next re-check, qBittorrent flips the torrent to "missing files" / "incomplete" and stops seeding. For users on private trackers with ratio requirements, that silently destroys ratio.
+>
+> If you seed: don't schedule this in cron. Either rely on Sonarr/Radarr's own "import then leave the torrent untouched" handling, or run cleanup manually after a torrent is removed from qBittorrent.
+>
+> If you don't seed (Real-Debrid only, public-only with no ratio): the script below is safe.
+
 ```bash
 nano /mnt/apps/scripts/cleanup-downloads.sh
 ```
@@ -1175,21 +1239,32 @@ nano /mnt/apps/scripts/cleanup-downloads.sh
 ```bash
 #!/usr/bin/env bash
 set -Eeuo pipefail
+source /mnt/apps/scripts/config.env
+
 COMPLETE="/mnt/tank/data/downloads/complete"
 INCOMPLETE="/mnt/apps/downloads-incomplete"
 LOG="/mnt/apps/scripts/cleanup-downloads.log"
 INCOMPLETE_DAYS="${INCOMPLETE_DAYS:-14}"
+
 echo "[cleanup] Starting $(date)" >> "$LOG"
-# Delete torrent junk (NFO, SFV, screenshots, sample clips)
-# -not -path '*/.*' skips hidden folders including .zfs snapshot directories
+
+# Delete torrent junk: NFO (release info), SFV (CRC checksums), URL (link
+# shortcuts). These three are reliably junk. Older versions of this script
+# also matched *.txt, *sample*, *featurette* — those have been removed
+# because each can hit legitimate content (liner-notes .txt files, movies
+# with "sample" in the title, actual featurette extras worth keeping).
+# -not -path '*/.*' skips hidden folders including .zfs snapshot directories.
 find "$COMPLETE" -not -path '*/.*' -type f \( \
--iname "*.nfo" -o -iname "*.sfv" -o -iname "*.url" -o \
--iname "*.txt" -o -iname "*sample*" -o -iname "*featurette*" \
+    -iname "*.nfo" -o -iname "*.sfv" -o -iname "*.url" \
 \) -print -delete >> "$LOG" 2>&1
-# Delete stale incomplete downloads
+
+# Delete stale incomplete downloads (configurable via INCOMPLETE_DAYS in
+# config.env; default 14).
 find "$INCOMPLETE" -not -path '*/.*' -type f -mtime +"$INCOMPLETE_DAYS" -print -delete >> "$LOG" 2>&1
-# Remove empty folders
+
+# Remove empty folders left behind.
 find "$COMPLETE" "$INCOMPLETE" -not -path '*/.*' -type d -empty -print -delete >> "$LOG" 2>&1
+
 echo "[cleanup] Finished $(date)" >> "$LOG"
 ```
 
@@ -1239,7 +1314,7 @@ nano /mnt/apps/scripts/health-check.sh
 set -Eeuo pipefail
 LOG="/mnt/apps/scripts/health-check.log"
 WEBHOOK_URL="${WEBHOOK_URL:-}"
-APPS="jellyfin navidrome immich-server immich-db immich-redis immich-machine-learning qbittorrent prowlarr sonarr radarr lidarr bazarr seerr clamav tailscale"
+APPS="jellyfin navidrome immich-server immich-db immich-redis immich-machine-learning qbittorrent prowlarr sonarr radarr lidarr bazarr seerr tailscale"
 echo "[health] Check $(date)" >> "$LOG"
 for app in $APPS; do
 if docker ps --format '{{.Names}}' | grep -qx "$app"; then
@@ -1257,6 +1332,10 @@ done
 ```bash
 chmod +x /mnt/apps/scripts/health-check.sh
 ```
+
+> [!NOTE]
+> **Webhook payload format is Discord/Slack-shaped.**
+> The `{"text": "..."}` JSON body works for Discord, Slack, and most generic webhook receivers. **It does not work cleanly for ntfy** — the recommended free option in Part 12. ntfy expects a plain-text body and would deliver `{"text": "NAS: jellyfin is down"}` as the literal notification message instead of just "NAS: jellyfin is down". If you use ntfy, either replace the curl line with a plain-text variant (`curl -sf -d "NAS: $app is down" "$WEBHOOK_URL"`) or expect the JSON envelope to show up in your phone notifications. Telegram needs a different shape entirely (the `{"text": ...}` field maps to nothing). Discord, Slack, and Pushover are the receivers that work as-written.
 
 ### Schedule All Scripts
 
