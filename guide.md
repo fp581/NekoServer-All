@@ -165,26 +165,34 @@ of it as a giant media warehouse in the cloud:
 > [!WARNING]
 > Always use a wired Ethernet cable. Wi-Fi causes mysterious transfer failures and timeouts that are very hard to diagnose.
 
-## Part 2 — Install TrueNAS SCALE
+## Part 2 — Install TrueNAS Community Edition
 
-This part installs the operating system onto SSD 1. You need a keyboard,
-monitor, and a USB drive connected to the NAS for this part only.
+This part installs the operating system onto the boot SSD. You need a
+keyboard, monitor, and a USB drive connected to the NAS for this part
+only.
+
+> [!NOTE]
+> **Naming change:** TrueNAS SCALE was renamed to **TrueNAS Community Edition** (CE) with the 25.04 Fangtooth release. The free, self-hosted product you want is TrueNAS Community Edition. The Enterprise edition is the paid tier. Older guides and forum posts still calling it "SCALE" are referring to the same product.
 
 ### Step 2.1 — Create the USB Installer
 
-1. Download balenaEtcher for free from balena.io/etcher on your regular
-   computer.
+1. Download a USB writer on your regular computer:
+   - **Windows:** [Rufus](https://rufus.ie) — small, signed, no telemetry, supports the TrueNAS ISO out of the box.
+   - **Mac / Linux:** the built-in `dd` command works (`sudo dd if=truenas.iso of=/dev/diskN bs=4M status=progress` — confirm the device path with `lsblk` on Linux or `diskutil list` on Mac first).
 
-2. Download the latest TrueNAS SCALE ISO from truenas.com/truenas-scale
-   (about 1.5 GB). Make sure you are on TrueNAS SCALE 24.10 or newer
-   for best Intel Arc iGPU support.
+2. Download the latest **TrueNAS Community Edition** ISO from
+   [truenas.com/download-truenas-community-edition](https://www.truenas.com/download-truenas-community-edition/)
+   (about 1.5 GB). The current release at time of writing is **25.10.3**
+   — install this version or newer.
 
-3. Open balenaEtcher. Click "Flash from file" and select the ISO file.
-   Click "Select target" and choose your USB drive. Click Flash. Wait
-   about 5 minutes, then safely eject.
+3. In Rufus: under **Device**, select your USB drive. Click **SELECT**
+   and choose the TrueNAS ISO. Leave the other options at their
+   defaults (Partition scheme: GPT, Target system: UEFI). Click
+   **START**. If prompted about ISO mode, accept the default
+   "Write in ISO Image mode". Wait about 5 minutes, then safely eject.
 
 > [!WARNING]
-> Do not select your SSD or HDD as the flash target. That would erase your drive.
+> Do not select your SSD or HDD as the flash target. That would erase your drive. The USB drive is usually the small one (8–32 GB) — double-check the size and label before clicking START.
 
 ### Step 2.2 — BIOS Setup
 
@@ -202,71 +210,95 @@ just power off and try again.
    \#1" and change it to your USB drive. The drive appears by its brand
    name.
 
-7. Find the Advanced tab. Find CPU Configuration. Find "Intel
+7. **Disable Secure Boot.** Most B760 / B860 motherboards ship with
+   Secure Boot **enabled** by default — TrueNAS will refuse to boot
+   with a "Secure Boot violation" error mid-install. Find Secure Boot
+   under the Boot tab or a Security tab and set it to **Disabled**
+   (some boards label this "Other OS" mode). If you cannot find the
+   option, look for a "Setup Mode" toggle or clear the Secure Boot
+   keys — both achieve the same result.
+
+8. Find the Advanced tab. Find CPU Configuration. Find "Intel
    Virtualization Technology" and set it to Enabled.
 
-8. In the same area, find "IOMMU" or "Intel VT-d" and set it to
+9. In the same area, find "IOMMU" or "Intel VT-d" and set it to
    Enabled. This lets Docker containers use the Intel graphics chip for
    video transcoding.
 
-9. For best idle power consumption: look for ASPM (PCIe Active State
-   Power Management) and enable it. Look for CPU C-states or Package
-   C-state and set to Auto or Enabled. These settings let the CPU and
-   PCIe devices sleep properly when idle.
+10. For best idle power consumption: look for ASPM (PCIe Active State
+    Power Management) and enable it. Look for CPU C-states or Package
+    C-state and set to Auto or Enabled. These settings let the CPU and
+    PCIe devices sleep properly when idle.
 
-10. Critical for headless use: your NAS will sit in a cupboard with no
+11. Critical for headless use: your NAS will sit in a cupboard with no
     monitor. By default, some motherboards disable the iGPU when no
     screen is connected. Find the setting labelled "Primary Display",
     "Primary Graphics", or "iGPU Multi-Monitor" — it may be in the
     Advanced tab or a Chipset/Graphics sub-menu. Set it to IGFX, iGPU,
-    or Internal Graphics. This forces the Intel Arc iGPU to stay active
+    or Internal Graphics. This forces the Intel iGPU to stay active
     even with no monitor plugged in. Without this, /dev/dri will be
     empty and Jellyfin hardware transcoding will silently fail.
 
-11. Press F10 to save and exit. The NAS restarts from the USB.
+12. Press F10 to save and exit. The NAS restarts from the USB.
 
 ### Step 2.3 — Install TrueNAS
 
 The installer is a blue text menu. Use arrow keys to move and Enter to
 select.
 
-12. Select "Install/Upgrade" from the menu.
+13. Select "Install/Upgrade" from the menu.
 
-13. The next screen asks which disk to install on. You will see a list.
-    Your SSD 1 will be the smallest drive — around 1 TB, NOT the 8 TB
-    IronWolf drives. Select it. If you see two similarly-sized SSDs,
-    double-check the serial numbers against the stickers on the drives.
+14. The next screen asks which disk to install on. You will see a list.
+    Your boot SSD will be the smallest drive — typically 250–500 GB,
+    NOT the 8 TB IronWolf drives. Select it. If you see two
+    similarly-sized SSDs, double-check the serial numbers against the
+    stickers on the drives.
 
-14. TrueNAS warns that the disk will be erased. Confirm. This only
-    erases SSD 1.
+15. TrueNAS warns that the disk will be erased. Confirm. This only
+    erases the boot SSD.
 
-15. It asks you to create an admin account with a username and password.
-    Write this down.
+16. It asks you to create an admin account with a username and password.
+    Write this down. **Note:** TrueNAS pre-fills the username as
+    `truenas_admin`. You can accept that default or override it with a
+    name of your choosing — the password is yours to set either way.
 
-16. Installation takes about 10 minutes. When it finishes, select
+17. Installation takes about 10 minutes. When it finishes, select
     Reboot. While rebooting, remove the USB drive so TrueNAS boots from
-    SSD 1.
+    the SSD.
 
 ### Step 2.4 — First Login
 
 On your regular PC (not the NAS), open a web browser.
 
-17. In the address bar, type http://truenas.local and press Enter. If
-    that does not work, the NAS shows its IP address on the monitor
-    during boot — type http:// followed by that address, for example
-    http://192.168.1.50.
+18. In the address bar, type `http://truenas.local` and press Enter.
+    If that does not work, use the IP address shown on the NAS monitor
+    during boot — for example `http://192.168.1.50`. (The `.local`
+    name relies on mDNS, which is blocked or unrouted on some
+    networks — corporate Wi-Fi, some prosumer routers with mDNS
+    forwarding off. The IP fallback always works.)
 
-18. A login page appears. Enter the username and password you created
+19. A login page appears. Enter the username and password you created
     during installation.
 
-19. A short setup wizard appears. It asks about storage and networking.
+20. A short setup wizard appears. It asks about storage and networking.
     Click Next or Skip through everything — do not configure storage
     here. You will do that in Parts 3 and 4.
 
-20. You land on the TrueNAS Dashboard. The NAS is running.
+21. You land on the TrueNAS Dashboard. The NAS is running.
+
+> [!IMPORTANT]
+> **Reserve the NAS's IP address on your router.**
+> The NAS got its current IP from your router's DHCP server. After a router reboot or a DHCP lease expiry, the IP can change — and every bookmark, every Jellyfin app on a TV, every script that hard-codes the IP will break.
+>
+> Two ways to lock it in:
+>
+> - **DHCP reservation** (recommended): in your router's admin page, find DHCP / LAN settings, find the NAS by its MAC address, and reserve its current IP. Easy to undo, leaves the IP visible from the router.
+> - **Static IP on the NAS**: in TrueNAS, Network → Interfaces → edit the interface, set a static address outside your DHCP pool, set the gateway and DNS. More fiddly; if you get it wrong you have to plug a monitor back in to fix.
+>
+> You only need this for local access. Tailscale (Part 5) handles remote access independently.
 
 > [!TIP]
-> TrueNAS SCALE is completely free. No license, no trial, no expiry.
+> TrueNAS Community Edition is completely free. No license, no trial, no expiry.
 
 ## Part 3 — Create Storage Pools
 
