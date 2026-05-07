@@ -139,20 +139,22 @@ of it as a giant media warehouse in the cloud:
 
 | **Component** | **Role in this build** |
 |:---|:---|
-| Intel Core Ultra 5 225 | CPU + built-in Arc iGPU (hardware video transcoding) + NPU |
-| 32 GB DDR5 RAM | TrueNAS, ZFS ARC cache, and all running containers |
-| MAXSUN iCraft B860M CROSS PRO | Motherboard |
-| SSD 1 (e.g. Corsair T500 1 TB) | TrueNAS OS boot drive — nothing else ever stored here |
-| SSD 2 (e.g. Corsair T500 1 TB) | Apps pool — databases, transcode, incomplete downloads |
-| 2x Seagate IronWolf 8 TB | tank mirror — media, photos, completed downloads, backups |
-| Lian Li SP750 V2 Gold 750 W | Power supply |
+| Intel Core i5-13500 (LGA1700) | CPU with UHD 770 iGPU for hardware video transcoding (Quick Sync). 14 cores (6P+8E), 65 W TDP. The i5-12500 is a fine cheaper alternative on the same socket. |
+| Intel stock cooler **or** tower cooler (be quiet! Pure Rock 2, Arctic Freezer 36) | Stock is adequate at idle and light transcoding loads. A tower cooler is quieter and keeps temps in check during sustained transcodes or in warm cupboards. |
+| 32 GB DDR4-3200 (or DDR5 if your board supports it) | TrueNAS, ZFS ARC cache, and all running containers. ECC RAM is nice but not required for a home NAS. |
+| ASUS PRIME B760M-A WIFI (or any LGA1700 micro-ATX board with 2x M.2, iGPU output, and gigabit Ethernet) | Motherboard. B760 micro-ATX boards from ASUS / MSI / Gigabyte / ASRock are all reasonable. |
+| Boot SSD: any 250–500 GB M.2 NVMe (e.g. WD Blue SN570 500 GB) | TrueNAS OS only — uses about 50 GB. Anything larger is just spare. |
+| Apps SSD: 1 TB M.2 NVMe (e.g. Corsair T500, WD Black SN770) | Apps pool — app databases, transcode temp, incomplete downloads. 1 TB gives headroom for Immich's database, transcode buffers, and active downloads. |
+| 2x Seagate IronWolf 8 TB | tank mirror — media, photos, completed downloads, backups. Size to your media library; 8–12 TB per drive is the typical sweet spot for cost-per-TB. |
+| be quiet! Pure Power 12 M 550 W (80+ Gold, modular) | Power supply. This build idles around 30–40 W and peaks under 150 W — 550 W is plenty. Anything above 650 W is wasted money and runs less efficiently at low load. |
+| Case with at least one intake fan with airflow over the HDD cage | Two 24/7 HDDs in a closed cupboard need active airflow. Fractal Design Pop Mini Air or Cooler Master NR200 are both good micro-ATX options. |
 | Wired Ethernet cable | Required — never use Wi-Fi for a NAS |
 
 ### Cable Connections
 
-- SSD 1 → M.2 slot M2_1 on the motherboard (OS drive)
+- Boot SSD → M.2 slot 1 on the motherboard (M.2 slot numbering is board-specific — check your manual)
 
-- SSD 2 → M.2 slot M2_2 on the motherboard (apps drive)
+- Apps SSD → M.2 slot 2
 
 - IronWolf Drive 1 → SATA port 1
 
@@ -164,6 +166,21 @@ of it as a giant media warehouse in the cloud:
 
 > [!WARNING]
 > Always use a wired Ethernet cable. Wi-Fi causes mysterious transfer failures and timeouts that are very hard to diagnose.
+
+> [!NOTE]
+> **You don't have to copy this build exactly.**
+> The parts above are a tested, attainable starting point. What actually matters:
+>
+> - **Intel CPU with iGPU** (Quick Sync) for hardware video transcoding. AMD works too if you handle GPU passthrough yourself.
+> - **Two SSDs** — one boot (small, anything ≥ 250 GB), one apps (1 TB recommended for headroom).
+> - **Two HDDs of equal capacity** for the tank mirror. Match capacity exactly; different sizes will waste space.
+> - **Active airflow over the HDD cage** if the NAS lives in a cabinet or cupboard. HDDs over 40 °C have meaningfully shorter lifespan.
+>
+> The catch: BIOS instructions in Part 2 reference a specific motherboard's option layout. If you use a different board, the option names (Intel VT, IOMMU, ASPM, Primary Display) are usually similar but may live in different menus.
+
+> [!NOTE]
+> **Author's original build — for reference**
+> The first version of this guide was built around an Intel Core Ultra 5 225 (Arrow Lake) on a MAXSUN iCraft B860M CROSS PRO (LGA1851) motherboard. That build still works; the catch is that the i915 graphics driver in TrueNAS 24.10's kernel does not yet recognise the Arrow Lake iGPU device ID, so it requires a kernel parameter workaround (the `ix_diagnostics_force_probe` step in Part 4). The LGA1700 build above does not need any of that.
 
 ## Part 2 — Install TrueNAS SCALE
 
