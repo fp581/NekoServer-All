@@ -155,6 +155,15 @@ class NextcloudImageTests(unittest.TestCase):
                 nextcloud.image_for_release(bad)
 
 
+class ModuleDependencyTests(unittest.TestCase):
+    def test_monthly_updates_do_not_need_the_usb_drive(self):
+        import installer
+        from modules import maintenance
+        self.assertNotIn('photo_backup', maintenance.DEPENDENCIES)
+        modules = installer.load_modules(ROOT / 'modules')
+        self.assertNotIn('photo_backup', installer.ordered(modules, ['maintenance']))
+
+
 class UpgradeMigrationTests(unittest.TestCase):
     """Servers installed with v0.21.0 must upgrade in place instead of refusing."""
 

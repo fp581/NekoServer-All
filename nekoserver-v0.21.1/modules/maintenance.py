@@ -8,7 +8,9 @@ import sys
 import native_runtime
 from neko_common import VERSION, atomic_json, atomic_write, safe_path, verify_storage, host_timezone
 
-DEPENDENCIES = ['docker', 'recovery', 'photos', 'photo_backup', 'nextcloud']
+# No photo_backup: since v0.21.1 the monthly snapshot stays on the HDD, so a missing
+# or unconfigured USB drive must not block monthly updates.
+DEPENDENCIES = ['docker', 'recovery', 'photos', 'nextcloud']
 DESCRIPTION = 'Monthly overnight app-state snapshot on the HDD, isolated restore tests and container updates'
 
 
