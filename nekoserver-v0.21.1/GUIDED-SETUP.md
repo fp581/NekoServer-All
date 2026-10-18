@@ -34,7 +34,7 @@ sudo bash "$NEKO_RELEASE/install.sh" --profile remote_access --apply \
 
 This single interactive remote run now guides server sign-in, DNS/HTTPS, route creation, phone setup and mobile-data tests. Normally there is no separate manual `tailscale up` command or second profile run. If a local CLI cannot provide an authorization URL, the console explains the manual `sudo tailscale up` fallback. Reapply to resume anything left pending.
 
-After a full-profile rerun, reapply remote_access if Tailscale should remain Nextcloud's primary address; the last gateway applied determines that origin.
+Nextcloud works on both the home and the Tailscale address at the same time; rerunning either profile does not change that.
 
 ## Email accounts
 
