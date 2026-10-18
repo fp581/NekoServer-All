@@ -1,34 +1,33 @@
-# TrueNAS SCALE Home Media Server Alpha
+# NekoServer - Arch based media server
 
-Script-first setup files for a TrueNAS Community Edition home media server.
+Overhall to fully automated server creation on Arch based systems.
 
-The original full walkthrough is still available in [guide.md](./guide.md). The runnable Phase 1 install flow is now:
+Tested only in virtual emulation with docker and not on live. need further testing.
 
-```bash
-sudo bash install.sh
-```
+The script needs Arch based system to run.
 
-Phase 1 assumes TrueNAS is installed and the required pools/datasets already exist. It creates folders, permissions, `/mnt/apps/scripts/config.env`, `/mnt/apps/scripts/docker-compose.yml`, and the maintenance scripts.
+The automation builds from the ground up the following server stack:
 
-Optional services are explicit:
+Immich (personal photos and video bakup and storage) : SSD for the software and data, weekly backup to the HDD and external drive (if connected). The stack also includes Sonarr, Radarr, Lidarr, Prowlarr, Seerr, and qBittorrent, plus the dashboard and access/monitoring components.
+Jellyfin (Movies and shows): SSD for the software HDD for the data
+Navidrome (Music app): SSD for the music as it will be accesed daily
+Nextcloud: other files and data storage, HDD only with external drive backup monthly
+Automated monthly backup and update, if the update fails the server will restore the old ver of the apps.
+Status Dashboard for monitoring the server (need to check if works on a live server)
+What makes sense to be in rust is in rust code, the rest shell and python for the instalation as it's one time thing. 
 
-```bash
-sudo bash install.sh --with flaresolverr
-sudo bash install.sh --with profilarr
-sudo bash install.sh --with clamav
-```
-
-After installation, follow [docs/manual-steps.md](./docs/manual-steps.md) for TrueNAS UI tasks such as Apps deployment, snapshot tasks, and cron jobs.
-
-Real-Debrid, Zurg, and rclone are installed as a separate Phase 2 after local playback and imports work:
-
-```bash
-sudo bash install.sh --phase realdebrid --realdebrid-token-file /root/realdebrid-token
-```
-
-If you omit `--realdebrid-token-file`, edit `/mnt/apps/appdata/zurg/config.yml` before starting Zurg. See [docs/manual-steps.md](./docs/manual-steps.md) for the remaining TrueNAS UI steps.
-
-## Project Highlights
-* **Hardware:** Intel iGPU-focused TrueNAS media server.
-* **Stack:** Jellyfin, Immich, Navidrome, qBittorrent, and the "Arr" Suite.
-* **Network:** Secure remote access via Tailscale (No port forwarding).
+Stack & Storage Architecture Review
+  +-------------------------------------------------------------------------+
+  |                             SSD STORAGE                                 |
+  |  - Containers / App Data / PostgreSQL Databases                        |
+  |  - Immich App & Library Cache                                           |
+  |  - Navidrome Music Collection (Daily Access)                             |
+  +-------------------------------------------------------------------------+
+                                      |
+         +----------------------------+----------------------------+
+         v                                                         v
+  +-----------------------+                                 +-----------------------+
+  |      HDD STORAGE      |                                 |    EXTERNAL BACKUP    |
+  | - Jellyfin Media      | ===== Cron/Timer Backup =======>| - Immich Offsite      |
+  | - Nextcloud Data      |                                 | - Nextcloud Offsite   |
+  +-----------------------+                                 +-----------------------+
