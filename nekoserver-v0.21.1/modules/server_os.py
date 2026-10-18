@@ -97,8 +97,6 @@ def run(context):
             subprocess.run(['systemctl','disable','--now','nekoserver-hdd-policy.service'],check=True,capture_output=True,timeout=30)
         context.log('No HDD command issued; earlier managed boot policy disabled. Restore previously changed hardware settings explicitly if needed.')
         return
-    if native_runtime.backend(context.config) != 'rust':
-        return {'status': 'needs_setup', 'reason': 'No-sleep/log limits installed; automatic HDD policy requires Rust'}
     verify_storage(context.config)
     if not shutil.which('hdparm') and shutil.which('pacman'):
         subprocess.run(['pacman','-Si','hdparm'],check=True,capture_output=True,timeout=30)

@@ -59,8 +59,8 @@ def run(context):
     if not context.apply:
         context.log('Independent heartbeat available with --apply; configure a monitor outside this PC')
         return
-    if os.geteuid() != 0 or native_runtime.backend(context.config) != 'rust':
-        raise RuntimeError('Heartbeat requires root and runtime.backend=rust')
+    if os.geteuid() != 0:
+        raise RuntimeError('Heartbeat requires root')
     private = safe_path(PRIVATE)
     if private.exists() and (private.stat().st_uid != 0 or private.stat().st_mode & 0o077):
         raise RuntimeError('Existing heartbeat configuration must be root-owned and private')

@@ -1,11 +1,11 @@
 # NekoServer v0.21.1
 
-## v0.21 guided setup
+## Guided setup
 
 Interactive desktop/browser/phone steps now open with clear instructions and yes/no confirmation. No reopens and repeats; yes runs available checks. See GUIDED-SETUP.md. Remote access remains the separate remote_access profile after the base full installation.
 
 
-An Arch/Nyarch home-server installer for an existing x86_64 systemd PC. It does not install the OS or format drives. Use the illustrated installation guide supplied with this release; this README and STORAGE.md describe current defaults. Earlier AUDIT-v*.md files are historical.
+An Arch/Nyarch home-server installer for an existing x86_64 systemd PC. It does not install the OS or format drives. Use the illustrated installation guide supplied with this release; this README and STORAGE.md describe current defaults.
 
 ## Start
 
@@ -64,8 +64,8 @@ qBittorrent accepts no incoming peer connections by default; downloads still wor
 
 PC sleep is blocked; a verified SATA HDD policy requests standby after 60 minutes idle. Ordinary apps, seeding, scans and backups can still wake it. Linux filesystem cache is normal and reclaimable; bounded journals and actual service memory should be observed on hardware, rather than scheduling cache-clearing commands.
 
-Weekly photo jobs: Sunday 02:15 and 03:00 Asia/Jerusalem. Monthly maintenance: first day 02:30 Asia/Jerusalem. Nightly app/host-state backups remain. Routine media API audit and raw music backup are disabled. See STORAGE.md and MONTHLY-MAINTENANCE.md for exact scope. The USB drive holds only add-only copies of Immich photos/videos and Nextcloud files; the HDD holds app settings, databases, container images, OS settings and the same photo copy. Nothing on an add-only copy is overwritten or deleted; changed files are kept as dated versions. The newest 3 complete monthly snapshots and 14 nightly snapshots are kept (`keep_snapshots` settings; `0` keeps everything), and the app password list is stored encrypted in backups, opened with your sudo password. Recovery must restore matching data and old images, not just change a tag. Major app migrations and OS updates remain separate.
+Weekly photo jobs: Sunday 02:15 (HDD) and 03:00 (USB). Monthly maintenance: first day 02:30. All times are in your configured `timezone`. Nightly app/host-state backups remain. Routine media API audit and raw music backup are disabled. See STORAGE.md and MONTHLY-MAINTENANCE.md for exact scope. The USB drive holds only add-only copies of Immich photos/videos and Nextcloud files; the HDD holds app settings, databases, container images, OS settings and the same photo copy. Nothing on an add-only copy is overwritten or deleted; changed files are kept as dated versions. The newest 3 complete monthly snapshots and 14 nightly snapshots are kept (`keep_snapshots` settings; `0` keeps everything), and the app password list is stored encrypted in backups, opened with your sudo password. Recovery must restore matching data and old images, not just change a tag. Major app migrations and OS updates remain separate.
 
 ## Evidence and limits
 
-AUDIT.md and audit-evidence contain current results and identify historical files. Filesystem/HTTP/native/Compose checks are executable tests; package manager, mounts, Docker services and hardware in integration fixtures are simulated. This is ready for controlled deployment testing, not a claim that a real server has passed acceptance. No full live VM or intended hardware installation is established by this release. Bazzite migration is separate; VM/KVM is not required.
+The automated tests run in GitHub Actions on every pull request: Python unit tests (`tests/`), Rust tests, `docker compose config` for every service, and a check that the bundled runtime matches its sources. Package manager, mounts, Docker services and hardware are simulated in those tests. This is ready for controlled deployment testing, not a claim that a real server has passed acceptance. No full live VM or intended hardware installation is established by this release. Bazzite migration is separate; VM/KVM is not required.

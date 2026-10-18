@@ -8,8 +8,7 @@ import native_runtime
 from neko_common import VERSION, atomic_json, atomic_write, safe_path
 
 DEPENDENCIES = ['storage', 'recovery']
-DESCRIPTION = 'Install scheduled media connection checks using the selected runtime'
-SUPPORT = ('account_store.py', 'neko_common.py', 'media_readiness.py', 'media_libraries.py', 'seerr_providers.py')
+DESCRIPTION = 'Install scheduled media connection checks (Rust runtime)'
 
 
 def run(context):
@@ -40,22 +39,17 @@ def run(context):
     project = Path(__file__).resolve().parents[1]
     # Validate native integrity before writing any live monitoring files.
     native_runtime.payload(project, context.config)
-    target = safe_path(data / 'scripts' / 'media-health.py')
-    config = target.parent / 'config.json'
+    config = safe_path(data / 'scripts' / 'config.json')
     report = data / 'reports' / 'media' / 'latest.json'
     runtime = data / 'installer' / 'runtime' / ('v' + VERSION)
     binary = native_runtime.deploy(project, context.config, runtime)
-    if binary:
-        command = f'{binary} media-health --config {config} --output {report}'
-    else:
-        command = f'/usr/bin/python3 {target} --config {config} --json-out {report}'
+    command = f'{binary} media-health --config {config} --output {report}'
     service = (
         '[Unit]\nDescription=NekoServer read-only media health audit\n'
         f'RequiresMountsFor={data} {context.config["media_mount"]}\n'
         'After=docker.service\n[Service]\nType=oneshot\n'
-        # Python uses 1 for incomplete configuration; Rust uses 3. A native
-        # runtime failure uses 1 and must remain a failed unit.
-        f'SuccessExitStatus={"3" if binary else "1"}\n'
+        # Exit 3 means remaining setup; a runtime failure (1) stays a failed unit.
+        'SuccessExitStatus=3\n'
         f'TimeoutStartSec=300\nExecStart={command}\n'
     )
     timer = (
@@ -72,10 +66,6 @@ def run(context):
         path = safe_path(Path('/etc/systemd/system') / name)
         if path.exists() and 'Description=NekoServer ' not in path.read_text():
             raise RuntimeError('Unmanaged existing media monitor unit')
-    # Python remains an explicit fallback; the Rust backend never launches it.
-    atomic_write(target, (project / 'media-health.py').read_bytes(), 0o750)
-    for name in SUPPORT:
-        atomic_write(target.parent / name, (project / name).read_bytes(), 0o750)
     atomic_json(config, context.config)
     for name, contents in definitions.items():
         atomic_write(Path('/etc/systemd/system') / name, contents, 0o644)

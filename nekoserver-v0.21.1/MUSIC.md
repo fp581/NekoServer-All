@@ -1,7 +1,3 @@
-# v0.18.0 schedule policy
-
-Routine NekoServer media checkups are disabled, music audio has no automatic backup, and managed photo originals/database/external backups run weekly on Sunday night. Monthly update/recovery checks and app-state backups remain. [STORAGE.md](STORAGE.md) defines the current policy and supersedes older schedule/coverage descriptions below.
-
 # Your personal music service
 
 The server player is **Navidrome**, already included with the media containers. This release finishes guided listener setup and authenticated monitoring. Lidarr is the music acquisition/import manager; it is not the player. Prowlarr and qBittorrent remain connected to Lidarr through the existing guided source/indexer/category setup.

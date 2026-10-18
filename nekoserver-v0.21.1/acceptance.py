@@ -9,7 +9,7 @@ import guided_setup
 import permission_checks
 import os_checks
 from modules import docker as docker_module,tv
-from neko_common import VERSION,safe_path,mount_path,atomic_json
+from neko_common import VERSION,safe_path,atomic_json
 from acceptance_summary import scope_digest
 from media_libraries import NoRedirect
 import urllib.request
@@ -77,14 +77,9 @@ def guard_check(config):
         text=safe_path('/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf').read_text()
         command=next(line.split('=',1)[1] for line in text.splitlines() if line.startswith('ExecStartPre='));args=shlex.split(command)
         if len(args)!=4 or args[2]!='--config':return False
-        if native_runtime.backend(config)=='rust':
-            if args[1]!='storage-guard':return False
-            script=safe_path(args[0]);runtime=script.parent
-            if script.name!=native_runtime.NAME or script.read_bytes()!=native_runtime.payload(ROOT,config):return False
-        else:
-            if args[0]!='/usr/bin/python3':return False
-            script=safe_path(args[1]);runtime=script.parent
-            if script.name!='storage-guard.py' or script.read_bytes()!=(ROOT/'storage-guard.py').read_bytes():return False
+        if args[1]!='storage-guard':return False
+        script=safe_path(args[0]);runtime=script.parent
+        if script.name!=native_runtime.NAME or script.read_bytes()!=native_runtime.payload(ROOT,config):return False
         root=Path(config['data_mount'])/'installer/guards'
         if runtime.parent!=root or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',runtime.name) or args[3]!=str(runtime/'storage.json'):return False
         if load_json(runtime/'storage.json')!={k:config[k] for k in ('data_mount','media_mount','storage')}:return False
@@ -283,11 +278,10 @@ def inspect(config,profile='full',now=None):
                     if rel.is_absolute() or '..' in rel.parts or not isinstance(digest,str) or not re.fullmatch(r'[a-f0-9]{64}',digest) or hashlib.sha256(safe_path(home/rel).read_bytes()).hexdigest()!=digest:good=False;break
             add('tv:launchers','TV desktop launchers','pass' if good else 'needs_setup','Current desktop launcher files must match their installation report; controller/display/session tests remain manual.')
         except (OSError,RuntimeError,ValueError,KeyError,TypeError):add('tv:launchers','TV desktop launchers','needs_setup','TV user or managed launcher evidence unavailable; reapply TV setup.')
-    if native_runtime.backend(config)=='rust':
-        if drives:
-            try:checks.extend(native_runtime.acceptance_checks(config,modules))
-            except (OSError,ValueError,TypeError,KeyError,RuntimeError):add('runtime','Native runtime','needs_setup','Verify native build integrity and reapply the affected modules.')
-        else:add('runtime','Native runtime','blocked','Drive verification is required before inspecting installed native workers.')
+    if drives:
+        try:checks.extend(native_runtime.acceptance_checks(config,modules))
+        except (OSError,ValueError,TypeError,KeyError,RuntimeError):add('runtime','Native runtime','needs_setup','Verify native build integrity and reapply the affected modules.')
+    else:add('runtime','Native runtime','blocked','Drive verification is required before inspecting installed native workers.')
     run['manual']=manual_tests(modules,config);return summarize(run)
 
 def summarize(report):

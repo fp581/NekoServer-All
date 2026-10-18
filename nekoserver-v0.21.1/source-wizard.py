@@ -6,7 +6,6 @@ Does not mount remote shares, add trackers, or handle secrets.
 """
 import argparse
 import json
-import os
 import urllib.parse
 from pathlib import Path
 from neko_common import safe_path, atomic_json

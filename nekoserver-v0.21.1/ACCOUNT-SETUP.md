@@ -1,6 +1,6 @@
 # Console account setup - v0.21.1
 
-## v0.21 guided setup
+## Guided setup
 
 If a supported API cannot finish an account, guided setup now opens its UI, repeats instructions on no, and retries authenticated checks on yes. Normal local email-shaped logins do not imply external email verification. See GUIDED-SETUP.md.
 

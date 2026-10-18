@@ -1,16 +1,8 @@
-# v0.18.0 schedule policy
-
-Routine NekoServer media checkups are disabled, music audio has no automatic backup, and managed photo originals/database/external backups run weekly on Sunday night. Monthly update/recovery checks and app-state backups remain. [STORAGE.md](STORAGE.md) defines the current policy and supersedes older schedule/coverage descriptions below.
-
-# v0.17.0 storage update
-
-The current layout is defined in [STORAGE.md](STORAGE.md): music and Immich live data on SSD, independent HDD backups, movies/shows only on HDD, and a verified 60-minute HDD idle timer. This supersedes older layout statements below. Existing deployments with old host paths are preserved and require a verified migration.
-
 # Monthly overnight backup, restore test and update
 
 ## What is scheduled
 
-The full profile installs a Rust worker and a systemd timer for the **first of each month at 02:30 Asia/Jerusalem**. This timezone is explicit, including daylight saving changes. Persistent catch-up is disabled: a missed night will not trigger updates at lunchtime. The worker checks its night window before starting and again before activating updates. Recovery of an interrupted job can run outside that window to bring services back.
+The full profile installs a Rust worker and a systemd timer for the **first of each month at 02:30** in your configured `timezone` (default Asia/Jerusalem). The timezone is explicit, including daylight saving changes. Persistent catch-up is disabled: a missed night will not trigger updates at lunchtime. The worker checks its night window before starting and again before activating updates. Recovery of an interrupted job can run outside that window to bring services back.
 
 This is an installed server timer, not a ChatGPT reminder. It operates without the dashboard or a chat session. Apply the full profile to the actual PC to enable it. No production schedule has been activated in the development workspace.
 

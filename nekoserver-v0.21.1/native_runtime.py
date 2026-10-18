@@ -5,15 +5,22 @@ from neko_common import VERSION,safe_path,atomic_write,atomic_json
 TARGET='x86_64-unknown-linux-musl'
 NAME='nekoserver-runtime'
 def backend(config):
+    """Scheduled jobs always use the bundled Rust runtime since v0.21.1.
+
+    The Python fallback was removed. Older configs that say runtime.backend=python,
+    or have no runtime setting, are treated as Rust; rerunning the installer
+    rewrites their units. install.sh already requires x86_64, which the bundled
+    runtime supports.
+    """
     options=config.get('runtime',{})
     if not isinstance(options,dict):raise RuntimeError('runtime must be an object')
-    value=options.get('backend','python')
-    if value not in ('rust','python'):raise RuntimeError('runtime.backend must be rust or python')
-    return value
+    value=options.get('backend','rust')
+    if value not in ('rust','python'):raise RuntimeError('runtime.backend must be rust')
+    return 'rust'
 
 def payload(project,config):
-    if backend(config)!='rust':return None
-    if platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('Bundled Rust runtime requires x86_64 Linux; select Python on unsupported hosts')
+    backend(config)
+    if platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('The bundled Rust runtime requires x86_64 Linux')
     root=safe_path(Path(project)/'runtime');manifest=json.loads(safe_path(root/'build.json').read_text())
     if manifest.get('version')!=VERSION or manifest.get('target')!=TARGET:raise RuntimeError('Native build identity does not match this release')
     binary=safe_path(root/'bin'/NAME).read_bytes()
@@ -27,7 +34,6 @@ def payload(project,config):
 
 def deploy(project,config,destination):
     blob=payload(project,config)
-    if blob is None:return None
     target=safe_path(Path(destination)/NAME)
     if target.exists() and target.read_bytes()!=blob:raise RuntimeError('Existing native runtime differs; custom file preserved')
     if not target.exists():atomic_write(target,blob,0o750)
@@ -41,7 +47,6 @@ def backup_guard(config):
 def acceptance_checks(config,modules):
     """Inspect native selection, executable bytes, private guard and loaded commands."""
     import dashboard_collect as health
-    if backend(config)!='rust':return []
     root=Path(__file__).resolve().parent;expected=hashlib.sha256(payload(root,config)).hexdigest();data=Path(config['data_mount']);rows=[]
     jobs=[]
     if 'dashboard' in modules:

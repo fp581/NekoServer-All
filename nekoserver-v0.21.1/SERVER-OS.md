@@ -1,7 +1,3 @@
-# v0.18.0 schedule policy
-
-Routine NekoServer media checkups are disabled, music audio has no automatic backup, and managed photo originals/database/external backups run weekly on Sunday night. Monthly update/recovery checks and app-state backups remain. [STORAGE.md](STORAGE.md) defines the current policy and supersedes older schedule/coverage descriptions below.
-
 # Server OS power, logs and memory
 
 The `server_os` module adds OS-wide safeguards to the existing GNOME TV power settings. New sample profiles include it. Existing customized profiles are preserved when upgrading; install the module explicitly with your own confirmed configuration.

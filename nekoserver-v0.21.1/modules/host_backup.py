@@ -114,7 +114,7 @@ def run(context):
     if not context.apply:
         context.log('Host snapshot timer available with --apply; Steam must be closed, extra save/share paths selected explicitly')
         return
-    if os.geteuid() != 0 or native_runtime.backend(context.config) != 'rust':
+    if os.geteuid() != 0:
         raise RuntimeError('Host snapshots require root and runtime.backend=rust')
     verify_storage(context.config)
     try: options = guard(context.config)

@@ -1,6 +1,6 @@
 # Independent outage detection
 
-## v0.21 guided setup
+## Guided setup
 
 New interactive provider setup opens external monitor guidance and waits for yes/no; no reopens it. Configure the chosen independent provider and recipient yourself, then paste the private success-ping URL into the hidden Konsole prompt. Real missed-ping/receipt acceptance remains separate.
 

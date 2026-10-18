@@ -1,6 +1,6 @@
 # NekoServer TV setup
 
-## v0.21 guided setup
+## Guided setup
 
 Interactive setup now opens Steam, selected Bluetooth settings, display settings and browser playback, with yes/no retries. Actual Remote Play/controller/HDMI results are user-witnessed; they do not become automatic hardware probes. See GUIDED-SETUP.md.
 

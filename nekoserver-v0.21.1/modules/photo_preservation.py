@@ -1,7 +1,7 @@
 """Install combined weekly photo preservation, retiring old frequent archive timers."""
 import native_runtime
-import os,sys,subprocess
-from modules._runtime import deploy
+import os,subprocess
+from neko_common import VERSION
 from pathlib import Path
 from neko_common import safe_path, relative_path, atomic_write, host_timezone
 DEPENDENCIES=['photos']
@@ -13,8 +13,7 @@ def run(ctx):
     cfg=ctx.config;data=Path(cfg['data_mount']);media=Path(cfg['media_mount']);opts=cfg['photos']
     for p in (data,media):
         if p.is_symlink() or subprocess.run(['findmnt','-n','--mountpoint',str(p)],stdout=subprocess.DEVNULL).returncode:raise RuntimeError(f'Missing mount: {p}')
-    runtime=deploy(data,Path(__file__).resolve().parents[1]);script=runtime/'photo-preservation-job.py'
-    if not script.is_file():raise RuntimeError('Photo preservation job missing')
+    runtime=data/'installer'/'runtime'/('v'+VERSION)
     interval=opts.get('archive_interval_minutes',360);age=opts.get('archive_min_age_seconds',600)
     if not isinstance(interval,int) or interval<15 or not isinstance(age,int) or age<60:raise RuntimeError('Invalid archive interval/age')
     tm=opts.get('database_backup_time','02:15')
@@ -22,11 +21,10 @@ def run(ctx):
     if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]',tm):raise RuntimeError('Invalid database backup time')
     archive=relative_path(opts.get('archive_dir','photos/archive'))
     binary=native_runtime.deploy(Path(__file__).resolve().parents[1],cfg,runtime)
-    command=(str(binary)+' preservation --config '+str(native_runtime.backup_guard(cfg))) if binary else (sys.executable+' '+str(script)+' --config '+str(native_runtime.backup_guard(cfg)))
+    command=str(binary)+' preservation --config '+str(native_runtime.backup_guard(cfg))
     keep=opts.get('database_keep',8)
     if type(keep) is not int or not 0<=keep<=520:raise RuntimeError('photos.database_keep must be a whole number from 0 to 520')
-    base=f'{command} --data {data} --media {media} --min-age {age} --archive-dir {archive}'
-    if binary:base+=f' --db-keep {keep}'
+    base=f'{command} --data {data} --media {media} --min-age {age} --archive-dir {archive} --db-keep {keep}'
     schedule=opts.get('backup_schedule','legacy')
     if schedule not in ('legacy','weekly'):raise RuntimeError('Invalid photo backup schedule')
     day=opts.get('backup_weekday','Sun')

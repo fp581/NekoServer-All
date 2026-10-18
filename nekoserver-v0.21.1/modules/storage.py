@@ -177,7 +177,7 @@ def run(context):
         atomic_json(config_path,payload)
     specs = mount_specs(context.config)
     for _, uuid, fstype, target in specs:
-        source = validate_device(uuid, fstype)
+        validate_device(uuid, fstype)  # raises if the drive identity is wrong
         current = subprocess.run(['findmnt', '-n', '-o', 'SOURCE', '--mountpoint', target], capture_output=True, text=True)
         if current.returncode == 0:
             mounted = current.stdout.strip().split('[')[0]

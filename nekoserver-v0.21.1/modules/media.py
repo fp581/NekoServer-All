@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 from neko_common import safe_path, ensure_directory, verify_storage, atomic_write, host_timezone
 
-from importlib.util import spec_from_file_location, module_from_spec
 
 DEPENDENCIES = ['docker']
 DESCRIPTION = 'Guarded deployment of eight independent media Compose projects (requires --apply)'
