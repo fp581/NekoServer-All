@@ -1,0 +1,23 @@
+services:
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    environment:
+      PUID: "${NEKO_UID}"
+      PGID: "${NEKO_GID}"
+      TZ: "${NEKO_TZ}"
+      WEBUI_PORT: "8080"
+    ports:
+      - "${NEKO_BIND}:8080:8080"
+    volumes:
+      - "${NEKO_DATA}/appdata/qbittorrent:/config"
+      - "${NEKO_MEDIA}/library:/data"
+      - "${NEKO_DATA}/library/downloads/music:/data/downloads/music"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - neko-media
+networks:
+  neko-media:
+    external: true
+    name: nekoserver-media

@@ -1,0 +1,7 @@
+[Unit]
+Description=NekoServer nightly music backup
+[Timer]
+OnCalendar=*-*-* 03:45:00 Asia/Jerusalem
+Persistent=false
+[Install]
+WantedBy=timers.target

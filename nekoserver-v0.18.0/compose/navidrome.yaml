@@ -1,0 +1,25 @@
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    ports:
+      - "${NEKO_BIND}:4533:4533"
+    environment:
+      ND_MUSICFOLDER: "/music"
+      ND_DATAFOLDER: "/data"
+      ND_SCANNER_SCHEDULE: "0 * * * *"
+      ND_SCANNER_WATCHERWAIT: "10s"
+      ND_ENABLESHARING: "false"
+      TZ: "${NEKO_TZ}"
+    volumes:
+      - "${NEKO_DATA}/appdata/navidrome:/data"
+      - "${NEKO_DATA}/library/music:/music:ro"
+    user: "${NEKO_UID}:${NEKO_GID}"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - neko-media
+networks:
+  neko-media:
+    external: true
+    name: nekoserver-media

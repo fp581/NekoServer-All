@@ -1,0 +1,203 @@
+"""Authenticated library setup. No account creation, resets or secret persistence."""
+import getpass
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from neko_common import VERSION, safe_path
+
+PORTS = {'jellyfin': 8096, 'seerr': 5055, 'sonarr': 8989, 'radarr': 7878}
+LIBRARIES = (('movies', 'Movies', 'movies'), ('tv', 'TV Shows', 'tvshows'))
+
+
+class SetupRequired(RuntimeError):
+    pass
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class Client:
+    def __init__(self, app):
+        self.app = app
+        self.base = f'http://127.0.0.1:{PORTS[app]}'
+        self.headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
+        if app == 'jellyfin':
+            self.headers['Authorization'] = f'MediaBrowser Client="NekoServer", Device="Installer", DeviceId="nekoserver-installer", Version="{VERSION}"'
+        # Local credentials must never follow redirects or environment proxies.
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+    def call(self, endpoint, method='GET', payload=None):
+        if not endpoint.startswith('/') or endpoint.startswith('//'):
+            raise ValueError('Invalid local endpoint')
+        prefix = {'seerr':'/api/v1','sonarr':'/api/v3','radarr':'/api/v3'}.get(self.app,'')
+        body = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(self.base + prefix + endpoint, data=body, method=method, headers=self.headers)
+        try:
+            with self.opener.open(req, timeout=12) as res:
+                data = res.read(3_000_001)
+                if len(data) > 3_000_000:
+                    raise RuntimeError('API response too large')
+                return json.loads(data) if data.strip() else {}
+        except urllib.error.HTTPError as exc:
+            code=exc.code;exc.close()
+            raise RuntimeError(f'{self.app}: HTTP {code}') from None
+        except (OSError, ValueError):
+            raise RuntimeError(f'{self.app}: unavailable or incompatible API response') from None
+
+    def close(self):
+        if self.app == 'jellyfin' and self.headers.get('X-Emby-Token'):
+            try:
+                self.call('/Sessions/Logout', 'POST')
+            except RuntimeError:
+                pass
+        self.headers.clear()
+
+
+def row(check, status, reason=None):
+    result = {'check': check, 'status': status}
+    if reason:
+        result['reason'] = reason
+    return result
+
+
+def folders(client):
+    values = client.call('/Library/VirtualFolders')
+    if not isinstance(values, list) or any(not isinstance(x, dict) or not isinstance(x.get('Locations'), list) for x in values):
+        raise RuntimeError('Unsupported Jellyfin library response')
+    return values
+
+
+def matching(values, category, name, kind):
+    path = '/data/' + category
+    matches = [x for x in values if path in [str(p).rstrip('/') for p in x['Locations']]]
+    if len(matches) > 1 or any(x.get('CollectionType') != kind for x in matches):
+        raise SetupRequired('Existing libraries conflict with the expected path/type; review them in Jellyfin')
+    if matches:
+        if not matches[0].get('ItemId'):
+            raise RuntimeError('Jellyfin library ID missing')
+        return matches[0]
+    if any(str(x.get('Name', '')).casefold() == name.casefold() for x in values):
+        raise SetupRequired('Existing library name uses a different path; custom settings preserved')
+    return None
+
+
+def jellyfin(client, media, apply, username, password):
+    info = client.call('/System/Info/Public')
+    if not isinstance(info, dict) or not info.get('Id'):
+        raise RuntimeError('Unsupported Jellyfin system response')
+    if info.get('StartupWizardCompleted') is not True:
+        raise SetupRequired('Complete the first administrator wizard at http://127.0.0.1:8096, then rerun --libraries')
+    user = username('Jellyfin administrator username (blank to skip): ').strip()
+    if not user:
+        raise SetupRequired('Administrator authentication skipped')
+    secret = password('Jellyfin administrator password: ')
+    if not secret:
+        raise SetupRequired('A nonempty administrator password is required')
+    auth = client.call('/Users/AuthenticateByName', 'POST', {'Username': user, 'Pw': secret})
+    del secret
+    if not isinstance(auth, dict) or not isinstance(auth.get('AccessToken'), str) or not auth['AccessToken']:
+        raise SetupRequired('Jellyfin administrator authentication was not verified')
+    client.headers['X-Emby-Token'] = auth['AccessToken']
+    user_info=auth.get('User')
+    policy=user_info.get('Policy') if isinstance(user_info,dict) else None
+    if not isinstance(policy,dict) or policy.get('IsAdministrator') is not True:
+        raise SetupRequired('Jellyfin administrator authentication was not verified')
+    results = [row('jellyfin:administrator', 'pass')]
+    ids = []
+    for category, name, kind in LIBRARIES:
+        try:
+            host = safe_path(Path(media) / 'library' / category)
+            if not host.is_dir():
+                raise SetupRequired('Expected HDD library folder is missing')
+            existing = matching(folders(client), category, name, kind)
+            if not existing and not apply:
+                results.append(row('jellyfin:' + category, 'needs_setup', 'Preview: library would be created'))
+                continue
+            if not existing:
+                query = urllib.parse.urlencode({'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'false'})
+                client.call('/Library/VirtualFolders?' + query, 'POST', {})
+                existing = matching(folders(client), category, name, kind)
+                if not existing:
+                    raise RuntimeError('Library creation was not retained')
+            ids.append(str(existing['ItemId']))
+            results.append(row('jellyfin:' + category, 'pass'))
+        except SetupRequired as exc:
+            results.append(row('jellyfin:' + category, 'needs_setup', str(exc)))
+        except (RuntimeError, ValueError, TypeError, KeyError):
+            results.append(row('jellyfin:' + category, 'fail', 'Library API/path check failed; existing settings preserved'))
+    return results, info['Id'], ids
+
+
+def seerr_key(root):
+    # Read the app's key, never write its settings file or duplicate it in logs.
+    path = safe_path(Path(root) / 'appdata' / 'seerr' / 'settings.json')
+    if not path.is_file():
+        raise SetupRequired('Complete Seerr login/server selection, then rerun --libraries')
+    try:
+        key = json.loads(path.read_text()).get('main', {}).get('apiKey')
+    except (ValueError, OSError, AttributeError):
+        raise SetupRequired('Seerr settings could not be read; complete setup in its web interface') from None
+    if not isinstance(key, str) or not key:
+        raise SetupRequired('Seerr API key is unavailable; complete first-run setup')
+    return key
+
+
+def seerr(client, root, server_id, library_ids, apply):
+    client.headers['X-Api-Key'] = seerr_key(root)
+    settings = client.call('/settings/jellyfin')
+    if not isinstance(settings, dict) or settings.get('serverId', settings.get('serverID')) != server_id:
+        raise SetupRequired('Seerr is not linked to this Jellyfin server; custom server selection preserved')
+    if len(library_ids) != len(LIBRARIES):
+        raise SetupRequired('Both Jellyfin movie/TV libraries must be verified before enabling them in Seerr')
+    results = [row('seerr:jellyfin_link', 'pass')]
+    if apply:
+        client.call('/settings/jellyfin/library/sync', 'POST')
+    values = client.call('/settings/jellyfin/library')
+    if not isinstance(values, list):
+        raise RuntimeError('Unsupported Seerr library response')
+    for lib_id in library_ids:
+        matches = [x for x in values if isinstance(x, dict) and str(x.get('id')) == lib_id]
+        if len(matches) != 1:
+            results.append(row('seerr:library:' + lib_id, 'needs_setup', 'Expected Jellyfin library not discovered'))
+            continue
+        if matches[0].get('enabled') is not True and apply:
+            client.call('/settings/jellyfin/library/' + urllib.parse.quote(lib_id, safe=''), 'PUT', {'enabled': True})
+            saved = client.call('/settings/jellyfin/library')
+            if not isinstance(saved, list) or not any(isinstance(x, dict) and str(x.get('id')) == lib_id and x.get('enabled') is True for x in saved):
+                raise RuntimeError('Seerr library setting was not retained')
+            results.append(row('seerr:library:' + lib_id, 'pass'))
+        else:
+            results.append(row('seerr:library:' + lib_id, 'pass' if matches[0].get('enabled') is True else 'needs_setup'))
+    results.append(row('seerr:request_providers', 'needs_setup', 'Run --request-providers and verify a complete request/import/playback on the server'))
+    return results
+
+
+def configure(root, media, apply=False, apps=('jellyfin', 'seerr'), factory=Client, username=input, password=getpass.getpass):
+    if 'jellyfin' not in apps:
+        return [row('media_libraries', 'needs_setup', 'Jellyfin is required for this library workflow')]
+    jf = factory('jellyfin')
+    try:
+        try:
+            results, server_id, ids = jellyfin(jf, media, apply, username, password)
+        except SetupRequired as exc:
+            return [row('jellyfin:setup', 'needs_setup', str(exc))]
+        except (RuntimeError, ValueError, TypeError, KeyError, EOFError):
+            return [row('jellyfin:setup', 'fail', 'Authenticated Jellyfin setup failed; rerun after checking the service')]
+        if 'seerr' in apps:
+            sr = factory('seerr')
+            try:
+                try:
+                    results += seerr(sr, root, server_id, ids, apply)
+                except SetupRequired as exc:
+                    results.append(row('seerr:setup', 'needs_setup', str(exc)))
+                except (RuntimeError, ValueError, TypeError, KeyError):
+                    results.append(row('seerr:setup', 'fail', 'Seerr authenticated link/library API checks failed'))
+            finally:
+                sr.close()
+        return results
+    finally:
+        jf.close()

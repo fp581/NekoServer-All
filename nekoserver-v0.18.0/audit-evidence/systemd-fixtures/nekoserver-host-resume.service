@@ -1,0 +1,10 @@
+[Unit]
+Description=NekoServer recover Samba after interrupted snapshot
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=5min
+ExecStart=/workspace/scratch/1b7b3a1e8239/work/nekoserver-v0.18.0/runtime/bin/nekoserver-runtime host-resume --config /etc/nekoserver-backups/config.json
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,614 @@
+{
+  "format": "neko-dashboard-v1",
+  "version": "0.15.1",
+  "generated_at": 1791962387.8165069,
+  "metrics": {
+    "cpu_percent": 14.2,
+    "memory_percent": 21.3,
+    "memory_used": 7301444403.2,
+    "memory_total": 34359738368,
+    "temperature": 43,
+    "uptime_seconds": 702000,
+    "cpu_model": "Intel Core Ultra 5 245"
+  },
+  "history": [
+    {
+      "at": 1791958847.8165069,
+      "cpu": 19.0,
+      "memory": 19.0,
+      "temperature": 43.0
+    },
+    {
+      "at": 1791958907.8165069,
+      "cpu": 22.7,
+      "memory": 19.0,
+      "temperature": 44.0
+    },
+    {
+      "at": 1791958967.8165069,
+      "cpu": 24.7,
+      "memory": 19.1,
+      "temperature": 44.9
+    },
+    {
+      "at": 1791959027.8165069,
+      "cpu": 24.0,
+      "memory": 19.1,
+      "temperature": 45.6
+    },
+    {
+      "at": 1791959087.8165069,
+      "cpu": 20.7,
+      "memory": 19.2,
+      "temperature": 46.0
+    },
+    {
+      "at": 1791959147.8165069,
+      "cpu": 15.6,
+      "memory": 19.2,
+      "temperature": 46.0
+    },
+    {
+      "at": 1791959207.8165069,
+      "cpu": 10.1,
+      "memory": 19.2,
+      "temperature": 45.6
+    },
+    {
+      "at": 1791959267.8165069,
+      "cpu": 5.7,
+      "memory": 19.3,
+      "temperature": 44.9
+    },
+    {
+      "at": 1791959327.8165069,
+      "cpu": 3.6,
+      "memory": 19.3,
+      "temperature": 44.0
+    },
+    {
+      "at": 1791959387.8165069,
+      "cpu": 4.3,
+      "memory": 19.4,
+      "temperature": 43.0
+    },
+    {
+      "at": 1791959447.8165069,
+      "cpu": 7.2,
+      "memory": 19.4,
+      "temperature": 41.9
+    },
+    {
+      "at": 1791959507.8165069,
+      "cpu": 11.2,
+      "memory": 19.4,
+      "temperature": 41.0
+    },
+    {
+      "at": 1791959567.8165069,
+      "cpu": 14.8,
+      "memory": 19.5,
+      "temperature": 40.4
+    },
+    {
+      "at": 1791959627.8165069,
+      "cpu": 16.9,
+      "memory": 19.5,
+      "temperature": 40.0
+    },
+    {
+      "at": 1791959687.8165069,
+      "cpu": 16.9,
+      "memory": 19.6,
+      "temperature": 40.1
+    },
+    {
+      "at": 1791959747.8165069,
+      "cpu": 15.1,
+      "memory": 19.6,
+      "temperature": 40.4
+    },
+    {
+      "at": 1791959807.8165069,
+      "cpu": 12.4,
+      "memory": 19.6,
+      "temperature": 41.1
+    },
+    {
+      "at": 1791959867.8165069,
+      "cpu": 10.2,
+      "memory": 19.7,
+      "temperature": 42.0
+    },
+    {
+      "at": 1791959927.8165069,
+      "cpu": 9.6,
+      "memory": 19.7,
+      "temperature": 43.1
+    },
+    {
+      "at": 1791959987.8165069,
+      "cpu": 11.1,
+      "memory": 19.8,
+      "temperature": 44.1
+    },
+    {
+      "at": 1791960047.8165069,
+      "cpu": 14.7,
+      "memory": 19.8,
+      "temperature": 45.0
+    },
+    {
+      "at": 1791960107.8165069,
+      "cpu": 19.1,
+      "memory": 19.8,
+      "temperature": 45.6
+    },
+    {
+      "at": 1791960167.8165069,
+      "cpu": 23.1,
+      "memory": 19.9,
+      "temperature": 46.0
+    },
+    {
+      "at": 1791960227.8165069,
+      "cpu": 25.2,
+      "memory": 19.9,
+      "temperature": 45.9
+    },
+    {
+      "at": 1791960287.8165069,
+      "cpu": 24.7,
+      "memory": 20.0,
+      "temperature": 45.6
+    },
+    {
+      "at": 1791960347.8165069,
+      "cpu": 21.4,
+      "memory": 20.0,
+      "temperature": 44.9
+    },
+    {
+      "at": 1791960407.8165069,
+      "cpu": 16.3,
+      "memory": 20.0,
+      "temperature": 44.0
+    },
+    {
+      "at": 1791960467.8165069,
+      "cpu": 10.8,
+      "memory": 20.1,
+      "temperature": 42.9
+    },
+    {
+      "at": 1791960527.8165069,
+      "cpu": 6.5,
+      "memory": 20.1,
+      "temperature": 41.9
+    },
+    {
+      "at": 1791960587.8165069,
+      "cpu": 4.4,
+      "memory": 20.2,
+      "temperature": 41.0
+    },
+    {
+      "at": 1791960647.8165069,
+      "cpu": 5.0,
+      "memory": 20.2,
+      "temperature": 40.4
+    },
+    {
+      "at": 1791960707.8165069,
+      "cpu": 7.7,
+      "memory": 20.2,
+      "temperature": 40.0
+    },
+    {
+      "at": 1791960767.8165069,
+      "cpu": 11.5,
+      "memory": 20.3,
+      "temperature": 40.1
+    },
+    {
+      "at": 1791960827.8165069,
+      "cpu": 14.7,
+      "memory": 20.3,
+      "temperature": 40.4
+    },
+    {
+      "at": 1791960887.8165069,
+      "cpu": 16.5,
+      "memory": 20.4,
+      "temperature": 41.1
+    },
+    {
+      "at": 1791960947.8165069,
+      "cpu": 16.1,
+      "memory": 20.4,
+      "temperature": 42.1
+    },
+    {
+      "at": 1791961007.8165069,
+      "cpu": 14.0,
+      "memory": 20.4,
+      "temperature": 43.1
+    },
+    {
+      "at": 1791961067.8165069,
+      "cpu": 11.2,
+      "memory": 20.5,
+      "temperature": 44.1
+    },
+    {
+      "at": 1791961127.8165069,
+      "cpu": 9.1,
+      "memory": 20.5,
+      "temperature": 45.0
+    },
+    {
+      "at": 1791961187.8165069,
+      "cpu": 8.6,
+      "memory": 20.6,
+      "temperature": 45.7
+    },
+    {
+      "at": 1791961247.8165069,
+      "cpu": 10.5,
+      "memory": 20.6,
+      "temperature": 46.0
+    },
+    {
+      "at": 1791961307.8165069,
+      "cpu": 14.3,
+      "memory": 20.6,
+      "temperature": 45.9
+    },
+    {
+      "at": 1791961367.8165069,
+      "cpu": 19.1,
+      "memory": 20.7,
+      "temperature": 45.5
+    },
+    {
+      "at": 1791961427.8165069,
+      "cpu": 23.3,
+      "memory": 20.7,
+      "temperature": 44.8
+    },
+    {
+      "at": 1791961487.8165069,
+      "cpu": 25.6,
+      "memory": 20.8,
+      "temperature": 43.9
+    },
+    {
+      "at": 1791961547.8165069,
+      "cpu": 25.1,
+      "memory": 20.8,
+      "temperature": 42.9
+    },
+    {
+      "at": 1791961607.8165069,
+      "cpu": 21.9,
+      "memory": 20.8,
+      "temperature": 41.9
+    },
+    {
+      "at": 1791961667.8165069,
+      "cpu": 16.9,
+      "memory": 20.9,
+      "temperature": 41.0
+    },
+    {
+      "at": 1791961727.8165069,
+      "cpu": 11.6,
+      "memory": 20.9,
+      "temperature": 40.3
+    },
+    {
+      "at": 1791961787.8165069,
+      "cpu": 7.3,
+      "memory": 21.0,
+      "temperature": 40.0
+    },
+    {
+      "at": 1791961847.8165069,
+      "cpu": 5.3,
+      "memory": 21.0,
+      "temperature": 40.1
+    },
+    {
+      "at": 1791961907.8165069,
+      "cpu": 5.9,
+      "memory": 21.0,
+      "temperature": 40.5
+    },
+    {
+      "at": 1791961967.8165069,
+      "cpu": 8.5,
+      "memory": 21.1,
+      "temperature": 41.2
+    },
+    {
+      "at": 1791962027.8165069,
+      "cpu": 11.9,
+      "memory": 21.1,
+      "temperature": 42.1
+    },
+    {
+      "at": 1791962087.8165069,
+      "cpu": 14.8,
+      "memory": 21.2,
+      "temperature": 43.2
+    },
+    {
+      "at": 1791962147.8165069,
+      "cpu": 16.1,
+      "memory": 21.2,
+      "temperature": 44.2
+    },
+    {
+      "at": 1791962207.8165069,
+      "cpu": 15.4,
+      "memory": 21.2,
+      "temperature": 45.0
+    },
+    {
+      "at": 1791962267.8165069,
+      "cpu": 13.0,
+      "memory": 21.3,
+      "temperature": 45.7
+    },
+    {
+      "at": 1791962327.8165069,
+      "cpu": 10.1,
+      "memory": 21.3,
+      "temperature": 46.0
+    },
+    {
+      "at": 1791962387.8165069,
+      "cpu": 7.9,
+      "memory": 21.4,
+      "temperature": 45.9
+    }
+  ],
+  "applications": [
+    {
+      "id": "jellyfin",
+      "name": "Jellyfin",
+      "description": "Movies & shows",
+      "url": "http://127.0.0.1:8096/",
+      "state": "running",
+      "health": "healthy"
+    },
+    {
+      "id": "immich",
+      "name": "Immich",
+      "description": "Photos & memories",
+      "url": "http://127.0.0.1:2283/",
+      "state": "running",
+      "health": "healthy"
+    },
+    {
+      "id": "seerr",
+      "name": "Seerr",
+      "description": "Discover & request",
+      "url": "http://127.0.0.1:5055/",
+      "state": "running",
+      "health": "healthy"
+    },
+    {
+      "id": "navidrome",
+      "name": "Navidrome",
+      "description": "Your music library",
+      "url": "http://127.0.0.1:4533/",
+      "state": "running",
+      "health": "healthy"
+    },
+    {
+      "id": "sonarr",
+      "name": "Sonarr",
+      "description": "Series automation",
+      "url": "http://127.0.0.1:8989/",
+      "state": "running",
+      "health": "healthy"
+    },
+    {
+      "id": "radarr",
+      "name": "Radarr",
+      "description": "Movie automation",
+      "url": "http://127.0.0.1:7878/",
+      "state": "running",
+      "health": "healthy"
+    },
+    {
+      "id": "lidarr",
+      "name": "Lidarr",
+      "description": "Music automation",
+      "url": "http://127.0.0.1:8686/",
+      "state": "running",
+      "health": "healthy"
+    },
+    {
+      "id": "prowlarr",
+      "name": "Prowlarr",
+      "description": "Media sources",
+      "url": "http://127.0.0.1:9696/",
+      "state": "running",
+      "health": "healthy"
+    },
+    {
+      "id": "qbittorrent",
+      "name": "qBittorrent",
+      "description": "Download queue",
+      "url": "http://127.0.0.1:8080/",
+      "state": "running",
+      "health": "healthy"
+    }
+  ],
+  "storage": [
+    {
+      "id": "data_ssd",
+      "name": "Application SSD",
+      "mount": "/srv/nekoserver",
+      "status": "mounted",
+      "total": 1000000000000.0,
+      "used": 267000000000.0,
+      "used_percent": 26.7,
+      "smart": {
+        "status": "pass",
+        "temperature": 39,
+        "checked_at": 1791961787.8165069,
+        "reason": "SMART health passed"
+      }
+    },
+    {
+      "id": "media_hdd",
+      "name": "Media HDD",
+      "mount": "/mnt/nekoserver-media",
+      "status": "mounted",
+      "total": 12000000000000.0,
+      "used": 3600000000000.0,
+      "used_percent": 30.0,
+      "smart": {
+        "status": "pass",
+        "temperature": 34,
+        "checked_at": 1791961787.8165069,
+        "reason": "SMART health passed"
+      }
+    },
+    {
+      "id": "os",
+      "name": "OS SSD",
+      "mount": "/",
+      "status": "mounted",
+      "total": 256000000000.0,
+      "used": 42000000000.0,
+      "used_percent": 16.4,
+      "smart": {
+        "status": "pass",
+        "temperature": 36,
+        "checked_at": 1791961787.8165069,
+        "reason": "SMART health passed"
+      }
+    }
+  ],
+  "backups": [
+    {
+      "id": "archive",
+      "name": "Photo archive",
+      "status": "pass",
+      "last_success": 1791960587.8165069,
+      "timer": {
+        "installed": true,
+        "active": true,
+        "next_run": "In 30 minutes"
+      }
+    },
+    {
+      "id": "database",
+      "name": "Immich database",
+      "status": "pass",
+      "last_success": 1791922787.8165069,
+      "timer": {
+        "installed": true,
+        "active": true,
+        "next_run": "Tomorrow \u00b7 02:15"
+      }
+    },
+    {
+      "id": "external",
+      "name": "External photo copy",
+      "status": "stale",
+      "last_success": 1791011987.8165069,
+      "timer": {
+        "installed": true,
+        "active": true,
+        "next_run": "Sunday \u00b7 03:00"
+      }
+    },
+    {
+      "id": "applications",
+      "name": "Media application snapshot",
+      "status": "pass",
+      "last_success": 1791958787.8165069,
+      "timer": {
+        "installed": true,
+        "active": true
+      }
+    },
+    {
+      "id": "host",
+      "name": "Host and user snapshot",
+      "status": "pass",
+      "last_success": 1791959387.8165069,
+      "timer": {
+        "installed": true,
+        "active": true
+      }
+    }
+  ],
+  "media": {
+    "status": "current",
+    "age_seconds": 600,
+    "counts": {
+      "pass": 21,
+      "needs_setup": 3
+    },
+    "checks": [
+      {
+        "name": "end to end media",
+        "status": "needs_setup"
+      },
+      {
+        "name": "navidrome \u00b7 playback",
+        "status": "needs_setup"
+      },
+      {
+        "name": "qbittorrent \u00b7 transfer",
+        "status": "needs_setup"
+      }
+    ]
+  },
+  "recovery": {
+    "status": "needs_setup",
+    "checkpoint": true,
+    "latest_rehearsal": {
+      "at": 1791789587.8165069,
+      "database_tables": 64,
+      "http_ready": true
+    }
+  },
+  "alerts": [
+    {
+      "id": "backup:external",
+      "level": "warning",
+      "title": "Your external photo copy is overdue",
+      "detail": "The last successful copy was 11 days ago. Reconnect the backup drive and check its scheduled job."
+    }
+  ],
+  "acceptance": {
+    "status": "pending",
+    "profile": "full",
+    "generated_at": 1791962387.8165069,
+    "automatic": {
+      "pass": 20
+    },
+    "manual": {
+      "needs_setup": 12
+    }
+  },
+  "heartbeat": {
+    "status": "pass",
+    "last_success": 1791962327.8165069,
+    "provider_notifications_verified": false
+  },
+  "notifications": {
+    "status": "unknown",
+    "timer": {
+      "installed": false,
+      "active": false
+    }
+  }
+}

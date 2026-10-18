@@ -1,0 +1,4 @@
+Normalized form: *-*-01 02:30:00 Asia/Jerusalem
+    Next elapse: Sun 2026-11-01 01:30:00 CET
+       (in UTC): Sun 2026-11-01 00:30:00 UTC
+       From now: 1 week 6 days left

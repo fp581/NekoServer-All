@@ -1,0 +1,20 @@
+services:
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    ports:
+      - "${NEKO_BIND}:9696:9696"
+    environment:
+      PUID: "${NEKO_UID}"
+      PGID: "${NEKO_GID}"
+      TZ: "${NEKO_TZ}"
+    volumes:
+      - "${NEKO_DATA}/appdata/prowlarr:/config"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - neko-media
+networks:
+  neko-media:
+    external: true
+    name: nekoserver-media

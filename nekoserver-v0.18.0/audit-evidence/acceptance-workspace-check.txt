@@ -1,0 +1,14 @@
+NekoServer acceptance · dashboard · failed
+automatic / configuration: pass — Selected profile and dependency plan are valid.
+automatic / host: needs_setup — Supported Nyarch/Arch x86_64 installation required; Bazzite needs separate validation.
+automatic / mount:data_ssd: needs_setup — Configure and mount the intended drive; no private data is inspected on a mismatch.
+automatic / mount:media_hdd: needs_setup — Configure and mount the intended drive; no private data is inspected on a mismatch.
+automatic / reboot: needs_setup — Save a baseline, reboot normally and rerun this profile. Same-boot inspections do not pass this check.
+automatic / bundle: blocked — Drive verification is required before inspecting private files.
+automatic / dashboard:status: fail — Local endpoint must return a current sanitized status snapshot.
+automatic / nekoserver-dashboard.service: fail — Dashboard web service and collection timer must be active and enabled.
+automatic / nekoserver-dashboard-collect.timer: fail — Dashboard web service and collection timer must be active and enabled.
+automatic / runtime: blocked — Drive verification is required before inspecting installed native workers.
+manual / missing_drive: needs_setup — With independent backups and the server shut down, test a deliberately unavailable data drive. Verify dependent services are blocked, then shut down and reconnect. Never unplug a live irreplaceable drive.
+manual / os_recovery: needs_setup — With independent verified backups, rehearse the documented supported OS recovery and confirm retained data/apps and reboot behaviour. Automatic Bazzite reattachment remains unsupported.
+Manual passes are user-reported. This report applies only to the selected profile and current inspection.

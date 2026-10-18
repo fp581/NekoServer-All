@@ -1,0 +1,66 @@
+{
+  "method": "Actual isolated Caddy process + trusted fixture HTTPS CA and disposable HTTP/WebSocket upstream; no production apps or devices",
+  "caddy_version": "v2.11.7 h1:yj0Y4fYZGPkSvibBJ1sTWE33xC0fxztVyXEW5iIdUT4=",
+  "checks": [
+    {
+      "check": "real Caddy HTTPS starts with trusted fixture CA",
+      "result": "pass"
+    },
+    {
+      "check": "root proxy retains paths and query",
+      "result": "pass"
+    },
+    {
+      "check": "proxy supplies HTTPS forwarding protocol",
+      "result": "pass"
+    },
+    {
+      "check": "application unauthenticated response retained",
+      "result": "pass"
+    },
+    {
+      "check": "application bearer login header retained",
+      "result": "pass"
+    },
+    {
+      "check": "application secure cookie retained",
+      "result": "pass"
+    },
+    {
+      "check": "media range response and headers retained",
+      "result": "pass"
+    },
+    {
+      "check": "large original upload transmitted without alteration",
+      "result": "pass"
+    },
+    {
+      "check": "chunked upload transmitted without alteration",
+      "result": "pass"
+    },
+    {
+      "check": "foreign host blocked",
+      "result": "pass"
+    },
+    {
+      "check": "forbidden source blocked despite spoofed forwarding header",
+      "result": "pass"
+    },
+    {
+      "check": "portal served",
+      "result": "pass"
+    },
+    {
+      "check": "portal cannot serve other files",
+      "result": "pass"
+    },
+    {
+      "check": "WebSocket upgrade and binary frame retained",
+      "result": "pass"
+    },
+    {
+      "check": "admin API disabled and HTTP/UDP listeners absent from model",
+      "result": "pass"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+test_absent_disabled_units_do_not_create_a_schedule (test_weekly_policy.RetiredSchedules.test_absent_disabled_units_do_not_create_a_schedule) ... ok
+test_acceptance_requires_old_timer_inactive (test_weekly_policy.RetiredSchedules.test_acceptance_requires_old_timer_inactive) ... ok
+test_custom_media_units_are_preserved_before_any_command (test_weekly_policy.RetiredSchedules.test_custom_media_units_are_preserved_before_any_command) ... ok
+test_custom_music_units_are_preserved_before_any_command (test_weekly_policy.RetiredSchedules.test_custom_music_units_are_preserved_before_any_command) ... ok
+test_old_media_timer_is_disabled_and_worker_stopped (test_weekly_policy.RetiredSchedules.test_old_media_timer_is_disabled_and_worker_stopped) ... ok
+test_old_music_timer_is_disabled_and_worker_stopped (test_weekly_policy.RetiredSchedules.test_old_music_timer_is_disabled_and_worker_stopped) ... ok
+test_explicit_opt_in_is_preserved (test_weekly_policy.SavedConfiguration.test_explicit_opt_in_is_preserved) ... ok
+test_old_confirmed_config_gets_current_schedule_defaults (test_weekly_policy.SavedConfiguration.test_old_confirmed_config_gets_current_schedule_defaults) ... ok
+test_disabled_media_report_never_reads_stale_api_report (test_weekly_policy.WeeklyPhotos.test_disabled_media_report_never_reads_stale_api_report) ... ok
+test_monthly_manual_health_worker_is_retained (test_weekly_policy.WeeklyPhotos.test_monthly_manual_health_worker_is_retained) ... ok
+test_weekly_installer_retires_frequent_timer_and_uses_combined_worker (test_weekly_policy.WeeklyPhotos.test_weekly_installer_retires_frequent_timer_and_uses_combined_worker) ... ok
+test_weekly_success_does_not_go_stale_after_two_days (test_weekly_policy.WeeklyPhotos.test_weekly_success_does_not_go_stale_after_two_days) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.024s
+
+OK

@@ -1,0 +1,1 @@
+Current v0.18.0: cargo fmt --check, cargo clippy --locked --offline -- -D warnings, 32 Rust unit tests, static production and isolated fixture builds passed. See native-build.txt.

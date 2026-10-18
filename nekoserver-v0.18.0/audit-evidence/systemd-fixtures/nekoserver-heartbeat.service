@@ -1,0 +1,22 @@
+[Unit]
+Description=NekoServer independent availability heartbeat
+After=network-online.target
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+RuntimeDirectory=nekoserver-heartbeat
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/workspace/scratch/1b7b3a1e8239/work/nekoserver-v0.18.0/runtime/bin/nekoserver-runtime heartbeat --config /etc/nekoserver-backups/config.json
+TimeoutStartSec=40
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock
