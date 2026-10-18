@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [NekoServer---Arch-based-media-server]
   pull_request:
   workflow_dispatch:
     inputs:
