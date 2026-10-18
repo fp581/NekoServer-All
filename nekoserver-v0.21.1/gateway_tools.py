@@ -6,7 +6,7 @@ import hashlib,html,ipaddress,json,os,pwd,re,shutil,socket,subprocess,sys,tempfi
 from pathlib import Path
 import dashboard_collect as health
 import recovery_tools
-from network_access import private_ip,lan,candidates,verify_lan
+from network_access import lan,candidates,verify_lan
 from neko_common import VERSION,safe_path,atomic_write,atomic_json,ensure_directory
 APPS={'jellyfin':('Jellyfin',8096,8443),'seerr':('Seerr',5055,8444),'immich':('Immich',2283,8445),'navidrome':('Music',4533,8446),'nextcloud':('Nextcloud',8088,8447)}
 ROOT=Path(__file__).resolve().parent
@@ -94,7 +94,7 @@ def lan_model(config,portal_root):
 
 def unit(config,code,state):
     data=config['data_mount'];media=config['media_mount']
-    guard=(str(code/'nekoserver-runtime')+' gateway-guard') if native_runtime.backend(config)=='rust' else ('/usr/bin/python3 '+str(code/'gateway_guard.py'))
+    guard=str(code/'nekoserver-runtime')+' gateway-guard'
     return '[Unit]\nDescription=NekoServer LAN HTTPS gateway\nWants=network-online.target\nAfter=network-online.target\nRequiresMountsFor='+data+' '+media+'\n[Service]\nUser=caddy\nGroup=caddy\nEnvironment=XDG_DATA_HOME='+str(state)+'\nEnvironment=XDG_CONFIG_HOME='+str(state)+'\nExecStartPre=+'+guard+' --config /etc/nekoserver-gateway/storage.json\nExecStart=/usr/bin/caddy run --config /etc/nekoserver-gateway/lan.json\nRestart=on-failure\nRestartSec=10s\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nPrivateDevices=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\nReadWritePaths='+str(state)+'\nInaccessiblePaths=-/run/docker.sock -/var/run/docker.sock '+data+'/appdata '+data+'/docker-engine '+media+'\nRestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK\n[Install]\nWantedBy=multi-user.target\n'
 
 def hashes(payloads):return {str(p):hashlib.sha256(v if isinstance(v,bytes) else v.encode()).hexdigest() for p,v in payloads.items()}
@@ -120,9 +120,7 @@ def _apply_lan(config):
     recovery_tools.require_root();recovery_tools.mounts(config);verify_lan(config);readiness(config)
     data=Path(config['data_mount']);state=safe_path(data/'gateway/caddy-state');code=safe_path(Path('/usr/local/lib/nekoserver-gateway')/('v'+VERSION));web=Path('/usr/local/share/nekoserver-gateway/lan');ledger=data/'gateway/lan-managed.json'
     payloads={Path('/etc/nekoserver-gateway/lan.json'):json.dumps(lan_model(config,web),indent=2)+'\n',Path('/etc/systemd/system/nekoserver-gateway-lan.service'):unit(config,code,state),web/'index.html':portal(config,lan(config)[0])}
-    payloads.update({code/n:(ROOT/n).read_bytes() for n in ('gateway_guard.py','network_access.py','storage-guard.py','neko_common.py')})
-    binary=native_runtime.payload(ROOT,config)
-    if binary is not None:payloads[code/native_runtime.NAME]=binary
+    payloads[code/native_runtime.NAME]=native_runtime.payload(ROOT,config)
     preflight(payloads,ledger);port_preflight(config)
     if not shutil.which('caddy'):
         if not shutil.which('pacman') or not recovery_tools.host_supported():raise RuntimeError('Install official Caddy for this OS; automatic installation supports Nyarch/Arch')

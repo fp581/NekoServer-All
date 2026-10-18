@@ -48,8 +48,6 @@ def run(ctx):
         return
     if os.geteuid() != 0:
         raise RuntimeError('Root required')
-    if native_runtime.backend(ctx.config) != 'rust':
-        raise RuntimeError('Scheduled music backup requires Rust')
     verify_storage(ctx.config)
     binary = native_runtime.deploy(Path(__file__).resolve().parents[1], ctx.config,
         Path(ctx.config['data_mount'])/'installer/runtime'/('v'+VERSION))

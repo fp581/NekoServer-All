@@ -1,7 +1,6 @@
 """Private, durable installer credentials; never put secrets in public reports."""
 import getpass
 import json
-import os
 from pathlib import Path
 import re
 import secrets

@@ -69,8 +69,8 @@ def run(context):
     if not context.apply:
         context.log('Background notifications available with --apply; configure your own HTTPS ntfy topic')
         return
-    if os.geteuid() != 0 or native_runtime.backend(context.config) != 'rust':
-        raise RuntimeError('Notification installation requires root and runtime.backend=rust')
+    if os.geteuid() != 0:
+        raise RuntimeError('Notification installation requires root')
     private = safe_path(PRIVATE_CONFIG)
     existing = json.loads(private.read_text()) if private.exists() else {}
     address = context.config.get('notifications', {}).get('endpoint', '') or existing.get('endpoint', '')

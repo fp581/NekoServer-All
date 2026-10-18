@@ -55,8 +55,6 @@ def run(context):
     if os.geteuid() != 0:
         raise RuntimeError('Root required')
     config = context.config
-    if native_runtime.backend(config) != 'rust':
-        raise RuntimeError('Application snapshots require runtime.backend=rust')
     # Validate calendar and native payload before touching installed files.
     definitions(config, '/placeholder/runtime', '/placeholder/config')
     verify_storage(config)

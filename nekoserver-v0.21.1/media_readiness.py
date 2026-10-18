@@ -1,6 +1,5 @@
 """Current GET-only Jellyfin/Seerr readiness; no prompts or credentials in reports."""
 import json
-from pathlib import Path
 from media_libraries import Client, SetupRequired, folders, matching, LIBRARIES, seerr_key, row
 from neko_common import safe_path
 import seerr_providers

@@ -88,8 +88,9 @@ def validate_config(config):
     for names in config.get('profiles',{}).values():
         if not isinstance(names,list) or any(not isinstance(name,str) for name in names) or len(set(names))!=len(names):raise InstallerError('Profiles must contain unique module names')
     runtime=config.get("runtime",{})
-    if not isinstance(runtime,dict) or runtime.get("backend","python") not in ("python","rust"):
-        raise InstallerError("runtime.backend must be rust or python")
+    # "python" is accepted only so older configs still load; it now means Rust.
+    if not isinstance(runtime,dict) or runtime.get("backend","rust") not in ("python","rust"):
+        raise InstallerError("runtime.backend must be rust")
     data, media = mount_path(config['data_mount']), mount_path(config['media_mount'])
     if data == media or data in media.parents or media in data.parents:
         raise InstallerError('Data and media mounts must be separate and non-nested')
@@ -138,7 +139,7 @@ def _execute(args, root=ROOT):
     plan = ordered(modules, selected)
     from config_checks import validate
     validate(config,plan)
-    if args.apply and config.get('runtime',{}).get('backend','python')=='rust' and set(plan)&{'docker','server_os','dashboard','gateway_lan','media_monitor','photo_preservation','photo_backup','app_backup','host_backup','notifications','heartbeat','maintenance'}:
+    if args.apply and set(plan)&{'docker','server_os','dashboard','gateway_lan','media_monitor','photo_preservation','photo_backup','app_backup','host_backup','notifications','heartbeat','maintenance'}:
         from native_runtime import payload
         payload(ROOT,config)
     if args.check or args.dry_run:

@@ -1,6 +1,5 @@
 """Run onboarding from the persistent installer after media deployment."""
 import guided_setup
-import os
 import account_store
 import subprocess
 import sys

@@ -73,8 +73,6 @@ def validate(config, plan):
             raise RuntimeError('Invalid external backup weekday')
         if opts.get('external_backup_fstype','ext4') not in ('ext4','xfs','btrfs','exfat'):
             raise RuntimeError('Invalid external backup filesystem')
-    if config.get('runtime',{}).get('backend','python') != 'rust' and set(plan)&{'app_backup','host_backup','notifications','heartbeat','maintenance'}:
-        raise RuntimeError('Selected native backup/notification modules require runtime.backend=rust')
 
 
 def _time(value):

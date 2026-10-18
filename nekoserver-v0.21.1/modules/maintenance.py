@@ -58,8 +58,8 @@ def run(ctx):
     if not ctx.apply:
         ctx.log('Monthly 02:30 backup, isolated restore rehearsal, container updates and rollback; OS packages excluded')
         return
-    if os.geteuid() != 0 or native_runtime.backend(ctx.config) != 'rust':
-        raise RuntimeError('Maintenance requires root and runtime.backend=rust')
+    if os.geteuid() != 0:
+        raise RuntimeError('Maintenance requires root')
     config = ctx.config
     verify_storage(config)
     binary = native_runtime.deploy(Path(__file__).resolve().parents[1], config, Path(config['data_mount'])/'installer/runtime'/('v'+VERSION))

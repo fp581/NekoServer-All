@@ -1,6 +1,6 @@
 # NekoServer installation and acceptance
 
-## v0.21 guided setup
+## Guided setup
 
 With guided_setup.enabled=true (default), --manual --save now uses guided yes/no handoffs instead of the legacy typed PASS/FAIL prompt. No repeats the instructions and opens the relevant pages/apps again. Ctrl+C leaves that check pending. Manual confirmation never overrides automatic failures. Disabling the guide retains the legacy explicit PASS/FAIL mode. See GUIDED-SETUP.md.
 

@@ -1,5 +1,5 @@
 """Read-only gateway transport/configuration checks; client acceptance is separate."""
-import json,ssl,urllib.request,urllib.error
+import ssl,urllib.request,urllib.error
 from pathlib import Path
 import gateway_tools as g
 import dashboard_collect as health

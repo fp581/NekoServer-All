@@ -77,7 +77,7 @@ def verify_classic_store():
 def guard_contents(config, runtime):
     paths = [str(mount_path(config[k])) for k in ('data_mount','media_mount')]
     units = [call(['systemd-escape','--path','--suffix=mount',p]) for p in paths]
-    guard=(str(runtime/'nekoserver-runtime')+' storage-guard') if native_runtime.backend(config)=='rust' else ('/usr/bin/python3 '+str(runtime/'storage-guard.py'))
+    guard=str(runtime/'nekoserver-runtime')+' storage-guard'
     return ('# Managed by NekoServer\n[Unit]\nRequiresMountsFor='+' '.join(paths)+'\n'
             'BindsTo='+' '.join(units)+'\nAfter='+' '.join(units)+'\n'
             '[Service]\nExecStartPre='+guard+
@@ -89,12 +89,6 @@ def install_storage_guard(config):
     runtime = safe_path(root/'installer'/'guards'/('v'+VERSION))
     runtime.mkdir(parents=True,exist_ok=True)
     project = Path(__file__).resolve().parents[1]
-    for name in ('neko_common.py','storage-guard.py'):
-        source = project/name
-        target = safe_path(runtime/name)
-        if target.exists() and target.read_bytes()!=source.read_bytes():
-            raise RuntimeError(f'Installed guard differs: {target}')
-        if not target.exists(): atomic_write(target,source.read_bytes(),0o750)
     atomic_json(runtime/'storage.json',{k:config[k] for k in ('data_mount','media_mount','storage')})
     native_runtime.deploy(project,config,runtime)
     override = Path('/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf')

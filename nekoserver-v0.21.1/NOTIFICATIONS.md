@@ -1,6 +1,6 @@
 # Background health notifications
 
-## v0.21 guided setup
+## Guided setup
 
 New interactive subscription setup opens the phone subscription instructions and waits for yes/no; no reopens them. Private destination/token entry stays in Konsole. Real delivery receipt still needs its witnessed acceptance check.
 
@@ -11,7 +11,7 @@ The installer does not create an ntfy account, reserve a topic, install a phone 
 
 ## Setup
 
-Keep your existing confirmed configuration and set `runtime.backend=rust`. The native executable is included; a Rust compiler is not needed on the server. curl and the system CA certificates must be available.
+Keep your existing confirmed configuration. The native executable is included; a Rust compiler is not needed on the server. curl and the system CA certificates must be available.
 
 ```bash
 python3 installer.py --module notifications --check

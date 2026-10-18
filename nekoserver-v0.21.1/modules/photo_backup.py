@@ -1,9 +1,8 @@
 """Install weekly systemd photo backup, run as root, fail closed if USB missing."""
 import native_runtime
 import os, re, subprocess, sys, json
-from modules._runtime import deploy
 from pathlib import Path
-from neko_common import safe_path, mount_path, relative_path, atomic_write, atomic_json, host_timezone
+from neko_common import VERSION, safe_path, mount_path, relative_path, atomic_write, atomic_json, host_timezone
 DEPENDENCIES=['storage','photo_preservation']
 DESCRIPTION='Install weekly add-only external photo backup timer (requires --apply and external UUID)'
 
@@ -54,13 +53,12 @@ def run(ctx):
     if not dest.is_absolute() or str(dest) in ('/','/home','/mnt','/srv') or dest.is_symlink(): raise RuntimeError('Unsafe USB destination')
     when=opts.get('backup_time','03:00');day=opts.get('backup_weekday','Sun')
     if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',when) or day not in ('Mon','Tue','Wed','Thu','Fri','Sat','Sun'): raise RuntimeError('Invalid schedule')
-    script=deploy(Path(ctx.config['data_mount']),Path(__file__).resolve().parents[1])/'photo-weekly.py'
     unit=Path('/etc/systemd/system/nekoserver-photo-backup.service');timer=Path('/etc/systemd/system/nekoserver-photo-backup.timer')
-    binary=native_runtime.deploy(Path(__file__).resolve().parents[1],ctx.config,script.parent)
-    command=(str(binary)+' weekly --config '+str(native_runtime.backup_guard(ctx.config))) if binary else (sys.executable+' '+str(script)+' --config '+str(native_runtime.backup_guard(ctx.config)))
+    binary=native_runtime.deploy(Path(__file__).resolve().parents[1],ctx.config,Path(ctx.config['data_mount'])/'installer'/'runtime'/('v'+VERSION))
+    command=str(binary)+' weekly --config '+str(native_runtime.backup_guard(ctx.config))
     cmd=f'{command} --uuid {uuid} --fstype {fstype} --source {source} --dest {dest} --media-root {ctx.config["media_mount"]} --data {ctx.config["data_mount"]}'
-    if binary and ctx.config.get('nextcloud',{}).get('enabled',False):
-        # Nextcloud user files get the same add-only weekly copy as photos (Rust worker).
+    if ctx.config.get('nextcloud',{}).get('enabled',False):
+        # Nextcloud user files get the same add-only weekly copy as photos.
         cmd+=' --cloud '+str(Path(ctx.config['media_mount'])/'cloud/files')
     service='[Unit]\nDescription=NekoServer add-only USB backup of photos and Nextcloud files\nRequiresMountsFor='+ctx.config['media_mount']+'\nAfter=nekoserver-immich-db-backup.service\n[Service]\nType=oneshot\nExecStart='+cmd+'\n'
     schedule='[Unit]\nDescription=Weekly NekoServer photo backup\n[Timer]\nOnCalendar='+day+' *-*-* '+when+':00 '+host_timezone(ctx.config)+'\nPersistent=false\n[Install]\nWantedBy=timers.target\n'

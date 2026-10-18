@@ -1,7 +1,7 @@
 """Local visual health dashboard with a privileged collector and unprivileged web server."""
 import native_runtime
 from acceptance_summary import scope_digest
-import importlib.util,json,os,platform,re,shutil,subprocess
+import importlib.util,os,platform,shutil,subprocess
 from pathlib import Path
 from neko_common import VERSION,safe_path,mount_path,atomic_write,atomic_json
 DEPENDENCIES=['storage','recovery']
@@ -15,9 +15,9 @@ def options(cfg):
     if 'install_smartmontools' in values and type(values['install_smartmontools']) is not bool:raise RuntimeError('SMART package switch must be a boolean')
     return port,interval,smart
 
-def units(data,code,config,port,interval,backend="python"):
-    serve=(str(code/"nekoserver-runtime")+" serve") if backend=="rust" else ("/usr/bin/python3 "+str(code/"dashboard_server.py"))
-    collect=(str(code/"nekoserver-runtime")+" collect") if backend=="rust" else ("/usr/bin/python3 "+str(code/"dashboard_collect.py"))
+def units(data,code,config,port,interval):
+    serve=str(code/"nekoserver-runtime")+" serve"
+    collect=str(code/"nekoserver-runtime")+" collect"
     common='NoNewPrivileges=yes\nProtectHome=yes\nProtectSystem=strict\nPrivateTmp=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n'
     return {
     'nekoserver-dashboard-collect.service':'[Unit]\nDescription=NekoServer dashboard collection\n[Service]\nType=oneshot\nRuntimeDirectory=nekoserver-dashboard\nRuntimeDirectoryMode=0755\nRuntimeDirectoryPreserve=yes\nExecStart='+collect+' --config '+str(config)+' --output /run/nekoserver-dashboard/status.json --state '+str(data/'dashboard-state')+'\nTimeoutStartSec=180\n'+common+'ReadWritePaths=/run/nekoserver-dashboard -'+str(data/'dashboard-state')+'\nRestrictAddressFamilies=AF_UNIX\n',
@@ -32,11 +32,9 @@ def run(ctx):
     cfg=ctx.config;data=mount_path(cfg['data_mount']);project=Path(__file__).resolve().parents[1]
     spec=importlib.util.spec_from_file_location('dashboard_storage_guard',project/'storage-guard.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard);guard.verify(cfg)
     code=safe_path(Path('/usr/local/lib/nekoserver-dashboard')/('v'+VERSION));config=safe_path(Path('/etc/nekoserver-dashboard/config.json'))
-    payloads={code/name:(project/name).read_bytes() for name in ('dashboard_collect.py','dashboard_server.py','neko_common.py','acceptance_summary.py')}
-    payloads.update({code/'dashboard'/name:(project/'dashboard'/name).read_bytes() for name in ASSETS})
-    binary=native_runtime.payload(project,cfg)
-    if binary is not None:payloads[code/native_runtime.NAME]=binary
-    definitions=units(data,code,config,port,interval,native_runtime.backend(cfg))
+    payloads={code/'dashboard'/name:(project/'dashboard'/name).read_bytes() for name in ASSETS}
+    payloads[code/native_runtime.NAME]=native_runtime.payload(project,cfg)
+    definitions=units(data,code,config,port,interval)
     for path,payload in payloads.items():
         safe_path(path)
         if path.exists() and path.read_bytes()!=payload:raise RuntimeError('Installed dashboard release differs; custom files preserved')

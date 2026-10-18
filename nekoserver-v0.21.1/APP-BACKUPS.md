@@ -4,7 +4,7 @@ The `app_backup` module schedules a private nightly snapshot at **04:15**, confi
 
 ## Install or upgrade
 
-Use your existing confirmed configuration. Select `runtime.backend=rust`; no Rust toolchain is needed on the server. This module deliberately requires Rust even when older modules use Python fallback.
+Use your existing confirmed configuration. It runs on the bundled Rust program; no Rust toolchain is needed on the server.
 
 ```bash
 python3 installer.py --config /path/to/your/config.json --module app_backup --check
