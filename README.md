@@ -17,17 +17,19 @@ Status Dashboard for monitoring the server (need to check if works on a live ser
 What makes sense to be in rust is in rust code, the rest shell and python for the instalation as it's one time thing. 
 
 Stack & Storage Architecture Review
-  +-------------------------------------------------------------------------+
-  |                             SSD STORAGE                                 |
-  |  - Containers / App Data / PostgreSQL Databases                        |
-  |  - Immich App & Library Cache                                           |
-  |  - Navidrome Music Collection (Daily Access)                             |
-  +-------------------------------------------------------------------------+
-                                      |
-         +----------------------------+----------------------------+
-         v                                                         v
-  +-----------------------+                                 +-----------------------+
-  |      HDD STORAGE      |                                 |    EXTERNAL BACKUP    |
-  | - Jellyfin Media      | ===== Cron/Timer Backup =======>| - Immich Offsite      |
-  | - Nextcloud Data      |                                 | - Nextcloud Offsite   |
-  +-----------------------+                                 +-----------------------+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              🚀 SSD STORAGE                                  │
+│  • Containers / App Data / PostgreSQL Databases                              │
+│  • Immich App & Library Cache                                                │
+│  • Navidrome Music Collection (Daily Access)                                 │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                       │
+                ┌──────────────────────┴──────────────────────┐
+                ▼                                             ▼
+┌──────────────────────────────┐              ┌──────────────────────────────┐
+│        💾 HDD STORAGE        │              │     🔌 EXTERNAL BACKUP       │
+│  • Jellyfin Media            │═══ Cron ════▶│  • Immich Offsite             │
+│  • Nextcloud Data            │    Backup    │  • Nextcloud Offsite         │
+└──────────────────────────────┘              └──────────────────────────────┘
+```
