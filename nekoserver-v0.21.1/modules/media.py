@@ -113,8 +113,8 @@ def adapt_to_host(name, text, gpu_present=None, peer_port=None):
 def without_host_adaptations(text):
     """A manifest with every adapt_to_host change undone, for recognising our own output."""
     text = text.replace(GPU_DEVICE_BLOCK, '')
-    text = re.sub(r'      TORRENTING_PORT: "\d+"\n', '', text)
-    return re.sub(r'      - "(\d+):\1/(?:tcp|udp)"\n', '', text)
+    text = re.sub(r' {6}TORRENTING_PORT: "\d+"\n', '', text)
+    return re.sub(r' {6}- "(\d+):\1/(?:tcp|udp)"\n', '', text)
 
 
 def render(template, data, media, uid, gid, tz, bind):

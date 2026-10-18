@@ -23,7 +23,10 @@ def run(ctx):
     archive=relative_path(opts.get('archive_dir','photos/archive'))
     binary=native_runtime.deploy(Path(__file__).resolve().parents[1],cfg,runtime)
     command=(str(binary)+' preservation --config '+str(native_runtime.backup_guard(cfg))) if binary else (sys.executable+' '+str(script)+' --config '+str(native_runtime.backup_guard(cfg)))
+    keep=opts.get('database_keep',8)
+    if type(keep) is not int or not 0<=keep<=520:raise RuntimeError('photos.database_keep must be a whole number from 0 to 520')
     base=f'{command} --data {data} --media {media} --min-age {age} --archive-dir {archive}'
+    if binary:base+=f' --db-keep {keep}'
     schedule=opts.get('backup_schedule','legacy')
     if schedule not in ('legacy','weekly'):raise RuntimeError('Invalid photo backup schedule')
     day=opts.get('backup_weekday','Sun')

@@ -54,7 +54,7 @@ Downloads/requests/uploads are unavailable while writers are stopped. Major appl
 
 ## Recovery and visibility
 
-The worker shares installer/recovery.lock with deployment/snapshot work. Conflicting jobs fail safely; they never run concurrently against the same state. The service's ExecStopPost and a boot resume service process the durable journal. A failed recovery retains the journal and quarantined data for inspection; it never reports a successful update. If a required drive is unavailable, reconnect the correct drive and restart the resume service. Do not delete its journal to bypass a failed recovery.
+The worker shares installer/recovery.lock with deployment/snapshot work. Jobs never run concurrently against the same state: a scheduled job that finds another one running (for example the Sunday photo backup when the 1st is a Sunday, or the nightly app backup while monthly maintenance is still working) waits for it, up to 3 hours, instead of failing and skipping that night. The service's ExecStopPost and a boot resume service process the durable journal. A failed recovery retains the journal and quarantined data for inspection; it never reports a successful update. If a required drive is unavailable, reconnect the correct drive and restart the resume service. Do not delete its journal to bypass a failed recovery.
 
 ```bash
 systemctl list-timers nekoserver-maintenance.timer

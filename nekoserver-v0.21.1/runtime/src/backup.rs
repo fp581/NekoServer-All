@@ -302,9 +302,25 @@ pub fn copy_tree(source: &Path, dest: &Path, apply: bool) -> Result<u64> {
 /// `dest/nextcloud/<user>/files`. Previews (appdata_*), trash, versions, caches and
 /// logs are skipped. A file that changes or disappears mid-copy (a live upload or
 /// delete) is skipped this week rather than failing the backup.
-pub fn copy_cloud(cloud: &Path, dest: &Path, apply: bool) -> Result<(u64, u64, u64)> {
+/// exFAT (and FAT) refuse some names Linux allows: `"*:<>?\|`, control characters,
+/// and a trailing dot or space. Such files cannot be stored on that USB drive.
+fn fat_safe(relative: &Path) -> bool {
+    relative.components().all(|c| {
+        let name = c.as_os_str().to_string_lossy();
+        !name.chars().any(|ch| ch < ' ' || "\"*:<>?\\|".contains(ch))
+            && !name.ends_with('.')
+            && !name.ends_with(' ')
+    })
+}
+pub fn copy_cloud(
+    cloud: &Path,
+    dest: &Path,
+    apply: bool,
+    fat_names: bool,
+) -> Result<(u64, u64, u64)> {
     let (cloud, dest) = separate(cloud, dest)?;
     let (mut copied, mut versions, mut skipped) = (0, 0, 0);
+    let mut refused = vec![];
     for user_dir in list(&cloud)? {
         let user = user_dir
             .file_name()
@@ -324,10 +340,18 @@ pub fn copy_cloud(cloud: &Path, dest: &Path, apply: bool) -> Result<(u64, u64, u
             if name.ends_with(".part") || name.ends_with(".neko-part") {
                 return Ok(());
             }
-            let target = dest.join("nextcloud").join(&user).join("files").join(
-                path.strip_prefix(&files)
-                    .map_err(|_| Error::new("Invalid relative path"))?,
-            );
+            let relative = path
+                .strip_prefix(&files)
+                .map_err(|_| Error::new("Invalid relative path"))?;
+            if fat_names && !fat_safe(relative) {
+                refused.push(format!("{user}/{}", relative.display()));
+                return Ok(());
+            }
+            let target = dest
+                .join("nextcloud")
+                .join(&user)
+                .join("files")
+                .join(relative);
             match add_only_copy(path, &target, apply, 0o600) {
                 Ok(Added::New) => copied += 1,
                 Ok(Added::Version) => versions += 1,
@@ -339,6 +363,13 @@ pub fn copy_cloud(cloud: &Path, dest: &Path, apply: bool) -> Result<(u64, u64, u
         })?;
     }
     println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
+    if !refused.is_empty() {
+        println!(
+            "Nextcloud: {} files not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
+            refused.len(),
+            refused.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
     Ok((copied, versions, skipped))
 }
 /// The USB drive holds only the add-only photo and Nextcloud copies. Full monthly
@@ -574,6 +605,36 @@ pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<
     }
     result
 }
+/// Keep the newest `keep` `immich-<UTC stamp>.sql` dumps in `folder` (0 keeps all).
+/// The stamp sorts by time; other files are never touched.
+pub fn prune_dumps(folder: &Path, keep: u64) -> Result<Vec<String>> {
+    if keep == 0 || !folder.is_dir() {
+        return Ok(vec![]);
+    }
+    let pattern = regex::Regex::new(r"^immich-[0-9]{8}T[0-9]{6}Z\.sql$").unwrap();
+    let mut dumps = vec![];
+    for entry in fs::read_dir(common::safe(folder)?)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if pattern.is_match(&name) && fs::symlink_metadata(entry.path())?.is_file() {
+            dumps.push(name);
+        }
+    }
+    dumps.sort();
+    let excess = dumps.len().saturating_sub(keep as usize);
+    let removed: Vec<String> = dumps.into_iter().take(excess).collect();
+    for name in &removed {
+        fs::remove_file(common::safe(&folder.join(name))?)?;
+    }
+    if !removed.is_empty() {
+        println!(
+            "Database: removed {} old weekly dumps from {}",
+            removed.len(),
+            folder.display()
+        );
+    }
+    Ok(removed)
+}
 pub fn preservation(a: &Args) -> Result<()> {
     common::require_root()?;
     let data = common::mount_path(a.get("data")?)?;
@@ -581,7 +642,10 @@ pub fn preservation(a: &Args) -> Result<()> {
     let cfg = a.path("config")?;
     guard(&cfg, &data, &media)?;
     let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
-    let _recovery = common::lock(&data.join("installer/recovery.lock"))?;
+    let _recovery = common::lock_wait(
+        &data.join("installer/recovery.lock"),
+        std::time::Duration::from_secs(3 * 3600),
+    )?;
     execute(
         Some(&data),
         if a.flag("db-backup") {
@@ -616,6 +680,14 @@ pub fn preservation(a: &Args) -> Result<()> {
                         .ok_or_else(|| Error::new("Invalid database filename"))?,
                 );
                 verified_copy(&created, &target, true, 0o600)?;
+                // Weekly dumps used to pile up forever on both drives.
+                let keep = a.number("db-keep", 8)?;
+                for folder in [
+                    data.join("backups/immich-database"),
+                    media.join("backups/immich-database"),
+                ] {
+                    prune_dumps(&folder, keep)?;
+                }
             }
             Ok(())
         },
@@ -706,7 +778,7 @@ pub fn weekly(a: &Args) -> Result<()> {
             guard(&cfg, &data, &media)?;
             if let Some(cloud) = &cloud {
                 if cloud.is_dir() {
-                    copy_cloud(cloud, &dest, true)?;
+                    copy_cloud(cloud, &dest, true, fstype == "exfat")?;
                     validate_external(&dest, uuid)?;
                     guard(&cfg, &data, &media)?;
                 } else {
@@ -806,7 +878,7 @@ mod tests {
         write(&cloud.join(".ocdata"), b"");
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
-        let (copied, versions, skipped) = copy_cloud(&cloud, &usb, true).unwrap();
+        let (copied, versions, skipped) = copy_cloud(&cloud, &usb, true, false).unwrap();
         assert_eq!((copied, versions, skipped), (3, 0, 0));
         assert_eq!(names(&usb.join("nextcloud")), ["alice", "bob"]);
         assert_eq!(names(&usb.join("nextcloud/alice")), ["files"]);
@@ -824,11 +896,66 @@ mod tests {
         // Second week, one edit and one new file.
         write(&cloud.join("alice/files/Documents/plan.odt"), b"plan v2");
         write(&cloud.join("bob/files/new.txt"), b"new");
-        assert_eq!(copy_cloud(&cloud, &usb, true).unwrap(), (1, 1, 0));
+        assert_eq!(copy_cloud(&cloud, &usb, true, false).unwrap(), (1, 1, 0));
         // Deleted on the server: kept on the USB.
         fs::remove_file(cloud.join("bob/files/todo.txt")).unwrap();
-        copy_cloud(&cloud, &usb, true).unwrap();
+        copy_cloud(&cloud, &usb, true, false).unwrap();
         assert!(usb.join("nextcloud/bob/files/todo.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn exfat_unsafe_names_are_skipped_not_fatal() {
+        assert!(fat_safe(Path::new("Docs/Report 2026.docx")));
+        for bad in [
+            "Meeting 10:30.docx",
+            "what?.txt",
+            "a\"b",
+            "dir./x",
+            "x/trailing ",
+            "tab\there",
+        ] {
+            assert!(!fat_safe(Path::new(bad)), "{bad}");
+        }
+        let root = scratch("fat");
+        let cloud = root.join("cloud");
+        write(&cloud.join("alice/files/ok.txt"), b"ok");
+        write(&cloud.join("alice/files/Meeting 10:30.docx"), b"colon");
+        let usb = root.join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        assert_eq!(copy_cloud(&cloud, &usb, true, true).unwrap(), (1, 0, 0));
+        assert_eq!(names(&usb.join("nextcloud/alice/files")), ["ok.txt"]);
+        // On a Linux filesystem the same file is copied normally.
+        assert_eq!(copy_cloud(&cloud, &usb, true, false).unwrap(), (1, 0, 0));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn old_database_dumps_are_pruned_newest_kept() {
+        let root = scratch("dumps");
+        for stamp in [
+            "20260104T001500Z",
+            "20260111T001500Z",
+            "20260118T001500Z",
+            "20251228T001500Z",
+        ] {
+            write(&root.join(format!("immich-{stamp}.sql")), b"dump");
+        }
+        write(&root.join("immich-20250101T000000Z.sql.part"), b"partial");
+        write(&root.join("notes.txt"), b"mine");
+        let removed = prune_dumps(&root, 2).unwrap();
+        assert_eq!(
+            removed,
+            ["immich-20251228T001500Z.sql", "immich-20260104T001500Z.sql"]
+        );
+        assert_eq!(
+            names(&root),
+            [
+                "immich-20250101T000000Z.sql.part",
+                "immich-20260111T001500Z.sql",
+                "immich-20260118T001500Z.sql",
+                "notes.txt"
+            ]
+        );
+        assert!(prune_dumps(&root, 0).unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

@@ -1,0 +1,4 @@
+# CI test dependencies, pinned by hash (pip --require-hashes). Wheels only.
+pyyaml==6.0.3 \
+    --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d \
+    --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6

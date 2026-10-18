@@ -4,7 +4,7 @@
 |---|---|---|
 | Music audio and downloads | SSD `library/music` and `library/downloads/music` | No automatic file backup, including monthly snapshots |
 | Music application settings/accounts/playlists | SSD appdata | Existing application-state backup policy |
-| Immich photos/videos | SSD `photos/immich-library` | Weekly add-only originals copy to the HDD and to the USB drive; weekly Immich database dump on the HDD |
+| Immich photos/videos | SSD `photos/immich-library` | Weekly add-only originals copy to the HDD and to the USB drive; weekly Immich database dump on the SSD and HDD (newest `photos.database_keep` dumps kept, default 8) |
 | Movies/shows and their downloads | HDD library | No media-file backup; application state remains protected |
 | Nextcloud files | HDD `cloud/files` | Weekly add-only copy of each user's files to the USB drive |
 | App settings and databases, container images | SSD appdata, Docker | Nightly app-state snapshot and monthly pre-update snapshot, both on the HDD |

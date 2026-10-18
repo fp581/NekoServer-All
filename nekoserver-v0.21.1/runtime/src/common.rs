@@ -283,6 +283,32 @@ pub fn lock(path: &Path) -> Result<File> {
     }
     Ok(f)
 }
+/// Shared recovery lock for scheduled jobs: wait for a job that is already running
+/// (polling every 5 s, up to `max`) instead of failing. Scheduled backups and the
+/// monthly update overlap at night; failing would skip that night's or month's run.
+pub fn lock_wait(path: &Path, max: Duration) -> Result<File> {
+    let start = Instant::now();
+    let mut announced = false;
+    loop {
+        match lock(path) {
+            Ok(f) => return Ok(f),
+            Err(e) => {
+                if start.elapsed() >= max {
+                    return Err(Error::new(&format!(
+                        "Another NekoServer job still held {} after {} minutes",
+                        path.display(),
+                        max.as_secs() / 60
+                    )));
+                }
+                if !announced {
+                    println!("Waiting for another NekoServer job to finish ({e})");
+                    announced = true;
+                }
+                thread::sleep(Duration::from_secs(5).min(max));
+            }
+        }
+    }
+}
 pub fn command(args: &[&str], timeout: u64) -> Result<(i32, String)> {
     let mut cmd = Command::new(args[0]);
     cmd.args(&args[1..])
@@ -387,4 +413,28 @@ pub fn directory(path: &Path, mode: u32) -> Result<()> {
         Err(e) => return Err(e.into()),
     }
     Ok(())
+}
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    #[test]
+    fn scheduled_jobs_wait_for_the_lock_then_proceed() {
+        let path = std::env::temp_dir().join(format!("neko-lock-{}", std::process::id()));
+        let held = lock(&path).unwrap();
+        // Busy: the plain lock fails at once; the waiting lock gives up after its budget.
+        assert!(lock(&path).is_err());
+        let start = Instant::now();
+        assert!(lock_wait(&path, Duration::from_secs(1)).is_err());
+        assert!(start.elapsed() >= Duration::from_secs(1));
+        // Released while waiting: the waiter gets it.
+        let releaser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            drop(held);
+        });
+        let got = lock_wait(&path, Duration::from_secs(60));
+        releaser.join().unwrap();
+        assert!(got.is_ok());
+        drop(got);
+        fs::remove_file(path).unwrap();
+    }
 }

@@ -39,10 +39,20 @@ def resolve_image(value):
     req = urllib.request.Request('https://api.github.com/repos/nextcloud/server/releases/latest', headers={'User-Agent': 'NekoServer-installer'})
     with urllib.request.urlopen(req, timeout=30) as response:
         release = json.loads(response.read(200000))
-    match = re.fullmatch(r'v(\d+)\.\d+\.\d+', release.get('tag_name', ''))
+    return image_for_release(release)
+
+
+def image_for_release(release):
+    """Docker image for a fresh install. A brand-new major (x.0.0 or x.0.1) installs the
+    previous major instead: Nextcloud advises waiting for early fixes, and the official
+    Docker image can lag the GitHub release by days, which would fail the install."""
+    match = re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)', release.get('tag_name', ''))
     if not match or release.get('prerelease') or release.get('draft'):
         raise RuntimeError('Stable Nextcloud release could not be resolved')
-    return 'nextcloud:'+match[1]+'-apache'
+    major, minor, patch = (int(x) for x in match.groups())
+    if minor == 0 and patch < 2:
+        major -= 1
+    return f'nextcloud:{major}-apache'
 
 
 def model(config, image):

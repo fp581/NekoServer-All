@@ -1516,7 +1516,10 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
     let cfg = load(&cfgpath)?;
     let data = common::mount_path(string(&cfg, "data_mount")?)?;
     mounts(&cfgpath, &cfg, false)?;
-    let _lock = common::lock(&data.join("installer/recovery.lock"))?;
+    let _lock = common::lock_wait(
+        &data.join("installer/recovery.lock"),
+        std::time::Duration::from_secs(3 * 3600),
+    )?;
     resume(&cfgpath, &cfg)?;
     if recover {
         let report = data.join("reports/jobs/maintenance.json");

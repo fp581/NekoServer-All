@@ -30,7 +30,7 @@ def definitions(config, binary, guard):
         'nekoserver-app-backup.service': (
             '[Unit]\nDescription=NekoServer media application snapshot\n'
             f'RequiresMountsFor={data} {media}\nAfter=docker.service\n'
-            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=2h\n'
+            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'
             f'ExecStart={binary} app-snapshot --config {guard}\n'
             f'ExecStopPost={resume}\nTimeoutStopSec=20min\n'
         ),
