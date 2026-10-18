@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_DIR: nekoserver-v0.21.0
+  RELEASE_DIR: nekoserver-v0.21.1
 
 jobs:
   python:

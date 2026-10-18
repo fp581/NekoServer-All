@@ -1,4 +1,4 @@
-# NekoServer v0.21.0
+# NekoServer v0.21.1
 
 ## v0.21 guided setup
 
@@ -16,7 +16,7 @@ cp config.json my-config.json
 chmod 600 my-config.json
 ```
 
-Verify `media.uid` / `media.gid` against `id -u` / `id -g`, choose your existing `tv.user`, and set the host timezone explicitly (for the supplied schedules: `sudo timedatectl set-timezone Asia/Jerusalem`). Have supported formatted filesystems on separate application SSD/media HDD/external backup drives ready. Keep the OS disk separate. Unmount desktop automounts of the app SSD/HDD before choosing them. Never format a disk without independently identifying its contents.
+Verify `media.uid` / `media.gid` against `id -u` / `id -g`, choose your existing `tv.user`, and set `timezone` in your config (default `Asia/Jerusalem`; it drives container clocks and backup/maintenance schedules) and match the host to it (for the default: `sudo timedatectl set-timezone Asia/Jerusalem`). Have supported formatted filesystems on separate application SSD/media HDD/external backup drives ready. Keep the OS disk separate. Unmount desktop automounts of the app SSD/HDD before choosing them. Never format a disk without independently identifying its contents.
 
 If Python 3.11+ is present, preview without writes:
 
@@ -49,7 +49,7 @@ sudo bash install.sh --retry-failed --apply --config "$PWD/my-config.json"
 sudo python3 acceptance.py --profile full --save --config "$PWD/my-config.json"
 ```
 
-Use the same confirmed configuration on reruns. The persistent copy is `/srv/nekoserver/installer/releases/v0.21.0/config.json`. After a normal reboot, rerun acceptance from that release with its config. Only mark witnessed checks after actually performing them. Test a request/download/import/play, music playback, phone photo upload, Nextcloud client transfer, intended access and independent restoration.
+Use the same confirmed configuration on reruns. The persistent copy is `/srv/nekoserver/installer/releases/v0.21.1/config.json`. After a normal reboot, rerun acceptance from that release with its config. Only mark witnessed checks after actually performing them. Test a request/download/import/play, music playback, phone photo upload, Nextcloud client transfer, intended access and independent restoration.
 
 ## Storage and operation
 

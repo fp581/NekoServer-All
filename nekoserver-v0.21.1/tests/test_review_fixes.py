@@ -86,5 +86,45 @@ class ComposeTests(unittest.TestCase):
         self.assertIn('"/srv/nekoserver/library/downloads/music:/data/downloads/music"', text)
 
 
+class UpgradeMigrationTests(unittest.TestCase):
+    """Servers installed with v0.21.0 must upgrade in place instead of refusing."""
+
+    FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'v0.21.0'
+
+    def previous(self, name):
+        template = (ROOT / 'compose' / f'{name}.yaml').read_text()
+        return media.previous_templates(name, template)
+
+    def test_v0210_lidarr_and_seerr_are_recognised_exactly(self):
+        for name in ('lidarr', 'seerr'):
+            with self.subTest(name=name):
+                shipped = (self.FIXTURES / f'{name}.yaml').read_text()
+                olds = [old for old, _ in self.previous(name)]
+                self.assertIn(shipped, olds)
+                self.assertEqual(self.previous(name)[0][1], 'compose.before-v0.21.1.yaml')
+
+    def test_v0210_seerr_with_non_default_uid_is_migrated(self):
+        shipped = (self.FIXTURES / 'seerr.yaml').read_text()
+        installed = media.render(shipped, '/srv/nekoserver', '/mnt/nekoserver-media', 1234, 2345, 'UTC', '127.0.0.1')
+        olds = [media.render(old, '/srv/nekoserver', '/mnt/nekoserver-media', 1234, 2345, 'UTC', '127.0.0.1')
+                for old, _ in self.previous('seerr')]
+        self.assertIn(installed, olds)
+        self.assertIn('user: "1234:2345"', render('seerr.yaml', uid=1234, gid=2345))
+
+    def test_current_navidrome_template_has_no_pending_migration_from_itself(self):
+        current = (ROOT / 'compose' / 'navidrome.yaml').read_text()
+        self.assertEqual(current, (self.FIXTURES / 'navidrome.yaml').read_text())
+        self.assertNotIn(current, [old for old, _ in self.previous('navidrome')])
+
+    def test_locally_edited_manifest_is_not_recognised(self):
+        edited = (self.FIXTURES / 'lidarr.yaml').read_text().replace('restart: unless-stopped', 'restart: always')
+        self.assertNotIn(edited, [old for old, _ in self.previous('lidarr')])
+
+    def test_unchanged_services_have_no_migrations(self):
+        for name in ('jellyfin', 'sonarr', 'radarr', 'prowlarr', 'qbittorrent'):
+            with self.subTest(name=name):
+                self.assertEqual(self.previous(name), [])
+
+
 if __name__ == '__main__':
     unittest.main()

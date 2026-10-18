@@ -36,6 +36,40 @@ def run_cmd(cmd, timeout=120):
     return result.stdout.strip()
 
 
+# Lines changed in v0.21.1. Earlier unedited manifests are migrated in place.
+LIDARR_V0210_MOUNTS = (
+    '      - "${NEKO_MEDIA}/library:/data"\n'
+    '      - "${NEKO_DATA}/library/downloads/music:/data/downloads/music"\n'
+    '      - "${NEKO_DATA}/library/music:/data/music"\n'
+)
+LIDARR_V0211_MOUNTS = (
+    '      # Single SSD mount: /data/downloads/music and /data/music share one\n'
+    '      # filesystem mount, so imports hardlink or move instead of copying.\n'
+    '      - "${NEKO_DATA}/library:/data"\n'
+)
+NAVIDROME_V0170_SCANNER = (
+    'ND_MUSICFOLDER: "/music"\n      ND_DATAFOLDER: "/data"\n      ND_SCANNER_SCHEDULE: "0 * * * *"\n'
+    '      ND_SCANNER_WATCHERWAIT: "10s"\n      ND_ENABLESHARING: "false"'
+)
+
+
+def previous_templates(name, template):
+    """Earlier shipped templates for ``name`` and the backup file to keep for each."""
+    candidates = {
+        # v0.16.0 and earlier shipped this exact scanner setting.
+        'navidrome': [(NAVIDROME_V0170_SCANNER, 'ND_SCANSCHEDULE: "1h"', 'compose.before-music-setup.yaml')],
+        # v0.21.0 split Lidarr's music folders across separate bind mounts.
+        'lidarr': [(LIDARR_V0211_MOUNTS, LIDARR_V0210_MOUNTS, 'compose.before-v0.21.1.yaml')],
+        # v0.21.0 hardcoded Seerr's account IDs.
+        'seerr': [('user: "${NEKO_UID}:${NEKO_GID}"', 'user: "1000:1000"', 'compose.before-v0.21.1.yaml')],
+    }
+    out = []
+    for new, old, backup in candidates.get(name, []):
+        if new in template:
+            out.append((template.replace(new, old), backup))
+    return out
+
+
 def render(template, data, media, uid, gid, tz, bind):
     substitutions = dict(DATA=str(data), MEDIA=str(media), UID=str(uid), GID=str(gid), TZ=tz, BIND=bind)
     output = template
@@ -88,15 +122,18 @@ def _run(context):
         template = (project_root / 'compose' / f'{name}.yaml').read_text(encoding='utf-8')
         desired = render(template, data, media, uid, gid, tz, bind)
         if dest.exists() and dest.read_text(encoding='utf-8') != desired:
-            # v0.16.0 and earlier shipped this exact scanner setting.
-            old_template=template.replace('ND_MUSICFOLDER: "/music"\n      ND_DATAFOLDER: "/data"\n      ND_SCANNER_SCHEDULE: "0 * * * *"\n      ND_SCANNER_WATCHERWAIT: "10s"\n      ND_ENABLESHARING: "false"','ND_SCANSCHEDULE: "1h"')
-            previous=render(old_template,data,media,uid,gid,tz,bind)
-            backup=safe_path(dest.parent/'compose.before-music-setup.yaml')
-            if name!='navidrome' or old_template==template or dest.read_text(encoding='utf-8')!=previous:
+            # Replace only an unedited copy of a template we shipped earlier.
+            current = dest.read_text(encoding='utf-8')
+            for old_template, backup_name in previous_templates(name, template):
+                previous = render(old_template, data, media, uid, gid, tz, bind)
+                if current == previous:
+                    break
+            else:
                 raise RuntimeError(f'{dest} has local edits or different settings; refusing to overwrite it')
-            if backup.exists() and backup.read_text()!=previous:
-                raise RuntimeError('Music template backup differs; preserved for review')
-            migrations[name]=(backup,previous)
+            backup = safe_path(dest.parent/backup_name)
+            if backup.exists() and backup.read_text() != previous:
+                raise RuntimeError(f'Template backup {backup} differs; preserved for review')
+            migrations[name] = (backup, previous)
         manifests[name] = (dest, desired)
     for name in selected:
         for path in (configs / name, compose_dir / name):

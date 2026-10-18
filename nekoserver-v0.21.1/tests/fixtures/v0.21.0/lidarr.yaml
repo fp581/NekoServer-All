@@ -1,0 +1,23 @@
+services:
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    ports:
+      - "${NEKO_BIND}:8686:8686"
+    environment:
+      PUID: "${NEKO_UID}"
+      PGID: "${NEKO_GID}"
+      TZ: "${NEKO_TZ}"
+    volumes:
+      - "${NEKO_DATA}/appdata/lidarr:/config"
+      - "${NEKO_MEDIA}/library:/data"
+      - "${NEKO_DATA}/library/downloads/music:/data/downloads/music"
+      - "${NEKO_DATA}/library/music:/data/music"
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - neko-media
+networks:
+  neko-media:
+    external: true
+    name: nekoserver-media

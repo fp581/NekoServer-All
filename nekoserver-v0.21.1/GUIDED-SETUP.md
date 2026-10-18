@@ -27,7 +27,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone 
 Use `full` first for base applications and local services. Remote access remains an explicit additional profile; it does not redeploy your apps:
 
 ```bash
-NEKO_RELEASE=/srv/nekoserver/installer/releases/v0.21.0
+NEKO_RELEASE=/srv/nekoserver/installer/releases/v0.21.1
 sudo bash "$NEKO_RELEASE/install.sh" --profile remote_access --apply \
   --config "$NEKO_RELEASE/config.json"
 ```

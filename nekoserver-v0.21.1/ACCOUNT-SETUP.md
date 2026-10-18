@@ -1,4 +1,4 @@
-# Console account setup - v0.21.0
+# Console account setup - v0.21.1
 
 ## v0.21 guided setup
 
@@ -72,7 +72,7 @@ sudo python3 account-setup.py --apply --config /absolute/path/to/confirmed-confi
 
 It selects deployed app manifests. If an imported/existing login fails, rerunning interactively offers ENTER to retry saved credentials or c to enter the current login. Correcting that private record does not reset the account's password in the app. Fresh in-progress records are retained so interrupted first-run setup can authenticate and resume without losing its original generated password.
 
-Older saved configurations do not silently gain this feature or new profile entries. For a new server, use the v0.21.0 sample as the starting point. For existing deployments, use the standalone helper with their confirmed config; do not replace disk/network settings with a fresh sample. This release is still not a general migration or password-rotation tool.
+Older saved configurations do not silently gain this feature or new profile entries. For a new server, use the v0.21.1 sample as the starting point. For existing deployments, use the standalone helper with their confirmed config; do not replace disk/network settings with a fresh sample. This release is still not a general migration or password-rotation tool.
 
 ## What still asks for you
 

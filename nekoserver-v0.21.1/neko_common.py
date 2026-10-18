@@ -7,7 +7,7 @@ import re
 import tempfile
 from pathlib import Path
 
-VERSION = '0.21.0'
+VERSION = '0.21.1'
 
 TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
 ZONEINFO = Path('/usr/share/zoneinfo')
