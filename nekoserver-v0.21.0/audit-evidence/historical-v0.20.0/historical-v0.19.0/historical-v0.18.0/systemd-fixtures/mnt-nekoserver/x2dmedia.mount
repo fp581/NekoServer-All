@@ -1,4 +1,0 @@
-[Mount]
-What=/dev/null
-Where=/mnt/nekoserver-media
-Type=ext4

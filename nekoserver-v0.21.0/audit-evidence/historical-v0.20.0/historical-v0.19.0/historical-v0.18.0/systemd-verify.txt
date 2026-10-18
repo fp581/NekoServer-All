@@ -1,1 +1,0 @@
-Service fixtures verified, not installed on a live server.

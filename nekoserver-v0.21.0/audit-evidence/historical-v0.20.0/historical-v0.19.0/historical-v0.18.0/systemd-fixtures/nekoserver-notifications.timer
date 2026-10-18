@@ -1,7 +1,0 @@
-[Unit]
-Description=NekoServer scheduled health notifications
-[Timer]
-OnBootSec=90s
-OnUnitInactiveSec=60s
-[Install]
-WantedBy=timers.target

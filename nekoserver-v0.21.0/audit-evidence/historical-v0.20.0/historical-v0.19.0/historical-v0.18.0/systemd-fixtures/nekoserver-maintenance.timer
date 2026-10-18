@@ -1,8 +1,0 @@
-[Unit]
-Description=NekoServer monthly night maintenance
-[Timer]
-OnCalendar=*-*-01 02:30:00 Asia/Jerusalem
-Persistent=false
-RandomizedDelaySec=0
-[Install]
-WantedBy=timers.target

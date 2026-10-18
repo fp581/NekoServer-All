@@ -1,9 +1,0 @@
-# NekoServer v0.16.0 audit
-
-710 Python tests, 29 Rust tests and 80 release checks passed. Native formatting and Clippy with warnings denied passed. Exact current output and scope are in audit-evidence/EVIDENCE-NOTES.md.
-
-Implemented: Nextcloud with private loopback access and SSD/HDD persistence, gateway/dashboard/acceptance integration; monthly 02:30 Asia/Jerusalem three-physical-drive complete state/image snapshots; isolated restored-stack HTTP/database/file probes; declared-stream image updates; matched data/image rollback with durable interruption recovery; private independent-copy verification/staging. Scheduled orchestration uses Rust. Python handles installation and optional ad hoc disaster staging. VM/KVM is unnecessary; OS upgrades and Bazzite migration remain separate.
-
-See NEXTCLOUD.md and MONTHLY-MAINTENANCE.md for setup, credentials, schedules, backup coverage, capacity, downtime, version policy, journal recovery and independent restoration. Existing hourly archive/daily SQL/weekly photo copying are retained. SSD/USB full snapshots are monthly. HDD working data and HDD snapshots share one disk failure domain. No automatic deletion, formatting, OS upgrade or automatic reboot is introduced.
-
-Tests exercise real files, tar archives, checksums, local HTTP, installer modules and native workers with Docker/disk/systemd adapters. Real installation, upstream container startup/migrations, phone/desktop clients, actual app connections/playback, host permissions/sandbox, USB behavior and independent disaster restore still require the intended PC. This is a tested software release ready for controlled deployment, not evidence that a physical server has already been installed and accepted.

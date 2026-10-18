@@ -1,8 +1,0 @@
-[Unit]
-Description=NekoServer versioned music backup
-RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
-[Service]
-Type=oneshot
-UMask=0077
-TimeoutStartSec=6h
-ExecStart=/workspace/scratch/1b7b3a1e8239/work/nekoserver-v0.18.0/runtime/bin/nekoserver-runtime music-backup --config /etc/nekoserver-backups/config.json

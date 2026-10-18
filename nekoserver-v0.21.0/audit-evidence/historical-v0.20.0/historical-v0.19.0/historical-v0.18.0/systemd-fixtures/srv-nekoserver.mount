@@ -1,4 +1,0 @@
-[Mount]
-What=/dev/null
-Where=/srv/nekoserver
-Type=ext4
