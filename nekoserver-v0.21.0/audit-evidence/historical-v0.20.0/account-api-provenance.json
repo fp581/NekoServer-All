@@ -1,0 +1,35 @@
+{
+  "checked_on": "2026-10-18",
+  "scope": "Primary upstream account/API contracts; endpoints may change; fixture checks are not live containers",
+  "references": [
+    "https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Api/Controllers/StartupController.cs",
+    "https://github.com/navidrome/navidrome/blob/master/server/auth.go",
+    "https://github.com/navidrome/navidrome/blob/master/server/nativeapi/native_api.go",
+    "https://github.com/navidrome/navidrome/blob/master/server/nativeapi/library.go",
+    "https://github.com/immich-app/immich/blob/main/server/src/controllers/auth.controller.ts",
+    "https://github.com/seerr-team/seerr/blob/develop/seerr-api.yml",
+    "https://github.com/seerr-team/seerr/blob/develop/server/routes/auth.ts",
+    "https://github.com/Sonarr/Sonarr/blob/develop/src/Sonarr.Api.V3/Config/HostConfigController.cs",
+    "https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-%28qBittorrent-5.0%29"
+  ],
+  "retrieved_source_sha256": {
+    "immich-auth-dto.ts": "3cdd70a86f912742b58d006f48db10faacfde5ef718cba4f6f224be6a65b3faf",
+    "immich-auth.ts": "81eb2ec932b8bade488989ec7e2e10d0fcf54fb507077ade92de99f40ff39a06",
+    "immich-server-dto.ts": "db81e51a077cb5de2fb2567397367b2bf5b4e97a64690de74996cc1c85e0e8f7",
+    "immich-server.ts": "eb82afaa7191b72c84dcd44f30f31d3a22e732053669f4512c64e233f4a3fb1f",
+    "jellyfin-startup.cs": "361957272df8be7bb3f832913df746922e95e74d4b07bbf1f580315d70dfb92b",
+    "native-native_api.go": "3728e171c905ce9e634fd1415c5b929d176cbdc0cf62c3fbe9623155d3a33f63",
+    "navidrome-auth.go": "04fe8ba82d159b6b86a59438f3c0640b5f80dd5f3d3735adef6961e46a69dbb4",
+    "navidrome-library.go": "e200e27116b3d4db9946a0d8646e67da2d8e72b570b17da11f99f238073c9802",
+    "navidrome-server.go": "df639b6ba54cb558243255a8780e4114a1f87b1dae27868ce333d4af974d108f",
+    "navidrome-user.go": "6832315af287f83a2f63c54438b03352c1fb971677a79f39dc614ad1ba995048",
+    "seerr-api.yml": "9533fc4ce04a5e68ef3d7c2deef5a25c43b560dbde07c361eb0f736fce66bf56",
+    "seerr-auth.ts": "1bfe7e51ad3da83c7831d5d2cdc1d5194836fc3c2a1e7dd42d07b86e4eace994",
+    "seerr-settings.ts": "a2063279c6a5cff0648862c303946c2d2d55d5f3364efe4f01a9958301a0b9f2",
+    "seerr-user-settings.ts": "34c7edc406a179fb083437934151fe8cbf335c58c7563c886d69843c5e123aa5",
+    "seerr-user.ts": "c84eeaa6fb39ef095fa2a201c4cd02f0b8013449b6ba17438a8e96467a8b94cd",
+    "sonarr-auth.cs": "9c16761c08ae75b2956e1774b1913b3421433ce469b4335ee3d35aac330557b0",
+    "sonarr-host-controller.cs": "1d47c7be2739cb573a68ef4f7966d5787908d69d49adbc9e6a4a66b19c175bc5",
+    "sonarr-host.cs": "c0be9d372743534f1e06e1be5f19d5cea9df5aa2de4a2b9c2363269e38f011c4"
+  }
+}

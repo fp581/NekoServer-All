@@ -1,0 +1,166 @@
+[
+  {
+    "check": "Python source syntax",
+    "result": "pass"
+  },
+  {
+    "check": "Installer shell syntax",
+    "result": "pass"
+  },
+  {
+    "check": "foundation --check",
+    "result": "pass"
+  },
+  {
+    "check": "foundation --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "media --check",
+    "result": "pass"
+  },
+  {
+    "check": "media --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "photos --check",
+    "result": "pass"
+  },
+  {
+    "check": "photos --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "full --check",
+    "result": "pass"
+  },
+  {
+    "check": "full --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "network --check",
+    "result": "pass"
+  },
+  {
+    "check": "network --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "media_monitor --check",
+    "result": "pass"
+  },
+  {
+    "check": "media_monitor --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "tv --check",
+    "result": "pass"
+  },
+  {
+    "check": "tv --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "dashboard --check",
+    "result": "pass"
+  },
+  {
+    "check": "dashboard --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "lan_access --check",
+    "result": "pass"
+  },
+  {
+    "check": "lan_access --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "remote_access --check",
+    "result": "pass"
+  },
+  {
+    "check": "remote_access --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "networking --check",
+    "result": "pass"
+  },
+  {
+    "check": "networking --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "app_backup --check",
+    "result": "pass"
+  },
+  {
+    "check": "app_backup --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "notifications --check",
+    "result": "pass"
+  },
+  {
+    "check": "notifications --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "server_os --check",
+    "result": "pass"
+  },
+  {
+    "check": "server_os --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "host_backup --check",
+    "result": "pass"
+  },
+  {
+    "check": "host_backup --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "heartbeat --check",
+    "result": "pass"
+  },
+  {
+    "check": "heartbeat --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "cloud --check",
+    "result": "pass"
+  },
+  {
+    "check": "cloud --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "music --check",
+    "result": "pass"
+  },
+  {
+    "check": "music --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "accounts --check",
+    "result": "pass"
+  },
+  {
+    "check": "accounts --dry-run",
+    "result": "pass"
+  },
+  {
+    "check": "Native source/binary integrity",
+    "result": "pass"
+  }
+]

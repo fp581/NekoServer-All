@@ -1,0 +1,140 @@
+   Compiling version_check v0.9.5
+    Checking typenum v1.20.1
+    Checking memchr v2.8.3
+   Compiling autocfg v1.5.1
+   Compiling zmij v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling libc v0.2.190
+   Compiling httparse v1.10.1
+   Compiling generic-array v0.14.7
+    Checking regex-syntax v0.8.11
+   Compiling serde_json v1.0.152
+   Compiling num-traits v0.2.19
+    Checking iana-time-zone v0.1.65
+    Checking cpufeatures v0.2.17
+    Checking itoa v1.0.18
+    Checking cfg-if v1.0.5
+    Checking aho-corasick v1.1.5
+    Checking chrono v0.4.45
+    Checking crypto-common v0.1.7
+    Checking block-buffer v0.10.4
+    Checking digest v0.10.7
+    Checking sha2 v0.10.9
+    Checking regex-automata v0.4.18
+    Checking regex v1.13.1
+    Checking nekoserver-runtime v0.19.0 (/workspace/scratch/1b7b3a1e8239/work/nekoserver-v0.19.0/runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.46s
+   Compiling typenum v1.20.1
+   Compiling memchr v2.8.3
+   Compiling regex-syntax v0.8.11
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling cpufeatures v0.2.17
+   Compiling num-traits v0.2.19
+   Compiling itoa v1.0.18
+   Compiling iana-time-zone v0.1.65
+   Compiling cfg-if v1.0.5
+   Compiling libc v0.2.190
+   Compiling httparse v1.10.1
+   Compiling aho-corasick v1.1.5
+   Compiling chrono v0.4.45
+   Compiling generic-array v0.14.7
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling regex-automata v0.4.18
+   Compiling serde_json v1.0.152
+   Compiling regex v1.13.1
+   Compiling nekoserver-runtime v0.19.0 (/workspace/scratch/1b7b3a1e8239/work/nekoserver-v0.19.0/runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.10s
+     Running unittests src/main.rs (target/debug/deps/nekoserver_runtime-79849ecc141f8ffb)
+
+running 32 tests
+test collect::os_tests::normal_or_unknown_memory_does_not_alert ... ok
+test collect::os_tests::low_available_memory_is_alerted ... ok
+test host_snapshot::tests::recursion_refused ... ok
+test host_snapshot::tests::duplicate_id_refused ... ok
+test host_snapshot::tests::root_refused ... ok
+test maintenance::tests::image_ids_are_immutable ... ok
+test maintenance::tests::monthly_automated_failures_and_missing_configuration_still_block ... ok
+test maintenance::tests::monthly_manual_playback_does_not_block_healthy_automation ... ok
+test maintenance::tests::reject_uncovered_persistent_state ... ok
+test maintenance::tests::rehearsal_never_joins_production_networks ... ok
+test maintenance::tests::root_scope_excludes_downloads_and_includes_all_state ... ok
+test media::tests::chunk_extensions_and_multiple_chunks_are_supported ... ok
+test media::tests::chunked_json_is_decoded ... ok
+test media::tests::invalid_chunk_length_is_rejected ... ok
+test media::tests::oversized_chunk_is_rejected_without_allocation ... ok
+test media::tests::unterminated_chunked_response_is_rejected ... ok
+test notify::tests::mount_alert_is_immediate ... ok
+test media::tests::api_records_must_be_objects ... ok
+test media::tests::truncated_chunks_are_rejected ... ok
+test notify::tests::stale_input_never_recovers_reported_problem ... ok
+test notify::tests::reported_problem_recovers_on_fresh_input ... ok
+test notify::tests::unknown_app_is_not_recovered ... ok
+test os_policy::tests::device_paths_are_narrow ... ok
+test notify::tests::transient_failure_is_debounced ... ok
+test notify::tests::untrusted_titles_and_ids_are_not_sent ... ok
+test notify::tests::unsent_recovery_is_silent ... ok
+test os_policy::tests::idle_timer_encoding_and_invalid_policies ... ok
+test startup::tests::broad_wrong_or_noncanonical_lan_refused ... ok
+test startup::tests::guard_config_does_not_allow_root_mount ... ok
+test startup::tests::physical_lan_only ... ok
+test heartbeat::tests::urls_are_narrow ... ok
+test notify::tests::rejects_destination_injection ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Compiling version_check v0.9.5
+   Compiling typenum v1.20.1
+   Compiling memchr v2.8.3
+   Compiling autocfg v1.5.1
+   Compiling zmij v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling httparse v1.10.1
+   Compiling libc v0.2.190
+   Compiling regex-syntax v0.8.11
+   Compiling serde_json v1.0.152
+   Compiling generic-array v0.14.7
+   Compiling num-traits v0.2.19
+   Compiling itoa v1.0.18
+   Compiling cpufeatures v0.2.17
+   Compiling iana-time-zone v0.1.65
+   Compiling cfg-if v1.0.5
+   Compiling aho-corasick v1.1.5
+   Compiling chrono v0.4.45
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling regex-automata v0.4.18
+   Compiling regex v1.13.1
+   Compiling nekoserver-runtime v0.19.0 (/workspace/scratch/1b7b3a1e8239/work/nekoserver-v0.19.0/runtime)
+    Finished `release` profile [optimized] target(s) in 30.25s
+   Compiling version_check v0.9.5
+   Compiling typenum v1.20.1
+   Compiling memchr v2.8.3
+   Compiling autocfg v1.5.1
+   Compiling zmij v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling libc v0.2.190
+   Compiling httparse v1.10.1
+   Compiling regex-syntax v0.8.11
+   Compiling serde_json v1.0.152
+   Compiling generic-array v0.14.7
+   Compiling cfg-if v1.0.5
+   Compiling num-traits v0.2.19
+   Compiling iana-time-zone v0.1.65
+   Compiling itoa v1.0.18
+   Compiling aho-corasick v1.1.5
+   Compiling cpufeatures v0.2.17
+   Compiling chrono v0.4.45
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+   Compiling sha2 v0.10.9
+   Compiling regex-automata v0.4.18
+   Compiling regex v1.13.1
+   Compiling nekoserver-runtime v0.19.0 (/workspace/scratch/1b7b3a1e8239/work/nekoserver-v0.19.0/runtime)
+    Finished `release` profile [optimized] target(s) in 30.75s

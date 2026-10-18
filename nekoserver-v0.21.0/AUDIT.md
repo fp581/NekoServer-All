@@ -1,0 +1,11 @@
+# NekoServer v0.21.0 audit
+
+Current automated evidence covers 816 distinct Python tests (full regression plus the three subsequently added provider tests), 32 Rust tests and 41 release checks. No failures or skips are accepted by packaging. Exact commands/results and limitations are in audit-evidence/EVIDENCE-NOTES.md. ZIP CRC and manifest checksums are verified during packaging.
+
+This release adds a shared one-time guided desktop handoff: clear numbered instructions, normal-user browser/app launch, yes/no confirmation, no reopening/repeating, and machine verification before completion where available. Missing desktop launch falls back to clear manual instructions; read-only/headless runs do not launch or prompt. Ctrl+C/EOF leaves required work pending. External passwords/2FA codes are entered only in their provider applications; authorization URLs are not sent to the durable installer logger.
+
+The flows cover failed/pending local account setup, selected-app security review, Tailscale server authorization, private HTTPS prerequisites, phone clients/mobile-data tests, selected provider account/challenge setup, TV/Steam/controller/display tests, new notification/independent-monitor configuration and guided witnessed acceptance. Local email-shaped accounts do not imply external email verification. Existing account choices are retained and no passwords are reset automatically. Supported machine checks and user-witnessed confirmations remain separate evidence.
+
+Remote access remains an explicit remote_access profile after base full setup. It now guides sign-in, HTTPS and phones in one interactive run. Existing private route ownership protections, localhost backends, storage/backup schedules and Rust workers remain in place. Updated 21-page INSTALLATION-GUIDE.pdf and GUIDED-SETUP.md describe the actual flow. Python is used only for installation/guidance here; no new persistent Python worker was introduced.
+
+Validation uses isolated fixtures, not the future physical server or a live full VM. Real provider approval, installed app versions, phone permissions/playback, hardware/HDMI/controller behavior and independent restoration still need acceptance on the intended system.
