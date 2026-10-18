@@ -225,7 +225,10 @@ pub fn run(a: &Args) -> Result<()> {
     let selected = sources(&cfg, &media)?;
     let _lock = common::lock(Path::new("/run/nekoserver-host-snapshot.lock"))?;
     resume()?;
-    let _recovery = common::lock(&data.join("installer/recovery.lock"))?;
+    let _recovery = common::lock_wait(
+        &data.join("installer/recovery.lock"),
+        std::time::Duration::from_secs(3 * 3600),
+    )?;
     backup::execute(Some(&data), "host", &cfgpath, || {
         snapshot(&cfgpath, &cfg, &data, &media, &selected)
     })

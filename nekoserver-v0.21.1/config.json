@@ -139,7 +139,8 @@
     "archive_interval_minutes": 10080,
     "archive_min_age_seconds": 600,
     "database_backup_time": "02:15",
-    "backup_schedule": "weekly"
+    "backup_schedule": "weekly",
+    "database_keep": 8
   },
   "profiles": {
     "foundation": [

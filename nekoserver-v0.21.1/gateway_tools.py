@@ -10,6 +10,7 @@ from network_access import private_ip,lan,candidates,verify_lan
 from neko_common import VERSION,safe_path,atomic_write,atomic_json,ensure_directory
 APPS={'jellyfin':('Jellyfin',8096,8443),'seerr':('Seerr',5055,8444),'immich':('Immich',2283,8445),'navidrome':('Music',4533,8446),'nextcloud':('Nextcloud',8088,8447)}
 ROOT=Path(__file__).resolve().parent
+OCC_GET,OCC_SET,OCC_DELETE='config:system:get','config:system:set','config:system:delete'
 
 def command(args,timeout=30,env=None):
     try:p=subprocess.run(args,capture_output=True,text=True,timeout=timeout,env=env)
@@ -235,20 +236,20 @@ def configure_cloud_origin(config, host, port):
     compose=['docker','--host','unix:///var/run/docker.sock','compose','-p','neko-nextcloud','-f',str(folder/'compose.yaml'),'--env-file',str(folder/'.env'),*compose_image_override(folder/'compose.yaml')]
     base=compose+['exec','-T','--user','www-data','nextcloud','php','occ']
     def get(key):
-        try:return json.loads(command(base+['config:system:get',key,'--output=json']))
+        try:return json.loads(command(base+[OCC_GET,key,'--output=json']))
         except (RuntimeError,ValueError):return None
     values=get('trusted_domains')
     if not isinstance(values,list):raise RuntimeError('Cannot inspect Nextcloud trusted hosts')
-    if host not in values:command(base+['config:system:set','trusted_domains',str(len(values)),'--value='+host])
-    command(base+['config:system:set','overwriteprotocol','--value=https'])
+    if host not in values:command(base+[OCC_SET,'trusted_domains',str(len(values)),'--value='+host])
+    command(base+[OCC_SET,'overwriteprotocol','--value=https'])
     previous=get('overwritehost')
     if isinstance(previous,str) and previous.endswith(':'+str(port)):
-        command(base+['config:system:delete','overwritehost'])
+        command(base+[OCC_DELETE,'overwritehost'])
     cli=get('overwrite.cli.url')
     if not (isinstance(cli,str) and cli.startswith('https://') and cli.endswith(':'+str(port))):
-        command(base+['config:system:set','overwrite.cli.url','--value=https://'+host+':'+str(port)])
+        command(base+[OCC_SET,'overwrite.cli.url','--value=https://'+host+':'+str(port)])
     for index,proxy in enumerate(cloud_proxies(compose)):
-        command(base+['config:system:set','trusted_proxies',str(index),'--value='+proxy])
+        command(base+[OCC_SET,'trusted_proxies',str(index),'--value='+proxy])
 
 
 def cloud_proxies(compose):

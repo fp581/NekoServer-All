@@ -34,6 +34,7 @@ class BackupSecretsTests(unittest.TestCase):
         (data / 'secrets/accounts/APP-CREDENTIALS.txt').write_bytes(SECRET)
         snap = self.root / 'snapshot'
         snap.mkdir()
+        (snap / 'manifest.json').write_text('{"format": "neko-maintenance-v1"}')
         archive = subprocess.run(['tar', '--create', '--file', '-', '-C', str(data), 'secrets/accounts'],
                                  capture_output=True, check=True).stdout
         subprocess.run(['openssl', 'cms', '-encrypt', '-binary', '-aes256', '-outform', 'DER',
@@ -94,6 +95,28 @@ class BackupSecretsTests(unittest.TestCase):
         (self.root / 'exists').mkdir()
         with self.assertRaises(RuntimeError):
             backup_secrets.restore(snap, self.root / 'exists', 'correct horse')
+
+    def test_restore_refuses_unsafe_or_wrong_paths(self):
+        self.make_key()
+        snap = self.seal_snapshot()
+        out = str(self.root / 'out')
+        cases = [
+            ('-snapshot', out),                       # would look like an option
+            ('snapshot', out),                        # relative
+            (str(self.root / 'snapshot/../snapshot'), out),
+            (str(snap), '-out'),
+            (str(snap), str(self.root / 'missing-parent/out')),
+        ]
+        for snapshot, dest in cases:
+            with self.subTest(snapshot=snapshot, dest=dest), self.assertRaises(RuntimeError):
+                backup_secrets.restore(snapshot, dest, 'correct horse')
+        (self.root / 'link').symlink_to(snap)
+        with self.assertRaises(RuntimeError):
+            backup_secrets.restore(str(self.root / 'link'), out, 'correct horse')
+        (snap / 'manifest.json').write_text('{"format": "something-else"}')
+        with self.assertRaisesRegex(RuntimeError, 'Not a monthly snapshot'):
+            backup_secrets.restore(snap, out, 'correct horse')
+        self.assertFalse((self.root / 'out').exists())
 
     def test_password_never_on_command_line(self):
         seen = []

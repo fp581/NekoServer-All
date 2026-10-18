@@ -38,7 +38,10 @@ pub fn run(a: &Args) -> Result<()> {
     let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
     let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
     backup::guard(&config, &data, &media)?;
-    let _lock = common::lock(&data.join("installer/recovery.lock"))?;
+    let _lock = common::lock_wait(
+        &data.join("installer/recovery.lock"),
+        std::time::Duration::from_secs(2 * 3600),
+    )?;
     backup::execute(Some(&data), "music", &config, || {
         let source = common::safe(&data.join("library/music"))?;
         let root = common::safe(&media.join("backups/music"))?;

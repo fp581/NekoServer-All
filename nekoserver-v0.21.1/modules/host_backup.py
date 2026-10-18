@@ -102,7 +102,7 @@ def definitions(config, binary, private):
     mounts = f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\n'
     return {
         'nekoserver-host-backup.service': '[Unit]\nDescription=NekoServer host and user snapshot\n'+mounts+
-            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=2h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec=5min\n',
+            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec=5min\n',
         'nekoserver-host-backup.timer': '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'+f'[Timer]\nOnCalendar=*-*-* {time}:00\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
         'nekoserver-host-resume.service': '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'+mounts+
             '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=5min\n'+f'ExecStart={resume}\n[Install]\nWantedBy=multi-user.target\n',

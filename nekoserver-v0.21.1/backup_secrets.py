@@ -15,6 +15,7 @@ Usage:
 """
 import argparse
 import getpass
+import json
 import os
 from pathlib import Path
 import pwd
@@ -119,16 +120,42 @@ def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, user=None, check=is_s
     raise RuntimeError('Backup key not created: sudo password not confirmed')
 
 
+def absolute(value, what):
+    """An absolute, symlink-free path without '..'. Absolute paths start with '/',
+    so they can never be read as a command-line option by openssl or tar."""
+    path = Path(value)
+    if not path.is_absolute() or '..' in path.parts or '\x00' in str(path):
+        raise RuntimeError(f'{what} must be an absolute path without ".."')
+    return safe_path(path)
+
+
+def snapshot_files(snapshot):
+    """Check that ``snapshot`` is a monthly snapshot and return its three files."""
+    snapshot = absolute(snapshot, 'Snapshot')
+    if not snapshot.is_dir():
+        raise RuntimeError('Snapshot directory not found')
+    try:
+        manifest = json.loads((snapshot / 'manifest.json').read_text())
+    except (OSError, ValueError):
+        raise RuntimeError('Not a monthly snapshot: manifest.json missing or unreadable') from None
+    if not isinstance(manifest, dict) or manifest.get('format') != 'neko-maintenance-v1':
+        raise RuntimeError('Not a monthly snapshot')
+    files = []
+    for name in (ARCHIVE_NAME, KEY_NAME, CERT_NAME):
+        path = safe_path(snapshot / name)
+        if not path.is_file():
+            raise RuntimeError('This snapshot holds no encrypted password files' if name == ARCHIVE_NAME
+                               else 'Snapshot key copy is missing')
+        files.append(path)
+    return files
+
+
 def restore(snapshot, destination, password):
     """Decrypt a snapshot's password folder into a new private directory."""
-    snapshot, destination = safe_path(Path(snapshot)), safe_path(Path(destination))
-    archive, key, cert = (snapshot / ARCHIVE_NAME, snapshot / KEY_NAME, snapshot / CERT_NAME)
-    if not archive.is_file():
-        raise RuntimeError('This snapshot holds no encrypted password files')
-    if not key.is_file() or not cert.is_file():
-        raise RuntimeError('Snapshot key copy is missing')
-    if not destination.is_absolute() or destination.exists():
-        raise RuntimeError('Choose a new absolute directory for the restored password files')
+    archive, key, cert = snapshot_files(snapshot)
+    destination = absolute(destination, 'Restore directory')
+    if destination.exists() or not destination.parent.is_dir():
+        raise RuntimeError('Choose a new directory, inside an existing folder, for the restored password files')
     if not unlocks(password, key):
         raise RuntimeError('Wrong password for this backup')
     plain = openssl(['cms', '-decrypt', '-binary', '-inform', 'DER', '-in', str(archive), '-inkey', str(key),

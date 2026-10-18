@@ -85,6 +85,7 @@ fn entry() -> Result<()> {
             "min-age",
             "db-backup",
             "archive-dir",
+            "db-keep",
         ],
         "weekly" => vec![
             "config",

@@ -142,6 +142,19 @@ class TorrentPortTests(unittest.TestCase):
         self.assertEqual(acceptance.peer_bindings(None, config), set())
 
 
+class NextcloudImageTests(unittest.TestCase):
+    def test_new_major_waits_for_early_fixes(self):
+        from modules import nextcloud
+        pick = lambda tag: nextcloud.image_for_release({'tag_name': tag})
+        self.assertEqual(pick('v32.0.0'), 'nextcloud:31-apache')
+        self.assertEqual(pick('v32.0.1'), 'nextcloud:31-apache')
+        self.assertEqual(pick('v32.0.2'), 'nextcloud:32-apache')
+        self.assertEqual(pick('v32.1.0'), 'nextcloud:32-apache')
+        for bad in ({'tag_name': 'v32.0.3', 'prerelease': True}, {'tag_name': 'nightly'}):
+            with self.assertRaises(RuntimeError):
+                nextcloud.image_for_release(bad)
+
+
 class UpgradeMigrationTests(unittest.TestCase):
     """Servers installed with v0.21.0 must upgrade in place instead of refusing."""
 
