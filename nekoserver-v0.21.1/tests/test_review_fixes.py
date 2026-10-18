@@ -86,6 +86,62 @@ class ComposeTests(unittest.TestCase):
         self.assertIn('"/srv/nekoserver/library/downloads/music:/data/downloads/music"', text)
 
 
+class JellyfinGpuTests(unittest.TestCase):
+    def test_gpu_block_kept_when_device_present(self):
+        text = render('jellyfin.yaml')
+        self.assertEqual(media.adapt_to_host('jellyfin', text, gpu_present=True), text)
+        self.assertIn(media.GPU_DEVICE_BLOCK, text)
+
+    def test_gpu_block_removed_without_device_and_compose_stays_valid(self):
+        import yaml
+        adapted = media.adapt_to_host('jellyfin', render('jellyfin.yaml'), gpu_present=False)
+        service = yaml.safe_load(adapted)['services']['jellyfin']
+        self.assertNotIn('devices', service)
+        self.assertEqual(service['restart'], 'unless-stopped')
+
+    def test_other_services_untouched(self):
+        text = render('sonarr.yaml')
+        self.assertEqual(media.adapt_to_host('sonarr', text, gpu_present=False), text)
+
+
+class TorrentPortTests(unittest.TestCase):
+    def test_closed_by_default(self):
+        self.assertIsNone(media.torrent_port({}))
+        text = render('qbittorrent.yaml')
+        self.assertEqual(media.adapt_to_host('qbittorrent', text, peer_port=None), text)
+
+    def test_invalid_or_reserved_ports_refused(self):
+        for bad in (80, 8080, 8443, 2283, 70000, '6881', True):
+            with self.subTest(bad=bad), self.assertRaises(RuntimeError):
+                media.torrent_port({'torrent_port': bad})
+
+    def test_opened_port_is_published_and_set_in_qbittorrent(self):
+        import yaml
+        text = media.adapt_to_host('qbittorrent', render('qbittorrent.yaml'), peer_port=51413)
+        service = yaml.safe_load(text)['services']['qbittorrent']
+        self.assertEqual(service['environment']['TORRENTING_PORT'], '51413')
+        self.assertEqual(service['ports'], ['127.0.0.1:8080:8080', '51413:51413/tcp', '51413:51413/udp'])
+
+    def test_any_earlier_variant_is_recognised_as_ours(self):
+        base = render('qbittorrent.yaml')
+        for port in (6881, 51413):
+            opened = media.adapt_to_host('qbittorrent', base, peer_port=port)
+            self.assertEqual(media.without_host_adaptations(opened), base)
+        jellyfin = render('jellyfin.yaml')
+        self.assertEqual(media.without_host_adaptations(jellyfin),
+                         media.adapt_to_host('jellyfin', jellyfin, gpu_present=False))
+
+    def test_acceptance_allows_only_the_configured_peer_port(self):
+        import acceptance
+        inspect = {'Config': {'Env': ['PUID=1000', 'TORRENTING_PORT=51413']}}
+        self.assertEqual(acceptance.peer_port(inspect), 51413)
+        config = {'media': {'torrent_port': 51413}}
+        self.assertEqual(acceptance.peer_bindings(51413, config), {'51413/tcp', '51413/udp'})
+        # Container claims a port the config did not choose: nothing is exempt.
+        self.assertEqual(acceptance.peer_bindings(51413, {'media': {'torrent_port': None}}), set())
+        self.assertEqual(acceptance.peer_bindings(None, config), set())
+
+
 class UpgradeMigrationTests(unittest.TestCase):
     """Servers installed with v0.21.0 must upgrade in place instead of refusing."""
 

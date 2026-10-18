@@ -113,7 +113,8 @@
     ],
     "uid": 1000,
     "gid": 1000,
-    "bind_ip": "127.0.0.1"
+    "bind_ip": "127.0.0.1",
+    "torrent_port": null
   },
   "storage": {
     "data_ssd": {
@@ -378,7 +379,8 @@
     "backend": "rust"
   },
   "app_backup": {
-    "time": "04:15"
+    "time": "04:15",
+    "keep_snapshots": 14
   },
   "notifications": {
     "endpoint": "",
@@ -399,7 +401,8 @@
     "steam": true,
     "samba": true,
     "extra_paths": [],
-    "minimum_free_gb": 2
+    "minimum_free_gb": 2,
+    "keep_snapshots": 14
   },
   "heartbeat": {
     "interval_seconds": 300
@@ -417,7 +420,7 @@
   "maintenance": {
     "time": "02:30",
     "minimum_free_gb": 20,
-    "require_external": true,
+    "keep_snapshots": 3,
     "night_end_hour": 6,
     "health_wait_seconds": 300
   },

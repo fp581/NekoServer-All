@@ -97,20 +97,36 @@ fn idle(cfg: &Value) -> Result<()> {
     }
     Ok(())
 }
-fn walk(source: &Path, relative: &Path, device: u64, out: &mut Vec<Value>) -> Result<()> {
+/// Sockets, FIFOs, devices and nested filesystems are skipped and listed rather than
+/// failing the backup; hard-linked files are copied as independent files.
+fn walk(
+    source: &Path,
+    relative: &Path,
+    device: u64,
+    out: &mut Vec<Value>,
+    skipped: &mut Vec<Value>,
+) -> Result<()> {
     common::safe(
         source
             .parent()
             .ok_or_else(|| Error::new("Invalid source"))?,
     )?;
     let m = fs::symlink_metadata(source)?;
-    if m.dev() != device
-        || !(m.is_dir() || m.is_file() || m.file_type().is_symlink())
-        || (m.is_file() && m.nlink() != 1)
-    {
-        return Err(Error::new(
-            "Special, hardlinked or nested filesystem source refused",
-        ));
+    let reason = if m.dev() != device && !m.file_type().is_symlink() {
+        Some("nested filesystem")
+    } else if !(m.is_dir() || m.is_file() || m.file_type().is_symlink()) {
+        Some("special file")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        if relative.components().count() <= 1 {
+            return Err(Error::new(
+                "Backup source is not a regular directory or file",
+            ));
+        }
+        skipped.push(json!({"path":relative.to_str().unwrap_or("?"),"reason":reason}));
+        return Ok(());
     }
     if m.is_file() && m.mode() & 0o6000 != 0 {
         return Err(Error::new("Privileged file metadata refused"));
@@ -141,6 +157,7 @@ fn walk(source: &Path, relative: &Path, device: u64, out: &mut Vec<Value>) -> Re
                 &relative.join(child.file_name()),
                 device,
                 out,
+                skipped,
             )?;
         }
     }
@@ -178,9 +195,11 @@ fn sources(cfg: &Value, media: &Path) -> Result<Vec<(String, PathBuf, bool)>> {
     }
     Ok(out)
 }
-fn inventory(selected: &[(String, PathBuf, bool)]) -> Result<(Vec<Value>, Vec<String>)> {
+type Inventory = (Vec<Value>, Vec<String>, Vec<Value>);
+fn inventory(selected: &[(String, PathBuf, bool)]) -> Result<Inventory> {
     let mut files = vec![];
     let mut missing = vec![];
+    let mut skipped = vec![];
     for (id, source, optional) in selected {
         match fs::symlink_metadata(source) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && *optional => {
@@ -188,13 +207,13 @@ fn inventory(selected: &[(String, PathBuf, bool)]) -> Result<(Vec<Value>, Vec<St
                 continue;
             }
             Err(e) => return Err(e.into()),
-            Ok(m) => walk(source, Path::new(id), m.dev(), &mut files)?,
+            Ok(m) => walk(source, Path::new(id), m.dev(), &mut files, &mut skipped)?,
         }
     }
     if files.is_empty() {
         return Err(Error::new("No host files to preserve"));
     }
-    Ok((files, missing))
+    Ok((files, missing, skipped))
 }
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
@@ -262,7 +281,7 @@ fn snapshot(
         }
         idle(cfg)?;
         backup::guard(cfgpath, data, media)?;
-        let (mut files, missing) = inventory(selected)?;
+        let (mut files, missing, skipped) = inventory(selected)?;
         let root = media.join("backups/host-user");
         common::directory(&root, 0o700)?;
         let m = fs::metadata(&root)?;
@@ -327,7 +346,7 @@ fn snapshot(
                 row["sha256"] = json!(app_snapshot::copy_file(&original, &target)?);
             }
         }
-        let (after, after_missing) = inventory(selected)?;
+        let (after, after_missing, _) = inventory(selected)?;
         let mut before = files.clone();
         for row in &mut before {
             row.as_object_mut().unwrap().remove("sha256");
@@ -349,7 +368,7 @@ fn snapshot(
         backup::guard(cfgpath, data, media)?;
         common::atomic_json(
             &stage.join("manifest.json"),
-            &json!({"format":"neko-host-snapshot-v1","version":VERSION,"created_at":common::now(),"files":files,"sources":cfg["host_backup"]["sources"],"missing_optional":missing,"smb_was_active":active,"links_are_inert":true,"application_consistency":"Steam closed; managed Samba stopped; other files checked for changes"}),
+            &json!({"format":"neko-host-snapshot-v1","version":VERSION,"created_at":common::now(),"files":files,"sources":cfg["host_backup"]["sources"],"missing_optional":missing,"skipped":skipped,"smb_was_active":active,"links_are_inert":true,"application_consistency":"Steam closed; managed Samba stopped; other files checked for changes"}),
         )?;
         fs::File::open(&stage)?.sync_all()?;
         let target = root.join(name);
@@ -369,6 +388,8 @@ fn snapshot(
             return Err(std::io::Error::last_os_error().into());
         }
         fs::File::open(&root)?.sync_all()?;
+        let keep = cfg["host_backup"]["keep_snapshots"].as_u64().unwrap_or(14);
+        common::prune_snapshots(&root, keep)?;
         Ok(())
     })();
     let restarted = resume();

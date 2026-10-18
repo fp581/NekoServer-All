@@ -99,6 +99,49 @@ pub fn relative(s: &str) -> Result<PathBuf> {
     }
     Ok(p)
 }
+/// Delete the oldest published `snapshot-<time>-<pid>` directories under `root`,
+/// keeping the newest `keep` (0 keeps everything). Only complete snapshots (with a
+/// manifest) owned privately by this user are touched; hidden `.partial` stages and
+/// anything else are left alone. Returns the removed names.
+pub fn prune_snapshots(root: &Path, keep: u64) -> Result<Vec<String>> {
+    use std::os::unix::fs::MetadataExt;
+    if keep == 0 || !root.is_dir() {
+        return Ok(vec![]);
+    }
+    let pattern = regex::Regex::new(r"^snapshot-([0-9]+)-([0-9]+)$").unwrap();
+    let owner = unsafe { libc::geteuid() };
+    let mut found = vec![];
+    for entry in fs::read_dir(safe(root)?)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(parts) = pattern.captures(&name) else {
+            continue;
+        };
+        let meta = fs::symlink_metadata(entry.path())?;
+        if !meta.is_dir() || meta.uid() != owner || meta.mode() & 0o077 != 0 {
+            continue;
+        }
+        if !entry.path().join("manifest.json").is_file() {
+            continue;
+        }
+        let order = (
+            parts[1].parse::<u128>().unwrap_or(0),
+            parts[2].parse::<u128>().unwrap_or(0),
+        );
+        found.push((order, name));
+    }
+    found.sort();
+    let excess = found.len().saturating_sub(keep as usize);
+    let mut removed = vec![];
+    for (_, name) in found.into_iter().take(excess) {
+        fs::remove_dir_all(safe(&root.join(&name))?)?;
+        removed.push(name);
+    }
+    if !removed.is_empty() {
+        File::open(root)?.sync_all()?;
+    }
+    Ok(removed)
+}
 pub fn file(path: &Path) -> Result<File> {
     safe(path)?;
     if !fs::symlink_metadata(path)?.is_file() {

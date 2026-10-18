@@ -94,6 +94,7 @@ fn entry() -> Result<()> {
             "dest",
             "media-root",
             "data",
+            "cloud",
         ],
         "database" => vec!["compose", "env", "dest", "apply"],
         _ => return Err(Error::new("Unknown command")),

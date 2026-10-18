@@ -20,7 +20,9 @@ sudo systemctl start nekoserver-app-backup.service
 sudo journalctl -u nekoserver-app-backup.service --no-pager
 ```
 
-Snapshots are created under `/mnt/nekoserver-media/backups/media-applications/snapshot-*` with default mount settings. Every run adds a new directory; existing snapshots are never replaced. Incomplete runs keep a hidden `.partial` directory for inspection and do not report success. No automatic deletion or retention rotation is enabled. Monitor HDD space; a snapshot contains a full copy of the selected app state.
+Snapshots are created under `/mnt/nekoserver-media/backups/media-applications/snapshot-*` with default mount settings. Every run adds a new directory; existing snapshots are never replaced. Incomplete runs keep a hidden `.partial` directory for inspection and do not report success. The newest `app_backup.keep_snapshots` complete snapshots (default 14) are kept and older ones deleted after each successful run; `.partial` directories and anything else in the folder are never touched. Set it to `0` to keep everything, as before v0.21.1. A snapshot contains a full copy of the selected app state, so check HDD space against your chosen count.
+
+Symlinks, sockets, FIFOs, devices and nested filesystems inside an app's folder are not restorable state; they are skipped and listed under `skipped` in the snapshot's manifest instead of failing the night's backup. Hard-linked files are copied as ordinary files. The SSD music library and downloads (`library/` on the SSD) are media, not app state, and are not included.
 
 ## Contents and permissions
 

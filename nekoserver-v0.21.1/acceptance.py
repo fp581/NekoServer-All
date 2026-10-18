@@ -18,6 +18,21 @@ STATES={'pass','fail','needs_setup','warning','blocked'}
 OPENER=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
 ROOT=Path(__file__).resolve().parent
 
+
+def peer_port(inspect):
+    """qBittorrent's TORRENTING_PORT from a container's environment, if set."""
+    for item in (inspect.get('Config',{}).get('Env') or []):
+        if isinstance(item,str) and item.startswith('TORRENTING_PORT='):
+            value=item.split('=',1)[1]
+            return int(value) if value.isdigit() else None
+    return None
+
+
+def peer_bindings(peer,config):
+    """The only non-loopback publications allowed: the configured qBittorrent peer port."""
+    if peer is None or peer!=config.get('media',{}).get('torrent_port'):return set()
+    return {f'{peer}/tcp',f'{peer}/udp'}
+
 def item(key,name,status,detail):
     if status not in STATES:raise ValueError('Invalid acceptance state')
     return {'id':key,'name':name,'status':status,'detail':detail}
@@ -108,7 +123,9 @@ def containers(config,photos=False):
                         mounts=mounts and all(bound(str(library/rel),(dest,),ro) for rel,dest,ro in needed)
                         if app=='qbittorrent':
                             mounts=mounts and bound(str(Path(config['data_mount'])/'library/downloads/music'),('/data/downloads/music',))
-                network=v.get('NetworkSettings',{});bindings=network.get('Ports',{});published=[p for rows in bindings.values() if rows for p in rows]
+                network=v.get('NetworkSettings',{});bindings=network.get('Ports',{})
+                peer=peer_port(v) if app=='qbittorrent' else None
+                published=[p for key,rows in bindings.items() if rows and key not in peer_bindings(peer,config) for p in rows]
                 ports=all(p.get('HostIp')=='127.0.0.1' for p in published)
                 if not photos or svc=='immich-server':ports=ports and any(p.get('HostPort')==str(health.APPS[app][2]) for p in (bindings.get(str(health.APPS[app][2])+'/tcp') or []))
                 if not photos:mounts=mounts and 'nekoserver-media' in network.get('Networks',{})

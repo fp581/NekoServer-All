@@ -110,3 +110,11 @@ See RUST-RUNTIME.md before upgrading workers. The current recovery bundle includ
 ## Media application state
 
 Nightly media app snapshots and explicit checksum/new-directory restoration are documented in [APP-BACKUPS.md](APP-BACKUPS.md). They exclude Immich/PostgreSQL, media content, VM disks and host/user state. Do not run restored Compose manifests with their original production paths.
+
+## App password files
+
+Monthly snapshots store the account inventory encrypted (see MONTHLY-MAINTENANCE.md). To get it back, you need the sudo password that was current when the backup key was created:
+
+```bash
+sudo python3 backup_secrets.py --restore /ABSOLUTE/BACKUP/RUN --to /ABSOLUTE/NEW-DIRECTORY
+```

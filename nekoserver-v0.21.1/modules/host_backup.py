@@ -31,6 +31,9 @@ def settings(config):
     free = opts.get('minimum_free_gb', 2)
     if type(free) is not int or not 1 <= free <= 1024:
         raise RuntimeError('Invalid backup free-space reserve')
+    keep = opts.get('keep_snapshots', 14)
+    if type(keep) is not int or not 0 <= keep <= 3650:
+        raise RuntimeError('host_backup.keep_snapshots must be a whole number from 0 to 3650')
     paths = opts.get('extra_paths', [])
     if not isinstance(paths, list) or len(paths) > 32 or any(not isinstance(p, str) for p in paths):
         raise RuntimeError('extra_paths must be a list of at most 32 absolute paths')
@@ -88,7 +91,8 @@ def guard(config):
         add('/var/lib/samba')
     value = native_runtime.storage_config(config)
     value['host_backup'] = {'sources': sources, 'samba': samba, 'steam_uid': user.pw_uid if user and opts.get('steam', True) else None,
-                            'minimum_free_bytes': opts.get('minimum_free_gb', 2)*1024**3}
+                            'minimum_free_bytes': opts.get('minimum_free_gb', 2)*1024**3,
+                            'keep_snapshots': opts.get('keep_snapshots', 14)}
     return value
 
 

@@ -11,11 +11,20 @@ DEPENDENCIES = ['media', 'recovery']
 DESCRIPTION = 'Nightly private media application snapshots with automatic restart recovery'
 
 
+def keep_snapshots(config):
+    """Nightly snapshots to keep on the HDD; 0 keeps every one (pre-v0.21.1 behaviour)."""
+    keep = config.get('app_backup', {}).get('keep_snapshots', 14)
+    if type(keep) is not int or not 0 <= keep <= 3650:
+        raise RuntimeError('app_backup.keep_snapshots must be a whole number from 0 to 3650')
+    return keep
+
+
 def definitions(config, binary, guard):
     data, media = config['data_mount'], config['media_mount']
     time = config.get('app_backup', {}).get('time', '04:15')
     if not isinstance(time, str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', time):
         raise RuntimeError('app_backup.time must be HH:MM')
+    keep_snapshots(config)
     resume = f'{binary} app-resume --config {guard}'
     return {
         'nekoserver-app-backup.service': (
@@ -56,6 +65,7 @@ def run(context):
     guard = safe_path('/etc/nekoserver-backups/applications.json')
     options = native_runtime.storage_config(config)
     options['media'] = {'services': config['media']['services']}
+    options['app_backup'] = {'keep_snapshots': keep_snapshots(config)}
     units = definitions(config, binary, guard)
     for name in units:
         path = safe_path(Path('/etc/systemd/system') / name)

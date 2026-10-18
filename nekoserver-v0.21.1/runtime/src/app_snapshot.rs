@@ -114,17 +114,41 @@ pub fn resume_command(a: &Args) -> Result<()> {
     }
     Ok(())
 }
-fn entries(root: &Path, relative: &Path, device: u64, out: &mut Vec<Value>) -> Result<()> {
-    let path = common::safe(&root.join(relative))?;
+/// Collect regular files and directories. Symlinks, sockets, FIFOs, devices and
+/// nested filesystems are not application state worth restoring; they are skipped
+/// and listed in the manifest rather than failing the whole night's backup.
+/// Hard-linked files are copied as independent files.
+fn entries(
+    root: &Path,
+    relative: &Path,
+    device: u64,
+    out: &mut Vec<Value>,
+    skipped: &mut Vec<Value>,
+) -> Result<()> {
+    // Check the parents for symlinks; the entry itself may be one (and is then skipped).
+    let path = root.join(relative);
+    common::safe(path.parent().ok_or_else(|| Error::new("Invalid path"))?)?;
     let m = fs::symlink_metadata(&path)?;
-    if m.dev() != device || (!m.is_dir() && !m.is_file()) || (m.is_file() && m.nlink() != 1) {
-        return Err(Error::new(
-            "Linked, special or nested filesystem entry refused",
-        ));
-    }
     let name = relative
         .to_str()
         .ok_or_else(|| Error::new("Non-UTF8 application path refused"))?;
+    let reason = if m.file_type().is_symlink() {
+        Some("symlink")
+    } else if m.dev() != device {
+        Some("nested filesystem")
+    } else if !m.is_dir() && !m.is_file() {
+        Some("special file")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        if relative.components().count() <= 2 {
+            // The application folder itself must be real, or nothing is backed up.
+            return Err(Error::new("Application folder is not a regular directory"));
+        }
+        skipped.push(json!({"path":name,"reason":reason}));
+        return Ok(());
+    }
     out.push(json!({"path":name,"kind":if m.is_dir(){"directory"}else{"file"},"mode":m.mode()&0o7777,"uid":m.uid(),"gid":m.gid(),"size":if m.is_file(){m.len()}else{0}}));
     if out.len() > 200000 {
         return Err(Error::new("Application snapshot file limit exceeded"));
@@ -133,7 +157,13 @@ fn entries(root: &Path, relative: &Path, device: u64, out: &mut Vec<Value>) -> R
         let mut children = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
         children.sort_by_key(|p| p.file_name());
         for child in children {
-            entries(root, &relative.join(child.file_name()), device, out)?;
+            entries(
+                root,
+                &relative.join(child.file_name()),
+                device,
+                out,
+                skipped,
+            )?;
         }
     }
     Ok(())
@@ -251,7 +281,9 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
             if m["RW"] == true
                 && !(m["Type"] == "bind"
                     && (m["Source"] == expected.to_string_lossy().as_ref()
-                        || m["Source"] == media.join("library").to_string_lossy().as_ref()))
+                        || m["Source"] == media.join("library").to_string_lossy().as_ref()
+                        || Path::new(m["Source"].as_str().unwrap_or(""))
+                            .starts_with(data.join("library"))))
             {
                 return Err(Error::new("Unmanaged writable container state"));
             }
@@ -323,22 +355,26 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
         common::directory(&payload, 0o700)?;
         let device = fs::metadata(data)?.dev();
         let mut files = vec![];
+        let mut skipped = vec![];
         for service in names {
-            entries(
-                data,
-                &PathBuf::from("appdata").join(service),
-                device,
-                &mut files,
-            )?;
-            entries(
-                data,
-                &PathBuf::from("compose").join(service),
-                device,
-                &mut files,
-            )?;
+            for folder in ["appdata", "compose"] {
+                entries(
+                    data,
+                    &PathBuf::from(folder).join(service),
+                    device,
+                    &mut files,
+                    &mut skipped,
+                )?;
+            }
         }
         if data.join("installer/releases").is_dir() {
-            entries(data, Path::new("installer/releases"), device, &mut files)?;
+            entries(
+                data,
+                Path::new("installer/releases"),
+                device,
+                &mut files,
+                &mut skipped,
+            )?;
         }
         for row in &mut files {
             let rel = PathBuf::from(row["path"].as_str().unwrap());
@@ -357,7 +393,7 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
         backup::guard(cfgpath, data, media)?;
         common::atomic_json(
             &stage.join("manifest.json"),
-            &json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"storage":common::json(cfgpath,64000)["storage"]}),
+            &json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"skipped":skipped,"storage":common::json(cfgpath,64000)["storage"]}),
         )?;
         fs::File::open(&stage)?.sync_all()?;
         let target = root.join(name);
@@ -380,8 +416,123 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
             return Err(std::io::Error::last_os_error().into());
         }
         fs::File::open(&root)?.sync_all()?;
+        let keep = common::json(cfgpath, 64000)["app_backup"]["keep_snapshots"]
+            .as_u64()
+            .unwrap_or(14);
+        common::prune_snapshots(&root, keep)?;
         Ok(())
     })();
     let restarted = resume();
     result.and(restarted)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::DirBuilderExt;
+    fn dir(path: &Path) {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .unwrap();
+    }
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("neko-app-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        dir(&root);
+        root
+    }
+    #[test]
+    fn unusual_entries_are_skipped_not_fatal() {
+        let root = scratch("skip");
+        let app = root.join("appdata/sonarr");
+        dir(&app.join("logs"));
+        fs::write(app.join("config.xml"), b"<Config/>").unwrap();
+        fs::write(app.join("logs/sonarr.txt"), b"log").unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", app.join("link")).unwrap();
+        fs::hard_link(app.join("config.xml"), app.join("config.hardlink")).unwrap();
+        let socket = std::os::unix::net::UnixListener::bind(app.join("ipc.sock")).unwrap();
+        let device = fs::metadata(&root).unwrap().dev();
+        let (mut files, mut skipped) = (vec![], vec![]);
+        entries(
+            &root,
+            Path::new("appdata/sonarr"),
+            device,
+            &mut files,
+            &mut skipped,
+        )
+        .unwrap();
+        let names: Vec<&str> = files.iter().map(|f| f["path"].as_str().unwrap()).collect();
+        assert!(names.contains(&"appdata/sonarr/config.xml"));
+        assert!(names.contains(&"appdata/sonarr/config.hardlink"));
+        assert!(names.contains(&"appdata/sonarr/logs/sonarr.txt"));
+        assert!(!names
+            .iter()
+            .any(|n| n.ends_with("link") && !n.ends_with("hardlink")));
+        assert_eq!(
+            skipped,
+            vec![
+                json!({"path":"appdata/sonarr/ipc.sock","reason":"special file"}),
+                json!({"path":"appdata/sonarr/link","reason":"symlink"}),
+            ]
+        );
+        drop(socket);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn symlinked_application_folder_is_still_refused() {
+        let root = scratch("top");
+        dir(&root.join("real"));
+        dir(&root.join("appdata"));
+        std::os::unix::fs::symlink(root.join("real"), root.join("appdata/sonarr")).unwrap();
+        let device = fs::metadata(&root).unwrap().dev();
+        let (mut files, mut skipped) = (vec![], vec![]);
+        assert!(entries(
+            &root,
+            Path::new("appdata/sonarr"),
+            device,
+            &mut files,
+            &mut skipped
+        )
+        .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn nightly_retention_keeps_newest_complete_snapshots() {
+        let root = scratch("prune");
+        for name in [
+            "snapshot-100-1",
+            "snapshot-900-1",
+            "snapshot-1000-1",
+            "snapshot-50-1",
+            ".snapshot-10-1.partial",
+            "snapshot-20-1",
+            "notes",
+        ] {
+            dir(&root.join(name));
+            if name != "snapshot-20-1" {
+                fs::write(root.join(name).join("manifest.json"), b"{}").unwrap();
+            }
+        }
+        let removed = common::prune_snapshots(&root, 2).unwrap();
+        assert_eq!(removed, ["snapshot-50-1", "snapshot-100-1"]);
+        let mut left: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        // Newest two complete ones, plus everything that is not a complete snapshot.
+        assert_eq!(
+            left,
+            [
+                ".snapshot-10-1.partial",
+                "notes",
+                "snapshot-1000-1",
+                "snapshot-20-1",
+                "snapshot-900-1"
+            ]
+        );
+        assert!(common::prune_snapshots(&root, 0).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

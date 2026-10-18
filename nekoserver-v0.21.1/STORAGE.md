@@ -4,9 +4,13 @@
 |---|---|---|
 | Music audio and downloads | SSD `library/music` and `library/downloads/music` | No automatic file backup, including monthly snapshots |
 | Music application settings/accounts/playlists | SSD appdata | Existing application-state backup policy |
-| Immich photos/videos | SSD `photos/immich-library` | Weekly HDD originals archive and logical database backup; weekly external originals copy; retained monthly complete recovery snapshot |
+| Immich photos/videos | SSD `photos/immich-library` | Weekly add-only originals copy to the HDD and to the USB drive; weekly Immich database dump on the HDD |
 | Movies/shows and their downloads | HDD library | No media-file backup; application state remains protected |
-| Nextcloud files | HDD `cloud/files` | Existing monthly full backup policy |
+| Nextcloud files | HDD `cloud/files` | Weekly add-only copy of each user's files to the USB drive |
+| App settings and databases, container images | SSD appdata, Docker | Nightly app-state snapshot and monthly pre-update snapshot, both on the HDD |
+| OS and user settings (Steam, Samba) | OS disk, home | Nightly host-state snapshot on the HDD |
+
+**What goes where.** The USB drive holds only the weekly add-only copies of Immich photos/videos and Nextcloud user files. The HDD holds the software side (app settings, databases, container images, OS/user settings) and the same add-only Immich photo copy plus the Immich database. "Add-only" means new files are added and nothing on the backup is ever overwritten or deleted: a file that changed (an edited document, an updated photo sidecar) is kept next to the old one as `name.neko-<date>.ext`. Nextcloud previews, trash and caches are not copied; group folders are not covered.
 
 Navidrome, Lidarr and the qBittorrent music category use the SSD. Local imports route music to SSD and videos to HDD. Incomplete downloads may use the configured shared temporary folder. No watched-video migration between SSD/HDD is performed.
 
@@ -30,14 +34,14 @@ The cleanup modules remain in dependency plans so applying the current full/medi
 
 The guarded native SATA standby timer remains **60 minutes** (`hdparm -S 242`), with no PC sleep. SMART queries avoid waking a standby disk. Playing HDD videos, Nextcloud activity, torrent seeding, app-owned scans, nightly application/host-state backups, weekly photo copies and monthly maintenance can still wake it. Removing NekoServer's periodic media audit cannot prevent ordinary application activity. Native power behaviour and wake latency need testing on the target PC.
 
-Nightly app-state/host-state backups and monthly overnight recovery/update work are unchanged. Scheduled orchestration remains Rust; Python handles installation and ad hoc recovery. No OS upgrades, automatic formatting or automatic retention deletion are added.
+Nightly app-state/host-state backups and monthly overnight recovery/update work are unchanged. Scheduled orchestration remains Rust; Python handles installation and ad hoc recovery. No OS upgrades or automatic formatting are added. Snapshot retention is described in MONTHLY-MAINTENANCE.md, APP-BACKUPS.md and HOST-BACKUPS.md; add-only photo and Nextcloud copies are never pruned.
 
 ## Existing installations and recovery
 
 Applying this release updates schedules and retires the recognized old timers. Existing old HDD music/Immich working layouts still require the verified, stopped-writer migration described in the prior release; different manifests or environment paths are preserved/refused. Do not switch a mount to an empty SSD folder and assume files moved.
 
-Monthly recovery continues to cover SSD Immich originals/generated assets and its database/settings, Nextcloud data, selected app state and exact old images. Raw audio/movie/show files are outside rollback coverage. Restored test stacks use isolated empty read-only substitutes for excluded media folders. Old-version durable recovery journals must be handled by their matching release; a changed version refuses them without replacing live state.
+Monthly recovery covers selected app state and databases (including Immich's and Nextcloud's) and exact old images. Since v0.21.1 it no longer contains the Immich photo library or Nextcloud files; those are restored from the weekly add-only copies. Raw audio/movie/show files are outside rollback coverage. Restored test stacks use isolated empty read-only substitutes for excluded media folders. Old-version durable recovery journals must be handled by their matching release; a changed version refuses them without replacing live state.
 
 ## Private account inventory
 
-The new secrets/accounts directory is included in monthly complete recovery snapshots when present. Its text and JSON credentials retain root-only permissions. Weekly photo originals do not include it. See ACCOUNT-SETUP.md.
+The secrets/accounts directory is included in monthly snapshots on the HDD, encrypted, and opens with your sudo password (see MONTHLY-MAINTENANCE.md). It is never written to the USB drive. See ACCOUNT-SETUP.md.

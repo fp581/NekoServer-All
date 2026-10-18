@@ -115,6 +115,81 @@ pub(crate) fn verified_copy(source: &Path, target: &Path, apply: bool, mode: u32
     let _ = fs::remove_file(temp);
     result
 }
+/// What happened to one file in an add-only copy.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Added {
+    Same,
+    New,
+    Version,
+}
+/// `name.ext` -> `name.neko-<stamp>.ext`, keeping the extension so the copy still opens.
+fn version_name(target: &Path, stamp: &str) -> PathBuf {
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let versioned = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => format!("{stem}.neko-{stamp}.{ext}"),
+        _ => format!("{name}.neko-{stamp}"),
+    };
+    target.with_file_name(versioned)
+}
+/// Copy `source` to `target` without ever overwriting or deleting anything. If
+/// `target` already holds different content (an edited document, an updated photo
+/// sidecar), the new content is kept next to it as a dated version instead of
+/// failing the whole backup. A version identical to the source is not copied again.
+pub(crate) fn add_only_copy(source: &Path, target: &Path, apply: bool, mode: u32) -> Result<Added> {
+    if !target.exists() {
+        return Ok(if verified_copy(source, target, apply, mode)? {
+            Added::New
+        } else {
+            Added::Same
+        });
+    }
+    if !target.is_file() {
+        return Err(Error::new("Backup target is not a regular file"));
+    }
+    let wanted = common::digest(source)?;
+    if common::digest(target)? == wanted {
+        return Ok(Added::Same);
+    }
+    let name = target
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.clone(), String::new()),
+    };
+    let parent = target
+        .parent()
+        .ok_or_else(|| Error::new("Target parent missing"))?;
+    for entry in fs::read_dir(parent)? {
+        let path = entry?.path();
+        let other = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if other.starts_with(&format!("{stem}.neko-"))
+            && other.ends_with(&ext)
+            && path.is_file()
+            && common::digest(&path)? == wanted
+        {
+            return Ok(Added::Same);
+        }
+    }
+    let modified = fs::metadata(source)?.mtime();
+    let stamp = chrono::DateTime::from_timestamp(modified, 0)
+        .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
+        .unwrap_or_else(|| modified.to_string());
+    let mut versioned = version_name(target, &stamp);
+    let mut n = 1;
+    while versioned.exists() {
+        versioned = version_name(target, &format!("{stamp}-{n}"));
+        n += 1;
+    }
+    verified_copy(source, &versioned, apply, mode)?;
+    Ok(Added::Version)
+}
 fn media_file(path: &Path) -> bool {
     let ext = path
         .extension()
@@ -153,6 +228,7 @@ pub fn archive(source: &Path, archive: &Path, apply: bool, age: u64) -> Result<u
     }
     let (source, archive) = separate(source, archive)?;
     let mut copied = 0;
+    let mut versions = 0;
     let now = common::now();
     for section in ["upload", "library"] {
         let root = source.join(section);
@@ -176,11 +252,16 @@ pub fn archive(source: &Path, archive: &Path, apply: bool, age: u64) -> Result<u
                 path.strip_prefix(&source)
                     .map_err(|_| Error::new("Invalid archive relative path"))?,
             );
-            if verified_copy(path, &target, apply, 0o644)? {
-                copied += 1
+            match add_only_copy(path, &target, apply, 0o644)? {
+                Added::New => copied += 1,
+                Added::Version => versions += 1,
+                Added::Same => {}
             }
             Ok(())
         })?;
+    }
+    if versions > 0 {
+        println!("Archive: {versions} changed files kept as dated versions");
     }
     println!(
         "Archive: {copied} new verified originals{}",
@@ -191,6 +272,7 @@ pub fn archive(source: &Path, archive: &Path, apply: bool, age: u64) -> Result<u
 pub fn copy_tree(source: &Path, dest: &Path, apply: bool) -> Result<u64> {
     let (source, dest) = separate(source, dest)?;
     let mut copied = 0;
+    let mut versions = 0;
     walk(&source, &mut |path| {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if name.ends_with(".neko-part") || name.ends_with(".sql.part") {
@@ -200,16 +282,102 @@ pub fn copy_tree(source: &Path, dest: &Path, apply: bool) -> Result<u64> {
             path.strip_prefix(&source)
                 .map_err(|_| Error::new("Invalid relative path"))?,
         );
-        if verified_copy(path, &target, apply, 0o644)? {
-            copied += 1
+        match add_only_copy(path, &target, apply, 0o644)? {
+            Added::New => copied += 1,
+            Added::Version => versions += 1,
+            Added::Same => {}
         }
         Ok(())
     })?;
+    if versions > 0 {
+        println!("Backup: {versions} changed files kept as dated versions");
+    }
     println!(
         "Backup: {copied} new verified files{}",
         if apply { "" } else { " identified (dry run)" }
     );
     Ok(copied)
+}
+/// Add-only copy of each Nextcloud user's own files (`<user>/files`) to
+/// `dest/nextcloud/<user>/files`. Previews (appdata_*), trash, versions, caches and
+/// logs are skipped. A file that changes or disappears mid-copy (a live upload or
+/// delete) is skipped this week rather than failing the backup.
+pub fn copy_cloud(cloud: &Path, dest: &Path, apply: bool) -> Result<(u64, u64, u64)> {
+    let (cloud, dest) = separate(cloud, dest)?;
+    let (mut copied, mut versions, mut skipped) = (0, 0, 0);
+    for user_dir in list(&cloud)? {
+        let user = user_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let files = user_dir.join("files");
+        if user.starts_with("appdata_")
+            || user.starts_with('.')
+            || !fs::symlink_metadata(&user_dir)?.is_dir()
+            || !fs::symlink_metadata(&files).is_ok_and(|m| m.is_dir())
+        {
+            continue;
+        }
+        walk(&files, &mut |path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name.ends_with(".part") || name.ends_with(".neko-part") {
+                return Ok(());
+            }
+            let target = dest.join("nextcloud").join(&user).join("files").join(
+                path.strip_prefix(&files)
+                    .map_err(|_| Error::new("Invalid relative path"))?,
+            );
+            match add_only_copy(path, &target, apply, 0o600) {
+                Ok(Added::New) => copied += 1,
+                Ok(Added::Version) => versions += 1,
+                Ok(Added::Same) => {}
+                Err(e) if e.to_string().contains("changed") || !path.exists() => skipped += 1,
+                Err(e) => return Err(e),
+            }
+            Ok(())
+        })?;
+    }
+    println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
+    Ok((copied, versions, skipped))
+}
+/// The USB drive holds only the add-only photo and Nextcloud copies. Full monthly
+/// snapshots that releases before v0.21.1 wrote there are removed once this week's
+/// copies have succeeded. Only directories with a monthly-snapshot manifest are touched.
+pub fn retire_usb_monthly(dest: &Path) -> Result<Vec<String>> {
+    let folder = dest.join("backups/monthly");
+    let mut removed = vec![];
+    if !folder.is_dir() {
+        return Ok(removed);
+    }
+    let pattern = regex::Regex::new(r"^[0-9]+-[0-9]+$").unwrap();
+    for entry in fs::read_dir(common::safe(&folder)?)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let path = entry.path();
+        if !pattern.is_match(&name) || !fs::symlink_metadata(&path)?.is_dir() {
+            continue;
+        }
+        let manifest: serde_json::Value =
+            match common::bytes(&path.join("manifest.json"), 2_000_000)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+            {
+                Some(v) => v,
+                None => continue,
+            };
+        if manifest["format"] == "neko-maintenance-v1" {
+            fs::remove_dir_all(common::safe(&path)?)?;
+            removed.push(name);
+        }
+    }
+    if !removed.is_empty() {
+        println!(
+            "USB: removed {} old monthly snapshots; it now holds only the add-only copies",
+            removed.len()
+        );
+    }
+    Ok(removed)
 }
 pub fn validate_external(dest: &Path, uuid: &str) -> Result<()> {
     common::safe(dest)?;
@@ -468,6 +636,16 @@ pub fn weekly(a: &Args) -> Result<()> {
     let media = common::mount_path(a.get("media-root")?)?;
     let data = common::mount_path(a.get("data")?)?;
     let cfg = a.path("config")?;
+    let cloud = match a.value("cloud", "").as_str() {
+        "" => None,
+        value => {
+            let path = common::safe(Path::new(value))?;
+            if !path.starts_with(&media) || path == media {
+                return Err(Error::new("Nextcloud folder outside media mount"));
+            }
+            Some(path)
+        }
+    };
     guard(&cfg, &data, &media)?;
     let identity = common::json(&cfg, 64000);
     if ["data_ssd", "media_hdd"]
@@ -526,6 +704,16 @@ pub fn weekly(a: &Args) -> Result<()> {
             copy_tree(&source, &dest, true)?;
             validate_external(&dest, uuid)?;
             guard(&cfg, &data, &media)?;
+            if let Some(cloud) = &cloud {
+                if cloud.is_dir() {
+                    copy_cloud(cloud, &dest, true)?;
+                    validate_external(&dest, uuid)?;
+                    guard(&cfg, &data, &media)?;
+                } else {
+                    println!("Nextcloud: no data folder yet; nothing to copy");
+                }
+            }
+            retire_usb_monthly(&dest)?;
             Ok(())
         })();
         if mounted_here {
@@ -533,4 +721,138 @@ pub fn weekly(a: &Args) -> Result<()> {
         }
         result
     })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("neko-backup-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+    fn write(path: &Path, body: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        v.sort();
+        v
+    }
+    #[test]
+    fn changed_files_become_dated_versions_never_overwrites() {
+        let root = scratch("versions");
+        let (src, dst) = (root.join("src/report.docx"), root.join("dst/report.docx"));
+        write(&src, b"v1");
+        assert_eq!(add_only_copy(&src, &dst, true, 0o600).unwrap(), Added::New);
+        assert_eq!(add_only_copy(&src, &dst, true, 0o600).unwrap(), Added::Same);
+        // Edited document: the original backup stays, the edit is added beside it.
+        write(&src, b"v2 edited");
+        assert_eq!(
+            add_only_copy(&src, &dst, true, 0o600).unwrap(),
+            Added::Version
+        );
+        assert_eq!(fs::read(&dst).unwrap(), b"v1");
+        let files = names(&root.join("dst"));
+        assert_eq!(files.len(), 2);
+        let version = files.iter().find(|n| n.contains(".neko-")).unwrap();
+        assert!(
+            version.starts_with("report.neko-") && version.ends_with(".docx"),
+            "{version}"
+        );
+        // Next week, unchanged since that version: nothing new.
+        assert_eq!(add_only_copy(&src, &dst, true, 0o600).unwrap(), Added::Same);
+        assert_eq!(names(&root.join("dst")).len(), 2);
+        // A dry run never writes.
+        write(&src, b"v3");
+        assert_eq!(
+            add_only_copy(&src, &dst, false, 0o600).unwrap(),
+            Added::Version
+        );
+        assert_eq!(names(&root.join("dst")).len(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn version_names_keep_the_extension() {
+        assert_eq!(
+            version_name(Path::new("/b/IMG_1.HEIC.xmp"), "S"),
+            Path::new("/b/IMG_1.HEIC.neko-S.xmp")
+        );
+        assert_eq!(
+            version_name(Path::new("/b/notes"), "S"),
+            Path::new("/b/notes.neko-S")
+        );
+        assert_eq!(
+            version_name(Path::new("/b/.profile"), "S"),
+            Path::new("/b/.profile.neko-S")
+        );
+    }
+    #[test]
+    fn nextcloud_copy_takes_only_users_own_files() {
+        let root = scratch("cloud");
+        let cloud = root.join("cloud");
+        write(&cloud.join("alice/files/Documents/plan.odt"), b"plan");
+        write(&cloud.join("alice/files/Photos/a.jpg"), b"jpg");
+        write(&cloud.join("alice/files_trashbin/files/old.txt"), b"trash");
+        write(&cloud.join("alice/files_versions/plan.odt.v1"), b"old");
+        write(&cloud.join("alice/uploads/chunk.part"), b"partial");
+        write(&cloud.join("appdata_oc123/preview/1/big.png"), b"preview");
+        write(&cloud.join("bob/files/todo.txt"), b"todo");
+        write(&cloud.join("nextcloud.log"), b"log");
+        write(&cloud.join(".ocdata"), b"");
+        let usb = root.join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        let (copied, versions, skipped) = copy_cloud(&cloud, &usb, true).unwrap();
+        assert_eq!((copied, versions, skipped), (3, 0, 0));
+        assert_eq!(names(&usb.join("nextcloud")), ["alice", "bob"]);
+        assert_eq!(names(&usb.join("nextcloud/alice")), ["files"]);
+        assert_eq!(
+            fs::read(usb.join("nextcloud/alice/files/Documents/plan.odt")).unwrap(),
+            b"plan"
+        );
+        assert_eq!(
+            fs::metadata(usb.join("nextcloud/bob/files/todo.txt"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        // Second week, one edit and one new file.
+        write(&cloud.join("alice/files/Documents/plan.odt"), b"plan v2");
+        write(&cloud.join("bob/files/new.txt"), b"new");
+        assert_eq!(copy_cloud(&cloud, &usb, true).unwrap(), (1, 1, 0));
+        // Deleted on the server: kept on the USB.
+        fs::remove_file(cloud.join("bob/files/todo.txt")).unwrap();
+        copy_cloud(&cloud, &usb, true).unwrap();
+        assert!(usb.join("nextcloud/bob/files/todo.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn usb_cleanup_removes_only_old_monthly_snapshots() {
+        let root = scratch("retire");
+        let monthly = root.join("backups/monthly");
+        write(
+            &monthly.join("100-1/manifest.json"),
+            br#"{"format":"neko-maintenance-v1"}"#,
+        );
+        write(&monthly.join("100-1/data.tar"), b"tar");
+        write(
+            &monthly.join("200-1/manifest.json"),
+            br#"{"format":"something-else"}"#,
+        );
+        write(&monthly.join("300-1/data.tar"), b"no manifest");
+        write(
+            &monthly.join("keep-me/manifest.json"),
+            br#"{"format":"neko-maintenance-v1"}"#,
+        );
+        write(&root.join("upload/IMG_1.jpg"), b"photo");
+        assert_eq!(retire_usb_monthly(&root).unwrap(), ["100-1"]);
+        assert_eq!(names(&monthly), ["200-1", "300-1", "keep-me"]);
+        assert!(root.join("upload/IMG_1.jpg").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
