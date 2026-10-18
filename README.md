@@ -37,13 +37,15 @@ Use the same confirmed configuration on reruns. The persistent copy is /srv/neko
 
 Storage and operation
 Content	Live location	Protection
-Immich uploads and database	App SSD	Weekly HDD originals+DB, weekly USB originals; monthly complete three-drive recovery snapshot
+Immich photos/videos and database	App SSD	Weekly add-only copy of photos/videos to HDD and USB; weekly database dump on HDD
 Music and music downloads	App SSD	No automatic audio-file backup; app settings/playlists still protected
 Movies/shows/downloads	HDD	No media-file backup
-Nextcloud user files	HDD	Monthly full backup to SSD and external drive; app/database/config SSD
+Nextcloud user files	HDD	Weekly add-only copy of each user's files to USB; app/database/config in HDD snapshots
+qBittorrent accepts no incoming peer connections by default; downloads still work, more slowly. To open one, set `media.torrent_port` (for example `51413`), rerun the media module and forward that TCP/UDP port on your router to this server. It is the only port published beyond localhost, and the installer, monthly worker and acceptance checks refuse any other.
+
 PC sleep is blocked; a verified SATA HDD policy requests standby after 60 minutes idle. Ordinary apps, seeding, scans and backups can still wake it. Linux filesystem cache is normal and reclaimable; bounded journals and actual service memory should be observed on hardware, rather than scheduling cache-clearing commands.
 
-Weekly photo jobs: Sunday 02:15 and 03:00 Asia/Jerusalem. Monthly maintenance: first day 02:30 Asia/Jerusalem. Nightly app/host-state backups remain. Routine media API audit and raw music backup are disabled. See STORAGE.md and MONTHLY-MAINTENANCE.md for exact scope. External disk absence/fullness blocks monthly updates; no automatic deletion/retention policy exists. Recovery must restore matching data and old images, not just change a tag. Major app migrations and OS updates remain separate.
+Weekly photo jobs: Sunday 02:15 and 03:00 Asia/Jerusalem. Monthly maintenance: first day 02:30 Asia/Jerusalem. Nightly app/host-state backups remain. Routine media API audit and raw music backup are disabled. See STORAGE.md and MONTHLY-MAINTENANCE.md for exact scope. The USB drive holds only add-only copies of Immich photos/videos and Nextcloud files; the HDD holds app settings, databases, container images, OS settings and the same photo copy. Nothing on an add-only copy is overwritten or deleted; changed files are kept as dated versions. The newest 3 complete monthly snapshots and 14 nightly snapshots are kept (`keep_snapshots` settings; `0` keeps everything), and the app password list is stored encrypted in backups, opened with your sudo password. Recovery must restore matching data and old images, not just change a tag. Major app migrations and OS updates remain separate.
 
 Evidence and limits
 AUDIT.md and audit-evidence contain current results and identify historical files. Filesystem/HTTP/native/Compose checks are executable tests; package manager, mounts, Docker services and hardware in integration fixtures are simulated. This is ready for controlled deployment testing, not a claim that a real server has passed acceptance. No full live VM or intended hardware installation is established by this release. Bazzite migration is separate; VM/KVM is not required.

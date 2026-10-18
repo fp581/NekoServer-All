@@ -4,11 +4,11 @@
 | --- | --- | --- |
 | Fresh Arch/Nyarch setup | Base prerequisite bootstrap, selected-module packages, private config, dependency/retry state | Existing supported OS/repos/user, formatted disks and Steam multilib |
 | Separate SSD/HDD/USB | Exact UUID confirmation, OS-disk exclusion, physical-disk separation, guarded writes | Identify devices, reboot and absent-drive acceptance |
-| Immich | SSD uploads/database, weekly HDD preservation, weekly external originals, monthly full recovery | Phone albums/background permissions, matched independent restore |
+| Immich | SSD uploads/database, weekly add-only photo copy to HDD and USB, weekly HDD database dump, database in monthly HDD snapshot | Phone albums/background permissions, matched independent restore |
 | Jellyfin/Arr/qBittorrent/Seerr | Compose plus authenticated connectors and shared video paths on HDD | Console-selected/generated admin accounts are provisioned; choose providers and witness request-to-play |
 | Navidrome | SSD music/downloads, private listener, client setup | Load library and listen on chosen device; no raw music backup |
-| Nextcloud | Four-container deployment, HDD files/SSD app+DB, monthly three-drive full backup | Admin selection/verification automated; witness client transfer/sharing and restore |
-| Monthly maintenance | Complete snapshot copies/checks, isolated restore rehearsal, supported-stream container updates, matched old-data/image rollback | Connected external drive, capacity and supervised real-engine failure drills |
+| Nextcloud | Four-container deployment, HDD files/SSD app+DB, weekly add-only USB copy of user files, app/DB in monthly HDD snapshot | Admin selection/verification automated; witness client transfer/sharing and restore |
+| Monthly maintenance | HDD app-state snapshot, isolated restore rehearsal, supported-stream container updates, matched old-data/image rollback | HDD capacity and supervised real-engine failure drills |
 | No-sleep/standby/RAM | Sleep masks, bounded logs, guarded 60-minute SATA idle timer | Firmware/drive behavior and actual memory trend; no cache-clearing job |
 | Access/permissions | Loopback apps, secured LAN gateway, private CA, Samba and optional Tailscale | Trust certificate, authenticate intended users and test denied access |
 | Runtime | Rust scheduled workers/guards/dashboard; Python/shell setup and explicit recovery/acceptance | Actual kernel/systemd/service sandbox checks |

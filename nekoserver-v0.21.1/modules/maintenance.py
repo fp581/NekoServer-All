@@ -3,12 +3,13 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 import native_runtime
 from neko_common import VERSION, atomic_json, atomic_write, safe_path, verify_storage, host_timezone
 
 DEPENDENCIES = ['docker', 'recovery', 'photos', 'photo_backup', 'nextcloud']
-DESCRIPTION = 'Monthly overnight three-drive backups, isolated restore tests and container updates'
+DESCRIPTION = 'Monthly overnight app-state snapshot on the HDD, isolated restore tests and container updates'
 
 
 def options(config):
@@ -21,14 +22,14 @@ def options(config):
     zone = host_timezone(config)
     if not (Path('/usr/share/zoneinfo')/zone).is_file():
         raise RuntimeError('Use an installed IANA maintenance timezone')
-    for key, default, low, high in (('minimum_free_gb', 20, 2, 100000), ('health_wait_seconds', 300, 30, 1800), ('night_end_hour', 6, 1, 7)):
+    for key, default, low, high in (('minimum_free_gb', 20, 2, 100000), ('health_wait_seconds', 300, 30, 1800), ('night_end_hour', 6, 1, 7), ('keep_snapshots', 3, 0, 120)):
         value = opts.get(key, default)
         if type(value) is not int or not low <= value <= high:
             raise RuntimeError('Invalid maintenance.'+key)
     if int(time[:2]) >= opts.get('night_end_hour', 6):
         raise RuntimeError('Maintenance starts after its allowed night window')
-    if opts.get('require_external', True) is not True:
-        raise RuntimeError('Three-drive maintenance requires the external copy')
+    # require_external is obsolete since v0.21.1: monthly snapshots stay on the HDD and
+    # the USB drive only receives the weekly add-only photo/Nextcloud copies.
     return opts
 
 
@@ -58,8 +59,6 @@ def run(ctx):
     if os.geteuid() != 0 or native_runtime.backend(ctx.config) != 'rust':
         raise RuntimeError('Maintenance requires root and runtime.backend=rust')
     config = ctx.config
-    if not config.get('photos', {}).get('external_backup_uuid'):
-        return {'status': 'needs_setup', 'reason': 'Select the external backup drive before enabling three-drive maintenance'}
     verify_storage(config)
     binary = native_runtime.deploy(Path(__file__).resolve().parents[1], config, Path(config['data_mount'])/'installer/runtime'/('v'+VERSION))
     guard = safe_path('/etc/nekoserver-backups/maintenance.json')
@@ -69,9 +68,15 @@ def run(ctx):
         target = safe_path(Path('/etc/systemd/system')/name)
         if target.exists() and 'Description=NekoServer ' not in target.read_text():
             raise RuntimeError('Unmanaged maintenance unit preserved')
+    import backup_secrets
+    if not backup_secrets.configured():
+        if sys.stdin.isatty():
+            backup_secrets.setup(out=ctx.log)
+        else:
+            ctx.log('Backup key not set up: monthly backups will leave out the app password files until you run: sudo python3 backup_secrets.py --setup')
     atomic_json(guard,config)
     for name, content in units.items():
         atomic_write(Path('/etc/systemd/system')/name, content, 0o644)
     for args in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', 'nekoserver-maintenance-resume.service'], ['systemctl', 'enable', '--now', 'nekoserver-maintenance.timer']):
         subprocess.run(args, check=True, capture_output=True, timeout=1200)
-    ctx.log('Monthly overnight maintenance enabled; external drive must be connected. Missing/wrong/full drives block updates. Old backups are retained.')
+    ctx.log('Monthly overnight maintenance enabled: app-state snapshot on the HDD, then updates. The newest '+str(options(ctx.config).get('keep_snapshots',3) or 'all')+' complete snapshots are kept.')

@@ -6,7 +6,9 @@ User services: Jellyfin (8443), Seerr (8444), Immich (8445), Navidrome (8446), N
 
 Apply `lan_access` or the base `full` profile using the confirmed config. Select the physical home interface/address/subnet. The interactive installer opens selected local apps, explains login/signup/sharing checks, asks yes/no and rechecks supported managed accounts before recording permission to enable their routes.
 
-The LAN Caddy gateway uses a private certificate authority. Clients using its LAN URLs must explicitly trust the exported public root certificate; never transfer the private key. Export instructions are in gateway_cert.py --help. The home portal uses port 8442. A router DHCP reservation should keep the chosen LAN address stable.
+The LAN Caddy gateway uses a private certificate authority. Clients using its LAN URLs must explicitly trust the exported public root certificate; never transfer the private key. Export instructions are in gateway_cert.py --help. The home portal uses port 8442.
+
+**Check each device before relying on the LAN URLs.** Phones and especially TV apps often ignore certificate authorities a user installs: Android apps do so by default, and many smart-TV, Roku and Fire TV apps offer no way to add one. Test the Jellyfin, Immich and Nextcloud apps on each device you plan to use. If an app refuses the LAN certificate, use the Tailscale route below (publicly trusted certificates), or the server's own TV session. A router DHCP reservation should keep the chosen LAN address stable.
 
 ## Away from home
 
@@ -18,4 +20,4 @@ Tailscale's publicly trusted Serve HTTPS path does not need the LAN Caddy CA on 
 
 Tailscale authorizes the device connection; it is not a shared app login, backup destination or photo/music player. Both the home server and phone need internet. The server must remain powered on with its storage available. Reauthentication/expiry and tailnet policy still need administration.
 
-Nextcloud uses the gateway applied last as its primary origin. After rerunning the full profile, reapply remote_access if the .ts.net URL should be primary. Phone tests are recorded as user-confirmed evidence, separate from automatic server route checks and full acceptance.
+Nextcloud answers on every gateway address at once: each gateway only adds its address to Nextcloud's trusted domains, and links follow whichever address the client used. (Before v0.21.1 the gateway applied last replaced the other's address, so applying remote_access broke Nextcloud on the home network for devices without Tailscale.) The first gateway's address is used for links in background emails. The Docker hop between the gateway and Nextcloud is a trusted proxy, so Nextcloud sees each client's real address for login throttling and logs. Phone tests are recorded as user-confirmed evidence, separate from automatic server route checks and full acceptance.

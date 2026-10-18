@@ -1,7 +1,7 @@
 //! Monthly cold snapshots, isolated restored-stack probes and recoverable image updates.
 //! The journal on the OS disk survives process death and SSD application restores.
 use crate::{
-    app_snapshot, backup,
+    backup,
     common::{self, Error, Result},
     Args, VERSION,
 };
@@ -52,9 +52,19 @@ fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
         .as_str()
         .ok_or_else(|| Error::new("Missing transaction field"))
 }
+/// Owner required for private maintenance state: root in production. Unit tests run
+/// unprivileged in CI, so they expect the current user instead.
+#[cfg(not(test))]
+fn state_owner() -> u32 {
+    0
+}
+#[cfg(test)]
+fn state_owner() -> u32 {
+    unsafe { libc::geteuid() }
+}
 fn private(path: &Path) -> Result<()> {
     let m = fs::metadata(common::safe(path)?)?;
-    if m.uid() != 0 || m.mode() & 0o077 != 0 {
+    if m.uid() != state_owner() || m.mode() & 0o077 != 0 {
         return Err(Error::new("Private root-owned maintenance state required"));
     }
     Ok(())
@@ -87,17 +97,14 @@ fn names(cfg: &Value) -> Result<Vec<String>> {
 }
 fn roots(names: &[String]) -> (Vec<String>, Vec<String>) {
     let mut data = vec![];
-    let mut media = vec![];
+    let media = vec![];
     for name in names {
         data.extend([format!("appdata/{name}"), format!("compose/{name}")]);
     }
-    if names.iter().any(|s| s == "immich") {
-        data.push("photos/immich-library".into());
-    }
-    if names.iter().any(|s| s == "nextcloud") {
-        media.push("cloud/files".into());
-    }
-    data.push("secrets/accounts".into());
+    // Photos and Nextcloud files are not in the monthly snapshot: they get
+    // add-only weekly copies (HDD and USB for photos, USB for Nextcloud files).
+    // Updates change the databases in appdata, which the snapshot does cover.
+    // App password files are never archived in plain text: see encrypt_secrets.
     (data, media)
 }
 fn free(path: &Path) -> Result<u64> {
@@ -258,7 +265,9 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<(
             let ports = v["ports"]
                 .as_array()
                 .ok_or_else(|| Error::new("Application port missing"))?;
-            if ports.is_empty() || ports.iter().any(|p| p["host_ip"] != "127.0.0.1") {
+            let peer = peer_port(service, v);
+            let public = |p: &Value| p["host_ip"] != "127.0.0.1" && !is_peer_binding(p, peer);
+            if ports.is_empty() || ports.iter().any(public) {
                 return Err(Error::new("Loopback application ports required"));
             }
         } else if v["ports"].as_array().is_some_and(|p| !p.is_empty()) {
@@ -266,6 +275,39 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<(
         }
     }
     Ok(())
+}
+/// qBittorrent's optional peer port (TORRENTING_PORT), the one publication allowed
+/// beyond loopback so other peers can connect in.
+fn peer_port(service: &str, v: &Value) -> Option<u16> {
+    if service != "qbittorrent" {
+        return None;
+    }
+    let env = &v["environment"];
+    let value = env["TORRENTING_PORT"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| {
+            env.as_array()?.iter().find_map(|e| {
+                e.as_str()?
+                    .strip_prefix("TORRENTING_PORT=")
+                    .map(str::to_string)
+            })
+        })?;
+    value.parse::<u16>().ok().filter(|p| *p >= 1024)
+}
+fn is_peer_binding(p: &Value, peer: Option<u16>) -> bool {
+    let Some(peer) = peer else {
+        return false;
+    };
+    let host = p["host_ip"].as_str().unwrap_or("");
+    let published = p["published"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| p["published"].as_u64().map(|n| n.to_string()));
+    ["", "0.0.0.0", "::"].contains(&host)
+        && p["target"].as_u64() == Some(peer as u64)
+        && published.as_deref() == Some(peer.to_string().as_str())
+        && ["tcp", "udp"].contains(&p["protocol"].as_str().unwrap_or("tcp"))
 }
 fn containers(name: &str, model: &mut Value) -> Result<Vec<Value>> {
     let mut out = vec![];
@@ -401,6 +443,65 @@ fn tar(root: &Path, paths: &[String], output: &Path) -> Result<()> {
     fs::File::open(Path::new(output.as_ref()))?.sync_all()?;
     Ok(())
 }
+const SECRETS_KEY_DIR: &str = "/etc/nekoserver-backups";
+const SECRETS_KEY: &str = "secrets-key.p8";
+const SECRETS_CERT: &str = "secrets-recipient.pem";
+const SECRETS_ARCHIVE: &str = "secrets.tar.cms";
+/// Store secrets/accounts only as a CMS envelope for the backup certificate. The tar
+/// stream is piped straight into openssl, so no plain-text copy reaches the backup
+/// drive. The sudo-password-protected key travels with the snapshot for restores.
+/// Returns "encrypted", "none" (no password folder) or "skipped_no_key".
+fn encrypt_secrets(data: &Path, snapshot: &Path) -> Result<&'static str> {
+    encrypt_secrets_with(data, snapshot, Path::new(SECRETS_KEY_DIR))
+}
+fn encrypt_secrets_with(data: &Path, snapshot: &Path, key_dir: &Path) -> Result<&'static str> {
+    if !data.join("secrets/accounts").exists() {
+        return Ok("none");
+    }
+    let key = key_dir.join(SECRETS_KEY);
+    let cert = key_dir.join(SECRETS_CERT);
+    if !key.is_file() || !cert.is_file() {
+        return Ok("skipped_no_key");
+    }
+    private(&key)?;
+    private(&cert)?;
+    let output = snapshot.join(SECRETS_ARCHIVE);
+    let mut archive = std::process::Command::new("tar")
+        .args(["--create", "--file", "-", "--acls", "--xattrs", "-C"])
+        .arg(data)
+        .args(["--", "secrets/accounts"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let stream = archive
+        .stdout
+        .take()
+        .ok_or_else(|| Error::new("Password archive stream unavailable"))?;
+    let sealed = std::process::Command::new("openssl")
+        .args([
+            "cms", "-encrypt", "-binary", "-aes256", "-outform", "DER", "-out",
+        ])
+        .arg(&output)
+        .arg(&cert)
+        .stdin(stream)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    let archived = archive.wait()?;
+    if !archived.success() || !sealed.success() {
+        let _ = fs::remove_file(&output);
+        return Err(Error::new("Could not encrypt the app password files"));
+    }
+    fs::set_permissions(
+        &output,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )?;
+    fs::File::open(&output)?.sync_all()?;
+    for (source, name) in [(&key, SECRETS_KEY), (&cert, SECRETS_CERT)] {
+        common::atomic(&snapshot.join(name), &common::bytes(source, 64_000)?, 0o600)?;
+    }
+    Ok("encrypted")
+}
 fn verify(snapshot: &Path) -> Result<Value> {
     private(snapshot)?;
     let manifest = load(&snapshot.join("manifest.json"))?;
@@ -411,6 +512,11 @@ fn verify(snapshot: &Path) -> Result<Value> {
         let archive = snapshot.join(format!("{key}.tar"));
         if common::digest(&archive)? != manifest["sha256"][key].as_str().unwrap_or("") {
             return Err(Error::new("Snapshot archive checksum mismatch"));
+        }
+    }
+    if let Some(expected) = manifest["sha256"]["secrets"].as_str() {
+        if common::digest(&snapshot.join(SECRETS_ARCHIVE))? != expected {
+            return Err(Error::new("Snapshot password archive checksum mismatch"));
         }
     }
     Ok(manifest)
@@ -675,6 +781,56 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
     }
     Ok(model)
 }
+/// Apps whose user data (photos, Nextcloud files) is kept out of the monthly
+/// snapshot, and a table that proves their restored database is the real one.
+fn database_only_table(name: &str) -> Option<&'static str> {
+    match name {
+        "immich" => Some("asset"),
+        "nextcloud" => Some("oc_filecache"),
+        _ => None,
+    }
+}
+fn database_probe(
+    file: &Path,
+    project: &str,
+    name: &str,
+    table: &str,
+    wait: u64,
+    report: &Path,
+) -> Result<()> {
+    // Immich v2 calls the table "asset"; v1 called it "assets".
+    let query = format!(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('{table}','{table}s')"
+    );
+    let command = format!("psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -Atc \"{query}\"");
+    let start = Instant::now();
+    loop {
+        let attempt = compose(
+            file,
+            project,
+            &["exec", "-T", "database", "sh", "-c", &command],
+        )
+        .and_then(|out| {
+            if out.trim().parse::<u32>().unwrap_or(0) >= 1 {
+                Ok(())
+            } else {
+                Err(Error::new(
+                    "Restored database is missing its application tables",
+                ))
+            }
+        });
+        if attempt.is_ok() {
+            return common::atomic_json(
+                &report.join(format!("{name}-restore-test.json")),
+                &json!({"status":"pass","database_sql":true,"table":table,"http":false,"files":"not in monthly snapshot; weekly add-only copies"}),
+            );
+        }
+        if start.elapsed() >= Duration::from_secs(wait) {
+            return attempt;
+        }
+        thread::sleep(Duration::from_secs(5));
+    }
+}
 fn rehearsal(snapshot: &Path, cfg: &Value, models: &Value, report: &Path) -> Result<()> {
     let stage = snapshot.join("restore-test");
     extract(snapshot, &stage)?;
@@ -692,18 +848,22 @@ fn rehearsal(snapshot: &Path, cfg: &Value, models: &Value, report: &Path) -> Res
             .unwrap()
             .push(json!({"file":file,"project":project}));
         common::atomic_json(Path::new(JOURNAL), &journal)?;
-        let result = compose(&file, &project, &["up", "-d", "--pull", "never"]).and_then(|_| {
-            health(
+        let wait = cfg["maintenance"]["health_wait_seconds"]
+            .as_u64()
+            .unwrap_or(300);
+        let result = if let Some(table) = database_only_table(name) {
+            // The snapshot holds this app's database but not its photos/files, so the
+            // full app cannot start from it. Prove the restored database instead.
+            compose(
                 &file,
                 &project,
-                name,
-                cfg["maintenance"]["health_wait_seconds"]
-                    .as_u64()
-                    .unwrap_or(300),
-                true,
-                report,
+                &["up", "-d", "--pull", "never", "database"],
             )
-        });
+            .and_then(|_| database_probe(&file, &project, name, table, wait, report))
+        } else {
+            compose(&file, &project, &["up", "-d", "--pull", "never"])
+                .and_then(|_| health(&file, &project, name, wait, true, report))
+        };
         let down = compose(&file, &project, &["down", "--volumes", "--remove-orphans"]);
         result.and(down)?;
     }
@@ -881,91 +1041,6 @@ fn write_override(cfg: &Value, name: &str, model: &Value) -> Result<()> {
         &json!({"services":services}),
     )
 }
-fn external_mount(cfg: &Value) -> Result<()> {
-    let ext = common::mount_path(string(cfg, "external_backup_mount")?)?;
-    let uuid = cfg["photos"]["external_backup_uuid"].as_str().unwrap_or("");
-    if uuid.is_empty() || !uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-        return Err(Error::new("External UUID required"));
-    }
-    if cfg["photos"]["external_backup_fstype"] == "exfat" {
-        let (code, targets) = common::command(
-            &[
-                "findmnt",
-                "-rn",
-                "--source",
-                &format!("UUID={uuid}"),
-                "-o",
-                "TARGET",
-            ],
-            10,
-        )?;
-        if code == 0 && targets.lines().any(|p| p.trim() != ext.to_string_lossy()) {
-            return Err(Error::new(
-                "Unmount other exFAT aliases before storing private full backups",
-            ));
-        }
-    }
-    if !common::mounted(&ext) {
-        let kind = cfg["photos"]["external_backup_fstype"]
-            .as_str()
-            .unwrap_or("ext4");
-        if !["ext4", "xfs", "btrfs", "exfat"].contains(&kind) {
-            return Err(Error::new("Unsupported external filesystem"));
-        }
-        common::directory(&ext, 0o755)?;
-        let opts = if kind == "exfat" {
-            "nodev,nosuid,noexec,uid=0,gid=0,umask=077"
-        } else {
-            "nodev,nosuid,noexec"
-        };
-        checked(
-            &[
-                "mount",
-                "-t",
-                kind,
-                "-o",
-                opts,
-                &format!("UUID={uuid}"),
-                &ext.to_string_lossy(),
-            ],
-            30,
-        )?;
-    }
-    backup::validate_external(&ext, uuid)?;
-    let mut disks = std::collections::BTreeSet::new();
-    for key in [
-        cfg["storage"]["data_ssd"]["uuid"].as_str().unwrap_or(""),
-        cfg["storage"]["media_hdd"]["uuid"].as_str().unwrap_or(""),
-        uuid,
-    ] {
-        let text = checked(
-            &[
-                "lsblk",
-                "-srn",
-                "-o",
-                "NAME,TYPE",
-                &format!("/dev/disk/by-uuid/{key}"),
-            ],
-            15,
-        )?;
-        let parents = text
-            .lines()
-            .filter_map(|line| {
-                let cols = line.split_whitespace().collect::<Vec<_>>();
-                if cols.len() == 2 && cols[1] == "disk" {
-                    Some(cols[0].to_string())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        if parents.len() != 1 || !disks.insert(parents[0].clone()) {
-            return Err(Error::new("Three distinct physical disks required"));
-        }
-    }
-    Ok(())
-}
-
 fn source_model(folder: &Path, name: &str) -> Result<Value> {
     let manifest = folder.join("compose.yaml");
     let file = manifest.to_string_lossy();
@@ -1150,17 +1225,107 @@ fn integrations(cfgpath: &Path, cfg: &Value) -> Result<()> {
     Ok(())
 }
 
+fn keep_snapshots(cfg: &Value) -> u64 {
+    cfg["maintenance"]["keep_snapshots"].as_u64().unwrap_or(3)
+}
+fn monthly_runs(root: &Path) -> Result<Vec<String>> {
+    let folder = root.join("backups/monthly");
+    let pattern = regex::Regex::new(r"^[0-9]+-[0-9]+$").unwrap();
+    let mut runs = vec![];
+    if !folder.exists() {
+        return Ok(runs);
+    }
+    for entry in fs::read_dir(common::safe(&folder)?)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry.file_type()?.is_dir() && pattern.is_match(&name) {
+            runs.push(name);
+        }
+    }
+    // Run names start with a microsecond timestamp, so numeric order is age order.
+    runs.sort_by_key(|n| {
+        let (a, b) = n.split_once('-').unwrap();
+        (
+            a.parse::<u128>().unwrap_or(0),
+            b.parse::<u128>().unwrap_or(0),
+        )
+    });
+    Ok(runs)
+}
+fn same_manifest(a: &Path, b: &Path) -> bool {
+    match (
+        fs::read(a.join("manifest.json")),
+        fs::read(b.join("manifest.json")),
+    ) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+fn remove_run(path: &Path) -> Result<()> {
+    private(path)?;
+    fs::remove_dir_all(common::safe(path)?)?;
+    Ok(())
+}
+/// Keep the newest `keep` complete monthly snapshots on the HDD (0 keeps everything).
+/// A run is complete once its restore test passed; incomplete or unrecognised runs
+/// are never deleted, only reported. Copies that v0.21.0 wrote to the SSD are removed
+/// once the same run (identical manifest) is on the HDD. The USB drive is not touched
+/// here: the weekly USB job retires the old monthly copies there.
+fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) -> Result<Value> {
+    let journal = load(Path::new(JOURNAL)).ok();
+    let protected = |run: &str| {
+        Some(run) == current
+            || journal.as_ref().is_some_and(|j| {
+                j["snapshot"]
+                    .as_str()
+                    .is_some_and(|s| Path::new(s).file_name().is_some_and(|f| f == run))
+            })
+    };
+    let hdd = media.join("backups/monthly");
+    let complete: Vec<String> = monthly_runs(media)?
+        .into_iter()
+        .filter(|r| hdd.join(r).join("restore-tests.json").is_file())
+        .filter(|r| hdd.join(r).join("manifest.json").is_file())
+        .collect();
+    let mut removed = vec![];
+    let mut kept = vec![];
+    if keep > 0 {
+        let cut = complete.len().saturating_sub(keep as usize);
+        for run in &complete[..cut] {
+            if protected(run) {
+                kept.push(run.clone());
+                continue;
+            }
+            remove_run(&hdd.join(run))?;
+            removed.push(json!({"run":run,"drive":"hdd"}));
+        }
+        kept.extend(complete[cut..].iter().cloned());
+    } else {
+        kept.extend(complete.iter().cloned());
+    }
+    let ssd = data.join("backups/monthly");
+    for run in monthly_runs(data)? {
+        if protected(&run) {
+            continue;
+        }
+        let copy = ssd.join(&run);
+        if same_manifest(&copy, &hdd.join(&run)) {
+            remove_run(&copy)?;
+            removed.push(json!({"run":run,"drive":"ssd"}));
+        }
+    }
+    let unmanaged: Vec<String> = monthly_runs(media)?
+        .into_iter()
+        .filter(|r| !complete.contains(r) && !protected(r))
+        .collect();
+    Ok(json!({"keep":keep,"kept":kept,"removed":removed,"incomplete_not_removed":unmanaged}))
+}
 fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
-    external_mount(cfg)?;
-    mounts(cfgpath, cfg, true)?;
+    mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
-    let external = Path::new(string(cfg, "external_backup_mount")?);
     let names = names(cfg)?;
-    let mut paths = roots(&names);
-    paths
-        .0
-        .retain(|p| p != "secrets/accounts" || data.join(p).exists());
+    let paths = roots(&names);
     let reserve = cfg["maintenance"]["minimum_free_gb"]
         .as_u64()
         .unwrap_or(20)
@@ -1169,6 +1334,8 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     let bytes = size(data, &paths.0)?
         .saturating_add(size(media, &paths.1)?)
         .saturating_add(1 << 30);
+    let keep = keep_snapshots(cfg);
+    let mut retention = prune_monthly(data, media, keep, None)?;
     let selected_images = docker(&["ps", "-aq", "--no-trunc"])?;
     let mut image_bytes = 0u64;
     for id in selected_images.split_whitespace() {
@@ -1178,8 +1345,9 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
         image_bytes = image_bytes.saturating_add(meta[0]["Size"].as_u64().unwrap_or(1 << 30));
     }
     let bytes = bytes.saturating_add(image_bytes);
-    // SSD/HDD also need space to stage restoration; never delete old backups to make room.
-    for (root, multiplier) in [(data, 2), (media, 3), (external, 1)] {
+    // HDD holds the snapshot, the restore test and a rollback stage; the SSD only a
+    // rollback stage. The USB drive is not used by monthly maintenance.
+    for (root, multiplier) in [(data, 1), (media, 3)] {
         if free(root)? < bytes.saturating_mul(multiplier).saturating_add(reserve) {
             return Err(Error::new(
                 "Not enough space for backup and verified recovery",
@@ -1217,9 +1385,10 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
         &json!({"format":"neko-maintenance-resume-v1","version":VERSION,"run":run,"phase":"snapshot","snapshot":snapshot,"storage":cfg["storage"],"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"models":models,"containers":rows,"rehearsals":[]}),
     )?;
     stop(&rows)?;
-    mounts(cfgpath, cfg, true)?;
+    mounts(cfgpath, cfg, false)?;
     tar(data, &paths.0, &snapshot.join("data.tar"))?;
     tar(media, &paths.1, &snapshot.join("media.tar"))?;
+    let password_files = encrypt_secrets(data, &snapshot)?;
     let mut images = std::collections::BTreeSet::new();
     for m in models.as_object().unwrap().values() {
         for v in m["services"].as_object().unwrap().values() {
@@ -1232,29 +1401,19 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     image_args.extend(images.iter().map(String::as_str));
     docker(&image_args)?;
     fs::File::open(&image_archive)?.sync_all()?;
-    let manifest = json!({"format":"neko-maintenance-v1","version":VERSION,"created_at":common::now(),"storage":cfg["storage"],"paths":{"data":paths.0,"media":paths.1},"sha256":{"data":common::digest(&snapshot.join("data.tar"))?,"media":common::digest(&snapshot.join("media.tar"))?,"images":common::digest(&image_archive)?}});
+    let mut manifest = json!({"format":"neko-maintenance-v1","version":VERSION,"created_at":common::now(),"storage":cfg["storage"],"paths":{"data":paths.0,"media":paths.1},"sha256":{"data":common::digest(&snapshot.join("data.tar"))?,"media":common::digest(&snapshot.join("media.tar"))?,"images":common::digest(&image_archive)?},"password_files":password_files});
+    if password_files == "encrypted" {
+        manifest["sha256"]["secrets"] = json!(common::digest(&snapshot.join(SECRETS_ARCHIVE))?);
+    }
     common::atomic_json(&snapshot.join("manifest.json"), &manifest)?;
     verify(&snapshot)?;
     let mut journal = load(Path::new(JOURNAL))?;
     journal["phase"] = json!("backed_up");
     save_journal(&journal)?;
-    for root in [data, external] {
-        mounts(cfgpath, cfg, true)?;
-        let dest = root.join("backups/monthly").join(&run);
-        common::directory(&dest, 0o700)?;
-        private(&dest)?;
-        for file in fs::read_dir(&snapshot)? {
-            let file = file?;
-            if file.file_type()?.is_file() {
-                app_snapshot::copy_file(&file.path(), &dest.join(file.file_name()))?;
-            }
-        }
-        verify(&dest)?;
-    }
     rehearsal(&snapshot, cfg, &models, &snapshot)?;
     common::atomic_json(
         &snapshot.join("restore-tests.json"),
-        &json!({"status":"pass","method":"isolated containers started from extracted backups, HTTP probes, Immich SQL, Nextcloud database/file round trip","at":common::now()}),
+        &json!({"status":"pass","method":"isolated containers started from extracted backups with HTTP probes; Immich and Nextcloud databases restored and checked by SQL","at":common::now()}),
     )?;
     if !night(cfg) {
         return Err(Error::new(
@@ -1292,7 +1451,7 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
             "Night window ended during image downloads; updates deferred",
         ));
     }
-    mounts(cfgpath, cfg, true)?;
+    mounts(cfgpath, cfg, false)?;
     journal = load(Path::new(JOURNAL))?;
     journal["phase"] = json!("updating");
     save_journal(&journal)?;
@@ -1335,10 +1494,19 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     }
     common::atomic_json(
         &snapshot.join("result.json"),
-        &json!({"status":"pass","updated_at":common::now(),"restore_test":"pass","three_copies":"verified","images":updated}),
+        &json!({"status":"pass","updated_at":common::now(),"restore_test":"pass","snapshot":"hdd","images":updated}),
     )?;
     fs::remove_file(JOURNAL)?;
     fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+    // The update is committed. Cleanup is best effort: a failure here must never be
+    // mistaken for a failed update, and deletes only touch a re-verified USB drive.
+    retention["after_update"] = match mounts(cfgpath, cfg, false)
+        .and_then(|_| prune_monthly(data, media, keep, Some(&run)))
+    {
+        Ok(report) => report,
+        Err(e) => json!({"status":"skipped","reason":e.to_string()}),
+    };
+    let _ = common::atomic_json(&snapshot.join("retention.json"), &retention);
     Ok(())
 }
 pub fn run(a: &Args, recover: bool) -> Result<()> {
@@ -1378,6 +1546,269 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::DirBuilderExt;
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("neko-prune-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for drive in ["ssd", "hdd", "usb"] {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(root.join(drive).join("backups/monthly"))
+                .unwrap();
+        }
+        root
+    }
+    fn snapshot(root: &Path, drive: &str, run: &str, complete: bool) {
+        let dir = root.join(drive).join("backups/monthly").join(run);
+        fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        fs::write(dir.join("manifest.json"), format!("{{\"run\":\"{run}\"}}")).unwrap();
+        fs::write(dir.join("data.tar"), b"archive").unwrap();
+        if complete {
+            fs::write(dir.join("restore-tests.json"), b"{}").unwrap();
+        }
+    }
+    fn runs(root: &Path, drive: &str) -> Vec<String> {
+        monthly_runs(&root.join(drive)).unwrap()
+    }
+    fn sh(args: &[&str], stdin: Option<&[u8]>) -> Vec<u8> {
+        use std::io::Write;
+        let mut child = std::process::Command::new(args[0])
+            .args(&args[1..])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.unwrap_or(b""))
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{args:?}");
+        out.stdout
+    }
+    #[test]
+    fn password_files_are_encrypted_and_open_only_with_the_password() {
+        let root = scratch("secrets");
+        let data = root.join("ssd");
+        let keys = root.join("keys");
+        let snap = root.join("hdd/backups/monthly/500-1");
+        for dir in [data.join("secrets/accounts"), keys.clone(), snap.clone()] {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .unwrap();
+        }
+        fs::write(
+            data.join("secrets/accounts/APP-CREDENTIALS.txt"),
+            b"jellyfin admin hunter2-topsecret\n",
+        )
+        .unwrap();
+        // No key yet: nothing is written, and nothing is written in plain text.
+        assert_eq!(
+            encrypt_secrets_with(&data, &snap, &keys).unwrap(),
+            "skipped_no_key"
+        );
+        assert!(fs::read_dir(&snap).unwrap().next().is_none());
+        // Same key format backup_secrets.py creates.
+        let plain = sh(
+            &[
+                "openssl",
+                "genpkey",
+                "-algorithm",
+                "RSA",
+                "-pkeyopt",
+                "rsa_keygen_bits:2048",
+            ],
+            None,
+        );
+        let locked = sh(
+            &[
+                "openssl",
+                "pkcs8",
+                "-topk8",
+                "-v2",
+                "aes-256-cbc",
+                "-v2prf",
+                "hmacWithSHA256",
+                "-iter",
+                "1000",
+                "-passout",
+                "pass:sudo-pw",
+            ],
+            Some(&plain),
+        );
+        let cert = sh(
+            &[
+                "openssl",
+                "req",
+                "-new",
+                "-x509",
+                "-key",
+                "/dev/stdin",
+                "-passin",
+                "pass:sudo-pw",
+                "-subj",
+                "/CN=test",
+                "-days",
+                "1",
+            ],
+            Some(&locked),
+        );
+        for (name, bytes) in [(SECRETS_KEY, &locked), (SECRETS_CERT, &cert)] {
+            fs::write(keys.join(name), bytes).unwrap();
+            fs::set_permissions(
+                keys.join(name),
+                <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            encrypt_secrets_with(&data, &snap, &keys).unwrap(),
+            "encrypted"
+        );
+        let sealed = fs::read(snap.join(SECRETS_ARCHIVE)).unwrap();
+        assert!(!sealed.windows(9).any(|w| w == b"topsecret"));
+        for name in [SECRETS_ARCHIVE, SECRETS_KEY, SECRETS_CERT] {
+            assert_eq!(
+                fs::metadata(snap.join(name)).unwrap().mode() & 0o777,
+                0o600,
+                "{name}"
+            );
+        }
+        let archive = snap.join(SECRETS_ARCHIVE).to_string_lossy().to_string();
+        let key = snap.join(SECRETS_KEY).to_string_lossy().to_string();
+        let recip = snap.join(SECRETS_CERT).to_string_lossy().to_string();
+        let opened = sh(
+            &[
+                "openssl",
+                "cms",
+                "-decrypt",
+                "-binary",
+                "-inform",
+                "DER",
+                "-in",
+                &archive,
+                "-inkey",
+                &key,
+                "-passin",
+                "pass:sudo-pw",
+                "-recip",
+                &recip,
+            ],
+            None,
+        );
+        let text = sh(&["tar", "-xO", "-f", "-"], Some(&opened));
+        assert_eq!(text, b"jellyfin admin hunter2-topsecret\n");
+        let wrong = std::process::Command::new("openssl")
+            .args([
+                "cms",
+                "-decrypt",
+                "-binary",
+                "-inform",
+                "DER",
+                "-in",
+                &archive,
+                "-inkey",
+                &key,
+                "-passin",
+                "pass:wrong",
+                "-recip",
+                &recip,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!wrong.success());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn only_the_configured_qbittorrent_peer_port_may_be_public() {
+        let qbit = json!({"environment":{"TORRENTING_PORT":"51413"}});
+        let peer = peer_port("qbittorrent", &qbit);
+        assert_eq!(peer, Some(51413));
+        let tcp = json!({"target":51413,"published":"51413","protocol":"tcp"});
+        let udp = json!({"host_ip":"0.0.0.0","target":51413,"published":"51413","protocol":"udp"});
+        assert!(is_peer_binding(&tcp, peer) && is_peer_binding(&udp, peer));
+        // Web UI, a different port, or a remapped port stays forbidden.
+        for p in [
+            json!({"target":8080,"published":"8080","protocol":"tcp"}),
+            json!({"target":51414,"published":"51414","protocol":"tcp"}),
+            json!({"target":51413,"published":"6881","protocol":"tcp"}),
+        ] {
+            assert!(!is_peer_binding(&p, peer), "{p}");
+        }
+        assert_eq!(peer_port("jellyfin", &qbit), None);
+        assert_eq!(peer_port("qbittorrent", &json!({"environment":{}})), None);
+        assert_eq!(
+            peer_port(
+                "qbittorrent",
+                &json!({"environment":["TORRENTING_PORT=51413"]})
+            ),
+            Some(51413)
+        );
+    }
+    #[test]
+    fn monthly_snapshot_holds_app_state_not_photos_or_cloud_files() {
+        let (data, media) = roots(&["immich".into(), "nextcloud".into(), "sonarr".into()]);
+        assert!(data.contains(&"appdata/immich".into()));
+        assert!(data.contains(&"appdata/nextcloud".into()));
+        assert!(!data.iter().any(|p| p.starts_with("photos")));
+        assert!(media.is_empty());
+        assert_eq!(database_only_table("immich"), Some("asset"));
+        assert_eq!(database_only_table("nextcloud"), Some("oc_filecache"));
+        assert_eq!(database_only_table("jellyfin"), None);
+    }
+    #[test]
+    fn monthly_retention_keeps_newest_complete_runs_on_the_hdd() {
+        let root = scratch("keep");
+        for run in ["100-1", "200-1", "300-1", "400-1", "1000-1"] {
+            snapshot(&root, "hdd", run, true);
+        }
+        snapshot(&root, "usb", "100-1", false);
+        let report = prune_monthly(&root.join("ssd"), &root.join("hdd"), 3, None).unwrap();
+        // Numeric, not lexical, order: 1000-1 is the newest.
+        assert_eq!(runs(&root, "hdd"), ["300-1", "400-1", "1000-1"]);
+        assert_eq!(report["removed"].as_array().unwrap().len(), 2);
+        // Monthly maintenance never touches the USB drive.
+        assert_eq!(runs(&root, "usb"), ["100-1"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn monthly_retention_never_removes_incomplete_or_current_runs() {
+        let root = scratch("safe");
+        snapshot(&root, "hdd", "100-1", true);
+        snapshot(&root, "hdd", "150-1", false); // failed/partial run: reported, kept
+        snapshot(&root, "hdd", "200-1", true);
+        snapshot(&root, "hdd", "300-1", true);
+        let report = prune_monthly(&root.join("ssd"), &root.join("hdd"), 1, Some("200-1")).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["150-1", "200-1", "300-1"]);
+        assert_eq!(report["incomplete_not_removed"], json!(["150-1"]));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn monthly_retention_zero_keeps_everything_and_reclaims_old_ssd_copies() {
+        let root = scratch("ssd");
+        for run in ["100-1", "200-1"] {
+            snapshot(&root, "hdd", run, true);
+            snapshot(&root, "ssd", run, false);
+        }
+        snapshot(&root, "ssd", "300-1", false); // only on the SSD: the only copy, keep it
+        fs::write(
+            root.join("ssd/backups/monthly/200-1/manifest.json"),
+            b"different",
+        )
+        .unwrap();
+        prune_monthly(&root.join("ssd"), &root.join("hdd"), 0, None).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["100-1", "200-1"]);
+        // 200-1 on the SSD differs from the HDD copy, so it is not ours to delete.
+        assert_eq!(runs(&root, "ssd"), ["200-1", "300-1"]);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn monthly_manual_playback_does_not_block_healthy_automation() {
         let report = json!({"services":{"navidrome":{"result":"pass"}},"integrations":{},"readiness":{"navidrome:catalogue":{"result":"pass"},"end_to_end_media":{"result":"needs_setup"},"navidrome:authenticated_playback_or_transfer":{"result":"needs_setup"}}});
@@ -1404,9 +1835,9 @@ mod tests {
             "qbittorrent".into(),
         ]);
         assert!(a.contains(&"appdata/immich".into()));
-        assert!(b.contains(&"cloud/files".into()));
+        assert!(!b.contains(&"cloud/files".into()));
         assert!(a.contains(&"appdata/navidrome".into()));
-        assert!(a.contains(&"secrets/accounts".into()));
+        assert!(!a.contains(&"secrets/accounts".into()));
         assert!(!a.iter().chain(b.iter()).any(|p| p.starts_with("library")));
     }
     #[test]

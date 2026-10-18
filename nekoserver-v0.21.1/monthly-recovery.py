@@ -21,6 +21,11 @@ def verify(snapshot):
             digest = hashlib.file_digest(source, 'sha256').hexdigest()
         if digest != manifest.get('sha256', {}).get(name):
             raise RuntimeError('Snapshot checksum mismatch: '+name)
+    expected = manifest.get('sha256', {}).get('secrets')
+    if expected is not None:
+        with safe_path(snapshot/'secrets.tar.cms').open('rb') as source:
+            if hashlib.file_digest(source, 'sha256').hexdigest() != expected:
+                raise RuntimeError('Snapshot checksum mismatch: secrets')
     return manifest
 
 
@@ -43,12 +48,18 @@ def main():
     parser.add_argument('--snapshot', required=True, type=Path)
     parser.add_argument('--stage', type=Path)
     parser.add_argument('--load-images', action='store_true', help='Load verified old Docker images for disaster recovery; does not start containers')
+    parser.add_argument('--secrets', type=Path, metavar='NEW_DIR', help='Decrypt the app password files into a new directory (asks for the sudo password that protected this backup)')
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Root is required to preserve private database ownership')
     verify(args.snapshot)
     if args.stage:
         stage(args.snapshot, args.stage)
+    if args.secrets:
+        import getpass
+        import backup_secrets
+        done = backup_secrets.restore(args.snapshot, args.secrets, getpass.getpass('Password that protected this backup (your sudo password at the time): '))
+        print(f'App password files restored to {done}')
     if args.load_images:
         subprocess.run(['docker', '--host', 'unix:///var/run/docker.sock', 'image', 'load', '--input', str(safe_path(args.snapshot/'images.tar'))], check=True)
     print('Monthly backup verified; live data and applications were not replaced.')

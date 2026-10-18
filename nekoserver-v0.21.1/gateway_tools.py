@@ -218,17 +218,49 @@ def apply_tailnet(config):
 
 
 def configure_cloud_origin(config, host, port):
-    """Set the canonical HTTPS origin and explicit trusted hosts through upstream occ."""
+    """Make Nextcloud answer on this gateway host without breaking any other gateway.
+
+    Each gateway (LAN, tailnet) only adds its host to trusted_domains. Caddy passes
+    the client's Host header through, so Nextcloud builds links for whichever
+    address the client used. A single overwritehost would force every client onto
+    one address, so it is never set here, and a value an earlier release set for a
+    gateway is removed. The proxy hop is trusted so client addresses are preserved.
+    """
     if 'nextcloud' not in selected(config):
         return
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*', host):
         raise RuntimeError('Invalid Nextcloud gateway host')
     from neko_common import compose_image_override
     folder=Path(config['data_mount'])/'compose/nextcloud'
-    base=['docker','--host','unix:///var/run/docker.sock','compose','-p','neko-nextcloud','-f',str(folder/'compose.yaml'),'--env-file',str(folder/'.env'),*compose_image_override(folder/'compose.yaml'),'exec','-T','--user','www-data','nextcloud','php','occ']
-    try:values=json.loads(command(base+['config:system:get','trusted_domains','--output=json']))
-    except ValueError:raise RuntimeError('Cannot inspect Nextcloud trusted hosts') from None
+    compose=['docker','--host','unix:///var/run/docker.sock','compose','-p','neko-nextcloud','-f',str(folder/'compose.yaml'),'--env-file',str(folder/'.env'),*compose_image_override(folder/'compose.yaml')]
+    base=compose+['exec','-T','--user','www-data','nextcloud','php','occ']
+    def get(key):
+        try:return json.loads(command(base+['config:system:get',key,'--output=json']))
+        except (RuntimeError,ValueError):return None
+    values=get('trusted_domains')
     if not isinstance(values,list):raise RuntimeError('Cannot inspect Nextcloud trusted hosts')
     if host not in values:command(base+['config:system:set','trusted_domains',str(len(values)),'--value='+host])
-    for key,value in [('overwriteprotocol','https'),('overwritehost',host+':'+str(port)),('overwrite.cli.url','https://'+host+':'+str(port))]:
-        command(base+['config:system:set',key,'--value='+value])
+    command(base+['config:system:set','overwriteprotocol','--value=https'])
+    previous=get('overwritehost')
+    if isinstance(previous,str) and previous.endswith(':'+str(port)):
+        command(base+['config:system:delete','overwritehost'])
+    cli=get('overwrite.cli.url')
+    if not (isinstance(cli,str) and cli.startswith('https://') and cli.endswith(':'+str(port))):
+        command(base+['config:system:set','overwrite.cli.url','--value=https://'+host+':'+str(port)])
+    for index,proxy in enumerate(cloud_proxies(compose)):
+        command(base+['config:system:set','trusted_proxies',str(index),'--value='+proxy])
+
+
+def cloud_proxies(compose):
+    """Docker network gateways that relay the gateway's connections to Nextcloud."""
+    ids=command(compose+['ps','-q','nextcloud']).split()
+    if len(ids)!=1:raise RuntimeError('Nextcloud container not found')
+    try:info=json.loads(command(['docker','--host','unix:///var/run/docker.sock','inspect',ids[0]]))[0]
+    except (ValueError,IndexError,KeyError):raise RuntimeError('Cannot inspect Nextcloud networks') from None
+    out=[]
+    for network in (info.get('NetworkSettings',{}).get('Networks') or {}).values():
+        try:gateway=ipaddress.ip_address(network.get('Gateway',''))
+        except ValueError:continue
+        if gateway.is_private and str(gateway) not in out:out.append(str(gateway))
+    if not out:raise RuntimeError('Nextcloud has no private Docker network gateway')
+    return out

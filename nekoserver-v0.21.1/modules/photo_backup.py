@@ -59,11 +59,14 @@ def run(ctx):
     binary=native_runtime.deploy(Path(__file__).resolve().parents[1],ctx.config,script.parent)
     command=(str(binary)+' weekly --config '+str(native_runtime.backup_guard(ctx.config))) if binary else (sys.executable+' '+str(script)+' --config '+str(native_runtime.backup_guard(ctx.config)))
     cmd=f'{command} --uuid {uuid} --fstype {fstype} --source {source} --dest {dest} --media-root {ctx.config["media_mount"]} --data {ctx.config["data_mount"]}'
-    service='[Unit]\nDescription=NekoServer add-only photo backup\nRequiresMountsFor='+ctx.config['media_mount']+'\nAfter=nekoserver-immich-db-backup.service\n[Service]\nType=oneshot\nExecStart='+cmd+'\n'
+    if binary and ctx.config.get('nextcloud',{}).get('enabled',False):
+        # Nextcloud user files get the same add-only weekly copy as photos (Rust worker).
+        cmd+=' --cloud '+str(Path(ctx.config['media_mount'])/'cloud/files')
+    service='[Unit]\nDescription=NekoServer add-only USB backup of photos and Nextcloud files\nRequiresMountsFor='+ctx.config['media_mount']+'\nAfter=nekoserver-immich-db-backup.service\n[Service]\nType=oneshot\nExecStart='+cmd+'\n'
     schedule='[Unit]\nDescription=Weekly NekoServer photo backup\n[Timer]\nOnCalendar='+day+' *-*-* '+when+':00 '+host_timezone(ctx.config)+'\nPersistent=false\n[Install]\nWantedBy=timers.target\n'
     for path,text in ((unit,service),(timer,schedule)):
         if path.exists() and path.read_text()!=text and 'NekoServer' not in path.read_text() and 'nekoserver-' not in path.read_text(): raise RuntimeError(f'Unmanaged systemd unit differs: {path}')
     atomic_write(unit,service,0o644);atomic_write(timer,schedule,0o644)
     subprocess.run(['systemctl','daemon-reload'],check=True)
     subprocess.run(['systemctl','enable','--now',timer.name],check=True)
-    ctx.log('Enabled weekly timer; when USB is absent, run fails visibly instead of writing to OS disk')
+    ctx.log('Enabled weekly USB copy of Immich photos/videos'+(' and Nextcloud files' if '--cloud' in cmd else '')+'; when the USB drive is absent the run fails visibly instead of writing to the OS disk')

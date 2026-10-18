@@ -51,7 +51,7 @@ sudo less /srv/nekoserver/secrets/accounts/APP-CREDENTIALS.txt
 
 This is an unencrypted plaintext inventory requested for setup. Keep any offline copy private. PLANNED, STARTED and NEEDS_SETUP are not successful logins; only VERIFIED entries have passed their checks. Reruns preserve passwords and regenerate a missing text export from the saved JSON. They do not rotate passwords. The inventory records choices known to this installer; it does not watch password changes made later in app interfaces.
 
-The complete private inventory is included in monthly full SSD/HDD/external snapshots when it exists, with private permissions. The weekly external photo-originals job does not publish this inventory. Keep an independent secure copy before relying on the server's restoration. The release ZIP contains no credentials generated on your future server.
+The private inventory is included, encrypted, in monthly HDD snapshots when it exists (it opens with your sudo password; see MONTHLY-MAINTENANCE.md). It is never written to the USB drive. Keep an independent secure copy before relying on the server's restoration. The release ZIP contains no credentials generated on your future server.
 
 ## Install and resume
 

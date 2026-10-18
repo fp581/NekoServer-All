@@ -2,6 +2,7 @@
 from neko_common import compose_image_override
 import os
 import re
+import time
 import shutil
 import subprocess
 from pathlib import Path
@@ -70,6 +71,52 @@ def previous_templates(name, template):
     return out
 
 
+GPU_DEVICE_BLOCK = '    devices:\n      - /dev/dri:/dev/dri\n'
+GPU_DEVICE = Path('/dev/dri')
+
+
+QBIT_WEBUI_LINE = '      - "127.0.0.1:8080:8080"\n'
+QBIT_ENV_LINE = '      WEBUI_PORT: "8080"\n'
+RESERVED_PORTS = {2283, 2284, 4533, 5055, 7878, 8080, 8088, 8096, 8686, 8787, 8989, 9696, *range(8442, 8448)}
+
+
+def torrent_port(settings):
+    """Optional qBittorrent peer port (``media.torrent_port``); None keeps it closed."""
+    port = settings.get('torrent_port')
+    if port is None:
+        return None
+    if type(port) is not int or not 1024 <= port <= 65535 or port in RESERVED_PORTS:
+        raise RuntimeError('media.torrent_port must be an unused port from 1024 to 65535, or null')
+    return port
+
+
+def adapt_to_host(name, text, gpu_present=None, peer_port=None):
+    """Fit a rendered manifest to this host and the chosen options.
+
+    Jellyfin: drop GPU passthrough on hosts without /dev/dri. Docker refuses to
+    create a container whose device does not exist, so on a PC without integrated
+    graphics (or a VM) Jellyfin would never start; it transcodes in software instead.
+    qBittorrent: publish the optional peer port so other peers can connect in.
+    """
+    if gpu_present is None:
+        gpu_present = GPU_DEVICE.is_dir()
+    if name == 'jellyfin' and not gpu_present:
+        return text.replace(GPU_DEVICE_BLOCK, '')
+    if name == 'qbittorrent' and peer_port is not None:
+        if QBIT_WEBUI_LINE not in text or QBIT_ENV_LINE not in text:
+            raise RuntimeError('qBittorrent template changed; cannot add the peer port')
+        text = text.replace(QBIT_ENV_LINE, QBIT_ENV_LINE + f'      TORRENTING_PORT: "{peer_port}"\n')
+        text = text.replace(QBIT_WEBUI_LINE, QBIT_WEBUI_LINE + f'      - "{peer_port}:{peer_port}/tcp"\n      - "{peer_port}:{peer_port}/udp"\n')
+    return text
+
+
+def without_host_adaptations(text):
+    """A manifest with every adapt_to_host change undone, for recognising our own output."""
+    text = text.replace(GPU_DEVICE_BLOCK, '')
+    text = re.sub(r'      TORRENTING_PORT: "\d+"\n', '', text)
+    return re.sub(r'      - "(\d+):\1/(?:tcp|udp)"\n', '', text)
+
+
 def render(template, data, media, uid, gid, tz, bind):
     substitutions = dict(DATA=str(data), MEDIA=str(media), UID=str(uid), GID=str(gid), TZ=tz, BIND=bind)
     output = template
@@ -120,12 +167,17 @@ def _run(context):
         if dest.is_symlink():
             raise RuntimeError(f'Refusing symlink manifest: {dest}')
         template = (project_root / 'compose' / f'{name}.yaml').read_text(encoding='utf-8')
-        desired = render(template, data, media, uid, gid, tz, bind)
+        rendered = render(template, data, media, uid, gid, tz, bind)
+        desired = adapt_to_host(name, rendered, peer_port=torrent_port(settings))
         if dest.exists() and dest.read_text(encoding='utf-8') != desired:
             # Replace only an unedited copy of a template we shipped earlier.
             current = dest.read_text(encoding='utf-8')
-            for old_template, backup_name in previous_templates(name, template):
-                previous = render(old_template, data, media, uid, gid, tz, bind)
+            candidates = [(render(old, data, media, uid, gid, tz, bind), backup) for old, backup in previous_templates(name, template)]
+            if without_host_adaptations(current) == without_host_adaptations(rendered):
+                # Our own output for this template, before a host/option change
+                # (GPU appeared or vanished, peer port opened, changed or closed).
+                candidates.append((current, f'compose.before-{int(time.time())}.yaml'))
+            for previous, backup_name in candidates:
                 if current == previous:
                     break
             else:
