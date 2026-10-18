@@ -241,9 +241,9 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<(
                         && ["movies", "tv"]
                             .iter()
                             .any(|n| p == media.join("library").join(n)))
-                    || (["navidrome", "lidarr"].contains(&name) && p == data.join("library/music"))
-                    || (["lidarr", "qbittorrent"].contains(&name)
-                        && p == data.join("library/downloads/music"));
+                    || (name == "navidrome" && p == data.join("library/music"))
+                    || (name == "lidarr" && p == data.join("library"))
+                    || (name == "qbittorrent" && p == data.join("library/downloads/music"));
                 let localtime = p == Path::new("/etc/localtime") && volume["read_only"] == true;
                 if !(allowed || photo || cloud || library || localtime) {
                     return Err(Error::new("Uncovered container bind mount"));

@@ -3,7 +3,7 @@ import native_runtime
 import os,sys,subprocess
 from modules._runtime import deploy
 from pathlib import Path
-from neko_common import safe_path, relative_path, atomic_write
+from neko_common import safe_path, relative_path, atomic_write, host_timezone
 DEPENDENCIES=['photos']
 DESCRIPTION='Weekly additive archival of SSD Immich originals and database backup'
 
@@ -34,7 +34,7 @@ def run(ctx):
     services={
       'nekoserver-photo-preservation':(base,f'OnBootSec=10min\nOnUnitInactiveSec={interval}min\n'),
       'nekoserver-immich-db-backup':(base+' --db-backup',f'OnCalendar=*-*-* {tm}:00\nPersistent=true\n')}
-    if schedule=='weekly':services={'nekoserver-immich-db-backup':(base+' --db-backup',f'OnCalendar={day} *-*-* {tm}:00 Asia/Jerusalem\nPersistent=false\n')}
+    if schedule=='weekly':services={'nekoserver-immich-db-backup':(base+' --db-backup',f'OnCalendar={day} *-*-* {tm}:00 {host_timezone(cfg)}\nPersistent=false\n')}
     # The DB job also archives to keep an identical fail-closed precondition.
     for name,(cmd,calendar) in services.items():
         service=Path('/etc/systemd/system')/(name+'.service');timer=Path('/etc/systemd/system')/(name+'.timer')

@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      commit_runtime:
+        description: Rebuild the static Rust runtime and commit it (with build.json) to this branch
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_DIR: nekoserver-v0.21.0
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    defaults:
+      run:
+        working-directory: ${{ env.RELEASE_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile every module
+        run: python -m py_compile *.py modules/*.py
+      - name: Lint (syntax errors and undefined names)
+        run: pipx run ruff check --select E9,F63,F7,F82 --output-format github .
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  compose:
+    name: Compose files
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.RELEASE_DIR }}
+    env:
+      NEKO_DATA: /srv/nekoserver
+      NEKO_MEDIA: /mnt/nekoserver-media
+      NEKO_UID: "1000"
+      NEKO_GID: "1000"
+      NEKO_TZ: UTC
+      NEKO_BIND: 127.0.0.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: for f in compose/*.yaml; do echo "::group::$f"; docker compose -f "$f" config -q; echo "::endgroup::"; done
+
+  rust:
+    name: Rust runtime
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.RELEASE_DIR }}/runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  runtime-manifest:
+    name: Bundled runtime matches its sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check build.json against source and binary
+        working-directory: ${{ env.RELEASE_DIR }}/runtime
+        run: |
+          python3 - <<'EOF'
+          import hashlib, json, pathlib, sys
+          root = pathlib.Path('.')
+          manifest = json.loads((root / 'build.json').read_text())
+          sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          stale = [rel for rel, digest in manifest['source_sha256'].items() if sha(root / rel) != digest]
+          stale += [str(p) for p in sorted((root / 'src').glob('*.rs')) if str(p) not in manifest['source_sha256']]
+          if sha(root / 'bin/nekoserver-runtime') != manifest['binary_sha256']:
+              stale.append('bin/nekoserver-runtime')
+          if stale:
+              print('::error::Runtime binary is stale; the installer will refuse it. '
+                    'Run this workflow manually with "commit_runtime" ticked. Changed: ' + ', '.join(stale))
+              sys.exit(1)
+          print('Bundled runtime matches build.json')
+          EOF
+
+  build-runtime:
+    name: Build static runtime
+    needs: rust
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Build (refreshes bin/ and build.json)
+        working-directory: ${{ env.RELEASE_DIR }}/runtime
+        run: python3 build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nekoserver-runtime
+          path: |
+            ${{ env.RELEASE_DIR }}/runtime/bin/nekoserver-runtime
+            ${{ env.RELEASE_DIR }}/runtime/build.json
+      - name: Commit rebuilt runtime
+        if: github.event_name == 'workflow_dispatch' && inputs.commit_runtime
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add "$RELEASE_DIR/runtime/bin/nekoserver-runtime" "$RELEASE_DIR/runtime/build.json"
+          git diff --cached --quiet && { echo "Runtime already current"; exit 0; }
+          git commit -m "Rebuild static Rust runtime"
+          git push

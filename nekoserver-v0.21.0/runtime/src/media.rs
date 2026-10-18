@@ -611,20 +611,26 @@ fn inspect(app: &str, data: &Path, media: &Path) -> Result<Value> {
     let expected_media = match app {
         "jellyfin" => vec![("movies", "/data/movies", false), ("tv", "/data/tv", false)],
         "navidrome" => vec![("music", "/music", false)],
-        "sonarr" | "radarr" | "lidarr" | "qbittorrent" => vec![("", "/data", true)],
+        // Lidarr only handles music: one SSD mount keeps downloads and library on the same mount.
+        "lidarr" => vec![("", "/data", true)],
+        "sonarr" | "radarr" | "qbittorrent" => vec![("", "/data", true)],
         _ => vec![],
     };
     let media_ok = expected_media.iter().all(|(folder, dest, rw)| {
         mounts.iter().any(|m| {
             Path::new(text(&m["Source"]))
-                == (if app == "navidrome" { data } else { media })
-                    .join("library")
-                    .join(folder)
+                == (if app == "navidrome" || app == "lidarr" {
+                    data
+                } else {
+                    media
+                })
+                .join("library")
+                .join(folder)
                 && m["Destination"] == *dest
                 && m["RW"] == *rw
         })
     });
-    let ssd_music_ok = !["lidarr", "qbittorrent"].contains(&app)
+    let ssd_music_ok = app != "qbittorrent"
         || mounts.iter().any(|m| {
             m["Source"]
                 == data
@@ -633,12 +639,7 @@ fn inspect(app: &str, data: &Path, media: &Path) -> Result<Value> {
                     .as_ref()
                 && m["Destination"] == "/data/downloads/music"
                 && m["RW"] == true
-        }) && (app != "lidarr"
-            || mounts.iter().any(|m| {
-                m["Source"] == data.join("library/music").to_string_lossy().as_ref()
-                    && m["Destination"] == "/data/music"
-                    && m["RW"] == true
-            }));
+        });
     let media_ok = media_ok && ssd_music_ok;
     // Reachability needs a valid HTTP response; authenticated JSON checks below prove APIs.
     let http_status = if running { reachability(app) } else { None };

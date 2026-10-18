@@ -9,9 +9,9 @@ services:
       TZ: "${NEKO_TZ}"
     volumes:
       - "${NEKO_DATA}/appdata/lidarr:/config"
-      - "${NEKO_MEDIA}/library:/data"
-      - "${NEKO_DATA}/library/downloads/music:/data/downloads/music"
-      - "${NEKO_DATA}/library/music:/data/music"
+      # Single SSD mount: /data/downloads/music and /data/music share one
+      # filesystem mount, so imports hardlink or move instead of copying.
+      - "${NEKO_DATA}/library:/data"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

@@ -1,5 +1,6 @@
 """Pure checks for selected modules, before any installer module can mutate OS state."""
 import re
+from neko_common import host_timezone
 from modules import app_backup, dashboard, heartbeat, host_backup, notifications, server_os, nextcloud, maintenance, music
 
 
@@ -39,8 +40,8 @@ def validate(config, plan):
                 raise RuntimeError('Media uid/gid must be positive numeric account IDs')
         if values.get('bind_ip','127.0.0.1') != '127.0.0.1':
             raise RuntimeError('Media web interfaces must bind to localhost')
-        if not isinstance(values.get('timezone','UTC'),str) or not re.fullmatch(r'[A-Za-z0-9_+./-]+',values.get('timezone','UTC')):
-            raise RuntimeError('Invalid media timezone')
+    if set(plan) & {'media', 'photos', 'photo_backup', 'photo_preservation', 'music_backup', 'maintenance'}:
+        host_timezone(config)
     if 'media_monitor' in plan:
         value=config.get('monitoring',{}).get('interval_minutes',60)
         if type(value) is not int or not 15<=value<=1440:raise RuntimeError('Invalid media monitoring interval')

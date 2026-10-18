@@ -103,12 +103,11 @@ def containers(config,photos=False):
                     destination='/app/config' if app=='seerr' else '/data' if app=='navidrome' else '/config'
                     mounts=bound(str(Path(config['data_mount'])/'appdata'/app),(destination,))
                     if app in ('jellyfin','navidrome','sonarr','radarr','lidarr','qbittorrent'):
-                        library=Path(config['data_mount'] if app=='navidrome' else config['media_mount'])/'library'
+                        library=Path(config['data_mount'] if app in ('navidrome','lidarr') else config['media_mount'])/'library'
                         needed=[('movies','/data/movies',True),('tv','/data/tv',True)] if app=='jellyfin' else [('music','/music',True)] if app=='navidrome' else [('', '/data',False)]
                         mounts=mounts and all(bound(str(library/rel),(dest,),ro) for rel,dest,ro in needed)
-                        if app in ('lidarr','qbittorrent'):
+                        if app=='qbittorrent':
                             mounts=mounts and bound(str(Path(config['data_mount'])/'library/downloads/music'),('/data/downloads/music',))
-                        if app=='lidarr':mounts=mounts and bound(str(Path(config['data_mount'])/'library/music'),('/data/music',))
                 network=v.get('NetworkSettings',{});bindings=network.get('Ports',{});published=[p for rows in bindings.values() if rows for p in rows]
                 ports=all(p.get('HostIp')=='127.0.0.1' for p in published)
                 if not photos or svc=='immich-server':ports=ports and any(p.get('HostPort')==str(health.APPS[app][2]) for p in (bindings.get(str(health.APPS[app][2])+'/tcp') or []))

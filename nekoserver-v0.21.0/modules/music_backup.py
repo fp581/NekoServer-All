@@ -5,7 +5,7 @@ import re
 import subprocess
 
 import native_runtime
-from neko_common import VERSION, atomic_write, safe_path, verify_storage
+from neko_common import VERSION, atomic_write, safe_path, verify_storage, host_timezone
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Nightly immutable music backup with checksum verification on the HDD'
@@ -24,7 +24,7 @@ def definitions(config, binary, guard):
         ),
         'nekoserver-music-backup.timer': (
             '[Unit]\nDescription=NekoServer nightly music backup\n'
-            f'[Timer]\nOnCalendar=*-*-* {time}:00 Asia/Jerusalem\nPersistent=false\n'
+            f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=false\n'
             '[Install]\nWantedBy=timers.target\n'
         ),
     }

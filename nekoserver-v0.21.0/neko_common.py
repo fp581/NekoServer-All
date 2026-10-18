@@ -9,6 +9,35 @@ from pathlib import Path
 
 VERSION = '0.21.0'
 
+TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
+ZONEINFO = Path('/usr/share/zoneinfo')
+
+
+def host_timezone(config):
+    """IANA zone used for container TZ and systemd timer schedules.
+
+    Order: top-level ``timezone``, the legacy ``media.timezone`` and
+    ``maintenance.timezone`` keys, then the host's /etc/localtime, then UTC.
+    """
+    value = config.get('timezone')
+    for section in ('media', 'maintenance'):
+        if value is None:
+            group = config.get(section, {})
+            value = group.get('timezone') if isinstance(group, dict) else None
+    if value is None:
+        try:
+            link = os.readlink('/etc/localtime')
+            value = link.split('zoneinfo/', 1)[1] if 'zoneinfo/' in link else None
+        except OSError:
+            value = None
+    if value is None:
+        value = 'UTC'
+    if not isinstance(value, str) or not TIMEZONE_PATTERN.fullmatch(value):
+        raise RuntimeError('timezone must be an IANA zone such as Europe/London')
+    if ZONEINFO.is_dir() and not (ZONEINFO / value).is_file():
+        raise RuntimeError(f'timezone {value} is not installed under {ZONEINFO}')
+    return value
+
 
 def safe_path(path):
     path = Path(path)

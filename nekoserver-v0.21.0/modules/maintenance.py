@@ -5,7 +5,7 @@ import re
 import subprocess
 
 import native_runtime
-from neko_common import VERSION, atomic_json, atomic_write, safe_path, verify_storage
+from neko_common import VERSION, atomic_json, atomic_write, safe_path, verify_storage, host_timezone
 
 DEPENDENCIES = ['docker', 'recovery', 'photos', 'photo_backup', 'nextcloud']
 DESCRIPTION = 'Monthly overnight three-drive backups, isolated restore tests and container updates'
@@ -18,8 +18,8 @@ def options(config):
     time = opts.get('time', '02:30')
     if not isinstance(time, str) or not re.fullmatch(r'0[0-5]:[0-5][0-9]', time):
         raise RuntimeError('Maintenance must start at night, HH:MM between 00:00 and 05:59')
-    zone = opts.get('timezone', 'Asia/Jerusalem')
-    if not isinstance(zone, str) or not re.fullmatch(r'[A-Za-z_]+(?:/[A-Za-z_+-]+)+|UTC', zone) or not (Path('/usr/share/zoneinfo')/zone).is_file():
+    zone = host_timezone(config)
+    if not (Path('/usr/share/zoneinfo')/zone).is_file():
         raise RuntimeError('Use an installed IANA maintenance timezone')
     for key, default, low, high in (('minimum_free_gb', 20, 2, 100000), ('health_wait_seconds', 300, 30, 1800), ('night_end_hour', 6, 1, 7)):
         value = opts.get(key, default)
@@ -35,7 +35,7 @@ def options(config):
 def definitions(config, binary, guard):
     opts = options(config)
     start = opts.get('time', '02:30')
-    zone = opts.get('timezone', 'Asia/Jerusalem')
+    zone = host_timezone(config)
     command = f'{binary} maintenance-resume --config {guard}'
     shared = f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\nAfter=docker.service\nRequires=docker.service\n'
     return {

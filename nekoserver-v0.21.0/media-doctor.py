@@ -50,11 +50,11 @@ def analyze(config, records):
         if not any(Path(x)==Path(data)/'appdata'/name for x in sources): issues.append(f'{name}: appdata not mounted from SSD')
         if name=='navidrome' and str(Path(data)/'library/music') not in sources:
             issues.append(f'{name}: music not mounted from SSD')
-        if name in ('lidarr','qbittorrent') and str(Path(data)/'library/downloads/music') not in sources:
+        if name=='qbittorrent' and str(Path(data)/'library/downloads/music') not in sources:
             issues.append(f'{name}: music downloads not mounted from SSD')
-        if name=='lidarr' and str(Path(data)/'library/music') not in sources:
-            issues.append(f'{name}: music library not mounted from SSD')
-        if name in ('jellyfin','sonarr','radarr','lidarr','qbittorrent') and not any(x.startswith(media+'/library/') or x == media+'/library' for x in sources):
+        if name=='lidarr' and str(Path(data)/'library') not in sources:
+            issues.append(f'{name}: SSD music library not mounted')
+        if name in ('jellyfin','sonarr','radarr','qbittorrent') and not any(x.startswith(media+'/library/') or x == media+'/library' for x in sources):
             issues.append(f'{name}: media not mounted from HDD')
     return issues
 

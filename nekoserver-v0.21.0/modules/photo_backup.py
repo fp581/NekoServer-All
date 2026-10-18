@@ -3,7 +3,7 @@ import native_runtime
 import os, re, subprocess, sys, json
 from modules._runtime import deploy
 from pathlib import Path
-from neko_common import safe_path, mount_path, relative_path, atomic_write, atomic_json
+from neko_common import safe_path, mount_path, relative_path, atomic_write, atomic_json, host_timezone
 DEPENDENCIES=['storage','photo_preservation']
 DESCRIPTION='Install weekly add-only external photo backup timer (requires --apply and external UUID)'
 
@@ -60,7 +60,7 @@ def run(ctx):
     command=(str(binary)+' weekly --config '+str(native_runtime.backup_guard(ctx.config))) if binary else (sys.executable+' '+str(script)+' --config '+str(native_runtime.backup_guard(ctx.config)))
     cmd=f'{command} --uuid {uuid} --fstype {fstype} --source {source} --dest {dest} --media-root {ctx.config["media_mount"]} --data {ctx.config["data_mount"]}'
     service='[Unit]\nDescription=NekoServer add-only photo backup\nRequiresMountsFor='+ctx.config['media_mount']+'\nAfter=nekoserver-immich-db-backup.service\n[Service]\nType=oneshot\nExecStart='+cmd+'\n'
-    schedule='[Unit]\nDescription=Weekly NekoServer photo backup\n[Timer]\nOnCalendar='+day+' *-*-* '+when+':00 Asia/Jerusalem\nPersistent=false\n[Install]\nWantedBy=timers.target\n'
+    schedule='[Unit]\nDescription=Weekly NekoServer photo backup\n[Timer]\nOnCalendar='+day+' *-*-* '+when+':00 '+host_timezone(ctx.config)+'\nPersistent=false\n[Install]\nWantedBy=timers.target\n'
     for path,text in ((unit,service),(timer,schedule)):
         if path.exists() and path.read_text()!=text and 'NekoServer' not in path.read_text() and 'nekoserver-' not in path.read_text(): raise RuntimeError(f'Unmanaged systemd unit differs: {path}')
     atomic_write(unit,service,0o644);atomic_write(timer,schedule,0o644)

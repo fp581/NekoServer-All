@@ -97,10 +97,10 @@ def audit(config, probe=http_check):
         app_mount=base/name
         data_ok=any(Path(m)==app_mount for m in mounts)
         media_required=name in ('jellyfin','navidrome','sonarr','radarr','lidarr','qbittorrent')
-        media_ok=(not media_required or any(Path(m)==Path(config['media_mount'])/'library' or (Path(config['media_mount'])/'library') in Path(m).parents for m in mounts))
+        media_ok=(not media_required or name=='lidarr' or any(Path(m)==Path(config['media_mount'])/'library' or (Path(config['media_mount'])/'library') in Path(m).parents for m in mounts))
         if name=='navidrome':media_ok=str(Path(config['data_mount'])/'library/music') in mounts
-        if name in ('lidarr','qbittorrent'):media_ok=media_ok and str(Path(config['data_mount'])/'library/downloads/music') in mounts
-        if name=='lidarr':media_ok=media_ok and str(Path(config['data_mount'])/'library/music') in mounts
+        if name=='qbittorrent':media_ok=media_ok and str(Path(config['data_mount'])/'library/downloads/music') in mounts
+        if name=='lidarr':media_ok=str(Path(config['data_mount'])/'library') in mounts
         level=('fail' if info['state']!='running' or not info['network'] or not data_ok or not media_ok or info['health']=='unhealthy' or status is None or status>=500 else
                'warning' if status>=400 and status not in (401,403) else 'pass')
         out['services'][name]={'result':level,'container':info['state'],'docker_health':info['health'],

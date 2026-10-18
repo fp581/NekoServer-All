@@ -1,5 +1,6 @@
 {
   "project_name": "NekoServer v0.21.0",
+  "timezone": "Asia/Jerusalem",
   "data_mount": "/srv/nekoserver",
   "media_mount": "/mnt/nekoserver-media",
   "external_backup_mount": "/mnt/nekoserver-photos",
@@ -112,7 +113,6 @@
     ],
     "uid": 1000,
     "gid": 1000,
-    "timezone": "Asia/Jerusalem",
     "bind_ip": "127.0.0.1"
   },
   "storage": {
@@ -416,7 +416,6 @@
   },
   "maintenance": {
     "time": "02:30",
-    "timezone": "Asia/Jerusalem",
     "minimum_free_gb": 20,
     "require_external": true,
     "night_end_hour": 6,

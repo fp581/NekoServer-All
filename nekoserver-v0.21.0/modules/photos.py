@@ -2,7 +2,7 @@
 from neko_common import compose_image_override
 import os, re, secrets, subprocess, urllib.request, json, shutil
 from pathlib import Path
-from neko_common import safe_path, relative_path, atomic_write, ensure_directory, verify_storage
+from neko_common import safe_path, relative_path, atomic_write, ensure_directory, verify_storage, host_timezone
 DEPENDENCIES=['docker']
 DESCRIPTION='Configure Immich with upstream Compose and separate append-only photo archive'
 IMMICH_COMPOSE='https://github.com/immich-app/immich/releases/download/{version}/docker-compose.yml'
@@ -76,7 +76,7 @@ def _run(ctx):
         # The upstream file binds 2283 to all host IPs; localize it explicitly.
         text=localize_manifest(content)
         atomic_write(compose,text,0o640)
-        atomic_write(env,'UPLOAD_LOCATION='+str(upload)+'\nDB_DATA_LOCATION='+str(db)+'\nIMMICH_VERSION='+ver+'\nDB_PASSWORD='+secrets.token_hex(24)+'\nDB_USERNAME=postgres\nDB_DATABASE_NAME=immich\nTZ=Asia/Jerusalem\n',0o600)
+        atomic_write(env,'UPLOAD_LOCATION='+str(upload)+'\nDB_DATA_LOCATION='+str(db)+'\nIMMICH_VERSION='+ver+'\nDB_PASSWORD='+secrets.token_hex(24)+'\nDB_USERNAME=postgres\nDB_DATABASE_NAME=immich\nTZ='+host_timezone(cfg)+'\n',0o600)
     else:
         if env.stat().st_uid != 0 or env.stat().st_mode & 0o077:
             raise RuntimeError('Existing Immich environment must be root-owned and private; file preserved')

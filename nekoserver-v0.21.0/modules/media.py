@@ -5,7 +5,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from neko_common import safe_path, ensure_directory, verify_storage, atomic_write
+from neko_common import safe_path, ensure_directory, verify_storage, atomic_write, host_timezone
 
 from importlib.util import spec_from_file_location, module_from_spec
 
@@ -69,7 +69,7 @@ def _run(context):
     if not isinstance(selected, list) or not selected or any(x not in SERVICES for x in selected):
         raise RuntimeError('media.services must be a nonempty list of known services')
     uid, gid = int(settings.get('uid', 1000)), int(settings.get('gid', 1000))
-    tz, bind = settings.get('timezone', 'Asia/Jerusalem'), settings.get('bind_ip', '127.0.0.1')
+    tz, bind = host_timezone(context.config), settings.get('bind_ip', '127.0.0.1')
     if uid <= 0 or gid <= 0 or not re.fullmatch(r'[A-Za-z0-9_+./-]+', tz):
         raise RuntimeError('Invalid uid, gid, or timezone')
     if bind != '127.0.0.1':
