@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Rust build output (the released binary lives in runtime/bin/)
+target/
+
+# Private working config (see README)
+my-config.json
