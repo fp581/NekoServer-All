@@ -98,13 +98,14 @@ fn resume() -> Result<()> {
 }
 pub fn resume_command(a: &Args) -> Result<()> {
     common::require_root()?;
-    let _lock = common::lock(Path::new("/run/nekoserver-app-snapshot.lock"))?;
-    resume()?;
     let cfgpath = a.path("config")?;
     let cfg = common::json(&cfgpath, 64000);
     let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
     let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
     backup::guard(&cfgpath, &data, &media)?;
+    let _lock = common::lock(Path::new("/run/nekoserver-app-snapshot.lock"))?;
+    let _recovery_lock = backup::coordinate(&cfgpath, &data, &media)?;
+    resume()?;
     let path = data.join("reports/jobs/applications.json");
     let mut row = common::json(&path, 64000);
     if row["status"] == "running" {
@@ -164,6 +165,86 @@ fn entries(
                 out,
                 skipped,
             )?;
+        }
+    }
+    Ok(())
+}
+/// Everything the snapshot copies, listed in a fixed order.
+fn listing(
+    data: &Path,
+    names: &[String],
+    device: u64,
+    files: &mut Vec<Value>,
+    skipped: &mut Vec<Value>,
+) -> Result<()> {
+    for service in names {
+        for folder in ["appdata", "compose"] {
+            entries(
+                data,
+                &PathBuf::from(folder).join(service),
+                device,
+                files,
+                skipped,
+            )?;
+        }
+    }
+    if data.join("installer/releases").is_dir() {
+        entries(
+            data,
+            Path::new("installer/releases"),
+            device,
+            files,
+            skipped,
+        )?;
+    }
+    Ok(())
+}
+fn unchanged_since_listing(
+    data: &Path,
+    names: &[String],
+    device: u64,
+    files: &[Value],
+    skipped: &[Value],
+) -> Result<()> {
+    let (mut again, mut skipped_again) = (vec![], vec![]);
+    listing(data, names, device, &mut again, &mut skipped_again)?;
+    let strip = |rows: &[Value]| -> Vec<Value> {
+        rows.iter()
+            .map(|r| {
+                let mut r = r.clone();
+                if let Some(m) = r.as_object_mut() {
+                    m.remove("sha256");
+                }
+                r
+            })
+            .collect()
+    };
+    if strip(files) != again || skipped != skipped_again.as_slice() {
+        let changed = files
+            .iter()
+            .zip(&again)
+            .find(|(a, b)| strip(&[(*a).clone()])[0] != **b)
+            .map(|(a, _)| a["path"].as_str().unwrap_or("").to_string())
+            .unwrap_or_else(|| "a file was added or removed".into());
+        return Err(Error::new(&format!(
+            "Application files changed while the snapshot was made ({changed}); it was not published and is retried next night"
+        )));
+    }
+    Ok(())
+}
+/// The staged copy must match its own manifest (size and checksum of every file)
+/// before it is published, exactly as the restore check will read it.
+fn verify_staged(payload: &Path, files: &[Value]) -> Result<()> {
+    for row in files.iter().filter(|r| r["kind"] == "file") {
+        let path = payload.join(row["path"].as_str().unwrap_or(""));
+        let size = fs::symlink_metadata(&path)?.len();
+        if Some(size) != row["size"].as_u64()
+            || common::digest(&path)? != row["sha256"].as_str().unwrap_or("")
+        {
+            return Err(Error::new(&format!(
+                "Staged application snapshot does not match its manifest ({}); not published",
+                row["path"].as_str().unwrap_or("")
+            )));
         }
     }
     Ok(())
@@ -228,11 +309,8 @@ pub fn run(a: &Args) -> Result<()> {
     let names = selected(&cfg)?;
     backup::guard(&cfgpath, &data, &media)?;
     let _lock = common::lock(Path::new("/run/nekoserver-app-snapshot.lock"))?;
+    let _recovery_lock = backup::coordinate(&cfgpath, &data, &media)?;
     resume()?;
-    let _recovery_lock = common::lock_wait(
-        &data.join("installer/recovery.lock"),
-        std::time::Duration::from_secs(3 * 3600),
-    )?;
     backup::execute(Some(&data), "applications", &cfgpath, || {
         snapshot(&cfgpath, &data, &media, &names)
     })
@@ -359,26 +437,7 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
         let device = fs::metadata(data)?.dev();
         let mut files = vec![];
         let mut skipped = vec![];
-        for service in names {
-            for folder in ["appdata", "compose"] {
-                entries(
-                    data,
-                    &PathBuf::from(folder).join(service),
-                    device,
-                    &mut files,
-                    &mut skipped,
-                )?;
-            }
-        }
-        if data.join("installer/releases").is_dir() {
-            entries(
-                data,
-                Path::new("installer/releases"),
-                device,
-                &mut files,
-                &mut skipped,
-            )?;
-        }
+        listing(data, names, device, &mut files, &mut skipped)?;
         for row in &mut files {
             let rel = PathBuf::from(row["path"].as_str().unwrap());
             let target = payload.join(&rel);
@@ -389,6 +448,11 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
                 row["sha256"] = json!(copy_file(&data.join(&rel), &target)?);
             }
         }
+        // Containers are stopped, but installer and settings files can still have
+        // other writers. List everything again: a file that changed, appeared or went
+        // away since the first listing makes this snapshot inconsistent.
+        unchanged_since_listing(data, names, device, &files, &skipped)?;
+        verify_staged(&payload, &files)?;
         for row in files.iter().rev().filter(|row| row["kind"] == "directory") {
             fs::File::open(payload.join(row["path"].as_str().unwrap()))?.sync_all()?;
         }
@@ -444,6 +508,53 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         dir(&root);
         root
+    }
+    #[test]
+    fn a_file_changed_after_listing_is_never_published() {
+        let data = scratch("changed-after-listing");
+        dir(&data.join("appdata/jellyfin"));
+        dir(&data.join("compose/jellyfin"));
+        fs::write(data.join("appdata/jellyfin/settings.xml"), b"a").unwrap();
+        let names = vec!["jellyfin".to_string()];
+        let device = fs::metadata(&data).unwrap().dev();
+        let (mut files, mut skipped) = (vec![], vec![]);
+        listing(&data, &names, device, &mut files, &mut skipped).unwrap();
+        // Another program rewrites the file before it is copied: 1 byte -> 18 bytes.
+        fs::write(
+            data.join("appdata/jellyfin/settings.xml"),
+            b"rewritten settings",
+        )
+        .unwrap();
+        let payload = data.join("stage");
+        for row in &mut files {
+            let rel = PathBuf::from(row["path"].as_str().unwrap());
+            if row["kind"] == "directory" {
+                dir(&payload.join(&rel));
+            } else {
+                row["sha256"] = json!(copy_file(&data.join(&rel), &payload.join(&rel)).unwrap());
+            }
+        }
+        let error = unchanged_since_listing(&data, &names, device, &files, &skipped)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("settings.xml"), "{error}");
+        let error = verify_staged(&payload, &files).unwrap_err().to_string();
+        assert!(error.contains("does not match its manifest"), "{error}");
+        // Nothing changed: both checks pass.
+        let (mut files, mut skipped) = (vec![], vec![]);
+        fs::remove_dir_all(&payload).unwrap();
+        listing(&data, &names, device, &mut files, &mut skipped).unwrap();
+        for row in &mut files {
+            let rel = PathBuf::from(row["path"].as_str().unwrap());
+            if row["kind"] == "directory" {
+                dir(&payload.join(&rel));
+            } else {
+                row["sha256"] = json!(copy_file(&data.join(&rel), &payload.join(&rel)).unwrap());
+            }
+        }
+        unchanged_since_listing(&data, &names, device, &files, &skipped).unwrap();
+        verify_staged(&payload, &files).unwrap();
+        let _ = fs::remove_dir_all(data);
     }
     #[test]
     fn unusual_entries_are_skipped_not_fatal() {

@@ -8,7 +8,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-VERSION = '0.24.4'
+VERSION = '0.24.5'
 
 TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
 ZONEINFO = Path('/usr/share/zoneinfo')
@@ -42,6 +42,12 @@ def host_timezone(config):
     if ZONEINFO.is_dir() and not (ZONEINFO / value).is_file():
         raise RuntimeError(f'timezone {value} is not installed under {ZONEINFO}')
     return value
+
+
+# Local ports the apps already use: Immich (and its restore test), Navidrome, Seerr,
+# Radarr, qBittorrent, Nextcloud, Jellyfin, Lidarr, Sonarr, Prowlarr, and the private
+# Tailscale addresses (8442-8448). The dashboard (8787 by default) must avoid them all.
+APP_PORTS = frozenset({2283, 2284, 4533, 5055, 7878, 8080, 8088, 8096, 8686, 8989, 9696, *range(8442, 8449)})
 
 
 def safe_path(path):

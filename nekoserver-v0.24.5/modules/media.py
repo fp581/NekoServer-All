@@ -6,7 +6,7 @@ import time
 import shutil
 import subprocess
 from pathlib import Path
-from neko_common import safe_path, ensure_directory, verify_storage, atomic_write, host_timezone
+from neko_common import APP_PORTS, safe_path, ensure_directory, verify_storage, atomic_write, host_timezone
 
 
 DEPENDENCIES = ['docker']
@@ -76,7 +76,7 @@ GPU_DEVICE = Path('/dev/dri')
 
 QBIT_WEBUI_LINE = '      - "127.0.0.1:8080:8080"\n'
 QBIT_ENV_LINE = '      WEBUI_PORT: "8080"\n'
-RESERVED_PORTS = {2283, 2284, 4533, 5055, 7878, 8080, 8088, 8096, 8686, 8787, 8989, 9696, *range(8442, 8449)}
+RESERVED_PORTS = {*APP_PORTS, 8787}  # plus the dashboard's default port
 
 
 def torrent_port(settings):

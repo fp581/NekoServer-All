@@ -3,7 +3,7 @@ import native_runtime
 from acceptance_summary import scope_digest
 import importlib.util,os,platform,shutil,subprocess
 from pathlib import Path
-from neko_common import VERSION,safe_path,mount_path,atomic_write,atomic_json
+from neko_common import APP_PORTS,VERSION,safe_path,mount_path,atomic_write,atomic_json
 DEPENDENCIES=['storage','recovery']
 DESCRIPTION='Install the localhost visual dashboard, read-only collector and local alerts'
 ASSETS=('index.html','style.css','app.js','logo.svg')
@@ -11,7 +11,7 @@ SERVICE='nekoserver-dashboard.service'
 
 def options(cfg):
     values=cfg.get('dashboard',{});port=values.get('port',8787);interval=values.get('interval_seconds',60);smart=values.get('smart_interval_seconds',1800)
-    if type(port) is not int or not 1024<=port<=65535 or port in (2283,2284,8096,8080,5055,4533,8989,7878,8686,9696):raise RuntimeError('Dashboard requires a distinct unprivileged localhost port')
+    if type(port) is not int or not 1024<=port<=65535 or port in APP_PORTS:raise RuntimeError(f'Dashboard port {port} is taken or not allowed: choose a free port from 1024 to 65535 that no app uses (Nextcloud uses 8088, Jellyfin 8096, Immich 2283)')
     if type(interval) is not int or not 30<=interval<=300 or type(smart) is not int or not 300<=smart<=86400:raise RuntimeError('Dashboard collection/SMART intervals are out of range')
     if 'install_smartmontools' in values and type(values['install_smartmontools']) is not bool:raise RuntimeError('SMART package switch must be a boolean')
     return port,interval,smart

@@ -1,10 +1,12 @@
 """Check drive space right after the drives are chosen, before anything is installed."""
 import glob
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 import guided_setup
 from neko_common import regular_files
@@ -37,6 +39,7 @@ def used_bytes(path):
 
 
 PHOTO_SECTIONS = ('upload', 'library')
+FULL_CHECK_DAYS = 28  # the weekly USB job compares every copy by checksum this often
 
 
 def archive_folder(config):
@@ -79,16 +82,68 @@ def newest_dump_bytes(config):
         return 0
 
 
-def pending_bytes(root, pairs):
+def pending_bytes(root, pairs, mirror=(), full=False):
     """Bytes the next weekly copy still has to write to the USB drive at root: every file
     it does not hold yet, in the current content. Earlier versions already on the drive
-    are not counted as reusable room: the backup only ever adds."""
+    are not counted as reusable room: the backup only ever adds. Folders named in
+    `mirror` are copies of the HDD photo archive and follow the mirror's rules
+    (`mirrored`); `full`: the 4-weekly checksum comparison of every copy is due."""
     total = 0
     for source, name in pairs:
+        noted = current_files(source) if name in mirror else set()
         for path, size in regular_files(source):
-            if not path.name.endswith(('.part', '.neko-part')) and not copied(path, root / name / path.relative_to(source)):
+            if path.name.endswith(('.part', '.neko-part')):
+                continue
+            target = root / name / path.relative_to(source)
+            done = (mirrored(path, target, full or path in noted) if name in mirror
+                    else copied(path, target))
+            if not done:
                 total += size
     return total
+
+
+def current_files(folder):
+    """Archive files named by a `.neko-latest` note: the weekly mirror checks these by
+    checksum every week."""
+    named = set()
+    for note in Path(folder).rglob('.*.neko-latest'):
+        try:
+            name = note.read_text(encoding='utf-8').strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if name and '/' not in name:
+            named.add(note.parent / name)
+    return named
+
+
+def mirrored(source, target, verify):
+    """Does the USB drive hold this archive file intact, as the weekly mirror decides?
+    The archive never changes a saved file, so a different copy is damaged: the mirror
+    keeps it aside and writes the file again in full. A same-size copy written after the
+    file last changed is trusted without reading it, unless `verify` (a full check, or a
+    file a current-version note names), which compares checksums like the mirror does."""
+    try:
+        info, copy = source.lstat(), target.stat()
+    except OSError:
+        return False
+    if copy.st_size != info.st_size:
+        return False
+    if not verify and copy.st_mtime_ns >= info.st_ctime_ns:
+        return True
+    try:
+        return digest(source) == digest(target)
+    except OSError:
+        return False
+
+
+def full_check_due(config):
+    """Is the weekly USB job's 4-weekly checksum comparison of every copy due?"""
+    report = Path(config['data_mount']) / 'reports/jobs/external-full-check.json'
+    try:
+        last = float(json.loads(report.read_text()).get('at', 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        last = 0.0
+    return time.time() - last >= FULL_CHECK_DAYS * 86400
 
 
 def copied(source, target):
@@ -124,7 +179,7 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def usb_room(uuid, pairs):
+def usb_room(uuid, pairs, full=False):
     """(free bytes, bytes still to copy) on the USB drive, or None if it is not attached.
     A drive that is not open anywhere is opened read-only, measured and closed again;
     nothing on it is changed."""
@@ -136,22 +191,22 @@ def usb_room(uuid, pairs):
                                capture_output=True, text=True, timeout=20)
         targets = found.stdout.split('\n') if found.returncode == 0 else []
         if targets and targets[0].strip():
-            return measure(Path(targets[0].strip()), pairs)
+            return measure(Path(targets[0].strip()), pairs, full)
         with tempfile.TemporaryDirectory(prefix='neko-usb-') as folder:
             opened = subprocess.run(['mount', '-o', 'ro,nosuid,nodev,noexec', 'UUID=' + uuid, folder],
                                     capture_output=True, timeout=60)
             if opened.returncode:
                 return None
             try:
-                return measure(Path(folder), pairs)
+                return measure(Path(folder), pairs, full)
             finally:
                 subprocess.run(['umount', folder], capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return None
 
 
-def measure(root, pairs):
-    return free_bytes(root), pending_bytes(root, pairs)
+def measure(root, pairs, full=False):
+    return free_bytes(root), pending_bytes(root, pairs, mirror=PHOTO_SECTIONS, full=full)
 
 
 def gib(value):
@@ -177,7 +232,8 @@ def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=ne
     # The archive also keeps photos deleted from Immich and earlier versions.
     photos = max(used(data / 'photos/immich-library'), used(archive_folder(config)))
     cloud = used(media / 'cloud/files')
-    room = usb_space(config.get('photos', {}).get('external_backup_uuid', ''), usb_sources(config))
+    room = usb_space(config.get('photos', {}).get('external_backup_uuid', ''), usb_sources(config),
+                     full=full_check_due(config))
     if room is not None:
         # What the next copy must write (new files, changed files, this week's database
         # copy) plus room to grow. Old versions already on the drive are never reused.

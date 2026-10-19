@@ -59,13 +59,14 @@ fn resume() -> Result<()> {
 }
 pub fn resume_command(a: &Args) -> Result<()> {
     common::require_root()?;
-    let _lock = common::lock(Path::new("/run/nekoserver-host-snapshot.lock"))?;
-    resume()?;
     let cfgpath = a.path("config")?;
     let cfg = common::json(&cfgpath, 128000);
     let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
     let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
     backup::guard(&cfgpath, &data, &media)?;
+    let _lock = common::lock(Path::new("/run/nekoserver-host-snapshot.lock"))?;
+    let _recovery = backup::coordinate(&cfgpath, &data, &media)?;
+    resume()?;
     let path = data.join("reports/jobs/host.json");
     let mut row = common::json(&path, 64000);
     if row["status"] == "running" {
@@ -224,11 +225,8 @@ pub fn run(a: &Args) -> Result<()> {
     backup::guard(&cfgpath, &data, &media)?;
     let selected = sources(&cfg, &media)?;
     let _lock = common::lock(Path::new("/run/nekoserver-host-snapshot.lock"))?;
+    let _recovery = backup::coordinate(&cfgpath, &data, &media)?;
     resume()?;
-    let _recovery = common::lock_wait(
-        &data.join("installer/recovery.lock"),
-        std::time::Duration::from_secs(3 * 3600),
-    )?;
     backup::execute(Some(&data), "host", &cfgpath, || {
         snapshot(&cfgpath, &cfg, &data, &media, &selected)
     })
