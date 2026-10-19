@@ -2,6 +2,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 
 import guided_setup
 
@@ -32,24 +33,45 @@ def used_bytes(path):
         return 0
 
 
-def device_bytes(uuid):
-    """Total size of the USB drive by UUID, or None if it is not attached."""
+# What the weekly job keeps on the USB drive; already-copied files need no new room.
+USB_COPIES = ('upload', 'library', 'nextcloud')
+
+
+def usb_room(uuid):
+    """(free bytes, bytes NekoServer already copied there) on the USB drive, or None if
+    it is not attached. A drive that is not open anywhere is opened read-only, measured
+    and closed again; nothing on it is changed."""
     device = Path('/dev/disk/by-uuid') / uuid
     if not uuid or not device.exists():
         return None
     try:
-        result = subprocess.run(['lsblk', '-b', '-n', '-d', '-o', 'SIZE', str(device.resolve())],
-                                capture_output=True, text=True, timeout=20)
-        return int(result.stdout.split()[0]) if result.returncode == 0 else None
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        found = subprocess.run(['findmnt', '-n', '-o', 'TARGET', '--source', 'UUID=' + uuid],
+                               capture_output=True, text=True, timeout=20)
+        targets = found.stdout.split('\n') if found.returncode == 0 else []
+        if targets and targets[0].strip():
+            return measure(Path(targets[0].strip()))
+        with tempfile.TemporaryDirectory(prefix='neko-usb-') as folder:
+            opened = subprocess.run(['mount', '-o', 'ro,nosuid,nodev,noexec', 'UUID=' + uuid, folder],
+                                    capture_output=True, timeout=60)
+            if opened.returncode:
+                return None
+            try:
+                return measure(Path(folder))
+            finally:
+                subprocess.run(['umount', folder], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
         return None
+
+
+def measure(root):
+    return free_bytes(root), sum(used_bytes(root / name) for name in USB_COPIES)
 
 
 def gib(value):
     return f'{value / GIB:.0f} GB'
 
 
-def assess(config, free=free_bytes, used=used_bytes, device=device_bytes):
+def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room):
     """Return (problems that stop the install, warnings worth confirming)."""
     data, media = Path(config['data_mount']), Path(config['media_mount'])
     stop, warn = [], []
@@ -66,13 +88,16 @@ def assess(config, free=free_bytes, used=used_bytes, device=device_bytes):
                         f'for {purpose}; it will fill up sooner.')
     photos = used(data / 'photos/immich-library')
     cloud = used(media / 'cloud/files')
-    usb = device(config.get('photos', {}).get('external_backup_uuid', ''))
-    if usb is not None:
+    room = usb_space(config.get('photos', {}).get('external_backup_uuid', ''))
+    if room is not None:
+        # Room that counts: free space plus what an earlier weekly copy already holds.
+        free_now, copied = room
+        available = free_now + copied
         needed = max(USB_MIN * GIB, int((photos + cloud) * 1.2))
-        if usb < needed:
-            warn.append(f'The USB drive is {gib(usb)}. Your photos and Nextcloud files take '
-                        f'{gib(photos + cloud)} today; {gib(needed)} or more is recommended so the '
-                        'weekly copy has room to grow.')
+        if available < needed:
+            warn.append(f'The USB drive has {gib(free_now)} free. Your photos and Nextcloud files take '
+                        f'{gib(photos + cloud)} today; {gib(needed)} or more of room is recommended so '
+                        'the weekly copy fits and has room to grow. Free up space on it or use a bigger one.')
     return stop, warn
 
 

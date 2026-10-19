@@ -156,6 +156,8 @@ def dashboard_check(port,now):
         return value.get('format')=='neko-dashboard-v1' and stamp is not None and now-stamp<=150
     except (OSError,ValueError,TypeError,AttributeError):return False
 
+OPTIONAL=('tv','notifications','heartbeat')
+
 def manual_tests(modules,config):
     out=[('missing_drive','Missing-drive startup protection','With independent backups and the server shut down, test a deliberately unavailable data drive. Verify dependent services are blocked, then shut down and reconnect. Never unplug a live irreplaceable drive.')]
     if 'media' in modules:out += [('media_workflow','Media request, import and playback','Using media you are allowed to acquire, complete the configured request/download/import/playback chain. Check Jellyfin hardware acceleration if wanted.'),('music_playback','Music import and streaming','Verify configured music imports and actual Navidrome playback from the intended client.')]
@@ -180,6 +182,8 @@ def inspect(config,profile='full',now=None):
         installer.validate_config(config)
         if profile not in config['profiles']:raise ValueError()
         modules=installer.ordered(installer.load_modules(ROOT/'modules'),config['profiles'][profile])
+        # Optional extras you turned down ("wanted": false) have nothing to accept.
+        modules=[m for m in modules if not (m in OPTIONAL and config.get(m,{}).get('wanted') is False)]
         run['config_fingerprint']=fingerprint(config,profile);run['dashboard_scope']=scope_digest(config)
     except (OSError,RuntimeError,ValueError,TypeError,KeyError,installer.InstallerError):
         add('configuration','Configuration and profile','fail','Configuration or selected dependency profile is invalid.');return summarize(run)

@@ -19,6 +19,15 @@ def keep_snapshots(config):
     return keep
 
 
+def guard_config(config):
+    """The private settings the nightly app backup runs with. The acceptance check
+    compares the installed file against this same function, so the two cannot drift."""
+    options = native_runtime.storage_config(config)
+    options['media'] = {'services': config['media']['services']}
+    options['app_backup'] = {'keep_snapshots': keep_snapshots(config)}
+    return options
+
+
 def definitions(config, binary, guard):
     data, media = config['data_mount'], config['media_mount']
     time = config.get('app_backup', {}).get('time', '04:15')
@@ -61,9 +70,7 @@ def run(context):
     project = Path(__file__).resolve().parents[1]
     binary = native_runtime.deploy(project, config, Path(config['data_mount']) / 'installer/runtime' / ('v' + VERSION))
     guard = safe_path('/etc/nekoserver-backups/applications.json')
-    options = native_runtime.storage_config(config)
-    options['media'] = {'services': config['media']['services']}
-    options['app_backup'] = {'keep_snapshots': keep_snapshots(config)}
+    options = guard_config(config)
     units = definitions(config, binary, guard)
     for name in units:
         path = safe_path(Path('/etc/systemd/system') / name)

@@ -78,7 +78,8 @@ def acceptance_checks(config,modules):
                 rc,recovery=health.run(['systemctl','show',unit,'--property=ExecStopPost'])
                 good=good and rc==0 and str(binary)+' maintenance-resume --config '+str(private) in recovery
             if command=='app-snapshot':
-                expected_guard=storage_config(config);expected_guard['media']={'services':config['media']['services']}
+                from modules import app_backup
+                expected_guard=app_backup.guard_config(config)
                 good=good and health.read_json('/etc/nekoserver-backups/applications.json')==expected_guard and '--config /etc/nekoserver-backups/applications.json' in loaded
                 rc,recovery=health.run(['systemctl','show',unit,'--property=ExecStopPost'])
                 good=good and rc==0 and str(binary)+' app-resume --config /etc/nekoserver-backups/applications.json' in recovery

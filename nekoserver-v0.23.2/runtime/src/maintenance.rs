@@ -1104,7 +1104,11 @@ fn immich_candidate(cfg: &Value, snapshot: &Path) -> Result<Option<PathBuf>> {
         return Err(Error::new("Unstable Immich release refused"));
     }
     // A different major is installed only when you approved exactly this release.
-    let approved = cfg["maintenance"]["immich_major_update"].as_str() == Some(tag);
+    let wanted = cfg["maintenance"]["immich_major_update"]
+        .as_str()
+        .unwrap_or("")
+        .trim();
+    let approved = immich_major_approved(wanted, tag, &next[1]);
     if before[1] != next[1] && !approved {
         common::atomic_json(
             &snapshot.join("immich-major-pending.json"),
@@ -1171,6 +1175,11 @@ fn immich_candidate(cfg: &Value, snapshot: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(folder))
 }
 
+/// You approve a new Immich major by naming it ("v3") or its exact release ("v3.0.1").
+/// Naming the major keeps working when a fix release comes out before the night it runs.
+fn immich_major_approved(wanted: &str, tag: &str, major: &str) -> bool {
+    !wanted.is_empty() && (wanted == tag || wanted.strip_prefix('v') == Some(major))
+}
 /// The Nextcloud major worth running now: a brand-new x.0.0 or x.0.1 counts as the
 /// previous major, as on a fresh install.
 fn nextcloud_recommended_major(tag: &str) -> Option<u64> {
@@ -1385,7 +1394,11 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
             continue;
         }
         let copy = ssd.join(&run);
-        if same_manifest(&copy, &hdd.join(&run)) {
+        let original = hdd.join(&run);
+        // The SSD copy may be the only good copy left. Delete it only when the HDD run is
+        // complete (restore-tested) and its archives really match their checksums; a
+        // matching manifest alone proves nothing about the archives next to it.
+        if complete.contains(&run) && same_manifest(&copy, &original) && verify(&original).is_ok() {
             remove_run(&copy)?;
             removed.push(json!({"run":run,"drive":"ssd"}));
         }
@@ -1501,11 +1514,6 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     let mut immich_files = None;
     let mut nextcloud_step = None;
     for name in &names {
-        if name == "nextcloud" {
-            if let Err(e) = nextcloud_major_notice(cfg, &snapshot) {
-                println!("Nextcloud: could not check for a newer major version ({e})");
-            }
-        }
         let source = if name == "immich" {
             immich_files = immich_candidate(cfg, &snapshot)?;
             immich_files
@@ -1517,7 +1525,15 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
         let mut candidate = source_model(&source, name)?;
         valid_model(&candidate, name, data, media)?;
         if name == "nextcloud" {
-            if let Some((from, to)) = nextcloud_major_step(cfg, &source)? {
+            let step = nextcloud_major_step(cfg, &source)?;
+            // Only report a newer major when none is being installed this month;
+            // otherwise the notice would describe the version being replaced.
+            if step.is_none() {
+                if let Err(e) = nextcloud_major_notice(cfg, &snapshot) {
+                    println!("Nextcloud: could not check for a newer major version ({e})");
+                }
+            }
+            if let Some((from, to)) = step {
                 println!("Nextcloud: installing approved major {to} (from {from})");
                 for service in ["nextcloud", "cron"] {
                     if candidate["services"][service]["image"]
@@ -1672,8 +1688,18 @@ mod tests {
     fn snapshot(root: &Path, drive: &str, run: &str, complete: bool) {
         let dir = root.join(drive).join("backups/monthly").join(run);
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
-        fs::write(dir.join("manifest.json"), format!("{{\"run\":\"{run}\"}}")).unwrap();
-        fs::write(dir.join("data.tar"), b"archive").unwrap();
+        // A real-looking snapshot: archives plus a manifest with their checksums.
+        let mut sums = serde_json::Map::new();
+        for key in ["data", "media", "images"] {
+            let path = dir.join(format!("{key}.tar"));
+            fs::write(&path, format!("{run}-{key}")).unwrap();
+            sums.insert(key.into(), json!(common::digest(&path).unwrap()));
+        }
+        fs::write(
+            dir.join("manifest.json"),
+            json!({"format":"neko-maintenance-v1","run":run,"sha256":sums}).to_string(),
+        )
+        .unwrap();
         if complete {
             fs::write(dir.join("restore-tests.json"), b"{}").unwrap();
         }
@@ -1920,6 +1946,26 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn ssd_copy_is_kept_when_the_hdd_archives_are_missing_or_damaged() {
+        let root = scratch("ssd-verify");
+        for run in ["100-1", "200-1", "300-1"] {
+            snapshot(&root, "hdd", run, true);
+            snapshot(&root, "ssd", run, false);
+        }
+        // Same manifest on both drives, but the HDD archive is gone or altered.
+        fs::remove_file(root.join("hdd/backups/monthly/200-1/data.tar")).unwrap();
+        fs::write(
+            root.join("hdd/backups/monthly/300-1/images.tar"),
+            b"bit rot",
+        )
+        .unwrap();
+        prune_monthly(&root.join("ssd"), &root.join("hdd"), 0, None).unwrap();
+        // Only 100-1 has a verified HDD copy, so only its SSD copy is reclaimed.
+        assert_eq!(runs(&root, "ssd"), ["200-1", "300-1"]);
+        assert_eq!(runs(&root, "hdd"), ["100-1", "200-1", "300-1"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn monthly_manual_playback_does_not_block_healthy_automation() {
         let report = json!({"services":{"navidrome":{"result":"pass"}},"integrations":{},"readiness":{"navidrome:catalogue":{"result":"pass"},"end_to_end_media":{"result":"needs_setup"},"navidrome:authenticated_playback_or_transfer":{"result":"needs_setup"}}});
         assert!(automated_media_ready(&report));
@@ -1957,6 +2003,11 @@ mod tests {
     }
     #[test]
     fn nextcloud_major_notice_waits_for_early_fixes() {
+        assert!(immich_major_approved("v3", "v3.0.2", "3"));
+        assert!(immich_major_approved("v3.0.2", "v3.0.2", "3"));
+        assert!(!immich_major_approved("v3.0.1", "v3.0.2", "3"));
+        assert!(!immich_major_approved("v2", "v3.0.2", "3"));
+        assert!(!immich_major_approved("", "v3.0.2", "3"));
         assert_eq!(nextcloud_recommended_major("v32.0.0"), Some(31));
         assert_eq!(nextcloud_recommended_major("v32.0.2"), Some(32));
         assert_eq!(nextcloud_recommended_major("v32.1.0"), Some(32));
