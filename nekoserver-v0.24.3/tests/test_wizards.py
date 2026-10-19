@@ -194,6 +194,23 @@ class CapacityTests(unittest.TestCase):
             (usb / 'upload/u/same.neko-20250101T000000Z.jpg').write_bytes(b'x' * 999)
             self.assertEqual(capacity.pending_bytes(usb, list(mapping.items())), 20 + 30 + 40)
 
+    def test_a_same_size_edit_needs_room_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            src, usb = root / 'src', root / 'usb'
+            usb.mkdir()
+            (usb / 'a.txt').write_bytes(b'AAAA')
+            (usb / 'b.txt').write_bytes(b'BBBB')
+            (usb / 'c.txt').write_bytes(b'CCCC')
+            (usb / 'c.neko-20261001T000000Z.txt').write_bytes(b'DDDD')
+            src.mkdir()
+            (src / 'a.txt').write_bytes(b'XXXX')  # edited, same size: a new version on the USB
+            (src / 'b.txt').write_bytes(b'BBBB')  # rewritten with the same content
+            (src / 'c.txt').write_bytes(b'DDDD')  # back to a version the drive already has
+            for name in ('a.txt', 'b.txt', 'c.txt', 'c.neko-20261001T000000Z.txt'):
+                os.utime(usb / name, (0, 0))  # copies older than the source change
+            self.assertEqual(capacity.pending_bytes(usb, [(src, '.')]), 4)
+
     def test_enough_space(self):
         self.assertEqual(self.assess(500, 4000, usb=1000, photos=200), ([], []))
 
@@ -313,6 +330,30 @@ class RecoveryWizardTests(unittest.TestCase):
         text = '\n'.join(out)
         self.assertIn('report.docx: version from 2026-10-12 14:03 UTC (4 versions', text)
         self.assertNotIn('older versions', text)
+
+    def test_an_undone_edit_restores_the_content_the_backup_last_saw(self):
+        # AAAA -> BBBB -> AAAA: the backup kept BBBB as a dated version and noted that
+        # the original is current again; "newest only" must restore AAAA.
+        usb = self.root / 'usb'
+        files = 'usb/nextcloud/alice/files/'
+        self.write(files + 'a.txt', b'AAAA')
+        self.write(files + 'a.neko-20261001T090000Z.txt', b'BBBB')
+        self.write(files + '.a.txt.neko-latest', b'a.txt')
+        self.write(files + 'b.txt', b'one')
+        self.write(files + 'b.neko-20261001T090000Z.txt', b'two')
+        self.write(files + 'b.neko-20261002T090000Z.txt', b'three')
+        self.write(files + '.b.txt.neko-latest', b'b.neko-20261001T090000Z.txt')
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None), \
+                mock.patch.object(recovery_wizard, 'stamp', side_effect=['1', '2']):
+            recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'yes'), lambda s: None)
+            recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'no'), lambda s: None)
+        latest, every = sorted((self.media / 'restored').iterdir())
+        self.assertEqual(sorted(p.name for p in (latest / 'files').iterdir()), ['a.txt', 'b.txt'])
+        self.assertEqual((latest / 'files/a.txt').read_bytes(), b'AAAA')
+        self.assertEqual((latest / 'files/b.txt').read_bytes(), b'two')
+        # Copying every version leaves the backup's notes out.
+        self.assertFalse(any(p.name.endswith('.neko-latest') for p in (every / 'files').iterdir()))
 
     def test_old_usb_snapshots_are_kept_unless_you_type_delete(self):
         usb = self.root / 'usb'

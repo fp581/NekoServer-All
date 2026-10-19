@@ -95,10 +95,17 @@ def command(args):
     subprocess.run(args, check=True, capture_output=True, timeout=1800)
 
 
-def stop_installed(ctx, run_command=None):
+# Written by monthly maintenance while an update is in progress; a resumed update or
+# rollback starts the apps it covers again.
+MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
+
+
+def stop_installed(ctx, run_command=None, hold=None, journal=MAINTENANCE_JOURNAL):
     """Nextcloud turned off: never installed means nothing to do; installed means stop
     its containers (app, database, Redis, cron) and keep every file and the database.
-    Stopped containers stay stopped after a reboot; turning it on again starts them."""
+    Stopped containers stay stopped after a reboot; turning it on again starts them.
+    Runs under the lock monthly maintenance and the backups hold, so it never stops
+    Nextcloud in the middle of an update, its health checks or a rollback."""
     folder = Path(ctx.config['data_mount']) / 'compose/nextcloud'
     manifest, env = folder / 'compose.yaml', folder / '.env'
     if not manifest.is_file():
@@ -107,10 +114,15 @@ def stop_installed(ctx, run_command=None):
     if not ctx.apply:
         ctx.log('Nextcloud: turned off; --apply stops its containers and keeps its data')
         return
-    base = ['docker', '--host', 'unix:///var/run/docker.sock', 'compose', '-p', 'neko-nextcloud',
-            '-f', str(manifest), *(['--env-file', str(env)] if env.is_file() else []),
-            *compose_image_override(manifest)]
-    (run_command or command)(base + ['stop'])
+    with (hold or lock)(ctx.config):
+        if journal.exists():
+            raise RuntimeError('A monthly update did not finish; it is completed (or rolled back) the next '
+                               'time maintenance runs, and that starts Nextcloud again. Run  sudo bash '
+                               'install.sh  again after it has finished to turn Nextcloud off.')
+        base = ['docker', '--host', 'unix:///var/run/docker.sock', 'compose', '-p', 'neko-nextcloud',
+                '-f', str(manifest), *(['--env-file', str(env)] if env.is_file() else []),
+                *compose_image_override(manifest)]
+        (run_command or command)(base + ['stop'])
     ctx.log('Nextcloud: turned off. Its containers are stopped; your files and database are kept. '
             'Set "enabled": true under "nextcloud" and run  sudo bash install.sh  to start it again.')
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.24.3 — 2026-10-19
+
+### Fixed (from an outside review)
+- **A failed monthly update can roll back with encryption on.** Since v0.24.2 each app's `.env` and Nextcloud's `config.php` go only into the encrypted part of the snapshot, but the automatic rollback restored from `data.tar` alone, so a failed update could leave Nextcloud without its configuration and the apps without their passwords. While an update runs, a root-only copy of those files is now kept on the data SSD (where the live files already are, never in the portable snapshot). The rollback checks it against its checksum and puts the files back before the old apps start, unattended. The copy is removed when the update or its rollback is over. If it is missing or damaged, the rollback stops and points to `monthly-recovery.py --secrets`. A test runs a failed update with encryption on.
+- **"Restore the newest version" restores the content you last had.** After an edit was undone (`AAAA → BBBB → AAAA`), the backup correctly made no new copy, but recovery picked the dated `BBBB` because it had the latest date. Version dates also came from the file's own timestamp, which can be set back. When a file has saved versions, the backup now keeps a small hidden note (`.name.ext.neko-latest`) naming the copy that matches the file as the backup last saw it, and recovery restores that one. New version dates are the time the backup saw the change. The weekly USB job mirrors the HDD archive's notes as they are. Backups made before this release have no notes; recovery then uses the newest date, as before.
+- **The USB drive's Immich database copy is checked.** A missing database copy, one more than 8 days old, or one made by an older release without a note now marks the weekly USB backup **incomplete** on the dashboard (it passed before). Each database copy now gets a `.sql.json` note when it is made, with the Immich version that made it (not the version installed when the USB copy runs), the time and its checksum. The checksum is checked before copying to the USB drive (a damaged copy is never copied) and a damaged USB copy is replaced. `IMMICH-VERSION.txt` names the version of the newest copy.
+- **No database password left behind by an Immich update.** The update's new Immich settings, `.env` included, were written into the snapshot folder on the HDD and stayed there in plain text. They are now prepared in the private SSD work folder and removed after the update; copies left in older snapshots are deleted the next time maintenance runs.
+- **A saved USB drive must be a separate disk too.** The drive picker refused another partition of the media HDD or the system disk, but a drive already named in the settings skipped the picker. Setup now refuses it when it is plugged in, and the weekly job checks before every run (through partitions, encryption and LVM) that the USB drive shares no disk with the system, the SSD or the HDD.
+- **The USB space check counts same-size edits.** It treated a file as already copied whenever the sizes matched. It now decides like the backup itself: a copy of the same size written after the file last changed counts; otherwise the contents are compared (including saved versions), so an edit of the same size needs room again.
+- **Turning Nextcloud off waits for backups and monthly updates.** Stopping a disabled Nextcloud skipped the lock that monthly maintenance and the backups hold, so it could stop Nextcloud during an update, fail its health check and trigger a rollback that started Nextcloud again. It now waits for that lock, and if an unfinished update is waiting to be resumed (which would start Nextcloud again) it says so instead of stopping it.
+
+### Changed
+- Version 0.24.3; the release folder is now `nekoserver-v0.24.3`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.24.2 — 2026-10-19
 
 ### Fixed (from an outside review)

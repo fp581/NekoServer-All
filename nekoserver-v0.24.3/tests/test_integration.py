@@ -295,14 +295,53 @@ class NextcloudOffTests(unittest.TestCase):
             folder.mkdir(parents=True)
             (folder / 'compose.yaml').write_text('{}')
             (folder / '.env').write_text('DB_PASSWORD=x\n')
-            with mock.patch.object(nextcloud, 'compose_image_override', return_value=[]):
-                with mock.patch.object(nextcloud, 'command', calls.append):
-                    self.assertIsNone(nextcloud.run(ctx))
+            with mock.patch.object(nextcloud, 'compose_image_override', return_value=[]), \
+                    mock.patch.object(nextcloud, 'MAINTENANCE_JOURNAL', Path(data) / 'no-journal.json'), \
+                    mock.patch.object(nextcloud, 'command', calls.append):
+                self.assertIsNone(nextcloud.run(ctx))
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][-1], 'stop')
             self.assertIn('neko-nextcloud', calls[0])
             self.assertNotIn('down', calls[0])  # containers stopped, never removed with their data
             self.assertTrue(any('files and database are kept' in m for m in ctx.logs))
+
+
+    def test_it_is_stopped_only_under_the_maintenance_lock(self):
+        from contextlib import contextmanager
+        from unittest import mock
+        from modules import nextcloud
+
+        class Ctx:
+            apply = True
+
+            def __init__(self, data):
+                self.config, self.logs = {'data_mount': data, 'nextcloud': {'enabled': False}}, []
+
+            def log(self, m):
+                self.logs.append(m)
+        with tempfile.TemporaryDirectory() as data:
+            folder = Path(data) / 'compose/nextcloud'
+            folder.mkdir(parents=True)
+            (folder / 'compose.yaml').write_text('{}')
+            events = []
+
+            @contextmanager
+            def hold(config):
+                events.append('locked')  # waits here while maintenance or a backup runs
+                try:
+                    yield
+                finally:
+                    events.append('released')
+            journal = Path(data) / 'maintenance-resume.json'
+            with mock.patch.object(nextcloud, 'compose_image_override', return_value=[]):
+                nextcloud.stop_installed(Ctx(data), lambda args: events.append(args[-1]), hold, journal)
+                self.assertEqual(events, ['locked', 'stop', 'released'])
+                # An unfinished update would start Nextcloud again when it resumes: refuse.
+                journal.write_text('{}')
+                events.clear()
+                with self.assertRaisesRegex(RuntimeError, 'monthly update did not finish'):
+                    nextcloud.stop_installed(Ctx(data), lambda args: events.append(args[-1]), hold, journal)
+                self.assertEqual(events, ['locked', 'released'])
 
 
 class InterruptedSetupTests(unittest.TestCase):

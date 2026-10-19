@@ -568,14 +568,32 @@ fn partial_reason(missing: &Value) -> String {
                 .collect()
         })
         .unwrap_or_default();
-    let mut text = format!(
-        "{} files were not copied ({in_use} in use, {names} with names the USB drive cannot store)",
-        in_use + names
-    );
-    if !files.is_empty() {
-        text += &format!(": {}", files.join(", "));
+    let mut parts = vec![];
+    if in_use + names > 0 || !files.is_empty() {
+        let mut text = format!(
+            "{} files were not copied ({in_use} in use, {names} with names the USB drive cannot store)",
+            in_use + names
+        );
+        if !files.is_empty() {
+            text += &format!(": {}", files.join(", "));
+        }
+        parts.push(text);
     }
-    text
+    // The USB copy of the Immich database: missing, stale or without its version note.
+    let database = chars(text(&missing["database"]), 300);
+    if !database.is_empty() {
+        let mut first = database.chars();
+        parts.push(
+            first
+                .next()
+                .map(|c| c.to_uppercase().collect::<String>() + first.as_str())
+                .unwrap_or_default(),
+        );
+    }
+    if parts.is_empty() {
+        return "Incomplete; see the job's report".to_string();
+    }
+    parts.join(". ")
 }
 fn heartbeat(cfg: &Value, now: f64) -> Value {
     let row = common::json(Path::new("/run/nekoserver-heartbeat/status.json"), 64000);
@@ -1140,6 +1158,10 @@ mod os_tests {
         );
         assert!(reason.starts_with("2 files were not copied"));
         assert!(reason.contains("alice/open.docx"));
+        let db = partial_reason(
+            &json!({"in_use":0,"unsupported_names":0,"files":[],"database":"the newest Immich database copy is 10 days old"}),
+        );
+        assert_eq!(db, "The newest Immich database copy is 10 days old");
         let shown = alerts(
             &json!({"backups":[{"id":"external","name":"USB backup","status":"partial","reason":reason}]}),
         );

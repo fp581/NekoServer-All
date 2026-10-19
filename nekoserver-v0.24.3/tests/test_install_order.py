@@ -3,6 +3,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -289,6 +290,29 @@ class UsbPickerTests(unittest.TestCase):
         offered = '\n'.join(shown)
         self.assertNotIn('sdb2', offered)       # second partition of the media HDD
         self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk
+
+    def test_a_saved_drive_on_the_hdd_is_refused_too(self):
+        # Saved settings skip the picker; the same disk check still applies.
+        from modules import photo_backup
+        import copy
+        self.assertIn('/dev/sdb', photo_backup.shared_disk(self.CONFIG, self.INVENTORY, 'hdd-second-0001'))
+        self.assertIn('/dev/nvme0n1', photo_backup.shared_disk(self.CONFIG, self.INVENTORY, 'spare-0001'))
+        self.assertIsNone(photo_backup.shared_disk(self.CONFIG, self.INVENTORY, 'usb-uuid-0001'))
+        self.assertIsNone(photo_backup.shared_disk(self.CONFIG, self.INVENTORY, 'not-plugged-in'))
+        config = copy.deepcopy(self.CONFIG)
+        config['photos'] = {'external_backup_uuid': 'hdd-second-0001', 'external_backup_fstype': 'exfat'}
+
+        class Ctx:
+            apply = True
+
+            def __init__(self):
+                self.config = config
+        with mock.patch.object(photo_backup.os, 'geteuid', return_value=0), \
+                mock.patch.object(storage, 'inventory_now', return_value=self.INVENTORY), \
+                mock.patch.object(photo_backup, 'atomic_write') as written:
+            with self.assertRaisesRegex(RuntimeError, 'separate drive'):
+                photo_backup.run(Ctx())
+        written.assert_not_called()  # no weekly timer for that partition
 
     def test_a_second_partition_of_the_hdd_is_refused(self):
         from modules import photo_backup

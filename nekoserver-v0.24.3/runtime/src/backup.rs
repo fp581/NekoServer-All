@@ -177,6 +177,18 @@ pub(crate) fn add_only_copy(
     mode: u32,
     check: Check,
 ) -> Result<Added> {
+    copy_kept(source, target, apply, mode, check, true)
+}
+/// `track`: keep the `.neko-latest` note for this file. Off when mirroring a backup
+/// that already has its own notes (the HDD archive to the USB drive).
+fn copy_kept(
+    source: &Path,
+    target: &Path,
+    apply: bool,
+    mode: u32,
+    check: Check,
+    track: bool,
+) -> Result<Added> {
     if !target.exists() {
         return Ok(if verified_copy(source, target, apply, mode)? {
             Added::New
@@ -193,6 +205,11 @@ pub(crate) fn add_only_copy(
     }
     let wanted = common::digest(source)?;
     if common::digest(target)? == wanted {
+        // Back to the first saved content: say so if later versions exist.
+        if track && latest_marker(target).exists() {
+            let name = target.file_name().unwrap_or_default().to_string_lossy();
+            mark_latest(target, &name, apply)?;
+        }
         return Ok(Added::Same);
     }
     let name = target
@@ -207,6 +224,7 @@ pub(crate) fn add_only_copy(
     let parent = target
         .parent()
         .ok_or_else(|| Error::new("Target parent missing"))?;
+    let mut versions = vec![];
     for entry in fs::read_dir(parent)? {
         let path = entry?.path();
         let other = path
@@ -216,17 +234,28 @@ pub(crate) fn add_only_copy(
             .to_string();
         if other.starts_with(&format!("{stem}.neko-"))
             && other.ends_with(&ext)
+            && !other.ends_with(".neko-part")
             && path.is_file()
-            && ((check == Check::Quick && copied_since_change(&source_meta, &fs::metadata(&path)?))
-                || common::digest(&path)? == wanted)
         {
+            versions.push((other, path));
+        }
+    }
+    versions.sort();
+    for (other, path) in &versions {
+        if (check == Check::Quick && copied_since_change(&source_meta, &fs::metadata(path)?))
+            || common::digest(path)? == wanted
+        {
+            // An edit that was undone: no new copy, but this saved version is current again.
+            if track {
+                mark_latest(target, other, apply)?;
+            }
             return Ok(Added::Same);
         }
     }
-    let modified = source_meta.mtime();
-    let stamp = chrono::DateTime::from_timestamp(modified, 0)
+    // Dated by when the backup saw the change; a file's own timestamp can be set back.
+    let stamp = chrono::DateTime::from_timestamp(common::now() as i64, 0)
         .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
-        .unwrap_or_else(|| modified.to_string());
+        .unwrap_or_else(|| (common::now() as i64).to_string());
     let mut versioned = version_name(target, &stamp);
     let mut n = 1;
     while versioned.exists() {
@@ -234,7 +263,28 @@ pub(crate) fn add_only_copy(
         n += 1;
     }
     verified_copy(source, &versioned, apply, mode)?;
+    if track {
+        mark_latest(
+            target,
+            &versioned.file_name().unwrap_or_default().to_string_lossy(),
+            apply,
+        )?;
+    }
     Ok(Added::Version)
+}
+/// `.name.ext.neko-latest` next to a file that has saved versions: names the saved copy
+/// (`name.ext` or one of its dated versions) that matches the file as the backup last
+/// saw it, so "restore the newest" restores that one, also after an edit was undone.
+pub(crate) fn latest_marker(target: &Path) -> PathBuf {
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    target.with_file_name(format!(".{name}.neko-latest"))
+}
+fn mark_latest(target: &Path, current: &str, apply: bool) -> Result<()> {
+    let marker = latest_marker(target);
+    if !apply || fs::read(&marker).is_ok_and(|b| b == current.as_bytes()) {
+        return Ok(());
+    }
+    common::atomic(&marker, current.as_bytes(), 0o600)
 }
 fn media_file(path: &Path) -> bool {
     let ext = path
@@ -328,7 +378,18 @@ pub fn copy_tree(source: &Path, dest: &Path, apply: bool, check: Check) -> Resul
             path.strip_prefix(&source)
                 .map_err(|_| Error::new("Invalid relative path"))?,
         );
-        match add_only_copy(path, &target, apply, 0o644, check)? {
+        if name.ends_with(".neko-latest") {
+            // The archive's own note of which saved copy is current: mirror it as is.
+            let note = common::bytes(path, 4096)?;
+            if apply && fs::read(&target).ok().as_deref() != Some(note.as_slice()) {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                common::atomic(&target, &note, 0o644)?;
+            }
+            return Ok(());
+        }
+        match copy_kept(path, &target, apply, 0o644, check, false)? {
             Added::New => copied += 1,
             Added::Version => versions += 1,
             Added::Same => {}
@@ -464,10 +525,40 @@ pub fn copy_cloud(
 }
 /// Weekly Immich database copies kept on the USB drive (newest first; older ones go).
 const USB_DUMPS: u64 = 4;
-/// Put the newest weekly Immich database copy on the USB drive, with the Immich
-/// version that made it, so the USB alone can rebuild albums, faces and users as well
-/// as the photos. Only the version is recorded, never the database password.
-pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path, immich_env: &Path) -> Result<Option<String>> {
+/// A database copy older than this is reported as stale (copies are made daily or weekly).
+const DUMP_STALE_DAYS: f64 = 8.0;
+/// `immich-<stamp>.sql.json` beside each database copy: the Immich version that made it,
+/// when, and its checksum. Written when the copy is made; travels with it.
+fn dump_note(dump: &Path) -> PathBuf {
+    let name = dump.file_name().unwrap_or_default().to_string_lossy();
+    dump.with_file_name(format!("{name}.json"))
+}
+fn env_version(env: &Path) -> Option<String> {
+    fs::read_to_string(env)
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("IMMICH_VERSION="))
+        .map(str::to_string)
+        .filter(|v| regex::Regex::new(r"^v\d+\.\d+\.\d+$").unwrap().is_match(v))
+}
+/// Record version, time and checksum of a database copy that was just made.
+pub(crate) fn describe_dump(dump: &Path, immich_env: &Path) -> Result<()> {
+    common::atomic_json(
+        &dump_note(dump),
+        &json!({"format":"neko-immich-dump-v1","immich_version":env_version(immich_env),"created_at":common::now(),"sha256":common::digest(dump)?}),
+    )?;
+    fs::set_permissions(
+        dump_note(dump),
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )?;
+    Ok(())
+}
+/// Put the newest Immich database copy on the USB drive with its note, so the USB alone
+/// can rebuild albums, faces and users as well as the photos. Returns what makes the
+/// USB copy incomplete (no copy, a stale one, one without a note), or None. A copy
+/// whose checksum does not match its note is never copied. Only the version is
+/// recorded, never the database password.
+pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> {
     let newest = fs::read_dir(hdd_dumps)
         .into_iter()
         .flatten()
@@ -476,31 +567,65 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path, immich_env: &Path) -> Resu
         .filter(|n| immich_dump(n))
         .max();
     let Some(name) = newest else {
-        return Ok(None);
+        return Ok(Some(
+            "no Immich database copy was found, so the USB drive cannot rebuild albums, faces and users"
+                .into(),
+        ));
     };
+    let source = hdd_dumps.join(&name);
+    let note = common::json(&dump_note(&source), 64000);
+    let expected = note["sha256"].as_str().map(str::to_string);
+    let mut problems = vec![];
+    match &expected {
+        Some(sum) if common::digest(&source)? != *sum => {
+            return Ok(Some(format!(
+                "the newest Immich database copy ({name}) is damaged (checksum mismatch) and was not copied"
+            )));
+        }
+        Some(_) => {}
+        None => problems.push(format!(
+            "the newest Immich database copy ({name}) has no record of its Immich version (made before v0.24.3)"
+        )),
+    }
+    let made = chrono::NaiveDateTime::parse_from_str(&name[7..22], "%Y%m%dT%H%M%S")
+        .map(|t| t.and_utc().timestamp() as f64)
+        .unwrap_or(0.0);
+    let age_days = (common::now() - made) / 86400.0;
+    if age_days > DUMP_STALE_DAYS {
+        problems.push(format!(
+            "the newest Immich database copy is {} days old; the database backup has not run",
+            age_days as u64
+        ));
+    }
     let folder = usb.join("immich-database");
     common::directory(&folder, 0o700)?;
     let target = folder.join(&name);
-    if !target.exists() {
-        verified_copy(&hdd_dumps.join(&name), &target, true, 0o600)?;
+    let damaged = |path: &Path| match &expected {
+        Some(sum) => common::digest(path).map(|d| d != *sum).unwrap_or(true),
+        None => false,
+    };
+    if target.exists() && damaged(&target) {
+        fs::remove_file(common::safe(&target)?)?; // a damaged copy is replaced
     }
-    let version = fs::read_to_string(immich_env)
-        .ok()
-        .and_then(|env| {
-            env.lines()
-                .find_map(|l| l.strip_prefix("IMMICH_VERSION="))
-                .map(str::to_string)
-        })
-        .filter(|v| regex::Regex::new(r"^v\d+\.\d+\.\d+$").unwrap().is_match(v))
-        .unwrap_or_else(|| "unknown".into());
+    if !target.exists() {
+        verified_copy(&source, &target, true, 0o600)?;
+    }
+    if expected.is_some() {
+        common::atomic(
+            &dump_note(&target),
+            &common::bytes(&dump_note(&source), 64000)?,
+            0o600,
+        )?;
+    }
+    let version = note["immich_version"].as_str().unwrap_or("unknown");
     common::atomic(
         &folder.join("IMMICH-VERSION.txt"),
-        format!("Immich version that made these database copies: {version}\nTo rebuild Immich from this USB drive, see RECOVERY.md, \"Rebuild Immich from the USB drive\".\n").as_bytes(),
+        format!("Immich version that made the newest database copy ({name}): {version}\nEach copy's own version and checksum are in the .json file next to it.\nTo rebuild Immich from this USB drive, see RECOVERY.md, \"Rebuild Immich from the USB drive\".\n").as_bytes(),
         0o600,
     )?;
     prune_dumps(&folder, USB_DUMPS)?;
     println!("USB: Immich database copy {name} (Immich {version})");
-    Ok(Some(name))
+    Ok((!problems.is_empty()).then(|| problems.join("; ")))
 }
 /// `immich-<UTC stamp>.sql`: a weekly Immich database copy (the stamp sorts by time).
 fn immich_dump(name: &str) -> bool {
@@ -529,6 +654,63 @@ pub fn legacy_usb_snapshots(dest: &Path) -> Vec<String> {
         .collect();
     out.sort();
     out
+}
+/// Physical disks a block device lives on (through partitions, encryption, LVM).
+fn disks_of(device: &str) -> Option<std::collections::BTreeSet<String>> {
+    let (code, out) =
+        common::command(&["lsblk", "-s", "-n", "-r", "-o", "NAME,TYPE", device], 10).ok()?;
+    (code == 0).then(|| parse_disks(&out))
+}
+fn parse_disks(lsblk: &str) -> std::collections::BTreeSet<String> {
+    lsblk
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let name = fields.next()?;
+            (fields.next()? == "disk").then(|| name.to_string())
+        })
+        .collect()
+}
+fn disks_under(path: &Path) -> Option<std::collections::BTreeSet<String>> {
+    let (code, out) = common::command(
+        &[
+            "findmnt",
+            "-n",
+            "-o",
+            "SOURCE",
+            "--target",
+            &path.to_string_lossy(),
+        ],
+        10,
+    )
+    .ok()?;
+    // btrfs shows "/dev/sdb1[/subvolume]".
+    let source = out.lines().next()?.split('[').next()?.trim().to_string();
+    (code == 0 && source.starts_with("/dev/"))
+        .then_some(source)
+        .and_then(|s| disks_of(&s))
+}
+/// The USB drive must be a disk of its own: a partition of the system disk, the SSD or
+/// the media HDD fails together with what it protects. Checked every week, also for a
+/// drive chosen in saved settings rather than in the picker.
+fn own_disk(device: &Path, data: &Path, media: &Path) -> Result<()> {
+    let usb = disks_of(&device.to_string_lossy())
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| Error::new("Could not identify the USB drive's disk"))?;
+    for (what, path) in [
+        ("the application SSD", data),
+        ("the media HDD", media),
+        ("the system disk", Path::new("/")),
+    ] {
+        if let Some(other) = disks_under(path) {
+            if !usb.is_disjoint(&other) {
+                return Err(Error::new(&format!(
+                    "The USB backup drive is on the same disk as {what}; it must be a separate drive"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 pub fn validate_external(dest: &Path, uuid: &str) -> Result<()> {
     common::safe(dest)?;
@@ -777,6 +959,10 @@ pub fn prune_dumps(folder: &Path, keep: u64) -> Result<Vec<String>> {
     let removed: Vec<String> = dumps.into_iter().take(excess).collect();
     for name in &removed {
         fs::remove_file(common::safe(&folder.join(name))?)?;
+        let note = dump_note(&folder.join(name));
+        if note.is_file() {
+            fs::remove_file(common::safe(&note)?)?;
+        }
     }
     if !removed.is_empty() {
         println!(
@@ -839,8 +1025,10 @@ pub fn preservation(a: &Args) -> Result<()> {
                         .file_name()
                         .ok_or_else(|| Error::new("Invalid database filename"))?,
                 );
+                describe_dump(&created, &data.join("compose/immich/.env"))?;
                 common::stage("copying the Immich database copy to the HDD");
                 verified_copy(&created, &target, true, 0o600)?;
+                verified_copy(&dump_note(&created), &dump_note(&target), true, 0o600)?;
                 // Weekly dumps used to pile up forever on both drives.
                 let keep = a.number("db-keep", 8)?;
                 for folder in [
@@ -853,6 +1041,19 @@ pub fn preservation(a: &Args) -> Result<()> {
             Ok(())
         },
     )
+}
+/// One "incomplete" report for the weekly USB copy: Nextcloud files left out and/or a
+/// database copy problem.
+fn incomplete(files: Option<Value>, database: Option<String>) -> Option<Value> {
+    if files.is_none() && database.is_none() {
+        return None;
+    }
+    let mut out = files.unwrap_or_else(|| json!({"in_use":0,"unsupported_names":0,"files":[]}));
+    if let Some(problem) = database {
+        out["database"] = json!(problem);
+        out["reason"] = json!("The USB backup is incomplete");
+    }
+    Some(out)
 }
 pub fn weekly(a: &Args) -> Result<()> {
     common::require_root()?;
@@ -901,6 +1102,7 @@ pub fn weekly(a: &Args) -> Result<()> {
         if !device.exists() {
             return Err(Error::new("External drive missing"));
         }
+        own_disk(&device, &data, &media)?;
         let (code, s) = common::command(
             &[
                 "blkid",
@@ -941,12 +1143,11 @@ pub fn weekly(a: &Args) -> Result<()> {
             copy_tree(&source, &dest, true, check)?;
             validate_external(&dest, uuid)?;
             guard(&cfg, &data, &media)?;
-            common::stage("copying the Immich database to the USB drive");
-            copy_newest_dump(
-                &media.join("backups/immich-database"),
-                &dest,
-                &data.join("compose/immich/.env"),
-            )?;
+            let mut database_problem = None;
+            if data.join("compose/immich/compose.yaml").is_file() {
+                common::stage("copying the Immich database to the USB drive");
+                database_problem = copy_newest_dump(&media.join("backups/immich-database"), &dest)?;
+            }
             validate_external(&dest, uuid)?;
             guard(&cfg, &data, &media)?;
             let mut cloud_copy = None;
@@ -968,7 +1169,10 @@ pub fn weekly(a: &Args) -> Result<()> {
                     legacy.join(", ")
                 );
             }
-            Ok(cloud_copy.and_then(|c| c.missing()))
+            Ok(incomplete(
+                cloud_copy.and_then(|c| c.missing()),
+                database_problem,
+            ))
         })();
         if mounted_here {
             success(&["umount", &dest.to_string_lossy()], 45)?;
@@ -1099,33 +1303,80 @@ mod tests {
         assert!(root.join("backups/monthly/100-1/manifest.json").is_file());
         let _ = fs::remove_dir_all(root);
     }
+    fn dump_name(days_ago: f64) -> String {
+        let t = chrono::DateTime::from_timestamp((common::now() - days_ago * 86400.0) as i64, 0)
+            .unwrap();
+        format!("immich-{}.sql", t.format("%Y%m%dT%H%M%SZ"))
+    }
     #[test]
-    fn usb_gets_the_newest_database_copy_and_the_immich_version_only() {
+    fn usb_gets_the_newest_database_copy_with_the_version_that_made_it() {
         let root = scratch("usb-db");
         let (hdd, usb, env) = (root.join("hdd"), root.join("usb"), root.join(".env"));
-        assert_eq!(copy_newest_dump(&hdd, &usb, &env).unwrap(), None);
+        let problem = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
+        assert!(problem.contains("no Immich database copy"), "{problem}");
         write(&env, b"IMMICH_VERSION=v2.1.0\nDB_PASSWORD=secret123\n");
-        for day in 10..16 {
-            write(
-                &hdd.join(format!("immich-202610{day}T001500Z.sql")),
-                b"dump",
-            );
-            copy_newest_dump(&hdd, &usb, &env).unwrap();
+        let mut made = vec![];
+        for days_ago in (0..6).rev() {
+            let name = dump_name(days_ago as f64 + 0.5);
+            write(&hdd.join(&name), format!("dump {days_ago}").as_bytes());
+            describe_dump(&hdd.join(&name), &env).unwrap();
+            assert_eq!(copy_newest_dump(&hdd, &usb).unwrap(), None);
+            made.push(name);
         }
         let folder = usb.join("immich-database");
-        assert_eq!(
-            names(&folder),
-            [
-                "IMMICH-VERSION.txt",
-                "immich-20261012T001500Z.sql",
-                "immich-20261013T001500Z.sql",
-                "immich-20261014T001500Z.sql",
-                "immich-20261015T001500Z.sql"
-            ]
-        );
+        let mut expected: Vec<String> = made[2..]
+            .iter()
+            .flat_map(|n| [n.clone(), format!("{n}.json")])
+            .collect();
+        expected.insert(0, "IMMICH-VERSION.txt".into());
+        assert_eq!(names(&folder), expected);
+        // Immich was upgraded but the newest copy was made by v2.1.0: the note says so.
+        write(&env, b"IMMICH_VERSION=v2.2.0\nDB_PASSWORD=secret123\n");
+        copy_newest_dump(&hdd, &usb).unwrap();
         let note = fs::read_to_string(folder.join("IMMICH-VERSION.txt")).unwrap();
-        assert!(note.contains("v2.1.0") && !note.contains("secret123"));
+        assert!(note.contains("v2.1.0") && !note.contains("v2.2.0") && !note.contains("secret123"));
+        // A damaged USB copy is replaced from the checked HDD copy.
+        let newest = made.last().unwrap();
+        fs::write(folder.join(newest), b"bit rot").unwrap();
+        assert_eq!(copy_newest_dump(&hdd, &usb).unwrap(), None);
+        assert_eq!(fs::read(folder.join(newest)).unwrap(), b"dump 0");
+        // A damaged HDD copy is never copied, and the run is incomplete.
+        fs::write(hdd.join(newest), b"bit rot").unwrap();
+        let problem = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
+        assert!(problem.contains("damaged"), "{problem}");
         let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_stale_or_unrecorded_database_copy_makes_the_usb_backup_incomplete() {
+        let root = scratch("usb-db-stale");
+        let (hdd, usb, env) = (root.join("hdd"), root.join("usb"), root.join(".env"));
+        write(&env, b"IMMICH_VERSION=v2.1.0\n");
+        let old = dump_name(10.0);
+        write(&hdd.join(&old), b"old dump");
+        describe_dump(&hdd.join(&old), &env).unwrap();
+        let problem = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
+        assert!(problem.contains("10 days old"), "{problem}");
+        let legacy = dump_name(1.0);
+        write(&hdd.join(&legacy), b"made by an older release");
+        let problem = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
+        assert!(
+            problem.contains("no record of its Immich version"),
+            "{problem}"
+        );
+        let report = incomplete(None, Some(problem)).unwrap();
+        assert!(report["database"].as_str().unwrap().contains("no record"));
+        assert_eq!(incomplete(None, None), None);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn disks_are_found_through_partitions_and_encryption() {
+        // lsblk -s lists a device and what it sits on, down to the physical disk.
+        let usb = parse_disks("sdc1 part\nsdc disk\n");
+        let media = parse_disks("luks-1 crypt\nsdb2 part\nsdb disk\n");
+        let same = parse_disks("sdb3 part\nsdb disk\n");
+        assert_eq!(usb.iter().collect::<Vec<_>>(), ["sdc"]);
+        assert!(usb.is_disjoint(&media));
+        assert!(!same.is_disjoint(&media));
     }
     #[test]
     fn incomplete_cloud_copy_is_reported_with_its_files() {
@@ -1162,8 +1413,12 @@ mod tests {
         );
         assert_eq!(fs::read(&dst).unwrap(), b"v1");
         let files = names(&root.join("dst"));
-        assert_eq!(files.len(), 2);
-        let version = files.iter().find(|n| n.contains(".neko-")).unwrap();
+        assert_eq!(files.len(), 3); // original, dated version, note of the current one
+        let version = files
+            .iter()
+            .find(|n| n.contains(".neko-") && !n.ends_with(".neko-latest"))
+            .unwrap();
+        assert_eq!(fs::read_to_string(latest_marker(&dst)).unwrap(), *version);
         assert!(
             version.starts_with("report.neko-") && version.ends_with(".docx"),
             "{version}"
@@ -1173,14 +1428,61 @@ mod tests {
             add_only_copy(&src, &dst, true, 0o600, Check::Quick).unwrap(),
             Added::Same
         );
-        assert_eq!(names(&root.join("dst")).len(), 2);
+        assert_eq!(names(&root.join("dst")).len(), 3);
         // A dry run never writes.
         write(&src, b"v3");
         assert_eq!(
             add_only_copy(&src, &dst, false, 0o600, Check::Quick).unwrap(),
             Added::Version
         );
-        assert_eq!(names(&root.join("dst")).len(), 2);
+        assert_eq!(names(&root.join("dst")).len(), 3);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_usb_copy_of_the_archive_keeps_the_archive_notes() {
+        let root = scratch("mirror-notes");
+        let (src, hdd, usb) = (root.join("src/a.jpg"), root.join("hdd"), root.join("usb"));
+        write(&src, b"AAAA");
+        add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
+        write(&src, b"BBBB");
+        add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
+        copy_tree(&hdd, &usb, true, Check::Quick).unwrap();
+        assert_eq!(names(&usb), names(&hdd));
+        write(&src, b"AAAA"); // undone on the server
+        add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
+        // A monthly full check of the USB copy must not rewrite the mirrored note.
+        copy_tree(&hdd, &usb, true, Check::Full).unwrap();
+        let note = latest_marker(&usb.join("a.jpg"));
+        assert_eq!(fs::read_to_string(note).unwrap(), "a.jpg");
+        assert_eq!(names(&usb), names(&hdd));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn an_undone_edit_makes_the_original_current_again() {
+        // AAAA -> BBBB -> AAAA: no new copy, but the note says the original is current.
+        let root = scratch("undo");
+        let (src, dst) = (root.join("src/a.txt"), root.join("dst/a.txt"));
+        write(&src, b"AAAA");
+        add_only_copy(&src, &dst, true, 0o600, Check::Quick).unwrap();
+        assert!(!latest_marker(&dst).exists()); // one copy only: no note needed
+        write(&src, b"BBBB");
+        add_only_copy(&src, &dst, true, 0o600, Check::Quick).unwrap();
+        let edited = fs::read_to_string(latest_marker(&dst)).unwrap();
+        assert!(edited.starts_with("a.neko-"));
+        write(&src, b"AAAA");
+        assert_eq!(
+            add_only_copy(&src, &dst, true, 0o600, Check::Quick).unwrap(),
+            Added::Same
+        );
+        assert_eq!(fs::read_to_string(latest_marker(&dst)).unwrap(), "a.txt");
+        // Redo the edit: that saved version is current again, still without a new copy.
+        write(&src, b"BBBB");
+        assert_eq!(
+            add_only_copy(&src, &dst, true, 0o600, Check::Full).unwrap(),
+            Added::Same
+        );
+        assert_eq!(fs::read_to_string(latest_marker(&dst)).unwrap(), edited);
+        assert_eq!(names(&root.join("dst")).len(), 3);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

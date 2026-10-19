@@ -20,7 +20,7 @@ Apply the v0.10.0 foundation profile once to preserve the new tools and record t
 
 ```bash
 sudo bash install.sh --profile foundation --apply
-cd /srv/nekoserver/installer/releases/v0.24.2
+cd /srv/nekoserver/installer/releases/v0.24.3
 sudo python3 recover.py check
 sudo python3 recover.py checkpoint --apply
 ```
@@ -89,7 +89,7 @@ sudo bash install.sh --config /path/to/recovery-config.json --module storage --a
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
-cd /srv/nekoserver/installer/releases/v0.24.2
+cd /srv/nekoserver/installer/releases/v0.24.3
 sudo python3 recover.py check
 sudo python3 recover.py reattach
 sudo python3 recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
@@ -123,11 +123,11 @@ sudo python3 backup_secrets.py --restore /ABSOLUTE/BACKUP/RUN --to /ABSOLUTE/NEW
 
 ## Rebuild Immich from the USB drive
 
-Use this when both the SSD and the HDD are lost. The USB drive holds the photos and videos (`upload/` and `library/`), the newest weekly Immich database copies (`immich-database/immich-<date>.sql`, the newest 4 are kept) and `immich-database/IMMICH-VERSION.txt`, which names the Immich version that made them. Together they bring back albums, faces, people, users and settings as well as the pictures.
+Use this when both the SSD and the HDD are lost. The USB drive holds the photos and videos (`upload/` and `library/`), the newest weekly Immich database copies (`immich-database/immich-<date>.sql`, the newest 4 are kept), each with a `.sql.json` note of the Immich version that made it, when, and its checksum, and `immich-database/IMMICH-VERSION.txt`, which names the version of the newest copy. If the newest copy is missing, more than 8 days old or has no note, the weekly USB backup is reported as incomplete on the dashboard. Together they bring back albums, faces, people, users and settings as well as the pictures.
 
-1. Set up NekoServer on the new drives as usual, but before the Immich step set `"immich_version"` under `"photos"` in `my-config.json` to the version in `IMMICH-VERSION.txt` (a database copy must be restored into the same Immich version).
+1. Set up NekoServer on the new drives as usual, but before the Immich step set `"immich_version"` under `"photos"` in `my-config.json` to the version in the `.sql.json` note of the copy you will restore (`IMMICH-VERSION.txt` names it for the newest copy). A database copy must be restored into the same Immich version.
 2. Copy `upload/` and `library/` from the USB drive into the new Immich library folder (`/srv/nekoserver/photos/immich-library/`), keeping those two folder names.
 3. Follow Immich's own "Backup and Restore" guide (immich.app/docs/administration/backup-and-restore) with the newest `immich-<date>.sql` from the USB drive. With NekoServer the Compose files are in `/srv/nekoserver/compose/immich/`, the project name is `neko-immich`, and the dump restores into the `immich` database (it was made with `pg_dump -d immich`).
 4. Start Immich and check that albums, faces and a few photos open before using it again.
 
-Changed photo sidecars appear twice on the backup (`name.xmp` and `name.neko-<date>.xmp`); the dated one is the newer edit. The recovery wizard (`sudo bash install.sh --recover`) restores only the newest version of each file unless you ask for all of them.
+Changed photo sidecars appear twice on the backup (`name.xmp` and `name.neko-<date>.xmp`); the dated one is a later edit, saved on that date. A hidden note (`.name.xmp.neko-latest`) records which copy matches the file as the backup last saw it, also after an edit was undone. The recovery wizard (`sudo bash install.sh --recover`) restores that current version of each file unless you ask for all of them.
