@@ -9,7 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory
+from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_STATE = Path.home() / '.local' / 'state' / 'nekoserver'
@@ -242,6 +242,11 @@ def main(argv=None):
     if not (args.wizard or args.recover):
         # The wizard and recovery default to my-config.json themselves.
         args.config = args.config or str(ROOT / 'config.json')
+    if args.config:
+        try:
+            args.config = str(settings_path(args.config))
+        except RuntimeError as exc:
+            parser.error(str(exc))
     if args.apply and (args.check or args.dry_run):
         parser.error('--apply cannot be combined with --check or --dry-run')
     try:

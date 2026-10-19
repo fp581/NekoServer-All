@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 import guided_setup
-from neko_common import ensure_room
+from neko_common import ensure_room, regular_files, settings_path
 
 ROOT = Path(__file__).resolve().parent
 # The weekly USB backup holds this lock while it mounts, copies and unmounts the drive.
@@ -31,6 +31,10 @@ MENU = [
     ('monthly', 'Everything from a monthly snapshot (for rebuilding a server)'),
     ('old-usb', 'Old full snapshots on the USB drive (from before v0.21.1): review or remove'),
 ]
+
+
+MONTHLY_DIR = 'backups/monthly'    # monthly snapshots, on the HDD (and old ones on the USB drive)
+MANIFEST = 'manifest.json'      # what every monthly snapshot folder must contain
 
 
 def say(output, *lines):
@@ -74,7 +78,7 @@ def snapshots(folder):
     found = []
     for path in folder.iterdir() if folder.is_dir() else ():
         match = SNAPSHOT.match(path.name)
-        if match and path.is_dir() and not path.is_symlink() and (path / 'manifest.json').is_file():
+        if match and path.is_dir() and not path.is_symlink() and (path / MANIFEST).is_file():
             found.append((int(match[1]), path))
     return [(path, when(stamp)) for stamp, path in sorted(found, reverse=True)]
 
@@ -85,7 +89,7 @@ def monthly_snapshots(folder, need=None):
     found = []
     for path in folder.iterdir() if folder.is_dir() else ():
         match = MONTHLY.match(path.name)
-        if (match and path.is_dir() and not path.is_symlink() and (path / 'manifest.json').is_file()
+        if (match and path.is_dir() and not path.is_symlink() and (path / MANIFEST).is_file()
                 and (need is None or (path / need).is_file())):
             found.append((int(match[1]), path))
     return [(path, when(stamp)) for stamp, path in sorted(found, reverse=True)]
@@ -190,20 +194,12 @@ def latest_versions(sources):
     the newest version of every file, restored under the file's own name."""
     picked = {}
     for name, source in sources:
-        root = Path(source)
-        if not root.is_dir():
-            continue
-        for path in root.rglob('*'):
-            if not path.is_file() or path.is_symlink():
-                continue
+        for path, _ in regular_files(source):
             original, key = version_of(path.name)
-            target = Path(name) / path.parent.relative_to(root) / original
+            target = Path(name) / path.parent.relative_to(source) / original
             best = picked.get(target)
             count = (best[3] if best else 0) + 1
-            if best is None or key > best[2]:
-                picked[target] = (path, target, key, count)
-            else:
-                picked[target] = (*best[:3], count)
+            picked[target] = (path, target, key, count) if best is None or key > best[2] else (*best[:3], count)
     return [(path, target, readable(key[0]) if key[0] else 'first backup', count)
             for path, target, key, count in picked.values()]
 
@@ -351,7 +347,7 @@ def restore_cloud(config, prompt, output):
 
 
 def restore_passwords(config, prompt, output):
-    runs = monthly_snapshots(Path(config['media_mount']) / 'backups/monthly', need='secrets.tar.cms')
+    runs = monthly_snapshots(Path(config['media_mount']) / MONTHLY_DIR, need='secrets.tar.cms')
     if not runs:
         output('No monthly snapshot with an encrypted password list on the HDD yet.')
         return
@@ -389,7 +385,7 @@ def restore_nightly(config, kind, prompt, output):
 
 
 def restore_monthly(config, prompt, output):
-    runs = monthly_snapshots(Path(config['media_mount']) / 'backups/monthly', need='restore-tests.json')
+    runs = monthly_snapshots(Path(config['media_mount']) / MONTHLY_DIR, need='restore-tests.json')
     if not runs:
         output('No complete monthly snapshot on the HDD yet.')
         return
@@ -411,9 +407,9 @@ def restore_monthly(config, prompt, output):
 def legacy_usb_snapshots(usb):
     """Full monthly snapshots releases before v0.21.1 wrote to the USB drive, oldest first."""
     found = []
-    for path in monthly_snapshots(Path(usb) / 'backups/monthly'):
+    for path in monthly_snapshots(Path(usb) / MONTHLY_DIR):
         try:
-            if json.loads((path[0] / 'manifest.json').read_text()).get('format') == 'neko-maintenance-v1':
+            if json.loads((path[0] / MANIFEST).read_text()).get('format') == 'neko-maintenance-v1':
                 found.append(path)
         except (OSError, ValueError):
             continue
@@ -452,7 +448,7 @@ def review_old_usb(config, prompt, output):
 
 def settings(config_path=None):
     """The chosen settings file (--config), else my-config.json, else config.json here."""
-    candidates = [Path(config_path)] if config_path else [ROOT / 'my-config.json', ROOT / 'config.json']
+    candidates = [settings_path(config_path)] if config_path else [ROOT / 'my-config.json', ROOT / 'config.json']
     for path in candidates:
         if path.is_file():
             return json.loads(path.read_text())

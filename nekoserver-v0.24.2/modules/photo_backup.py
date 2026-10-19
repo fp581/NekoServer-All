@@ -6,21 +6,30 @@ from neko_common import VERSION, safe_path, mount_path, relative_path, atomic_wr
 DEPENDENCIES=['storage','photo_preservation']
 DESCRIPTION='Install weekly add-only external photo backup timer (requires --apply and external UUID)'
 
-def select_external(config, inventory, input_fn=input, out_fn=print):
-    """Explicitly identify a formatted external filesystem; never guess or format."""
+SYSTEM_MOUNTS=('/','/boot','/boot/efi','/home','/var')
+BACKUP_FILESYSTEMS=('ext4','xfs','btrfs','exfat')
+
+def eligible(config, inventory):
+    """Filesystems that may hold the USB backup. It must be on its own physical disk: a
+    partition of the system disk, the SSD or the media HDD would be lost together with
+    what it is meant to protect."""
     forbidden={u for u in (config.get('storage',{}).get(k,{}).get('uuid') for k in ('data_ssd','media_hdd')) if u}
     candidates=[];busy_disks=set()
-    # The backup must be on its own physical disk: a partition of the system disk, the
-    # SSD or the media HDD would be lost together with what it is meant to protect.
+    def usable_mount(mount):
+        return not mount or mount==config['external_backup_mount'] or (isinstance(mount,str) and mount.startswith(('/run/media/','/media/')))
     def walk(row,disk=None):
         physical=row.get('name') if row.get('type')=='disk' else disk
-        uuid=row.get('uuid');fs=row.get('fstype');mount=row.get('mountpoint')
-        if uuid in forbidden or mount in ('/','/boot','/boot/efi','/home','/var'):busy_disks.add(physical)
-        if row.get('type') in ('disk','part') and uuid and uuid not in forbidden and fs in ('ext4','xfs','btrfs','exfat') and (not mount or mount==config['external_backup_mount'] or (isinstance(mount,str) and mount.startswith(('/run/media/','/media/')))):
+        uuid=row.get('uuid')
+        if uuid in forbidden or row.get('mountpoint') in SYSTEM_MOUNTS:busy_disks.add(physical)
+        elif row.get('type') in ('disk','part') and uuid and row.get('fstype') in BACKUP_FILESYSTEMS and usable_mount(row.get('mountpoint')):
             candidates.append({**row,'physical_disk':physical})
         for child in row.get('children',[]):walk(child,physical)
     for row in inventory.get('blockdevices',[]):walk(row)
-    candidates=[c for c in candidates if c['physical_disk'] not in busy_disks and c['physical_disk']]
+    return [c for c in candidates if c['physical_disk'] and c['physical_disk'] not in busy_disks]
+
+def select_external(config, inventory, input_fn=input, out_fn=print):
+    """Explicitly identify a formatted external filesystem; never guess or format."""
+    candidates=eligible(config, inventory)
     if len({v['uuid'] for v in candidates})!=len(candidates):raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')
     if not candidates:raise RuntimeError('No eligible backup drive: it must be a formatted drive of its own, not a partition of the system disk, the SSD or the media HDD; connect it first')
     for index,row in enumerate(candidates,1):out_fn(f"  {index}) /dev/{row['name']} {row.get('size','')} {row['fstype']} UUID={row['uuid']} mounted={row.get('mountpoint') or '-'}")
@@ -57,7 +66,7 @@ def run(ctx):
             saved=json.loads(ctx.config_path.read_text());saved['photos']=opts;atomic_json(ctx.config_path,saved)
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}',uuid): raise RuntimeError('Set photos.external_backup_uuid from lsblk -f')
     fstype=opts.get('external_backup_fstype','ext4')
-    if fstype not in ('ext4','xfs','btrfs','exfat'): raise RuntimeError('Unexpected backup filesystem')
+    if fstype not in BACKUP_FILESYSTEMS: raise RuntimeError('Unexpected backup filesystem')
     for key in ('data_ssd','media_hdd'):
         if uuid==ctx.config.get('storage',{}).get(key,{}).get('uuid'): raise RuntimeError('USB UUID must differ from SSD/HDD')
     source=safe_path(Path(ctx.config['media_mount'])/relative_path(opts.get('archive_dir','photos/archive')))

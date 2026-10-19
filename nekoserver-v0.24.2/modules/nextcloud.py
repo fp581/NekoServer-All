@@ -13,6 +13,8 @@ from recovery_tools import lock
 
 DEPENDENCIES = ['docker', 'recovery']
 DESCRIPTION = 'Personal cloud with SSD application state and HDD files'
+HTML, POSTGRES = 'appdata/nextcloud/html', 'appdata/nextcloud/postgres'  # under the data SSD
+ROOT_UID = 0  # setup files must belong to root (tests run as a normal user)
 
 
 def options(config):
@@ -134,7 +136,7 @@ def run(ctx):
             # Setup stopped while writing its settings (compose.yaml is written last, so
             # it marks a finished step). Containers start only after that, so with no app
             # data yet nothing depends on these files: write them again from the start.
-            for existing in (data/'appdata/nextcloud/html', data/'appdata/nextcloud/postgres'):
+            for existing in (data/HTML, data/POSTGRES):
                 if existing.exists() and any(safe_path(existing).iterdir()):
                     raise RuntimeError('Incomplete Nextcloud installation with existing data; preserved for inspection')
             for leftover in partial:
@@ -148,13 +150,13 @@ def run(ctx):
             if chosen:
                 opts['admin_user'] = chosen['username']
                 ctx.persist_config()
-            for existing in (data/'appdata/nextcloud/html', data/'appdata/nextcloud/postgres', Path(config['media_mount'])/'cloud/files'):
+            for existing in (data/HTML, data/POSTGRES, Path(config['media_mount'])/'cloud/files'):
                 safe_path(existing)
                 if existing.exists() and any(existing.iterdir()):
                     raise RuntimeError('Existing Nextcloud data preserved; explicit recovery required')
             image = resolve_image(image)
             payload = json.dumps(model(config, image), indent=2)+'\n'
-            for target, mode in ((data/'appdata', 0o755), (data/'appdata/nextcloud', 0o700), (data/'appdata/nextcloud/html', 0o755), (data/'appdata/nextcloud/postgres', 0o700), (Path(config['media_mount'])/'cloud', 0o755), (Path(config['media_mount'])/'cloud/files', 0o750), (folder, 0o700)):
+            for target, mode in ((data/'appdata', 0o755), (data/'appdata/nextcloud', 0o700), (data/HTML, 0o755), (data/POSTGRES, 0o700), (Path(config['media_mount'])/'cloud', 0o755), (Path(config['media_mount'])/'cloud/files', 0o750), (folder, 0o700)):
                 ensure_directory(safe_path(target), mode)
             # Nextcloud/Apache writes as www-data; only newly empty application data is initialized.
             files = safe_path(Path(config['media_mount'])/'cloud/files')
@@ -166,7 +168,7 @@ def run(ctx):
             # Written last: a compose.yaml means every setting file of this step is in place.
             atomic_write(manifest, payload, 0o600)
         safe_path(env)
-        if env.stat().st_uid != 0 or env.stat().st_mode & 0o077:
+        if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
             raise RuntimeError('Nextcloud credentials must be private and root-owned')
         owned = json.loads(safe_path(managed).read_text())
         image = owned['image']

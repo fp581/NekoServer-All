@@ -1,12 +1,11 @@
 """Check drive space right after the drives are chosen, before anything is installed."""
-import os
 from pathlib import Path
 import shutil
-import stat
 import subprocess
 import tempfile
 
 import guided_setup
+from neko_common import regular_files
 
 DEPENDENCIES = ['storage']
 DESCRIPTION = 'Check there is enough space on the SSD, HDD and USB drive before installing'
@@ -69,24 +68,18 @@ def pending_bytes(root, pairs):
     are not counted as reusable room: the backup only ever adds."""
     total = 0
     for source, name in pairs:
-        if not source.is_dir():
-            continue
-        for folder, _dirs, files in os.walk(source):
-            for file in files:
-                path = Path(folder) / file
-                try:
-                    info = path.lstat()
-                except OSError:
-                    continue
-                if not stat.S_ISREG(info.st_mode) or file.endswith(('.part', '.neko-part')):
-                    continue
-                try:
-                    if (root / name / path.relative_to(source)).stat().st_size == info.st_size:
-                        continue
-                except OSError:
-                    pass
-                total += info.st_size
+        for path, size in regular_files(source):
+            if not path.name.endswith(('.part', '.neko-part')) and not copied(root / name / path.relative_to(source), size):
+                total += size
     return total
+
+
+def copied(target, size):
+    """True if the USB drive already has this file at the same size."""
+    try:
+        return target.stat().st_size == size
+    except OSError:
+        return False
 
 
 def usb_room(uuid, pairs):

@@ -11,7 +11,7 @@ from pathlib import Path
 import pwd
 
 import guided_setup
-from neko_common import VERSION, atomic_json, mount_path, safe_path
+from neko_common import VERSION, atomic_json, mount_path, safe_path, settings_path
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
@@ -184,7 +184,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
         output('Run it with sudo:  sudo bash install.sh')
         return 2
     if config:
-        path, created = checked_path(Path(config).absolute()), False
+        path, created = settings_path(config), False
         if not path.is_file():
             output('Settings file not found: ' + str(path))
             return 2

@@ -350,6 +350,7 @@ class InterruptedSetupTests(unittest.TestCase):
             return real(path, *a)
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(photos.os, 'geteuid', return_value=0))
+            stack.enter_context(mock.patch.object(photos, 'ROOT_UID', os.getuid()))
             stack.enter_context(mock.patch.object(photos, 'verify_storage'))
             stack.enter_context(mock.patch.object(photos, 'checked_mount', side_effect=str))
             stack.enter_context(mock.patch.object(photos.shutil, 'which', return_value='/usr/bin/docker'))
@@ -408,6 +409,8 @@ class InterruptedSetupTests(unittest.TestCase):
             return write
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(nextcloud.os, 'geteuid', return_value=0))
+            stack.enter_context(mock.patch.object(nextcloud, 'ROOT_UID', os.getuid()))
+            stack.enter_context(mock.patch.object(nextcloud.os, 'chown'))  # www-data owner needs root
             stack.enter_context(mock.patch.object(nextcloud, 'verify_storage'))
             stack.enter_context(mock.patch.object(nextcloud, 'lock', side_effect=lambda c: nullcontext()))
             stack.enter_context(mock.patch.object(nextcloud.account_store, 'enabled', return_value=False))
@@ -447,6 +450,25 @@ class InterruptedSetupTests(unittest.TestCase):
 
 
 class ConfigArgumentTests(unittest.TestCase):
+    def test_settings_path_is_checked_before_reading(self):
+        import installer
+        import recovery_wizard
+        from neko_common import settings_path
+        with tempfile.TemporaryDirectory() as d:
+            good = Path(d) / 'mine.json'
+            good.write_text('{"data_mount": "/x"}')
+            self.assertEqual(settings_path(str(good)), good)
+            link = Path(d) / 'link.json'
+            link.symlink_to(good)
+            (Path(d) / 'shadow').write_text('secret')
+            for bad in (str(link), d + '/../etc/passwd.json', d + '/shadow', 'a\x00.json'):
+                with self.subTest(bad), self.assertRaises(RuntimeError):
+                    settings_path(bad)
+            with self.assertRaises(RuntimeError):
+                recovery_wizard.settings(d + '/shadow')
+            with self.assertRaises(SystemExit):
+                installer.main(['--check', '--config', d + '/../x.json'])
+
     def test_wizard_and_recovery_use_the_chosen_settings_file(self):
         from unittest import mock
         import installer
@@ -520,7 +542,7 @@ class AccountCorrectionTests(unittest.TestCase):
             'jellyfin': {'username': 'neko_ab12', 'password': 'x' * 32, 'state': 'needs_setup',
                          'allow_create': True, 'source': 'generate'}}}
         with mock.patch.object(account_store, 'load', return_value=value), \
-                mock.patch.object(account_store, 'save', lambda config, v: None):
+                mock.patch.object(account_store, 'save', return_value=None):
             account_store.collect({'data_mount': '/srv/nekoserver'}, ['jellyfin'], prompt=lambda q='': '',
                                   password_prompt=lambda q='': '', output=lambda s: None)
         self.assertTrue(value['apps']['jellyfin']['allow_create'])

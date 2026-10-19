@@ -4,6 +4,7 @@ import errno
 import json
 import os
 import re
+import stat
 import tempfile
 from pathlib import Path
 
@@ -51,6 +52,31 @@ def safe_path(path):
         if item.is_symlink():
             raise RuntimeError(f'Refusing symlink path: {item}')
     return path
+
+
+def regular_files(root):
+    """(path, size) of every regular file under root; symlinks and unreadable entries skipped."""
+    for folder, _dirs, files in os.walk(root):
+        for name in files:
+            path = Path(folder) / name
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode):
+                yield path, info.st_size
+
+
+def settings_path(value):
+    """A settings file given on the command line (--config), checked before it is read:
+    a .json file name, made absolute, with no '..' and no symlinks along the way."""
+    text = str(value)
+    if '\x00' in text or '..' in Path(text).parts:
+        raise RuntimeError('Settings file path must not contain ".."')
+    path = Path(text).absolute()
+    if path.suffix != '.json':
+        raise RuntimeError('Settings file must be a .json file: ' + str(path))
+    return safe_path(path)
 
 
 def mount_path(value):

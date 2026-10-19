@@ -6,6 +6,7 @@ from neko_common import safe_path, relative_path, atomic_write, ensure_directory
 DEPENDENCIES=['docker']
 DESCRIPTION='Configure Immich with upstream Compose and separate append-only photo archive'
 IMMICH_COMPOSE='https://github.com/immich-app/immich/releases/download/{version}/docker-compose.yml'
+ROOT_UID = 0  # setup files must belong to root (tests run as a normal user)
 
 def checked_mount(target):
     target=Path(target)
@@ -44,7 +45,7 @@ def env_value(content, key):
 
 def checked_env(env, upload, db):
     """Contents of an existing Immich .env after checking it is private and points at this layout."""
-    if env.stat().st_uid != 0 or env.stat().st_mode & 0o077:
+    if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
         raise RuntimeError('Existing Immich environment must be root-owned and private; file preserved')
     content=env.read_text(); required=('UPLOAD_LOCATION='+str(upload),'DB_DATA_LOCATION='+str(db))
     if any(r not in content.splitlines() for r in required): raise RuntimeError('Existing Immich paths differ; refusing overwrite. Follow STORAGE.md for a verified migration before applying this layout')
