@@ -12,7 +12,7 @@ The LAN Caddy gateway uses a private certificate authority. Clients using its LA
 
 ## Away from home
 
-After the base apps work, apply the `remote_access` profile. It now opens and guides Tailscale authorization, DNS/HTTPS settings and phone setup in one interactive run. No reopens the step and instructions; yes also triggers available checks. Exact commands and fallback behavior: GUIDED-SETUP.md.
+Tailscale is part of the main installation (`sudo bash install.sh`). After the apps are set up, the wizard pauses to connect this server to your Tailscale account, turn on secure addresses (MagicDNS and HTTPS), create a private address for each everyday app (Jellyfin, Seerr, Immich, Navidrome, Nextcloud), and walk you through each app on your phone with a QR-code page. These addresses are private to devices on your Tailscale account: Tailscale Serve, never Funnel, and no router port forwarding. Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent stay reachable only on the server. To add or redo just this part later: `sudo bash install.sh --profile remote_access --apply --config my-config.json`. Exact steps: GUIDED-SETUP.md.
 
 Generated URLs are in `/srv/nekoserver/reports/gateway-tailnet.json`, under `links`. Use the same complete https://...ts.net:port/ URLs at home and away with Tailscale connected. The phone needs the official Tailscale app, authorized VPN configuration, membership/access in the same tailnet, and each server app's own credentials. Test with Wi-Fi off and mobile data on.
 

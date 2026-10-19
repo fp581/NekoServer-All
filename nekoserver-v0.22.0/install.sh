@@ -2,11 +2,15 @@
 # One-time Arch/Nyarch bootstrap. Scheduled work uses the bundled Rust runtime.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# No options: the guided setup wizard. It installs, so it needs the same checks as --apply.
+if (( $# == 0 )); then
+    set -- --wizard
+fi
 apply=false
 readonly_mode=false
 for arg in "$@"; do
     case "$arg" in
-        --apply) apply=true ;;
+        --apply|--wizard|--recover) apply=true ;;
         --check|--dry-run|--help|-h) readonly_mode=true ;;
     esac
 done
@@ -17,7 +21,7 @@ fi
 
 if "$apply"; then
     if (( EUID != 0 )); then
-        echo 'Installation requires root: run sudo bash install.sh ... --apply.' >&2
+        echo 'Run it with sudo:  sudo bash install.sh' >&2
         exit 1
     fi
     # Never use pacman on an unsupported distribution or perform a partial upgrade.

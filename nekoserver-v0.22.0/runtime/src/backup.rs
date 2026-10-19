@@ -312,12 +312,20 @@ fn fat_safe(relative: &Path) -> bool {
             && !name.ends_with(' ')
     })
 }
-pub fn copy_cloud(
-    cloud: &Path,
-    dest: &Path,
-    apply: bool,
-    fat_names: bool,
-) -> Result<(u64, u64, u64)> {
+/// What one Nextcloud copy did. `complete()` is false if any file was left out.
+#[derive(Debug, Default, PartialEq)]
+pub struct CloudCopy {
+    pub copied: u64,
+    pub versions: u64,
+    pub skipped: u64,
+    pub refused: Vec<String>,
+}
+impl CloudCopy {
+    pub fn complete(&self) -> bool {
+        self.skipped == 0 && self.refused.is_empty()
+    }
+}
+pub fn copy_cloud(cloud: &Path, dest: &Path, apply: bool, fat_names: bool) -> Result<CloudCopy> {
     let (cloud, dest) = separate(cloud, dest)?;
     let (mut copied, mut versions, mut skipped) = (0, 0, 0);
     let mut refused = vec![];
@@ -370,11 +378,71 @@ pub fn copy_cloud(
             refused.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
         );
     }
-    Ok((copied, versions, skipped))
+    Ok(CloudCopy {
+        copied,
+        versions,
+        skipped,
+        refused,
+    })
+}
+/// Why old monthly snapshots on the USB drive must stay, or None if they are now
+/// fully covered elsewhere. They held photos, Nextcloud files, app state and the
+/// Immich database; all four must have a verified replacement first:
+/// - this week's photo and Nextcloud copies finished with nothing skipped or refused;
+/// - a complete (restore-tested) monthly snapshot is on the HDD for app state;
+/// - if an old snapshot covered Immich, a weekly Immich database dump is on the HDD.
+pub fn usb_cleanup_blocker(dest: &Path, media: &Path, cloud: Option<&CloudCopy>) -> Option<String> {
+    if let Some(c) = cloud {
+        if !c.complete() {
+            return Some(format!(
+                "this week's Nextcloud copy left out {} files ({} in use, {} with names the USB drive cannot store)",
+                c.skipped as usize + c.refused.len(),
+                c.skipped,
+                c.refused.len()
+            ));
+        }
+    }
+    let hdd = media.join("backups/monthly");
+    let restore_tested = fs::read_dir(&hdd).ok().is_some_and(|entries| {
+        entries.flatten().any(|e| {
+            e.path().join("restore-tests.json").is_file()
+                && e.path().join("manifest.json").is_file()
+        })
+    });
+    if !restore_tested {
+        return Some("no complete, restore-tested monthly snapshot on the HDD yet".into());
+    }
+    let old_had_immich = fs::read_dir(dest.join("backups/monthly"))
+        .ok()
+        .is_some_and(|entries| {
+            entries.flatten().any(|e| {
+                common::bytes(&e.path().join("manifest.json"), 2_000_000)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                    .is_some_and(|m| {
+                        m["paths"]["data"]
+                            .as_array()
+                            .is_some_and(|p| p.iter().any(|v| v == "appdata/immich"))
+                    })
+            })
+        });
+    let dump_pattern = regex::Regex::new(r"^immich-[0-9]{8}T[0-9]{6}Z\.sql$").unwrap();
+    let has_dump = fs::read_dir(media.join("backups/immich-database"))
+        .ok()
+        .is_some_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| dump_pattern.is_match(&e.file_name().to_string_lossy()))
+        });
+    if old_had_immich && !has_dump {
+        return Some("no weekly Immich database copy on the HDD yet".into());
+    }
+    None
 }
 /// The USB drive holds only the add-only photo and Nextcloud copies. Full monthly
-/// snapshots that releases before v0.21.1 wrote there are removed once this week's
-/// copies have succeeded. Only directories with a monthly-snapshot manifest are touched.
+/// snapshots that releases before v0.21.1 wrote there are removed only when
+/// `usb_cleanup_blocker` finds nothing they still protect. Only directories with a
+/// monthly-snapshot manifest are touched.
 pub fn retire_usb_monthly(dest: &Path) -> Result<Vec<String>> {
     let folder = dest.join("backups/monthly");
     let mut removed = vec![];
@@ -776,16 +844,24 @@ pub fn weekly(a: &Args) -> Result<()> {
             copy_tree(&source, &dest, true)?;
             validate_external(&dest, uuid)?;
             guard(&cfg, &data, &media)?;
+            let mut cloud_copy = None;
             if let Some(cloud) = &cloud {
                 if cloud.is_dir() {
-                    copy_cloud(cloud, &dest, true, fstype == "exfat")?;
+                    cloud_copy = Some(copy_cloud(cloud, &dest, true, fstype == "exfat")?);
                     validate_external(&dest, uuid)?;
                     guard(&cfg, &data, &media)?;
                 } else {
                     println!("Nextcloud: no data folder yet; nothing to copy");
                 }
             }
-            retire_usb_monthly(&dest)?;
+            match usb_cleanup_blocker(&dest, &media, cloud_copy.as_ref()) {
+                None => {
+                    retire_usb_monthly(&dest)?;
+                }
+                Some(reason) => println!(
+                    "USB: keeping old monthly snapshots because {reason}; they will be removed once that is resolved"
+                ),
+            }
             Ok(())
         })();
         if mounted_here {
@@ -878,8 +954,9 @@ mod tests {
         write(&cloud.join(".ocdata"), b"");
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
-        let (copied, versions, skipped) = copy_cloud(&cloud, &usb, true, false).unwrap();
-        assert_eq!((copied, versions, skipped), (3, 0, 0));
+        let first = copy_cloud(&cloud, &usb, true, false).unwrap();
+        assert_eq!((first.copied, first.versions, first.skipped), (3, 0, 0));
+        assert!(first.complete());
         assert_eq!(names(&usb.join("nextcloud")), ["alice", "bob"]);
         assert_eq!(names(&usb.join("nextcloud/alice")), ["files"]);
         assert_eq!(
@@ -896,7 +973,8 @@ mod tests {
         // Second week, one edit and one new file.
         write(&cloud.join("alice/files/Documents/plan.odt"), b"plan v2");
         write(&cloud.join("bob/files/new.txt"), b"new");
-        assert_eq!(copy_cloud(&cloud, &usb, true, false).unwrap(), (1, 1, 0));
+        let second = copy_cloud(&cloud, &usb, true, false).unwrap();
+        assert_eq!((second.copied, second.versions, second.skipped), (1, 1, 0));
         // Deleted on the server: kept on the USB.
         fs::remove_file(cloud.join("bob/files/todo.txt")).unwrap();
         copy_cloud(&cloud, &usb, true, false).unwrap();
@@ -922,10 +1000,14 @@ mod tests {
         write(&cloud.join("alice/files/Meeting 10:30.docx"), b"colon");
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
-        assert_eq!(copy_cloud(&cloud, &usb, true, true).unwrap(), (1, 0, 0));
+        let fat = copy_cloud(&cloud, &usb, true, true).unwrap();
+        assert_eq!((fat.copied, fat.refused.len()), (1, 1));
+        assert!(!fat.complete());
         assert_eq!(names(&usb.join("nextcloud/alice/files")), ["ok.txt"]);
         // On a Linux filesystem the same file is copied normally.
-        assert_eq!(copy_cloud(&cloud, &usb, true, false).unwrap(), (1, 0, 0));
+        let linux = copy_cloud(&cloud, &usb, true, false).unwrap();
+        assert_eq!(linux.copied, 1);
+        assert!(linux.complete());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -956,6 +1038,48 @@ mod tests {
             ]
         );
         assert!(prune_dumps(&root, 0).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn usb_cleanup_waits_for_complete_copies_and_replacement_coverage() {
+        let root = scratch("gate");
+        let (usb, hdd) = (root.join("usb"), root.join("hdd"));
+        write(
+            &usb.join("backups/monthly/100-1/manifest.json"),
+            br#"{"format":"neko-maintenance-v1","paths":{"data":["appdata/immich"]}}"#,
+        );
+        let complete = CloudCopy::default();
+        // Nothing on the HDD yet: keep.
+        assert!(usb_cleanup_blocker(&usb, &hdd, Some(&complete))
+            .unwrap()
+            .contains("monthly snapshot"));
+        // Restore-tested HDD snapshot, but the old one covered Immich and no dump exists: keep.
+        write(&hdd.join("backups/monthly/200-1/manifest.json"), b"{}");
+        write(&hdd.join("backups/monthly/200-1/restore-tests.json"), b"{}");
+        assert!(usb_cleanup_blocker(&usb, &hdd, Some(&complete))
+            .unwrap()
+            .contains("Immich database"));
+        write(
+            &hdd.join("backups/immich-database/immich-20261018T001500Z.sql"),
+            b"dump",
+        );
+        assert_eq!(usb_cleanup_blocker(&usb, &hdd, Some(&complete)), None);
+        assert_eq!(usb_cleanup_blocker(&usb, &hdd, None), None);
+        // Any file left out of this week's Nextcloud copy: keep.
+        let in_use = CloudCopy {
+            skipped: 1,
+            ..Default::default()
+        };
+        assert!(usb_cleanup_blocker(&usb, &hdd, Some(&in_use))
+            .unwrap()
+            .contains("1 in use"));
+        let refused = CloudCopy {
+            refused: vec!["alice/a:b.txt".into()],
+            ..Default::default()
+        };
+        assert!(usb_cleanup_blocker(&usb, &hdd, Some(&refused))
+            .unwrap()
+            .contains("cannot store"));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

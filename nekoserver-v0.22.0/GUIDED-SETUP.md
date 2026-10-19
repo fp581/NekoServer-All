@@ -22,17 +22,17 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone 
 - New ntfy subscriptions and independent heartbeat monitors: open setup guidance, explain the work on the phone/provider, then collect private destination values in hidden console fields. Subscription/recipient choices are yours; the browser handoff sends no test messages.
 - `acceptance.py --manual --save`: open relevant app pages and guide witnessed tests with the same yes/no loop. User confirmation never overrides a failed automatic check or performs a destructive restore for you.
 
-## Run the intended profiles
+## How to run it
 
-Use `full` first for base applications and local services. Remote access remains an explicit additional profile; it does not redeploy your apps:
+`sudo bash install.sh` runs everything, including Tailscale and the phone steps, in one guided session. Running it again continues where it stopped.
+
+The Tailscale part, in order: connect this server (sign-in page, free account), turn on secure addresses (MagicDNS and HTTPS), create the private app addresses, then the phone: install Tailscale, then each app with its QR code from the page at `/usr/local/share/nekoserver-pages/phone-setup.html`, then a test on mobile data. If no sign-in page opens, the step explains the `sudo tailscale up` fallback.
+
+To redo only the remote part later:
 
 ```bash
-NEKO_RELEASE=/srv/nekoserver/installer/releases/v0.21.1
-sudo bash "$NEKO_RELEASE/install.sh" --profile remote_access --apply \
-  --config "$NEKO_RELEASE/config.json"
+sudo bash install.sh --profile remote_access --apply --config my-config.json
 ```
-
-This single interactive remote run now guides server sign-in, DNS/HTTPS, route creation, phone setup and mobile-data tests. Normally there is no separate manual `tailscale up` command or second profile run. If a local CLI cannot provide an authorization URL, the console explains the manual `sudo tailscale up` fallback. Reapply to resume anything left pending.
 
 Nextcloud works on both the home and the Tailscale address at the same time; rerunning either profile does not change that.
 

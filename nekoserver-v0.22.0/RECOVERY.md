@@ -1,5 +1,7 @@
 # NekoServer recovery and restore rehearsal
 
+**Easiest way:** `sudo bash install.sh --recover` opens a guided menu: photos and videos, Nextcloud files, the app password list, app settings, Steam/Samba settings, or a whole monthly snapshot. It lists the backups by date and restores into a new folder, never over what you have now. The rest of this page explains the underlying tools for advanced use.
+
 ## What each operation does
 
 | Command | Default behavior | With --apply |
@@ -18,7 +20,7 @@ Apply the v0.10.0 foundation profile once to preserve the new tools and record t
 
 ```bash
 sudo bash install.sh --profile foundation --apply
-cd /srv/nekoserver/installer/releases/v0.21.1
+cd /srv/nekoserver/installer/releases/v0.22.0
 sudo python3 recover.py check
 sudo python3 recover.py checkpoint --apply
 ```
@@ -87,7 +89,7 @@ sudo bash install.sh --config /path/to/recovery-config.json --module storage --a
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
-cd /srv/nekoserver/installer/releases/v0.21.1
+cd /srv/nekoserver/installer/releases/v0.22.0
 sudo python3 recover.py check
 sudo python3 recover.py reattach
 sudo python3 recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID

@@ -73,6 +73,20 @@ def valid_url(url):
         return False
 
 
+PAGE_ROOT = Path('/usr/local/share/nekoserver-pages')
+
+
+def valid_page(path, root=None):
+    """A local page NekoServer wrote itself: a regular file directly inside PAGE_ROOT."""
+    root = Path(root or PAGE_ROOT)
+    try:
+        path = Path(path)
+        return (path.is_absolute() and path.parent == root and path.suffix == '.html'
+                and not path.is_symlink() and not root.is_symlink() and path.is_file())
+    except (TypeError, ValueError, OSError):
+        return False
+
+
 def launch(ctx, target, kind='url'):
     """Targets are passed as argv, never as shell text. No GUI secrets in logs."""
     if not interactive(ctx):
@@ -81,9 +95,15 @@ def launch(ctx, target, kind='url'):
         desktop_command(ctx.config, ['/usr/bin/true'])
     except (OSError, RuntimeError, KeyError, ValueError):
         return False
-    if kind == 'url':
+    if kind == 'page':
+        if not valid_page(target):
+            raise ValueError('Unsupported local page')
+        target = Path(target).as_uri()
+        kind = 'url'
+    elif kind == 'url':
         if not valid_url(target):
             raise ValueError('Unsupported browser URL')
+    if kind == 'url':
         missing = [pkg for pkg, binary in (('xdg-utils', 'xdg-open'), ('firefox', 'firefox'))
                    if not shutil.which(binary)]
         if missing and os.geteuid() == 0 and shutil.which('pacman'):
@@ -150,7 +170,7 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None,
                     output('The launch preparation did not complete. Follow the instructions manually or answer no to retry.')
             for kind, target in current:
                 opened = launch(ctx, target, kind)
-                if kind == 'url':
+                if kind in ('url', 'page'):
                     # Print only to the user's console, not the durable installer logger.
                     output(('Opened: ' if opened else 'Open this address manually: ') + target)
                 elif not opened:

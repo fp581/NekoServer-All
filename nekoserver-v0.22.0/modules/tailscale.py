@@ -79,14 +79,17 @@ def run(context):
         run_cmd(['pacman', '-S', '--needed', '--noconfirm', 'tailscale'], timeout=900)
     run_cmd(['systemctl', 'enable', '--now', 'tailscaled'], timeout=45)
     if not connected():
-        done = guided_setup.checkpoint(context, 'Authorize this server in Tailscale', [
-            'The installer starts tailscale up and opens its own authorization link.',
-            'In the browser, sign in with the identity you will also use for your own phone. '
-            'Approve this server in the intended private tailnet.',
-            'If device approval is enabled, approve this machine in the Tailscale admin console too.',
-            'If no authorization link is available, run sudo tailscale up in another Konsole, '
-            'follow its printed link, then return here. Do not reset existing preferences.',
-            'Return to Konsole and type yes. The installer checks the local Tailscale connection.'
+        done = guided_setup.checkpoint(context, 'Tailscale: connect this server', [
+            'What this is: Tailscale lets your phone and other devices reach this server '
+            'from anywhere, as if you were at home, without opening your router to the '
+            'internet. It is free for personal use.',
+            'A Tailscale sign-in page opened in the browser. Sign in (or create a free '
+            'account) with Google, Microsoft, Apple or GitHub. Use the account you will '
+            'also use on your phone.',
+            'Click "Connect" (or "Authorize") to add this server to your account.',
+            'If no page opened: open a second terminal, run  sudo tailscale up , open the '
+            'link it prints, and come back here.',
+            'Answer yes. The installer checks that this server is connected.',
         ], prepare=login_targets, verify=connected)
         if not done:
             return {'status': 'needs_setup', 'reason': 'Tailscale authorization pending; reapply interactively or run sudo tailscale up'}
