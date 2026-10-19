@@ -9,7 +9,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path
+from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path, pending_maintenance
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_STATE = Path.home() / '.local' / 'state' / 'nekoserver'
@@ -212,6 +212,9 @@ def execute(args, root=ROOT):
         return _execute(args, root)
     if os.geteuid()!=0:
         raise InstallerError('--apply requires root')
+    blocked=pending_maintenance()
+    if blocked:
+        raise InstallerError(blocked)
     path=safe_path('/run/nekoserver-install.lock')
     fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
     try:

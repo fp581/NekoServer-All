@@ -321,7 +321,7 @@ class SnapshotUnderLockTests(unittest.TestCase):
                 if 'ps' in argv:
                     return 'database\nimmich-server\n'
                 if 'exec' in argv:
-                    stdout.write(b'-- dump made by the database of v2.0.0\n' * 5)
+                    stdout.write(b'-- dump made by the database of v2.0.0\n' * 5 + b'-- PostgreSQL database dump complete\n')
                 return ''
             destination = data / 'snapshot'
             with mock.patch.multiple(rt, mounts=mock.DEFAULT, validate_model=mock.DEFAULT,
@@ -346,9 +346,60 @@ class DashboardPortTests(unittest.TestCase):
                 dashboard.options({'dashboard': {'port': port}})
         self.assertEqual(dashboard.options({'dashboard': {'port': 8787}})[0], 8787)
         self.assertEqual(dashboard.options({})[0], 8787)
+        # A custom dashboard port and qBittorrent's peer port cannot be the same.
+        clash = {'dashboard': {'port': 9999}, 'media': {'torrent_port': 9999}}
+        with self.assertRaisesRegex(RuntimeError, 'taken or not allowed'):
+            dashboard.options(clash)
+        import config_checks
+        with self.assertRaisesRegex(RuntimeError, 'is the dashboard port'):
+            config_checks.validate(clash, ['media'])
+        self.assertEqual(dashboard.options({'dashboard': {'port': 9999}, 'media': {'torrent_port': 50000}})[0], 9999)
         # One list for both checks: everything the apps use is also kept away from imports.
         from neko_common import APP_PORTS
         self.assertTrue(APP_PORTS <= media.RESERVED_PORTS and 8787 in media.RESERVED_PORTS)
+
+
+class UnfinishedMaintenanceTests(unittest.TestCase):
+    def test_an_upgrade_waits_for_an_unfinished_monthly_update(self):
+        import tempfile
+        import neko_common
+        with tempfile.TemporaryDirectory() as d:
+            journal = Path(d) / 'maintenance-resume.json'
+            self.assertIsNone(neko_common.pending_maintenance(journal))  # nothing pending
+            journal.write_text(json.dumps({'format': 'neko-maintenance-resume-v1', 'version': neko_common.VERSION}))
+            self.assertIsNone(neko_common.pending_maintenance(journal))  # this release finishes it
+            journal.write_text(json.dumps({'format': 'neko-maintenance-resume-v1', 'version': '0.24.4'}))
+            message = neko_common.pending_maintenance(journal)
+            self.assertIn('NekoServer v0.24.4', message)
+            self.assertIn('sudo systemctl start nekoserver-maintenance-resume.service', message)
+            journal.write_text('not json')
+            self.assertIn('an earlier NekoServer', neko_common.pending_maintenance(journal))
+            # The installer stops before taking its lock or running any module.
+            journal.write_text(json.dumps({'version': '0.24.4'}))
+            args = mock.Mock(apply=True)
+            with mock.patch.object(installer.os, 'geteuid', return_value=0), \
+                    mock.patch.object(neko_common, 'MAINTENANCE_JOURNAL', journal), \
+                    mock.patch.object(installer, 'pending_maintenance', lambda: neko_common.pending_maintenance(journal)), \
+                    mock.patch.object(installer, '_execute') as run_modules:
+                with self.assertRaisesRegex(installer.InstallerError, 'did not finish'):
+                    installer.execute(args)
+            run_modules.assert_not_called()
+
+    def test_install_sh_checks_before_the_system_update(self):
+        text = (Path(installer.__file__).parent / 'install.sh').read_text()
+        self.assertLess(text.index('maintenance-resume.json'), text.index('pacman -Syu'))
+
+
+class DumpCompleteTests(unittest.TestCase):
+    def test_a_cut_off_database_dump_is_recognised(self):
+        import tempfile
+        import recovery_tools as rt
+        with tempfile.TemporaryDirectory() as d:
+            dump = Path(d) / 'database.sql'
+            dump.write_bytes(b'CREATE TABLE asset (id int);\n' * 500 + b'--\n-- PostgreSQL database dump complete\n--\n')
+            self.assertTrue(rt.dump_complete(dump))
+            dump.write_bytes(b'CREATE TABLE asset (id int);\n' * 500)  # the disk filled up here
+            self.assertFalse(rt.dump_complete(dump))
 
 
 class UsbPickerTests(unittest.TestCase):

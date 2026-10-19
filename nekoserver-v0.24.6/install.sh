@@ -49,6 +49,17 @@ if "$apply"; then
         echo 'An x86_64 systemd host is required.' >&2
         exit 1
     fi
+    if ! "$recover" && [[ -e /etc/nekoserver-backups/maintenance-resume.json ]]; then
+        # An unfinished monthly update can only be finished by the version that started
+        # it; stop before the system update or any NekoServer file is replaced.
+        if ! command -v python3 >/dev/null; then
+            echo 'A monthly update did not finish. Run  sudo systemctl start nekoserver-maintenance-resume.service  first, then run  sudo bash install.sh  again.' >&2
+            exit 1
+        fi
+        if ! NEKO_ROOT="$ROOT" python3 -I -c 'import os, sys; sys.path.insert(0, os.environ["NEKO_ROOT"]); import neko_common; m = neko_common.pending_maintenance(); m and sys.exit(m)'; then
+            exit 1
+        fi
+    fi
     if ! "$recover"; then
         # The update and packages go on the system disk; the apps and data go on the SSD
         # and HDD, which the wizard checks once you have picked them. Stop before changing

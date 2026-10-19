@@ -230,6 +230,13 @@ def enough_space(path,required):
     while not ancestor.exists():ancestor=ancestor.parent
     if shutil.disk_usage(ancestor).free<required+100*1024*1024:raise RuntimeError('Insufficient free space for recovery copy plus reserve')
 
+def dump_complete(path):
+    """A disk that fills up mid-dump can leave a cut-off file even when every program
+    reports success; pg_dump ends a finished plain dump with this line."""
+    with open(path,'rb') as stream:
+        stream.seek(max(0,os.fstat(stream.fileno()).st_size-4096))
+        return b'-- PostgreSQL database dump complete' in stream.read()
+
 def snapshot_plan(config,destination):
     """Read what the snapshot records: Compose settings, the pinned Immich version, the
     exact images and the running services. On --apply this runs only while holding the
@@ -278,6 +285,7 @@ def snapshot(config,destination,apply=False):
                 command(base+['exec','-T','database','sh','-ec','exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl'],1800,stdout=output)
                 output.flush();os.fsync(output.fileno())
             if sql.stat().st_size<100:raise RuntimeError('Database dump unexpectedly small')
+            if not dump_complete(sql):raise RuntimeError('Database dump is incomplete (no end marker); the disk may be full')
             atomic_json(destination/'compose-resolved.json',model)
             entries={str(p.relative_to(destination)):digest(p) for p in regular_files(destination) if p!=destination/'.incomplete'}
             metadata={'format':FORMAT,'created_at':dt.datetime.now(dt.timezone.utc).isoformat(),'immich_version':version,'source_upload':str(upload),'source_database':str(database),'database_bytes':database_bytes,'sha256':entries,'empty_directories':[str(p.relative_to(photo)) for p in sorted(photo.rglob('*')) if p.is_dir()]}

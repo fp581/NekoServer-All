@@ -39,7 +39,9 @@ def validate(config, plan):
             if type(value) is not int or not 1 <= value <= 2**32-2:
                 raise RuntimeError('Media uid/gid must be positive numeric account IDs')
         from modules import media as media_module
-        media_module.torrent_port(values)
+        peer = media_module.torrent_port(values)
+        if peer is not None and peer == config.get('dashboard', {}).get('port', 8787):
+            raise RuntimeError(f'media.torrent_port {peer} is the dashboard port; choose another port for one of them')
         if values.get('bind_ip','127.0.0.1') != '127.0.0.1':
             raise RuntimeError('Media web interfaces must bind to localhost')
     if set(plan) & {'media', 'photos', 'photo_backup', 'photo_preservation', 'music_backup', 'maintenance'}:
