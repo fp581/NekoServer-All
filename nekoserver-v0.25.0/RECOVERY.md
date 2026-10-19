@@ -20,7 +20,7 @@ Apply the v0.10.0 foundation profile once to preserve the new tools and record t
 
 ```bash
 sudo bash install.sh --profile foundation --apply
-cd /srv/nekoserver/installer/releases/v0.24.6
+cd /srv/nekoserver/installer/releases/v0.25.0
 sudo python3 recover.py check
 sudo python3 recover.py checkpoint --apply
 ```
@@ -89,7 +89,7 @@ sudo bash install.sh --config /path/to/recovery-config.json --module storage --a
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
-cd /srv/nekoserver/installer/releases/v0.24.6
+cd /srv/nekoserver/installer/releases/v0.25.0
 sudo python3 recover.py check
 sudo python3 recover.py reattach
 sudo python3 recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
@@ -130,4 +130,4 @@ Use this when both the SSD and the HDD are lost. The USB drive holds the photos 
 3. Follow Immich's own "Backup and Restore" guide (immich.app/docs/administration/backup-and-restore) with the newest `immich-<date>.sql` from the USB drive. With NekoServer the Compose files are in `/srv/nekoserver/compose/immich/`, the project name is `neko-immich`, and the dump restores into the `immich` database (it was made with `pg_dump -d immich`).
 4. Start Immich and check that albums, faces and a few photos open before using it again.
 
-Changed photo sidecars appear twice on the backup (`name.xmp` and `name.neko-<date>.xmp`); the dated one is a later edit, saved on that date. A hidden note (`.name.xmp.neko-latest`) records which copy matches the file as the backup last saw it, also after an edit was undone. The recovery wizard (`sudo bash install.sh --recover`) restores that current version of each file unless you ask for all of them.
+Changed photo sidecars appear twice on the backup (`name.xmp` and `name.neko-<date>.xmp`); the dated one is a later edit, saved on that date. A hidden note (`.name.xmp.neko-latest`) records which copy matches the file as the backup last saw it, also after an edit was undone. The recovery wizard (`sudo bash install.sh --recover`) restores that current version of each file unless you ask for all of them. It checks every restored file against the backup's checksum ledger and stops at the first damaged or unreadable file; if that happens, restore from the other backup (HDD or USB). See STORAGE.md, "How backups are verified".

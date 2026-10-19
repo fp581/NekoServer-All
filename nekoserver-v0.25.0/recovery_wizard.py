@@ -14,7 +14,8 @@ import subprocess
 import sys
 
 import guided_setup
-from neko_common import ensure_room, regular_files, settings_path
+from neko_common import (QUARANTINE, atomic_json, backup_files, copy_checked, ensure_room, read_ledger,
+                         record_ledger, settings_path, sha256_file, valid_ledger_path)
 
 ROOT = Path(__file__).resolve().parent
 # The weekly USB backup holds this lock while it mounts, copies and unmounts the drive.
@@ -30,6 +31,7 @@ MENU = [
     ('host', 'Steam and Samba settings (nightly backup)'),
     ('monthly', 'Everything from a monthly snapshot (for rebuilding a server)'),
     ('old-usb', 'Old full snapshots on the USB drive (from before v0.21.1): review or remove'),
+    ('repair', 'Repair damaged backup copies (found by the checksum checks)'),
 ]
 
 
@@ -149,23 +151,49 @@ def tree_bytes(folder):
     return total
 
 
-def check_space(sources, destination):
-    """Refuse a restore that would leave less than 5 GB (or 5%) free where it goes."""
-    need = sum(tree_bytes(s) for _, s in sources if Path(s).is_dir())
-    ensure_room(destination.parent, need, 'The restore')
+class Checked:
+    """Restores check every file against the backup tree's checksum ledger. A file the
+    ledger has no checksum for yet is restored but counted as unverified."""
+
+    def __init__(self, ledger_root):
+        self.root = Path(ledger_root) if ledger_root else None
+        self.sums = read_ledger(self.root) if self.root else {}
+        self.verified = 0
+        self.unverified = 0
+
+    def copy(self, source, target):
+        key = None
+        if self.root:
+            try:
+                key = Path(source).relative_to(self.root).as_posix()
+            except ValueError:
+                key = None
+        expected = self.sums.get(key)
+        copy_checked(source, target, expected)
+        if expected:
+            self.verified += 1
+        else:
+            self.unverified += 1
+
+    def summary(self):
+        text = f'{self.verified} files matched their recorded checksums'
+        if self.unverified:
+            text += (f'; {self.unverified} had no recorded checksum yet (backed up before checksums '
+                     'were kept), so they could not be checked')
+        return text + '.'
 
 
-def copy_new(sources, destination):
-    """Copy folders into a new destination, never following symlinks. Returns file count."""
-    check_space(sources, destination)
+def copy_new(sources, destination, checked=None):
+    """Copy every file (every version) into a new destination. A missing or unreadable
+    file, or one that fails its checksum, stops the restore. Returns file count."""
+    checked = checked or Checked(None)
+    files = [(name, Path(source), path) for name, source in sources if Path(source).is_dir()
+             for path, _ in backup_files(source)]
+    ensure_room(destination.parent, sum(p.stat().st_size for _, _, p in files), 'The restore')
     destination.mkdir(mode=0o700)
-    count = 0
-    for name, source in sources:
-        if Path(source).is_dir():
-            shutil.copytree(source, destination / name, symlinks=True,
-                            ignore=shutil.ignore_patterns('.*' + LATEST_NOTE))
-            count += sum(1 for p in (destination / name).rglob('*') if p.is_file())
-    return count
+    for name, source, path in files:
+        checked.copy(path, destination / name / path.relative_to(source))
+    return len(files)
 
 
 # The weekly backup never overwrites: the first copy keeps the file's own name, and
@@ -208,9 +236,9 @@ def latest_versions(sources):
     the current version of every file, restored under the file's own name."""
     groups = {}
     for name, source in sources:
-        for path, _ in regular_files(source):
-            if path.name.startswith('.') and path.name.endswith(LATEST_NOTE):
-                continue
+        if not Path(source).is_dir():
+            continue
+        for path, _ in backup_files(source):
             original, key = version_of(path.name)
             groups.setdefault(Path(name) / path.parent.relative_to(source) / original, []).append((key, path, original))
     chosen = []
@@ -225,16 +253,15 @@ def latest_versions(sources):
     return chosen
 
 
-def copy_latest(sources, destination, output=print):
+def copy_latest(sources, destination, output=print, checked=None):
     """Copy only the newest version of each file, under its own name. Shows the dates
     of files that had several versions, so you can see which one you get."""
+    checked = checked or Checked(None)
     chosen = latest_versions(sources)
     ensure_room(destination.parent, sum(p.stat().st_size for p, _, _, _ in chosen), 'The restore')
     destination.mkdir(mode=0o700)
     for path, target, _, _ in chosen:
-        out = destination / target
-        out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        shutil.copy2(path, out, follow_symlinks=False)
+        checked.copy(path, destination / target)
     several = [(t, when, n) for _, t, when, n in chosen if n > 1]
     if several:
         output(f'{len(several)} files had more than one version; you get the newest of each:')
@@ -245,12 +272,17 @@ def copy_latest(sources, destination, output=print):
     return len(chosen)
 
 
-def copy_choice(sources, target, prompt, output):
-    """Newest version of each file (recommended), or every version as stored."""
+def copy_choice(sources, target, prompt, output, ledger_root=None):
+    """Newest version of each file (recommended), or every version as stored. Every
+    file is checked against the checksum ledger at `ledger_root`."""
+    checked = Checked(ledger_root)
     if ask('Restore only the NEWEST version of each file? (recommended; "no" copies every version)',
            prompt, output):
-        return copy_latest(sources, target, output), True
-    return copy_new(sources, target), False
+        result = copy_latest(sources, target, output, checked), True
+    else:
+        result = copy_new(sources, target, checked), False
+    output(checked.summary())
+    return result
 
 
 VERSIONS_EXPLAINED = ('Every version was copied. A file\'s own name is its FIRST backed-up version; '
@@ -340,7 +372,8 @@ def restore_photos(config, prompt, output):
         if target is None:
             return
         output('Copying... this can take a while for a big library.')
-        count, latest = copy_choice([('upload', base / 'upload'), ('library', base / 'library')], target, prompt, output)
+        count, latest = copy_choice([('upload', base / 'upload'), ('library', base / 'library')], target, prompt, output,
+                                    ledger_root=base)
     say(output, f'\nDone: {count} files copied to {target}',
         *(() if latest else (VERSIONS_EXPLAINED,)),
         'To get them back into Immich: open Immich in a browser, click "Upload" and choose',
@@ -362,7 +395,8 @@ def restore_cloud(config, prompt, output):
         if target is None:
             return
         output('Copying...')
-        count, latest = copy_choice([('files', usb / 'nextcloud' / user / 'files')], target, prompt, output)
+        count, latest = copy_choice([('files', usb / 'nextcloud' / user / 'files')], target, prompt, output,
+                                    ledger_root=usb / 'nextcloud')
     say(output, f'\nDone: {count} files copied to {target}',
         *(() if latest else (VERSIONS_EXPLAINED,)),
         'To put them back: open Nextcloud in a browser (or the desktop app) and upload the',
@@ -439,6 +473,144 @@ def legacy_usb_snapshots(usb):
     return list(reversed(found))
 
 
+PROBLEM_LISTS = ('damaged', 'both_damaged', 'disagree')
+
+
+def integrity_sections(config):
+    """What the last checksum checks found, per backup tree (reports/integrity.json)."""
+    try:
+        value = json.loads((Path(config['data_mount']) / 'reports/integrity.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    return value.get('sections', {}) if isinstance(value, dict) and value.get('format') == 'neko-integrity-v1' else {}
+
+
+def listed(section):
+    """Files a check reported as damaged or mismatched (only plain relative paths)."""
+    return sorted({key for name in PROBLEM_LISTS for key in section.get(name, [])
+                   if isinstance(key, str) and valid_ledger_path(key)})
+
+
+def replace_copy(good, bad, root, key, expected, aside):
+    """Move a bad copy (if any) to <root>/neko-damaged/<time>/<key>, then copy the good
+    one in its place, checked against `expected` (SHA-256)."""
+    if bad.exists() or bad.is_symlink():
+        kept = Path(root) / QUARANTINE / aside / key
+        kept.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.rename(bad, kept)
+    copy_checked(good, bad, expected)
+
+
+def describe(label, path):
+    info = path.stat()
+    when = dt.datetime.fromtimestamp(info.st_mtime).strftime('%Y-%m-%d %H:%M')
+    return f'{label}: {info.st_size} bytes, last changed {when}'
+
+
+def repair_one(key, copies, ledgers, original, prompt, output, aside):
+    """Repair one file of a tree. `copies`: [(label, root)] holding the file under `key`
+    (HDD archive and USB copy, or just the USB copy); `ledgers`: [(root, its ledger)];
+    `original`: a live source (the Immich library or Nextcloud) that may still hold it.
+    Returns what happened."""
+    expected = None
+    for _, known in ledgers:
+        expected = expected or known.get(key)
+    present = [(label, root, Path(root) / key) for label, root in copies]
+    sums = {label: sha256_file(path) if path.is_file() else None for label, _, path in present}
+    live = sha256_file(original) if original and original.is_file() else None
+    if expected is None:
+        # No recorded checksum: a matching original decides, otherwise you do.
+        candidates = [(label, path, sums[label]) for label, _, path in present if sums[label]]
+        chosen = next((c for c in candidates if live and c[2] == live), None)
+        if chosen is None:
+            if len(candidates) < 2:
+                return 'skipped: no second copy to compare with'
+            output(f'\n{key} differs between the backups and has no recorded checksum:')
+            options = [(c, describe(c[0], c[1])) for c in candidates]
+            chosen = choose('Which copy is the right one?', options + [(None, 'Keep both as they are')],
+                            prompt, output)
+            if chosen is None:
+                return 'kept both as they are'
+        expected = chosen[2]
+        good = chosen[1]
+    else:
+        good = next((path for label, _, path in present if sums[label] == expected), None)
+        if good is None and live == expected:
+            good = original
+        if good is None:
+            return 'no copy matches its recorded checksum any more; every copy was kept untouched'
+    fixed = []
+    for label, root, path in present:
+        if sums[label] != expected:
+            replace_copy(good, path, root, key, expected, aside)
+            fixed.append(label)
+    # The checksum is recorded after the files are in place (it is never replaced).
+    for root, known in ledgers:
+        if key not in known:
+            record_ledger(root, {key: expected}, 'chosen')
+            known[key] = expected
+    return 'repaired the ' + ' and '.join(fixed) + ' copy' if fixed else 'already intact'
+
+
+def repair_backups(config, prompt, output):
+    """Fix the files the checksum checks reported, from a copy that still matches."""
+    from recovery_tools import lock
+    sections = integrity_sections(config)
+    work = {name: listed(sections.get(name, {})) for name in ('archive', 'usb_photos', 'usb_nextcloud')}
+    if not any(work.values()):
+        output('The last checksum checks found nothing to repair.')
+        return
+    media, data = Path(config['media_mount']), Path(config['data_mount'])
+    archive = media / config.get('photos', {}).get('archive_dir', 'photos/archive')
+    library = data / 'photos/immich-library'
+    aside = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    say(output, '\nRepair damaged backup copies',
+        'Each file is compared with its recorded SHA-256 checksum and fixed from a copy that',
+        'still matches it. Damaged copies are moved to a "neko-damaged" folder, never deleted.')
+    resolved = {name: [] for name in work}
+    with lock(config), Usb(config, writable=True) as usb:
+        photos = sorted(set(work['archive']) | set(work['usb_photos']))
+        copies = [('HDD', archive)] + ([('USB', usb)] if usb else [])
+        ledgers = [(root, read_ledger(root)) for _, root in copies]
+        for key in photos:
+            result = repair_one(key, copies, ledgers, library / key, prompt, output, aside)
+            output(f'  {key}: {result}')
+            if result.startswith(('repaired', 'already')):
+                resolved['archive'].append(key)
+                resolved['usb_photos'].append(key)
+        if work['usb_nextcloud'] and usb:
+            root = usb / 'nextcloud'
+            ledgers = [(root, read_ledger(root))]
+            for key in work['usb_nextcloud']:
+                result = repair_one(key, [('USB', root)], ledgers, media / 'cloud/files' / key, prompt, output, aside)
+                output(f'  {key}: {result}')
+                if result.startswith(('repaired', 'already')):
+                    resolved['usb_nextcloud'].append(key)
+        elif work['usb_nextcloud']:
+            output('  The Nextcloud files need the USB drive; plug it in and choose this again.')
+    clear_resolved(config, resolved)
+    say(output, '\nDone. The next backup run checks everything again.')
+
+
+def clear_resolved(config, resolved):
+    """Take repaired files off the dashboard's list until the next check runs."""
+    path = Path(config['data_mount']) / 'reports/integrity.json'
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    for name, keys in resolved.items():
+        section = value.get('sections', {}).get(name)
+        if not isinstance(section, dict) or not keys:
+            continue
+        for kind in PROBLEM_LISTS:
+            rows = section.get(kind, [])
+            section[kind] = [k for k in rows if k not in keys]
+            counts = section.setdefault('counts', {})
+            counts[kind] = max(0, counts.get(kind, len(rows)) - (len(rows) - len(section[kind])))
+    atomic_json(path, value)
+
+
 def review_old_usb(config, prompt, output):
     """List the old snapshots; optionally keep a copy on the HDD; remove only on 'DELETE'.
     They may be the only place a long-deleted file still exists, so nothing is automatic."""
@@ -491,6 +663,7 @@ def run(prompt=input, output=print, config_path=None):
         'host': lambda c, p, o: restore_nightly(c, 'host', p, o),
         'monthly': restore_monthly,
         'old-usb': review_old_usb,
+        'repair': repair_backups,
     }
     try:
         while True:

@@ -4,6 +4,7 @@ mod collect;
 mod common;
 mod heartbeat;
 mod host_snapshot;
+mod ledger;
 mod maintenance;
 mod media;
 mod music_backup;

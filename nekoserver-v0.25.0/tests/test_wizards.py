@@ -401,6 +401,104 @@ class RecoveryWizardTests(unittest.TestCase):
         # Copying every version leaves the backup's notes out.
         self.assertFalse(any(p.name.endswith('.neko-latest') for p in (every / 'files').iterdir()))
 
+    def ledger(self, rel_root, files):
+        import hashlib as h
+        entries = {key: {'sha256': h.sha256(body).hexdigest(), 'size': len(body), 'verified_at': 1.0, 'how': 'copied'}
+                   for key, body in files.items()}
+        self.write(rel_root + '/.neko-ledger.json', json.dumps({'format': 'neko-ledger-v1', 'entries': entries}).encode())
+
+    def restore_cloud(self, *choices):
+        usb = self.root / 'usb'
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+            out = []
+            recovery_wizard.restore_cloud(self.config, answers(*choices), out.append)
+        return out
+
+    def test_restored_files_are_checked_against_their_recorded_checksums(self):
+        self.write('usb/nextcloud/alice/files/a.txt', b'kept safe')
+        self.write('usb/nextcloud/alice/files/old.txt', b'from before checksums')
+        self.ledger('usb/nextcloud', {'alice/files/a.txt': b'kept safe'})
+        out = self.restore_cloud('1', 'yes', 'yes')
+        restored = next((self.media / 'restored').iterdir()) / 'files'
+        self.assertEqual((restored / 'a.txt').read_bytes(), b'kept safe')
+        self.assertIn('1 files matched their recorded checksums; 1 had no recorded checksum yet', '\n'.join(out))
+
+    def test_a_damaged_backup_file_stops_the_restore(self):
+        self.write('usb/nextcloud/alice/files/a.txt', b'kept safe')
+        self.ledger('usb/nextcloud', {'alice/files/a.txt': b'kept safe'})
+        self.write('usb/nextcloud/alice/files/a.txt', b'kept s?fe')  # bit rot on the USB drive
+        with self.assertRaisesRegex(RuntimeError, 'damaged on the backup'):
+            self.restore_cloud('1', 'yes', 'yes')
+
+    def test_an_unreadable_or_odd_backup_entry_stops_the_restore(self):
+        self.write('usb/nextcloud/alice/files/a.txt', b'a')
+        os.symlink('/etc/passwd', self.root / 'usb/nextcloud/alice/files/escape')
+        with self.assertRaisesRegex(RuntimeError, 'could not be read'):
+            self.restore_cloud('1', 'yes', 'no')
+        self.assertFalse((self.media / 'restored').exists() and any((self.media / 'restored').iterdir()))
+
+    def test_a_ledger_with_an_unsafe_path_is_not_trusted(self):
+        from neko_common import read_ledger
+        self.write('usb/nextcloud/.neko-ledger.json', json.dumps({'format': 'neko-ledger-v1', 'entries': {
+            '../../etc/shadow': {'sha256': 'a' * 64, 'size': 1}}}).encode())
+        with self.assertRaisesRegex(RuntimeError, 'not trusted'):
+            read_ledger(self.root / 'usb/nextcloud')
+
+    def test_repair_fixes_each_case_from_a_copy_that_matches_its_checksum(self):
+        import hashlib as h
+        good = {k: f'good {k}'.encode() for k in 'abcdef'}
+        archive, usb = 'hdd/photos/archive', 'usb'
+        for k in 'abcf':  # recorded checksums
+            self.write(f'{archive}/upload/{k}.jpg', good[k])
+            self.write(f'{usb}/upload/{k}.jpg', good[k])
+        self.ledger(archive, {f'upload/{k}.jpg': good[k] for k in 'abcf'})
+        self.ledger(usb, {f'upload/{k}.jpg': good[k] for k in 'abcf'})
+        self.write(f'{usb}/upload/a.jpg', b'rotten a')                  # USB damaged
+        self.write(f'{archive}/upload/b.jpg', b'rotten b')              # HDD damaged
+        self.write(f'{archive}/upload/c.jpg', b'rot1 c')                # both damaged...
+        self.write(f'{usb}/upload/c.jpg', b'rot2 c')
+        self.write('ssd/photos/immich-library/upload/c.jpg', good['c'])  # ...Immich still has it
+        self.write(f'{archive}/upload/d.jpg', b'hdd d')                 # no checksum, copies differ,
+        self.write(f'{usb}/upload/d.jpg', good['d'])                     # the original decides
+        self.write('ssd/photos/immich-library/upload/d.jpg', good['d'])
+        self.write(f'{archive}/upload/e.jpg', b'hdd e')                 # no checksum, no original:
+        self.write(f'{usb}/upload/e.jpg', good['e'])                     # you choose (USB)
+        self.write(f'{archive}/upload/f.jpg', b'rot1 f')                # nothing good left
+        self.write(f'{usb}/upload/f.jpg', b'rot2 f')
+        keys = {'damaged': ['upload/a.jpg', 'upload/b.jpg'], 'both_damaged': ['upload/c.jpg', 'upload/f.jpg'],
+                'disagree': ['upload/d.jpg', 'upload/e.jpg']}
+        self.write('ssd/reports/integrity.json', json.dumps({'format': 'neko-integrity-v1', 'sections': {
+            'usb_photos': {**keys, 'counts': {k: len(v) for k, v in keys.items()}}}}).encode())
+        out = []
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / usb), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+            recovery_wizard.repair_backups(self.config, answers('2'), out.append)
+        for k in 'abcde':
+            for where in (archive, usb):
+                self.assertEqual((self.root / where / f'upload/{k}.jpg').read_bytes(), good[k], (k, where))
+        self.assertEqual((self.root / archive / 'upload/f.jpg').read_bytes(), b'rot1 f')
+        self.assertEqual((self.root / usb / 'upload/f.jpg').read_bytes(), b'rot2 f')
+        text = '\n'.join(out)
+        self.assertIn('upload/f.jpg: no copy matches its recorded checksum', text)
+        # Damaged copies are kept aside, never deleted.
+        aside = next((self.root / archive / 'neko-damaged').iterdir())
+        self.assertEqual((aside / 'upload/b.jpg').read_bytes(), b'rotten b')
+        # The chosen checksums were recorded; the recorded ones were never changed.
+        from neko_common import read_ledger
+        ledger = read_ledger(self.root / archive)
+        self.assertEqual(ledger['upload/e.jpg'], h.sha256(good['e']).hexdigest())
+        self.assertEqual(ledger['upload/b.jpg'], h.sha256(good['b']).hexdigest())
+        # Only the file that could not be repaired is still listed for the dashboard.
+        left = json.loads((self.root / 'ssd/reports/integrity.json').read_text())['sections']['usb_photos']
+        self.assertEqual([left[k] for k in ('damaged', 'both_damaged', 'disagree')], [[], ['upload/f.jpg'], []])
+        self.assertEqual(left['counts'], {'damaged': 0, 'both_damaged': 1, 'disagree': 0})
+
+    def test_repair_with_nothing_reported(self):
+        out = []
+        recovery_wizard.repair_backups(self.config, answers(), out.append)
+        self.assertIn('nothing to repair', out[0])
+
     def test_old_usb_snapshots_are_kept_unless_you_type_delete(self):
         usb = self.root / 'usb'
         self.write('usb/backups/monthly/100-1/manifest.json', b'{"format":"neko-maintenance-v1"}')

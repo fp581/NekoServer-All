@@ -50,6 +50,10 @@ fn label(id: &str) -> Option<String> {
             "nextcloud" => "Nextcloud",
             _ => return None,
         },
+        "integrity" => crate::collect::CHECKS
+            .iter()
+            .find(|(id, _)| *id == key)
+            .map(|(_, name)| *name)?,
         "major-update" => match key {
             "immich" => "Immich",
             "nextcloud" => "Nextcloud",
@@ -65,6 +69,7 @@ fn label(id: &str) -> Option<String> {
             "smart" => "disk health warning",
             "backup" => "backup needs attention",
             "major-update" => "new major version available",
+            "integrity" => "damaged backup copies found",
             _ => "app needs attention",
         }
     ))
@@ -116,7 +121,10 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     let drives = ["data_ssd", "media_hdd", "os"]
         .iter()
         .flat_map(|d| ["mount", "space", "smart"].map(|kind| format!("{kind}:{d}")));
-    for id in apps.chain(jobs).chain(drives) {
+    let checks = crate::collect::CHECKS
+        .iter()
+        .map(|(id, _)| format!("integrity:{id}"));
+    for id in apps.chain(jobs).chain(drives).chain(checks) {
         if label(&id).is_some() {
             unknown.insert(id);
         }
@@ -142,6 +150,15 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     for row in s["backups"].as_array().unwrap() {
         if row["status"] == "pass" {
             unknown.remove(&format!("backup:{}", row["id"].as_str().unwrap_or("")));
+        }
+    }
+    // A check is good again only when its latest results list no damaged files.
+    for row in s["integrity"].as_array().cloned().unwrap_or_default() {
+        if ["damaged", "both_damaged", "disagree"]
+            .iter()
+            .all(|k| row[k].as_u64() == Some(0))
+        {
+            unknown.remove(&format!("integrity:{}", row["id"].as_str().unwrap_or("")));
         }
     }
     for row in s["storage"].as_array().unwrap() {
@@ -548,6 +565,23 @@ mod tests {
         for (app, ..) in crate::collect::APPS {
             assert!(unknown.contains(&format!("app:{app}")), "{app}");
         }
+        for (check, _) in crate::collect::CHECKS {
+            assert!(unknown.contains(&format!("integrity:{check}")), "{check}");
+        }
+    }
+    #[test]
+    fn damaged_backup_copies_alert_and_recover_only_when_the_checks_are_clean() {
+        let previous = json!({"format":"neko-notifications-v1","entries":{"integrity:usb_photos":{"last_sent":1000}}});
+        let mut s = snapshot(2000., json!([]));
+        // No results yet: not a recovery.
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        s["integrity"] = json!([{"id":"usb_photos","damaged":0,"both_damaged":0,"disagree":0}]);
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert_eq!(e.len(), 1);
+        assert!(label("integrity:usb_photos")
+            .unwrap()
+            .contains("damaged backup copies"));
     }
     #[test]
     fn untrusted_titles_and_ids_are_not_sent() {

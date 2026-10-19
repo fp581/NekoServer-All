@@ -22,6 +22,40 @@ pub(crate) const APPS: [(&str, &str, &str, u16); 10] = [
     ("qbittorrent", "qBittorrent", "Download queue", 8080),
     ("nextcloud", "Nextcloud", "Your personal files", 8088),
 ];
+/// Backup trees whose checksum checks the dashboard shows (reports/integrity.json).
+pub(crate) const CHECKS: [(&str, &str); 3] = [
+    ("archive", "HDD photo archive"),
+    ("usb_photos", "USB photo copy"),
+    ("usb_nextcloud", "USB Nextcloud copy"),
+];
+/// What the last checksum checks of each backup tree found.
+fn integrity(data: &Path, ok: bool) -> Value {
+    let all = if ok {
+        common::json(&data.join("reports/integrity.json"), 20_000_000)
+    } else {
+        empty()
+    };
+    let mut rows = vec![];
+    for (id, name) in CHECKS {
+        let s = &all["sections"][id];
+        if !s.is_object() {
+            continue;
+        }
+        let count = |key: &str| s["counts"][key].as_u64().unwrap_or(0);
+        let files: Vec<String> = ["both_damaged", "damaged", "disagree"]
+            .iter()
+            .flat_map(|k| s[k].as_array().cloned().unwrap_or_default())
+            .filter_map(|v| v.as_str().map(|f| chars(f, 120)))
+            .take(5)
+            .collect();
+        rows.push(json!({"id": id, "name": name, "at": s["at"],
+            "unverified": s["unverified"].as_u64().unwrap_or(0),
+            "repaired": s["repaired"].as_u64().unwrap_or(0),
+            "damaged": count("damaged"), "both_damaged": count("both_damaged"), "disagree": count("disagree"),
+            "files": files}));
+    }
+    json!(rows)
+}
 /// Every monitored job; notify.rs names an alert for each (checked by a test).
 pub(crate) const JOBS: [(&str, &str, &str, f64); 7] = [
     (
@@ -966,6 +1000,29 @@ fn alerts(s: &Value) -> Value {
             }
         }
     }
+    if let Some(rows) = s["integrity"].as_array() {
+        for c in rows {
+            let count = |k: &str| c[k].as_u64().unwrap_or(0);
+            let bad = count("damaged") + count("both_damaged") + count("disagree");
+            if bad > 0 {
+                let files = c["files"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|f| f.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                add(
+                    format!("integrity:{}", text(&c["id"])),
+                    if count("both_damaged") + count("damaged") > 0 { "critical" } else { "warning" },
+                    format!("{}: {bad} files failed their checksum check", text(&c["name"])),
+                    &format!("Run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\". Files: {files}"),
+                );
+            }
+        }
+    }
     if let Some(rows) = s["updates"].as_array() {
         for u in rows {
             add(
@@ -1082,6 +1139,7 @@ pub fn run(a: &Args) -> Result<()> {
     let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":applications(&cfg),"backups":backups(&cfg,now,ok),"media":media(&cfg,now,ok),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
     result["notifications"] = notification_status(now);
     result["updates"] = updates(&cfg, media_ok);
+    result["integrity"] = integrity(data, ok);
     result["alerts"] = alerts(&result);
     if ok {
         let check = mount_info(
@@ -1108,6 +1166,38 @@ pub fn run(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn damaged_backup_copies_reach_the_dashboard_and_raise_an_alert() {
+        let data =
+            std::env::temp_dir().join(format!("neko-collect-integrity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let report = crate::backup::Integrity {
+            unverified: 7,
+            damaged: vec!["upload/u/b.jpg".into()],
+            ..Default::default()
+        };
+        crate::backup::save_integrity(&data, "usb_photos", &report).unwrap();
+        crate::backup::save_integrity(&data, "archive", &Default::default()).unwrap();
+        let rows = integrity(&data, true);
+        assert_eq!(rows.as_array().unwrap().len(), 2);
+        let usb = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "usb_photos")
+            .unwrap();
+        assert_eq!(
+            (usb["damaged"].as_u64(), usb["unverified"].as_u64()),
+            (Some(1), Some(7))
+        );
+        let shown = alerts(&json!({"integrity": rows}));
+        let shown = shown.as_array().unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0]["level"], "critical");
+        assert!(text(&shown[0]["detail"]).contains("upload/u/b.jpg"));
+        assert!(text(&shown[0]["detail"]).contains("Repair damaged backup copies"));
+        let _ = std::fs::remove_dir_all(data);
+    }
     #[test]
     fn major_updates_found_by_maintenance_are_alerted() {
         let root = std::env::temp_dir().join(format!("neko-updates-{}", std::process::id()));

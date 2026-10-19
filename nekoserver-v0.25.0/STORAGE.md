@@ -10,9 +10,40 @@
 | App settings and databases, container images | SSD appdata, Docker | Nightly app-state snapshot and monthly pre-update snapshot, both on the HDD |
 | OS and user settings (Steam, Samba) | OS disk, home | Nightly host-state snapshot on the HDD |
 
-**What goes where.** The USB drive holds the weekly add-only copies of Immich photos/videos and Nextcloud user files, plus the newest 4 weekly Immich database copies, each with a note of the Immich version that made it and its checksum, so it can rebuild Immich on its own (RECOVERY.md, "Rebuild Immich from the USB drive"). The HDD holds the software side (app settings, databases, container images, OS/user settings) and the same add-only Immich photo copy plus the Immich database. "Add-only" means new files are added and nothing on the backup is ever overwritten or deleted: a file that changed (an edited document, an updated photo sidecar) is kept next to the old one as `name.neko-<date>.ext`, and a hidden `.name.ext.neko-latest` note records which copy is current. The USB drive must be a disk of its own: setup and every weekly run refuse a partition of the system disk, the SSD or the media HDD. A USB copy that no longer matches the HDD archive (a damaged file) is moved to `neko-damaged/<time>/` on the USB drive and copied again from the archive; check that drive if this happens often. Nextcloud previews, trash and caches are not copied; group folders are not covered.
+**What goes where.** The USB drive holds the weekly add-only copies of Immich photos/videos and Nextcloud user files, plus the newest 4 weekly Immich database copies, each with a note of the Immich version that made it and its checksum, so it can rebuild Immich on its own (RECOVERY.md, "Rebuild Immich from the USB drive"). The HDD holds the software side (app settings, databases, container images, OS/user settings) and the same add-only Immich photo copy plus the Immich database. "Add-only" means new files are added and nothing on the backup is ever overwritten or deleted: a file that changed (an edited document, an updated photo sidecar) is kept next to the old one as `name.neko-<date>.ext`, and a hidden `.name.ext.neko-latest` note records which copy is current. The USB drive must be a disk of its own: setup and every weekly run refuse a partition of the system disk, the SSD or the media HDD. Damaged copies are handled as described in "How backups are verified" below. Nextcloud previews, trash and caches are not copied; group folders are not covered.
 
 Navidrome, Lidarr and the qBittorrent music category use the SSD. Local imports route music to SSD and videos to HDD. Incomplete downloads may use the configured shared temporary folder. No watched-video migration between SSD/HDD is performed.
+
+## How backups are verified
+
+Every backup tree (the photo archive on the HDD, its copy on the USB drive, and the Nextcloud copy on the USB drive) has a **checksum ledger**, `.neko-ledger.json`, at its root.
+
+- **Recorded once, never replaced.** Every checksum is SHA-256. A file's checksum is recorded the moment a copy of it is first verified. It is never updated afterwards, even when the file on a drive changes, so damage can never become the "expected" content.
+- **Unverified until confirmed.** Files backed up before the ledger existed have no checksum. They stay *unverified* (the dashboard log says how many) until two independent copies agree: the archive file and the Immich original, or the HDD and USB copies. Then the agreed checksum is recorded.
+- **Every copy is checked three ways.** The data is hashed while it streams into a temporary file, the file is fsync'd and read back from disk, and the source is hashed again. The file is published (never over an existing one, then the folder is fsync'd) only when all three match and the source did not change during the copy (same size, modification and status-change times).
+- **The ledger is written last.** It is written to `.neko-ledger.json.<uuid>.tmp`, fsync'd, renamed and the folder fsync'd, always after the files it lists. Only one job writes it at a time.
+
+When copies disagree, the ledger decides:
+
+| HDD archive | USB copy | What happens |
+|---|---|---|
+| matches | matches | Nothing to do |
+| matches | damaged | The USB copy is moved to `neko-damaged/<time>/` on the USB drive and copied again from the HDD |
+| damaged | matches | The USB copy is kept; the HDD file is reported as damaged and never copied onto the USB drive |
+| damaged | damaged | Both are kept untouched and the job fails with a CRITICAL message |
+| no checksum, copies equal | | The checksum is recorded |
+| no checksum, copies differ | | Both are kept untouched and reported |
+
+A damaged archive file whose Immich original still matches the ledger is replaced from the original (the damaged one is kept in `neko-damaged/` on the HDD). Damage fails the job with the file names after the rest of the copy has finished.
+
+**Seeing and fixing problems.** The dashboard's Backups page shows the result of each tree's last check: intact, how many files are not verified yet, and any damaged or mismatched files. An alert is raised when anything is damaged. To fix them, run `sudo bash install.sh --recover` and choose **Repair damaged backup copies**:
+- A file with a recorded checksum is fixed from whichever copy still matches it: the HDD, the USB drive or the Immich original (Nextcloud: the live Nextcloud file). If none matches, every copy is left untouched and you are told.
+- A file with no recorded checksum whose copies differ is settled by the Immich original when it matches one of them; otherwise you choose the right copy. Its checksum is then recorded.
+- Damaged copies are moved to `neko-damaged/<time>/`, never deleted.
+
+**Fast checks and deep audits.** Path, size, modification time and status-change time are used only to skip files that have not changed since they were last copied. They never prove that a file is intact. Files named by a current-version note are read every week. Every 4 weeks every copy on every drive is read in full and compared with its recorded checksum, which finds silent bit rot that leaves size and dates unchanged.
+
+**Restores.** The recovery wizard checks every file it restores against the ledger of the backup it reads from. A damaged file, an unreadable file or folder, or a symlink in the backup stops the restore with the file named; nothing is restored from a partial list. Files without a recorded checksum are restored and counted as unverified. Paths in a ledger must be plain relative paths (no `/` at the start, no `..`), or the whole ledger is refused.
 
 ## Weekly photo protection
 

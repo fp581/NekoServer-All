@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.25.0 — 2026-10-19
+
+### Added: checksum ledger and integrity rules for every backup
+Every backup tree (the HDD photo archive, its USB copy and the USB Nextcloud copy) now has a checksum ledger, `.neko-ledger.json`. See STORAGE.md, "How backups are verified".
+- **Immutable checksums.** A file's SHA-256 is recorded when a copy of it is first verified and is never replaced, even when the file on a drive changes, so damage can never become the expected content.
+- **Unverified files are flagged.** Files from before the ledger stay unverified (counted in the job log) until two independent copies agree (the archive and the Immich original, or the HDD and USB copies); then the agreed checksum is recorded.
+- **HDD vs USB vs ledger.** The HDD matches and the USB doesn't: the USB copy is repaired from the HDD (the damaged one is kept in `neko-damaged/`). The USB matches and the HDD doesn't: the USB copy is kept, the HDD file is reported and never copied onto the USB drive. Neither matches: both are kept untouched and the job fails as CRITICAL. No checksum and the copies differ: both are kept and reported. The weekly job finishes every copy first, then fails with the file names.
+- **A damaged archive file is no longer taken for an edit.** Before, a rotted archive file looked like a changed photo and got a new dated version. Now it is compared with its checksum. If the Immich original still matches, the archive file is repaired from it; otherwise it is reported.
+- **Three-checksum copies.** Every copy is hashed while it streams, fsync'd and read back from disk, and the source is hashed again. It is published only when all three match and the source's size, modification and status-change times did not change. A source rewritten mid-copy (even with its size and mtime put back) is refused.
+- **Durable, ordered ledgers.** Each ledger is written to `.neko-ledger.json.<uuid>.tmp`, fsync'd, renamed and its folder fsync'd, always after the files it lists. A lock keeps it to one writer. The USB drive gets its copy of the archive ledger after the files.
+- **Fast checks vs deep audits.** Size and dates are used only to skip unchanged files. Every 4 weeks every copy on every drive is read in full against its checksum, which catches bit rot that leaves size and dates unchanged.
+- **Strict enumeration and restore.** Backup trees with a symlink, a special file or an unreadable entry are reported, never silently skipped. The recovery wizard checks every restored file against the ledger and stops at a damaged, missing or unreadable file. Ledger paths must be plain relative paths (no leading `/`, no `..`); a ledger with any other path is not trusted at all.
+- **Damage shows on the dashboard and can be repaired.** Each job saves what its checks found in `reports/integrity.json`. The dashboard's Backups page shows each tree as intact or needing repair, with the number of unverified files, and raises an alert (also sent to your phone) when anything is damaged. The alert clears only when a later check finds nothing. The new recovery menu option **Repair damaged backup copies** fixes each reported file from whichever copy still matches its SHA-256 checksum (HDD, USB drive or the Immich/Nextcloud original). Files with no checksum whose copies differ are settled by the original, or by you, and then recorded. Damaged copies are moved aside, never deleted. Without this, a damaged HDD file would have failed the weekly job every week.
+- **SHA-256 everywhere.** Every backup checksum (ledgers, copies, database copies, snapshots) is SHA-256; tests check the published FIPS 180-2 test values in both the backup program and the Python tools, and the ledger accepts nothing but 64-character SHA-256 values.
+
+### Changed
+- Version 0.25.0; the release folder is now `nekoserver-v0.25.0`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+- The first runs after upgrading record checksums as files are copied. Existing backups are reported as unverified until the next 4-weekly full check confirms them against a second copy.
+
 ## v0.24.6 — 2026-10-19
 
 ### Fixed (from an outside review)
