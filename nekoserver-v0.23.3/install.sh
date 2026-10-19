@@ -47,6 +47,16 @@ if "$apply"; then
         exit 1
     fi
     if ! "$recover"; then
+        # The update and packages go on the system disk; the apps and data go on the SSD
+        # and HDD, which the wizard checks once you have picked them. Stop before changing
+        # anything when the system disk is too full for a safe update.
+        system_free=$(df -P -B1G --output=avail /var/cache/pacman 2>/dev/null | tail -n 1 | tr -dc '0-9')
+        if [[ -n "$system_free" ]] && (( system_free < 5 )); then
+            echo "The system disk has only ${system_free} GB free. The system update and the packages" >&2
+            echo 'need at least 5 GB there (your apps and files go on the SSD and HDD instead).' >&2
+            echo 'Free some space (for example: sudo pacman -Sc), then run  sudo bash install.sh  again.' >&2
+            exit 1
+        fi
         # Arch supports only full upgrades: refresh and upgrade everything first, so the
         # apps and their dependencies install at their current versions and match each
         # other. Recovery skips this so restoring never depends on the network.

@@ -132,3 +132,41 @@ class ReviewFixTests(unittest.TestCase):
         guard = app_backup.guard_config(config)
         self.assertIn('keep_snapshots', guard['app_backup'])
         self.assertIn('app_backup.guard_config(config)', (ROOT / 'native_runtime.py').read_text())
+
+
+class BusyLockTests(unittest.TestCase):
+    def test_installer_waits_for_a_running_backup_then_explains(self):
+        import fcntl
+        import tempfile
+        import recovery_tools
+        with tempfile.NamedTemporaryFile() as f, open(f.name, 'a') as holder, open(f.name, 'a') as mine:
+            fcntl.flock(holder, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(RuntimeError, 'backup or monthly update is running'):
+                recovery_tools.wait_for(mine, False)
+            with self.assertRaisesRegex(RuntimeError, 'run  sudo bash install.sh  again'):
+                recovery_tools.wait_for(mine, True, limit=10, sleep=lambda s: None)
+            tries = []
+
+            def finish(seconds):
+                tries.append(seconds)
+                fcntl.flock(holder, fcntl.LOCK_UN)
+            recovery_tools.wait_for(mine, True, sleep=finish)
+            self.assertEqual(len(tries), 1)
+
+
+class SeerrPermissionCheckTests(unittest.TestCase):
+    def test_seerr_is_checked_as_the_configured_user(self):
+        from unittest import mock
+        import permission_checks
+        config = {'data_mount': '/ssd', 'media_mount': '/hdd',
+                  'media': {'uid': 2000, 'gid': 2000, 'services': ['seerr', 'sonarr']}}
+        seen = {}
+
+        def access(path, uid, groups, mask, bind_root=False):
+            seen[str(path)] = (uid, groups)
+            return True
+        with mock.patch.object(permission_checks, 'access', access):
+            rows = permission_checks.check(config, ['media'])
+        self.assertEqual(seen['/ssd/appdata/seerr'], (2000, {2000}))
+        self.assertEqual(seen['/ssd/appdata/sonarr'], (2000, {2000}))
+        self.assertTrue(all(r['status'] == 'pass' for r in rows))

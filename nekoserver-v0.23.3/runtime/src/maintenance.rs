@@ -502,7 +502,7 @@ fn encrypt_secrets_with(data: &Path, snapshot: &Path, key_dir: &Path) -> Result<
     }
     Ok("encrypted")
 }
-fn verify(snapshot: &Path) -> Result<Value> {
+pub(crate) fn verify(snapshot: &Path) -> Result<Value> {
     private(snapshot)?;
     let manifest = load(&snapshot.join("manifest.json"))?;
     if manifest["format"] != "neko-maintenance-v1" {
@@ -1374,8 +1374,29 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
         .collect();
     let mut removed = vec![];
     let mut kept = vec![];
-    if keep > 0 {
-        let cut = complete.len().saturating_sub(keep as usize);
+    let mut held_back = None;
+    let cut = complete.len().saturating_sub(keep as usize);
+    // Old snapshots are only deleted while the ones kept in their place are intact.
+    let damaged: Vec<&String> = if keep > 0 && cut > 0 {
+        complete[cut..]
+            .iter()
+            .filter(|r| verify(&hdd.join(r)).is_err())
+            .collect()
+    } else {
+        vec![]
+    };
+    if !damaged.is_empty() {
+        held_back = Some(format!(
+            "older snapshots kept: {} failed its checksum check",
+            damaged
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        println!("Monthly retention: {}", held_back.as_deref().unwrap_or(""));
+        kept.extend(complete.iter().cloned());
+    } else if keep > 0 {
         for run in &complete[..cut] {
             if protected(run) {
                 kept.push(run.clone());
@@ -1407,7 +1428,9 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
         .into_iter()
         .filter(|r| !complete.contains(r) && !protected(r))
         .collect();
-    Ok(json!({"keep":keep,"kept":kept,"removed":removed,"incomplete_not_removed":unmanaged}))
+    Ok(
+        json!({"keep":keep,"kept":kept,"removed":removed,"incomplete_not_removed":unmanaged,"held_back":held_back}),
+    )
 }
 fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     mounts(cfgpath, cfg, false)?;
@@ -1688,7 +1711,13 @@ mod tests {
     fn snapshot(root: &Path, drive: &str, run: &str, complete: bool) {
         let dir = root.join(drive).join("backups/monthly").join(run);
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
-        // A real-looking snapshot: archives plus a manifest with their checksums.
+        snapshot_archives(&dir, run);
+        if complete {
+            fs::write(dir.join("restore-tests.json"), b"{}").unwrap();
+        }
+    }
+    /// A real-looking snapshot: archives plus a manifest with their checksums.
+    fn snapshot_archives(dir: &Path, run: &str) {
         let mut sums = serde_json::Map::new();
         for key in ["data", "media", "images"] {
             let path = dir.join(format!("{key}.tar"));
@@ -1700,9 +1729,6 @@ mod tests {
             json!({"format":"neko-maintenance-v1","run":run,"sha256":sums}).to_string(),
         )
         .unwrap();
-        if complete {
-            fs::write(dir.join("restore-tests.json"), b"{}").unwrap();
-        }
     }
     fn runs(root: &Path, drive: &str) -> Vec<String> {
         monthly_runs(&root.join(drive)).unwrap()
@@ -1943,6 +1969,22 @@ mod tests {
         assert_eq!(runs(&root, "hdd"), ["100-1", "200-1"]);
         // 200-1 on the SSD differs from the HDD copy, so it is not ours to delete.
         assert_eq!(runs(&root, "ssd"), ["200-1", "300-1"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn old_snapshots_stay_while_a_newer_kept_one_is_damaged() {
+        let root = scratch("hold");
+        for run in ["100-1", "200-1", "300-1"] {
+            snapshot(&root, "hdd", run, true);
+        }
+        fs::write(root.join("hdd/backups/monthly/300-1/data.tar"), b"bit rot").unwrap();
+        let report = prune_monthly(&root.join("ssd"), &root.join("hdd"), 1, None).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["100-1", "200-1", "300-1"]);
+        assert!(report["held_back"].as_str().unwrap().contains("300-1"));
+        // Once the newest is intact again, retention removes the older ones as usual.
+        snapshot_archives(&root.join("hdd/backups/monthly/300-1"), "300-1");
+        prune_monthly(&root.join("ssd"), &root.join("hdd"), 1, None).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["300-1"]);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

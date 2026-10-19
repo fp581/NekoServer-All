@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.23.3 — 2026-10-19
+
+### Fixed
+- **Old full snapshots on the USB drive were removed once an HDD snapshot merely existed.** The weekly job now also checks that snapshot's archives against their checksums before removing them; a missing or altered archive keeps the USB snapshots.
+- **The Seerr permission check still assumed user 1000.** Since v0.23.2 Seerr's folder belongs to your user, but the readiness check still checked it as 1000:1000 and reported a false "needs setup" for other users. It now checks the configured user, like every other app.
+- **The system disk is checked before the system update.** The update and packages go on the system disk, before the drives are picked; with less than 5 GB free there, `install.sh` now stops before changing anything and says how to free space. (The SSD and HDD are still checked after you pick them, before any app is installed.)
+- **Monthly retention could delete the last good snapshot.** Snapshots beyond the newest 3 were deleted without checking that the 3 kept are intact. If any kept one fails its checksum check, nothing older is deleted that month, and the log says why.
+- **Running the installer during a night-time backup no longer fails with "Another recovery operation is active".** It waits for the backup (up to 30 minutes, and says so), then explains what to do if it is still running.
+- The home-network step and the README now say to reserve the server's address in the router, so the home addresses keep working after a restart.
+- Finishing screen: a list join no longer uses `sum()` (SonarCloud).
+
+### Changed
+- Version 0.23.3; the release folder is now `nekoserver-v0.23.3`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release (Rust sources changed).
+
 ## v0.23.2 — 2026-10-19
 
 ### Fixed (from an outside review)
