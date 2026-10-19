@@ -449,7 +449,33 @@ pub fn usb_cleanup_blocker(dest: &Path, media: &Path, cloud: Option<&CloudCopy>)
     if old_had_immich && !has_dump {
         return Some("no weekly Immich database copy on the HDD yet".into());
     }
+    // Last and slowest: the HDD snapshot that replaces the old USB ones must really be
+    // intact, not just present. Its archives are checked against their checksums.
+    if !hdd_snapshot_verifies(&hdd, |run| crate::maintenance::verify(run).is_ok()) {
+        return Some(
+            "no restore-tested monthly snapshot on the HDD passed its checksum check".into(),
+        );
+    }
     None
+}
+/// Is there a complete (restore-tested) HDD monthly snapshot whose archives verify?
+/// Newest first, stopping at the first good one.
+fn hdd_snapshot_verifies<F: Fn(&Path) -> bool>(hdd: &Path, verifies: F) -> bool {
+    let pattern = regex::Regex::new(r"^([0-9]+)-[0-9]+$").unwrap();
+    let mut runs: Vec<(u128, PathBuf)> = fs::read_dir(hdd)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let stamp = pattern.captures(&name)?[1].parse().ok()?;
+            let path = e.path();
+            (path.join("restore-tests.json").is_file() && path.join("manifest.json").is_file())
+                .then_some((stamp, path))
+        })
+        .collect();
+    runs.sort_by_key(|r| std::cmp::Reverse(r.0));
+    runs.iter().any(|(_, path)| verifies(path))
 }
 /// The USB drive holds only the add-only photo and Nextcloud copies. Full monthly
 /// snapshots that releases before v0.21.1 wrote there are removed only when
@@ -1089,8 +1115,23 @@ mod tests {
             .unwrap()
             .contains("monthly snapshot"));
         // Restore-tested HDD snapshot, but the old one covered Immich and no dump exists: keep.
-        write(&hdd.join("backups/monthly/200-1/manifest.json"), b"{}");
-        write(&hdd.join("backups/monthly/200-1/restore-tests.json"), b"{}");
+        let run = hdd.join("backups/monthly/200-1");
+        let mut sums = serde_json::Map::new();
+        for key in ["data", "media", "images"] {
+            write(&run.join(format!("{key}.tar")), key.as_bytes());
+            sums.insert(
+                key.into(),
+                json!(common::digest(&run.join(format!("{key}.tar"))).unwrap()),
+            );
+        }
+        write(
+            &run.join("manifest.json"),
+            json!({"format":"neko-maintenance-v1","sha256":sums})
+                .to_string()
+                .as_bytes(),
+        );
+        write(&run.join("restore-tests.json"), b"{}");
+        fs::set_permissions(&run, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(usb_cleanup_blocker(&usb, &hdd, Some(&complete))
             .unwrap()
             .contains("Immich database"));
@@ -1100,6 +1141,19 @@ mod tests {
         );
         assert_eq!(usb_cleanup_blocker(&usb, &hdd, Some(&complete)), None);
         assert_eq!(usb_cleanup_blocker(&usb, &hdd, None), None);
+        // Present but damaged: an archive no longer matches its checksum, so keep.
+        write(&run.join("images.tar"), b"bit rot");
+        assert!(usb_cleanup_blocker(&usb, &hdd, Some(&complete))
+            .unwrap()
+            .contains("checksum"));
+        write(&run.join("images.tar"), b"images");
+        // Manifest and restore test present, but an archive is missing: keep.
+        fs::remove_file(run.join("data.tar")).unwrap();
+        assert!(usb_cleanup_blocker(&usb, &hdd, Some(&complete))
+            .unwrap()
+            .contains("checksum"));
+        write(&run.join("data.tar"), b"data");
+        assert_eq!(usb_cleanup_blocker(&usb, &hdd, Some(&complete)), None);
         // Any file left out of this week's Nextcloud copy: keep.
         let in_use = CloudCopy {
             skipped: 1,

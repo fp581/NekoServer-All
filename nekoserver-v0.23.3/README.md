@@ -1,4 +1,4 @@
-# NekoServer v0.23.2
+# NekoServer v0.23.3
 
 NekoServer turns a PC running **Arch Linux** or **Nyarch** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -52,11 +52,11 @@ Open a **terminal**, logged in as your normal user, and run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer---Arch-based-media-server.git
-cd NekoServer---Arch-based-media-server/nekoserver-v0.23.2
+cd NekoServer---Arch-based-media-server/nekoserver-v0.23.3
 sudo bash install.sh
 ```
 
-That's it: one command does everything. First it **updates the system** (`pacman -Syu`, so every app installs at its current version) and **installs the packages the apps need** (Docker, Tailscale, Caddy, Samba and a few tools). If the update installed a new Linux kernel, it asks you to restart the PC and run the command again.
+That's it: one command does everything. First it **updates the system** (`pacman -Syu`, so every app installs at its current version) and **installs the packages the apps need** (Docker, Tailscale, Caddy, Samba and a few tools). If the update installed a new Linux kernel, it asks you to restart the PC and run the command again. It needs 5 GB free on the system disk for this; it stops before changing anything if there is less.
 
 Then the setup wizard explains what will happen and asks `Ready to start? [yes/no]`. It:
 
@@ -100,7 +100,7 @@ Keep a copy somewhere safe, such as a password manager.
 
 These addresses are **private**: they work only on devices signed in to your Tailscale account. Nothing is opened to the public internet, and your router needs no changes.
 
-**On other devices at home** you can also use your server's home address, for example `https://192.168.1.20:8442` for the app menu (ports 8443–8447 for the apps, as above). Browsers warn about the certificate the first time, because your server made its own; [GATEWAY.md](GATEWAY.md) explains how to trust it. The Tailscale addresses have normal certificates and never warn.
+**On other devices at home** you can also use your server's home address (first, in your router, reserve that address for the server, usually called "DHCP reservation" or "static lease"; otherwise it can change after a restart and the home addresses stop working), for example `https://192.168.1.20:8442` for the app menu (ports 8443–8447 for the apps, as above). Browsers warn about the certificate the first time, because your server made its own; [GATEWAY.md](GATEWAY.md) explains how to trust it. The Tailscale addresses have normal certificates and never warn.
 
 **On the server itself**, the dashboard is at `http://127.0.0.1:8787`. Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are only reachable from the server's own browser, on purpose.
 

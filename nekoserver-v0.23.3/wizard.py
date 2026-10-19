@@ -161,7 +161,8 @@ def finishing_screen(config, states, page=None, output=print):
     by_status = {status: [n for n in plan if states[n].get('status') in group]
                  for status, group in (('done', ('success',)), ('waiting', ('needs_setup',)),
                                        ('broken', ('failed', 'blocked', 'running', 'missing')))}
-    unknown = [n for n in plan if n not in sum(by_status.values(), [])]
+    sorted_out = {n for names in by_status.values() for n in names}
+    unknown = [n for n in plan if n not in sorted_out]
     by_status['broken'] += unknown
     complete = bool(plan) and not by_status['waiting'] and not by_status['broken']
     line = '=' * 64

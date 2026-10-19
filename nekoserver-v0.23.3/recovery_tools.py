@@ -2,6 +2,7 @@
 import copy
 import datetime as dt
 import fcntl
+import sys
 import hashlib
 import importlib.util
 import json
@@ -76,9 +77,24 @@ def lock(config):
     path=safe_path(Path(config['data_mount'])/'installer/recovery.lock');path.parent.mkdir(parents=True,exist_ok=True)
     with path.open('a') as stream:
         os.fchmod(stream.fileno(),0o600)
-        try:fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:raise RuntimeError('Another recovery operation is active') from None
+        wait_for(stream,sys.stdin.isatty())
         yield
+
+BUSY='A NekoServer backup or monthly update is running right now. Wait for it to finish (usually under an hour), then run  sudo bash install.sh  again.'
+
+def wait_for(stream,patient,limit=1800,sleep=None):
+    """Take the shared lock. Night-time backups hold it too: an interactive run waits
+    for them (up to 30 minutes, saying so) instead of failing with a puzzling error."""
+    import time
+    sleep=sleep or time.sleep
+    waited=0
+    while True:
+        try:
+            fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB);return
+        except BlockingIOError:
+            if not patient or waited>=limit:raise RuntimeError(BUSY) from None
+            if waited==0:print('Waiting for a NekoServer backup that is running right now to finish (up to 30 minutes)...',flush=True)
+            sleep(5);waited+=5
 
 def require_root():
     if os.geteuid()!=0:raise RuntimeError('Recovery changes require sudo')

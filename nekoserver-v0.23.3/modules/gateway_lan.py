@@ -6,4 +6,8 @@ def run(ctx):
     gateway_tools.selected(ctx.config)
     if not ctx.apply:ctx.log('LAN gateway: private HTTPS after LAN selection and secured app-account confirmation');return
     if not gateway_tools.configure(ctx,'lan'):return {'status':'needs_setup','reason':'Choose gateway.lan_ip/lan_cidr and confirm secured gateway.confirmed_services on the actual server'}
-    result=gateway_tools.apply_lan(ctx.config);ctx.log('LAN gateway: '+result['portal']);return result
+    result=gateway_tools.apply_lan(ctx.config);ctx.log('LAN gateway: '+result['portal'])
+    # The home addresses use this exact IP; a router that hands out another one after a
+    # restart breaks them (the Tailscale addresses are not affected).
+    ctx.log('Tip: in your router, reserve '+ctx.config['gateway']['lan_ip']+' for this server ("DHCP reservation" or "static lease") so the home addresses keep working after a restart.')
+    return result

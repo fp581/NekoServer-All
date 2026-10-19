@@ -45,9 +45,8 @@ def check(config, modules):
 
     if 'media' in modules:
         for app in config['media']['services']:
-            owner = 1000 if app == 'seerr' else uid
-            groups = {1000} if app == 'seerr' else {gid}
-            inspect(app + ':appdata', data / 'appdata' / app, owner, groups, True, bind_root=True)
+            # Every app, Seerr included, runs as media.uid/gid (since v0.21.1).
+            inspect(app + ':appdata', data / 'appdata' / app, uid, {gid}, True, bind_root=True)
         for category in ('movies', 'tv', 'music', 'downloads'):
             inspect('media:' + category, (data if category == 'music' else media) / 'library' / category, uid, {gid}, True)
         inspect('media:music-downloads', data / 'library/downloads/music', uid, {gid}, True)
