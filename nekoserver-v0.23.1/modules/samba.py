@@ -88,6 +88,8 @@ def run(context):
             context.log('Samba service installed; authenticated user setup is still required')
             return {'status':'needs_setup','reason':'Run interactively to create the Samba password, or use sudo smbpasswd -a '+user}
         # Samba prompts directly on the terminal; NekoServer does not store/log the password.
+        print('\nShared folders: choose a password for opening the server\'s folders from other '
+              'computers (user: '+user+'). Type it twice; nothing is shown while you type.')
         subprocess.run(['smbpasswd','-a',user],check=True)
         account=subprocess.run(['pdbedit','-L','-u',user],capture_output=True,text=True,timeout=15)
         if account.returncode or not any(line.startswith(user+':') for line in account.stdout.splitlines()):

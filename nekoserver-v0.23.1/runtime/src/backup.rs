@@ -22,6 +22,13 @@ fn same(a: &Metadata, b: &Metadata) -> bool {
         && a.mtime() == b.mtime()
         && a.mtime_nsec() == b.mtime_nsec()
 }
+/// A backup copy already holds this source's content, decided without reading either
+/// file: same size, and the copy was written after the source last changed. Weekly
+/// runs therefore read only new or changed photos, not the whole library again.
+fn copied_since_change(source: &Metadata, copy: &Metadata) -> bool {
+    source.len() == copy.len()
+        && (copy.mtime(), copy.mtime_nsec()) >= (source.mtime(), source.mtime_nsec())
+}
 fn separate(source: &Path, dest: &Path) -> Result<(PathBuf, PathBuf)> {
     common::safe(source)?;
     common::safe(dest)?;
@@ -146,6 +153,10 @@ pub(crate) fn add_only_copy(source: &Path, target: &Path, apply: bool, mode: u32
     if !target.is_file() {
         return Err(Error::new("Backup target is not a regular file"));
     }
+    let source_meta = fs::metadata(source)?;
+    if copied_since_change(&source_meta, &fs::metadata(target)?) {
+        return Ok(Added::Same);
+    }
     let wanted = common::digest(source)?;
     if common::digest(target)? == wanted {
         return Ok(Added::Same);
@@ -172,12 +183,13 @@ pub(crate) fn add_only_copy(source: &Path, target: &Path, apply: bool, mode: u32
         if other.starts_with(&format!("{stem}.neko-"))
             && other.ends_with(&ext)
             && path.is_file()
-            && common::digest(&path)? == wanted
+            && (copied_since_change(&source_meta, &fs::metadata(&path)?)
+                || common::digest(&path)? == wanted)
         {
             return Ok(Added::Same);
         }
     }
-    let modified = fs::metadata(source)?.mtime();
+    let modified = source_meta.mtime();
     let stamp = chrono::DateTime::from_timestamp(modified, 0)
         .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
         .unwrap_or_else(|| modified.to_string());
@@ -890,6 +902,29 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+    #[test]
+    fn existing_copies_are_skipped_without_reading_them() {
+        let root = scratch("skip");
+        let (src, dst) = (root.join("src/a.jpg"), root.join("dst/a.jpg"));
+        write(&src, b"photo");
+        assert_eq!(add_only_copy(&src, &dst, true, 0o644).unwrap(), Added::New);
+        // Unreadable copy: a re-read would fail, so Same proves it was not read.
+        fs::set_permissions(&dst, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&dst).is_err() {
+            assert_eq!(add_only_copy(&src, &dst, true, 0o644).unwrap(), Added::Same);
+        }
+        fs::set_permissions(&dst, fs::Permissions::from_mode(0o644)).unwrap();
+        // Same size but changed after the copy: checked by content, kept as a version.
+        thread::sleep(Duration::from_millis(20));
+        write(&src, b"PHOTO");
+        assert_eq!(
+            add_only_copy(&src, &dst, true, 0o644).unwrap(),
+            Added::Version
+        );
+        assert_eq!(fs::read(&dst).unwrap(), b"photo");
+        assert_eq!(add_only_copy(&src, &dst, true, 0o644).unwrap(), Added::Same);
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn changed_files_become_dated_versions_never_overwrites() {

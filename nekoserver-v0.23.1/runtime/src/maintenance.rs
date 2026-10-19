@@ -1103,7 +1103,9 @@ fn immich_candidate(cfg: &Value, snapshot: &Path) -> Result<Option<PathBuf>> {
     if release["prerelease"] == true || release["draft"] == true {
         return Err(Error::new("Unstable Immich release refused"));
     }
-    if before[1] != next[1] {
+    // A different major is installed only when you approved exactly this release.
+    let approved = cfg["maintenance"]["immich_major_update"].as_str() == Some(tag);
+    if before[1] != next[1] && !approved {
         common::atomic_json(
             &snapshot.join("immich-major-pending.json"),
             &json!({"status":"manual_major_upgrade_required","current":current,"available":tag}),
@@ -1167,6 +1169,80 @@ fn immich_candidate(cfg: &Value, snapshot: &Path) -> Result<Option<PathBuf>> {
         0o600,
     )?;
     Ok(Some(folder))
+}
+
+/// The Nextcloud major worth running now: a brand-new x.0.0 or x.0.1 counts as the
+/// previous major, as on a fresh install.
+fn nextcloud_recommended_major(tag: &str) -> Option<u64> {
+    let caps = regex::Regex::new(r"^v(\d+)\.(\d+)\.(\d+)$")
+        .unwrap()
+        .captures(tag)?;
+    let major: u64 = caps[1].parse().ok()?;
+    let minor: u64 = caps[2].parse().ok()?;
+    let patch: u64 = caps[3].parse().ok()?;
+    Some(if minor == 0 && patch < 2 {
+        major.saturating_sub(1)
+    } else {
+        major
+    })
+}
+fn installed_nextcloud_major(manifest: &str) -> Option<u64> {
+    regex::Regex::new(r"nextcloud:(\d+)(?:\.\d+)*-apache")
+        .unwrap()
+        .captures(manifest)?[1]
+        .parse()
+        .ok()
+}
+/// Record, never apply, a newer Nextcloud major: monthly updates stay on the installed
+/// major, and Nextcloud must be upgraded one major at a time. The dashboard shows it.
+fn nextcloud_major_notice(cfg: &Value, snapshot: &Path) -> Result<()> {
+    let manifest = common::bytes(
+        &Path::new(string(cfg, "data_mount")?).join("compose/nextcloud/compose.yaml"),
+        200000,
+    )?;
+    let Some(current) = installed_nextcloud_major(&String::from_utf8_lossy(&manifest)) else {
+        return Ok(());
+    };
+    let release: Value = serde_json::from_str(&release_fetch(
+        "https://api.github.com/repos/nextcloud/server/releases/latest",
+    )?)?;
+    if release["prerelease"] == true || release["draft"] == true {
+        return Ok(());
+    }
+    match nextcloud_recommended_major(string(&release, "tag_name")?) {
+        Some(next) if next > current => common::atomic_json(
+            &snapshot.join("nextcloud-major-pending.json"),
+            &json!({"status":"manual_major_upgrade_required","current":current.to_string(),"available":next.to_string(),"next_step":(current + 1).to_string()}),
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Files that move Nextcloud to the approved next major, or None. Nextcloud upgrades
+/// one major at a time, so only `installed + 1` is ever accepted.
+fn nextcloud_major_step(cfg: &Value, folder: &Path) -> Result<Option<(u64, u64)>> {
+    let Some(approved) = cfg["maintenance"]["nextcloud_major_update"]
+        .as_str()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+    else {
+        return Ok(None);
+    };
+    let manifest =
+        String::from_utf8_lossy(&common::bytes(&folder.join("compose.yaml"), 200000)?).to_string();
+    match installed_nextcloud_major(&manifest) {
+        Some(current) if approved == current + 1 => Ok(Some((current, approved))),
+        Some(current) if approved > current + 1 => {
+            println!("Nextcloud: {approved} approved, but it must be reached one major at a time; installing {} first is not automatic. Set nextcloud_major_update to {}", current + 1, current + 1);
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+fn retag_nextcloud(text: &str, from: u64, to: u64) -> String {
+    text.replace(
+        &format!("\"nextcloud:{from}-apache\""),
+        &format!("\"nextcloud:{to}-apache\""),
+    )
 }
 
 fn automated_media_ready(report: &Value) -> bool {
@@ -1423,7 +1499,13 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     // Pull the declared version streams. Major-version migrations and OS upgrades are excluded.
     let mut updated = json!({});
     let mut immich_files = None;
+    let mut nextcloud_step = None;
     for name in &names {
+        if name == "nextcloud" {
+            if let Err(e) = nextcloud_major_notice(cfg, &snapshot) {
+                println!("Nextcloud: could not check for a newer major version ({e})");
+            }
+        }
         let source = if name == "immich" {
             immich_files = immich_candidate(cfg, &snapshot)?;
             immich_files
@@ -1434,6 +1516,20 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
         };
         let mut candidate = source_model(&source, name)?;
         valid_model(&candidate, name, data, media)?;
+        if name == "nextcloud" {
+            if let Some((from, to)) = nextcloud_major_step(cfg, &source)? {
+                println!("Nextcloud: installing approved major {to} (from {from})");
+                for service in ["nextcloud", "cron"] {
+                    if candidate["services"][service]["image"]
+                        == json!(format!("nextcloud:{from}-apache"))
+                    {
+                        candidate["services"][service]["image"] =
+                            json!(format!("nextcloud:{to}-apache"));
+                    }
+                }
+                nextcloud_step = Some((from, to));
+            }
+        }
         for v in candidate["services"].as_object_mut().unwrap().values_mut() {
             let image = string(v, "image")?.to_string();
             docker(&["pull", &image])?;
@@ -1462,6 +1558,17 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
                 &common::bytes(&folder.join(name), 500000)?,
                 0o600,
             )?;
+        }
+    }
+    // The declared tag moves with an approved Nextcloud major, so later monthly
+    // updates and installer re-runs stay on it (the snapshot covers these files).
+    if let Some((from, to)) = nextcloud_step {
+        for name in ["compose.yaml", "managed.json"] {
+            let path = data.join("compose/nextcloud").join(name);
+            if path.exists() {
+                let text = String::from_utf8_lossy(&common::bytes(&path, 500000)?).to_string();
+                common::atomic(&path, retag_nextcloud(&text, from, to).as_bytes(), 0o600)?;
+            }
         }
     }
     // Originals have remained stopped since the consistent backup; no writes are lost.
@@ -1847,6 +1954,45 @@ mod tests {
     fn image_ids_are_immutable() {
         assert!(image_id(&format!("sha256:{}", "a".repeat(64))));
         assert!(!image_id("nextcloud:latest"));
+    }
+    #[test]
+    fn nextcloud_major_notice_waits_for_early_fixes() {
+        assert_eq!(nextcloud_recommended_major("v32.0.0"), Some(31));
+        assert_eq!(nextcloud_recommended_major("v32.0.2"), Some(32));
+        assert_eq!(nextcloud_recommended_major("v32.1.0"), Some(32));
+        assert_eq!(nextcloud_recommended_major("32.1.0"), None);
+        assert_eq!(
+            installed_nextcloud_major("\"image\": \"nextcloud:31-apache\""),
+            Some(31)
+        );
+        assert_eq!(
+            installed_nextcloud_major("\"image\": \"postgres:17\""),
+            None
+        );
+        assert_eq!(
+            retag_nextcloud(
+                "{\"image\": \"nextcloud:31-apache\", \"x\": \"postgres:17\"}",
+                31,
+                32
+            ),
+            "{\"image\": \"nextcloud:32-apache\", \"x\": \"postgres:17\"}"
+        );
+        let root = std::env::temp_dir().join(format!("neko-ncstep-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("compose.yaml"),
+            "{\"image\": \"nextcloud:31-apache\"}",
+        )
+        .unwrap();
+        let cfg = |v: &str| json!({"maintenance":{"nextcloud_major_update":v}});
+        assert_eq!(
+            nextcloud_major_step(&cfg("32"), &root).unwrap(),
+            Some((31, 32))
+        );
+        assert_eq!(nextcloud_major_step(&cfg("33"), &root).unwrap(), None);
+        assert_eq!(nextcloud_major_step(&cfg(""), &root).unwrap(), None);
+        assert_eq!(nextcloud_major_step(&json!({}), &root).unwrap(), None);
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn reject_uncovered_persistent_state() {

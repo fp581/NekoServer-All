@@ -19,10 +19,10 @@ def select_external(config, inventory, input_fn=input, out_fn=print):
     if len({v['uuid'] for v in candidates})!=len(candidates):raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')
     if not candidates:raise RuntimeError('No eligible formatted external backup filesystem; connect it first')
     for index,row in enumerate(candidates,1):out_fn(f"  {index}) /dev/{row['name']} {row.get('size','')} {row['fstype']} UUID={row['uuid']} mounted={row.get('mountpoint') or '-'}")
-    answer=input_fn('Select the external photo backup filesystem (blank aborts): ').strip()
+    answer=input_fn('Choose the USB backup drive by number (Enter to skip for now): ').strip()
     if not answer.isdigit() or not 1<=int(answer)<=len(candidates):raise RuntimeError('External backup selection aborted')
     chosen=candidates[int(answer)-1]
-    if input_fn('Type its exact UUID to confirm: ').strip()!=chosen['uuid']:raise RuntimeError('External backup UUID confirmation failed')
+    if input_fn(f"Type {chosen['name']} to confirm it is the USB backup drive: ").strip() not in (chosen['name'],'/dev/'+chosen['name'],chosen['uuid']):raise RuntimeError('External backup drive confirmation failed')
     config.setdefault('photos',{}).update(external_backup_uuid=chosen['uuid'],external_backup_fstype=chosen['fstype'])
     return chosen
 
@@ -61,7 +61,7 @@ def run(ctx):
         # Nextcloud user files get the same add-only weekly copy as photos.
         cmd+=' --cloud '+str(Path(ctx.config['media_mount'])/'cloud/files')
     service='[Unit]\nDescription=NekoServer add-only USB backup of photos and Nextcloud files\nRequiresMountsFor='+ctx.config['media_mount']+'\nAfter=nekoserver-immich-db-backup.service\n[Service]\nType=oneshot\nExecStart='+cmd+'\n'
-    schedule='[Unit]\nDescription=Weekly NekoServer photo backup\n[Timer]\nOnCalendar='+day+' *-*-* '+when+':00 '+host_timezone(ctx.config)+'\nPersistent=false\n[Install]\nWantedBy=timers.target\n'
+    schedule='[Unit]\nDescription=Weekly NekoServer photo backup\n[Timer]\nOnCalendar='+day+' *-*-* '+when+':00 '+host_timezone(ctx.config)+'\nPersistent=true\n[Install]\nWantedBy=timers.target\n'
     for path,text in ((unit,service),(timer,schedule)):
         if path.exists() and path.read_text()!=text and 'NekoServer' not in path.read_text() and 'nekoserver-' not in path.read_text(): raise RuntimeError(f'Unmanaged systemd unit differs: {path}')
     atomic_write(unit,service,0o644);atomic_write(timer,schedule,0o644)
