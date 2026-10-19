@@ -134,6 +134,20 @@ def apps_on(config, choice, log, client_factory=None):
     return done
 
 
+def switch_apps(ctx, choice, hold=None, check_storage=None):
+    """Recreate Immich with the chip and switch both apps over while holding the lock
+    that backups and monthly maintenance hold, so Immich is never restarted in the
+    middle of their consistent snapshot or a rollback."""
+    from recovery_tools import lock, mounts
+    from neko_common import verify_storage
+    if hold is None:
+        mounts(ctx.config)
+    with (hold or lock)(ctx.config):
+        (check_storage or verify_storage)(ctx.config)
+        give_immich_the_chip(ctx.config, ctx.log)
+        return apps_on(ctx.config, choice, ctx.log)
+
+
 def run(ctx):
     if not ctx.apply:
         ctx.log('Hardware video: finds the graphics chip and turns on hardware transcoding in Jellyfin and Immich')
@@ -155,8 +169,7 @@ def run(ctx):
                 'both apps keep converting video in software')
         atomic_json(report, {'status': 'software', 'reason': 'chip failed the decode check', 'vendor': vendor, 'device': node})
         return
-    give_immich_the_chip(ctx.config, ctx.log)
-    apps = apps_on(ctx.config, choice, ctx.log)
+    apps = switch_apps(ctx, choice)
     atomic_json(report, {'status': 'hardware', 'vendor': vendor, 'device': node, 'apps': apps})
     if any(not state.startswith(('on', 'kept')) for state in apps.values()):
         return {'status': 'needs_setup', 'reason': 'Graphics chip works; turn on hardware transcoding in: ' +

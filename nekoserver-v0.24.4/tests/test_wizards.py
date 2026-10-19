@@ -145,13 +145,13 @@ class FinishingScreenTests(unittest.TestCase):
 class CapacityTests(unittest.TestCase):
     CONFIG = {'data_mount': '/ssd', 'media_mount': '/hdd', 'photos': {'external_backup_uuid': 'u'}}
 
-    def assess(self, ssd, hdd, usb=None, photos=0, cloud=0, pending=None, dump=0):
+    def assess(self, ssd, hdd, usb=None, photos=0, cloud=0, pending=None, dump=0, unarchived=0):
         free = {'/ssd': ssd * GIB, '/hdd': hdd * GIB}
         used = {'/ssd/photos/immich-library': photos * GIB, '/hdd/cloud/files': cloud * GIB}
         pending = photos + cloud if pending is None else pending
-        return capacity.assess(self.CONFIG, free=lambda p: free[str(p)], used=lambda p: used[str(p)],
+        return capacity.assess(self.CONFIG, free=lambda p: free[str(p)], used=lambda p: used.get(str(p), 0),
                                usb_space=lambda uuid, pairs: None if usb is None else (usb * GIB, pending * GIB),
-                               dump=lambda config: dump * GIB)
+                               dump=lambda config: dump * GIB, unarchived=lambda config: unarchived * GIB)
 
     def test_usb_counts_free_space_not_drive_size(self):
         # A big but nearly full drive warns; files the drive already has need no new room.
@@ -173,12 +173,12 @@ class CapacityTests(unittest.TestCase):
             root = Path(d)
             ssd, hdd, usb = root / 'ssd', root / 'hdd', root / 'usb'
             files = {
-                ssd / 'photos/immich-library/upload/u/same.jpg': (b'a' * 10, b'a' * 10),
-                ssd / 'photos/immich-library/upload/u/new.jpg': (b'b' * 20, None),
-                ssd / 'photos/immich-library/library/changed.xmp': (b'c' * 30, b'c' * 5),
+                hdd / 'photos/archive/upload/u/same.jpg': (b'a' * 10, b'a' * 10),
+                hdd / 'photos/archive/upload/u/new.jpg': (b'b' * 20, None),
+                hdd / 'photos/archive/library/changed.xmp': (b'c' * 30, b'c' * 5),
                 hdd / 'cloud/files/alice/files/doc.txt': (b'd' * 40, None),
                 hdd / 'cloud/files/appdata_x/files/skip.bin': (b'e' * 50, None),
-                ssd / 'photos/immich-library/upload/u/live.jpg.part': (b'f' * 60, None),
+                hdd / 'photos/archive/upload/u/live.jpg.part': (b'f' * 60, None),
             }
             for path, (source, copy) in files.items():
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +193,24 @@ class CapacityTests(unittest.TestCase):
             # An old dated version on the drive is not room for anything new.
             (usb / 'upload/u/same.neko-20250101T000000Z.jpg').write_bytes(b'x' * 999)
             self.assertEqual(capacity.pending_bytes(usb, list(mapping.items())), 20 + 30 + 40)
+
+    def test_photos_kept_only_in_the_hdd_archive_need_room_on_the_usb(self):
+        # A photo deleted from Immich stays in the archive and the USB job copies it; a
+        # photo not archived yet goes to the archive first and then to the USB drive too.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config = {'data_mount': root / 'ssd', 'media_mount': root / 'hdd'}
+            usb = root / 'usb'
+            (root / 'hdd/photos/archive/upload/u').mkdir(parents=True)
+            (root / 'hdd/photos/archive/upload/u/deleted-from-immich.jpg').write_bytes(b'k' * 70)
+            (root / 'hdd/photos/archive/upload/u/old.neko-20261001T000000Z.jpg').write_bytes(b'v' * 5)
+            (root / 'ssd/photos/immich-library/upload/u').mkdir(parents=True)
+            (root / 'ssd/photos/immich-library/upload/u/brand-new.jpg').write_bytes(b'n' * 9)
+            usb.mkdir()
+            self.assertEqual(capacity.pending_bytes(usb, capacity.usb_sources(config)), 75)
+            self.assertEqual(capacity.awaiting_archive(config), 9)
+        _, warn = self.assess(500, 4000, usb=30, pending=20, unarchived=15)
+        self.assertTrue(any('still has to add 35 GB' in w for w in warn), warn)
 
     def test_a_same_size_edit_needs_room_again(self):
         with tempfile.TemporaryDirectory() as d:

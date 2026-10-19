@@ -265,6 +265,79 @@ class HardwareVideoTests(unittest.TestCase):
         self.assertIn('/usr/lib/jellyfin-ffmpeg/vainfo', calls[-1])
 
 
+class HardwareVideoLockTests(unittest.TestCase):
+    def test_immich_is_not_touched_while_a_backup_holds_the_lock(self):
+        import fcntl
+        import tempfile
+        import recovery_tools
+        from modules import hardware_video as hv
+
+        class Ctx:
+            def __init__(self, data):
+                self.config, self.logs = {'data_mount': data}, []
+
+            def log(self, m):
+                self.logs.append(m)
+        with tempfile.TemporaryDirectory() as data:
+            calls = []
+            lock_file = Path(data) / 'installer/recovery.lock'
+            lock_file.parent.mkdir(parents=True)
+            with mock.patch.object(recovery_tools, 'mounts'), \
+                    mock.patch.object(hv, 'give_immich_the_chip', lambda *a: calls.append('immich')), \
+                    mock.patch.object(hv, 'apps_on', lambda *a: calls.append('apps') or {}), \
+                    mock.patch.object(recovery_tools.sys.stdin, 'isatty', return_value=False):
+                with lock_file.open('a') as held:  # a backup or monthly update is running
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    with self.assertRaisesRegex(RuntimeError, 'running right now'):
+                        hv.switch_apps(Ctx(data), None, check_storage=lambda c: None)
+                    self.assertEqual(calls, [])  # no settings written, nothing restarted
+                hv.switch_apps(Ctx(data), None, check_storage=lambda c: calls.append('storage'))
+            self.assertEqual(calls, ['storage', 'immich', 'apps'])
+
+
+class SnapshotUnderLockTests(unittest.TestCase):
+    def test_the_snapshot_records_the_version_that_made_the_database(self):
+        # A monthly update finishes (v1.0.0 -> v2.0.0) while the snapshot waits for the
+        # lock. What it records must be read after that, not before.
+        import tempfile
+        from contextlib import contextmanager
+        import recovery_tools as rt
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            (data / 'photos/immich-library').mkdir(parents=True)
+            (data / 'appdata/immich/postgres').mkdir(parents=True)
+            env = data / 'compose/immich/.env'
+            env.parent.mkdir(parents=True)
+            env.write_text('IMMICH_VERSION=v1.0.0\n')
+            image = ['immich-server@sha256:old']
+
+            @contextmanager
+            def upgrade_then_lock(config):
+                env.write_text('IMMICH_VERSION=v2.0.0\n')  # the update completed first
+                image[0] = 'immich-server@sha256:new'
+                yield
+
+            def command(argv, timeout=60, stdin=None, stdout=None):
+                if 'ps' in argv:
+                    return 'database\nimmich-server\n'
+                if 'exec' in argv:
+                    stdout.write(b'-- dump made by the database of v2.0.0\n' * 5)
+                return ''
+            destination = data / 'snapshot'
+            with mock.patch.multiple(rt, mounts=mock.DEFAULT, validate_model=mock.DEFAULT,
+                                     enough_space=mock.DEFAULT, require_root=mock.DEFAULT,
+                                     compose_args=mock.Mock(return_value=['docker', 'compose']),
+                                     json_command=mock.Mock(return_value={'services': {}}),
+                                     new_folder=mock.Mock(return_value=destination),
+                                     freeze_images=mock.Mock(side_effect=lambda base, model: {'image': image[0]}),
+                                     command=command, lock=upgrade_then_lock):
+                rt.snapshot({'data_mount': str(data)}, destination, apply=True)
+            recorded = json.loads((destination / 'snapshot.json').read_text())
+            self.assertEqual(recorded['immich_version'], 'v2.0.0')
+            self.assertEqual(json.loads((destination / 'compose-resolved.json').read_text()),
+                             {'image': 'immich-server@sha256:new'})
+
+
 class UsbPickerTests(unittest.TestCase):
     INVENTORY = {'blockdevices': [
         {'name': 'nvme0n1', 'type': 'disk', 'children': [

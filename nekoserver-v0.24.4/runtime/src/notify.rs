@@ -102,30 +102,23 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
         && s["backups"].is_array();
     let mut active = BTreeMap::new();
     let mut unknown = BTreeSet::new();
-    for kind in ["app", "backup", "mount", "space", "smart"] {
-        for key in [
-            "jellyfin",
-            "navidrome",
-            "sonarr",
-            "radarr",
-            "lidarr",
-            "prowlarr",
-            "seerr",
-            "qbittorrent",
-            "immich",
-            "archive",
-            "database",
-            "external",
-            "applications",
-            "host",
-            "data_ssd",
-            "media_hdd",
-            "os",
-        ] {
-            let id = format!("{kind}:{key}");
-            if label(&id).is_some() {
-                unknown.insert(id);
-            }
+    // Everything that can alert starts as unknown and is cleared only by explicit
+    // evidence below (a running, not unhealthy app; a passed job; a mounted, checked
+    // drive), so "RECOVERED" is never sent for a job that is merely running again or an
+    // app whose state cannot be read. The ids come from the same lists the dashboard
+    // uses, so a newly monitored app or job is covered automatically.
+    let apps = crate::collect::APPS
+        .iter()
+        .map(|(id, ..)| format!("app:{id}"));
+    let jobs = crate::collect::JOBS
+        .iter()
+        .map(|(id, ..)| format!("backup:{id}"));
+    let drives = ["data_ssd", "media_hdd", "os"]
+        .iter()
+        .flat_map(|d| ["mount", "space", "smart"].map(|kind| format!("{kind}:{d}")));
+    for id in apps.chain(jobs).chain(drives) {
+        if label(&id).is_some() {
+            unknown.insert(id);
         }
     }
     if !fresh {
@@ -523,6 +516,38 @@ mod tests {
         s["applications"] = json!([{"id":"sonarr","state":"unknown"}]);
         let (_, e) = plan(&s, &previous, 2000., 0, 43200);
         assert!(e.is_empty());
+    }
+    #[test]
+    fn recovery_needs_evidence_for_every_monitored_app_and_job() {
+        // Alerts were open; now Nextcloud's state is unknown and the failed jobs are only
+        // running again. None of that proves recovery.
+        let previous = json!({"format":"neko-notifications-v1","entries":{
+            "app:nextcloud":{"last_sent":1000},
+            "backup:maintenance":{"last_sent":1000},
+            "backup:music":{"last_sent":1000}}});
+        let mut s = snapshot(2000., json!([]));
+        s["applications"] = json!([{"id":"nextcloud","state":"unknown"}]);
+        s["backups"] =
+            json!([{"id":"maintenance","status":"running"},{"id":"music","status":"running"}]);
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        // Real evidence: Nextcloud running and both jobs passed.
+        s["applications"] = json!([{"id":"nextcloud","state":"running","health":"healthy"}]);
+        s["backups"] = json!([{"id":"maintenance","status":"pass"},{"id":"music","status":"pass"}]);
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert_eq!(e.len(), 3, "{e:?}");
+    }
+    #[test]
+    fn every_app_and_job_needs_evidence_before_recovery() {
+        let mut s = snapshot(2000., json!([]));
+        s["applications"] = json!([]);
+        let (_, unknown, _) = observations(&s, 2000.);
+        for (job, ..) in crate::collect::JOBS {
+            assert!(unknown.contains(&format!("backup:{job}")), "{job}");
+        }
+        for (app, ..) in crate::collect::APPS {
+            assert!(unknown.contains(&format!("app:{app}")), "{app}");
+        }
     }
     #[test]
     fn untrusted_titles_and_ids_are_not_sent() {
