@@ -1,0 +1,25 @@
+{
+  "version": "0.24.2",
+  "target": "x86_64-unknown-linux-musl",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "binary_sha256": "be2083465acf898e9193fc354e5778b8ae7f1eb18eff6204cc152eea108bdfa4",
+  "source_sha256": {
+    "Cargo.toml": "daa972ea0738d84a03e87f21987bce565c13065d24788f7ecf39c1ac54383f09",
+    "Cargo.lock": "cd2bdc8ca1e1f14d0054e2213d5a1b746244c89e369fedd099d0284f8d182ed4",
+    "build.py": "e28baddf0e9a553c4fbce447185830602c896716afbe4af8719eedff5a74bd8f",
+    "src/app_snapshot.rs": "e5f5978f1e4db99d2c3338c3e50b70f2ca2eb7b35de397e910dfbcf10c6e1968",
+    "src/backup.rs": "c5b901f7fd7fcbf620bb7681b3a1c7aaa4d64c5bc14a38e062ef663b0dbb354a",
+    "src/collect.rs": "0b21f1bff6cf2694a8317d1fe258531e56b875f1c96a2ca340a552a1b600023e",
+    "src/common.rs": "7460612c71c4735d3b92037b08ef70e0dfd9ba917ccd95c9149292c37cd31bb9",
+    "src/heartbeat.rs": "d703981145c7d99ce5a991f19bd10a9a9a9fb80e5afdc0f093aa2453f5247a50",
+    "src/host_snapshot.rs": "89c917e9d519a4328d75b00329827ae186e05853c093eeab96e513be6e34cf0a",
+    "src/main.rs": "0f848dc9457b8687748677746e64363fe6661878604155dc81499491a194d963",
+    "src/maintenance.rs": "7f8a827a2adacf398cc09f7c79510666fdab6baec788e55549f04c45350eae55",
+    "src/media.rs": "8342fa21a1690ef5909f6d8dee2417e7eca644baaabc1f8d696aa43e10d52175",
+    "src/music_backup.rs": "814ebedb57a27e988f8704b74c24ea21f72f87ffa6dcc0ca1112aafae7d18b1a",
+    "src/notify.rs": "84910dbbe4526c94c1bd0f5b2d6ec2fbb6530b304aa464fad91b3a120c98c422",
+    "src/os_policy.rs": "2c68f8c9693d9dae74e3df0f6f46b51e53ace4c8c2ab976422b08584bf4a32ca",
+    "src/serve.rs": "a730a0a5e6f13e061163a1eea4c17151ecec693476e9e43f61c3dca08135a5bc",
+    "src/startup.rs": "a07004dda9a3d21b9a05ef3c66dd5e07d157f6258b67b6bccd7f819048f6ce34"
+  }
+}

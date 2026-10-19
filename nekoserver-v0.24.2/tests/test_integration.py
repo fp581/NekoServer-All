@@ -1,0 +1,549 @@
+"""How the pieces connect: the real install.sh preflight (real df), and every runtime
+command the installer writes into a systemd unit, checked against the Rust program's
+own option table and, when it matches its sources, the bundled binary itself."""
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import gateway_tools  # noqa: E402
+from modules import (app_backup, dashboard, docker, heartbeat, host_backup, maintenance,  # noqa: E402
+                     media_monitor, music_backup, notifications, photo_backup,
+                     photo_preservation, server_os)
+
+BIN = Path('/usr/local/lib/nekoserver/nekoserver-runtime')
+RUNTIME = ROOT / 'runtime'
+
+
+def config():
+    cfg = json.loads((ROOT / 'config.json').read_text())
+    cfg['storage'] = {'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'},
+                      'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'}}
+    cfg['timezone'] = 'UTC'
+    return cfg
+
+
+def unit_texts():
+    """Every systemd unit text the installer generates that runs the runtime."""
+    cfg = config()
+    etc = Path('/etc/nekoserver-backups/x.json')
+    texts = {}
+    for name, made in (
+        ('dashboard', dashboard.units(Path('/srv/nekoserver'), BIN.parent, etc, 8787, 60, 'neko.tail1.ts.net')),
+        ('dashboard-local', dashboard.units(Path('/srv/nekoserver'), BIN.parent, etc, 8787, 60, None)),
+        ('app_backup', app_backup.definitions(cfg, BIN, etc)),
+        ('heartbeat', heartbeat.definitions(cfg, BIN, etc)),
+        ('host_backup', host_backup.definitions(cfg, BIN, etc)),
+        ('maintenance', maintenance.definitions(cfg, BIN, etc)),
+        ('music_backup', music_backup.definitions(cfg, BIN, etc)),
+        ('notifications', notifications.definitions(BIN, etc)),
+    ):
+        for unit, text in made.items():
+            texts[name + ':' + unit] = text
+    texts['server_os'] = server_os.unit(BIN, etc, cfg)
+    texts['gateway'] = gateway_tools.unit(cfg, BIN.parent, Path('/srv/nekoserver/gateway/state'))
+    texts['docker'] = docker.guard_contents(cfg, BIN.parent)
+    texts['photo_preservation'] = 'ExecStart=' + photo_preservation.command_line(
+        BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8) + ' --db-backup'
+    texts['photo_backup'] = 'ExecStart=' + photo_backup.command_line(
+        cfg, BIN, etc, 'cccc-3333', 'exfat', '/mnt/nekoserver-media/photos/archive', '/mnt/nekoserver-photos')
+    texts['media_monitor'] = 'ExecStart=' + media_monitor.command_line(BIN, etc, '/srv/nekoserver/reports/media/latest.json')
+    return texts
+
+
+def runtime_commands():
+    """(where, command, [--options...], full argv after the binary) for each runtime call."""
+    out = []
+    for where, text in unit_texts().items():
+        for line in text.splitlines():
+            match = re.match(r'(ExecStart|ExecStartPre|ExecStopPost)=[+-]?(.*)', line)
+            if not match:
+                continue
+            argv = shlex.split(match.group(2))
+            if not argv or not argv[0].endswith('nekoserver-runtime'):
+                continue
+            options = [a[2:] for a in argv[2:] if a.startswith('--')]
+            out.append((where, argv[1], options, argv[1:]))
+    return out
+
+
+def option_table():
+    """The runtime's own {command: allowed options}, read from main.rs."""
+    source = (RUNTIME / 'src/main.rs').read_text()
+    block = source[source.index('let allowed = match mode.as_str() {'):source.index('_ => return Err(Error::new("Unknown command"))')]
+    table = {}
+    for names, options in re.findall(r'((?:"[a-z-]+"\s*\|?\s*)+)=>\s*\{?\s*vec!\[([^\]]*)\]', block):
+        for name in re.findall(r'"([a-z-]+)"', names):
+            table[name] = set(re.findall(r'"([a-z-]+)"', options))
+    return table
+
+
+def bundled_binary_current():
+    """The bundled binary, if build.json says it was built from these exact sources."""
+    binary = RUNTIME / 'bin/nekoserver-runtime'
+    manifest = json.loads((RUNTIME / 'build.json').read_text())
+    digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()  # noqa: E731
+    sources = {str(p.relative_to(RUNTIME)) for p in (RUNTIME / 'src').glob('*.rs')}
+    if (not binary.is_file() or digest(binary) != manifest.get('binary_sha256')
+            or sources - set(manifest.get('source_sha256', {}))
+            or any(digest(RUNTIME / rel) != sha for rel, sha in manifest.get('source_sha256', {}).items())):
+        return None
+    return binary
+
+
+class GeneratedCommandTests(unittest.TestCase):
+    def test_every_generated_runtime_command_uses_known_options(self):
+        table = option_table()
+        commands = runtime_commands()
+        self.assertGreaterEqual({c for _, c, _, _ in commands},
+                                {'serve', 'collect', 'weekly', 'preservation', 'app-snapshot', 'maintenance',
+                                 'host-snapshot', 'hdd-policy', 'gateway-guard', 'storage-guard', 'media-health'})
+        for where, command, options, _ in commands:
+            with self.subTest(unit=where, command=command):
+                self.assertIn(command, table)
+                self.assertLessEqual(set(options), table[command])
+
+    def test_bundled_runtime_accepts_every_generated_command(self):
+        binary = bundled_binary_current()
+        if binary is None:
+            self.skipTest('bundled runtime is being rebuilt for these sources (CI checks that separately)')
+        if not os.access(binary, os.X_OK):
+            binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+        for where, command, _, argv in runtime_commands():
+            with self.subTest(unit=where, command=command):
+                # The parser validates every option before --help, then exits without running.
+                result = subprocess.run([str(binary), *argv, '--help'], capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class InstallScriptTests(unittest.TestCase):
+    """install.sh up to the point it starts the installer, with the real df and coreutils;
+    only pacman, the network tools and the system identity are stood in for."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.root, self.log = root, root / 'log'
+        (root / 'bin').mkdir()
+        (root / 'etc').mkdir()
+        (root / 'modules' / os.uname().release).mkdir(parents=True)
+        (root / 'etc/os-release').write_text('ID=arch\n')
+        for name, body in (('pacman', 'echo "PACMAN $*" >> "$LOG"\nexit 0'), ('ip', 'exit 0'), ('lspci', 'exit 0'),
+                           ('systemctl', 'exit 0'), ('uname', 'if [ "$1" = -m ]; then echo x86_64; else /bin/uname "$@"; fi')):
+            path = root / 'bin' / name
+            path.write_text('#!/bin/sh\n' + body + '\n')
+            path.chmod(0o755)
+
+    def run_script(self, system_path, extra_path=None, args=()):
+        text = (ROOT / 'install.sh').read_text()
+        text = text.replace('(( EUID != 0 ))', '(( 0 != 0 ))')
+        text = text.replace('/etc/os-release', str(self.root / 'etc/os-release'))
+        text = text.replace('/usr/lib/modules/', str(self.root / 'modules') + '/')
+        text = text.replace('system_path=/var/cache/pacman', 'system_path=' + str(system_path))
+        text = re.sub(r'(?m)^exec python3 .*$', 'echo "START $*" >> "$LOG"', text)
+        script = self.root / 'install.sh'
+        script.write_text(text)
+        path = os.pathsep.join(p for p in (extra_path, str(self.root / 'bin'), os.environ['PATH']) if p)
+        self.log.write_text('')
+        result = subprocess.run(['bash', str(script), *args], capture_output=True, text=True, timeout=60,
+                                env={**os.environ, 'PATH': path, 'LOG': str(self.log)})
+        return result, self.log.read_text()
+
+    def test_real_df_measures_and_the_setup_starts(self):
+        self.assertTrue(shutil.which('df'))
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('Could not measure', result.stderr)
+        self.assertIn('PACMAN -Syu --noconfirm', log)
+        self.assertIn('START --wizard', log)
+
+    def test_unmeasurable_space_is_reported_not_silent(self):
+        broken = self.root / 'brokendf'
+        broken.mkdir()
+        (broken / 'df').write_text('#!/bin/sh\necho "df: unsupported" >&2\nexit 1\n')
+        (broken / 'df').chmod(0o755)
+        result, log = self.run_script(self.root, str(broken))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Could not measure the free space', result.stderr)
+        self.assertIn('START --wizard', log)
+
+    def test_low_space_stops_before_any_change(self):
+        fake = self.root / 'lowdf'
+        fake.mkdir()
+        (fake / 'df').write_text('#!/bin/sh\necho Avail\necho 3\n')
+        (fake / 'df').chmod(0o755)
+        result, log = self.run_script(self.root, str(fake))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('only 3 GB free', result.stderr)
+        self.assertNotIn('PACMAN', log)
+        self.assertNotIn('START', log)
+
+
+if __name__ == '__main__':
+    unittest.main()
+
+
+class TimerTimezoneTests(unittest.TestCase):
+    def test_every_calendar_timer_uses_the_configured_timezone(self):
+        from neko_common import host_timezone
+        zone = host_timezone(config())
+        calendars = [(where, line) for where, text in unit_texts().items()
+                     for line in text.splitlines() if line.startswith('OnCalendar=')]
+        self.assertGreaterEqual(len(calendars), 4)
+        for where, line in calendars:
+            with self.subTest(unit=where):
+                self.assertTrue(line.endswith(' ' + zone), line)
+
+
+class TailnetAcceptanceTests(unittest.TestCase):
+    def test_check_accepts_exactly_what_the_installer_configures(self):
+        from unittest import mock
+        import gateway_checks
+        cfg = config()
+        cfg['nextcloud']['enabled'] = True
+        cfg['photos']['deploy_immich'] = True
+        host = 'neko.tail1234.ts.net'
+        installed = gateway_tools.tailnet_routes(cfg, host)
+        self.assertIn(str(gateway_tools.DASHBOARD_PORT), installed['TCP'])
+        journal = {'format': 'neko-tailnet-owned-v1', 'host': host, 'status': 'configured', 'owned': installed}
+        with mock.patch.object(gateway_checks.g, 'tailnode', return_value=host), \
+                mock.patch.object(gateway_checks.g, 'serve_state', return_value=installed), \
+                mock.patch.object(gateway_checks.health, 'read_json', return_value=journal):
+            self.assertEqual(gateway_checks.check(cfg, 'tailnet')[0]['status'], 'pass')
+            # A route set missing the dashboard (or anything else) is still a failure.
+            partial = gateway_tools.desired(host, gateway_tools.selected(cfg))
+            with mock.patch.object(gateway_checks.g, 'serve_state', return_value=partial):
+                self.assertEqual(gateway_checks.check(cfg, 'tailnet')[0]['status'], 'fail')
+
+
+class QbitMusicCategoryTests(unittest.TestCase):
+    class Fake:
+        def __init__(self, music_path, torrents):
+            self.categories = {'tv': {'savePath': '/data/downloads'}, 'music': {'savePath': music_path}}
+            self.torrents, self.edits = torrents, []
+
+        def login(self, *a):
+            pass
+
+        def close(self):
+            pass
+
+        def call(self, endpoint, form=None, json_result=False):
+            if endpoint == '/app/preferences':
+                return {'save_path': '/data/downloads'}
+            if endpoint == '/torrents/categories':
+                return self.categories
+            if endpoint.startswith('/torrents/info'):
+                return self.torrents
+            if endpoint == '/torrents/editCategory':
+                self.edits.append(form)
+                self.categories[form['category']] = {'savePath': form['savePath']}
+            if endpoint == '/torrents/createCategory':
+                self.categories[form['category']] = {'savePath': form['savePath']}
+            return {}
+
+    def test_wrong_music_path_is_corrected_when_empty(self):
+        import qbit_setup
+        fake = self.Fake('/data/downloads', [])
+        qbit_setup.configure('u', 'p', apply=True, client=fake)
+        self.assertEqual(fake.edits, [{'category': 'music', 'savePath': '/data/downloads/music'}])
+        self.assertEqual(fake.categories['music']['savePath'], '/data/downloads/music')
+
+    def test_wrong_music_path_with_torrents_needs_a_person(self):
+        import qbit_setup
+        fake = self.Fake('/data/downloads', [{'name': 'album'}])
+        with self.assertRaisesRegex(RuntimeError, 'not /data/downloads/music'):
+            qbit_setup.configure('u', 'p', apply=True, client=fake)
+        self.assertEqual(fake.edits, [])
+
+    def test_shared_folder_is_fine_for_tv_and_movies(self):
+        import qbit_setup
+        self.assertTrue(qbit_setup.category_ok('tv', '/data/downloads'))
+        self.assertFalse(qbit_setup.category_ok('music', '/data/downloads'))
+        self.assertTrue(qbit_setup.category_ok('music', ''))
+
+
+class NextcloudOffTests(unittest.TestCase):
+    def test_turning_it_off_stops_an_installed_nextcloud_and_keeps_data(self):
+        from unittest import mock
+        from modules import nextcloud
+
+        class Ctx:
+            def __init__(self, data, apply=True):
+                self.config, self.apply, self.logs = {'data_mount': data, 'nextcloud': {'enabled': False}}, apply, []
+
+            def log(self, m):
+                self.logs.append(m)
+        with tempfile.TemporaryDirectory() as data:
+            calls = []
+            ctx = Ctx(data)
+            nextcloud.stop_installed(ctx, calls.append)
+            self.assertEqual(calls, [])  # never installed: nothing to stop
+            folder = Path(data) / 'compose/nextcloud'
+            folder.mkdir(parents=True)
+            (folder / 'compose.yaml').write_text('{}')
+            (folder / '.env').write_text('DB_PASSWORD=x\n')
+            with mock.patch.object(nextcloud, 'compose_image_override', return_value=[]):
+                with mock.patch.object(nextcloud, 'command', calls.append):
+                    self.assertIsNone(nextcloud.run(ctx))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][-1], 'stop')
+            self.assertIn('neko-nextcloud', calls[0])
+            self.assertNotIn('down', calls[0])  # containers stopped, never removed with their data
+            self.assertTrue(any('files and database are kept' in m for m in ctx.logs))
+
+
+class InterruptedSetupTests(unittest.TestCase):
+    """A setup stopped between writing its settings files must finish on the next run."""
+
+    class Ctx:
+        def __init__(self, config):
+            self.config, self.apply, self.logs = config, True, []
+
+        def log(self, m):
+            self.logs.append(m)
+
+        def persist_config(self):
+            pass
+
+    MANIFEST = b'services:\n  immich-server:\n    ports:\n      - 2283:2283\n# DB_DATA_LOCATION\n'
+
+    def immich(self, data, interrupt=False):
+        from contextlib import ExitStack
+        from unittest import mock
+        from modules import photos
+        cfg = {'data_mount': str(data / 'ssd'), 'media_mount': str(data / 'hdd'), 'timezone': 'UTC',
+               'photos': {'deploy_immich': True, 'immich_version': 'v1.2.3'}}
+        urls, calls = [], []
+
+        class Response:
+            def __init__(self, url):
+                urls.append(url)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return InterruptedSetupTests.MANIFEST
+        writes = []
+        real = photos.atomic_write
+
+        def write(path, *a):
+            writes.append(Path(path).name)
+            if interrupt and len(writes) == 2:
+                raise KeyboardInterrupt
+            return real(path, *a)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(photos.os, 'geteuid', return_value=0))
+            stack.enter_context(mock.patch.object(photos, 'ROOT_UID', os.getuid()))
+            stack.enter_context(mock.patch.object(photos, 'verify_storage'))
+            stack.enter_context(mock.patch.object(photos, 'checked_mount', side_effect=str))
+            stack.enter_context(mock.patch.object(photos.shutil, 'which', return_value='/usr/bin/docker'))
+            stack.enter_context(mock.patch.object(photos.subprocess, 'run', side_effect=lambda a, **k: calls.append(a)))
+            stack.enter_context(mock.patch.object(photos.urllib.request, 'urlopen', side_effect=lambda u, **k: Response(u)))
+            stack.enter_context(mock.patch.object(photos, 'compose_image_override', return_value=[]))
+            stack.enter_context(mock.patch.object(photos, 'atomic_write', side_effect=write))
+            photos._run(self.Ctx(cfg))
+        return urls, calls, data / 'ssd/compose/immich'
+
+    def test_immich_finishes_after_stopping_between_its_two_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            with self.assertRaises(KeyboardInterrupt):
+                self.immich(data, interrupt=True)
+            folder = data / 'ssd/compose/immich'
+            self.assertTrue((folder / '.env').exists())          # .env goes first ...
+            self.assertFalse((folder / 'compose.yaml').exists())  # ... compose.yaml marks a finished step
+            password = [x for x in (folder / '.env').read_text().splitlines() if x.startswith('DB_PASSWORD=')]
+            urls, calls, _ = self.immich(data)
+            self.assertTrue((folder / 'compose.yaml').exists())
+            self.assertIn('/v1.2.3/', urls[0])
+            self.assertEqual(password, [x for x in (folder / '.env').read_text().splitlines() if x.startswith('DB_PASSWORD=')])
+            self.assertEqual(calls[-1][-2:], ['up', '-d'])
+
+    def test_immich_left_by_an_older_release_with_only_compose_yaml(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            folder = data / 'ssd/compose/immich'
+            folder.mkdir(parents=True)
+            (folder / 'compose.yaml').write_bytes(self.MANIFEST)
+            _, calls, _ = self.immich(data)
+            self.assertTrue((folder / '.env').exists())
+            self.assertEqual(calls[-1][-2:], ['up', '-d'])
+            # With a database already there the missing password matters: stop and keep files.
+            (folder / '.env').unlink()
+            (data / 'ssd/appdata/immich/postgres/PG_VERSION').write_text('16')
+            with self.assertRaisesRegex(RuntimeError, 'database but its .env'):
+                self.immich(data)
+            self.assertTrue((folder / 'compose.yaml').exists())
+
+    def nextcloud(self, data, interrupt_at=None):
+        from contextlib import ExitStack, nullcontext
+        from unittest import mock
+        from modules import nextcloud
+        cfg = {'data_mount': str(data / 'ssd'), 'media_mount': str(data / 'hdd'), 'nextcloud': {'image': 'nextcloud:30-apache'}}
+        calls, writes = [], []
+        real_write, real_json = nextcloud.atomic_write, nextcloud.atomic_json
+
+        def track(real):
+            def write(path, *a):
+                writes.append(Path(path).name)
+                if interrupt_at and Path(path).name == interrupt_at:
+                    raise KeyboardInterrupt
+                return real(path, *a)
+            return write
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(nextcloud.os, 'geteuid', return_value=0))
+            stack.enter_context(mock.patch.object(nextcloud, 'ROOT_UID', os.getuid()))
+            stack.enter_context(mock.patch.object(nextcloud.os, 'chown'))  # www-data owner needs root
+            stack.enter_context(mock.patch.object(nextcloud, 'verify_storage'))
+            stack.enter_context(mock.patch.object(nextcloud, 'lock', side_effect=lambda c: nullcontext()))
+            stack.enter_context(mock.patch.object(nextcloud.account_store, 'enabled', return_value=False))
+            stack.enter_context(mock.patch.object(nextcloud, 'compose_image_override', return_value=[]))
+            stack.enter_context(mock.patch.object(nextcloud, 'command', side_effect=calls.append))
+            stack.enter_context(mock.patch.object(nextcloud, 'atomic_write', side_effect=track(real_write)))
+            stack.enter_context(mock.patch.object(nextcloud, 'atomic_json', side_effect=track(real_json)))
+            nextcloud.run(self.Ctx(cfg))
+        return calls, writes
+
+    def test_nextcloud_finishes_after_stopping_while_writing_its_settings(self):
+        for stop_at in ('managed.json', 'compose.yaml'):
+            with self.subTest(stop_at), tempfile.TemporaryDirectory() as d:
+                data = Path(d)
+                with self.assertRaises(KeyboardInterrupt):
+                    self.nextcloud(data, interrupt_at=stop_at)
+                calls, writes = self.nextcloud(data)
+                self.assertEqual(writes[-1], 'compose.yaml')  # written last
+                self.assertEqual(calls[-1][-2:], ['up', '-d'])
+                self.assertEqual(sorted(p.name for p in (data / 'ssd/compose/nextcloud').iterdir()),
+                                 ['.env', 'compose.yaml', 'managed.json'])
+
+    def test_nextcloud_left_by_an_older_release_without_managed_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            self.nextcloud(data)
+            folder = data / 'ssd/compose/nextcloud'
+            (folder / 'managed.json').unlink()
+            calls, _ = self.nextcloud(data)
+            self.assertEqual(calls[-1][-2:], ['up', '-d'])
+            # Once the database holds data, an incomplete setup is kept for a person to inspect.
+            (folder / 'managed.json').unlink()
+            (data / 'ssd/appdata/nextcloud/postgres/PG_VERSION').write_text('16')
+            with self.assertRaisesRegex(RuntimeError, 'existing data'):
+                self.nextcloud(data)
+            self.assertTrue((folder / 'compose.yaml').exists())
+
+
+class ConfigArgumentTests(unittest.TestCase):
+    def test_settings_path_is_checked_before_reading(self):
+        import installer
+        import recovery_wizard
+        from neko_common import settings_path
+        with tempfile.TemporaryDirectory() as d:
+            good = Path(d) / 'mine.json'
+            good.write_text('{"data_mount": "/x"}')
+            self.assertEqual(settings_path(str(good)), good)
+            link = Path(d) / 'link.json'
+            link.symlink_to(good)
+            (Path(d) / 'shadow').write_text('secret')
+            for bad in (str(link), d + '/../etc/passwd.json', d + '/shadow', 'a\x00.json'):
+                with self.subTest(bad), self.assertRaises(RuntimeError):
+                    settings_path(bad)
+            with self.assertRaises(RuntimeError):
+                recovery_wizard.settings(d + '/shadow')
+            with self.assertRaises(SystemExit):
+                installer.main(['--check', '--config', d + '/../x.json'])
+
+    def test_wizard_and_recovery_use_the_chosen_settings_file(self):
+        from unittest import mock
+        import installer
+        with mock.patch('wizard.run', return_value=0) as wizard_run, \
+                mock.patch('recovery_wizard.run', return_value=0) as recovery_run:
+            installer.main(['--wizard', '--config', '/srv/custom/settings.json'])
+            installer.main(['--recover', '--config', '/srv/custom/settings.json'])
+            installer.main(['--recover'])
+        self.assertEqual(wizard_run.call_args.kwargs['config'], '/srv/custom/settings.json')
+        self.assertEqual(recovery_run.call_args_list[0].kwargs['config_path'], '/srv/custom/settings.json')
+        self.assertIsNone(recovery_run.call_args_list[1].kwargs['config_path'])
+
+    def test_recovery_reads_that_file(self):
+        import recovery_wizard
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'settings.json'
+            path.write_text(json.dumps({'media_mount': '/mnt/custom-hdd'}))
+            self.assertEqual(recovery_wizard.settings(str(path))['media_mount'], '/mnt/custom-hdd')
+            with self.assertRaisesRegex(RuntimeError, 'not found'):
+                recovery_wizard.settings(str(Path(folder) / 'missing.json'))
+
+
+class AcceptanceReportCompatibilityTests(unittest.TestCase):
+    """The Rust dashboard rejects a saved acceptance report with a manual check it does
+    not know, so every check Python can write must be known to the Rust reader."""
+
+    def rust_manual_ids(self):
+        source = (RUNTIME / 'src/collect.rs').read_text()
+        start = source.index('fn manual(key: &str)')
+        return set(re.findall(r'"([a-z_]+)" =>', source[start:source.index('_ => None', start)]))
+
+    def test_every_manual_check_python_writes_is_known_to_the_dashboard(self):
+        import acceptance
+        import acceptance_summary
+        every_module = set(installer_modules())
+        written = {row['id'] for row in acceptance.manual_tests(every_module, {'photos': {'deploy_immich': True}})}
+        self.assertIn('cloud_client', written)
+        self.assertLessEqual(written, self.rust_manual_ids())
+        self.assertEqual(set(acceptance_summary.MANUAL), self.rust_manual_ids())
+
+
+def installer_modules():
+    import installer
+    return installer.load_modules(ROOT / 'modules')
+
+
+class AccountCorrectionTests(unittest.TestCase):
+    def test_pending_new_account_can_switch_to_the_login_you_set_yourself(self):
+        from unittest import mock
+        import account_store
+        value = {'format': 1, 'mode': 'per-app', 'apps': {
+            'jellyfin': {'username': 'neko_ab12', 'password': 'x' * 32, 'state': 'needs_setup',
+                         'allow_create': True, 'source': 'generate'}}}
+        saved, out = [], []
+        answers = iter(['c', 'dana'])
+        passwords = iter(['my-own-password', 'my-own-password'])
+        with mock.patch.object(account_store, 'load', return_value=value), \
+                mock.patch.object(account_store, 'save', lambda config, v: saved.append(json.loads(json.dumps(v)))):
+            account_store.collect({'data_mount': '/srv/nekoserver'}, ['jellyfin'],
+                                  prompt=lambda q='': next(answers), password_prompt=lambda q='': next(passwords),
+                                  output=out.append)
+        entry = saved[-1]['apps']['jellyfin']
+        self.assertEqual((entry['username'], entry['password']), ('dana', 'my-own-password'))
+        self.assertEqual((entry['state'], entry['allow_create'], entry['source']), ('planned', False, 'custom-existing'))
+        self.assertTrue(any('not changed or reset' in line for line in out))
+
+    def test_enter_keeps_retrying_the_saved_login(self):
+        from unittest import mock
+        import account_store
+        value = {'format': 1, 'mode': 'per-app', 'apps': {
+            'jellyfin': {'username': 'neko_ab12', 'password': 'x' * 32, 'state': 'needs_setup',
+                         'allow_create': True, 'source': 'generate'}}}
+        with mock.patch.object(account_store, 'load', return_value=value), \
+                mock.patch.object(account_store, 'save', return_value=None):
+            account_store.collect({'data_mount': '/srv/nekoserver'}, ['jellyfin'], prompt=lambda q='': '',
+                                  password_prompt=lambda q='': '', output=lambda s: None)
+        self.assertTrue(value['apps']['jellyfin']['allow_create'])
+        self.assertEqual(value['apps']['jellyfin']['username'], 'neko_ab12')

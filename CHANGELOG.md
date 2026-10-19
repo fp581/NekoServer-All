@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.24.2 — 2026-10-19
+
+### Fixed (from an outside review)
+- **`install.sh` exited silently before setup.** It called `df -P --output=avail`, which GNU df rejects; with `set -euo pipefail` and the error hidden, the installer stopped without a word. It now uses `df --output=avail`, and if the space cannot be measured it says so plainly and continues.
+- **Weekly backups could miss a replaced file.** A copy was trusted when its size matched and it was written after the source's *modified* time, which tools that preserve timestamps can set back (reproduced: `AAAA` backed up, replaced by `BBBB` with the old timestamp, nothing copied). The check now uses the source's *status-change* time (ctime), which any rewrite or replacement moves forward and which cannot be set back. In addition, every 4 weeks the archive and USB jobs compare every existing copy by checksum.
+- **Turning on the dashboard's Tailscale address broke the dashboard service, local access included.** The service passed `--public-host`, which the runtime's option table did not accept. The option is registered.
+- **Incomplete USB backups were reported as successful.** When Nextcloud files were skipped (in use) or refused (names exFAT cannot store), the weekly job still recorded success. It now records **partial**, with counts and up to 50 file names; the dashboard shows *Incomplete* with the files, phone alerts warn, and it does not count as a full success.
+
+- **Password files are no longer in plain text in monthly snapshots.** Encrypting `APP-CREDENTIALS.txt` left other copies readable: each app's Compose `.env` (database and Nextcloud admin passwords) and Nextcloud's `config.php` in `data.tar`, and the resolved app definitions (`*-old.json`, `*-new.json`, `*-rehearsal.json`, `result.json`). The `.env` files and `config.php` now go only into the encrypted `secrets.tar.cms` (left out of `data.tar`), and the saved definitions have their password values blanked once the update or its rollback is over (they are needed until then). Snapshots made before this release stay as they were until retention removes them. Without a backup key the files stay in `data.tar` so the snapshot remains restorable.
+- **The USB drive can rebuild Immich on its own.** It held the photos but not the database, so albums, faces and users needed the SSD or HDD. The weekly USB job now also copies the newest Immich database copy (the one made that night; the newest 4 are kept) and `IMMICH-VERSION.txt` with the Immich version that made them (never the database password). RECOVERY.md has a "Rebuild Immich from the USB drive" section.
+- **The recovery wizard described file versions backwards.** It called the dated `.neko-<date>` copies "older versions"; they are the later edits. It now offers to restore only the newest version of each file under its own name (the default), shows the date of each file that had several versions, and explains the naming correctly when every version is copied.
+- **Every restore checks free space first.** Nightly snapshot restores, monthly snapshot unpacking and loading saved app versions now use the same check as photo and Nextcloud restores (refuse if less than 5 GB or 5% would be left free).
+- **Nightly app and host backups use the configured timezone**, like every other schedule (they ran in the system's own timezone). A test checks every generated timer.
+
+- **The USB backup must be a separate physical disk.** The picker excluded the SSD's and HDD's own filesystems but not other partitions on the same disks, so a second partition of the media HDD (or of the system disk) could be chosen, and one disk failure would take both copies. Only partitions on a disk that holds neither the system, the SSD nor the media HDD are offered now.
+- **Phone alerts cover Nextcloud and monthly maintenance.** Notifications used a list of known alert names that left out `app:nextcloud`, `backup:maintenance`, `backup:music` and the new major-update notices, so those were shown on the dashboard but never sent. A test now checks every monitored app and job has a notification.
+- **The Tailscale acceptance check accepts the installer's own routes.** It compared against the apps only, without the dashboard route the installer adds, and failed. Installation and the check now use one route calculation (`tailnet_routes`).
+- **Failures say why and where.** The runtime printed one generic message and dropped every command's error output. It now keeps a short, sanitized reason (anything that looks like a password or key removed) and the step it was on ("copying photos and videos to the USB drive"), in the job report, on the dashboard ("Failed while …: …") and in its error output.
+
+- **Old full snapshots on the USB drive are no longer removed automatically.** Releases before v0.21.1 wrote full monthly snapshots (photos and Nextcloud files included) to the USB drive, and the weekly job removed them once current backups existed, without checking that their files survive elsewhere. A file deleted from the server long ago could exist only there. The weekly job now keeps and lists them; the recovery menu (`sudo bash install.sh --recover`, "Old full snapshots on the USB drive") shows their dates and sizes, offers to copy them to the HDD first, and removes them only when you type DELETE. The automatic cleanup code is gone.
+- **qBittorrent's music category must point to the music download folder.** Setup accepted an existing `music` category saving to `/data/downloads` (on the HDD, where Lidarr does not look) and reported success. Music must save to `/data/downloads/music` (on the SSD); a wrong but empty music category is corrected, one with torrents stops setup with instructions. TV and movies may still use the shared `/data/downloads`.
+- **Turning Nextcloud off stops an installed Nextcloud.** `"enabled": false` only skipped installation, so an existing Nextcloud, its database, Redis and cron kept running and restarting. Its containers are now stopped (files and database kept; they stay stopped after a reboot), and turning it back on starts them again.
+
+- **`--config` reaches the wizard and recovery.** `sudo bash install.sh --recover --config FILE` (and `--wizard --config FILE`) accepted the option but used the settings next to the installer, so recovery could look for backups on the wrong drives. Both now use the chosen file; without `--config` they use `my-config.json` as before.
+- **Nextcloud acceptance results no longer turn the dashboard's acceptance panel to "unknown".** Python writes a manual check named `cloud_client` that the Rust dashboard did not know, so it treated every cloud/full report as invalid. It is known now, and a test checks that every manual check Python can write is known to the dashboard.
+- **A pending app login can be corrected.** If creating an app's account did not finish and you completed the app's setup yourself with another login, the account tool kept retrying the saved login and never offered to change it. It now offers to enter the login you used; that switches the app to "existing account", so it is never created or reset.
+
+- **The USB space check no longer counts old backup versions as free room.** It added everything already on the USB drive to its free space, as if those files could be reused. The backup only ever adds: earlier versions stay, and a changed file needs its full size again. With 100 GB of new files, 30 GB free and 150 GB of earlier versions, it gave no warning. It now adds up what the next weekly copy still has to write (files not on the drive yet, files whose copy differs, and this week's Immich database copy) and compares that, plus room to grow, with the free space.
+- **An interrupted first setup of Immich or Nextcloud now finishes on the next run.** Each writes several settings files; stopping between them left a half-written set that every rerun refused ("Incomplete … deployment"). `compose.yaml` is now always written last, so it marks a finished step. A rerun that finds only the earlier files completes the step: Immich keeps the `.env` it wrote (its version and database password); Nextcloud writes its files again, since nothing has started yet. Half-written sets left by older releases are completed the same way as long as the app has no database yet; once it has one, the files are still kept for inspection.
+
+- **`--config` paths are checked before they are read.** The installer, the setup wizard and recovery now accept only a `.json` file, with no `..` and no symlinks along the path (flagged by SonarCloud as a possible path traversal).
+
+### Added: tests of how the pieces connect
+- `tests/test_integration.py` runs the real `install.sh` preflight with the real `df` (only pacman, network tools and system identity stood in for), and checks every runtime command the installer writes into a systemd unit (22 commands) against the runtime's own option table, and against the bundled binary whenever it matches its sources. Both reported blockers fail these tests.
+
+### Fixed
+- **Dashboard app buttons work on the phone.** Opened over Tailscale, the dashboard's app buttons still pointed to `http://127.0.0.1:…`, which on a phone means the phone itself. They now open each everyday app's private Tailscale address (Jellyfin, Seerr, Immich, Navidrome, Nextcloud); the admin apps, which are only reachable on the server, say "Opens only on the server itself" instead of failing.
+
+### Changed
+- Version 0.24.2; the release folder is now `nekoserver-v0.24.2`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release (version change only).
+
 ## v0.24.1 — 2026-10-19
 
 ### Added
