@@ -14,6 +14,7 @@ DEPENDENCIES=['system','recovery']
 DESCRIPTION='Install native Steam, graphics/controller support and TV launch shortcuts on Nyarch/Arch'
 SCHEMA='org.gnome.settings-daemon.plugins.power'
 POWER_KEY='sleep-inactive-ac-type'
+REPORT='reports/tv-setup.json'
 
 
 def arch_host():
@@ -53,7 +54,7 @@ def previous_checks(root):
     """TV hardware tests already confirmed in an earlier run."""
     try:
         import json
-        report=json.loads((Path(root)/'reports/tv-setup.json').read_text())
+        report=json.loads((Path(root)/REPORT).read_text())
         return {row['check'] for row in report.get('checks',[]) if isinstance(row,dict) and row.get('status')=='user_confirmed'}
     except (OSError,ValueError,KeyError,TypeError):
         return set()
@@ -207,8 +208,8 @@ def run(ctx):
         results.append({'check': 'tv:' + key,
                         'status': 'user_confirmed' if done else 'needs_setup',
                         'reason': 'Witnessed Konsole confirmation; not an independent hardware probe'})
-    atomic_json(root/'reports/tv-setup.json',{'user':user.pw_name,'checks':results,'launchers_sha256':{str(path.relative_to(home)):hashlib.sha256(text.encode()).hexdigest() for path,text in destinations.items()}})
-    ctx.log('TV launchers installed for '+user.pw_name+'; complete Steam login, Remote Play and controller/HDMI tests. Report: '+str(root/'reports/tv-setup.json'))
+    atomic_json(root/REPORT,{'user':user.pw_name,'checks':results,'launchers_sha256':{str(path.relative_to(home)):hashlib.sha256(text.encode()).hexdigest() for path,text in destinations.items()}})
+    ctx.log('TV launchers installed for '+user.pw_name+'; complete Steam login, Remote Play and controller/HDMI tests. Report: '+str(root/REPORT))
     if any(row['status'] == 'needs_setup' for row in results):
         return {'status':'needs_setup','reason':'TV software installed; unfinished desktop/hardware handoffs remain'}
     return {'status':'configured', 'reason':'TV setup and user-witnessed tests completed; see tv-setup.json'}

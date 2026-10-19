@@ -58,6 +58,41 @@ def confirmed_links(config):
     return None
 
 
+def secure_addresses(ctx):
+    """Turn on Tailscale HTTPS addresses for the apps; asks only if HTTPS is not on yet."""
+    result = {}
+
+    def configure_routes():
+        nonlocal result
+        result = gateway_tools.apply_tailnet(ctx.config)
+        return result.get('status') == 'configured'
+
+    interactive = guided_setup.interactive(ctx)
+    if interactive and gateway_tools.https_ready():
+        try:
+            if configure_routes():
+                ctx.log('Tailscale: MagicDNS and HTTPS already on; secure addresses updated')
+                return result
+        except RuntimeError:
+            pass
+    if not interactive:
+        configure_routes()
+        return result
+    if guided_setup.checkpoint(ctx, 'Tailscale: turn on secure addresses', [
+        'A Tailscale settings page (DNS) opened in the browser.',
+        'Find "MagicDNS" and make sure it is ON (click "Enable MagicDNS" if you see it).',
+        'Scroll to "HTTPS Certificates" and click "Enable HTTPS". Tailscale explains '
+        'that your server\'s name becomes visible in public certificate logs; your '
+        'files and apps do not. Accept to continue.',
+        'Nothing else to change. Your apps stay private to the devices on your '
+        'Tailscale account; nothing is opened to the public internet.',
+        'Answer yes. The installer then creates a secure address for each app. '
+        'If that fails, check both settings above are on and answer no to try again.',
+    ], [('url', 'https://console.tailscale.com/admin/dns')], verify=configure_routes):
+        return result
+    return {'status': 'needs_setup', 'reason': 'Private HTTPS configuration pending; reapply to resume'}
+
+
 def run(ctx):
     gateway_tools.selected(ctx.config)
     if not ctx.apply:
@@ -67,36 +102,9 @@ def run(ctx):
         return {'status': 'needs_setup', 'reason': 'Selected app security checks/confirmation still pending'}
     # Read before the routes are applied: applying rewrites the report.
     earlier = confirmed_links(ctx.config)
-    result = None
-
-    def configure_routes():
-        nonlocal result
-        result = gateway_tools.apply_tailnet(ctx.config)
-        return result.get('status') == 'configured'
-
-    if guided_setup.interactive(ctx) and gateway_tools.https_ready():
-        try:
-            configure_routes()
-        except RuntimeError:
-            result = None
-    if result is not None and result.get('status') == 'configured':
-        ctx.log('Tailscale: MagicDNS and HTTPS already on; secure addresses updated')
-    elif guided_setup.interactive(ctx):
-        done = guided_setup.checkpoint(ctx, 'Tailscale: turn on secure addresses', [
-            'A Tailscale settings page (DNS) opened in the browser.',
-            'Find "MagicDNS" and make sure it is ON (click "Enable MagicDNS" if you see it).',
-            'Scroll to "HTTPS Certificates" and click "Enable HTTPS". Tailscale explains '
-            'that your server\'s name becomes visible in public certificate logs; your '
-            'files and apps do not. Accept to continue.',
-            'Nothing else to change. Your apps stay private to the devices on your '
-            'Tailscale account; nothing is opened to the public internet.',
-            'Answer yes. The installer then creates a secure address for each app. '
-            'If that fails, check both settings above are on and answer no to try again.',
-        ], [('url', 'https://console.tailscale.com/admin/dns')], verify=configure_routes)
-        if not done:
-            return {'status': 'needs_setup', 'reason': 'Private HTTPS configuration pending; reapply to resume'}
-    else:
-        configure_routes()
+    result = secure_addresses(ctx)
+    if result.get('status') == 'needs_setup':
+        return result
     ctx.log('Private application links saved in reports/gateway-tailnet.json')
     if earlier and earlier == result.get('links'):
         try:

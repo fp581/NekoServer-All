@@ -41,7 +41,7 @@ class OptionalExtrasTests(unittest.TestCase):
             out = []
             self.assertFalse(guided_setup.wanted(ctx, 'tv', 'Use a TV', prompt=answers('maybe', 'no'),
                                                  output=out.append))
-            self.assertEqual(ctx.config['tv']['wanted'], False)
+            self.assertFalse(ctx.config['tv']['wanted'])
             self.assertEqual(ctx.saved, 1)
             self.assertTrue(any('"wanted" to true' in line for line in out))
             # Second run: no question at all.
