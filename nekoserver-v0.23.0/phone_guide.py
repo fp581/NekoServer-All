@@ -12,7 +12,12 @@ from guided_setup import PAGE_ROOT
 from neko_common import atomic_write
 
 PAGE = PAGE_ROOT / 'phone-setup.html'
-CREDENTIALS = '/srv/nekoserver/secrets/accounts/APP-CREDENTIALS.txt'
+CREDENTIALS = 'secrets/accounts/APP-CREDENTIALS.txt'
+
+
+def credentials(config):
+    """Where the password list is, on this server's data SSD."""
+    return str(Path(config.get('data_mount', '/srv/nekoserver')) / CREDENTIALS)
 TAILSCALE_DOWNLOAD = 'https://tailscale.com/download'
 
 # Which login each app uses on the phone (account_store keys).
@@ -103,7 +108,7 @@ def instructions(config, app, url):
         'Make sure Tailscale is ON on the phone.',
         *[step.replace('the server address below', 'this server address: ' + url) for step in info['steps']],
         login + '. Password: in the password list on the server '
-        '(sudo cat ' + CREDENTIALS + ').',
+        '(sudo cat ' + credentials(config) + ').',
         'Return here and answer yes once it works on the phone.',
     ]
 
@@ -169,7 +174,7 @@ def page_html(config, links, qr=qr_svg):
             '<title>Phone setup</title><style>' + style + '</style></head><body><main>'
             '<h1>Set up your phone</h1><p>Do these in order. Scan each code with your '
             'phone camera to open the address. Passwords are in the password list on the '
-            'server: <code>sudo cat ' + html.escape(CREDENTIALS) + '</code></p>'
+            'server: <code>sudo cat ' + html.escape(credentials(config)) + '</code></p>'
             + ''.join(cards) + '</main></body></html>\n')
 
 

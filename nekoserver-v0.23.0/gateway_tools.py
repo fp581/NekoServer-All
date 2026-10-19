@@ -174,6 +174,15 @@ def tailnode():
     if v.get('BackendState')!='Running' or not re.fullmatch(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.ts\.net',name):raise RuntimeError('Authenticate Tailscale and enable tailnet HTTPS/MagicDNS first')
     return name
 
+def https_ready():
+    """True when MagicDNS and HTTPS certificates are already on for this tailnet."""
+    try:
+        v=json.loads(command(['tailscale','status','--json']))
+        host=v.get('Self',{}).get('DNSName','').rstrip('.')
+        return bool(v.get('BackendState')=='Running' and host and (v.get('CurrentTailnet') or {}).get('MagicDNSEnabled') is True and host in (v.get('CertDomains') or []))
+    except (RuntimeError,ValueError,AttributeError,TypeError):
+        return False
+
 def gateway_owned(host,owned):
     try:
         if not isinstance(owned,dict) or set(owned)!= {'TCP','Web'}:return False

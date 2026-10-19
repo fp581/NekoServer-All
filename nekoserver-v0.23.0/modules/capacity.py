@@ -90,11 +90,24 @@ def ask(question, prompt=input, output=print):
         output('Please type yes or no.')
 
 
+def installed(config):
+    """True once Docker and the apps already live on the data SSD (a re-run)."""
+    return (Path(config.get('data_mount', '/srv/nekoserver')) / 'docker-engine').is_dir()
+
+
 def run(ctx, prompt=input, output=print):
     if not ctx.apply:
         ctx.log('Capacity check runs after the drives are chosen')
         return
     stop, warn = assess(ctx.config)
+    if installed(ctx.config):
+        # The minimums are for a new install. Afterwards the drives fill with your own
+        # photos and files; say so, but never block the rest of a re-run.
+        for line in stop + warn:
+            ctx.log('Drive space: ' + line)
+        if not (stop or warn):
+            ctx.log('Drive space: enough on every drive')
+        return
     if stop:
         raise RuntimeError(' '.join(stop))
     if not warn:

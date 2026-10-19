@@ -4,6 +4,7 @@ A menu over the existing restore tools. Everything is restored into a NEW folder
 live data is never overwritten. Each restore ends with what to do next.
 """
 import datetime as dt
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent
+# The weekly USB backup holds this lock while it mounts, copies and unmounts the drive.
+USB_LOCK = Path('/run/nekoserver-photo-backup.lock')
 SNAPSHOT = re.compile(r'^snapshot-(\d+)-\d+$')
 MONTHLY = re.compile(r'^(\d+)-\d+$')
 
@@ -128,8 +131,33 @@ def new_folder(suggested, prompt=input, output=print):
     return None
 
 
+def tree_bytes(folder):
+    """Total size of the regular files in a folder (symlinks are not followed)."""
+    total = 0
+    for path in Path(folder).rglob('*'):
+        try:
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def check_space(sources, destination):
+    """Refuse a restore that would leave less than 5 GB (or 5%) free where it goes."""
+    need = sum(tree_bytes(s) for _, s in sources if Path(s).is_dir())
+    usage = shutil.disk_usage(destination.parent)
+    reserve = max(5 * 1024 ** 3, usage.total // 20)
+    if need + reserve > usage.free:
+        gb = 1024 ** 3
+        raise RuntimeError(f'not enough free space: the restore needs {need / gb:.1f} GB and '
+                           f'{usage.free / gb:.1f} GB is free on that drive (5 GB or 5% is kept '
+                           'free). Free some space or choose a folder on another drive.')
+
+
 def copy_new(sources, destination):
     """Copy folders into a new destination, never following symlinks. Returns file count."""
+    check_space(sources, destination)
     destination.mkdir(mode=0o700)
     count = 0
     for name, source in sources:
@@ -158,10 +186,20 @@ class Usb:
         photos = config.get('photos', {})
         self.uuid = photos.get('external_backup_uuid', '')
         self.mounted_here = False
+        self.lock = None
 
     def __enter__(self):
         if not self.uuid:
             return None
+        # Never share the drive with a running weekly backup: it unmounts when done.
+        fd = os.open(USB_LOCK, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            raise RuntimeError('the weekly backup is using the USB drive right now. '
+                               'Try again when it has finished (usually within an hour)') from None
+        self.lock = fd
         if subprocess.run(['findmnt', '-n', '--mountpoint', str(self.mount)],
                           capture_output=True).returncode != 0:
             if not (Path('/dev/disk/by-uuid') / self.uuid).exists():
@@ -176,8 +214,13 @@ class Usb:
         return self.mount if found.lower() == self.uuid.lower() else None
 
     def __exit__(self, *exc):
-        if self.mounted_here:
-            subprocess.run(['umount', str(self.mount)], capture_output=True, timeout=60)
+        try:
+            if self.mounted_here:
+                subprocess.run(['umount', str(self.mount)], capture_output=True, timeout=60)
+        finally:
+            if self.lock is not None:
+                os.close(self.lock)
+                self.lock = None
 
 
 def tool(name, *args):

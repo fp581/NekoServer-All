@@ -1,4 +1,4 @@
-# NekoServer v0.22.0
+# NekoServer v0.23.0
 
 NekoServer turns a PC running **Arch Linux** or **Nyarch** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -21,7 +21,7 @@ It does **not** install Linux and it **never formats a drive**. You prepare thos
 | **Dashboard** | One page showing drives, apps and backups | |
 | **Tailscale** | Use your apps from anywhere, privately, on your own devices | |
 
-Also included: watching on a TV connected to the server (Steam Big Picture), shared folders on your home network (Samba), and optional phone alerts when something fails (ntfy).
+Also included: shared folders on your home network (Samba) and, if you want them, watching on a TV connected to the server (Steam Big Picture) and phone alerts when something fails (ntfy).
 
 ---
 
@@ -52,7 +52,7 @@ Open a **terminal**, logged in as your normal user, and run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer---Arch-based-media-server.git
-cd NekoServer---Arch-based-media-server/nekoserver-v0.22.0
+cd NekoServer---Arch-based-media-server/nekoserver-v0.23.0
 sudo bash install.sh
 ```
 
@@ -65,11 +65,12 @@ That's it: one command starts the setup wizard. It explains what will happen and
 5. **Asks for your sudo password once**, to lock the backup of your app passwords. You are never asked again; night-time backups run on their own.
 6. **Sets up Tailscale** so you can use your apps from anywhere. It pauses, explains what Tailscale is, and opens the sign-in page. You create a free account (with Google, Microsoft, Apple or GitHub) and approve the server.
 7. **Sets up your phone, app by app.** A page with QR codes opens on the PC: scan a code with the phone camera to open each address. For every app it tells you which phone app to install (iPhone and Android), what to type, and which username to use.
-8. **Shows a finishing screen** with what's done, anything still waiting for you, your app addresses, and where your passwords are.
+8. **Asks about three optional extras**, once each: a TV connected to the server, phone alerts when something fails, and outage alerts. Answer `no` to skip any of them; they are not needed for anything else.
+9. **Shows a finishing screen** with what's done, anything still waiting for you, your app addresses, and where your passwords are.
 
 Whenever it needs you, it shows numbered instructions, opens the right page, and asks `Have you completed this step successfully? [yes/no]`. Answer `no` to see the step again.
 
-**Stopped, or something not finished?** Run `sudo bash install.sh` again. It keeps everything already done and continues with the rest.
+**Stopped, or something not finished?** Run `sudo bash install.sh` again. It keeps everything already done and continues with the rest. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again.
 
 Your settings are saved in `my-config.json` next to the installer. The wizard creates it the first time, with your timezone and user filled in, so you don't need to edit it. See [Optional settings](#optional-settings).
 
@@ -121,7 +122,7 @@ What is copied, where, and when (times are in your `timezone`):
 - **Old snapshots are cleaned up automatically:** the newest 3 monthly, 14 nightly, and 8 weekly Immich database copies are kept. Change `keep_snapshots` and `database_keep` in `my-config.json` to keep more, or set them to `0` to keep everything.
 - **On the 1st of each month**, at night, the server takes a snapshot, tests that it can be restored, then updates the apps. If an update fails, it goes back to the snapshot automatically.
 
-**Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, or a whole monthly snapshot), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
+**Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, or a whole monthly snapshot), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
 
 ---
 
@@ -135,6 +136,7 @@ Everything works without editing anything. If you want to change something, edit
 | `"user"` under `"tv"` | Which account is the TV user (below) | `"auto"`: you |
 | `"torrent_port"` under `"media"` | Lets other peers connect to qBittorrent for faster downloads. Set a port such as `51413`, then forward it on your router. | off |
 | `"keep_snapshots"` and `"database_keep"` | How many backups to keep (`0` keeps all) | 3 monthly, 14 nightly, 8 database |
+| `"wanted"` under `"tv"`, `"notifications"` or `"heartbeat"` | Your answer to the optional extras (TV, phone alerts, outage alerts). Change `false` to `true` to set one up later. | asked once |
 | `"enabled"` under `"nextcloud"` | Set to `false` if you don't want Nextcloud; also remove `"nextcloud"` from the `"services"` list under `"gateway"` | on |
 
 ### Who is the TV user?
