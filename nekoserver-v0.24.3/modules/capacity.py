@@ -1,4 +1,6 @@
 """Check drive space right after the drives are chosen, before anything is installed."""
+import glob
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -63,23 +65,47 @@ def newest_dump_bytes(config):
 
 def pending_bytes(root, pairs):
     """Bytes the next weekly copy still has to write to the USB drive at root: every file
-    that is not there yet, or whose copy differs in size (a changed file is kept as an extra
-    dated version, so it needs its full size again). Earlier versions already on the drive
+    it does not hold yet, in the current content. Earlier versions already on the drive
     are not counted as reusable room: the backup only ever adds."""
     total = 0
     for source, name in pairs:
         for path, size in regular_files(source):
-            if not path.name.endswith(('.part', '.neko-part')) and not copied(root / name / path.relative_to(source), size):
+            if not path.name.endswith(('.part', '.neko-part')) and not copied(path, root / name / path.relative_to(source)):
                 total += size
     return total
 
 
-def copied(target, size):
-    """True if the USB drive already has this file at the same size."""
+def copied(source, target):
+    """Does the USB drive already hold this content? Decided like the backup itself: a
+    copy of the same size written after the source last changed (its status-change time,
+    which cannot be set back) counts without reading it; otherwise the copy and its saved
+    versions are compared by checksum. A same-size edit therefore needs room again."""
     try:
-        return target.stat().st_size == size
+        info, copy = source.lstat(), target.stat()
     except OSError:
         return False
+    if copy.st_size == info.st_size and copy.st_mtime_ns >= info.st_ctime_ns:
+        return True
+    stem, dot, ext = target.name.rpartition('.')
+    stem, ext = (stem, dot + ext) if stem else (target.name, '')
+    versions = [v for v in target.parent.glob(glob.escape(stem) + '.neko-*' + glob.escape(ext))
+                if not v.name.endswith('.neko-part')]
+    wanted = None
+    for saved in [target, *versions]:
+        try:
+            if saved.stat().st_size != info.st_size:
+                continue
+            wanted = wanted or digest(source)
+            if digest(saved) == wanted:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def digest(path):
+    with open(path, 'rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def usb_room(uuid, pairs):

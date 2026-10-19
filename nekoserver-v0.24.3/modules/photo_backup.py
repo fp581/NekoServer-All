@@ -9,23 +9,40 @@ DESCRIPTION='Install weekly add-only external photo backup timer (requires --app
 SYSTEM_MOUNTS=('/','/boot','/boot/efi','/home','/var')
 BACKUP_FILESYSTEMS=('ext4','xfs','btrfs','exfat')
 
+def disk_layout(config, inventory):
+    """([(filesystem row, its physical disk)], disks holding the system, the SSD or the HDD)."""
+    forbidden={u for u in (config.get('storage',{}).get(k,{}).get('uuid') for k in ('data_ssd','media_hdd')) if u}
+    rows=[];busy_disks=set()
+    def walk(row,disk=None):
+        physical=row.get('name') if row.get('type')=='disk' else disk
+        if row.get('uuid') in forbidden or row.get('mountpoint') in SYSTEM_MOUNTS:busy_disks.add(physical)
+        rows.append((row,physical))
+        for child in row.get('children',[]):walk(child,physical)
+    for row in inventory.get('blockdevices',[]):walk(row)
+    return rows,busy_disks,forbidden
+
 def eligible(config, inventory):
     """Filesystems that may hold the USB backup. It must be on its own physical disk: a
     partition of the system disk, the SSD or the media HDD would be lost together with
     what it is meant to protect."""
-    forbidden={u for u in (config.get('storage',{}).get(k,{}).get('uuid') for k in ('data_ssd','media_hdd')) if u}
-    candidates=[];busy_disks=set()
+    rows,busy_disks,forbidden=disk_layout(config, inventory)
     def usable_mount(mount):
         return not mount or mount==config['external_backup_mount'] or (isinstance(mount,str) and mount.startswith(('/run/media/','/media/')))
-    def walk(row,disk=None):
-        physical=row.get('name') if row.get('type')=='disk' else disk
-        uuid=row.get('uuid')
-        if uuid in forbidden or row.get('mountpoint') in SYSTEM_MOUNTS:busy_disks.add(physical)
-        elif row.get('type') in ('disk','part') and uuid and row.get('fstype') in BACKUP_FILESYSTEMS and usable_mount(row.get('mountpoint')):
-            candidates.append({**row,'physical_disk':physical})
-        for child in row.get('children',[]):walk(child,physical)
-    for row in inventory.get('blockdevices',[]):walk(row)
-    return [c for c in candidates if c['physical_disk'] and c['physical_disk'] not in busy_disks]
+    return [{**row,'physical_disk':physical} for row,physical in rows
+            if row.get('type') in ('disk','part') and row.get('uuid') and row['uuid'] not in forbidden
+            and row.get('fstype') in BACKUP_FILESYSTEMS and usable_mount(row.get('mountpoint'))
+            and physical and physical not in busy_disks]
+
+def shared_disk(config, inventory, uuid):
+    """Why a saved USB drive cannot be used (it shares a disk with the system, the SSD
+    or the HDD), or None. A drive that is not plugged in is checked by the weekly job."""
+    rows,busy_disks,_=disk_layout(config, inventory)
+    for row,physical in rows:
+        if row.get('uuid')==uuid and physical in busy_disks:
+            return (f'The saved USB backup drive (UUID {uuid}) is a partition of /dev/{physical}, which also holds '
+                    'the system, the SSD or the media HDD. One disk failure would lose both copies. '
+                    'Choose a separate drive: remove "external_backup_uuid" under "photos" in your settings and run setup again.')
+    return None
 
 def select_external(config, inventory, input_fn=input, out_fn=print):
     """Explicitly identify a formatted external filesystem; never guess or format."""
@@ -65,6 +82,9 @@ def run(ctx):
         elif getattr(ctx,'config_path',None):
             saved=json.loads(ctx.config_path.read_text());saved['photos']=opts;atomic_json(ctx.config_path,saved)
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}',uuid): raise RuntimeError('Set photos.external_backup_uuid from lsblk -f')
+    from modules.storage import inventory_now
+    problem=shared_disk(ctx.config,inventory_now(),uuid)
+    if problem: raise RuntimeError(problem)
     fstype=opts.get('external_backup_fstype','ext4')
     if fstype not in BACKUP_FILESYSTEMS: raise RuntimeError('Unexpected backup filesystem')
     for key in ('data_ssd','media_hdd'):

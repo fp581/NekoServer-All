@@ -495,6 +495,72 @@ fn sealed_members(data: &Path) -> Vec<String> {
     }
     out
 }
+/// Private per-run folder on the data SSD for files an update needs but the portable
+/// snapshot must not hold in plain text: a copy of the sealed config files (so an
+/// automatic rollback restores them without the sudo password) and the Immich
+/// candidate settings. The live copies of these files sit on the same SSD already.
+/// Removed once the update or its rollback is over.
+fn work_dir(data: &Path, run: &str) -> PathBuf {
+    data.join("backups/maintenance-work").join(run)
+}
+const SEALED_COPY: &str = "sealed-config.tar";
+/// Keep the sealed files of this run on the SSD for an unattended rollback; returns its checksum.
+fn save_sealed_copy(data: &Path, work: &Path) -> Result<Option<String>> {
+    let members: Vec<String> = sealed_members(data)
+        .into_iter()
+        .filter(|m| m != "secrets/accounts")
+        .collect();
+    if members.is_empty() {
+        return Ok(None);
+    }
+    let output = work.join(SEALED_COPY);
+    tar(data, &members, &output, &[])?;
+    fs::set_permissions(
+        &output,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )?;
+    Ok(Some(common::digest(&output)?))
+}
+/// Put the sealed config files back into a rollback stage before the old apps restart.
+fn restore_sealed_copy(journal: &Value, data: &Path, stage: &Path) -> Result<()> {
+    let Some(expected) = journal["sealed_copy"].as_str() else {
+        return Ok(()); // nothing was left out of data.tar
+    };
+    let copy = work_dir(data, string(journal, "run")?).join(SEALED_COPY);
+    if !copy.is_file() || common::digest(&copy)? != expected {
+        return Err(Error::new(
+            "Rollback stopped: the saved copy of the app password files is missing or damaged. \
+             Restore them with monthly-recovery.py --secrets (see MONTHLY-MAINTENANCE.md)",
+        ));
+    }
+    for action in ["--extract", "--compare"] {
+        let mut args = vec!["tar", action, "--file"];
+        let file = copy.to_string_lossy();
+        let dir = stage.to_string_lossy();
+        args.push(&file);
+        if action == "--extract" {
+            args.extend(["--acls", "--xattrs", "--numeric-owner", "--same-owner"]);
+        }
+        args.extend(["-C", &dir]);
+        checked(&args, 3600)?;
+    }
+    Ok(())
+}
+/// Remove the work folders of finished runs (all but the run an unfinished update uses).
+fn clear_work(data: &Path) {
+    let active = load(Path::new(JOURNAL))
+        .ok()
+        .and_then(|j| j["run"].as_str().map(str::to_string));
+    let root = data.join("backups/maintenance-work");
+    for entry in fs::read_dir(&root).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if Some(&name) != active.as_ref() && entry.file_type().is_ok_and(|t| t.is_dir()) {
+            if let Err(e) = common::safe(&entry.path()).and_then(|p| Ok(fs::remove_dir_all(p)?)) {
+                println!("Monthly maintenance: could not remove old work folder {name} ({e})");
+            }
+        }
+    }
+}
 fn secrets_key_ready(key_dir: &Path) -> bool {
     key_dir.join(SECRETS_KEY).is_file() && key_dir.join(SECRETS_CERT).is_file()
 }
@@ -989,6 +1055,7 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
                 ],
                 21600,
             )?;
+            restore_sealed_copy(&journal, Path::new(string(cfg, "data_mount")?), &ssd_stage)?;
             journal["phase"] = json!("restoring");
             journal["restored"] = json!([]);
             save_journal(&journal)?;
@@ -1074,6 +1141,7 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     fs::remove_file(JOURNAL)?;
     fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
     scrub_all(Path::new(string(cfg, "media_mount")?));
+    clear_work(Path::new(string(cfg, "data_mount")?));
     Ok(())
 }
 /// Environment names that carry a password or secret.
@@ -1128,6 +1196,12 @@ fn redact_environment(env: &mut Value) {
 /// snapshot no longer need their resolved passwords: blank them so the snapshot holds
 /// passwords only inside the encrypted archive. Not used while a rollback may need them.
 fn scrub_snapshot(snapshot: &Path) -> Result<()> {
+    // Releases up to 0.24.2 left the Immich candidate settings (database password
+    // included) in the snapshot; the update is over, so they are not needed.
+    let candidate_env = snapshot.join("immich-candidate/.env");
+    if fs::symlink_metadata(&candidate_env).is_ok_and(|m| m.is_file()) {
+        fs::remove_file(&candidate_env)?;
+    }
     for entry in fs::read_dir(common::safe(snapshot)?)? {
         let path = entry?.path();
         let name = path
@@ -1230,7 +1304,7 @@ fn release_fetch(url: &str) -> Result<String> {
         70,
     )
 }
-fn immich_candidate(cfg: &Value, snapshot: &Path) -> Result<Option<PathBuf>> {
+fn immich_candidate(cfg: &Value, snapshot: &Path, work: &Path) -> Result<Option<PathBuf>> {
     let original = Path::new(string(cfg, "data_mount")?).join("compose/immich");
     let env = String::from_utf8(common::bytes(&original.join(".env"), 64000)?)
         .map_err(|_| Error::new("Invalid Immich environment"))?;
@@ -1301,7 +1375,8 @@ fn immich_candidate(cfg: &Value, snapshot: &Path) -> Result<Option<PathBuf>> {
             "Unknown upstream Immich port mapping; update refused",
         ));
     }
-    let folder = snapshot.join("immich-candidate");
+    // On the SSD work folder, not in the snapshot: its .env holds the database password.
+    let folder = work.join("immich-candidate");
     common::directory(&folder, 0o700)?;
     let env = env
         .lines()
@@ -1629,6 +1704,10 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     let run = format!("{}-{}", (common::now() * 1e6) as u128, std::process::id());
     let snapshot = media.join("backups/monthly").join(&run);
     common::directory(&snapshot, 0o700)?;
+    clear_work(data);
+    let work = work_dir(data, &run);
+    common::directory(&data.join("backups/maintenance-work"), 0o700)?;
+    common::directory(&work, 0o700)?;
     let mut models = json!({});
     let mut rows = vec![];
     for name in &names {
@@ -1667,6 +1746,13 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     tar(data, &paths.0, &snapshot.join("data.tar"), exclude)?;
     tar(media, &paths.1, &snapshot.join("media.tar"), &[])?;
     let password_files = encrypt_secrets(data, &snapshot)?;
+    if sealing {
+        // data.tar left these out; keep a private SSD copy so a failed update can be
+        // rolled back unattended (the encrypted copy needs the sudo password).
+        let mut journal = load(Path::new(JOURNAL))?;
+        journal["sealed_copy"] = json!(save_sealed_copy(data, &work)?);
+        save_journal(&journal)?;
+    }
     let mut images = std::collections::BTreeSet::new();
     for m in models.as_object().unwrap().values() {
         for v in m["services"].as_object().unwrap().values() {
@@ -1706,7 +1792,7 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     let mut nextcloud_step = None;
     for name in &names {
         let source = if name == "immich" {
-            immich_files = immich_candidate(cfg, &snapshot)?;
+            immich_files = immich_candidate(cfg, &snapshot, &work)?;
             immich_files
                 .clone()
                 .unwrap_or_else(|| data.join("compose/immich"))
@@ -1814,6 +1900,7 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     fs::remove_file(JOURNAL)?;
     fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
     scrub_all(media);
+    clear_work(data);
     // The update is committed. Cleanup is best effort: a failure here must never be
     // mistaken for a failed update, and deletes only touch a re-verified USB drive.
     retention["after_update"] = match mounts(cfgpath, cfg, false)
@@ -1920,6 +2007,97 @@ mod tests {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{args:?}");
         out.stdout
+    }
+    #[test]
+    fn rollback_with_encryption_restores_the_left_out_config_files() {
+        // A failed update with a backup key: data.tar lacks .env and config.php, and the
+        // rollback stage must get them back without anyone typing the sudo password.
+        let root = scratch("seal-rollback");
+        let data = root.join("ssd");
+        for (rel, body) in [
+            ("compose/nextcloud/.env", "ADMIN_PASSWORD=nc-admin-pw\n"),
+            (
+                "compose/immich/.env",
+                "DB_PASSWORD=im-db-pw\nIMMICH_VERSION=v1.2.3\n",
+            ),
+            ("compose/immich/compose.yaml", "services: {}\n"),
+            (
+                "appdata/nextcloud/html/config/config.php",
+                "'dbpassword' => 'nc-db-pw'\n",
+            ),
+            ("appdata/nextcloud/html/index.php", "<?php\n"),
+            (
+                "secrets/accounts/APP-CREDENTIALS.txt",
+                "only in the encrypted archive\n",
+            ),
+        ] {
+            fs::create_dir_all(data.join(rel).parent().unwrap()).unwrap();
+            fs::write(data.join(rel), body).unwrap();
+        }
+        let paths = ["appdata/nextcloud".to_string(), "compose".to_string()];
+        let snapshot = root.join("hdd/run");
+        fs::create_dir_all(&snapshot).unwrap();
+        tar(&data, &paths, &snapshot.join("data.tar"), &SEALED_EXCLUDES).unwrap();
+        let work = work_dir(&data, "run-1");
+        fs::create_dir_all(&work).unwrap();
+        let journal =
+            json!({"run": "run-1", "sealed_copy": save_sealed_copy(&data, &work).unwrap()});
+        let copy = fs::read(work.join(SEALED_COPY)).unwrap();
+        assert!(!copy.windows(13).any(|w| w == b"encrypted arc")); // accounts list stays sealed only
+                                                                   // The update fails and changes the live files; rollback stages the snapshot.
+        fs::write(
+            data.join("compose/immich/.env"),
+            "DB_PASSWORD=im-db-pw\nIMMICH_VERSION=v9.9.9\n",
+        )
+        .unwrap();
+        let stage = data.join("backups/rollback-run-1");
+        fs::create_dir_all(&stage).unwrap();
+        sh(
+            &[
+                "tar",
+                "-x",
+                "-f",
+                &snapshot.join("data.tar").to_string_lossy(),
+                "-C",
+                &stage.to_string_lossy(),
+            ],
+            None,
+        );
+        assert!(!stage.join("compose/nextcloud/.env").exists());
+        restore_sealed_copy(&journal, &data, &stage).unwrap();
+        assert_eq!(
+            fs::read_to_string(stage.join("compose/immich/.env")).unwrap(),
+            "DB_PASSWORD=im-db-pw\nIMMICH_VERSION=v1.2.3\n"
+        );
+        assert!(
+            fs::read_to_string(stage.join("appdata/nextcloud/html/config/config.php"))
+                .unwrap()
+                .contains("nc-db-pw")
+        );
+        assert!(stage.join("compose/nextcloud/.env").is_file());
+        // A damaged copy stops the rollback with instructions instead of starting broken apps.
+        fs::write(work.join(SEALED_COPY), b"damaged").unwrap();
+        let error = restore_sealed_copy(&journal, &data, &stage)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("monthly-recovery.py --secrets"), "{error}");
+        // Nothing left out (no backup key): nothing to restore.
+        restore_sealed_copy(&json!({"run": "run-1"}), &data, &stage).unwrap();
+        // Finished runs' work folders are removed.
+        clear_work(&data);
+        assert!(!work.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn scrub_removes_the_old_immich_candidate_password_file() {
+        let root = scratch("scrub-candidate");
+        fs::create_dir_all(root.join("immich-candidate")).unwrap();
+        fs::write(root.join("immich-candidate/.env"), "DB_PASSWORD=secret\n").unwrap();
+        fs::write(root.join("immich-candidate/compose.yaml"), "services: {}\n").unwrap();
+        scrub_snapshot(&root).unwrap();
+        assert!(!root.join("immich-candidate/.env").exists());
+        assert!(root.join("immich-candidate/compose.yaml").exists());
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn plain_data_archive_leaves_out_password_files() {

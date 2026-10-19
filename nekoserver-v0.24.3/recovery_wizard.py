@@ -162,13 +162,14 @@ def copy_new(sources, destination):
     count = 0
     for name, source in sources:
         if Path(source).is_dir():
-            shutil.copytree(source, destination / name, symlinks=True)
+            shutil.copytree(source, destination / name, symlinks=True,
+                            ignore=shutil.ignore_patterns('.*' + LATEST_NOTE))
             count += sum(1 for p in (destination / name).rglob('*') if p.is_file())
     return count
 
 
 # The weekly backup never overwrites: the first copy keeps the file's own name, and
-# each later edit is kept beside it as name.neko-<UTC time of that edit>[-n].ext.
+# each later edit is kept beside it as name.neko-<UTC time the backup saw it>[-n].ext.
 # So the dated copies are the NEWER versions.
 VERSIONED = re.compile(r'^(?P<stem>.+)\.neko-(?P<stamp>\d{8}T\d{6}Z)(?:-(?P<n>\d+))?(?:\.(?P<ext>[^.]+))?$')
 
@@ -189,19 +190,39 @@ def readable(stamp):
         return 'first backup'
 
 
+LATEST_NOTE = '.neko-latest'
+
+
+def noted_latest(folder, original):
+    """The saved copy the weekly backup last saw as current (from its note), or None.
+    Backups made before 0.24.3 have no notes; then the newest date wins."""
+    try:
+        name = (folder / f'.{original}{LATEST_NOTE}').read_text(encoding='utf-8').strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return name if name and '/' not in name else None
+
+
 def latest_versions(sources):
     """[(source file, path in the restore, date of that version, how many versions)]:
-    the newest version of every file, restored under the file's own name."""
-    picked = {}
+    the current version of every file, restored under the file's own name."""
+    groups = {}
     for name, source in sources:
         for path, _ in regular_files(source):
+            if path.name.startswith('.') and path.name.endswith(LATEST_NOTE):
+                continue
             original, key = version_of(path.name)
-            target = Path(name) / path.parent.relative_to(source) / original
-            best = picked.get(target)
-            count = (best[3] if best else 0) + 1
-            picked[target] = (path, target, key, count) if best is None or key > best[2] else (*best[:3], count)
-    return [(path, target, readable(key[0]) if key[0] else 'first backup', count)
-            for path, target, key, count in picked.values()]
+            groups.setdefault(Path(name) / path.parent.relative_to(source) / original, []).append((key, path, original))
+    chosen = []
+    for target, found in groups.items():
+        found.sort()
+        key, path, original = found[-1]
+        noted = noted_latest(path.parent, original) if len(found) > 1 else None
+        for candidate in found:
+            if candidate[1].name == noted:
+                key, path, _ = candidate
+        chosen.append((path, target, readable(key[0]) if key[0] else 'first backup', len(found)))
+    return chosen
 
 
 def copy_latest(sources, destination, output=print):
@@ -233,7 +254,9 @@ def copy_choice(sources, target, prompt, output):
 
 
 VERSIONS_EXPLAINED = ('Every version was copied. A file\'s own name is its FIRST backed-up version; '
-                      'copies named ".neko-<date>" are LATER edits, from the date in the name.')
+                      'copies named ".neko-<date>" are LATER edits, saved on the date in the name. '
+                      'An edit can be undone later, so the latest date is not always the current '
+                      'file: "newest only" restores the one the backup last saw.')
 
 
 def restored(config):
