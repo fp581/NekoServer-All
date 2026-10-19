@@ -13,8 +13,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent
-SNAPSHOT = re.compile(r'^snapshot-([0-9]+)-[0-9]+$')
-MONTHLY = re.compile(r'^([0-9]+)-[0-9]+$')
+SNAPSHOT = re.compile(r'^snapshot-(\d+)-\d+$')
+MONTHLY = re.compile(r'^(\d+)-\d+$')
 
 MENU = [
     ('photos', 'Photos and videos (Immich)'),
@@ -93,27 +93,39 @@ def cloud_users(usb):
     return sorted(p.name for p in folder.iterdir() if (p / 'files').is_dir() and not p.is_symlink())
 
 
+def folder_problem(path):
+    """Why a restore destination cannot be used, or None if it can."""
+    if path.exists():
+        return 'That folder already exists; restoring never overwrites anything. Pick another.'
+    if not path.parent.is_dir():
+        return 'Its parent folder does not exist. Pick another.'
+    return None
+
+
+def typed_folder(prompt, output):
+    """A typed absolute path without '..', or None when the user goes back."""
+    while True:
+        typed = prompt('Type a full path for a NEW folder (or press Enter to go back): ').strip()
+        if not typed:
+            return None
+        candidate = Path(typed)
+        if candidate.is_absolute() and '..' not in candidate.parts:
+            return candidate
+        output('Please type a full path starting with /, without "..".')
+
+
 def new_folder(suggested, prompt=input, output=print):
     """Agree a destination that does not exist yet, inside an existing folder."""
     path = Path(suggested)
-    while True:
+    while path is not None:
         output(f'\nRestore into this new folder:\n  {path}')
         if ask('Use this folder?', prompt, output):
-            if path.exists():
-                output('That folder already exists; restoring never overwrites anything. Pick another.')
-            elif not path.parent.is_dir():
-                output('Its parent folder does not exist. Pick another.')
-            else:
+            problem = folder_problem(path)
+            if problem is None:
                 return path
-        while True:
-            typed = prompt('Type a full path for a NEW folder (or press Enter to go back): ').strip()
-            if not typed:
-                return None
-            candidate = Path(typed)
-            if candidate.is_absolute() and '..' not in candidate.parts:
-                path = candidate
-                break
-            output('Please type a full path starting with /, without "..".')
+            output(problem)
+        path = typed_folder(prompt, output)
+    return None
 
 
 def copy_new(sources, destination):

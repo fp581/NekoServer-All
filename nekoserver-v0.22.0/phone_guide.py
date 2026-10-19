@@ -19,13 +19,15 @@ TAILSCALE_DOWNLOAD = 'https://tailscale.com/download'
 LOGIN = {'jellyfin': 'jellyfin', 'seerr': 'seerr', 'immich': 'immich',
          'navidrome': 'navidrome_listener', 'nextcloud': 'nextcloud'}
 
+OPEN_APP = 'Install the app and open it.'
+
 APPS = {
     'jellyfin': {
         'title': 'Jellyfin: movies and TV',
         'iphone': 'Jellyfin (App Store)',
         'android': 'Jellyfin (Google Play)',
         'steps': [
-            'Install the app and open it.',
+            OPEN_APP,
             'Tap "Add Server" (or "Connect"), enter the server address below, and tap "Connect".',
             'Sign in with your Jellyfin username and password.',
             'Play a short video to check it works.',
@@ -47,7 +49,7 @@ APPS = {
         'iphone': 'Immich (App Store)',
         'android': 'Immich (Google Play)',
         'steps': [
-            'Install the app and open it.',
+            OPEN_APP,
             'In "Server Endpoint URL" enter the server address below and tap "Next".',
             'Sign in with your Immich email address and password.',
             'Allow access to your photos when the phone asks.',
@@ -60,7 +62,7 @@ APPS = {
         'iphone': 'Amperfy (App Store)',
         'android': 'Substreamer or Ultrasonic (Google Play)',
         'steps': [
-            'Install the app and open it.',
+            OPEN_APP,
             'Add a server: enter the server address below as the server URL.',
             'Sign in with your Navidrome listener username and password.',
             'Play a song to check it works.',

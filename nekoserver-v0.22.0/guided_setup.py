@@ -100,9 +100,8 @@ def launch(ctx, target, kind='url'):
             raise ValueError('Unsupported local page')
         target = Path(target).as_uri()
         kind = 'url'
-    elif kind == 'url':
-        if not valid_url(target):
-            raise ValueError('Unsupported browser URL')
+    elif kind == 'url' and not valid_url(target):
+        raise ValueError('Unsupported browser URL')
     if kind == 'url':
         missing = [pkg for pkg, binary in (('xdg-utils', 'xdg-open'), ('firefox', 'firefox'))
                    if not shutil.which(binary)]

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import pwd
 
-from neko_common import VERSION, atomic_json
+from neko_common import VERSION, atomic_json, mount_path, safe_path
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
@@ -91,62 +91,86 @@ def ask(question, prompt=input, output=print):
         output('Please type yes or no.')
 
 
+def checked_path(value):
+    """An absolute path with no '..' and no symlinks along it, or ValueError."""
+    path = Path(value)
+    if not path.is_absolute() or '..' in path.parts or '\x00' in str(path):
+        raise ValueError('Expected an absolute path without ".."')
+    return safe_path(path)
+
+
 def read_json(path):
+    """A JSON object from a validated path, or {} if missing or unreadable."""
     try:
-        value = json.loads(Path(path).read_text())
+        value = json.loads(checked_path(path).read_text())
         return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         return {}
 
 
+def data_folder(config):
+    """The configured data SSD mount, validated like the installer does."""
+    try:
+        return mount_path(config.get('data_mount', '/srv/nekoserver'))
+    except (RuntimeError, ValueError, TypeError):
+        return Path('/srv/nekoserver')
+
+
 def state_file(config, default_state):
-    persistent = Path(config.get('data_mount', '/srv/nekoserver')) / 'installer/state/state.json'
-    return persistent if persistent.exists() else Path(default_state) / 'state.json'
+    persistent = data_folder(config) / 'installer/state/state.json'
+    return persistent if persistent.exists() else checked_path(default_state) / 'state.json'
+
+
+def show_steps(title, names, states, fallback, output):
+    if names:
+        output('\n' + title)
+        for name in names:
+            output(f'  - {STEPS[name]}: {states[name].get("reason", fallback)}')
+
+
+def show_addresses(data, output):
+    lan = read_json(data / 'reports/gateway-lan.json').get('portal')
+    links = read_json(data / 'reports/gateway-tailnet.json').get('links') or {}
+    if not (lan or links):
+        return
+    output('\nYour apps:')
+    if lan:
+        output(f'  At home (app menu):  {lan}')
+    if links:
+        output('  Anywhere, with Tailscale on:')
+        for app, url in links.items():
+            output(f'    {app.capitalize():<10} {url}')
+
+
+NEXT_DONE = ['  Everything is set up. Backups and monthly updates run on their own;',
+             '  the dashboard shows how they are doing.']
+NEXT_PENDING = ['  Fix the items above, then run  sudo bash install.sh  again.',
+                '  It continues where it stopped and keeps everything already done.']
 
 
 def finishing_screen(config, states, page=None, output=print):
     """The summary shown at the end. Returns True when nothing is left to do."""
-    data = Path(config.get('data_mount', '/srv/nekoserver'))
+    data = data_folder(config)
     plan = [name for name in STEPS if name in states]
-    done = [n for n in plan if states[n].get('status') == 'success']
-    waiting = [n for n in plan if states[n].get('status') == 'needs_setup']
-    broken = [n for n in plan if states[n].get('status') in ('failed', 'blocked', 'running')]
-    complete = not waiting and not broken
+    by_status = {status: [n for n in plan if states[n].get('status') in group]
+                 for status, group in (('done', ('success',)), ('waiting', ('needs_setup',)),
+                                       ('broken', ('failed', 'blocked', 'running')))}
+    complete = not by_status['waiting'] and not by_status['broken']
     line = '=' * 64
     output('\n' + line)
     output('  NekoServer is ready!' if complete else '  NekoServer is almost ready')
     output(line)
-    output(f'\nDone: {len(done)} of {len(plan)} steps.')
-    if waiting:
-        output('\nStill needs you:')
-        for name in waiting:
-            output(f'  - {STEPS[name]}: {states[name].get("reason", "unfinished")}')
-    if broken:
-        output('\nDid not finish:')
-        for name in broken:
-            reason = states[name].get('reason', 'stopped before finishing')
-            output(f'  - {STEPS[name]}: {reason}')
-    lan = read_json(data / 'reports/gateway-lan.json').get('portal')
-    links = read_json(data / 'reports/gateway-tailnet.json').get('links') or {}
-    if lan or links:
-        output('\nYour apps:')
-        if lan:
-            output(f'  At home (app menu):  {lan}')
-        if links:
-            output('  Anywhere, with Tailscale on:')
-            for app, url in links.items():
-                output(f'    {app.capitalize():<10} {url}')
+    output(f'\nDone: {len(by_status["done"])} of {len(plan)} steps.')
+    show_steps('Still needs you:', by_status['waiting'], states, 'unfinished', output)
+    show_steps('Did not finish:', by_status['broken'], states, 'stopped before finishing', output)
+    show_addresses(data, output)
     output('\nPasswords:          sudo cat ' + str(data / CREDENTIALS))
     if page and Path(page).exists():
         output('Phone setup page:   ' + str(page) + '  (open it in a browser on this PC)')
     output('Dashboard:          ' + DASHBOARD + '  (on this PC)')
     output('\nWhat next:')
-    if complete:
-        output('  Everything is set up. Backups and monthly updates run on their own;')
-        output('  the dashboard shows how they are doing.')
-    else:
-        output('  Fix the items above, then run  sudo bash install.sh  again.')
-        output('  It continues where it stopped and keeps everything already done.')
+    for text in NEXT_DONE if complete else NEXT_PENDING:
+        output(text)
     output('  If something goes wrong later:  sudo bash install.sh --recover')
     output(line + '\n')
     return complete
@@ -165,6 +189,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT):
     if not ask('\nReady to start?', prompt, output):
         output('Nothing was changed. Run  sudo bash install.sh  when you are ready.')
         return 0
+    default_state = checked_path(default_state)
     args = argparse.Namespace(all=False, profile='full', module=None, retry_failed=False,
                               apply=True, check=False, dry_run=False, config=str(path),
                               state_dir=str(default_state))
