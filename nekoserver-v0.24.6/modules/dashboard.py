@@ -11,7 +11,7 @@ SERVICE='nekoserver-dashboard.service'
 
 def options(cfg):
     values=cfg.get('dashboard',{});port=values.get('port',8787);interval=values.get('interval_seconds',60);smart=values.get('smart_interval_seconds',1800)
-    if type(port) is not int or not 1024<=port<=65535 or port in APP_PORTS:raise RuntimeError(f'Dashboard port {port} is taken or not allowed: choose a free port from 1024 to 65535 that no app uses (Nextcloud uses 8088, Jellyfin 8096, Immich 2283)')
+    if type(port) is not int or not 1024<=port<=65535 or port in APP_PORTS or port==cfg.get('media',{}).get('torrent_port'):raise RuntimeError(f'Dashboard port {port} is taken or not allowed: choose a free port from 1024 to 65535 that no app uses (Nextcloud uses 8088, Jellyfin 8096, Immich 2283)')
     if type(interval) is not int or not 30<=interval<=300 or type(smart) is not int or not 300<=smart<=86400:raise RuntimeError('Dashboard collection/SMART intervals are out of range')
     if 'install_smartmontools' in values and type(values['install_smartmontools']) is not bool:raise RuntimeError('SMART package switch must be a boolean')
     return port,interval,smart

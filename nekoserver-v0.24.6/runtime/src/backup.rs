@@ -667,7 +667,11 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> 
         .map(|t| t.and_utc().timestamp() as f64)
         .unwrap_or(0.0);
     let age_days = (common::now() - made) / 86400.0;
-    if age_days > DUMP_STALE_DAYS {
+    if age_days < -1.0 {
+        problems.push(format!(
+            "the newest Immich database copy ({name}) is dated in the future; check the server's clock (timedatectl)"
+        ));
+    } else if age_days > DUMP_STALE_DAYS {
         problems.push(format!(
             "the newest Immich database copy is {} days old; the database backup has not run",
             age_days as u64
@@ -699,7 +703,7 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> 
         format!("Immich version that made the newest database copy ({name}): {version}\nEach copy's own version and checksum are in the .json file next to it.\nTo rebuild Immich from this USB drive, see RECOVERY.md, \"Rebuild Immich from the USB drive\".\n").as_bytes(),
         0o600,
     )?;
-    prune_dumps(&folder, USB_DUMPS)?;
+    prune_dumps(&folder, USB_DUMPS, Some(&name))?;
     println!("USB: Immich database copy {name} (Immich {version})");
     Ok((!problems.is_empty()).then(|| problems.join("; ")))
 }
@@ -1021,6 +1025,13 @@ pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<
         if !status.success() || output.metadata()?.len() < 100 {
             return Err(Error::new("Database dump failed or too small"));
         }
+        // A disk that fills up mid-dump can leave a cut-off file even when every
+        // program reports success. pg_dump ends a finished dump with this line.
+        if !dump_complete(&temp)? {
+            return Err(Error::new(
+                "Database dump is incomplete (no end marker); the disk may be full",
+            ));
+        }
         common::publish(&temp, &target)?;
         Ok(Some(target.clone()))
     })();
@@ -1029,9 +1040,21 @@ pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<
     }
     result
 }
+/// Does a plain-format pg_dump file end with pg_dump's own completion line?
+pub(crate) fn dump_complete(path: &Path) -> Result<bool> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = common::file(path)?;
+    let len = file.metadata()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(4096)))?;
+    let mut tail = vec![];
+    file.read_to_end(&mut tail)?;
+    Ok(String::from_utf8_lossy(&tail).contains("-- PostgreSQL database dump complete"))
+}
 /// Keep the newest `keep` `immich-<UTC stamp>.sql` dumps in `folder` (0 keeps all).
 /// The stamp sorts by time; other files are never touched.
-pub fn prune_dumps(folder: &Path, keep: u64) -> Result<Vec<String>> {
+/// `newest` (the copy just made) is never removed, even if a clock jump made its name
+/// sort before older copies.
+pub fn prune_dumps(folder: &Path, keep: u64, newest: Option<&str>) -> Result<Vec<String>> {
     if keep == 0 || !folder.is_dir() {
         return Ok(vec![]);
     }
@@ -1039,12 +1062,16 @@ pub fn prune_dumps(folder: &Path, keep: u64) -> Result<Vec<String>> {
     for entry in fs::read_dir(common::safe(folder)?)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if immich_dump(&name) && fs::symlink_metadata(entry.path())?.is_file() {
+        if immich_dump(&name)
+            && Some(name.as_str()) != newest
+            && fs::symlink_metadata(entry.path())?.is_file()
+        {
             dumps.push(name);
         }
     }
     dumps.sort();
-    let excess = dumps.len().saturating_sub(keep as usize);
+    let kept_aside = usize::from(newest.is_some_and(|n| folder.join(n).is_file()));
+    let excess = (dumps.len() + kept_aside).saturating_sub(keep as usize);
     let removed: Vec<String> = dumps.into_iter().take(excess).collect();
     for name in &removed {
         fs::remove_file(common::safe(&folder.join(name))?)?;
@@ -1121,7 +1148,7 @@ pub fn preservation(a: &Args) -> Result<()> {
                     data.join("backups/immich-database"),
                     media.join("backups/immich-database"),
                 ] {
-                    prune_dumps(&folder, keep)?;
+                    prune_dumps(&folder, keep, created.file_name().and_then(|n| n.to_str()))?;
                 }
             }
             Ok(())
@@ -1502,6 +1529,49 @@ mod tests {
         }
     }
     #[test]
+    fn a_clock_jump_never_deletes_the_copy_just_made_or_hides_a_stale_one() {
+        let root = scratch("clock-jump");
+        // After the clock jumped back, today's copy sorts before last week's.
+        for name in [
+            "immich-20261001T000000Z.sql",
+            "immich-20261008T000000Z.sql",
+            "immich-20261015T000000Z.sql",
+            "immich-20250101T000000Z.sql",
+        ] {
+            write(&root.join(name), b"dump");
+        }
+        let removed = prune_dumps(&root, 2, Some("immich-20250101T000000Z.sql")).unwrap();
+        assert_eq!(
+            removed,
+            ["immich-20261001T000000Z.sql", "immich-20261008T000000Z.sql"]
+        );
+        assert!(root.join("immich-20250101T000000Z.sql").is_file());
+        // A copy dated in the future is not taken as fresh.
+        let (hdd, usb, env) = (root.join("hdd"), root.join("usb"), root.join(".env"));
+        write(&env, b"IMMICH_VERSION=v2.1.0\n");
+        let future = dump_name(-3.0);
+        write(&hdd.join(&future), b"dump");
+        describe_dump(&hdd.join(&future), &env).unwrap();
+        let problem = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
+        assert!(problem.contains("dated in the future"), "{problem}");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_cut_off_database_dump_is_recognised() {
+        let root = scratch("dump-end");
+        write(
+            &root.join("whole.sql"),
+            b"CREATE TABLE a();\n--\n-- PostgreSQL database dump complete\n--\n",
+        );
+        write(
+            &root.join("cut.sql"),
+            b"CREATE TABLE a();\nINSERT INTO a VALUES",
+        );
+        assert!(dump_complete(&root.join("whole.sql")).unwrap());
+        assert!(!dump_complete(&root.join("cut.sql")).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
     fn incomplete_cloud_copy_is_reported_with_its_files() {
         assert_eq!(CloudCopy::default().missing(), None);
         let partial = CloudCopy {
@@ -1740,7 +1810,7 @@ mod tests {
         }
         write(&root.join("immich-20250101T000000Z.sql.part"), b"partial");
         write(&root.join("notes.txt"), b"mine");
-        let removed = prune_dumps(&root, 2).unwrap();
+        let removed = prune_dumps(&root, 2, None).unwrap();
         assert_eq!(
             removed,
             ["immich-20251228T001500Z.sql", "immich-20260104T001500Z.sql"]
@@ -1754,7 +1824,7 @@ mod tests {
                 "notes.txt"
             ]
         );
-        assert!(prune_dumps(&root, 0).unwrap().is_empty());
+        assert!(prune_dumps(&root, 0, None).unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

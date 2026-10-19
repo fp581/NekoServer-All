@@ -8,7 +8,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-VERSION = '0.24.5'
+VERSION = '0.24.6'
 
 TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
 ZONEINFO = Path('/usr/share/zoneinfo')
@@ -48,6 +48,30 @@ def host_timezone(config):
 # Radarr, qBittorrent, Nextcloud, Jellyfin, Lidarr, Sonarr, Prowlarr, and the private
 # Tailscale addresses (8442-8448). The dashboard (8787 by default) must avoid them all.
 APP_PORTS = frozenset({2283, 2284, 4533, 5055, 7878, 8080, 8088, 8096, 8686, 8989, 9696, *range(8442, 8449)})
+
+
+MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
+
+
+def pending_maintenance(journal=MAINTENANCE_JOURNAL):
+    """Why this release must not be installed yet, or None. An unfinished monthly update
+    is finished (or rolled back) only by the program version that started it; installing
+    another version first would replace that program and leave the apps stopped."""
+    journal = Path(journal)
+    if not journal.exists():
+        return None
+    try:
+        started = json.loads(journal.read_text()).get('version')
+    except (OSError, ValueError, AttributeError):
+        started = None
+    if started == VERSION:
+        return None  # this release finishes it itself
+    which = f'NekoServer v{started}' if isinstance(started, str) and started else 'an earlier NekoServer'
+    return (f'A monthly update started by {which} did not finish, so some apps may still be stopped. '
+            'Let that version finish it (or roll it back) before installing this one:\n'
+            '  sudo systemctl start nekoserver-maintenance-resume.service\n'
+            'When that has finished (sudo systemctl status nekoserver-maintenance-resume.service shows it '
+            'exited successfully), run  sudo bash install.sh  again. Nothing was changed.')
 
 
 def safe_path(path):

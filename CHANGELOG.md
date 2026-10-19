@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.24.6 — 2026-10-19
+
+### Fixed (from an outside review)
+- **An upgrade waits for an unfinished monthly update.** A monthly update can only be finished (or rolled back) by the program version that started it, and the installer replaced that program without checking, so the new version refused the old update's notes (`Maintenance recovery identity mismatch`) and the apps stayed stopped until someone ran the old program by hand (reproduced). `install.sh` now checks first, before the system update or any NekoServer file changes, and the installer checks again before running anything. If an update from another version is unfinished, they stop and give the exact command: `sudo systemctl start nekoserver-maintenance-resume.service` (still the old version, since nothing was replaced), then run `sudo bash install.sh` again. The version check inside the update itself stays.
+- **The dashboard and qBittorrent's peer port cannot be the same.** A custom `dashboard.port` equal to `media.torrent_port` passed both checks, and one of them could not start. Both checks now refuse it.
+
+### Hardened (from a review of failure modes)
+- **A database copy cut off by a full disk is never kept.** If the disk fills up while the Immich database copy is written, a program in between can still report success. The nightly database copy and the manual Immich snapshot now require `pg_dump`'s own end-of-dump line; a cut-off copy is removed and the job fails. (Monthly snapshots and file copies already failed on a write error and are checksummed.)
+- **A system clock jump never deletes the newest database copy.** Copies are named by their time and the oldest are removed by name; after a clock jump the copy just made could sort as "oldest". The copy just made is now never removed, and a newest copy dated in the future marks the USB backup incomplete with a hint to check the clock.
+- Containers that do not stop cleanly were already covered: monthly maintenance and nightly app snapshots allow 60 seconds, then refuse to continue if any container was killed (exit code 137), ran out of memory or is still running.
+
+### Changed
+- Version 0.24.6; the release folder is now `nekoserver-v0.24.6`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.24.5 — 2026-10-19
 
 ### Fixed (from an outside review)

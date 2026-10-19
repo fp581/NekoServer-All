@@ -1,6 +1,7 @@
 """Deploy private Nextcloud, PostgreSQL, Redis and its upstream cron worker."""
 import json
 import account_store
+import neko_common
 import os
 from pathlib import Path
 import re
@@ -97,7 +98,7 @@ def command(args):
 
 # Written by monthly maintenance while an update is in progress; a resumed update or
 # rollback starts the apps it covers again.
-MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
+MAINTENANCE_JOURNAL = neko_common.MAINTENANCE_JOURNAL
 
 
 def stop_installed(ctx, run_command=None, hold=None, journal=MAINTENANCE_JOURNAL):
