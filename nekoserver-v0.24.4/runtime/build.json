@@ -1,14 +1,14 @@
 {
-  "version": "0.24.3",
+  "version": "0.24.4",
   "target": "x86_64-unknown-linux-musl",
   "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
-  "binary_sha256": "ccefbb2b1b49b202962266e658b615eee07e6f563d3e02e60a8d1f5e9dcbbc38",
+  "binary_sha256": "547140c818c020e434d12a302dfab4b9e91cfdb70902ac476fe408d2a580d564",
   "source_sha256": {
-    "Cargo.toml": "b106e17b58498c53504bfd00aec06e29e9ede7632cf88515efb7606193173d2c",
-    "Cargo.lock": "a4e6e84a2c66f51430a3c7026a5a527b4962a8277f643cf04421e71f7522c33e",
+    "Cargo.toml": "0a83eea354bc75b0711df027bf5032e510b67e5a31187c4ce07c637ca12c5c44",
+    "Cargo.lock": "d84ee127230ea2bc38332814285ccbbbf606a9c814d48e46702ec15c28bb96d5",
     "build.py": "e28baddf0e9a553c4fbce447185830602c896716afbe4af8719eedff5a74bd8f",
     "src/app_snapshot.rs": "e5f5978f1e4db99d2c3338c3e50b70f2ca2eb7b35de397e910dfbcf10c6e1968",
-    "src/backup.rs": "d0f6c9ec301e7620a5541299bd2c8e969175223b6e6677c75e30336f3806ab74",
+    "src/backup.rs": "fa399025dee2e272b186e31e158890ceba8bb590cb5a56c7d53e5d597ae59034",
     "src/collect.rs": "91e8a6e8c115a5e00ca55aaf4ecccfc7dcc77beec0f2d0e72a4b90499f036810",
     "src/common.rs": "7460612c71c4735d3b92037b08ef70e0dfd9ba917ccd95c9149292c37cd31bb9",
     "src/heartbeat.rs": "d703981145c7d99ce5a991f19bd10a9a9a9fb80e5afdc0f093aa2453f5247a50",
@@ -17,7 +17,7 @@
     "src/maintenance.rs": "0873068c56bd0fd92ac9fa9cdefb19bb388b834396ea402e5969151b605ae681",
     "src/media.rs": "8342fa21a1690ef5909f6d8dee2417e7eca644baaabc1f8d696aa43e10d52175",
     "src/music_backup.rs": "814ebedb57a27e988f8704b74c24ea21f72f87ffa6dcc0ca1112aafae7d18b1a",
-    "src/notify.rs": "84910dbbe4526c94c1bd0f5b2d6ec2fbb6530b304aa464fad91b3a120c98c422",
+    "src/notify.rs": "917c5c370604ba0bd8523fa1ef9ead5aa4a2ca3874d58f5f75248f1c04710400",
     "src/os_policy.rs": "2c68f8c9693d9dae74e3df0f6f46b51e53ace4c8c2ab976422b08584bf4a32ca",
     "src/serve.rs": "a730a0a5e6f13e061163a1eea4c17151ecec693476e9e43f61c3dca08135a5bc",
     "src/startup.rs": "a07004dda9a3d21b9a05ef3c66dd5e07d157f6258b67b6bccd7f819048f6ce34"
