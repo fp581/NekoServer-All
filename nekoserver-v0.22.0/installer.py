@@ -231,6 +231,8 @@ def main(argv=None):
     mode.add_argument('--profile', metavar='NAME', help='Run named module profile')
     mode.add_argument('--module', metavar='NAME', help='Run a module and its dependencies')
     mode.add_argument('--retry-failed', action='store_true', help='Retry failed or blocked modules and their dependencies')
+    mode.add_argument('--wizard', action='store_true', help='Guided setup of everything (what `sudo bash install.sh` runs)')
+    mode.add_argument('--recover', action='store_true', help='Guided recovery from your backups')
     parser.add_argument('--apply', action='store_true', help='Allow explicitly supported system changes (requires root for Docker install)')
     parser.add_argument('--check', action='store_true', help='Validate configuration and dependency graph without running')
     parser.add_argument('--dry-run', action='store_true', help='Preview execution; writes nothing')
@@ -240,6 +242,12 @@ def main(argv=None):
     if args.apply and (args.check or args.dry_run):
         parser.error('--apply cannot be combined with --check or --dry-run')
     try:
+        if args.wizard:
+            import wizard
+            return wizard.run(execute, Path(args.state_dir))
+        if args.recover:
+            import recovery_wizard
+            return recovery_wizard.run()
         return execute(args)
     except (InstallerError, RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)

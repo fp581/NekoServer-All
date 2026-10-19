@@ -1,4 +1,4 @@
-# Storage and scheduled work — v0.21.1
+# Storage and scheduled work
 
 | Content | Working location | Backup policy |
 |---|---|---|

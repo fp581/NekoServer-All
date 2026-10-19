@@ -7,7 +7,7 @@ import re
 import tempfile
 from pathlib import Path
 
-VERSION = '0.21.1'
+VERSION = '0.22.0'
 
 TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
 ZONEINFO = Path('/usr/share/zoneinfo')
@@ -18,10 +18,14 @@ def host_timezone(config):
 
     Order: top-level ``timezone``, the legacy ``media.timezone`` and
     ``maintenance.timezone`` keys, then the host's /etc/localtime, then UTC.
+    ``"auto"`` (the default in a new config) means "use this PC's timezone".
     """
     value = config.get('timezone')
+    automatic = value == 'auto'
+    if automatic:
+        value = None
     for section in ('media', 'maintenance'):
-        if value is None:
+        if value is None and not automatic:
             group = config.get(section, {})
             value = group.get('timezone') if isinstance(group, dict) else None
     if value is None:

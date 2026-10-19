@@ -1,6 +1,6 @@
 {
-  "project_name": "NekoServer v0.21.1",
-  "timezone": "Asia/Jerusalem",
+  "project_name": "NekoServer v0.22.0",
+  "timezone": "auto",
   "data_mount": "/srv/nekoserver",
   "media_mount": "/mnt/nekoserver-media",
   "external_backup_mount": "/mnt/nekoserver-photos",
@@ -181,6 +181,7 @@
     "full": [
       "system",
       "storage",
+      "capacity",
       "recovery",
       "account_credentials",
       "server_os",
@@ -195,6 +196,8 @@
       "onboarding",
       "music",
       "gateway_lan",
+      "tailscale",
+      "gateway_tailnet",
       "samba",
       "media_monitor",
       "dashboard",

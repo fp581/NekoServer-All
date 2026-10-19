@@ -1,4 +1,4 @@
-# Console account setup - v0.21.1
+# Console account setup
 
 ## Guided setup
 
@@ -55,11 +55,10 @@ The private inventory is included, encrypted, in monthly HDD snapshots when it e
 
 ## Install and resume
 
-Use the normal full-profile command with your confirmed configuration:
+Account setup is part of the setup wizard. Run it, or run it again to continue:
 
 ```bash
-sudo bash install.sh --profile full --apply --config "$PWD/my-config.json"
-sudo bash install.sh --retry-failed --apply --config "$PWD/my-config.json"
+sudo bash install.sh
 ```
 
 The media, photos, cloud and music profiles include their corresponding account steps. Advanced --module deployments remain component operations; use the full/named profiles or the standalone account helper for onboarding. Read-only check/dry-run modes never prompt for, create or print passwords. A noninteractive fresh run remains needs_setup until you choose credentials in a terminal.
