@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.24.5 — 2026-10-19
+
+### Fixed (from an outside review)
+- **The USB space check counts damaged photos that the weekly job will replace.** Since v0.24.4 the weekly mirror keeps a damaged USB copy aside and writes the archive file again in full, but the estimate still counted a same-size copy as already done (reproduced: 0 bytes estimated while the backup kept the damaged file and wrote a replacement; with large videos this could run the drive out of space unexpectedly). Photos copied from the HDD archive are now estimated with the mirror's own rules: a file named by a current-version note is compared by checksum every week, every file is compared when the 4-weekly full check is due, and a copy that does not match counts its full size.
+- **Restoring the password files checks the snapshot's checksum first.** `backup_secrets.py --restore` (and the recovery menu's password option) checked only that the encrypted archive existed. Encrypted data does not reveal damage on its own: a damaged archive decrypted "successfully" into wrong passwords (reproduced). The checksum recorded in the snapshot is now compared before anything is decrypted or created; a damaged archive, or one without a recorded checksum, is refused and nothing is restored. (`monthly-recovery.py` already did this.)
+- **Restarting apps after an interrupted backup waits for the drives and the shared lock.** `app-resume` and `host-resume` (run at boot after an interrupted nightly backup) restarted containers and Samba and removed their notes before checking the drives, and without the lock monthly maintenance holds (reproduced with the bundled runtime: with the lock held and the wrong drive mounted, they still started everything). They, the nightly app and host backups, the photo archive and database jobs and the music backup now all check the drives, take the shared lock, check the drives again and only then resume anything. Tests cover the check and the order.
+- **A nightly app snapshot is published only if it matches what was listed.** File sizes were recorded when the files were listed; a file rewritten before it was copied (installer and settings files can have other writers while the apps are stopped) was copied in its new form under the old size, the job passed, and the restore check later rejected the snapshot (reproduced: 1 byte listed, 18 copied). Everything is now listed again after copying, and the staged copy is checked file by file (size and checksum) against its own list before it is published. If anything changed, nothing is published and the job fails clearly; it runs again the next night.
+- **The dashboard cannot use an app's port.** `dashboard.port` accepted 8088, which Nextcloud uses, so one of them could not start. The dashboard and media import checks now share one list of the ports the apps use (Nextcloud and the private Tailscale addresses included).
+
+### Changed
+- Version 0.24.5; the release folder is now `nekoserver-v0.24.5`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.24.4 — 2026-10-19
 
 ### Fixed (from an outside review)

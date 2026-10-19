@@ -901,6 +901,19 @@ fn guard_data(cfgpath: &Path, data: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// Check the drives, take the lock monthly maintenance and the other jobs hold, then
+/// check the drives again. Anything that starts or stops services (including resuming
+/// after an interrupted backup) runs only after this, so it never acts on the wrong
+/// drives or in the middle of a monthly update or its rollback.
+pub fn coordinate(cfgpath: &Path, data: &Path, media: &Path) -> Result<fs::File> {
+    guard(cfgpath, data, media)?;
+    let held = common::lock_wait(
+        &data.join("installer/recovery.lock"),
+        std::time::Duration::from_secs(3 * 3600),
+    )?;
+    guard(cfgpath, data, media)?;
+    Ok(held)
+}
 pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
     if c["data_mount"].as_str() != data.to_str() || c["media_mount"].as_str() != media.to_str() {
@@ -1056,10 +1069,7 @@ pub fn preservation(a: &Args) -> Result<()> {
     let cfg = a.path("config")?;
     guard(&cfg, &data, &media)?;
     let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
-    let _recovery = common::lock_wait(
-        &data.join("installer/recovery.lock"),
-        std::time::Duration::from_secs(3 * 3600),
-    )?;
+    let _recovery = coordinate(&cfg, &data, &media)?;
     execute(
         Some(&data),
         if a.flag("db-backup") {
@@ -1453,6 +1463,43 @@ mod tests {
         assert_eq!(usb.iter().collect::<Vec<_>>(), ["sdc"]);
         assert!(usb.is_disjoint(&media));
         assert!(!same.is_disjoint(&media));
+    }
+    #[test]
+    fn nothing_is_locked_or_resumed_on_the_wrong_drives() {
+        // app-resume, host-resume and the backups call coordinate() before they restart
+        // anything; drives that do not match the settings stop them right there.
+        let root = scratch("coordinate");
+        let (data, media) = (root.join("ssd"), root.join("hdd"));
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&media).unwrap();
+        let cfg = root.join("guard.json");
+        write(
+            &cfg,
+            serde_json::to_string(&json!({"data_mount": data, "media_mount": media,
+                "storage": {"data_ssd": {"uuid": "aaaa-1111", "fstype": "ext4"},
+                            "media_hdd": {"uuid": "bbbb-2222", "fstype": "ext4"}}}))
+            .unwrap()
+            .as_bytes(),
+        );
+        let error = coordinate(&cfg, &data, &media).unwrap_err().to_string();
+        assert!(error.contains("mismatch"), "{error}");
+        assert!(!data.join("installer/recovery.lock").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn services_are_resumed_only_after_the_drives_and_the_lock_are_checked() {
+        for (file, source) in [
+            ("app_snapshot.rs", include_str!("app_snapshot.rs")),
+            ("host_snapshot.rs", include_str!("host_snapshot.rs")),
+        ] {
+            for entry in ["pub fn resume_command(", "pub fn run("] {
+                let body = &source[source.find(entry).unwrap()..];
+                let body = &body[..body.find("\n}\n").unwrap()];
+                let checked = body.find("backup::coordinate(").expect(file);
+                let resumed = body.find("resume()?").expect(file);
+                assert!(checked < resumed, "{file} {entry}");
+            }
+        }
     }
     #[test]
     fn incomplete_cloud_copy_is_reported_with_its_files() {

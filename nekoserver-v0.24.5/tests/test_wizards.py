@@ -150,7 +150,7 @@ class CapacityTests(unittest.TestCase):
         used = {'/ssd/photos/immich-library': photos * GIB, '/hdd/cloud/files': cloud * GIB}
         pending = photos + cloud if pending is None else pending
         return capacity.assess(self.CONFIG, free=lambda p: free[str(p)], used=lambda p: used.get(str(p), 0),
-                               usb_space=lambda uuid, pairs: None if usb is None else (usb * GIB, pending * GIB),
+                               usb_space=lambda uuid, pairs, **_: None if usb is None else (usb * GIB, pending * GIB),
                                dump=lambda config: dump * GIB, unarchived=lambda config: unarchived * GIB)
 
     def test_usb_counts_free_space_not_drive_size(self):
@@ -211,6 +211,34 @@ class CapacityTests(unittest.TestCase):
             self.assertEqual(capacity.awaiting_archive(config), 9)
         _, warn = self.assess(500, 4000, usb=30, pending=20, unarchived=15)
         self.assertTrue(any('still has to add 35 GB' in w for w in warn), warn)
+
+    def test_a_damaged_usb_photo_counts_its_full_replacement(self):
+        # The weekly mirror keeps a damaged USB copy aside and writes the archive file
+        # again; the estimate must count that, following the mirror's own checks.
+        import json as json_module
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            archive, usb = root / 'hdd/photos/archive', root / 'usb'
+            (archive / 'upload').mkdir(parents=True)
+            (usb / 'upload').mkdir(parents=True)
+            (archive / 'upload/current.mp4').write_bytes(b'A' * 40)
+            (archive / 'upload/.current.mp4.neko-latest').write_text('current.mp4')
+            (archive / 'upload/other.mp4').write_bytes(b'B' * 30)
+            (usb / 'upload/.current.mp4.neko-latest').write_text('current.mp4')
+            (usb / 'upload/current.mp4').write_bytes(b'Z' * 40)  # damaged, same size, newer
+            (usb / 'upload/other.mp4').write_bytes(b'Y' * 30)    # damaged, same size, newer
+            pairs = [(archive / 'upload', 'upload')]
+            # Weekly: the noted file is checked by checksum, the other one is not (yet).
+            self.assertEqual(capacity.pending_bytes(usb, pairs, mirror=('upload',)), 40)
+            # The 4-weekly full check compares everything.
+            self.assertEqual(capacity.pending_bytes(usb, pairs, mirror=('upload',), full=True), 70)
+            config = {'data_mount': root / 'ssd'}
+            self.assertTrue(capacity.full_check_due(config))
+            report = root / 'ssd/reports/jobs/external-full-check.json'
+            report.parent.mkdir(parents=True)
+            report.write_text(json_module.dumps({'at': time.time()}))
+            self.assertFalse(capacity.full_check_due(config))
 
     def test_a_same_size_edit_needs_room_again(self):
         with tempfile.TemporaryDirectory() as d:

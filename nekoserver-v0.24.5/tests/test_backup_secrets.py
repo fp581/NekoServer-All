@@ -1,4 +1,6 @@
 """The app password list in backups opens only with the sudo password."""
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -42,6 +44,8 @@ class BackupSecretsTests(unittest.TestCase):
                        input=archive, check=True)
         for name in (backup_secrets.KEY_NAME, backup_secrets.CERT_NAME):
             (snap / name).write_bytes((self.keys / name).read_bytes())
+        digest = hashlib.sha256((snap / backup_secrets.ARCHIVE_NAME).read_bytes()).hexdigest()
+        (snap / 'manifest.json').write_text(json.dumps({'format': 'neko-maintenance-v1', 'sha256': {'secrets': digest}}))
         return snap
 
     def test_setup_creates_private_key_locked_with_the_password(self):
@@ -88,6 +92,24 @@ class BackupSecretsTests(unittest.TestCase):
         out = backup_secrets.restore(snap, self.root / 'out', 'correct horse')
         self.assertEqual((out / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), SECRET)
         self.assertEqual(out.stat().st_mode & 0o777, 0o700)
+
+    def test_a_damaged_archive_is_refused_before_anything_is_restored(self):
+        # CMS decryption does not notice changed bytes; the snapshot's checksum must.
+        self.make_key()
+        snap = self.seal_snapshot()
+        archive = snap / backup_secrets.ARCHIVE_NAME
+        data = bytearray(archive.read_bytes())
+        data[-20] ^= 0xFF  # inside the ciphertext
+        archive.write_bytes(bytes(data))
+        with self.assertRaisesRegex(RuntimeError, 'damaged'):
+            backup_secrets.restore(snap, self.root / 'out', 'correct horse')
+        self.assertFalse((self.root / 'out').exists())
+        manifest = json.loads((snap / 'manifest.json').read_text())
+        del manifest['sha256']
+        (snap / 'manifest.json').write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(RuntimeError, 'no checksum'):
+            backup_secrets.restore(snap, self.root / 'out', 'correct horse')
+        self.assertFalse((self.root / 'out').exists())
 
     def test_restore_refuses_existing_destination(self):
         self.make_key()

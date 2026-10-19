@@ -338,6 +338,19 @@ class SnapshotUnderLockTests(unittest.TestCase):
                              {'image': 'immich-server@sha256:new'})
 
 
+class DashboardPortTests(unittest.TestCase):
+    def test_the_dashboard_cannot_take_an_app_port(self):
+        from modules import dashboard, media
+        for port in (8088, 8096, 2283, 8448):  # Nextcloud, Jellyfin, Immich, Tailscale dashboard
+            with self.subTest(port), self.assertRaisesRegex(RuntimeError, 'taken or not allowed'):
+                dashboard.options({'dashboard': {'port': port}})
+        self.assertEqual(dashboard.options({'dashboard': {'port': 8787}})[0], 8787)
+        self.assertEqual(dashboard.options({})[0], 8787)
+        # One list for both checks: everything the apps use is also kept away from imports.
+        from neko_common import APP_PORTS
+        self.assertTrue(APP_PORTS <= media.RESERVED_PORTS and 8787 in media.RESERVED_PORTS)
+
+
 class UsbPickerTests(unittest.TestCase):
     INVENTORY = {'blockdevices': [
         {'name': 'nvme0n1', 'type': 'disk', 'children': [

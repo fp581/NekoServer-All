@@ -15,6 +15,7 @@ Usage:
 """
 import argparse
 import getpass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -130,7 +131,8 @@ def absolute(value, what):
 
 
 def snapshot_files(snapshot):
-    """Check that ``snapshot`` is a monthly snapshot and return its three files."""
+    """Check that ``snapshot`` is a monthly snapshot whose encrypted password archive matches
+    its recorded checksum, and return its three files."""
     snapshot = absolute(snapshot, 'Snapshot')
     if not snapshot.is_dir():
         raise RuntimeError('Snapshot directory not found')
@@ -147,6 +149,15 @@ def snapshot_files(snapshot):
             raise RuntimeError('This snapshot holds no encrypted password files' if name == ARCHIVE_NAME
                                else 'Snapshot key copy is missing')
         files.append(path)
+    # CMS decryption does not detect damage: a changed byte gives changed passwords.
+    # The checksum recorded when the snapshot was made is checked before anything else.
+    expected = manifest.get('sha256', {}).get('secrets') if isinstance(manifest.get('sha256'), dict) else None
+    if not isinstance(expected, str) or len(expected) != 64:
+        raise RuntimeError('This snapshot has no checksum for its encrypted password files; refusing to restore them')
+    with files[0].open('rb') as stream:
+        if hashlib.file_digest(stream, 'sha256').hexdigest() != expected:
+            raise RuntimeError('The encrypted password files in this snapshot are damaged (checksum mismatch); '
+                               'nothing was restored. Use another monthly snapshot.')
     return files
 
 
