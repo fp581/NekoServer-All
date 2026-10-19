@@ -56,7 +56,7 @@ class SettingsFileTests(unittest.TestCase):
 
     def test_template_runs_tailscale_and_capacity_in_full(self):
         full = json.loads((ROOT / 'config.json').read_text())['profiles']['full']
-        self.assertEqual(full[:3], ['system', 'storage', 'capacity'])
+        self.assertEqual(full[:4], ['system', 'tailscale', 'storage', 'capacity'])
         self.assertLess(full.index('tailscale'), full.index('gateway_tailnet'))
 
 

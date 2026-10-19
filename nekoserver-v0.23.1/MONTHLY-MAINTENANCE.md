@@ -26,7 +26,7 @@ Before v0.21.1 each snapshot also held the full photo library and Nextcloud file
 2. Commit a private resume journal on the OS disk **before stopping writers**. Stop application/cron workers before databases and reject forced/OOM shutdowns. Refuse other containers writing into the covered state.
 3. Keep production apps stopped while making consistent uncompressed archives and saving old images. Verify the HDD snapshot. This avoids accepting uploads between a backup and a potentially failed migration.
 4. Extract the backup into private staging, compare extracted files against the archives, and start each restored stack under a separate Compose project/internal network with ephemeral localhost ports. Use the saved old images. Clone definitions never attach to production Docker networks or bind writable live application data. HDD movie/show/download libraries are empty read-only substitutes; covered SSD music paths use isolated restored copies. Test real HTTP endpoints. Immich and Nextcloud cannot start fully without their photos/files, which the snapshot leaves out, so for them only the restored database is started and checked by SQL for the app's own tables. Remove only the recorded rehearsal projects/volumes and temporary rehearsal data.
-5. Pull candidate images from declared version streams. Nextcloud remains on its installed major; PostgreSQL and Redis retain their major tags. Immich checks the latest stable release, fetches that release's official Compose manifest, localizes its known port mapping and validates the covered mounts/services. A different major is recorded as pending and left unchanged. Unknown upstream structure blocks the update.
+5. Pull candidate images from declared version streams. Nextcloud remains on its installed major; PostgreSQL and Redis retain their major tags. Immich checks the latest stable release, fetches that release's official Compose manifest, localizes its known port mapping and validates the covered mounts/services. A different major (Immich or Nextcloud) is recorded as pending, shown on the dashboard and left unchanged unless you approved it (see "Major version updates"). Unknown upstream structure blocks the update.
 6. Journal the migration phase, activate candidates, and check all selected containers and HTTP endpoints, Immich SQL and Nextcloud file operations. Run the existing live media connection audit again. These are real server checks during an installed run; development tests simulate Docker while exercising the native worker, archives, copies and local HTTP.
 7. On success, save immutable image pins for installer reruns and reboot reproducibility. Old images are not pruned; old snapshots follow the retention rule below. On failure, stop candidates, verify/extract the matched old backup on the correct destination filesystems, quarantine the failed state, restore old files/databases and images, restart and test the old stack. The failed run remains failed in monitoring even if recovery succeeds.
 
@@ -42,7 +42,7 @@ Other secrets, such as database passwords in Compose `.env` files, are still in 
 
 Backup and image archive sizes determine downtime. A large library may take hours to copy and rehearse; work starts at night and can extend beyond it. If backup/testing/downloads exhaust the update window, updates are deferred and originals restart. The worker reserves space for backups, isolated extraction and rollback; it stops before updating if the drive is too full. Beyond the `keep_snapshots` retention described above, it never deletes old generations. Add capacity or explicitly manage retention when needed.
 
-Downloads/requests/uploads are unavailable while writers are stopped. Major application upgrades, new upstream deployment structures, Pacman/Yay/OS upgrades, firmware and automatic reboot are outside this transaction. An OS rollback requires a separate OS snapshot strategy. Bazzite migration is a separate future automation. VM/KVM is not required for this project.
+Downloads/requests/uploads are unavailable while writers are stopped. Unapproved major application upgrades (see "Major version updates"), new upstream deployment structures, Pacman/Yay/OS upgrades, firmware and automatic reboot are outside this transaction. An OS rollback requires a separate OS snapshot strategy. Bazzite migration is a separate future automation. VM/KVM is not required for this project.
 
 ## Recovery and visibility
 
@@ -70,3 +70,18 @@ The stage must be a fresh directory with adequate space. The helper preserves or
 Snapshot directories and files on the HDD keep their private, root-only permissions.
 
 In v0.16.1, monthly update readiness distinguishes automated checks from the three explicitly unwitnessed human playback/end-to-end rows. Those rows remain pending for acceptance; healthy automated connections can proceed. Missing music credentials or real API/configuration failures still block updates.
+
+## Major version updates
+
+Monthly updates install new versions within the major version you have (for example Immich v2.1 to v2.2, Nextcloud 31.0.5 to 31.0.6). A new **major** version (Immich v3, Nextcloud 32) can need extra steps, so it is never installed on its own. When one is out, the dashboard shows a warning such as "Nextcloud 32 is available (you have 31)".
+
+To install it:
+
+1. Read the app's release notes for anything you need to do first (Immich: github.com/immich-app/immich/releases; Nextcloud: nextcloud.com/changelog).
+2. In `my-config.json`, under `"maintenance"`, type the version from the dashboard warning:
+   - Immich: `"immich_major_update": "v3.0.1"` (the exact release, with the `v`).
+   - Nextcloud: `"nextcloud_major_update": "32"`. Nextcloud goes up **one major at a time**: from 30 to 32, approve 31 first, and 32 after that month's update.
+3. Run `sudo bash install.sh` again so the monthly job sees the change (finished steps are not repeated).
+
+The next monthly update installs it the same safe way as any other update: snapshot first, restore test, health checks, and an automatic return to the snapshot if anything fails. You can leave the setting as it is afterwards.
+

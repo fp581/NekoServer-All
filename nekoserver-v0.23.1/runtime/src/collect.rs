@@ -784,6 +784,37 @@ fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
     });
     r
 }
+/// Major app updates that monthly maintenance found but leaves for you to start
+/// (read from the newest complete monthly snapshot on the HDD).
+fn updates(cfg: &Value, media_ok: bool) -> Value {
+    if !media_ok {
+        return json!([]);
+    }
+    let folder = Path::new(text(&cfg["media_mount"])).join("backups/monthly");
+    let pattern = regex::Regex::new(r"^([0-9]+)-[0-9]+$").unwrap();
+    let newest = fs::read_dir(&folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let stamp: u128 = pattern.captures(&name)?[1].parse().ok()?;
+            let path = e.path();
+            (path.join("manifest.json").is_file() && !path.is_symlink()).then_some((stamp, path))
+        })
+        .max_by_key(|(stamp, _)| *stamp);
+    let Some((_, run)) = newest else {
+        return json!([]);
+    };
+    let mut out = vec![];
+    for (app, name) in [("immich", "Immich"), ("nextcloud", "Nextcloud")] {
+        let pending = common::json(&run.join(format!("{app}-major-pending.json")), 64000);
+        if pending["status"] == "manual_major_upgrade_required" {
+            out.push(json!({"app":app,"name":name,"current":chars(text(&pending["current"]),40),"available":chars(text(&pending["available"]),40)}));
+        }
+    }
+    json!(out)
+}
 fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
@@ -883,6 +914,21 @@ fn alerts(s: &Value) -> Value {
                         .unwrap_or("Review the backup schedule."),
                 );
             }
+        }
+    }
+    if let Some(rows) = s["updates"].as_array() {
+        for u in rows {
+            add(
+                format!("major-update:{}", text(&u["app"])),
+                "warning",
+                format!(
+                    "{} {} is available (you have {})",
+                    text(&u["name"]),
+                    text(&u["available"]),
+                    text(&u["current"])
+                ),
+                "A major version is not installed automatically, because it can need extra steps. Read MONTHLY-MAINTENANCE.md, \"Major version updates\".",
+            );
         }
     }
     if s["media"]["status"] == "stale" {
@@ -985,6 +1031,7 @@ pub fn run(a: &Args) -> Result<()> {
     history.push(json!({"at":now,"cpu":host["cpu_percent"],"memory":host["memory_percent"],"temperature":host["temperature"]}));
     let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":applications(&cfg),"backups":backups(&cfg,now,ok),"media":media(&cfg,now,ok),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
     result["notifications"] = notification_status(now);
+    result["updates"] = updates(&cfg, media_ok);
     result["alerts"] = alerts(&result);
     if ok {
         let check = mount_info(
@@ -1011,6 +1058,38 @@ pub fn run(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn major_updates_found_by_maintenance_are_alerted() {
+        let root = std::env::temp_dir().join(format!("neko-updates-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for run in ["100-1", "200-1"] {
+            fs::create_dir_all(root.join("backups/monthly").join(run)).unwrap();
+            fs::write(
+                root.join("backups/monthly").join(run).join("manifest.json"),
+                "{}",
+            )
+            .unwrap();
+        }
+        fs::write(
+            root.join("backups/monthly/100-1/immich-major-pending.json"),
+            r#"{"status":"manual_major_upgrade_required","current":"v1.9.0","available":"v2.0.1"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("backups/monthly/200-1/nextcloud-major-pending.json"),
+            r#"{"status":"manual_major_upgrade_required","current":"31","available":"32"}"#,
+        )
+        .unwrap();
+        let cfg = json!({"media_mount": root.to_string_lossy()});
+        // Only the newest snapshot counts: the Immich notice is from an older month.
+        let found = updates(&cfg, true);
+        assert_eq!(found.as_array().unwrap().len(), 1);
+        assert_eq!(found[0]["app"], "nextcloud");
+        let shown = alerts(&json!({ "updates": found }));
+        assert!(text(&shown[0]["title"]).contains("Nextcloud 32 is available"));
+        assert_eq!(updates(&cfg, false), json!([]));
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn low_available_memory_is_alerted() {
         let rows = alerts(&json!({"metrics":{"memory_percent":95}}));

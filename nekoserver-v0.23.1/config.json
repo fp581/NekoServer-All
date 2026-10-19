@@ -1,5 +1,5 @@
 {
-  "project_name": "NekoServer v0.23.0",
+  "project_name": "NekoServer v0.23.1",
   "timezone": "auto",
   "data_mount": "/srv/nekoserver",
   "media_mount": "/mnt/nekoserver-media",
@@ -180,6 +180,7 @@
     ],
     "full": [
       "system",
+      "tailscale",
       "storage",
       "capacity",
       "recovery",
@@ -195,9 +196,8 @@
       "accounts",
       "onboarding",
       "music",
-      "gateway_lan",
-      "tailscale",
       "gateway_tailnet",
+      "gateway_lan",
       "samba",
       "media_monitor",
       "dashboard",
@@ -426,7 +426,9 @@
     "minimum_free_gb": 20,
     "keep_snapshots": 3,
     "night_end_hour": 6,
-    "health_wait_seconds": 300
+    "health_wait_seconds": 300,
+    "immich_major_update": "",
+    "nextcloud_major_update": ""
   },
   "music": {
     "create_desktop_shortcut": true,

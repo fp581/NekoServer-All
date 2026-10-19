@@ -1,4 +1,4 @@
-# NekoServer v0.23.0
+# NekoServer v0.23.1
 
 NekoServer turns a PC running **Arch Linux** or **Nyarch** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -52,19 +52,21 @@ Open a **terminal**, logged in as your normal user, and run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer---Arch-based-media-server.git
-cd NekoServer---Arch-based-media-server/nekoserver-v0.23.0
+cd NekoServer---Arch-based-media-server/nekoserver-v0.23.1
 sudo bash install.sh
 ```
 
-That's it: one command starts the setup wizard. It explains what will happen and asks `Ready to start? [yes/no]`. Then it:
+That's it: one command does everything. First it **updates the system** (`pacman -Syu`, so every app installs at its current version) and **installs the packages the apps need** (Docker, Tailscale, Caddy, Samba and a few tools). If the update installed a new Linux kernel, it asks you to restart the PC and run the command again.
 
-1. **Asks you to pick your SSD, HDD and USB drive** from a list, confirms each one, and **checks they have enough space** before installing anything.
-2. **Installs Docker and the apps**, and connects them to each other.
-3. **Asks which network connection is your home network** (a numbered list such as `1. enp3s0 · 192.168.1.20`).
+Then the setup wizard explains what will happen and asks `Ready to start? [yes/no]`. It:
+
+1. **Connects the server to Tailscale** so you can use your apps from anywhere. It pauses, explains what Tailscale is, and opens the sign-in page. You create a free account (with Google, Microsoft, Apple or GitHub) and approve the server.
+2. **Asks you to pick your SSD, HDD and USB drive** from a list, confirms each one, and **checks they have enough space** before installing anything.
+3. **Installs the apps**, and connects them to each other.
 4. **Creates an account for each app.** For each one you choose a generated password (recommended) or your own.
 5. **Asks for your sudo password once**, to lock the backup of your app passwords. You are never asked again; night-time backups run on their own.
-6. **Sets up Tailscale** so you can use your apps from anywhere. It pauses, explains what Tailscale is, and opens the sign-in page. You create a free account (with Google, Microsoft, Apple or GitHub) and approve the server.
-7. **Sets up your phone, app by app.** A page with QR codes opens on the PC: scan a code with the phone camera to open each address. For every app it tells you which phone app to install (iPhone and Android), what to type, and which username to use.
+6. **Gives each app a private Tailscale address and sets up your phone, app by app.** A page with QR codes opens on the PC: scan a code with the phone camera to open each address. For every app it tells you which phone app to install (iPhone and Android), what to type, and which username to use.
+7. **Asks which network connection is your home network** (a numbered list such as `1. enp3s0 · 192.168.1.20`), for using the apps at home without Tailscale.
 8. **Asks about three optional extras**, once each: a TV connected to the server, phone alerts when something fails, and outage alerts. Answer `no` to skip any of them; they are not needed for anything else.
 9. **Shows a finishing screen** with what's done, anything still waiting for you, your app addresses, and where your passwords are.
 
@@ -120,7 +122,8 @@ What is copied, where, and when (times are in your `timezone`):
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
 - **Old snapshots are cleaned up automatically:** the newest 3 monthly, 14 nightly, and 8 weekly Immich database copies are kept. Change `keep_snapshots` and `database_keep` in `my-config.json` to keep more, or set them to `0` to keep everything.
-- **On the 1st of each month**, at night, the server takes a snapshot, tests that it can be restored, then updates the apps. If an update fails, it goes back to the snapshot automatically.
+- **On the 1st of each month**, at night, the server takes a snapshot, tests that it can be restored, then updates the apps. If an update fails, it goes back to the snapshot automatically. New major versions are only shown on the dashboard until you approve them (see [Optional settings](#optional-settings)).
+- **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library.
 
 **Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, or a whole monthly snapshot), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
 
@@ -136,6 +139,7 @@ Everything works without editing anything. If you want to change something, edit
 | `"user"` under `"tv"` | Which account is the TV user (below) | `"auto"`: you |
 | `"torrent_port"` under `"media"` | Lets other peers connect to qBittorrent for faster downloads. Set a port such as `51413`, then forward it on your router. | off |
 | `"keep_snapshots"` and `"database_keep"` | How many backups to keep (`0` keeps all) | 3 monthly, 14 nightly, 8 database |
+| `"immich_major_update"`, `"nextcloud_major_update"` under `"maintenance"` | Approve a new major app version shown on the dashboard; the next monthly update installs it. See [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md#major-version-updates). | empty (not installed) |
 | `"wanted"` under `"tv"`, `"notifications"` or `"heartbeat"` | Your answer to the optional extras (TV, phone alerts, outage alerts). Change `false` to `true` to set one up later. | asked once |
 | `"enabled"` under `"nextcloud"` | Set to `false` if you don't want Nextcloud; also remove `"nextcloud"` from the `"services"` list under `"gateway"` | on |
 

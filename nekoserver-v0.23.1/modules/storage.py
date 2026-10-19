@@ -43,7 +43,7 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
     configured=config.setdefault('storage',{})
     selected=set()
     selected_disks=set()
-    for key, label in [('data_ssd','1TB application SSD'),('media_hdd','12TB media HDD')]:
+    for key, label in [('data_ssd','the SSD (apps, photos and music)'),('media_hdd','the HDD (movies, shows, Nextcloud files and backups)')]:
         record=configured.setdefault(key,{})
         uuid=record.get('uuid','').strip()
         if uuid:
@@ -54,15 +54,16 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
             record['fstype']=matches[0]['fstype']
         elif apply:
             if not interactive: raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
-            options=[v for v in items if v['uuid'] not in selected and (not v['mountpoint'] or v['mountpoint']==config.get('data_mount' if key=='data_ssd' else 'media_mount'))]
+            # A drive the desktop opened by itself (/run/media/...) is still eligible.
+            options=[v for v in items if v['uuid'] not in selected and (not v['mountpoint'] or v['mountpoint']==config.get('data_mount' if key=='data_ssd' else 'media_mount') or str(v['mountpoint']).startswith(('/run/media/','/media/')))]
             if not options: raise RuntimeError(f'No eligible formatted Linux filesystem for {label}; formatting is never automatic')
             out_fn(f'Select {label}:')
             for n,v in enumerate(options,1): out_fn(f"  {n}) /dev/{v['name']} {v['size']} {v['fstype']} UUID={v['uuid']} mounted={v['mountpoint'] or '-'}")
             choice=input_fn('Choose number (or ENTER to abort): ').strip()
             if not choice.isdigit() or not 1<=int(choice)<=len(options): raise RuntimeError('Selection aborted')
             device=options[int(choice)-1]
-            confirm=input_fn(f"Type the exact UUID {device['uuid']} to confirm {label}: ").strip()
-            if confirm!=device['uuid']: raise RuntimeError('Drive confirmation failed')
+            confirm=input_fn(f"Type {device['name']} to confirm it is {label}: ").strip()
+            if confirm not in (device['name'],'/dev/'+device['name'],device['uuid']): raise RuntimeError('Drive confirmation failed')
             record['uuid']=device['uuid']; record['fstype']=device['fstype']
             uuid=device['uuid']
         else:
@@ -195,6 +196,24 @@ def run(context):
         if not Path(current).exists() or Path(current).resolve() != source_path(uuid):
             raise RuntimeError(f'Post-mount validation failed for {target}')
         context.log(f'Mounted UUID={uuid} on {target}; fstab configured for reboot')
+    choose_usb(context)
+
+
+def choose_usb(context):
+    """Pick the USB backup drive with the other drives, so the space check covers it."""
+    photos = context.config.setdefault('photos', {})
+    if photos.get('external_backup_uuid') or not sys.stdin.isatty():
+        return
+    from modules.photo_backup import select_external
+    inventory = json.loads(call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MODEL']))
+    context.log('Now the USB backup drive (it gets a weekly copy of your photos and Nextcloud files):')
+    try:
+        select_external(context.config, inventory, out_fn=context.log)
+    except RuntimeError as exc:
+        context.log(f'USB backup drive not chosen yet ({exc}); you will be asked again at the weekly backup step')
+        return
+    if hasattr(context, 'persist_config'):
+        context.persist_config()
 
 
 def source_path(uuid):

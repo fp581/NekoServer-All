@@ -8,11 +8,19 @@ if (( $# == 0 )); then
 fi
 apply=false
 readonly_mode=false
+recover=false
+full=false
+previous=''
 for arg in "$@"; do
     case "$arg" in
-        --apply|--wizard|--recover) apply=true ;;
+        --apply) apply=true ;;
+        --wizard) apply=true; full=true ;;
+        --recover) apply=true; recover=true ;;
         --check|--dry-run|--help|-h) readonly_mode=true ;;
     esac
+    [[ "$previous" == --profile && "$arg" == full ]] && full=true
+    [[ "$arg" == --profile=full ]] && full=true
+    previous="$arg"
 done
 if "$apply" && "$readonly_mode"; then
     echo 'Use --apply separately from --check, --dry-run, or --help.' >&2
@@ -37,6 +45,24 @@ if "$apply"; then
     if [[ "$(uname -m)" != x86_64 ]] || ! command -v systemctl >/dev/null; then
         echo 'An x86_64 systemd host is required.' >&2
         exit 1
+    fi
+    if ! "$recover"; then
+        # Arch supports only full upgrades: refresh and upgrade everything first, so the
+        # apps and their dependencies install at their current versions and match each
+        # other. Recovery skips this so restoring never depends on the network.
+        echo 'Updating the system first (pacman -Syu). This can take a while.'
+        if pacman -Q archlinux-keyring >/dev/null 2>&1; then
+            # Arch's recommended order: a current keyring before the upgrade it signs.
+            pacman -Sy --needed --noconfirm archlinux-keyring
+        fi
+        pacman -Syu --noconfirm
+        if [[ ! -d "/usr/lib/modules/$(uname -r)" ]]; then
+            echo
+            echo 'A new Linux kernel was installed by the update.'
+            echo 'Restart the PC now (sudo reboot), then run  sudo bash install.sh  again.'
+            echo 'Nothing else was changed; it starts from here next time.'
+            exit 3
+        fi
     fi
     packages=()
     # Check commands as well as packages: an installed but incomplete package
@@ -73,9 +99,17 @@ if "$apply"; then
             fi
         done
     done
+    if "$full"; then
+        # Every system package the apps need that is not inside their containers,
+        # installed up front so a missing one stops the setup before it starts.
+        # Installing does not start Docker; its setup step does that on the SSD.
+        app_packages=(docker docker-compose tailscale caddy samba hdparm smartmontools qrencode xdg-utils)
+        echo "Installing the packages the apps need: ${app_packages[*]}"
+        pacman -S --needed --noconfirm -- "${app_packages[@]}"
+    fi
 fi
 if ! command -v python3 >/dev/null; then
-    echo 'Python 3.11+ is missing. An apply run can install it: sudo bash install.sh --profile full --apply' >&2
+    echo 'Python 3.11+ is missing. Running  sudo bash install.sh  installs it' >&2
     echo 'Read-only check/dry-run modes never install packages.' >&2
     exit 1
 fi

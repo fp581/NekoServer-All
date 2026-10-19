@@ -28,6 +28,11 @@ def options(config):
         value = opts.get(key, default)
         if type(value) is not int or not low <= value <= high:
             raise RuntimeError('Invalid maintenance.'+key)
+    # Major versions are installed only when you approve them (see MONTHLY-MAINTENANCE.md).
+    for key, pattern in (('immich_major_update', r'(v\d+\.\d+\.\d+)?'), ('nextcloud_major_update', r'(\d{1,3})?')):
+        value = opts.get(key, '')
+        if not isinstance(value, str) or not re.fullmatch(pattern, value.strip()):
+            raise RuntimeError('Invalid maintenance.'+key+': leave it empty, or use the version the dashboard shows')
     if int(time[:2]) >= opts.get('night_end_hour', 6):
         raise RuntimeError('Maintenance starts after its allowed night window')
     # require_external is obsolete since v0.21.1: monthly snapshots stay on the HDD and
