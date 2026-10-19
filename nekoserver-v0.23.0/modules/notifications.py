@@ -75,6 +75,13 @@ def run(context):
     existing = json.loads(private.read_text()) if private.exists() else {}
     address = context.config.get('notifications', {}).get('endpoint', '') or existing.get('endpoint', '')
     token = existing.get('token', '')
+    if not address and guided_setup.wanted(context, 'notifications', 'Phone alerts when something fails', [
+            'NekoServer can send a message to your phone when a backup or app fails.',
+            'It uses ntfy, a free notification app. Setting it up takes about 10 minutes.',
+            'You can skip this; the dashboard on the server still shows everything.',
+    ]) is False:
+        context.log('Phone alerts: skipped by choice')
+        return
     if not address and sys.stdin.isatty():
         if not guided_setup.checkpoint(context, 'Set up phone notifications', [
             'Use your chosen access-controlled ntfy server/topic. The opened documentation explains phone subscriptions.',

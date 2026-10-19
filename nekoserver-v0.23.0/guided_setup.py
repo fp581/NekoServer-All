@@ -196,6 +196,44 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None,
         return False
 
 
+def save_settings(ctx):
+    if hasattr(ctx, 'persist_config'):
+        ctx.persist_config()
+
+
+def wanted(ctx, section, question, explain=(), prompt=None, output=None):
+    """Ask once whether an optional extra is wanted and save the answer.
+
+    Returns True/False, or None when nobody is there to ask. The answer is saved as
+    "wanted" under `section` in the settings file; edit it there to change your mind.
+    """
+    options = ctx.config.setdefault(section, {})
+    if isinstance(options.get('wanted'), bool):
+        return options['wanted']
+    if not interactive(ctx):
+        return None
+    prompt = prompt or input
+    output = output or print
+    output('\n=== Optional: ' + question + ' ===')
+    for line in explain:
+        output(line)
+    try:
+        while True:
+            answer = prompt(question + ' [yes/no]: ').strip().lower()
+            if answer in ('yes', 'y', 'no', 'n'):
+                break
+            output('Please type yes or no.')
+    except (EOFError, KeyboardInterrupt):
+        output('')
+        return None
+    options['wanted'] = answer in ('yes', 'y')
+    save_settings(ctx)
+    if not options['wanted']:
+        output('Skipped. To set it up later, change "wanted" to true under "' + section +
+               '" in my-config.json and run  sudo bash install.sh  again.')
+    return options['wanted']
+
+
 def app_security(ctx, apps, ports):
     def verify_accounts():
         import account_setup

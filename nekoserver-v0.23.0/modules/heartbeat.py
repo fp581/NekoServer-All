@@ -66,6 +66,13 @@ def run(context):
         raise RuntimeError('Existing heartbeat configuration must be root-owned and private')
     saved = json.loads(private.read_text()) if private.exists() else {}
     address = saved.get('endpoint', '')
+    if not address and guided_setup.wanted(context, 'heartbeat', 'Outage alerts if the server goes offline', [
+            'An outside service (such as Healthchecks.io) can email you when this server stops',
+            'checking in, for example after a power cut. It needs a free account there.',
+            'This is for advanced users; most people can skip it.',
+    ]) is False:
+        context.log('Outage monitor: skipped by choice')
+        return
     if not address and sys.stdin.isatty():
         if not guided_setup.checkpoint(context, 'Set up an independent outage monitor', [
             'Choose a monitor outside this PC, such as Healthchecks.io or your own independently hosted compatible service.',

@@ -11,7 +11,7 @@ from pathlib import Path
 from neko_common import safe_path, atomic_write, atomic_json
 
 DEPENDENCIES=['system','recovery']
-DESCRIPTION='Install native Steam, Intel graphics/controller support and TV launch shortcuts on Nyarch/Arch'
+DESCRIPTION='Install native Steam, graphics/controller support and TV launch shortcuts on Nyarch/Arch'
 SCHEMA='org.gnome.settings-daemon.plugins.power'
 POWER_KEY='sleep-inactive-ac-type'
 
@@ -26,6 +26,37 @@ def arch_host():
 
 def command(argv, timeout=30):
     return subprocess.run(argv,capture_output=True,text=True,timeout=timeout,check=False)
+
+
+VULKAN={'intel':['vulkan-intel','lib32-vulkan-intel'],'amd':['vulkan-radeon','lib32-vulkan-radeon']}
+
+
+def graphics(lspci=None):
+    """Vendors of the display adapters: 'intel', 'amd' and/or 'nvidia'."""
+    if lspci is None:
+        try:lspci=command(['lspci','-mm']).stdout
+        except (OSError,subprocess.SubprocessError):lspci=''
+    found=[]
+    for line in lspci.splitlines():
+        if not re.search(r'"(VGA compatible controller|3D controller|Display controller)"',line):continue
+        lower=line.lower()
+        for vendor,marks in (('intel',('intel',)),('amd',('advanced micro devices','amd/ati','ati technologies')),('nvidia',('nvidia',))):
+            if any(mark in lower for mark in marks) and vendor not in found:found.append(vendor)
+    return found
+
+
+def vulkan_packages(vendors):
+    return [p for vendor in vendors for p in VULKAN.get(vendor,[])]
+
+
+def previous_checks(root):
+    """TV hardware tests already confirmed in an earlier run."""
+    try:
+        import json
+        report=json.loads((Path(root)/'reports/tv-setup.json').read_text())
+        return {row['check'] for row in report.get('checks',[]) if isinstance(row,dict) and row.get('status')=='user_confirmed'}
+    except (OSError,ValueError,KeyError,TypeError):
+        return set()
 
 
 def desktop_user(config):
@@ -95,6 +126,12 @@ def run(ctx):
     if os.geteuid()!=0:raise RuntimeError('TV package installation requires sudo')
     if platform.machine()!='x86_64' or not arch_host() or not shutil.which('pacman'):raise RuntimeError('TV installation currently supports x86_64 Nyarch/Arch; Bazzite backend remains pending')
     if not shutil.which('runuser'):raise RuntimeError('runuser is required to configure the desktop user safely')
+    if guided_setup.wanted(ctx,'tv','Use a TV connected to this server',[
+            'If a TV is plugged into this PC, NekoServer installs Steam Big Picture, adds app',
+            'shortcuts to your desktop, and helps you test a controller and the TV picture.',
+            'Skip it if this server has no TV; your apps work on your other devices either way.',
+    ]) is False:
+        ctx.log('TV setup: skipped by choice');return
     cfg=ctx.config;opts=cfg.get('tv',{});user,home=desktop_user(cfg)
     if any(key in opts and type(opts[key]) is not bool for key in ('desktop_shortcuts','autostart_big_picture','bluetooth','keep_awake')):raise RuntimeError('TV switches must be JSON booleans')
     root=safe_path(cfg['data_mount'])
@@ -115,7 +152,10 @@ def run(ctx):
     if opts.get('keep_awake',True):
         power_dir=safe_path(home/'.config')
         if power_dir.exists() and (not power_dir.is_dir() or power_dir.stat().st_uid!=user.pw_uid):raise RuntimeError('Desktop power configuration directory must be owned by the selected user')
-    packages=['steam','steam-devices','vulkan-intel','lib32-vulkan-intel','firefox']
+    vendors=graphics()
+    if not vulkan_packages(vendors):
+        ctx.log('TV: no Intel or AMD graphics found'+(' (NVIDIA needs its own driver; see the Arch wiki "NVIDIA" page)' if 'nvidia' in vendors else '')+'; installing Steam without a Vulkan driver package')
+    packages=['steam','steam-devices',*vulkan_packages(vendors),'firefox']
     if opts.get('bluetooth',True):packages+=['bluez','bluez-utils']
     missing=[p for p in packages if command(['pacman','-Q',p]).returncode]
     unavailable=[p for p in missing if command(['pacman','-Si',p]).returncode]
@@ -161,8 +201,9 @@ def run(ctx):
             'Confirm yes only after testing this real display/audio/controller combination.'
         ], [('settings', ''), ('url', 'https://www.youtube.com/')]),
     ]
+    confirmed = previous_checks(root)
     for key, title, instructions, targets in handoffs:
-        done = guided_setup.checkpoint(ctx, title, instructions, targets)
+        done = ('tv:' + key) in confirmed or guided_setup.checkpoint(ctx, title, instructions, targets)
         results.append({'check': 'tv:' + key,
                         'status': 'user_confirmed' if done else 'needs_setup',
                         'reason': 'Witnessed Konsole confirmation; not an independent hardware probe'})

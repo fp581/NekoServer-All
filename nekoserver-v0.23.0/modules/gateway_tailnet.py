@@ -4,6 +4,7 @@ import gateway_tools
 import phone_guide
 from neko_common import atomic_json
 from pathlib import Path
+import json
 
 DEPENDENCIES = ['storage', 'recovery', 'tailscale']
 DESCRIPTION = 'Private Tailscale addresses for the everyday apps, with phone setup for each app'
@@ -42,6 +43,21 @@ def phone_steps(ctx, result):
     ], page_target)
 
 
+def report_path(config):
+    return Path(config['data_mount']) / 'reports/gateway-tailnet.json'
+
+
+def confirmed_links(config):
+    """The app addresses a phone was confirmed for in an earlier run, or None."""
+    try:
+        old = json.loads(report_path(config).read_text())
+    except (OSError, ValueError):
+        return None
+    if isinstance(old, dict) and old.get('client_acceptance') == 'user_confirmed':
+        return old.get('links')
+    return None
+
+
 def run(ctx):
     gateway_tools.selected(ctx.config)
     if not ctx.apply:
@@ -49,6 +65,8 @@ def run(ctx):
         return
     if not gateway_tools.configure(ctx, 'tailnet'):
         return {'status': 'needs_setup', 'reason': 'Selected app security checks/confirmation still pending'}
+    # Read before the routes are applied: applying rewrites the report.
+    earlier = confirmed_links(ctx.config)
     result = None
 
     def configure_routes():
@@ -56,7 +74,14 @@ def run(ctx):
         result = gateway_tools.apply_tailnet(ctx.config)
         return result.get('status') == 'configured'
 
-    if guided_setup.interactive(ctx):
+    if guided_setup.interactive(ctx) and gateway_tools.https_ready():
+        try:
+            configure_routes()
+        except RuntimeError:
+            result = None
+    if result is not None and result.get('status') == 'configured':
+        ctx.log('Tailscale: MagicDNS and HTTPS already on; secure addresses updated')
+    elif guided_setup.interactive(ctx):
         done = guided_setup.checkpoint(ctx, 'Tailscale: turn on secure addresses', [
             'A Tailscale settings page (DNS) opened in the browser.',
             'Find "MagicDNS" and make sure it is ON (click "Enable MagicDNS" if you see it).',
@@ -73,10 +98,18 @@ def run(ctx):
     else:
         configure_routes()
     ctx.log('Private application links saved in reports/gateway-tailnet.json')
-    confirmed = phone_steps(ctx, result)
+    if earlier and earlier == result.get('links'):
+        try:
+            phone_guide.write_page(ctx.config, result['links'])
+        except (OSError, RuntimeError):
+            pass
+        ctx.log('Phone: already set up for these addresses; not asking again')
+        confirmed = True
+    else:
+        confirmed = phone_steps(ctx, result)
     result['client_acceptance'] = 'user_confirmed' if confirmed else 'needs_setup'
     result['client_acceptance_evidence'] = 'Konsole user confirmation; no independent phone probe'
-    atomic_json(Path(ctx.config['data_mount']) / 'reports/gateway-tailnet.json', result)
+    atomic_json(report_path(ctx.config), result)
     if not confirmed:
         return {'status': 'needs_setup', 'reason': 'Private routes configured; actual phone setup/mobile-data test remains pending'}
     return result
