@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.24.1 — 2026-10-19
+
+### Added
+- **Dashboard on your phone.** The read-only dashboard (drives, apps, backups, alerts) now also has a private Tailscale address, `https://<server>.ts.net:8448/`, on your own devices only (Tailscale Serve, never Funnel). It is on the phone setup page and the finishing screen. The dashboard server accepts only its loopback names and this server's own Tailscale name, and has no way to change anything. `"remote": false` under `"dashboard"` keeps it on the server only.
+- **Hardware video in Jellyfin and Immich.** A new step, *Video using the graphics chip*, finds the graphics chip, installs its video drivers, checks from inside Jellyfin that the chip really decodes video, then turns on hardware transcoding: Quick Sync on Intel, VA-API on AMD, in both Jellyfin and Immich (Immich's server also gets the graphics device, kept across monthly updates in a `hardware.yaml` next to its Compose file). A setting you already chose in either app is kept; without a usable chip (or with NVIDIA) both apps keep working in software. See HARDWARE-VIDEO.md.
+- Shared `gpu.py` for graphics detection (TV and hardware video).
+
+### Fixed
+- **Music no longer stays "unfinished" without Firefox.** Its optional desktop shortcut needed Firefox, which only the TV setup installed; with the TV extra turned down, music (and the finishing screen) stayed "needs setup" forever. A missing browser now just skips the shortcut; music works in any browser and on phones.
+
+### Changed: less duplicated code (same behaviour)
+- `app-recovery.py` and `host-recovery.py` were two near-identical 140-line copies. Both now share `snapshot_restore.py`; the commands and their output are unchanged, and the restore logic is covered by tests for the first time.
+- One yes/no question (`guided_setup.yes_no`) replaces five copies (setup wizard, space check, recovery wizard, optional extras, guided steps).
+- One Arch/Nyarch check (`neko_common.arch_host`) replaces three (Tailscale, TV, recovery); it also tolerates a missing or unusual `/etc/os-release`.
+- One drive-list command for all drive pickers.
+- Rust: one monthly-snapshot listing for maintenance, the weekly USB job and the dashboard, and one Immich database-copy name check.
+- Version 0.24.1; the release folder is now `nekoserver-v0.24.1`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release (Rust sources changed).
+- Existing servers: add `"hardware_video"` after `"accounts"` in the `full` profile of `my-config.json` (or start from the new template), then run `sudo bash install.sh`. The dashboard's Tailscale address is added on that run too.
+
 ## v0.23.3 — 2026-10-19
 
 ### Fixed
