@@ -79,9 +79,9 @@ To install it:
 
 1. Read the app's release notes for anything you need to do first (Immich: github.com/immich-app/immich/releases; Nextcloud: nextcloud.com/changelog).
 2. In `my-config.json`, under `"maintenance"`, type the version from the dashboard warning:
-   - Immich: `"immich_major_update": "v3.0.1"` (the exact release, with the `v`).
+   - Immich: `"immich_major_update": "v3"` (the major from the warning, with the `v`; an exact release such as `"v3.0.1"` also works).
    - Nextcloud: `"nextcloud_major_update": "32"`. Nextcloud goes up **one major at a time**: from 30 to 32, approve 31 first, and 32 after that month's update.
 3. Run `sudo bash install.sh` again so the monthly job sees the change (finished steps are not repeated).
 
-The next monthly update installs it the same safe way as any other update: snapshot first, restore test, health checks, and an automatic return to the snapshot if anything fails. You can leave the setting as it is afterwards.
+The next monthly update installs it the same safe way as any other update: snapshot first, restore test, health checks, and an automatic return to the snapshot if anything fails. You can leave the setting as it is afterwards. A big Nextcloud can take more than 5 minutes to upgrade; if the update is rolled back for taking too long, raise `"health_wait_seconds"` under `"maintenance"` (up to 1800) and run `sudo bash install.sh` again.
 

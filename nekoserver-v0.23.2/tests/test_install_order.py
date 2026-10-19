@@ -76,3 +76,59 @@ class DrivePickingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReviewFixTests(unittest.TestCase):
+    """v0.23.2: findings from the external review."""
+
+    def test_failed_space_check_blocks_everything_that_writes_to_the_drives(self):
+        modules = installer.load_modules(ROOT / 'modules')
+
+        def needs(name, target, seen=()):
+            deps = modules[name]['deps']
+            return target in deps or any(needs(d, target, seen + (name,)) for d in deps if d not in seen)
+
+        for name in ('docker', 'media', 'photos', 'nextcloud', 'maintenance', 'app_backup',
+                     'host_backup', 'photo_backup', 'photo_preservation', 'server_os'):
+            self.assertTrue(needs(name, 'capacity'), name)
+        # Tailscale does not touch the drives and still runs first.
+        self.assertFalse(needs('tailscale', 'capacity'))
+
+    def test_seerr_folder_is_handed_to_the_configured_user(self):
+        import tempfile
+        from unittest import mock
+        from modules import media
+        with tempfile.TemporaryDirectory() as folder:
+            seerr = Path(folder) / 'seerr'
+            (seerr / 'db').mkdir(parents=True)
+            (seerr / 'settings.json').write_text('{}')
+            owners = {str(seerr): (1000, 1000)}
+            calls = []
+
+            class Stat:
+                def __init__(self, uid, gid):
+                    self.st_uid, self.st_gid = uid, gid
+
+            def lstat(path):
+                return Stat(*owners.get(str(path), (1000, 1000)))
+
+            with mock.patch.object(Path, 'lstat', lambda self: lstat(self)), \
+                    mock.patch.object(media.os, 'chown', lambda p, u, g, follow_symlinks=True: calls.append((str(p), u, g, follow_symlinks))):
+                self.assertTrue(media.adopt_seerr_folder(seerr, 2000, 2000, lambda s: None))
+            self.assertIn((str(seerr), 2000, 2000, False), calls)
+            self.assertIn((str(seerr / 'settings.json'), 2000, 2000, False), calls)
+            self.assertIn((str(seerr / 'db'), 2000, 2000, False), calls)
+            # Already right, or owned by someone else entirely: left alone.
+            owners[str(seerr)] = (2000, 2000)
+            with mock.patch.object(Path, 'lstat', lambda self: lstat(self)):
+                self.assertFalse(media.adopt_seerr_folder(seerr, 2000, 2000, lambda s: None))
+            owners[str(seerr)] = (3000, 3000)
+            with mock.patch.object(Path, 'lstat', lambda self: lstat(self)):
+                self.assertFalse(media.adopt_seerr_folder(seerr, 2000, 2000, lambda s: None))
+
+    def test_nightly_backup_settings_check_matches_what_setup_writes(self):
+        from modules import app_backup
+        config = json.loads((ROOT / 'config.json').read_text())
+        guard = app_backup.guard_config(config)
+        self.assertIn('keep_snapshots', guard['app_backup'])
+        self.assertIn('app_backup.guard_config(config)', (ROOT / 'native_runtime.py').read_text())

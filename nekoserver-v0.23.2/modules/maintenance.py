@@ -29,7 +29,7 @@ def options(config):
         if type(value) is not int or not low <= value <= high:
             raise RuntimeError('Invalid maintenance.'+key)
     # Major versions are installed only when you approve them (see MONTHLY-MAINTENANCE.md).
-    for key, pattern in (('immich_major_update', r'(v\d+\.\d+\.\d+)?'), ('nextcloud_major_update', r'(\d{1,3})?')):
+    for key, pattern in (('immich_major_update', r'(v\d+(\.\d+\.\d+)?)?'), ('nextcloud_major_update', r'(\d{1,3})?')):
         value = opts.get(key, '')
         if not isinstance(value, str) or not re.fullmatch(pattern, value.strip()):
             raise RuntimeError('Invalid maintenance.'+key+': leave it empty, or use the version the dashboard shows')

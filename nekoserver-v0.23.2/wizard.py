@@ -152,11 +152,18 @@ NEXT_PENDING = ['  Fix the items above, then run  sudo bash install.sh  again.',
 def finishing_screen(config, states, page=None, output=print):
     """The summary shown at the end. Returns True when nothing is left to do."""
     data = data_folder(config)
-    plan = [name for name in STEPS if name in states]
+    # Judge against the steps the installation is meant to run, not only the ones that
+    # left a state behind: missing or unreadable state must never read as "ready".
+    expected = [n for n in config.get('profiles', {}).get('full', []) if n in STEPS]
+    plan = expected or [name for name in STEPS if name in states]
+    states = {n: states.get(n) if isinstance(states.get(n), dict) else
+              {'status': 'missing', 'reason': 'did not run (no record of this step)'} for n in plan}
     by_status = {status: [n for n in plan if states[n].get('status') in group]
                  for status, group in (('done', ('success',)), ('waiting', ('needs_setup',)),
-                                       ('broken', ('failed', 'blocked', 'running')))}
-    complete = not by_status['waiting'] and not by_status['broken']
+                                       ('broken', ('failed', 'blocked', 'running', 'missing')))}
+    unknown = [n for n in plan if n not in sum(by_status.values(), [])]
+    by_status['broken'] += unknown
+    complete = bool(plan) and not by_status['waiting'] and not by_status['broken']
     line = '=' * 64
     output('\n' + line)
     output('  NekoServer is ready!' if complete else '  NekoServer is almost ready')
@@ -188,7 +195,8 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT):
     output('\nYour settings are in ' + str(path) +
            (' (just created for you; you do not need to edit it).' if created else '.'))
     if not ask('\nReady to start?', prompt, output):
-        output('Nothing was changed. Run  sudo bash install.sh  when you are ready.')
+        output('No apps were set up. (The system update and the packages NekoServer needs are '
+               'already installed; that is all.) Run  sudo bash install.sh  when you are ready.')
         return 0
     default_state = checked_path(default_state)
     args = argparse.Namespace(all=False, profile='full', module=None, retry_failed=False,

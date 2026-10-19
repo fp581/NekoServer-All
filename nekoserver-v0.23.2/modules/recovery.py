@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from neko_common import VERSION, safe_path, atomic_write, atomic_json
 
-DEPENDENCIES=['storage']
+DEPENDENCIES=['storage','capacity']
 DESCRIPTION='Preserve installer, templates and current configuration on the application SSD'
 
 

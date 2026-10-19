@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_DIR: nekoserver-v0.23.1
+  RELEASE_DIR: nekoserver-v0.23.2
   # Pinned so lint results and the shipped binary only change when this line does.
   # Matches the rustc recorded in runtime/build.json.
   RUST_TOOLCHAIN: "1.99.1"

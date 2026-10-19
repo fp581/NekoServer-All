@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.23.2 — 2026-10-19
+
+### Fixed (from an outside review)
+- **A monthly backup's SSD copy could be deleted while the HDD copy was missing or damaged.** Old SSD copies of monthly snapshots were removed when their manifest matched the HDD's, without checking the HDD archives themselves. Now the SSD copy is removed only when the HDD run is complete (restore-tested) and every HDD archive matches its checksum. Otherwise it stays, as possibly the only good copy.
+- **A failed drive space check did not stop the installation.** Docker, the apps, Immich, Nextcloud, backups and maintenance still ran after the check failed (or you answered no). Every step that writes to the drives now waits for it; Tailscale, which does not, still runs.
+- **Seerr could not use its settings folder with a user other than 1000.** It runs as your user (`media.uid`/`gid`), but its folder was created for 1000:1000 with mode 0750. The folder is now created for your user, and an existing one owned by 1000:1000 is handed to your user (that folder only; links are not followed).
+- **A correct nightly app-backup setup failed its readiness check.** Setup writes the retention setting into the backup's private settings, but the check expected them without it and reported "needs setup". Both now use one shared definition.
+- **The finishing screen could say "ready" with missing or unreadable state.** It now checks every step the installation is meant to run; a step with no record counts as unfinished.
+- **The USB space check used the drive's size, not its free space**, so a large but nearly full drive passed. It now measures free space, plus what an earlier weekly copy already holds there (opening the drive read-only if needed).
+
+### Fixed
+- **No stale "newer Nextcloud" warning after an approved upgrade.** In the month an approved Nextcloud major was installed, maintenance first recorded "Nextcloud 32 is available (you have 31)" and the dashboard kept showing it for a month. The check is now skipped in the month a major is being installed.
+- **Approving an Immich major survives a fix release.** The approval had to be the exact release (`"v3.0.1"`), so it stopped matching if Immich published v3.0.2 before the update night. You can now approve the major itself (`"immich_major_update": "v3"`); an exact release still works.
+- **Acceptance checks leave out extras you turned down** (TV, phone alerts, outage alerts), so they no longer stay "not done" on the dashboard.
+- **Answering "no" at the wizard's first question no longer says "Nothing was changed"**: by then the system update and packages are already installed, and it now says so.
+- Docs: a big Nextcloud can take longer than the 5-minute health wait to upgrade; MONTHLY-MAINTENANCE.md explains raising `health_wait_seconds`.
+
+### Changed
+- Version 0.23.2; the release folder is now `nekoserver-v0.23.2`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release (Rust sources changed).
+
 ## v0.23.1 — 2026-10-19
 
 ### Changed: install order

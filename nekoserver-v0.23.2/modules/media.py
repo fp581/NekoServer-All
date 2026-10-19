@@ -211,10 +211,12 @@ def _run(context):
         if not target.exists():
             ensure_directory(configs, 0o755)
             ensure_directory(target, 0o750)
-            os.chown(target, 1000 if name == 'seerr' else uid, 1000 if name == 'seerr' else gid)
+            os.chown(target, uid, gid)
         safe_path(target)
         if target.is_symlink():
             raise RuntimeError(f'Refusing symlink appdata: {target}')
+        if name == 'seerr':
+            adopt_seerr_folder(target, uid, gid, context.log)
     run_cmd(['docker', 'network', 'inspect', 'nekoserver-media'], timeout=15) if network_exists() else run_cmd(['docker', 'network', 'create', 'nekoserver-media'], timeout=20)
     failed = []
     for name, (dest, content) in manifests.items():
@@ -237,6 +239,24 @@ def _run(context):
     if failed:
         raise RuntimeError(f'Media projects failed: {failed}; retry with the same manifest/config once fixed')
     context.log('Media stack deployed. Run the onboarding module to connect accounts, libraries and API keys; verify actual playback.')
+
+
+def adopt_seerr_folder(folder, uid, gid, log=print):
+    """Seerr runs as media.uid:gid. Releases before v0.23.2 created its folder for
+    1000:1000 (and before v0.21.1 Seerr itself ran as 1000:1000), so with another user it
+    could not read or write its own settings. Hand that folder, and only it, to the
+    configured user. Symlinks are never followed."""
+    stat = folder.lstat()
+    if (stat.st_uid, stat.st_gid) == (uid, gid) or (stat.st_uid, stat.st_gid) != (1000, 1000):
+        return False
+    for root, dirs, files in os.walk(folder, followlinks=False):
+        for name in dirs + files:
+            path = Path(root) / name
+            if path.lstat().st_uid == 1000:
+                os.chown(path, uid, gid, follow_symlinks=False)
+    os.chown(folder, uid, gid, follow_symlinks=False)
+    log(f'Seerr settings folder handed to {uid}:{gid}, the user Seerr runs as')
+    return True
 
 
 def network_exists():

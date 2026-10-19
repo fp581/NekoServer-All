@@ -76,7 +76,7 @@ class WizardFlowTests(unittest.TestCase):
         code = wizard.run(execute, self.root / 'state', prompt=answers('no'), output=out.append, root=self.root)
         self.assertEqual(code, 0)
         execute.assert_not_called()
-        self.assertTrue(any('Nothing was changed' in line for line in out))
+        self.assertTrue(any('No apps were set up' in line for line in out))
 
     def test_yes_runs_the_full_install_with_the_settings_file(self):
         execute = mock.Mock(return_value=0)
@@ -117,6 +117,18 @@ class FinishingScreenTests(unittest.TestCase):
         self.assertIn('sudo cat', text)
         self.assertIn('--recover', text)
 
+    def test_missing_or_unreadable_state_is_never_ready(self):
+        complete, text = self.screen({})
+        self.assertFalse(complete)
+        self.assertNotIn('NekoServer is ready!', text)
+        self.config['profiles'] = {'full': ['system', 'storage', 'media']}
+        complete, text = self.screen({'system': {'status': 'success'}, 'storage': {'status': 'success'}})
+        self.assertFalse(complete)
+        self.assertIn('Movie, TV and music apps: did not run', text)
+        complete, text = self.screen({'system': {'status': 'success'}, 'storage': {'status': 'success'},
+                                      'media': {'status': 'success'}})
+        self.assertTrue(complete)
+
     def test_pending_and_failed_steps_are_named_in_plain_words(self):
         complete, text = self.screen({
             'storage': {'status': 'success'},
@@ -133,11 +145,18 @@ class FinishingScreenTests(unittest.TestCase):
 class CapacityTests(unittest.TestCase):
     CONFIG = {'data_mount': '/ssd', 'media_mount': '/hdd', 'photos': {'external_backup_uuid': 'u'}}
 
-    def assess(self, ssd, hdd, usb=None, photos=0, cloud=0):
+    def assess(self, ssd, hdd, usb=None, photos=0, cloud=0, copied=0):
         free = {'/ssd': ssd * GIB, '/hdd': hdd * GIB}
         used = {'/ssd/photos/immich-library': photos * GIB, '/hdd/cloud/files': cloud * GIB}
         return capacity.assess(self.CONFIG, free=lambda p: free[str(p)], used=lambda p: used[str(p)],
-                               device=lambda uuid: None if usb is None else usb * GIB)
+                               usb_space=lambda uuid: None if usb is None else (usb * GIB, copied * GIB))
+
+    def test_usb_counts_free_space_not_drive_size(self):
+        # A big but nearly full drive warns; space already holding earlier copies counts.
+        _, warn = self.assess(500, 4000, usb=10, photos=100)
+        self.assertTrue(any('USB drive has 10 GB free' in w for w in warn))
+        _, warn = self.assess(500, 4000, usb=30, photos=100, copied=100)
+        self.assertEqual(warn, [])
 
     def test_enough_space(self):
         self.assertEqual(self.assess(500, 4000, usb=1000, photos=200), ([], []))
@@ -155,7 +174,7 @@ class CapacityTests(unittest.TestCase):
 
     def test_usb_must_fit_photos_and_cloud_with_room(self):
         _, warn = self.assess(500, 4000, usb=128, photos=100, cloud=20)
-        self.assertTrue(any('USB drive is 128 GB' in w for w in warn))
+        self.assertTrue(any('USB drive has 128 GB free' in w for w in warn))
         _, warn = self.assess(500, 4000, usb=256, photos=100, cloud=20)
         self.assertEqual(warn, [])
 
