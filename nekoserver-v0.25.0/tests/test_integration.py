@@ -344,6 +344,29 @@ class NextcloudOffTests(unittest.TestCase):
                 self.assertEqual(events, ['locked', 'released'])
 
 
+class LedgerFormatTests(unittest.TestCase):
+    def test_python_checksums_are_sha256(self):
+        import neko_common
+        with tempfile.TemporaryDirectory() as d:
+            source, target = Path(d) / 'abc', Path(d) / 'copy'
+            source.write_bytes(b'abc')
+            expected = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'  # FIPS 180-2
+            self.assertEqual(neko_common.sha256_file(source), expected)
+            self.assertEqual(neko_common.copy_checked(source, target, expected), expected)
+
+    def test_python_reads_the_ledger_the_runtime_writes(self):
+        import neko_common
+        source = (RUNTIME / 'src/ledger.rs').read_text()
+        self.assertIn(f'pub const LEDGER: &str = "{neko_common.LEDGER_NAME}";', source)
+        self.assertIn('const FORMAT: &str = "neko-ledger-v1";', source)
+        self.assertIn(f'const QUARANTINE: &str = "{neko_common.QUARANTINE}";', (RUNTIME / 'src/backup.rs').read_text())
+        with tempfile.TemporaryDirectory() as d:
+            # Exactly what Ledger::save writes.
+            (Path(d) / '.neko-ledger.json').write_text(json.dumps({'format': 'neko-ledger-v1', 'entries': {
+                'upload/u/a.jpg': {'sha256': 'ab' * 32, 'size': 4, 'verified_at': 1.5, 'how': 'copied'}}}))
+            self.assertEqual(neko_common.read_ledger(d), {'upload/u/a.jpg': 'ab' * 32})
+
+
 class InterruptedSetupTests(unittest.TestCase):
     """A setup stopped between writing its settings files must finish on the next run."""
 

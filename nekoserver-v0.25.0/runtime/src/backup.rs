@@ -1,8 +1,10 @@
+use crate::ledger::{self, Ledger, Recorded};
 use crate::{
     common::{self, Error, Result},
     Args,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     fs::{self, Metadata, OpenOptions},
     io::{Read, Write},
@@ -15,12 +17,16 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+/// The same file, unchanged: identity, size, modification and status-change times.
+/// ctime also moves on edits that keep the size and set mtime back.
 fn same(a: &Metadata, b: &Metadata) -> bool {
     a.dev() == b.dev()
         && a.ino() == b.ino()
         && a.len() == b.len()
         && a.mtime() == b.mtime()
         && a.mtime_nsec() == b.mtime_nsec()
+        && a.ctime() == b.ctime()
+        && a.ctime_nsec() == b.ctime_nsec()
 }
 /// How existing backup copies are checked.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,7 +90,36 @@ fn list(root: &Path) -> Result<Vec<PathBuf>> {
     rows.sort();
     Ok(rows)
 }
+/// `copy_verified` for callers that only need to know whether a copy was (or, on a
+/// dry run, would be) made.
 pub(crate) fn verified_copy(source: &Path, target: &Path, apply: bool, mode: u32) -> Result<bool> {
+    let new = !target.exists();
+    let landed = copy_verified(source, target, apply, mode)?;
+    Ok(landed.is_some() || (new && !apply))
+}
+/// Copy `source` to a new `target` and return the checksum that landed (None when the
+/// target already held the same content, or on a dry run). The data is streamed into
+/// `target.neko-part` while being hashed, fsync'd, then read back from disk and hashed
+/// again, and the source is hashed once more: only when all three checksums match and
+/// the source did not change (identity, size, mtime, ctime) is the file published
+/// (no-replace link or rename, then the folder is fsync'd). Nothing is overwritten.
+pub(crate) fn copy_verified(
+    source: &Path,
+    target: &Path,
+    apply: bool,
+    mode: u32,
+) -> Result<Option<String>> {
+    copy_verified_with(source, target, apply, mode, &|| {})
+}
+/// `copy_verified`; `streamed` runs right after the data was written (tests use it to
+/// change the source mid-copy).
+fn copy_verified_with(
+    source: &Path,
+    target: &Path,
+    apply: bool,
+    mode: u32,
+    streamed_hook: &dyn Fn(),
+) -> Result<Option<String>> {
     common::safe(source)?;
     common::safe(target)?;
     let before = common::file(source)?.metadata()?;
@@ -92,10 +127,10 @@ pub(crate) fn verified_copy(source: &Path, target: &Path, apply: bool, mode: u32
         if !target.is_file() || common::digest(target)? != common::digest(source)? {
             return Err(Error::new("Collision or changed original; no overwrite"));
         }
-        return Ok(false);
+        return Ok(None);
     }
     if !apply {
-        return Ok(true);
+        return Ok(None);
     }
     let parent = target
         .parent()
@@ -127,25 +162,37 @@ pub(crate) fn verified_copy(source: &Path, target: &Path, apply: bool, mode: u32
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(&temp)?;
         out.set_permissions(fs::Permissions::from_mode(mode))?;
+        let mut stream = Sha256::new();
         let mut buf = [0u8; 65536];
         loop {
             let n = input.read(&mut buf)?;
             if n == 0 {
                 break;
             }
+            stream.update(&buf[..n]);
             out.write_all(&buf[..n])?;
         }
+        out.flush()?;
         out.sync_all()?;
         drop(out);
-        if !same(&before, &input.metadata()?)
-            || !same(&before, &fs::metadata(source)?)
-            || common::digest(&temp)? != common::digest(source)?
-            || !same(&before, &fs::metadata(source)?)
-        {
-            return Err(Error::new("Source changed or verification failed"));
+        streamed_hook();
+        let streamed = format!("{:x}", stream.finalize());
+        if !same(&before, &input.metadata()?) || !same(&before, &fs::metadata(source)?) {
+            return Err(Error::new("Source changed during the copy; not published"));
+        }
+        // Re-open the copy from disk: what actually landed, not what was sent.
+        let landed = common::digest(&temp)?;
+        let original = common::digest(source)?;
+        if !same(&before, &fs::metadata(source)?) {
+            return Err(Error::new("Source changed during the copy; not published"));
+        }
+        if streamed != landed || landed != original {
+            return Err(Error::new(
+                "Copy verification failed (checksums differ); not published",
+            ));
         }
         common::publish(&temp, target)?;
-        Ok(true)
+        Ok(Some(landed))
     })();
     let _ = fs::remove_file(temp);
     result
@@ -156,6 +203,29 @@ pub(crate) enum Added {
     Same,
     New,
     Version,
+    /// The existing copy differs from its recorded checksum: it is damaged, not edited.
+    Damaged,
+}
+/// What `kept_copy` did, with what the checksum ledger needs: the saved file it
+/// verified (`file`, `sha256`) and how (`how`), and the source's checksum if read.
+#[derive(Debug)]
+pub(crate) struct Kept {
+    pub added: Added,
+    pub file: Option<PathBuf>,
+    pub sha256: Option<String>,
+    pub how: &'static str,
+    pub source_sha256: Option<String>,
+}
+impl Kept {
+    fn only(added: Added) -> Kept {
+        Kept {
+            added,
+            file: None,
+            sha256: None,
+            how: "",
+            source_sha256: None,
+        }
+    }
 }
 /// `name.ext` -> `name.neko-<stamp>.ext`, keeping the extension so the copy still opens.
 fn version_name(target: &Path, stamp: &str) -> PathBuf {
@@ -170,6 +240,7 @@ fn version_name(target: &Path, stamp: &str) -> PathBuf {
 /// `target` already holds different content (an edited document, an updated photo
 /// sidecar), the new content is kept next to it as a dated version instead of
 /// failing the whole backup. A version identical to the source is not copied again.
+#[cfg(test)]
 pub(crate) fn add_only_copy(
     source: &Path,
     target: &Path,
@@ -177,11 +248,28 @@ pub(crate) fn add_only_copy(
     mode: u32,
     check: Check,
 ) -> Result<Added> {
+    Ok(kept_copy(source, target, apply, mode, check, None)?.added)
+}
+/// `add_only_copy`, told the target's recorded checksum (`expected`, from the ledger):
+/// a target that differs from it is reported as `Damaged` instead of being taken for an
+/// edit, and the verified files are returned for the ledger.
+pub(crate) fn kept_copy(
+    source: &Path,
+    target: &Path,
+    apply: bool,
+    mode: u32,
+    check: Check,
+    expected: Option<&str>,
+) -> Result<Kept> {
     if !target.exists() {
-        return Ok(if verified_copy(source, target, apply, mode)? {
-            Added::New
-        } else {
-            Added::Same
+        let landed = copy_verified(source, target, apply, mode)?;
+        let made = landed.is_some() || !apply;
+        return Ok(Kept {
+            added: if made { Added::New } else { Added::Same },
+            file: Some(target.to_path_buf()),
+            source_sha256: landed.clone(),
+            sha256: landed,
+            how: "copied",
         });
     }
     if !target.is_file() {
@@ -189,16 +277,32 @@ pub(crate) fn add_only_copy(
     }
     let source_meta = fs::metadata(source)?;
     if check == Check::Quick && copied_since_change(&source_meta, &fs::metadata(target)?) {
-        return Ok(Added::Same);
+        return Ok(Kept::only(Added::Same));
     }
     let wanted = common::digest(source)?;
-    if common::digest(target)? == wanted {
+    let have = common::digest(target)?;
+    if have == wanted {
         // Back to the first saved content: say so if later versions exist.
         if latest_marker(target).exists() {
             let name = target.file_name().unwrap_or_default().to_string_lossy();
             mark_latest(target, &name, apply)?;
         }
-        return Ok(Added::Same);
+        return Ok(Kept {
+            added: Added::Same,
+            file: Some(target.to_path_buf()),
+            sha256: Some(have),
+            how: "agreed",
+            source_sha256: Some(wanted),
+        });
+    }
+    if expected.is_some_and(|e| e != have) {
+        return Ok(Kept {
+            added: Added::Damaged,
+            file: Some(target.to_path_buf()),
+            sha256: None,
+            how: "",
+            source_sha256: Some(wanted),
+        });
     }
     let name = target
         .file_name()
@@ -230,12 +334,18 @@ pub(crate) fn add_only_copy(
     }
     versions.sort();
     for (other, path) in &versions {
-        if (check == Check::Quick && copied_since_change(&source_meta, &fs::metadata(path)?))
-            || common::digest(path)? == wanted
-        {
+        let quick =
+            check == Check::Quick && copied_since_change(&source_meta, &fs::metadata(path)?);
+        if quick || common::digest(path)? == wanted {
             // An edit that was undone: no new copy, but this saved version is current again.
             mark_latest(target, other, apply)?;
-            return Ok(Added::Same);
+            return Ok(Kept {
+                added: Added::Same,
+                file: (!quick).then(|| path.clone()),
+                sha256: (!quick).then(|| wanted.clone()),
+                how: "agreed",
+                source_sha256: Some(wanted),
+            });
         }
     }
     // Dated by when the backup saw the change; a file's own timestamp can be set back.
@@ -248,13 +358,19 @@ pub(crate) fn add_only_copy(
         versioned = version_name(target, &format!("{stamp}-{n}"));
         n += 1;
     }
-    verified_copy(source, &versioned, apply, mode)?;
+    let landed = copy_verified(source, &versioned, apply, mode)?;
     mark_latest(
         target,
         &versioned.file_name().unwrap_or_default().to_string_lossy(),
         apply,
     )?;
-    Ok(Added::Version)
+    Ok(Kept {
+        added: Added::Version,
+        file: Some(versioned),
+        sha256: landed,
+        how: "copied",
+        source_sha256: Some(wanted),
+    })
 }
 /// `.name.ext.neko-latest` next to a file that has saved versions: names the saved copy
 /// (`name.ext` or one of its dated versions) that matches the file as the backup last
@@ -302,7 +418,185 @@ fn walk<F: FnMut(&Path) -> Result<()>>(root: &Path, f: &mut F) -> Result<()> {
     }
     Ok(())
 }
+/// Folder (at the root of a backup tree) that keeps damaged copies aside; never data.
+const QUARANTINE: &str = "neko-damaged";
+/// What the checksum checks of one backup tree found.
+#[derive(Debug, Default, PartialEq)]
+pub struct Integrity {
+    /// Checksums recorded for the first time this run.
+    pub newly_verified: u64,
+    /// Files with no recorded checksum and no second copy that agrees yet.
+    pub unverified: u64,
+    /// Damaged copies replaced from a copy that matches the recorded checksum.
+    pub repaired: u64,
+    /// The primary copy (HDD archive, or the USB copy of a Nextcloud file) no longer
+    /// matches its recorded checksum; the other copy is kept.
+    pub damaged: Vec<String>,
+    /// Neither copy matches the recorded checksum; both are kept untouched.
+    pub both_damaged: Vec<String>,
+    /// No checksum recorded yet and the two copies differ; both are kept untouched.
+    pub disagree: Vec<String>,
+}
+impl Integrity {
+    /// Text for a failed job when a copy is damaged; None when everything checks out.
+    pub fn problem(&self, what: &str) -> Option<String> {
+        let list = |rows: &Vec<String>| {
+            let mut text = rows.iter().take(10).cloned().collect::<Vec<_>>().join(", ");
+            if rows.len() > 10 {
+                text += &format!(" and {} more", rows.len() - 10);
+            }
+            text
+        };
+        let mut parts = vec![];
+        if !self.damaged.is_empty() {
+            parts.push(format!(
+                "{} {what} files no longer match their recorded checksum (the other copy is kept): {}",
+                self.damaged.len(),
+                list(&self.damaged)
+            ));
+        }
+        if !self.both_damaged.is_empty() {
+            parts.push(format!(
+                "CRITICAL: {} files match their recorded checksum in no copy; every copy is kept untouched: {}",
+                self.both_damaged.len(),
+                list(&self.both_damaged)
+            ));
+        }
+        if !self.disagree.is_empty() {
+            parts.push(format!(
+                "{} files differ between the HDD and the USB drive and had no recorded checksum yet; both are kept untouched: {}",
+                self.disagree.len(),
+                list(&self.disagree)
+            ));
+        }
+        (!parts.is_empty()).then(|| parts.join(". "))
+    }
+    fn print(&self, what: &str) {
+        if self.newly_verified > 0 {
+            println!("{what}: {} checksums recorded", self.newly_verified);
+        }
+        if self.repaired > 0 {
+            println!(
+                "{what}: {} damaged copies replaced from a verified copy (the damaged ones are kept in {QUARANTINE}/)",
+                self.repaired
+            );
+        }
+        if self.unverified > 0 {
+            println!(
+                "{what}: {} files have no recorded checksum yet (unverified until a second copy agrees)",
+                self.unverified
+            );
+        }
+    }
+}
+/// Save one tree's check results in `reports/integrity.json` (read by the dashboard and
+/// by the recovery menu's repair option). Lists are capped; counts are exact.
+pub fn save_integrity(data: &Path, section: &str, report: &Integrity) -> Result<()> {
+    let path = data.join("reports/integrity.json");
+    let mut all = common::json(&path, 20_000_000);
+    if all["format"] != "neko-integrity-v1" {
+        all = json!({"format": "neko-integrity-v1", "sections": {}});
+    }
+    let cap = |rows: &Vec<String>| rows.iter().take(1000).cloned().collect::<Vec<_>>();
+    all["sections"][section] = json!({
+        "at": common::now(),
+        "newly_verified": report.newly_verified,
+        "unverified": report.unverified,
+        "repaired": report.repaired,
+        "damaged": cap(&report.damaged),
+        "both_damaged": cap(&report.both_damaged),
+        "disagree": cap(&report.disagree),
+        "counts": {"damaged": report.damaged.len(), "both_damaged": report.both_damaged.len(), "disagree": report.disagree.len()},
+    });
+    common::atomic_json(&path, &all)
+}
+/// `path` relative to `root`, as a ledger key ("upload/u/a.jpg").
+fn ledger_key(path: &Path, root: &Path) -> Result<String> {
+    path.strip_prefix(root)
+        .ok()
+        .and_then(|p| p.to_str())
+        .filter(|p| ledger::valid_path(p))
+        .map(str::to_string)
+        .ok_or_else(|| Error::new("File name cannot be recorded in the checksum ledger"))
+}
+/// Record what `kept_copy` verified; a conflicting existing entry means damage.
+fn record_kept(
+    ledger: &mut Ledger,
+    root: &Path,
+    kept: &Kept,
+    report: &mut Integrity,
+) -> Result<()> {
+    let (Some(file), Some(sha)) = (&kept.file, &kept.sha256) else {
+        return Ok(());
+    };
+    let key = ledger_key(file, root)?;
+    match ledger.record(&key, sha, fs::metadata(file)?.len(), kept.how)? {
+        Recorded::New => report.newly_verified += 1,
+        Recorded::Same => {}
+        Recorded::Conflict => report.damaged.push(key),
+    }
+    Ok(())
+}
+/// Files of a backup tree that are data (not its ledger, notes, partial files or the
+/// folder of damaged copies), with their ledger keys.
+fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let mut out = vec![];
+    if !root.is_dir() {
+        return Ok(out);
+    }
+    walk(root, &mut |path| {
+        let key = ledger_key(path, root)?;
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if !(key == QUARANTINE
+            || key.starts_with(&format!("{QUARANTINE}/"))
+            || ledger::own_file(&key)
+            || name.ends_with(".neko-latest")
+            || name.ends_with(".neko-part")
+            || name.starts_with(".neko-"))
+        {
+            out.push((key, path.to_path_buf()));
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+/// The 4-weekly deep audit: read every file again and compare it with its recorded
+/// checksum, whatever its size and dates say (silent bit rot keeps both).
+fn audit(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<()> {
+    for (key, path) in tree_files(root)? {
+        match ledger.get(&key) {
+            Some(entry) => {
+                if common::digest(&path)? != entry.sha256 && !report.damaged.contains(&key) {
+                    report.damaged.push(key);
+                }
+            }
+            None => report.unverified += 1,
+        }
+    }
+    Ok(())
+}
+fn quarantine_folder(root: &Path) -> PathBuf {
+    root.join(QUARANTINE).join(
+        chrono::DateTime::from_timestamp(common::now() as i64, 0)
+            .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
+            .unwrap_or_default(),
+    )
+}
 pub fn archive(source: &Path, archive: &Path, apply: bool, age: u64, check: Check) -> Result<u64> {
+    let (copied, report) = archive_checked(source, archive, apply, age, check)?;
+    match report.problem("HDD archive") {
+        Some(problem) => Err(Error::new(&problem)),
+        None => Ok(copied),
+    }
+}
+/// The archive copy and what its checksum checks found.
+pub fn archive_checked(
+    source: &Path,
+    archive: &Path,
+    apply: bool,
+    age: u64,
+    check: Check,
+) -> Result<(u64, Integrity)> {
     if age < 60 {
         return Err(Error::new("Archive minimum age is 60 seconds"));
     }
@@ -310,6 +604,14 @@ pub fn archive(source: &Path, archive: &Path, apply: bool, age: u64, check: Chec
     let mut copied = 0;
     let mut versions = 0;
     let now = common::now();
+    common::directory(&archive, 0o755)?;
+    let mut ledger = if apply {
+        Ledger::open(&archive)?
+    } else {
+        Ledger::read(&archive)?
+    };
+    let mut report = Integrity::default();
+    let quarantine = quarantine_folder(&archive);
     for section in ["upload", "library"] {
         let root = source.join(section);
         common::safe(&root)?;
@@ -332,14 +634,35 @@ pub fn archive(source: &Path, archive: &Path, apply: bool, age: u64, check: Chec
                 path.strip_prefix(&source)
                     .map_err(|_| Error::new("Invalid archive relative path"))?,
             );
-            match add_only_copy(path, &target, apply, 0o644, check)? {
+            let key = ledger_key(&target, &archive)?;
+            let expected = ledger.get(&key).map(|e| e.sha256.clone());
+            let kept = kept_copy(path, &target, apply, 0o644, check, expected.as_deref())?;
+            match kept.added {
                 Added::New => copied += 1,
                 Added::Version => versions += 1,
                 Added::Same => {}
+                // The Immich original still matches what was recorded: it is the
+                // trusted copy, so the damaged archive file is replaced from it.
+                Added::Damaged if apply && kept.source_sha256 == expected => {
+                    replace_damaged(path, &target, &quarantine.join(&key))?;
+                    report.repaired += 1;
+                }
+                Added::Damaged => report.damaged.push(key),
+            }
+            if apply {
+                record_kept(&mut ledger, &archive, &kept, &mut report)?;
             }
             Ok(())
         })?;
     }
+    if apply {
+        if check == Check::Full {
+            audit(&archive, &ledger, &mut report)?;
+        }
+        // Published after every file it lists.
+        ledger.save()?;
+    }
+    report.print("Archive");
     if versions > 0 {
         println!("Archive: {versions} changed files kept as dated versions");
     }
@@ -347,102 +670,131 @@ pub fn archive(source: &Path, archive: &Path, apply: bool, age: u64, check: Chec
         "Archive: {copied} new verified originals{}",
         if apply { "" } else { " identified (dry run)" }
     );
-    Ok(copied)
+    Ok((copied, report))
 }
-/// Mirror the HDD photo archive to the USB drive. The archive never changes a file it
-/// has saved (changes become new dated files), so a USB copy that differs from its
-/// archive file is damaged: it is moved to `neko-damaged/<time>/` on the USB drive and
-/// the verified archive file is copied again under its own name. The archive's
-/// `.neko-latest` notes are mirrored as they are, and every file a note names is
-/// checked by checksum before the run counts as done.
+/// Mirror the HDD photo archive to the USB drive, checking both copies against the
+/// archive's checksum ledger (recorded when each file was first verified):
+///
+/// | HDD copy | USB copy | what happens                                              |
+/// |----------|----------|-----------------------------------------------------------|
+/// | matches  | matches  | nothing                                                   |
+/// | matches  | differs  | USB copy moved to `neko-damaged/<time>/`, copied again    |
+/// | differs  | matches  | USB copy kept; the HDD file is reported as damaged         |
+/// | differs  | differs  | both kept untouched; reported as a critical failure       |
+///
+/// A file without a recorded checksum is unverified: when both copies agree, their
+/// checksum is recorded; when they differ, both are kept and it is reported.
+/// Size and dates only let unchanged files be skipped; files named by a
+/// current-version note are read every week and everything every 4 weeks (`Full`).
+/// The archive's notes and ledger are mirrored after the files they describe.
 pub fn copy_tree(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<u64> {
+    let (copied, report) = mirror(source, dest, apply, check)?;
+    match report.problem("HDD archive") {
+        Some(problem) => Err(Error::new(&problem)),
+        None => Ok(copied),
+    }
+}
+pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(u64, Integrity)> {
     let (source, dest) = separate(source, dest)?;
-    let mut copied = 0;
-    let mut repaired = 0;
+    let mut ledger = if apply {
+        Ledger::open(&source)?
+    } else {
+        Ledger::read(&source)?
+    };
+    let mut report = Integrity::default();
+    let quarantine = quarantine_folder(&dest);
+    let files = tree_files(&source)?;
+    // Files a current-version note names: what "restore newest" will take.
+    let mut noted = std::collections::BTreeSet::new();
     let mut notes = vec![];
-    let quarantine = dest.join("neko-damaged").join(
-        chrono::DateTime::from_timestamp(common::now() as i64, 0)
-            .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
-            .unwrap_or_default(),
-    );
     walk(&source, &mut |path| {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name.ends_with(".neko-part") || name.ends_with(".sql.part") {
-            return Ok(());
-        }
-        let relative = path
-            .strip_prefix(&source)
-            .map_err(|_| Error::new("Invalid relative path"))?;
-        let target = dest.join(relative);
-        if name.ends_with(".neko-latest") {
-            // The archive's own note of which saved copy is current: mirror it as is.
-            let note = common::bytes(path, 4096)?;
-            if apply && fs::read(&target).ok().as_deref() != Some(note.as_slice()) {
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                common::atomic(&target, &note, 0o644)?;
-            }
-            notes.push(relative.to_path_buf());
-            return Ok(());
-        }
-        match mirror_file(path, &target, apply, check, &quarantine.join(relative))? {
-            Mirrored::New => copied += 1,
-            Mirrored::Repaired => repaired += 1,
-            Mirrored::Same => {}
+        if name.starts_with('.') && name.ends_with(".neko-latest") {
+            let named = String::from_utf8(common::bytes(path, 4096)?)
+                .map_err(|_| Error::new("Unreadable current-version note"))?;
+            let folder = path.parent().unwrap_or(&source);
+            noted.insert(ledger_key(&folder.join(named.trim()), &source)?);
+            notes.push(path.to_path_buf());
         }
         Ok(())
     })?;
-    if apply {
-        for note in &notes {
-            repaired += check_current_copy(&source, &dest, note, &quarantine)?;
+    let mut copied = 0;
+    for (key, path) in &files {
+        let target = dest.join(key);
+        let recorded = ledger.get(key).map(|e| e.sha256.clone());
+        if !target.exists() {
+            // Never copy a damaged archive file onto the USB drive.
+            if let Some(expected) = &recorded {
+                if common::digest(path)? != *expected {
+                    report.damaged.push(key.clone());
+                    continue;
+                }
+            } else {
+                report.unverified += 1;
+            }
+            verified_copy(path, &target, apply, 0o644)?;
+            copied += 1;
+            continue;
+        }
+        if !target.is_file() {
+            return Err(Error::new("Backup target is not a regular file"));
+        }
+        let verify = check == Check::Full || noted.contains(key);
+        if !verify && copied_since_change(&fs::metadata(path)?, &fs::metadata(&target)?) {
+            if recorded.is_none() {
+                report.unverified += 1;
+            }
+            continue;
+        }
+        let (hdd, usb) = (common::digest(path)?, common::digest(&target)?);
+        match recorded {
+            Some(expected) => match (hdd == expected, usb == expected) {
+                (true, true) => {}
+                (true, false) => {
+                    if apply {
+                        replace_damaged(path, &target, &quarantine.join(key))?;
+                    }
+                    report.repaired += 1;
+                }
+                (false, true) => report.damaged.push(key.clone()),
+                (false, false) => report.both_damaged.push(key.clone()),
+            },
+            None if hdd == usb => {
+                if apply
+                    && ledger.record(key, &hdd, fs::metadata(path)?.len(), "agreed")?
+                        == Recorded::New
+                {
+                    report.newly_verified += 1;
+                } else if !apply {
+                    report.unverified += 1;
+                }
+            }
+            None => report.disagree.push(key.clone()),
         }
     }
-    if repaired > 0 {
-        println!(
-            "Backup: {repaired} damaged USB copies replaced from the HDD archive (the damaged ones are kept in {})",
-            quarantine.display()
-        );
+    if apply {
+        for note in &notes {
+            let target = dest.join(ledger_key(note, &source)?);
+            let text = common::bytes(note, 4096)?;
+            if fs::read(&target).ok().as_deref() != Some(text.as_slice()) {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                common::atomic(&target, &text, 0o644)?;
+            }
+        }
+        // Ledgers last: the HDD one with this run's agreements, then its USB copy.
+        ledger.save()?;
+        ledger.publish_copy(&dest)?;
     }
+    report.print("Backup");
     println!(
         "Backup: {copied} new verified files{}",
         if apply { "" } else { " identified (dry run)" }
     );
-    Ok(copied)
+    Ok((copied, report))
 }
-#[derive(Debug, PartialEq)]
-enum Mirrored {
-    Same,
-    New,
-    Repaired,
-}
-fn mirror_file(
-    source: &Path,
-    target: &Path,
-    apply: bool,
-    check: Check,
-    quarantine: &Path,
-) -> Result<Mirrored> {
-    if !target.exists() {
-        verified_copy(source, target, apply, 0o644)?;
-        return Ok(Mirrored::New);
-    }
-    if !target.is_file() {
-        return Err(Error::new("Backup target is not a regular file"));
-    }
-    if check == Check::Quick && copied_since_change(&fs::metadata(source)?, &fs::metadata(target)?)
-    {
-        return Ok(Mirrored::Same);
-    }
-    if common::digest(target)? == common::digest(source)? {
-        return Ok(Mirrored::Same);
-    }
-    if apply {
-        replace_damaged(source, target, quarantine)?;
-    }
-    Ok(Mirrored::Repaired)
-}
-/// Keep the damaged copy aside (never delete) and put the verified archive file back.
+/// Keep the damaged copy aside (never delete) and put the verified file back.
 fn replace_damaged(source: &Path, target: &Path, quarantine: &Path) -> Result<()> {
     if let Some(parent) = quarantine.parent() {
         fs::create_dir_all(parent)?;
@@ -450,36 +802,6 @@ fn replace_damaged(source: &Path, target: &Path, quarantine: &Path) -> Result<()
     fs::rename(common::safe(target)?, common::safe(quarantine)?)?;
     verified_copy(source, target, true, 0o644)?;
     Ok(())
-}
-/// The file a mirrored note names must be on the USB drive with the archive's content;
-/// a damaged one is replaced. Returns how many were replaced (0 or 1).
-fn check_current_copy(source: &Path, dest: &Path, note: &Path, quarantine: &Path) -> Result<u64> {
-    let named = String::from_utf8(common::bytes(&dest.join(note), 4096)?)
-        .map_err(|_| Error::new("Unreadable current-version note"))?;
-    let named = named.trim();
-    if named.is_empty() || named.contains('/') || named == "." || named == ".." {
-        return Err(Error::new("Invalid current-version note"));
-    }
-    let folder = note.parent().unwrap_or(Path::new(""));
-    let (archive, copy) = (
-        source.join(folder).join(named),
-        dest.join(folder).join(named),
-    );
-    if !archive.is_file() {
-        return Err(Error::new(&format!(
-            "The HDD archive's note {} names a missing file",
-            note.display()
-        )));
-    }
-    if copy.is_file() && common::digest(&copy)? == common::digest(&archive)? {
-        return Ok(0);
-    }
-    if copy.exists() {
-        replace_damaged(&archive, &copy, &quarantine.join(folder).join(named))?;
-    } else {
-        verified_copy(&archive, &copy, true, 0o644)?;
-    }
-    Ok(1)
 }
 /// Add-only copy of each Nextcloud user's own files (`<user>/files`) to
 /// `dest/nextcloud/<user>/files`. Previews (appdata_*), trash, versions, caches and
@@ -504,6 +826,8 @@ pub struct CloudCopy {
     pub refused: Vec<String>,
     /// Files skipped because they changed or vanished while being copied (in use).
     pub skipped_files: Vec<String>,
+    /// What the checksum checks of the USB copy found.
+    pub integrity: Integrity,
 }
 impl CloudCopy {
     pub fn complete(&self) -> bool {
@@ -539,6 +863,16 @@ pub fn copy_cloud(
     let (mut copied, mut versions, mut skipped) = (0, 0, 0);
     let mut refused = vec![];
     let mut skipped_files = vec![];
+    // The USB copy keeps its own ledger: the Nextcloud files are not on the HDD.
+    let root = dest.join("nextcloud");
+    common::directory(&root, 0o700)?;
+    let mut ledger = if apply {
+        Ledger::open(&root)?
+    } else {
+        Ledger::read(&root)?
+    };
+    let mut report = Integrity::default();
+    let quarantine = quarantine_folder(&root);
     for user_dir in list(&cloud)? {
         let user = user_dir
             .file_name()
@@ -570,10 +904,25 @@ pub fn copy_cloud(
                 .join(&user)
                 .join("files")
                 .join(relative);
-            match add_only_copy(path, &target, apply, 0o600, check) {
-                Ok(Added::New) => copied += 1,
-                Ok(Added::Version) => versions += 1,
-                Ok(Added::Same) => {}
+            let key = ledger_key(&target, &root)?;
+            let expected = ledger.get(&key).map(|e| e.sha256.clone());
+            match kept_copy(path, &target, apply, 0o600, check, expected.as_deref()) {
+                Ok(kept) => {
+                    match kept.added {
+                        Added::New => copied += 1,
+                        Added::Version => versions += 1,
+                        Added::Same => {}
+                        // The live file still matches the recorded checksum: repair the USB copy.
+                        Added::Damaged if apply && kept.source_sha256 == expected => {
+                            replace_damaged(path, &target, &quarantine.join(&key))?;
+                            report.repaired += 1;
+                        }
+                        Added::Damaged => report.damaged.push(key),
+                    }
+                    if apply {
+                        record_kept(&mut ledger, &root, &kept, &mut report)?;
+                    }
+                }
                 Err(e) if e.to_string().contains("changed") || !path.exists() => {
                     skipped += 1;
                     skipped_files.push(format!("{user}/{}", relative.display()));
@@ -583,6 +932,13 @@ pub fn copy_cloud(
             Ok(())
         })?;
     }
+    if apply {
+        if check == Check::Full {
+            audit(&root, &ledger, &mut report)?;
+        }
+        ledger.save()?;
+    }
+    report.print("Nextcloud");
     println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
     if !refused.is_empty() {
         println!(
@@ -597,6 +953,7 @@ pub fn copy_cloud(
         skipped,
         refused,
         skipped_files,
+        integrity: report,
     })
 }
 /// Weekly Immich database copies kept on the USB drive (newest first; older ones go).
@@ -1110,13 +1467,17 @@ pub fn preservation(a: &Args) -> Result<()> {
             let archive_dir = common::relative(&a.value("archive-dir", "photos/archive"))?;
             let full = full_check_due(&data, "archive");
             common::stage("copying new photos and videos to the HDD");
-            archive(
+            let (_, checks) = archive_checked(
                 &data.join("photos/immich-library"),
                 &media.join(archive_dir),
                 true,
                 a.number("min-age", 600)?,
                 if full { Check::Full } else { Check::Quick },
             )?;
+            save_integrity(&data, "archive", &checks)?;
+            if let Some(problem) = checks.problem("HDD archive") {
+                return Err(Error::new(&problem));
+            }
             if full {
                 println!("Archive: compared every existing copy by checksum (every 4 weeks)");
                 record_full_check(&data, "archive")?;
@@ -1253,7 +1614,7 @@ pub fn weekly(a: &Args) -> Result<()> {
             validate_external(&dest, uuid)?;
             guard(&cfg, &data, &media)?;
             common::stage("copying photos and videos to the USB drive");
-            copy_tree(&source, &dest, true, check)?;
+            let (_, photos) = mirror(&source, &dest, true, check)?;
             validate_external(&dest, uuid)?;
             guard(&cfg, &data, &media)?;
             let mut database_problem = None;
@@ -1281,6 +1642,24 @@ pub fn weekly(a: &Args) -> Result<()> {
                     legacy.len(),
                     legacy.join(", ")
                 );
+            }
+            save_integrity(&data, "usb_photos", &photos)?;
+            if let Some(cloud) = &cloud_copy {
+                save_integrity(&data, "usb_nextcloud", &cloud.integrity)?;
+            }
+            // Damage found by the checksum checks fails the job, after everything else
+            // was copied: nothing is lost by finishing the run first.
+            let damage: Vec<String> = [
+                photos.problem("HDD archive"),
+                cloud_copy
+                    .as_ref()
+                    .and_then(|c| c.integrity.problem("USB Nextcloud")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            if !damage.is_empty() {
+                return Err(Error::new(&damage.join(". ")));
             }
             Ok(incomplete(
                 cloud_copy.and_then(|c| c.missing()),
@@ -1310,6 +1689,14 @@ mod tests {
     fn write(path: &Path, body: &[u8]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
+    }
+    /// Save `src` into the backup tree `root` under `key` the way the archive job does:
+    /// verified copy, checksum recorded in the tree's ledger.
+    fn keep(src: &Path, root: &Path, key: &str) {
+        let mut ledger = Ledger::open(root).unwrap();
+        let kept = kept_copy(src, &root.join(key), true, 0o600, Check::Quick, None).unwrap();
+        record_kept(&mut ledger, root, &kept, &mut Integrity::default()).unwrap();
+        ledger.save().unwrap();
     }
     fn names(dir: &Path) -> Vec<String> {
         let mut v: Vec<String> = fs::read_dir(dir)
@@ -1572,6 +1959,192 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
+    fn a_copy_is_published_only_when_stream_disk_and_source_checksums_agree() {
+        let root = scratch("three-hash");
+        let (src, dst) = (root.join("a.mov"), root.join("out/a.mov"));
+        write(&src, b"original video");
+        let landed = copy_verified(&src, &dst, true, 0o600).unwrap().unwrap();
+        assert_eq!(landed, common::digest(&src).unwrap());
+        assert_eq!(fs::read(&dst).unwrap(), b"original video");
+        // The source is rewritten while it is being copied: nothing is published.
+        let (src2, dst2) = (root.join("b.mov"), root.join("out/b.mov"));
+        write(&src2, b"first take");
+        let error = copy_verified_with(&src2, &dst2, true, 0o600, &|| {
+            fs::write(&src2, b"second take, longer").unwrap()
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("changed during the copy"), "{error}");
+        assert!(!dst2.exists());
+        assert!(!root.join("out/b.mov.neko-part").exists());
+        // Same size and mtime put back: ctime still shows the edit.
+        let (src3, dst3) = (root.join("c.mov"), root.join("out/c.mov"));
+        write(&src3, b"AAAA");
+        let error = copy_verified_with(&src3, &dst3, true, 0o600, &|| {
+            let m = fs::metadata(&src3).unwrap();
+            fs::write(&src3, b"BBBB").unwrap();
+            let times = [
+                libc::timespec {
+                    tv_sec: m.atime(),
+                    tv_nsec: m.atime_nsec(),
+                },
+                libc::timespec {
+                    tv_sec: m.mtime(),
+                    tv_nsec: m.mtime_nsec(),
+                },
+            ];
+            let path = std::ffi::CString::new(src3.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(
+                unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), 0) },
+                0
+            );
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("changed during the copy"), "{error}");
+        assert!(!dst3.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn hdd_usb_and_the_ledger_decide_which_copy_is_good() {
+        let root = scratch("three-way");
+        let (src, hdd, usb) = (root.join("src"), root.join("hdd"), root.join("usb"));
+        for name in ["a", "b", "c", "d"] {
+            write(&src.join(name), format!("good {name}").as_bytes());
+            keep(&src.join(name), &hdd, &format!("upload/{name}.jpg"));
+        }
+        let (copied, report) = mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        assert_eq!((copied, report.problem("HDD archive")), (4, None));
+        let recorded = |key: &str| Ledger::read(&hdd).unwrap().get(key).unwrap().sha256.clone();
+        let before = recorded("upload/b.jpg");
+        // Same-size damage, so only reading the files can find it.
+        fs::write(usb.join("upload/a.jpg"), b"ROT? a").unwrap(); // USB wrong, HDD right
+        fs::write(hdd.join("upload/b.jpg"), b"ROT? b").unwrap(); // HDD wrong, USB right
+        fs::write(hdd.join("upload/c.jpg"), b"ROT1 c").unwrap(); // both wrong
+        fs::write(usb.join("upload/c.jpg"), b"ROT2 c").unwrap();
+        let (_, report) = mirror(&hdd, &usb, true, Check::Full).unwrap();
+        // HDD matches, USB fails: the USB copy is repaired from the HDD.
+        assert_eq!(report.repaired, 1);
+        assert_eq!(fs::read(usb.join("upload/a.jpg")).unwrap(), b"good a");
+        let kept: Vec<_> = fs::read_dir(usb.join(QUARANTINE))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            fs::read(kept[0].path().join("upload/a.jpg")).unwrap(),
+            b"ROT? a"
+        );
+        // USB matches, HDD fails: the USB copy is kept, the HDD file is reported.
+        assert_eq!(report.damaged, ["upload/b.jpg"]);
+        assert_eq!(fs::read(usb.join("upload/b.jpg")).unwrap(), b"good b");
+        // Neither matches: both kept untouched, critical.
+        assert_eq!(report.both_damaged, ["upload/c.jpg"]);
+        assert_eq!(fs::read(hdd.join("upload/c.jpg")).unwrap(), b"ROT1 c");
+        assert_eq!(fs::read(usb.join("upload/c.jpg")).unwrap(), b"ROT2 c");
+        assert!(report.problem("HDD archive").unwrap().contains("CRITICAL"));
+        assert!(copy_tree(&hdd, &usb, true, Check::Full).is_err());
+        // The recorded checksum never follows the damage.
+        assert_eq!(recorded("upload/b.jpg"), before);
+        // The USB drive carries the same ledger, published after the files.
+        assert_eq!(
+            Ledger::read(&usb)
+                .unwrap()
+                .get("upload/d.jpg")
+                .unwrap()
+                .sha256,
+            recorded("upload/d.jpg")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn files_without_a_checksum_stay_unverified_until_two_copies_agree() {
+        let root = scratch("unverified");
+        let (hdd, usb) = (root.join("hdd"), root.join("usb"));
+        // Archive files from before the ledger existed.
+        write(&hdd.join("upload/old.jpg"), b"old photo");
+        write(&hdd.join("upload/odd.jpg"), b"hdd version");
+        write(&usb.join("upload/old.jpg"), b"old photo");
+        write(&usb.join("upload/odd.jpg"), b"usb version");
+        let (_, report) = mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        assert!(report.unverified >= 1);
+        let (_, report) = mirror(&hdd, &usb, true, Check::Full).unwrap();
+        assert_eq!(report.newly_verified, 1);
+        let ledger = Ledger::read(&hdd).unwrap();
+        assert_eq!(ledger.get("upload/old.jpg").unwrap().how, "agreed");
+        // Copies that differ with nothing recorded: neither is trusted or changed.
+        assert!(ledger.get("upload/odd.jpg").is_none());
+        assert_eq!(report.disagree, ["upload/odd.jpg"]);
+        assert_eq!(
+            fs::read(usb.join("upload/odd.jpg")).unwrap(),
+            b"usb version"
+        );
+        assert_eq!(
+            fs::read(hdd.join("upload/odd.jpg")).unwrap(),
+            b"hdd version"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_damaged_hdd_file_is_never_copied_to_the_usb_drive() {
+        let root = scratch("no-spread");
+        let (src, hdd, usb) = (root.join("a.jpg"), root.join("hdd"), root.join("usb"));
+        write(&src, b"good");
+        keep(&src, &hdd, "upload/a.jpg");
+        fs::write(hdd.join("upload/a.jpg"), b"bad!").unwrap();
+        let (copied, report) = mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        assert_eq!(
+            (copied, report.damaged.clone()),
+            (0, vec!["upload/a.jpg".to_string()])
+        );
+        assert!(!usb.join("upload/a.jpg").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_archive_repairs_itself_from_the_immich_original_and_audits_every_file() {
+        let root = scratch("archive-ledger");
+        let (library, hdd) = (root.join("library"), root.join("hdd"));
+        let old = |path: &Path| {
+            let past = libc::timespec {
+                tv_sec: 1_000_000_000,
+                tv_nsec: 0,
+            };
+            let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), [past, past].as_ptr(), 0) };
+        };
+        write(&library.join("upload/u/a.jpg"), b"photo a");
+        write(&library.join("upload/u/b.jpg"), b"photo b");
+        old(&library.join("upload/u/a.jpg"));
+        old(&library.join("upload/u/b.jpg"));
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        let ledger = Ledger::read(&hdd).unwrap();
+        assert_eq!(ledger.get("upload/u/a.jpg").unwrap().how, "copied");
+        // Bit rot on the HDD; the Immich original still matches: repaired from it.
+        fs::write(hdd.join("upload/u/a.jpg"), b"photo ?").unwrap();
+        archive(&library, &hdd, true, 60, Check::Full).unwrap();
+        assert_eq!(fs::read(hdd.join("upload/u/a.jpg")).unwrap(), b"photo a");
+        // A file Immich no longer has: only the audit can see it, and it is reported.
+        fs::remove_file(library.join("upload/u/b.jpg")).unwrap();
+        fs::write(hdd.join("upload/u/b.jpg"), b"photo ?").unwrap();
+        let error = archive(&library, &hdd, true, 60, Check::Full)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("upload/u/b.jpg"), "{error}");
+        // The damaged file was never taken for an edit: no dated version was made.
+        assert!(!names(&hdd.join("upload/u"))
+            .iter()
+            .any(|n| n.contains(".neko-2")));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_symlink_in_a_backup_tree_is_reported_not_skipped() {
+        let root = scratch("enumerate");
+        write(&root.join("hdd/upload/a.jpg"), b"a");
+        std::os::unix::fs::symlink("/etc", root.join("hdd/upload/escape")).unwrap();
+        let error = tree_files(&root.join("hdd")).unwrap_err().to_string();
+        assert!(error.contains("symlink"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
     fn incomplete_cloud_copy_is_reported_with_its_files() {
         assert_eq!(CloudCopy::default().missing(), None);
         let partial = CloudCopy {
@@ -1640,7 +2213,7 @@ mod tests {
         write(&src, b"BBBB");
         add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
         copy_tree(&hdd, &usb, true, Check::Quick).unwrap();
-        assert_eq!(names(&usb), names(&hdd));
+        assert_eq!(names(&usb), names(&hdd)); // the ledger and its lock included
         write(&src, b"AAAA"); // undone on the server
         add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
         // A monthly full check of the USB copy must not rewrite the mirrored note.
@@ -1656,9 +2229,9 @@ mod tests {
         let root = scratch("damaged-usb");
         let (src, hdd, usb) = (root.join("src/a.jpg"), root.join("hdd"), root.join("usb"));
         write(&src, b"AAAA");
-        add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
+        keep(&src, &hdd, "a.jpg");
         write(&src, b"BBBB");
-        add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
+        keep(&src, &hdd, "a.jpg");
         copy_tree(&hdd, &usb, true, Check::Quick).unwrap();
         let current = fs::read_to_string(latest_marker(&usb.join("a.jpg"))).unwrap();
         fs::write(usb.join(&current), b"ZZZZ").unwrap(); // same size, written later
@@ -1671,7 +2244,10 @@ mod tests {
         // No extra dated copy; the damaged one is kept aside, outside the photo folders.
         let mut usb_names = names(&usb);
         usb_names.retain(|n| n != "neko-damaged");
-        assert_eq!(usb_names, names(&hdd));
+        let mut hdd_names = names(&hdd);
+        hdd_names.retain(|n| n != ".neko-ledger.lock");
+        usb_names.retain(|n| n != ".neko-ledger.lock");
+        assert_eq!(usb_names, hdd_names);
         let kept: Vec<_> = fs::read_dir(usb.join("neko-damaged"))
             .unwrap()
             .flatten()
@@ -1744,7 +2320,10 @@ mod tests {
         let first = copy_cloud(&cloud, &usb, true, false, Check::Quick).unwrap();
         assert_eq!((first.copied, first.versions, first.skipped), (3, 0, 0));
         assert!(first.complete());
-        assert_eq!(names(&usb.join("nextcloud")), ["alice", "bob"]);
+        assert_eq!(
+            names(&usb.join("nextcloud")),
+            [".neko-ledger.json", ".neko-ledger.lock", "alice", "bob"]
+        );
         assert_eq!(names(&usb.join("nextcloud/alice")), ["files"]);
         assert_eq!(
             fs::read(usb.join("nextcloud/alice/files/Documents/plan.odt")).unwrap(),

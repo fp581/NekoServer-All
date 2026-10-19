@@ -1,6 +1,7 @@
 """Shared local filesystem safety; standard library only."""
 import ctypes
 import errno
+import hashlib
 import json
 import os
 import re
@@ -8,7 +9,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-VERSION = '0.24.6'
+VERSION = '0.25.0'
 
 TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
 ZONEINFO = Path('/usr/share/zoneinfo')
@@ -95,6 +96,154 @@ def regular_files(root):
                 continue
             if stat.S_ISREG(info.st_mode):
                 yield path, info.st_size
+
+
+LEDGER_NAME = '.neko-ledger.json'   # checksum ledger at the root of a backup tree
+QUARANTINE = 'neko-damaged'         # damaged copies kept aside at the root; never data
+
+
+def valid_ledger_path(rel):
+    """A ledger path is plain and relative: no leading /, no '.', '..' or empty parts."""
+    return (isinstance(rel, str) and rel and '\0' not in rel and not rel.startswith('/')
+            and all(part not in ('', '.', '..') for part in rel.split('/')))
+
+
+def read_ledger(root):
+    """{relative path: sha256} recorded for a backup tree, or {} if it has no ledger yet.
+    A ledger with any unsafe path or malformed entry is not trusted at all."""
+    path = Path(root) / LEDGER_NAME
+    if not path.exists():
+        return {}
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f'The checksum ledger {path} is not a regular file')
+    try:
+        value = json.loads(path.read_text())
+        entries = value['entries'] if value.get('format') == 'neko-ledger-v1' else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        entries = None
+    if not isinstance(entries, dict):
+        raise RuntimeError(f'The checksum ledger {path} is unreadable')
+    out = {}
+    for rel, row in entries.items():
+        sha = row.get('sha256') if isinstance(row, dict) else None
+        if not valid_ledger_path(rel) or not (isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha)):
+            raise RuntimeError(f'The checksum ledger {path} has an invalid entry; it is not trusted')
+        out[rel] = sha
+    return out
+
+
+def record_ledger(root, entries, how):
+    """Add {relative path: sha256} to a tree's checksum ledger, with the same rules as the
+    backup program: one writer at a time (its lock), an existing entry is never
+    replaced, and the new ledger is written to `.neko-ledger.json.<uuid>.tmp`,
+    fsync'd, renamed and its folder fsync'd. Returns the paths actually added."""
+    import fcntl
+    import time
+    import uuid
+    root = safe_path(Path(root))
+    with open(root / '.neko-ledger.lock', 'a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError('A backup job is using this backup right now; try again when it has finished') from None
+        path = root / LEDGER_NAME
+        value = json.loads(path.read_text()) if path.exists() else {'format': 'neko-ledger-v1', 'entries': {}}
+        read_ledger(root)  # refuse to extend a ledger that is not trusted
+        added = []
+        for rel, sha in entries.items():
+            if not valid_ledger_path(rel) or not re.fullmatch(r'[0-9a-f]{64}', sha):
+                raise RuntimeError('Refusing an invalid checksum ledger entry')
+            if rel in value['entries']:
+                continue
+            value['entries'][rel] = {'sha256': sha, 'size': (root / rel).stat().st_size,
+                                     'verified_at': time.time(), 'how': how}
+            added.append(rel)
+        if added:
+            temp = root / f'{LEDGER_NAME}.{uuid.uuid4()}.tmp'
+            try:
+                with open(temp, 'x') as out:
+                    os.fchmod(out.fileno(), 0o600)
+                    json.dump(value, out)
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.replace(temp, path)
+                fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            finally:
+                if temp.exists():
+                    temp.unlink()
+        return added
+
+
+def sha256_file(path):
+    """SHA-256 of a file, read in full."""
+    with open(path, 'rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def backup_files(root):
+    """Every data file of a backup tree, strictly: an unreadable folder or file, a
+    symlink or a special file is an error, never silently left out. The tree's own
+    ledger, notes, partial files and its folder of damaged copies are not data."""
+    root = Path(root)
+    problems = []
+    out = []
+
+    def failed(error):
+        problems.append(f'{error.filename}: {error.strerror}')
+    for folder, dirs, files in os.walk(root, onerror=failed):
+        here = Path(folder)
+        if here == root and QUARANTINE in dirs:
+            dirs.remove(QUARANTINE)
+        for name in dirs:
+            if (here / name).is_symlink():
+                problems.append(f'{here / name}: symlink in a backup')
+        for name in files:
+            path = here / name
+            if name.startswith('.neko-') or name.endswith(('.neko-latest', '.neko-part')) \
+                    or (here == root and name.startswith(LEDGER_NAME)):
+                continue
+            try:
+                info = path.lstat()
+            except OSError as error:
+                problems.append(f'{path}: {error.strerror}')
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                problems.append(f'{path}: not a regular file')
+                continue
+            out.append((path, info.st_size))
+    if problems:
+        raise RuntimeError('Some backup files could not be read; nothing was restored from a '
+                           'partial list: ' + '; '.join(problems[:5]) +
+                           (f' and {len(problems) - 5} more' if len(problems) > 5 else ''))
+    return out
+
+
+def copy_checked(source, target, expected=None):
+    """Copy one file into a new `target`: stream it while hashing, fsync, read it back
+    from disk and hash again. Raises if the two disagree or, when `expected` (its
+    recorded checksum) is given, if the backup copy no longer matches it."""
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    stream = hashlib.sha256()
+    with open(source, 'rb') as src, open(target, 'xb') as out:
+        os.fchmod(out.fileno(), 0o600)
+        while chunk := src.read(1 << 20):
+            stream.update(chunk)
+            out.write(chunk)
+        out.flush()
+        os.fsync(out.fileno())
+    with open(target, 'rb') as back:
+        landed = hashlib.file_digest(back, 'sha256').hexdigest()
+    if landed != stream.hexdigest():
+        raise RuntimeError(f'Restoring {source} failed: the copy written to disk does not match what was read')
+    if expected is not None and landed != expected:
+        raise RuntimeError(f'{source} is damaged on the backup (it no longer matches its recorded '
+                           'checksum); the restore was stopped. Try the other backup (HDD or USB).')
+    return landed
 
 
 def settings_path(value):
