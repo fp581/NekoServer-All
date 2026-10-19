@@ -177,18 +177,6 @@ pub(crate) fn add_only_copy(
     mode: u32,
     check: Check,
 ) -> Result<Added> {
-    copy_kept(source, target, apply, mode, check, true)
-}
-/// `track`: keep the `.neko-latest` note for this file. Off when mirroring a backup
-/// that already has its own notes (the HDD archive to the USB drive).
-fn copy_kept(
-    source: &Path,
-    target: &Path,
-    apply: bool,
-    mode: u32,
-    check: Check,
-    track: bool,
-) -> Result<Added> {
     if !target.exists() {
         return Ok(if verified_copy(source, target, apply, mode)? {
             Added::New
@@ -206,7 +194,7 @@ fn copy_kept(
     let wanted = common::digest(source)?;
     if common::digest(target)? == wanted {
         // Back to the first saved content: say so if later versions exist.
-        if track && latest_marker(target).exists() {
+        if latest_marker(target).exists() {
             let name = target.file_name().unwrap_or_default().to_string_lossy();
             mark_latest(target, &name, apply)?;
         }
@@ -246,9 +234,7 @@ fn copy_kept(
             || common::digest(path)? == wanted
         {
             // An edit that was undone: no new copy, but this saved version is current again.
-            if track {
-                mark_latest(target, other, apply)?;
-            }
+            mark_latest(target, other, apply)?;
             return Ok(Added::Same);
         }
     }
@@ -263,13 +249,11 @@ fn copy_kept(
         n += 1;
     }
     verified_copy(source, &versioned, apply, mode)?;
-    if track {
-        mark_latest(
-            target,
-            &versioned.file_name().unwrap_or_default().to_string_lossy(),
-            apply,
-        )?;
-    }
+    mark_latest(
+        target,
+        &versioned.file_name().unwrap_or_default().to_string_lossy(),
+        apply,
+    )?;
     Ok(Added::Version)
 }
 /// `.name.ext.neko-latest` next to a file that has saved versions: names the saved copy
@@ -365,19 +349,31 @@ pub fn archive(source: &Path, archive: &Path, apply: bool, age: u64, check: Chec
     );
     Ok(copied)
 }
+/// Mirror the HDD photo archive to the USB drive. The archive never changes a file it
+/// has saved (changes become new dated files), so a USB copy that differs from its
+/// archive file is damaged: it is moved to `neko-damaged/<time>/` on the USB drive and
+/// the verified archive file is copied again under its own name. The archive's
+/// `.neko-latest` notes are mirrored as they are, and every file a note names is
+/// checked by checksum before the run counts as done.
 pub fn copy_tree(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<u64> {
     let (source, dest) = separate(source, dest)?;
     let mut copied = 0;
-    let mut versions = 0;
+    let mut repaired = 0;
+    let mut notes = vec![];
+    let quarantine = dest.join("neko-damaged").join(
+        chrono::DateTime::from_timestamp(common::now() as i64, 0)
+            .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
+            .unwrap_or_default(),
+    );
     walk(&source, &mut |path| {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if name.ends_with(".neko-part") || name.ends_with(".sql.part") {
             return Ok(());
         }
-        let target = dest.join(
-            path.strip_prefix(&source)
-                .map_err(|_| Error::new("Invalid relative path"))?,
-        );
+        let relative = path
+            .strip_prefix(&source)
+            .map_err(|_| Error::new("Invalid relative path"))?;
+        let target = dest.join(relative);
         if name.ends_with(".neko-latest") {
             // The archive's own note of which saved copy is current: mirror it as is.
             let note = common::bytes(path, 4096)?;
@@ -387,23 +383,103 @@ pub fn copy_tree(source: &Path, dest: &Path, apply: bool, check: Check) -> Resul
                 }
                 common::atomic(&target, &note, 0o644)?;
             }
+            notes.push(relative.to_path_buf());
             return Ok(());
         }
-        match copy_kept(path, &target, apply, 0o644, check, false)? {
-            Added::New => copied += 1,
-            Added::Version => versions += 1,
-            Added::Same => {}
+        match mirror_file(path, &target, apply, check, &quarantine.join(relative))? {
+            Mirrored::New => copied += 1,
+            Mirrored::Repaired => repaired += 1,
+            Mirrored::Same => {}
         }
         Ok(())
     })?;
-    if versions > 0 {
-        println!("Backup: {versions} changed files kept as dated versions");
+    if apply {
+        for note in &notes {
+            repaired += check_current_copy(&source, &dest, note, &quarantine)?;
+        }
+    }
+    if repaired > 0 {
+        println!(
+            "Backup: {repaired} damaged USB copies replaced from the HDD archive (the damaged ones are kept in {})",
+            quarantine.display()
+        );
     }
     println!(
         "Backup: {copied} new verified files{}",
         if apply { "" } else { " identified (dry run)" }
     );
     Ok(copied)
+}
+#[derive(Debug, PartialEq)]
+enum Mirrored {
+    Same,
+    New,
+    Repaired,
+}
+fn mirror_file(
+    source: &Path,
+    target: &Path,
+    apply: bool,
+    check: Check,
+    quarantine: &Path,
+) -> Result<Mirrored> {
+    if !target.exists() {
+        verified_copy(source, target, apply, 0o644)?;
+        return Ok(Mirrored::New);
+    }
+    if !target.is_file() {
+        return Err(Error::new("Backup target is not a regular file"));
+    }
+    if check == Check::Quick && copied_since_change(&fs::metadata(source)?, &fs::metadata(target)?)
+    {
+        return Ok(Mirrored::Same);
+    }
+    if common::digest(target)? == common::digest(source)? {
+        return Ok(Mirrored::Same);
+    }
+    if apply {
+        replace_damaged(source, target, quarantine)?;
+    }
+    Ok(Mirrored::Repaired)
+}
+/// Keep the damaged copy aside (never delete) and put the verified archive file back.
+fn replace_damaged(source: &Path, target: &Path, quarantine: &Path) -> Result<()> {
+    if let Some(parent) = quarantine.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(common::safe(target)?, common::safe(quarantine)?)?;
+    verified_copy(source, target, true, 0o644)?;
+    Ok(())
+}
+/// The file a mirrored note names must be on the USB drive with the archive's content;
+/// a damaged one is replaced. Returns how many were replaced (0 or 1).
+fn check_current_copy(source: &Path, dest: &Path, note: &Path, quarantine: &Path) -> Result<u64> {
+    let named = String::from_utf8(common::bytes(&dest.join(note), 4096)?)
+        .map_err(|_| Error::new("Unreadable current-version note"))?;
+    let named = named.trim();
+    if named.is_empty() || named.contains('/') || named == "." || named == ".." {
+        return Err(Error::new("Invalid current-version note"));
+    }
+    let folder = note.parent().unwrap_or(Path::new(""));
+    let (archive, copy) = (
+        source.join(folder).join(named),
+        dest.join(folder).join(named),
+    );
+    if !archive.is_file() {
+        return Err(Error::new(&format!(
+            "The HDD archive's note {} names a missing file",
+            note.display()
+        )));
+    }
+    if copy.is_file() && common::digest(&copy)? == common::digest(&archive)? {
+        return Ok(0);
+    }
+    if copy.exists() {
+        replace_damaged(&archive, &copy, &quarantine.join(folder).join(named))?;
+    } else {
+        verified_copy(&archive, &copy, true, 0o644)?;
+    }
+    Ok(1)
 }
 /// Add-only copy of each Nextcloud user's own files (`<user>/files`) to
 /// `dest/nextcloud/<user>/files`. Previews (appdata_*), trash, versions, caches and
@@ -1455,6 +1531,39 @@ mod tests {
         let note = latest_marker(&usb.join("a.jpg"));
         assert_eq!(fs::read_to_string(note).unwrap(), "a.jpg");
         assert_eq!(names(&usb), names(&hdd));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_damaged_usb_copy_is_replaced_not_kept_as_current() {
+        // AAAA -> BBBB on the server; the USB copy of the current version is damaged.
+        let root = scratch("damaged-usb");
+        let (src, hdd, usb) = (root.join("src/a.jpg"), root.join("hdd"), root.join("usb"));
+        write(&src, b"AAAA");
+        add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
+        write(&src, b"BBBB");
+        add_only_copy(&src, &hdd.join("a.jpg"), true, 0o600, Check::Quick).unwrap();
+        copy_tree(&hdd, &usb, true, Check::Quick).unwrap();
+        let current = fs::read_to_string(latest_marker(&usb.join("a.jpg"))).unwrap();
+        fs::write(usb.join(&current), b"ZZZZ").unwrap(); // same size, written later
+        copy_tree(&hdd, &usb, true, Check::Quick).unwrap();
+        assert_eq!(fs::read(usb.join(&current)).unwrap(), b"BBBB");
+        assert_eq!(
+            fs::read_to_string(latest_marker(&usb.join("a.jpg"))).unwrap(),
+            current
+        );
+        // No extra dated copy; the damaged one is kept aside, outside the photo folders.
+        let mut usb_names = names(&usb);
+        usb_names.retain(|n| n != "neko-damaged");
+        assert_eq!(usb_names, names(&hdd));
+        let kept: Vec<_> = fs::read_dir(usb.join("neko-damaged"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(fs::read(kept[0].path().join(&current)).unwrap(), b"ZZZZ");
+        // A damaged file no note names is found by the 4-weekly full check.
+        fs::write(usb.join("a.jpg"), b"XXXX").unwrap();
+        copy_tree(&hdd, &usb, true, Check::Full).unwrap();
+        assert_eq!(fs::read(usb.join("a.jpg")).unwrap(), b"AAAA");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

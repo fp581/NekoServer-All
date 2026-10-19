@@ -36,11 +36,20 @@ def used_bytes(path):
         return 0
 
 
+PHOTO_SECTIONS = ('upload', 'library')
+
+
+def archive_folder(config):
+    """The permanent photo archive on the HDD (what the weekly USB job copies)."""
+    return Path(config['media_mount']) / config.get('photos', {}).get('archive_dir', 'photos/archive')
+
+
 def usb_sources(config):
     """(folder on this server, matching folder on the USB drive) for everything the weekly
-    job copies there; mirrors the layout the server program writes."""
-    data, media = Path(config['data_mount']), Path(config['media_mount'])
-    pairs = [(data / 'photos/immich-library' / name, name) for name in ('upload', 'library')]
+    job copies there; mirrors the layout the server program writes. Photos come from the
+    HDD archive, which keeps photos deleted from Immich and every saved version."""
+    media = Path(config['media_mount'])
+    pairs = [(archive_folder(config) / name, name) for name in PHOTO_SECTIONS]
     cloud = media / 'cloud/files'
     try:
         users = sorted(cloud.iterdir()) if cloud.is_dir() else []
@@ -51,6 +60,13 @@ def usb_sources(config):
             continue
         pairs.append((user / 'files', f'nextcloud/{user.name}/files'))
     return pairs
+
+
+def awaiting_archive(config):
+    """Bytes of photos and videos on the SSD that the HDD archive does not hold yet; the
+    nightly archive copy adds them there, and the weekly USB copy then adds them too."""
+    library = Path(config['data_mount']) / 'photos/immich-library'
+    return pending_bytes(archive_folder(config), [(library / name, name) for name in PHOTO_SECTIONS])
 
 
 def newest_dump_bytes(config):
@@ -142,7 +158,8 @@ def gib(value):
     return f'{value / GIB:.0f} GB'
 
 
-def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=newest_dump_bytes):
+def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=newest_dump_bytes,
+           unarchived=awaiting_archive):
     """Return (problems that stop the install, warnings worth confirming)."""
     data, media = Path(config['data_mount']), Path(config['media_mount'])
     stop, warn = [], []
@@ -157,18 +174,19 @@ def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=ne
         elif space < recommended * GIB:
             warn.append(f'The {name} has {gib(space)} free. {recommended} GB or more is recommended '
                         f'for {purpose}; it will fill up sooner.')
-    photos = used(data / 'photos/immich-library')
+    # The archive also keeps photos deleted from Immich and earlier versions.
+    photos = max(used(data / 'photos/immich-library'), used(archive_folder(config)))
     cloud = used(media / 'cloud/files')
     room = usb_space(config.get('photos', {}).get('external_backup_uuid', ''), usb_sources(config))
     if room is not None:
         # What the next copy must write (new files, changed files, this week's database
         # copy) plus room to grow. Old versions already on the drive are never reused.
         free_now, pending = room
-        pending += dump(config)
+        pending += unarchived(config) + dump(config)
         needed = max(USB_MIN * GIB, pending + int((photos + cloud) * 0.2))
         if free_now < needed:
             warn.append(f'The USB drive has {gib(free_now)} free. The next weekly copy still has to add '
-                        f'{gib(pending)} (new and changed photos, Nextcloud files and a database copy); '
+                        f'{gib(pending)} (photos and versions from the HDD archive, photos not archived yet, Nextcloud files and a database copy); '
                         f'{gib(needed)} or more free is recommended so it fits and has room to grow. '
                         'Free up space on it or use a bigger one.')
     return stop, warn

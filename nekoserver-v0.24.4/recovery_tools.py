@@ -230,7 +230,10 @@ def enough_space(path,required):
     while not ancestor.exists():ancestor=ancestor.parent
     if shutil.disk_usage(ancestor).free<required+100*1024*1024:raise RuntimeError('Insufficient free space for recovery copy plus reserve')
 
-def snapshot(config,destination,apply=False):
+def snapshot_plan(config,destination):
+    """Read what the snapshot records: Compose settings, the pinned Immich version, the
+    exact images and the running services. On --apply this runs only while holding the
+    shared lock, so a monthly update cannot change any of it before the copy is made."""
     mounts(config);base=compose_args(config);model=json_command(base+['config','--format','json'])
     upload=safe_path(Path(config['data_mount'])/'photos/immich-library');database=safe_path(Path(config['data_mount'])/'appdata/immich/postgres')
     validate_model(model,upload,database)
@@ -245,9 +248,16 @@ def snapshot(config,destination,apply=False):
     running=command(base+['ps','--status','running','--services']).split()
     if 'database' not in running or any(x not in SERVICES for x in running):raise RuntimeError('Immich database must be running with only standard services')
     resume=sorted(set(running)-{'database'})
-    if not apply:return {'status':'needs_setup','reason':'Preview: pause running Immich services, copy full upload tree and dump its database; source services then resume','files':len(files),'immich_version':version}
+    return base,model,upload,database,version,destination,files,resume
+
+def snapshot(config,destination,apply=False):
+    if not apply:
+        plan=snapshot_plan(config,destination);version,files=plan[4],plan[6]
+        return {'status':'needs_setup','reason':'Preview: pause running Immich services, copy full upload tree and dump its database; source services then resume','files':len(files),'immich_version':version}
     require_root()
     with lock(config):
+        # Everything recorded is read (and the drives re-checked) only now, under the lock.
+        base,model,upload,database,version,destination,files,resume=snapshot_plan(config,destination)
         destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700);destination.mkdir(mode=0o700)
         atomic_json(destination/'.incomplete',{'reason':'Snapshot is not usable until manifest publication','source_project':'neko-immich','resume_services':resume})
         paused=False

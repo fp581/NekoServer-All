@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.24.4 — 2026-10-19
+
+### Fixed (from an outside review)
+- **A damaged USB copy is replaced, never left as the "current" version.** When a photo's copy on the USB drive was damaged (reproduced: `AAAA` → `BBBB`, then the USB copy of `BBBB` changed to `ZZZZ`), the weekly job saved the good content under another name while the current-version note still pointed at the damaged file, and "newest only" recovery restored `ZZZZ`. The HDD archive never changes a file it has saved, so a USB copy that differs from it is damaged: it is now moved to `neko-damaged/<time>/` on the USB drive (kept, never deleted, and outside the folders recovery reads) and the verified archive file is copied back under its own name. Before the run counts as done, every file a current-version note names is compared by checksum with the archive and replaced if it differs, so this is caught every week, not only in the 4-weekly full check.
+- **The USB space check includes the whole photo archive.** It compared the Immich library on the SSD with the USB drive, but the weekly job copies the HDD archive, which also keeps photos deleted from Immich and every saved version (reproduced: 0 bytes estimated while a kept photo was still to be copied). It now compares the HDD archive with the USB drive, and adds the photos on the SSD that the archive does not hold yet (they reach the USB drive the same week). The room-to-grow margin uses the archive's size when it is larger than the library.
+- **Hardware video setup waits for backups and monthly updates.** It wrote Immich's graphics settings and restarted Immich without the lock that backups and monthly maintenance hold, so a rerun of the installer could restart Immich while maintenance needed it stopped for a consistent snapshot or a rollback (reproduced: with the lock held it still wrote the settings and started Immich). Recreating Immich and switching Jellyfin and Immich over now happen while holding that lock, after checking the drives; when a backup is running, an unattended run stops with a clear message and an interactive one waits for it.
+- **Phone alerts no longer announce a recovery without proof.** The list of things that need evidence before "RECOVERED" is sent left out Nextcloud, monthly maintenance and the music backup, so a failed job that was merely running again, or Nextcloud with an unreadable state, produced a recovery message (reproduced with the bundled runtime). The list now comes from the same app and job lists the dashboard uses, and recovery is only announced after a passed job or a running, not unhealthy app. A test checks every app and job.
+- **A manual Immich snapshot records the version that made its database.** `recover.py snapshot --apply` read the Compose settings, the Immich version, the exact images and the running services before taking the lock that monthly maintenance holds. If an update finished in between, the snapshot paired the upgraded database with the old version and images, and still passed its checks (reproduced: database from v2.0.0, snapshot recorded v1.0.0). All of that is now read, and the drives checked again, only after the lock is taken.
+
+### Changed
+- Version 0.24.4; the release folder is now `nekoserver-v0.24.4`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.24.3 — 2026-10-19
 
 ### Fixed (from an outside review)
