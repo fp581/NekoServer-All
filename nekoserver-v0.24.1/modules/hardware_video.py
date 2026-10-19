@@ -114,7 +114,7 @@ def apps_on(config, choice, log, client_factory=None):
     import account_setup
     import account_store
     client_factory = client_factory or account_setup.Client
-    vendor, node, jellyfin_method, immich_method = choice
+    _, node, jellyfin_method, immich_method = choice
     done = {}
     for app, configure in (('jellyfin', lambda e, c: configure_jellyfin(e, jellyfin_method, node, c)),
                            ('immich', lambda e, c: configure_immich(e, immich_method, c))):

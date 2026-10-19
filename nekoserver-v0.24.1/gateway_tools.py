@@ -8,6 +8,7 @@ import dashboard_collect as health
 import recovery_tools
 from network_access import lan,candidates,verify_lan
 from neko_common import VERSION,safe_path,atomic_write,atomic_json,ensure_directory
+LOOPBACK='http://127.0.0.1:'
 APPS={'jellyfin':('Jellyfin',8096,8443),'seerr':('Seerr',5055,8444),'immich':('Immich',2283,8445),'navidrome':('Music',4533,8446),'nextcloud':('Nextcloud',8088,8447)}
 ROOT=Path(__file__).resolve().parent
 OCC_GET,OCC_SET,OCC_DELETE='config:system:get','config:system:set','config:system:delete'
@@ -63,7 +64,7 @@ def readiness(config):
     for app,endpoint,key in [('jellyfin','/System/Info/Public','StartupWizardCompleted'),('seerr','/api/v1/settings/public','initialized')]:
         if app not in apps:continue
         try:
-            with opener.open('http://127.0.0.1:'+str(APPS[app][1])+endpoint,timeout=5) as r:value=json.loads(r.read(64000))
+            with opener.open(LOOPBACK+str(APPS[app][1])+endpoint,timeout=5) as r:value=json.loads(r.read(64000))
             if not isinstance(value,dict) or value.get(key) is not True:raise RuntimeError('Initial application account setup is incomplete')
         except (OSError,ValueError):raise RuntimeError('Application onboarding could not be verified; finish setup locally') from None
     from acceptance import containers
@@ -167,10 +168,10 @@ def dashboard_target(config):
     opts=config.get('dashboard',{})
     if opts.get('remote',True) is not True:return None
     port=opts.get('port',8787)
-    return 'http://127.0.0.1:'+str(port) if type(port) is int and 1024<=port<=65535 else None
+    return LOOPBACK+str(port) if type(port) is int and 1024<=port<=65535 else None
 
 def desired(host,apps,dashboard=None):
-    ports={str(APPS[a][2]):'http://127.0.0.1:'+str(APPS[a][1]) for a in apps}
+    ports={str(APPS[a][2]):LOOPBACK+str(APPS[a][1]) for a in apps}
     if dashboard:ports[str(DASHBOARD_PORT)]=dashboard
     return {'TCP':{p:{'HTTPS':True} for p in ports},'Web':{host+':'+p:{'Handlers':{'/':{'Proxy':target}}} for p,target in ports.items()}}
 

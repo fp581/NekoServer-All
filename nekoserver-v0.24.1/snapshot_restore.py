@@ -67,18 +67,22 @@ def relative(kind, value):
     return Path(*path.parts)
 
 
-def check_row(kind, snapshot, row, inventory):
-    if not isinstance(row, dict):
-        raise RuntimeError('Invalid inventory entry')
-    rel = relative(kind, row.get('path'))
-    if str(rel) in inventory or row.get('kind') not in kind.kinds():
-        raise RuntimeError('Duplicate or invalid inventory entry')
+def check_metadata(row):
     for key, maximum in (('uid', 2**32-2), ('gid', 2**32-2), ('mode', 0o7777), ('size', 2**63-1)):
         if type(row.get(key)) is not int or not 0 <= row[key] <= maximum:
             raise RuntimeError('Invalid file metadata')
     # Setuid/setgid file execution is never needed for restored settings.
     if row['kind'] == 'file' and row['mode'] & 0o6000:
         raise RuntimeError('Privileged executable metadata refused')
+
+
+def check_row(kind, snapshot, row, inventory):
+    if not isinstance(row, dict):
+        raise RuntimeError('Invalid inventory entry')
+    rel = relative(kind, row.get('path'))
+    if str(rel) in inventory or row.get('kind') not in kind.kinds():
+        raise RuntimeError('Duplicate or invalid inventory entry')
+    check_metadata(row)
     path = safe_path(snapshot / 'payload' / rel)
     metadata = path.lstat()
     if row['kind'] == 'directory':
@@ -130,19 +134,7 @@ def restore(kind, snapshot, destination, preserve_owners=False):
     destination.mkdir(mode=0o700)  # Never create missing parents or reuse an existing directory.
     rows = manifest['files']
     for row in rows:
-        rel = relative(kind, row['path'])
-        target = safe_path(destination / rel)
-        ensure_directory(target.parent, 0o700)
-        if row['kind'] == 'directory':
-            ensure_directory(target, 0o700)
-            continue
-        with safe_path(snapshot / 'payload' / rel).open('rb') as source, target.open('xb') as output:
-            os.chmod(target, 0o600)
-            shutil.copyfileobj(source, output, 65536)
-            output.flush()
-            os.fsync(output.fileno())
-        if digest(target) != row['sha256']:
-            raise RuntimeError('Restored file verification failed; partial directory retained')
+        copy_row(kind, snapshot, destination, row)
     # Privately retain evidence before applying original directory permissions.
     report = {'format': kind.restore_format, 'files': len(rows), 'checksums_verified': True,
               'original_owners_restored': preserve_owners, **kind.report}
@@ -150,11 +142,33 @@ def restore(kind, snapshot, destination, preserve_owners=False):
         report.update(sources=manifest.get('sources', []), missing_optional=manifest.get('missing_optional', []))
     atomic_json(destination / 'restore-report.json', report)
     if preserve_owners:
-        for row in sorted(rows, key=lambda r: len(relative(kind, r['path']).parts), reverse=True):
-            target = safe_path(destination / relative(kind, row['path']))
-            os.chown(target, row['uid'], row['gid'])
-            os.chmod(target, row['mode'] if row['kind'] != 'symlink' else 0o600)
+        apply_owners(kind, destination, rows)
     return destination
+
+
+def copy_row(kind, snapshot, destination, row):
+    """Copy one inventory entry into the new folder privately, verifying its checksum."""
+    rel = relative(kind, row['path'])
+    target = safe_path(destination / rel)
+    ensure_directory(target.parent, 0o700)
+    if row['kind'] == 'directory':
+        ensure_directory(target, 0o700)
+        return
+    with safe_path(snapshot / 'payload' / rel).open('rb') as source, target.open('xb') as output:
+        os.chmod(target, 0o600)
+        shutil.copyfileobj(source, output, 65536)
+        output.flush()
+        os.fsync(output.fileno())
+    if digest(target) != row['sha256']:
+        raise RuntimeError('Restored file verification failed; partial directory retained')
+
+
+def apply_owners(kind, destination, rows):
+    """Original owners and modes, deepest entries first so parents stay writable."""
+    for row in sorted(rows, key=lambda r: len(relative(kind, r['path']).parts), reverse=True):
+        target = safe_path(destination / relative(kind, row['path']))
+        os.chown(target, row['uid'], row['gid'])
+        os.chmod(target, row['mode'] if row['kind'] != 'symlink' else 0o600)
 
 
 def main(kind, description, argv=None):

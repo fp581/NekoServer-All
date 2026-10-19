@@ -7,6 +7,7 @@ from neko_common import VERSION,safe_path,mount_path,atomic_write,atomic_json
 DEPENDENCIES=['storage','recovery']
 DESCRIPTION='Install the localhost visual dashboard, read-only collector and local alerts'
 ASSETS=('index.html','style.css','app.js','logo.svg')
+SERVICE='nekoserver-dashboard.service'
 
 def options(cfg):
     values=cfg.get('dashboard',{});port=values.get('port',8787);interval=values.get('interval_seconds',60);smart=values.get('smart_interval_seconds',1800)
@@ -31,7 +32,7 @@ def units(data,code,config,port,interval,public=None):
     return {
     'nekoserver-dashboard-collect.service':'[Unit]\nDescription=NekoServer dashboard collection\n[Service]\nType=oneshot\nRuntimeDirectory=nekoserver-dashboard\nRuntimeDirectoryMode=0755\nRuntimeDirectoryPreserve=yes\nExecStart='+collect+' --config '+str(config)+' --output /run/nekoserver-dashboard/status.json --state '+str(data/'dashboard-state')+'\nTimeoutStartSec=180\n'+common+'ReadWritePaths=/run/nekoserver-dashboard -'+str(data/'dashboard-state')+'\nRestrictAddressFamilies=AF_UNIX\n',
     'nekoserver-dashboard-collect.timer':f'[Unit]\nDescription=NekoServer periodic dashboard collection\n[Timer]\nOnBootSec=15s\nOnUnitInactiveSec={interval}s\nUnit=nekoserver-dashboard-collect.service\n[Install]\nWantedBy=timers.target\n',
-    'nekoserver-dashboard.service':'[Unit]\nDescription=NekoServer local dashboard\nWants=nekoserver-dashboard-collect.service\nAfter=nekoserver-dashboard-collect.service\n[Service]\nType=simple\nDynamicUser=yes\nExecStart='+serve+' --assets '+str(code/'dashboard')+f' --status /run/nekoserver-dashboard/status.json --port {port}'+(' --public-host '+public if public else '')+'\nRestart=on-failure\n'+common+'PrivateDevices=yes\nRestrictAddressFamilies=AF_INET AF_UNIX\nInaccessiblePaths=-/run/docker.sock -/var/run/docker.sock '+str(data)+' '+str(config.parent)+'\n[Install]\nWantedBy=multi-user.target\n'}
+    SERVICE:'[Unit]\nDescription=NekoServer local dashboard\nWants=nekoserver-dashboard-collect.service\nAfter=nekoserver-dashboard-collect.service\n[Service]\nType=simple\nDynamicUser=yes\nExecStart='+serve+' --assets '+str(code/'dashboard')+f' --status /run/nekoserver-dashboard/status.json --port {port}'+(' --public-host '+public if public else '')+'\nRestart=on-failure\n'+common+'PrivateDevices=yes\nRestrictAddressFamilies=AF_INET AF_UNIX\nInaccessiblePaths=-/run/docker.sock -/var/run/docker.sock '+str(data)+' '+str(config.parent)+'\n[Install]\nWantedBy=multi-user.target\n'}
 
 def run(ctx):
     port,interval,smart=options(ctx.config)
@@ -74,7 +75,7 @@ def run(ctx):
     for name,text in definitions.items():atomic_write(Path('/etc/systemd/system')/name,text,0o644)
     subprocess.run(['systemctl','daemon-reload'],capture_output=True,check=True,timeout=30)
     subprocess.run(['systemctl','start','nekoserver-dashboard-collect.service'],capture_output=True,check=True,timeout=190)
-    for unit in ('nekoserver-dashboard-collect.timer','nekoserver-dashboard.service'):subprocess.run(['systemctl','enable','--now',unit],capture_output=True,check=True,timeout=30)
-    subprocess.run(['systemctl','restart','nekoserver-dashboard.service'],capture_output=True,check=True,timeout=30)
+    for unit in ('nekoserver-dashboard-collect.timer',SERVICE):subprocess.run(['systemctl','enable','--now',unit],capture_output=True,check=True,timeout=30)
+    subprocess.run(['systemctl','restart',SERVICE],capture_output=True,check=True,timeout=30)
     ctx.log(f'NekoServer dashboard: http://127.0.0.1:{port}/ · read-only; backup history starts after updated jobs run')
     if public:ctx.log(f'Dashboard on your phone (Tailscale on): https://{public}:8448/')
