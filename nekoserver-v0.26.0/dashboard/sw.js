@@ -16,7 +16,7 @@ self.addEventListener('fetch', event => {
   event.respondWith(fetch(event.request).then(response => {
     if (response.ok && SHELL.includes(url.pathname)) {
       const copy = response.clone();
-      caches.open(CACHE).then(cache => cache.put(event.request, copy));
+      event.waitUntil(caches.open(CACHE).then(cache => cache.put(event.request, copy)).catch(() => undefined));
     }
     return response;
   }).catch(() => caches.match(event.request).then(hit => hit || caches.match('/'))));

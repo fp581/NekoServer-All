@@ -17,7 +17,7 @@ const text = (v, fallback = '') => typeof v === 'string' && v ? v : fallback;
 const nowSeconds = () => Date.now() / 1000;
 const LOCAL = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
 
-function el(tag, className = '', content) {
+function el(tag, className, content) {
   const n = document.createElement(tag);
   if (className) n.className = className;
   if (content !== undefined && content !== null) n.textContent = String(content);
@@ -141,7 +141,7 @@ async function getJson(path, timeoutMs = 8000) {
   } finally { clearTimeout(timer); }
 }
 function validStatus(raw) {
-  if (!raw || raw.format !== 'neko-dashboard-v1' || !numeric(raw.generated_at)) throw new CodedError('E11');
+  if (raw?.format !== 'neko-dashboard-v1' || !numeric(raw.generated_at)) throw new CodedError('E11');
   const rows = (v, max = 200) => list(v).slice(0, max);
   return {
     ...raw, version: text(raw.version, 'unknown').slice(0, 40), metrics: object(raw.metrics),
@@ -805,7 +805,12 @@ for (const b of document.querySelectorAll('[data-filter]')) b.addEventListener('
   renderApps();
 });
 for (const b of document.querySelectorAll('[data-guide]')) { b.addEventListener('click', () => showGuide(b.dataset.guide)); }
-$('refresh').addEventListener('click', () => { void load('status'); if (LIVE_ROUTES.includes(state.route)) void load('live'); if (state.route === 'processes') void load('processes'); });
+function refreshNow() {
+  void load('status');
+  if (LIVE_ROUTES.includes(state.route)) { void load('live'); }
+  if (state.route === 'processes') { void load('processes'); }
+}
+$('refresh').addEventListener('click', refreshNow);
 $('preferences').addEventListener('click', preferences);
 $('more').addEventListener('click', moreMenu);
 $('export').addEventListener('click', diagnostics);
@@ -817,7 +822,7 @@ $('process-prev').addEventListener('click', () => { state.processPage--; renderP
 $('process-next').addEventListener('click', () => { state.processPage++; renderProcesses(); });
 $('problem-link').addEventListener('click', e => { e.preventDefault(); location.hash = 'help-errors'; });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyPreferences);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { void load('status'); if (LIVE_ROUTES.includes(state.route)) void load('live'); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshNow(); } });
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); state.installPrompt = e; if (state.route === 'help') renderHelp(); });
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => { /* works without it */ });
 setInterval(() => { if (!document.hidden) renderChrome(); }, 30000); // "x min ago" and staleness move on their own
