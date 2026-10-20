@@ -53,9 +53,17 @@ pub fn full_check_due(data: &Path, job: &str) -> bool {
         &data.join(format!("reports/jobs/{job}-full-check.json")),
         64000,
     )["at"]
-        .as_f64()
-        .unwrap_or(0.0);
-    common::now() - last >= FULL_CHECK_EVERY
+        .as_f64();
+    due_since(last, common::now())
+}
+/// Due when there is no valid record, when it is older than FULL_CHECK_EVERY, or when it
+/// lies in the future: a check made while the clock was wrong (set to 2030, say) must
+/// not postpone the next one for years once the clock is corrected.
+fn due_since(last: Option<f64>, now: f64) -> bool {
+    match last {
+        Some(at) if at.is_finite() && at > 0.0 && at <= now + 300.0 => now - at >= FULL_CHECK_EVERY,
+        _ => true,
+    }
 }
 fn record_full_check(data: &Path, job: &str) -> Result<()> {
     common::atomic_json(
@@ -1197,6 +1205,58 @@ fn own_disk(device: &Path, data: &Path, media: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// exFAT has no owners or permissions: `chmod` is silently ignored there and the mount
+/// options alone decide who can read the files. The backup holds private copies
+/// (Nextcloud files, database dumps), so an exFAT drive is mounted for root only.
+const PRIVATE_EXFAT: &str = "uid=0,gid=0,fmask=0177,dmask=0077";
+fn usb_mount_options(fstype: &str) -> String {
+    if fstype == "exfat" {
+        format!("rw,nosuid,nodev,noexec,{PRIVATE_EXFAT}")
+    } else {
+        "rw,nosuid,nodev".to_string()
+    }
+}
+/// Are these mount options private (root only)? Filesystems with real permissions are,
+/// since the backup sets them itself; exFAT needs uid/gid 0 and masks that hide
+/// everything from group and others.
+fn private_options(options: &str, fstype: &str) -> bool {
+    if fstype != "exfat" {
+        return true;
+    }
+    let get = |key: &str| {
+        options
+            .split(',')
+            .find_map(|o| o.strip_prefix(key)?.strip_prefix('='))
+    };
+    let hidden = |key: &str| {
+        get(key)
+            .and_then(|v| u32::from_str_radix(v, 8).ok())
+            .is_some_and(|m| m & 0o077 == 0o077)
+    };
+    get("uid").unwrap_or("0") == "0"
+        && get("gid").unwrap_or("0") == "0"
+        && hidden("fmask")
+        && hidden("dmask")
+}
+fn require_private_mount(dest: &Path, fstype: &str) -> Result<()> {
+    let (code, options) = common::command(
+        &[
+            "findmnt",
+            "-n",
+            "-o",
+            "OPTIONS",
+            "--mountpoint",
+            &dest.to_string_lossy(),
+        ],
+        10,
+    )?;
+    if code != 0 || !private_options(options.trim(), fstype) {
+        return Err(Error::new(
+            "The USB drive is mounted so that other accounts on this computer could read it. Unmount it and the backup mounts it privately",
+        ));
+    }
+    Ok(())
+}
 pub fn validate_external(dest: &Path, uuid: &str) -> Result<()> {
     common::safe(dest)?;
     if uuid.trim().is_empty() || !dest.is_dir() {
@@ -1651,7 +1711,7 @@ pub fn weekly(a: &Args) -> Result<()> {
                     &[
                         "mount",
                         "-o",
-                        "rw,nosuid,nodev",
+                        &usb_mount_options(fstype),
                         &format!("UUID={uuid}"),
                         &dest.to_string_lossy(),
                     ],
@@ -1660,6 +1720,8 @@ pub fn weekly(a: &Args) -> Result<()> {
                 mounted_here = true;
             }
             validate_external(&dest, uuid)?;
+            // Also when someone else mounted it: no private copy onto a readable drive.
+            require_private_mount(&dest, fstype)?;
             guard(&cfg, &data, &media)?;
             common::stage("copying photos and videos to the USB drive");
             let (_, photos) = mirror(&source, &dest, true, check)?;
@@ -1728,6 +1790,42 @@ pub fn weekly(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exfat_usb_drives_are_mounted_for_root_only() {
+        assert_eq!(usb_mount_options("ext4"), "rw,nosuid,nodev");
+        let exfat = usb_mount_options("exfat");
+        assert!(
+            exfat.contains("fmask=0177") && exfat.contains("dmask=0077") && exfat.contains("uid=0")
+        );
+        assert!(private_options(&exfat, "exfat"));
+        // What the kernel shows for an exFAT drive mounted with default (readable) masks.
+        assert!(!private_options(
+            "rw,nosuid,nodev,relatime,uid=0,gid=0,fmask=0022,dmask=0022,iocharset=utf8",
+            "exfat"
+        ));
+        assert!(!private_options(
+            "rw,relatime,uid=1000,gid=1000,fmask=0177,dmask=0077",
+            "exfat"
+        ));
+        assert!(!private_options("rw,relatime", "exfat"));
+        assert!(private_options("rw,relatime", "ext4"));
+    }
+    #[test]
+    fn a_full_check_is_due_after_four_weeks_or_with_a_future_record() {
+        let now = 1_800_000_000.0;
+        assert!(!due_since(Some(now - 86400.0), now));
+        assert!(due_since(Some(now - FULL_CHECK_EVERY), now));
+        assert!(due_since(None, now));
+        assert!(due_since(Some(0.0), now));
+        assert!(due_since(Some(f64::NAN), now));
+        // Recorded while the clock said 2030; the clock is now right (2026).
+        assert!(due_since(Some(1_900_000_000.0), now));
+        assert!(due_since(Some(1_900_000_000.0), now + FULL_CHECK_EVERY));
+        assert!(
+            !due_since(Some(now + 60.0), now),
+            "a small clock difference is not a future record"
+        );
+    }
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("neko-backup-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

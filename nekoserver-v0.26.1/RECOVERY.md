@@ -20,7 +20,7 @@ Apply this release's foundation profile once to preserve the recovery tools and 
 
 ```bash
 sudo bash install.sh --profile foundation --apply
-cd /srv/nekoserver/installer/releases/v0.26.0
+cd /srv/nekoserver/installer/releases/v0.26.1
 sudo python3 recover.py check
 sudo python3 recover.py checkpoint --apply
 ```
@@ -89,7 +89,7 @@ sudo bash install.sh --config /path/to/recovery-config.json --module storage --a
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
-cd /srv/nekoserver/installer/releases/v0.26.0
+cd /srv/nekoserver/installer/releases/v0.26.1
 sudo python3 recover.py check
 sudo python3 recover.py reattach
 sudo python3 recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID

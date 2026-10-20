@@ -1029,7 +1029,7 @@ fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
                 r["manual_checks"]
                     .as_array_mut()
                     .unwrap()
-                    .push(json!({"name":label,"status":state}));
+                    .push(json!({"id":text(&row["id"]),"name":label,"status":state}));
             }
         }
         r[group] = counts;
@@ -1094,6 +1094,16 @@ fn alerts(s: &Value) -> Value {
         // services everything else depends on must start with the computer.
         let name = text(&unit["unit"]);
         let core = !name.ends_with(".timer") || name == "nekoserver-dashboard-collect.timer";
+        // Enabled is not the same as healthy: a failed service is reported either way
+        // (a finished one-shot, such as a resume service, is "inactive", not failed).
+        if unit["active"] == "failed" {
+            add(
+                format!("startup:{name}:failed"),
+                if core { "critical" } else { "warning" },
+                format!("{} has stopped with an error", text(&unit["name"])),
+                "Its last start or run failed. The guide shows how to read its log; setup can start it again.",
+            );
+        }
         if core && unit["enabled"] == false {
             add(
                 format!("startup:{}", text(&unit["unit"])),
@@ -1342,6 +1352,12 @@ pub fn run(a: &Args) -> Result<()> {
     result["containers"] = containers;
     result["gpu_telemetry"] = gpu_telemetry();
     result["startup"] = startup();
+    // How often readings are taken, so the page and the acceptance check know when they
+    // are late (2 × interval + 30 s; see reading_max_age in neko_common.py).
+    result["collect_interval"] = json!(cfg["dashboard"]["interval_seconds"]
+        .as_u64()
+        .filter(|s| (30..=300).contains(s))
+        .unwrap_or(60));
     result["updates"] = updates(&cfg, media_ok);
     result["integrity"] = integrity(data, ok);
     result["alerts"] = alerts(&result);
@@ -1418,6 +1434,21 @@ mod os_tests {
             .find(|a| a["id"] == "startup:docker.service")
             .unwrap();
         assert_eq!(row["title"], "Apps (Docker) won't start after a restart");
+        // Enabled but failed is not healthy; a finished one-shot is.
+        let units = parse_startup("Id=smb.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=failed\n\nId=nekoserver-app-resume.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive");
+        let shown = alerts(&json!({ "startup": units }));
+        let ids = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["startup:smb.service:failed"]);
+        assert_eq!(shown[0]["level"], "critical");
+        assert_eq!(
+            shown[0]["title"],
+            "Shared folders (Samba) has stopped with an error"
+        );
     }
     #[test]
     fn damaged_backup_copies_reach_the_dashboard_and_raise_an_alert() {

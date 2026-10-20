@@ -42,7 +42,7 @@ On a phone the main pages are in the bar at the bottom; **More** opens the rest.
 
 There is nothing to configure. The dashboard reads what Linux reports:
 
-- **Temperatures, fans, fan outputs, power, voltages:** every hardware-monitoring chip (`/sys/class/hwmon`): processor (coretemp, k10temp, zenpower), graphics (amdgpu, nouveau, i915, xe), NVMe and SATA drives, motherboard chips (nct67xx, it87, asus, gigabyte…), Wi-Fi cards and liquid coolers. If none report a temperature (some mini PCs, virtual machines), the system's thermal zones are used instead.
+- **Temperatures, fans, fan outputs, power, voltages:** every hardware-monitoring chip (`/sys/class/hwmon`): processor (coretemp, k10temp, zenpower), graphics (amdgpu, nouveau, i915, xe), NVMe drives, motherboard chips (nct67xx, it87, asus, gigabyte…), Wi-Fi cards and liquid coolers. **SATA drive temperatures are not read live:** on some hard drives that resets the spin-down timer, so an open dashboard could keep the media drive awake. They come from the drive health check instead (every 30 minutes, never waking a sleeping drive). If none report a temperature (some mini PCs, virtual machines), the system's thermal zones are used instead.
 - **Graphics cards and AI chips:** every display adapter and NPU, named from the system's PCI list. AMD cards report their load and video memory; Intel graphics report their clock; NVIDIA cards are read through the NVIDIA driver once a minute.
 - **Network and drives:** wired, Wi-Fi and Tailscale traffic; activity of every physical drive.
 - **Batteries and UPS:** a laptop battery or a USB UPS.
@@ -51,7 +51,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 A missing reading shows "—" or "No load reading", never a made-up 0. If a sensor you expect is missing, see Help → *A sensor is missing*. Most motherboard chips need `lm_sensors` (`sudo pacman -S lm_sensors`, then `sudo sensors-detect` and a restart). To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.26.0/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.26.1/nekoserver-runtime hardware
 ```
 
 Fans and lighting are **only read**. The motherboard (BIOS) or your fan/RGB app stays in charge of them.
@@ -66,8 +66,8 @@ When something goes wrong, the dashboard shows a short code at the top of the pa
 | E02 | The server is slow to answer | It may be busy with a backup or update. The page keeps trying by itself. |
 | E10 | Readings not ready yet | Normal for a minute after the server starts. |
 | E11 | Readings could not be read | Usually fixes itself within a minute. If not, run setup again. |
-| E12 | Readings are out of date | The reading service stopped: Help → *Readings are old or missing*. |
-| E20 | Live readings unavailable | They come back by themselves. If not: `sudo systemctl restart nekoserver-dashboard.service`. |
+| E12 | Readings are out of date | No new reading for two collection intervals plus 30 seconds (150 s at the default 60 s): Help → *Readings are old or missing*. |
+| E20 | Live readings unavailable | They come back by themselves. If not: `sudo systemctl restart nekoserver-dashboard.service`. Until then, older live readings are dimmed and marked with their time. |
 | E40 | Page not found | Use the menu to go back. |
 | E41 | Open the dashboard from its own address | Use 127.0.0.1:8787 on the server, or the Tailscale address. |
 | E42 | Request not supported | Reload the page. |
@@ -80,7 +80,7 @@ After a restart (or a power cut) everything comes back without you:
 - **Tailscale** reconnects, with its phone addresses;
 - the **dashboard** starts, takes its first readings 15 seconds after boot and every minute after that, and restarts itself if it ever stops.
 
-Server health → *Starts by itself* shows each of these, and Needs attention warns when one of them is switched off.
+Server health → *Starts by itself* shows each of these: whether it starts at boot and whether it is working now. A service that stopped with an error is never shown green, even when it starts at boot; Needs attention lists it (urgent for Docker, Tailscale, the dashboard and Samba), together with anything switched off.
 
 ## Install or update
 
@@ -90,7 +90,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.26.0` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.26.1` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ## What runs, and what it can see
 
@@ -116,7 +116,7 @@ sudo journalctl -u nekoserver-dashboard-collect.service -n 50
 | Temperature on Home | Hottest processor sensor. Warnings at 80 °C, critical at 95 °C (monitoring limits, not chip limits). |
 | Drives | Space from the mounted, identity-checked SSD and HDD; health from read-only SMART every 30 minutes. A sleeping drive is not woken, so its health can show "Not checked yet". |
 | Apps | Docker containers by their NekoServer project. "Running" doesn't prove an app works; the app checks and the acceptance checklist do. |
-| Backups | Each job's last attempt, last success and schedule. Checksums show whether copied files still match. |
+| Backups | Each job's last attempt, last success and schedule. Checksums show whether copied files matched at the **last recorded check**; a check with no valid date, or older than two weeks, is not shown as passed. *Restore tried* counts only the witnessed restore tests for the backups this server makes (photos, apps, host and user files), and says which were tested. |
 
 Warnings appear for missing drives, drives 90% full (critical at 97%), SMART problems, stopped apps, failed or overdue backups, damaged backup files, and anything that won't start after a restart.
 

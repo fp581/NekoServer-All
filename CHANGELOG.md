@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.26.1 — 2026-10-20
+
+### Fixed (review of v0.26.0)
+- **An open dashboard no longer keeps the media hard drive awake.** Live readings asked SATA drives for their temperature every few seconds, which resets the spin-down timer on some hard drives. Those temperatures now come from the drive health check (every 30 minutes, never waking a sleeping drive).
+- **Readings are never shown as current when they aren't.** When live readings failed, Home kept showing the old ones under "Connected"; when the snapshot failed, "Everything looks good" could stay beside the error. Each feed is now tracked on its own: errors show on every page with their code, old live readings are dimmed and marked with their time, and the overall status includes failed requests.
+- **"Restore tried" means the backups you have were restored.** It turned green for any completed checklist, including one without a single restore test (reproduced with the dashboard profile). It now counts only the witnessed restore tests for the backups this server makes (photos, apps, host and user files) and names the ones still to try.
+- **Checksum results need a date.** A checksum report without a valid date, or older than two weeks, showed "Checksums match" (reproduced). It now shows "Not dated" or "Overdue", and the time of the last recorded check.
+- **Keyboard and controller focus stays put.** Starring an app or a refresh rebuilt the cards and dropped focus to the top of the page (reproduced). Focus now returns to the same control.
+- **A failed service is never green.** "Starts by itself" only looked at whether a service starts at boot, so an enabled Samba that had failed was green with no warning (reproduced). Working now and starting at boot are shown separately, and a failed service raises an alert (urgent for Docker, Tailscale, the dashboard and Samba).
+- **No false "out of date" with a five-minute schedule.** Readings counted as late after a fixed 150 seconds, although a 300-second collection interval is allowed (reproduced: E12 after 151 s). The collector now publishes its interval, and the page and the acceptance check both allow two intervals plus 30 seconds.
+- **A manual photo snapshot can't silently leave out an album.** Its file listing skipped folders it couldn't read, so a snapshot missing an album passed, and so did its verification (reproduced). Planning, copying and verifying now share one strict listing: anything unreadable stops the snapshot, which stays marked incomplete.
+- **A manual snapshot checks that Immich stopped cleanly.** It now refuses to copy when a container is still running or was killed (exit 137 or out of memory), like the nightly app snapshot.
+- **A corrected clock no longer postpones full checksum checks for years.** A check recorded while the clock was wrong (in the future) counted as recent. Future or invalid records now make the full check due, in the backup program and in the space estimate.
+- **USB backups on exFAT stay private.** exFAT has no owners or permissions, so the backup's chmod was silently ignored and other local accounts could read the Nextcloud copies and database dumps. exFAT drives are now mounted for root only, and a drive already mounted readable by others is refused before anything private is copied. The restore helper also releases the drive (and unmounts it) when opening it fails.
+
+### Changed
+- Version 0.26.1; the release folder is now `nekoserver-v0.26.1`. v0.26.0 was merged before these fixes, so this release carries its own version (an installed release folder is never overwritten).
+- The dashboard script was restructured for readability (SonarCloud maintainability: no nested conditions, small functions), with no change in behaviour. Folder walks check their path first (absolute, no `..`, no symlinks; recovery folders use the same plain characters as mount paths).
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.26.0 — 2026-10-20
 
 ### New dashboard

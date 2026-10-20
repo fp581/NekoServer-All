@@ -9,7 +9,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-VERSION = '0.26.0'
+VERSION = '0.26.1'
 
 TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
 ZONEINFO = Path('/usr/share/zoneinfo')
@@ -95,6 +95,41 @@ def regular_files(root):
                 continue
             if stat.S_ISREG(info.st_mode):
                 yield path, info.st_size
+
+
+def reading_max_age(interval):
+    """How old the dashboard's readings may be before they count as late: two collection
+    intervals plus 30 seconds for a slow run (150 s at the default 60 s). The page uses
+    the same rule (statusStale in dashboard/app.js); `interval` comes from the snapshot."""
+    if type(interval) is not int or not 30 <= interval <= 300:
+        interval = 60
+    return 2 * interval + 30
+
+
+# exFAT has no owners or permissions (chmod is silently ignored): the mount options
+# alone decide who can read the backup copies, so it is mounted for root only. Same
+# options as the backup program (backup.rs usb_mount_options).
+PRIVATE_EXFAT = 'uid=0,gid=0,fmask=0177,dmask=0077'
+
+
+def usb_mount_options(fstype, writable=False):
+    options = ('rw' if writable else 'ro') + ',nosuid,nodev,noexec'
+    return options + ',' + PRIVATE_EXFAT if fstype == 'exfat' else options
+
+
+def private_mount_options(options, fstype):
+    """Are these (findmnt) mount options root-only? Always for filesystems with real
+    permissions; exFAT needs uid/gid 0 and masks hiding everything from others."""
+    if fstype != 'exfat':
+        return True
+    found = {key: value for key, _, value in (o.partition('=') for o in options.split(',') if '=' in o)}
+
+    def hidden(key):
+        try:
+            return int(found[key], 8) & 0o077 == 0o077
+        except (KeyError, ValueError):
+            return False
+    return found.get('uid', '0') == '0' and found.get('gid', '0') == '0' and hidden('fmask') and hidden('dmask')
 
 
 LEDGER_NAME = '.neko-ledger.json'   # checksum ledger at the root of a backup tree
@@ -207,12 +242,21 @@ def file_entry(path, problems):
     return None
 
 
+def plain_folder(value):
+    """A folder about to be walked, checked first (folder paths come from settings
+    files): absolute, with no '..' and no symlinks along the way."""
+    text = str(value)
+    if '\x00' in text or '..' in Path(text).parts or not Path(text).is_absolute():
+        raise RuntimeError('A folder to read must be a plain absolute path: ' + text)
+    return safe_path(Path(text))
+
+
 def strict_files(root, skip=None, skip_dirs=()):
     """Every regular file under `root` as (path, size), strictly: an unreadable folder or
     file, a symlink or a special file is an error, never silently left out. `skip(here,
     name)` names files that are not data (temporary or partial files); `skip_dirs` are
     folder names left out at the top level. Used by restores and media imports."""
-    root = Path(root)
+    root = plain_folder(root)
     problems, out = [], []
 
     def unreadable(error):
