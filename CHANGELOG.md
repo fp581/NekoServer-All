@@ -1,17 +1,8 @@
 # Changelog
 
-## v0.26.0 — 2026-10-20
+## v0.26.1 — 2026-10-20
 
-### New dashboard
-- **A new dashboard, in Rust, replacing the old one.** Same cat and colours, rebuilt for everyday use: Home (what needs attention, apps, storage and live readings), Your apps (with each app's processor and memory use), Backups, **Hardware**, **Sensors**, **Processes**, Server health, Needs attention and Help.
-- **Hardware and sensors are found automatically** by the dashboard's own web server, with no setup and without root: processor (total, each core, clock, waiting work), memory and swap, every graphics card and AI chip (named from the system's PCI list; AMD load and video memory, Intel clock, NVIDIA through the collector), every hardware-monitoring chip (temperatures, fans, fan outputs, power, voltages; thermal zones when no chip reports a temperature), network traffic per card and Tailscale, drive activity, batteries and UPS, and RGB devices of a running OpenRGB server. Readings are taken only while a page asks for them. Nothing is ever written to fans, lighting or processes. `nekoserver-runtime hardware` prints what it finds.
-- **Processes**, with the app each one belongs to (ffmpeg → Jellyfin). Names only: never command lines, environments or users.
-- **Phone, tablet and TV:** a bottom tab bar on phones, an icon rail on tablets, larger touch targets and text (Settings → Large or TV).
-- **Use it like an app instead of a browser tab:** it can be installed on phones, tablets and computers (Add to Home Screen / Install app) and opens in its own window. If the server can't be reached, the page still opens and says why. On the server, **NekoServer Dashboard** in the app menu opens it in an app window (Chromium, Chrome, Brave, Edge or Vivaldi when installed; otherwise the normal browser).
-- **Short error codes** (E01 … E42) with one plain sentence each, shown at the top of the page and explained in Help and DASHBOARD.md.
-- **Starts by itself:** the dashboard restarts if it ever stops (Restart=always). Server health lists what starts with the computer (Docker and the apps, Tailscale, the dashboard, Samba, the resume services, the schedules), and Needs attention warns when one of them is switched off.
-
-### Fixed (review of the new dashboard and backups)
+### Fixed (review of v0.26.0)
 - **An open dashboard no longer keeps the media hard drive awake.** Live readings asked SATA drives for their temperature every few seconds, which resets the spin-down timer on some hard drives. Those temperatures now come from the drive health check (every 30 minutes, never waking a sleeping drive).
 - **Readings are never shown as current when they aren't.** When live readings failed, Home kept showing the old ones under "Connected"; when the snapshot failed, "Everything looks good" could stay beside the error. Each feed is now tracked on its own: errors show on every page with their code, old live readings are dimmed and marked with their time, and the overall status includes failed requests.
 - **"Restore tried" means the backups you have were restored.** It turned green for any completed checklist, including one without a single restore test (reproduced with the dashboard profile). It now counts only the witnessed restore tests for the backups this server makes (photos, apps, host and user files) and names the ones still to try.
@@ -23,6 +14,24 @@
 - **A manual snapshot checks that Immich stopped cleanly.** It now refuses to copy when a container is still running or was killed (exit 137 or out of memory), like the nightly app snapshot.
 - **A corrected clock no longer postpones full checksum checks for years.** A check recorded while the clock was wrong (in the future) counted as recent. Future or invalid records now make the full check due, in the backup program and in the space estimate.
 - **USB backups on exFAT stay private.** exFAT has no owners or permissions, so the backup's chmod was silently ignored and other local accounts could read the Nextcloud copies and database dumps. exFAT drives are now mounted for root only, and a drive already mounted readable by others is refused before anything private is copied. The restore helper also releases the drive (and unmounts it) when opening it fails.
+
+### Changed
+- Version 0.26.1; the release folder is now `nekoserver-v0.26.1`. v0.26.0 was merged before these fixes, so this release carries its own version (an installed release folder is never overwritten).
+- The dashboard script was restructured for readability (SonarCloud maintainability: no nested conditions, small functions), with no change in behaviour. Folder walks check their path first (absolute, no `..`, no symlinks; recovery folders use the same plain characters as mount paths).
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
+## v0.26.0 — 2026-10-20
+
+### New dashboard
+- **A new dashboard, in Rust, replacing the old one.** Same cat and colours, rebuilt for everyday use: Home (what needs attention, apps, storage and live readings), Your apps (with each app's processor and memory use), Backups, **Hardware**, **Sensors**, **Processes**, Server health, Needs attention and Help.
+- **Hardware and sensors are found automatically** by the dashboard's own web server, with no setup and without root: processor (total, each core, clock, waiting work), memory and swap, every graphics card and AI chip (named from the system's PCI list; AMD load and video memory, Intel clock, NVIDIA through the collector), every hardware-monitoring chip (temperatures, fans, fan outputs, power, voltages; thermal zones when no chip reports a temperature), network traffic per card and Tailscale, drive activity, batteries and UPS, and RGB devices of a running OpenRGB server. Readings are taken only while a page asks for them. Nothing is ever written to fans, lighting or processes. `nekoserver-runtime hardware` prints what it finds.
+- **Processes**, with the app each one belongs to (ffmpeg → Jellyfin). Names only: never command lines, environments or users.
+- **Phone, tablet and TV:** a bottom tab bar on phones, an icon rail on tablets, larger touch targets and text (Settings → Large or TV).
+- **Use it like an app instead of a browser tab:** it can be installed on phones, tablets and computers (Add to Home Screen / Install app) and opens in its own window. If the server can't be reached, the page still opens and says why. On the server, **NekoServer Dashboard** in the app menu opens it in an app window (Chromium, Chrome, Brave, Edge or Vivaldi when installed; otherwise the normal browser).
+- **Short error codes** (E01 … E42) with one plain sentence each, shown at the top of the page and explained in Help and DASHBOARD.md.
+- **Starts by itself:** the dashboard restarts if it ever stops (Restart=always). Server health lists what starts with the computer (Docker and the apps, Tailscale, the dashboard, Samba, the resume services, the schedules), and Needs attention warns when one of them is switched off.
 
 ### Fixed
 - **Upgrading from v0.25.1 works.** The follow-up fixes below were merged while the release still called itself 0.25.1 everywhere inside (Python, the Rust runtime, its build manifest and install paths). Releases are installed into immutable per-version folders, so installing it over the real v0.25.1 was refused ("Installed release differs; refusing overwrite" and "Existing native runtime differs; custom file preserved", reproduced). This release is consistently 0.26.0 (0.25.2 to 0.25.31 were not used as internal versions), and a test now checks that the folder, Python, Cargo, config, README, CI and the install paths in the guides all name the same version. The immutable-file protection is unchanged.
