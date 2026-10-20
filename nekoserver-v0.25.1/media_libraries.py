@@ -6,7 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from neko_common import VERSION, atomic_write, safe_path
+from neko_common import VERSION, atomic_write, mount_path, safe_path
 
 PORTS = {'jellyfin': 8096, 'seerr': 5055, 'sonarr': 8989, 'radarr': 7878}
 LIBRARIES = (('movies', 'Movies', 'movies'), ('tv', 'TV Shows', 'tvshows'))
@@ -184,7 +184,7 @@ READINESS_APP = 'NekoServer readiness'
 
 def readiness_key_path(root):
     """Private (root-only) file holding Jellyfin's API key for NekoServer's own checks."""
-    return safe_path(Path(root) / 'secrets/jellyfin-readiness.key')
+    return safe_path(mount_path(str(root)) / 'secrets/jellyfin-readiness.key')
 
 
 def ensure_readiness_key(client, root):

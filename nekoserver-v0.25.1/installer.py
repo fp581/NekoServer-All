@@ -30,7 +30,11 @@ class Context:
             atomic_json(path,self.config)
 
 def read_json(path):
-    with path.open(encoding='utf-8') as f:
+    """A settings or state file: absolute, no '..', no symlinks along the way."""
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts:
+        raise InstallerError(f'Expected an absolute path without "..": {path}')
+    with safe_path(path).open(encoding='utf-8') as f:
         return json.load(f)
 
 def load_modules(directory):
@@ -117,7 +121,10 @@ def _execute(args, root=ROOT):
     validate_config(config)
     modules = load_modules(root / 'modules')
     enabled = [k for k in modules if config.get('modules', {}).get(k, {}).get('enabled', False)]
-    state_dir = safe_path(Path(args.state_dir).expanduser())
+    state_dir = Path(args.state_dir).expanduser()
+    if not state_dir.is_absolute() or '..' in state_dir.parts:
+        raise InstallerError('--state-dir must be an absolute path without ".."')
+    state_dir = safe_path(state_dir)
     if state_dir==DEFAULT_STATE and os.path.ismount(config['data_mount']):
         state_dir=Path(config['data_mount'])/'installer'/'state'
     state_path = safe_path(state_dir / 'state.json')

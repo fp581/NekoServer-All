@@ -194,6 +194,19 @@ class UnreadableEntries(RuntimeError):
         super().__init__(f'{len(problems)} entries could not be read: {shown}{more}')
 
 
+def file_entry(path, problems):
+    """(path, size) of a regular file; anything else is added to `problems`."""
+    try:
+        info = path.lstat()
+    except OSError as error:
+        problems.append((path, error.strerror))
+        return None
+    if stat.S_ISREG(info.st_mode):
+        return path, info.st_size
+    problems.append((path, 'symlink' if stat.S_ISLNK(info.st_mode) else 'not a regular file'))
+    return None
+
+
 def strict_files(root, skip=None, skip_dirs=()):
     """Every regular file under `root` as (path, size), strictly: an unreadable folder or
     file, a symlink or a special file is an error, never silently left out. `skip(here,
@@ -201,24 +214,16 @@ def strict_files(root, skip=None, skip_dirs=()):
     folder names left out at the top level. Used by restores and media imports."""
     root = Path(root)
     problems, out = [], []
-    for folder, dirs, files in os.walk(root, onerror=lambda e: problems.append((e.filename, e.strerror))):
+
+    def unreadable(error):
+        problems.append((error.filename, error.strerror))
+    for folder, dirs, files in os.walk(root, onerror=unreadable):
         here = Path(folder)
         if here == root:
             dirs[:] = [d for d in dirs if d not in skip_dirs]
-        problems += [(here / d, 'symlink') for d in dirs if (here / d).is_symlink()]
-        for name in files:
-            if skip and skip(here, name):
-                continue
-            path = here / name
-            try:
-                info = path.lstat()
-            except OSError as error:
-                problems.append((path, error.strerror))
-                continue
-            if stat.S_ISREG(info.st_mode):
-                out.append((path, info.st_size))
-            else:
-                problems.append((path, 'symlink' if stat.S_ISLNK(info.st_mode) else 'not a regular file'))
+        problems.extend((here / d, 'symlink') for d in dirs if (here / d).is_symlink())
+        wanted = (name for name in files if not (skip and skip(here, name)))
+        out.extend(entry for entry in (file_entry(here / name, problems) for name in wanted) if entry)
     if problems:
         raise UnreadableEntries(problems)
     return out

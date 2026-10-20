@@ -80,7 +80,7 @@ impl Ledger {
     /// Open the ledger of `root` for writing (taking the single-writer lock).
     pub fn open(root: &Path) -> Result<Ledger> {
         common::safe(root)?;
-        let lock = common::lock(&root.join(LOCK))?;
+        let lock = take_lock(&root.join(LOCK))?;
         let mut ledger = Ledger::read(root)?;
         ledger._lock = Some(lock);
         Ok(ledger)
@@ -191,11 +191,30 @@ impl Ledger {
     /// Publish this ledger's entries as the ledger of another tree (the USB mirror).
     pub fn publish_copy(&self, other_root: &Path) -> Result<()> {
         common::safe(other_root)?;
-        let _lock = common::lock(&other_root.join(LOCK))?;
+        let _lock = take_lock(&other_root.join(LOCK))?;
         publish(other_root, &serde_json::to_vec(&self.value())?)
     }
 }
 
+/// The single-writer lock. A program another thread of this job just started can hold
+/// a copy of the lock for an instant before it starts running (its copy is closed then),
+/// so a busy lock is retried briefly before it counts as another writer.
+fn take_lock(path: &Path) -> Result<File> {
+    let start = std::time::Instant::now();
+    loop {
+        match common::lock(path) {
+            Ok(file) => return Ok(file),
+            Err(_) if start.elapsed() < std::time::Duration::from_secs(2) => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            Err(_) => {
+                return Err(Error::new(
+                    "The checksum ledger is in use by another NekoServer job",
+                ))
+            }
+        }
+    }
+}
 /// `.neko-ledger.json.<uuid>.tmp` -> fsync -> rename -> fsync the folder.
 fn publish(root: &Path, bytes: &[u8]) -> Result<()> {
     let temp = root.join(format!("{LEDGER}.{}.tmp", uuid4()?));

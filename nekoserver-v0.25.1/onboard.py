@@ -54,7 +54,11 @@ def readiness_exit(findings):
     check passed. Witnessed tests (a real playback) are reported but never counted:
     no rerun of this script could change them."""
     automatic=[x for x in findings if x.get('check') not in media_readiness.WITNESSED]
-    return 2 if any(x['status']=='fail' for x in automatic) else 1 if any(x['status']!='pass' for x in automatic) else 0
+    if any(x['status']=='fail' for x in automatic):
+        return 2
+    if any(x['status']!='pass' for x in automatic):
+        return 1
+    return 0
 
 
 def wait_ready(apps,seconds,probe=None,clock=time.monotonic,sleep=time.sleep):

@@ -185,6 +185,15 @@ def log_rotation():
     try:return docker_module.unbounded_logs(json.loads(out)) if rc==0 else None
     except ValueError:return None
 
+def log_rotation_finding(unbounded):
+    """(status, detail) for the container log check; None means Docker could not be read."""
+    if unbounded==[]:
+        return 'pass','Every container log is size-limited.'
+    names=': '+', '.join(unbounded[:8]) if unbounded else ''
+    return 'needs_setup',('Unlimited container logs can fill the SSD'+names+'. Containers made before the limit '
+                          'keep unlimited logs until they are recreated after Docker restarts (a reboot, then the '
+                          'monthly update or rerunning setup).')
+
 def inspect(config,profile='full',now=None):
     now=time.time() if now is None else now;run={'format':'neko-acceptance-v1','version':VERSION,'generated_at':now,'run_id':str(uuid.uuid4()),'profile':profile,'automatic':[],'manual':[],'scope':'selected deployment profile; manual results are user reported'}
     checks=run['automatic'];add=lambda *x:checks.append(item(*x))
@@ -226,11 +235,7 @@ def inspect(config,profile='full',now=None):
             valid,version=docker_info(config);add('docker:store','Docker persistent store','pass' if valid else 'fail','Running classic overlay2 store uses the intended SSD.' if valid else 'Verify Docker availability, SSD data-root and classic storage backend.')
             add('docker:service','Docker boot service','pass' if service('docker.service') else 'fail','Service must be active and enabled for boot.')
             add('docker:guard','Effective Docker storage guard','pass' if guard_check(config) else 'fail','Installed and loaded UUID/mount guard must match both data drives.')
-            unbounded=log_rotation()
-            add('docker:logs','Container log size limits','pass' if unbounded==[] else 'needs_setup',
-                'Every container log is size-limited.' if unbounded==[] else
-                'Unlimited container logs can fill the SSD'+(': '+', '.join(unbounded[:8]) if unbounded else '')+
-                '. Containers made before the limit keep unlimited logs until they are recreated after Docker restarts (a reboot, then the monthly update or rerunning setup).')
+            add('docker:logs','Container log size limits',*log_rotation_finding(log_rotation()))
             saved=load_json(Path(config['data_mount'])/'installer/host-checkpoint.json');expected={k:config[k] for k in ('storage','data_mount','media_mount')};good=valid and saved.get('format')=='neko-host-checkpoint-v1' and saved.get('docker_version')==version and saved.get('architecture')==platform.machine() and saved.get('driver')=='overlay2' and saved.get('docker_root')==str(Path(config['data_mount'])/'docker-engine') and all(saved.get(k)==v for k,v in expected.items()) and saved.get('uid')==config['media']['uid'] and saved.get('gid')==config['media']['gid'];add('checkpoint','Docker recovery checkpoint','pass' if good else 'needs_setup','Checkpoint must match the running engine, drives and configured ownership.')
             if 'media' in modules:checks.extend(containers(config));checks.extend(media_checks(config))
             if 'nextcloud' in modules:

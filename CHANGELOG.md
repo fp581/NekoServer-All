@@ -19,6 +19,7 @@
 
 ### Changed
 - Version 0.25.1; the release folder is now `nekoserver-v0.25.1`. Two long functions were split for readability (no change in behaviour).
+- **Steadier checksum ledger lock.** Opening a ledger now retries a busy lock for up to 2 seconds before reporting another writer: a program started at the same moment by another thread can briefly hold a copy of the lock (seen as an occasional test failure in CI). Paths read from the command line or settings are validated before use (installer state files, Jellyfin's key file).
 - **Slimmer release.** Removed `INSTALLATION-GUIDE.pdf`, a v0.21.0 walk-through nothing linked to any more (the README is the current guide). Out-of-date guidance in the docs was corrected: old install paths and commands (for example NOTIFICATIONS.md's test command pointed at v0.15.1), DASHBOARD.md's claims that the dashboard is local-only and can still run in Python, and "use the v0.10.0 installer" in RECOVERY.md. DASHBOARD, NEXTCLOUD, HEARTBEAT and SERVER-OS guides are now linked from the README. Upgrade code for older releases is kept on purpose: it moves existing servers forward safely and protects old backups.
 
 ### Upgrade notes
