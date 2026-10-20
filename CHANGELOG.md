@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.27.1 — 2026-10-20
+
+### Fixed (review of v0.27.0)
+- **Fans are handed back after a crash during Detect fans.** Detection kept the motherboard's own fan settings only in memory, so a crash during its 35 % test could leave fans in manual mode. Every fan's original setting is now written to disk *before* it is changed (for curves and for detection alike), the recovery command reads both records, and the service also puts back anything left over when it starts. Stopping the service now waits for a running detection to hand its fans back first.
+- **Lighting can't delay cooling.** Talking to OpenRGB held the same lock as the fan loop, so a slow or hung OpenRGB could delay temperature checks and the full-speed safety response by seconds. Fans, lighting and the PIN now have separate locks, each request runs on its own, retrying lights has its own thread, and the page shows the last lighting answer while OpenRGB is busy.
+- **Detect fans needs temperatures it can read.** A sensor that failed was simply ignored while fans were slowed down. Detection now won't start when no temperature can be read, and stops (handing the fans back) as soon as a watched temperature can no longer be read.
+- **A fan that won't go back to the motherboard is never shown as handed back.** Errors putting back the motherboard's setting were ignored and the record of it dropped, so the page could say "Motherboard" while the fan stayed in manual mode. The result is now checked: until it works, the record is kept (in memory and on disk), the fan runs at full speed, the page says *Not handed back*, and NekoServer keeps trying, also after a restart.
+- **Changes that can't be saved are refused.** Failures writing the fan or lighting settings were ignored, so a change could work until the next restart and then vanish. Such a change is now refused with the new code E46, and nothing changes.
+- **The fan page no longer shows old readings as current.** After losing the connection it kept showing the last temperatures and speeds without a warning. They are now dimmed, the badge and banner show the error, and nothing can be changed until fresh readings arrive.
+- **Edits made while saving are kept.** Changing a fan while its Save was on the way marked everything as saved although only the earlier values were sent. The page now tracks which edit was saved and asks you to save again.
+- **Lighting controls follow changes.** After *Apply to all* or a change on another device, only the colour dot changed; the colour, brightness and effect controls now follow too, except while you're using them.
+- **Brightness is honest about effects with their own colours.** Brightness only scales the chosen colour, so it did nothing for effects such as a rainbow. For those effects, colour and brightness are now switched off with a short explanation.
+- **Lights are retried until every device got its setting.** A device missing when the lights were restored (still starting, plugged in later) was skipped for good. The service now keeps retrying until every saved device has received its lighting.
+- **Identical lighting devices keep their own settings.** Two identical RAM sticks or controllers shared one name (name and description only), so they shared settings and appeared as one card. Each device is now named by where it is connected (or its serial number, or its position as a last resort), and the card shows where it is. Choices saved by 0.27.0 move to each matching device.
+
+### Changed
+- Version 0.27.1; the release folder is now `nekoserver-v0.27.1`.
+- Smaller fixes from the code check: no `!important` in the stylesheet, and the dashboard installer is split into short steps.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.0 — 2026-10-20
 
 ### Added

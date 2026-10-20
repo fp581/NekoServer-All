@@ -320,8 +320,8 @@ p.fan-now { font-size: 15px; color: var(--text); margin: 0; font-variant-numeric
 .fan-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
 .light { display: flex; flex-direction: column; gap: 10px; }
 .light .field { margin: 0; }
-.swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line); flex-shrink: 0; }
-.swatch.off { background: repeating-linear-gradient(45deg, var(--raised) 0 4px, var(--line) 4px 8px) !important; }
+.swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line); flex-shrink: 0; background: var(--swatch, transparent); }
+.swatch.off { background: repeating-linear-gradient(45deg, var(--raised) 0 4px, var(--line) 4px 8px); }
 input[type=color] { width: 100%; height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); padding: 4px; cursor: pointer; }
 .light-all { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
 .light-all input[type=color] { width: 64px; flex-shrink: 0; }
@@ -354,6 +354,7 @@ body.stale #apps, body.stale #backups, body.stale #protection, body.stale #drive
 /* Old live readings (the live feed failed): dim them too. */
 body.live-stale #load-cards, body.live-stale #cpu-cores, body.live-stale #network, body.live-stale #disk-io,
 body.live-stale #temperatures, body.live-stale #fans, body.live-stale #power { opacity: .6; }
+body.control-stale #fan-outputs, body.control-stale #fan-loose, body.control-stale #lights { opacity: .6; }
 .tabbar { display: none; }
 
 /* ---------- larger text (settings) ---------- */
