@@ -155,12 +155,18 @@ async function getJson(path, timeoutMs = 8000) {
     throw new CodedError(controller.signal.aborted ? 'E02' : 'E01');
   } finally { clearTimeout(timer); }
 }
+/* The collector lists every kind of backup NekoServer can make; one this server
+ * doesn't use is only a placeholder. A backup counts once its schedule is installed
+ * (even if switched off or broken) or it has ever run. */
+function backupInUse(job) {
+  return job.timer?.installed === true || numeric(job.last_success) || numeric(job.last_attempt) || ['running', 'pass', 'fail', 'partial', 'stale'].includes(job.status);
+}
 function validStatus(raw) {
   if (raw?.format !== 'neko-dashboard-v1' || !numeric(raw.generated_at)) { throw new CodedError('E11'); }
   const rows = (v, max = 200) => list(v).slice(0, max);
   return {
     ...raw, version: text(raw.version, 'unknown').slice(0, 40), metrics: object(raw.metrics),
-    applications: rows(raw.applications, 20), storage: rows(raw.storage, 20), backups: rows(raw.backups, 30),
+    applications: rows(raw.applications, 20), storage: rows(raw.storage, 20), backups: rows(raw.backups, 30).filter(backupInUse),
     alerts: rows(raw.alerts), integrity: rows(raw.integrity, 20), history: rows(raw.history, 120),
     startup: rows(raw.startup, 40), updates: rows(raw.updates, 20),
     media: {...object(raw.media), checks: rows(raw.media?.checks)}, acceptance: object(raw.acceptance),
@@ -708,7 +714,8 @@ function gpuDetail(g) {
   const memory = numeric(g.memory_used) ? bytes(g.memory_used) + total + ' video memory' : '';
   const max = numeric(g.clock_max_mhz) ? ' of ' + g.clock_max_mhz : '';
   const clock = numeric(g.clock_mhz) ? 'clock ' + g.clock_mhz + max + ' MHz' : '';
-  return joined([text(g.driver), memory, clock]) || 'Graphics';
+  const measured = numeric(g.sampled_at) ? 'measured ' + ago(g.sampled_at) : '';
+  return joined([text(g.driver), memory, clock, measured]) || 'Graphics';
 }
 function gpuValue(g) {
   if (numeric(g.percent)) { return pct(g.percent); }

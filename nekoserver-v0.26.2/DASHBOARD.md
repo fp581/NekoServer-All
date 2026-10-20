@@ -51,7 +51,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 A missing reading shows "—" or "No load reading", never a made-up 0. If a sensor you expect is missing, see Help → *A sensor is missing*. Most motherboard chips need `lm_sensors` (`sudo pacman -S lm_sensors`, then `sudo sensors-detect` and a restart). To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.26.1/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.26.2/nekoserver-runtime hardware
 ```
 
 Fans and lighting are **only read**. The motherboard (BIOS) or your fan/RGB app stays in charge of them.
@@ -90,7 +90,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.26.1` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.26.2` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ## What runs, and what it can see
 

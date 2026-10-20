@@ -65,6 +65,25 @@ class SnapshotRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Unmanaged'):
             sr.relative(sr.APPS, 'source0/x')
 
+    def test_the_report_says_owners_were_restored_only_when_they_were(self):
+        from unittest import mock
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'appdata/sonarr/config.xml': b'<x/>'})
+        report = lambda out: json.loads((out / 'restore-report.json').read_text())
+        with mock.patch.object(sr.os, 'geteuid', return_value=0), \
+                mock.patch.object(sr.os, 'chown', side_effect=PermissionError(1, 'Operation not permitted')):
+            with self.assertRaises(PermissionError):
+                sr.restore(sr.APPS, snap, self.root / 'failed', preserve_owners=True)
+        failed = report(self.root / 'failed')
+        self.assertFalse(failed['original_owners_restored'])
+        self.assertEqual(failed['ownership'], 'incomplete')
+        with mock.patch.object(sr.os, 'geteuid', return_value=0), mock.patch.object(sr.os, 'chown'):
+            done = report(sr.restore(sr.APPS, snap, self.root / 'done', preserve_owners=True))
+        self.assertTrue(done['original_owners_restored'])
+        self.assertEqual(done['ownership'], 'restored')
+        plain = report(sr.restore(sr.APPS, snap, self.root / 'plain'))
+        self.assertEqual((plain['original_owners_restored'], plain['ownership']), (False, 'not requested'))
+
     def test_restore_never_reuses_an_existing_folder(self):
         snap = self.root / 'snap'
         make(snap, sr.APPS, {'compose/a.yaml': b'a'})

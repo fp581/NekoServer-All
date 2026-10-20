@@ -1626,8 +1626,12 @@ pub fn preservation(a: &Args) -> Result<()> {
 }
 /// One "incomplete" report for the weekly USB copy: Nextcloud files left out and/or a
 /// database copy problem.
-fn incomplete(files: Option<Value>, database: Option<String>) -> Option<Value> {
-    if files.is_none() && database.is_none() {
+fn incomplete(
+    files: Option<Value>,
+    database: Option<String>,
+    source: Option<String>,
+) -> Option<Value> {
+    if files.is_none() && database.is_none() && source.is_none() {
         return None;
     }
     let mut out = files.unwrap_or_else(|| json!({"in_use":0,"unsupported_names":0,"files":[]}));
@@ -1635,8 +1639,15 @@ fn incomplete(files: Option<Value>, database: Option<String>) -> Option<Value> {
         out["database"] = json!(problem);
         out["reason"] = json!("The USB backup is incomplete");
     }
+    if let Some(problem) = source {
+        out["source"] = json!(problem);
+        out["reason"] = json!("The USB backup is incomplete");
+    }
     Some(out)
 }
+/// The Nextcloud files folder is made when Nextcloud is installed, so a configured one
+/// that is missing means a problem (a drive or folder gone), never "nothing to copy".
+const CLOUD_MISSING: &str = "the Nextcloud files folder is missing, so Nextcloud was not copied";
 pub fn weekly(a: &Args) -> Result<()> {
     common::require_root()?;
     let uuid = a.get("uuid")?;
@@ -1735,6 +1746,7 @@ pub fn weekly(a: &Args) -> Result<()> {
             validate_external(&dest, uuid)?;
             guard(&cfg, &data, &media)?;
             let mut cloud_copy = None;
+            let mut cloud_problem = None;
             if let Some(cloud) = &cloud {
                 if cloud.is_dir() {
                     common::stage("copying Nextcloud files to the USB drive");
@@ -1742,7 +1754,8 @@ pub fn weekly(a: &Args) -> Result<()> {
                     validate_external(&dest, uuid)?;
                     guard(&cfg, &data, &media)?;
                 } else {
-                    println!("Nextcloud: no data folder yet; nothing to copy");
+                    println!("Nextcloud: {CLOUD_MISSING}; this backup is incomplete");
+                    cloud_problem = Some(CLOUD_MISSING.to_string());
                 }
             }
             let legacy = legacy_usb_snapshots(&dest);
@@ -1774,6 +1787,7 @@ pub fn weekly(a: &Args) -> Result<()> {
             Ok(incomplete(
                 cloud_copy.and_then(|c| c.missing()),
                 database_problem,
+                cloud_problem,
             ))
         })();
         if mounted_here {
@@ -1790,6 +1804,13 @@ pub fn weekly(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_missing_nextcloud_folder_makes_the_backup_incomplete() {
+        assert!(incomplete(None, None, None).is_none());
+        let partial = incomplete(None, None, Some(CLOUD_MISSING.into())).unwrap();
+        assert_eq!(partial["source"], CLOUD_MISSING);
+        assert_eq!(partial["reason"], "The USB backup is incomplete");
+    }
     #[test]
     fn exfat_usb_drives_are_mounted_for_root_only() {
         assert_eq!(usb_mount_options("ext4"), "rw,nosuid,nodev");
@@ -2009,9 +2030,9 @@ mod tests {
             problem.contains("no record of its Immich version"),
             "{problem}"
         );
-        let report = incomplete(None, Some(problem)).unwrap();
+        let report = incomplete(None, Some(problem), None).unwrap();
         assert!(report["database"].as_str().unwrap().contains("no record"));
-        assert_eq!(incomplete(None, None), None);
+        assert_eq!(incomplete(None, None, None), None);
         let _ = fs::remove_dir_all(root);
     }
     #[test]
