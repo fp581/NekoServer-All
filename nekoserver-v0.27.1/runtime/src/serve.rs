@@ -38,6 +38,7 @@ pub const ERRORS: &[(&str, u16, &str)] = &[
     ("E43", 403, "Enter your PIN to change this"),
     ("E44", 403, "Wrong PIN"),
     ("E45", 429, "Too many tries; wait 5 minutes"),
+    ("E46", 503, "The change could not be saved"),
 ];
 /// The HTTP status for a coded answer from the control service.
 fn status_of(code: &str) -> u16 {

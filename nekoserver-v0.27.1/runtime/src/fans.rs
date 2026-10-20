@@ -8,7 +8,9 @@
 //! - full speed when the curve's sensor can't be read, or any sensor nears its
 //!   critical temperature (or 95 °C);
 //! - every output goes back to the firmware when control stops (and, after a crash,
-//!   through `control --restore`, which systemd runs whenever the service ends).
+//!   through `control --restore`, which systemd runs whenever the service ends). For
+//!   that, the firmware's own setting is written to a journal file *before* an output
+//!   is taken over, and removed only after it has been put back.
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -257,6 +259,32 @@ pub struct Controller {
     pub originals: BTreeMap<String, Original>,
     last: BTreeMap<String, f64>,
     pub status: BTreeMap<String, Value>,
+    /// Where `originals` is kept for `control --restore` (None only in tests).
+    journal: Option<PathBuf>,
+}
+/// The journal's form: {output id: {"enable": …, "pwm": …}}.
+pub fn originals_json(originals: &BTreeMap<String, Original>) -> Value {
+    json!(originals
+        .iter()
+        .map(|(k, o)| (k.clone(), json!({"enable": o.enable, "pwm": o.pwm})))
+        .collect::<serde_json::Map<_, _>>())
+}
+pub fn originals_from(saved: &Value) -> BTreeMap<String, Original> {
+    saved
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(id, o)| {
+            let field = |k: &str| o[k].as_str().unwrap_or("").to_string();
+            (
+                id.clone(),
+                Original {
+                    enable: field("enable"),
+                    pwm: field("pwm"),
+                },
+            )
+        })
+        .collect()
 }
 impl Controller {
     pub fn new(inventory: Inventory, settings: BTreeMap<String, Setting>) -> Self {
@@ -266,6 +294,18 @@ impl Controller {
             originals: BTreeMap::new(),
             last: BTreeMap::new(),
             status: BTreeMap::new(),
+            journal: None,
+        }
+    }
+    pub fn with_journal(mut self, path: PathBuf) -> Self {
+        self.journal = Some(path);
+        self
+    }
+    fn save_journal(&self) -> std::io::Result<()> {
+        match &self.journal {
+            Some(path) => crate::common::atomic_json(path, &originals_json(&self.originals))
+                .map_err(|_| std::io::Error::other("journal")),
+            None => Ok(()),
         }
     }
     pub fn temperature(&self, id: &str) -> Option<f64> {
@@ -294,26 +334,54 @@ impl Controller {
                     pwm: read(&out.path("")),
                 },
             );
+            // Recorded first: if the journal can't be written, the fan isn't touched.
+            if let Err(e) = self.save_journal() {
+                self.originals.remove(&out.id);
+                return Err(e);
+            }
         }
         if read(&out.path("_enable")) != "1" {
             write(&out.path("_enable"), "1")?;
         }
         Ok(())
     }
-    /// Hand one output back to the firmware.
-    pub fn release(&mut self, id: &str) {
-        let Some(original) = self.originals.remove(id) else {
-            return;
+    /// Hand one output back to the firmware. True once it is back (or was never taken).
+    /// When the output refuses, its firmware setting stays recorded (in memory and in the
+    /// journal) so it is tried again, and the fan is set to full speed meanwhile.
+    pub fn release(&mut self, id: &str) -> bool {
+        let Some(original) = self.originals.get(id).cloned() else {
+            return true;
         };
-        if let Some(out) = self.inventory.outputs.iter().find(|o| o.id == id) {
-            restore_output(out, &original);
+        let out = self.inventory.outputs.iter().find(|o| o.id == id).cloned();
+        if !out
+            .as_ref()
+            .is_some_and(|out| restore_output(out, &original))
+        {
+            if let Some(out) = out {
+                let _ = write(&out.path(""), "255");
+            }
+            return false;
         }
+        self.originals.remove(id);
         self.last.remove(id);
+        let _ = self.save_journal(); // a stale entry only restores the same setting again
+        true
     }
-    pub fn release_all(&mut self) {
+    /// True when every output is back with the firmware.
+    pub fn release_all(&mut self) -> bool {
+        let mut all = true;
         for id in self.originals.keys().cloned().collect::<Vec<_>>() {
-            self.release(&id);
+            all &= self.release(&id);
         }
+        all
+    }
+    /// Firmware settings not yet put back (after a crash, or by detection), kept so
+    /// this controller keeps trying.
+    pub fn adopt_originals(&mut self, originals: BTreeMap<String, Original>) {
+        for (id, o) in originals {
+            self.originals.entry(id).or_insert(o);
+        }
+        let _ = self.save_journal();
     }
     /// One control step: every output to its target speed (or back to the firmware).
     pub fn step(&mut self) {
@@ -322,8 +390,12 @@ impl Controller {
             let setting = self.settings.get(&out.id).cloned();
             let target = match setting.as_ref().map(|s| &s.mode) {
                 None | Some(Mode::Automatic) => {
-                    self.release(&out.id);
-                    self.status.insert(out.id.clone(), json!({"mode": "auto"}));
+                    let state = if self.release(&out.id) {
+                        json!({"mode": "auto"})
+                    } else {
+                        json!({"mode": "stuck", "percent": 100.0, "note": NOT_BACK})
+                    };
+                    self.status.insert(out.id.clone(), state);
                     continue;
                 }
                 Some(Mode::Fixed(pct)) => Ok(*pct),
@@ -358,24 +430,34 @@ impl Controller {
                 }
                 Err(_) => {
                     // Can't drive it: give it back to the firmware rather than leave it stuck.
-                    self.release(&out.id);
-                    self.status.insert(out.id.clone(), json!({"mode": "auto", "note": "This output refused the new speed, so the motherboard is in charge"}));
+                    let state = if self.release(&out.id) {
+                        json!({"mode": "auto", "note": "This output refused the new speed, so the motherboard is in charge"})
+                    } else {
+                        json!({"mode": "stuck", "note": NOT_BACK})
+                    };
+                    self.status.insert(out.id.clone(), state);
                 }
             }
         }
     }
 }
-pub fn restore_output(out: &Channel, original: &Original) {
+const NOT_BACK: &str =
+    "The motherboard didn't take this fan back, so it runs at full speed; NekoServer keeps trying";
+/// Put the firmware's setting back, and check that it took. False when it didn't.
+pub fn restore_output(out: &Channel, original: &Original) -> bool {
     // Manual with a fixed value before: put that value back too.
-    if original.enable == "1" && !original.pwm.is_empty() {
-        let _ = write(&out.path(""), &original.pwm);
+    if original.enable == "1"
+        && !original.pwm.is_empty()
+        && write(&out.path(""), &original.pwm).is_err()
+    {
+        return false;
     }
     let enable = if original.enable.is_empty() {
         "2"
     } else {
         &original.enable
     };
-    let _ = write(&out.path("_enable"), enable);
+    write(&out.path("_enable"), enable).is_ok() && read(&out.path("_enable")) == enable
 }
 
 /// Which fans each output drives: all outputs to full speed, then one at a time to

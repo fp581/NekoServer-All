@@ -164,6 +164,58 @@ def refresh(cfg,log,target=None):
     atomic_json(target,wanted);log('Dashboard: settings refreshed with the final setup choices')
     return True
 
+def check_existing(payloads,definitions,folders):
+    """Stop before changing anything when files, units or folders someone else changed
+    are in the way."""
+    for path,payload in payloads.items():
+        safe_path(path)
+        if path.exists() and path.read_bytes()!=payload:raise RuntimeError('Installed dashboard release differs; custom files preserved')
+        if path.name==native_runtime.NAME and path.exists() and path.stat().st_mode&0o005!=0o005:raise RuntimeError('Dashboard native executable must be readable/executable by its unprivileged account; review its permissions')
+    for name in definitions:
+        path=safe_path(Path('/etc/systemd/system')/name)
+        if path.exists() and not path.read_text().startswith('[Unit]\nDescription=NekoServer '):raise RuntimeError('Unmanaged dashboard systemd unit preserved')
+    for folder in folders:
+        safe_path(folder)
+        if folder.exists() and (not folder.is_dir() or folder.stat().st_mode&0o005!=0o005):raise RuntimeError('Existing dashboard asset directory permissions block its unprivileged account; review locally')
+
+def install_smart(cfg,log):
+    if not cfg.get('dashboard',{}).get('install_smartmontools',True) or shutil.which('smartctl'):return
+    if not shutil.which('pacman'):log('SMART readings unavailable: install smartmontools for this OS');return
+    if subprocess.run(['pacman','-Si','smartmontools'],capture_output=True,timeout=30).returncode:raise RuntimeError('smartmontools unavailable; update the system normally and retry')
+    subprocess.run(['pacman','-S','--needed','--noconfirm','smartmontools'],capture_output=True,check=True,timeout=900)
+
+def prepare_control(code,definitions,lighting,log):
+    """The control group and OpenRGB; lighting is left out when OpenRGB can't be had.
+    Returns whether lighting is on."""
+    control_group()
+    if lighting and not install_openrgb(log):
+        del definitions[OPENRGB];definitions.update(control_units(code,False))
+        return False
+    return lighting
+
+def write_files(folders,payloads,definitions):
+    for folder in folders:
+        if not folder.exists():
+            folder.mkdir(parents=True,mode=0o755);folder.chmod(0o755)
+    for path,payload in payloads.items():
+        if not path.exists():atomic_write(path,payload,0o755 if path.name==native_runtime.NAME else 0o644)
+    for name,text in definitions.items():atomic_write(Path('/etc/systemd/system')/name,text,0o644)
+
+def systemctl(*args,timeout=60):
+    subprocess.run(['systemctl',*args],capture_output=True,check=True,timeout=timeout)
+
+def start_services(definitions,code,control,log):
+    systemctl('daemon-reload',timeout=30)
+    systemctl('start','nekoserver-dashboard-collect.service',timeout=190)
+    started=[u for u in (OPENRGB,CONTROL) if u in definitions]
+    stopped=[u for u in (CONTROL,OPENRGB) if u not in definitions and (Path('/etc/systemd/system')/u).exists()]
+    if stopped:subprocess.run(['systemctl','disable','--now',*stopped],capture_output=True,timeout=60) # fans go back to the motherboard
+    if control:
+        CONTROL_CONFIG.mkdir(mode=0o700,exist_ok=True)
+        choose_pin(code/native_runtime.NAME,log)
+    for unit in ('nekoserver-dashboard-collect.timer',*started,SERVICE):systemctl('enable','--now',unit)
+    for unit in (*started,SERVICE):systemctl('restart',unit)
+
 def run(ctx):
     port,interval,smart=options(ctx.config)
     if not ctx.apply:ctx.log('Local dashboard available with --apply at http://127.0.0.1:'+str(port));return
@@ -178,44 +230,13 @@ def run(ctx):
     control,lighting=control_options(cfg)
     definitions=units(data,code,config,port,interval,public,control)
     if control:definitions.update(control_units(code,lighting))
-    for path,payload in payloads.items():
-        safe_path(path)
-        if path.exists() and path.read_bytes()!=payload:raise RuntimeError('Installed dashboard release differs; custom files preserved')
-        if path.name==native_runtime.NAME and path.exists() and path.stat().st_mode&0o005!=0o005:raise RuntimeError('Dashboard native executable must be readable/executable by its unprivileged account; review its permissions')
-    for name,text in definitions.items():
-        path=safe_path(Path('/etc/systemd/system')/name)
-        if path.exists() and not path.read_text().startswith('[Unit]\nDescription=NekoServer '):raise RuntimeError('Unmanaged dashboard systemd unit preserved')
-    public_directories=(code.parent,code,code/'dashboard')
-    for folder in public_directories:
-        safe_path(folder)
-        if folder.exists() and (not folder.is_dir() or folder.stat().st_mode&0o005!=0o005):raise RuntimeError('Existing dashboard asset directory permissions block its unprivileged account; review locally')
-    if cfg.get('dashboard',{}).get('install_smartmontools',True) and not shutil.which('smartctl'):
-        if not shutil.which('pacman'):ctx.log('SMART readings unavailable: install smartmontools for this OS')
-        else:
-            check=subprocess.run(['pacman','-Si','smartmontools'],capture_output=True,timeout=30)
-            if check.returncode:raise RuntimeError('smartmontools unavailable; update the system normally and retry')
-            subprocess.run(['pacman','-S','--needed','--noconfirm','smartmontools'],capture_output=True,check=True,timeout=900)
-    if control:
-        control_group()
-        if lighting and not install_openrgb(ctx.log):
-            lighting=False;del definitions[OPENRGB];definitions.update(control_units(code,False))
-    for folder in public_directories:
-        if not folder.exists():
-            folder.mkdir(parents=True,mode=0o755);folder.chmod(0o755)
-    for path,payload in payloads.items():
-        if not path.exists():atomic_write(path,payload,0o755 if path.name==native_runtime.NAME else 0o644)
+    folders=(code.parent,code,code/'dashboard')
+    check_existing(payloads,definitions,folders)
+    install_smart(cfg,ctx.log)
+    if control:lighting=prepare_control(code,definitions,lighting,ctx.log)
+    write_files(folders,payloads,definitions)
     atomic_json(config,collector_settings(cfg,smart,interval));safe_path(data/'dashboard-state').mkdir(mode=0o700,exist_ok=True)
-    for name,text in definitions.items():atomic_write(Path('/etc/systemd/system')/name,text,0o644)
-    subprocess.run(['systemctl','daemon-reload'],capture_output=True,check=True,timeout=30)
-    subprocess.run(['systemctl','start','nekoserver-dashboard-collect.service'],capture_output=True,check=True,timeout=190)
-    started=[u for u in (OPENRGB,CONTROL) if u in definitions]
-    stopped=[u for u in (CONTROL,OPENRGB) if u not in definitions and (Path('/etc/systemd/system')/u).exists()]
-    if stopped:subprocess.run(['systemctl','disable','--now',*stopped],capture_output=True,timeout=60) # fans go back to the motherboard
-    if control:
-        CONTROL_CONFIG.mkdir(mode=0o700,exist_ok=True)
-        choose_pin(code/native_runtime.NAME,ctx.log)
-    for unit in ('nekoserver-dashboard-collect.timer',*started,SERVICE):subprocess.run(['systemctl','enable','--now',unit],capture_output=True,check=True,timeout=60)
-    for unit in (*started,SERVICE):subprocess.run(['systemctl','restart',unit],capture_output=True,check=True,timeout=60)
+    start_services(definitions,code,control,ctx.log)
     write_managed(LAUNCHER,launcher(port),0o755,ctx.log)
     write_managed(DESKTOP_ENTRY,desktop_entry(code),0o644,ctx.log)
     ctx.log(f'NekoServer dashboard: http://127.0.0.1:{port}/ · backup history starts after updated jobs run')

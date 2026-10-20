@@ -125,7 +125,8 @@ const ERRORS = {
   E42: ['Request not supported', 'Reload the page.'],
   E43: ['Enter your PIN to change this', 'Phones, tablets and other computers need the PIN chosen during setup.'],
   E44: ['Wrong PIN', 'Check the PIN and try again.'],
-  E45: ['Too many tries; wait 5 minutes', 'After five wrong PINs, changes stay locked for 5 minutes.']
+  E45: ['Too many tries; wait 5 minutes', 'After five wrong PINs, changes stay locked for 5 minutes.'],
+  E46: ['The change could not be saved', 'Nothing was changed. The server’s system drive may be full or failing: Help → “Fans don’t change”.']
 };
 class CodedError extends Error {
   constructor(code) { super(ERRORS[code]?.[0] || 'Error'); this.code = ERRORS[code] ? code : 'E01'; }
@@ -390,6 +391,7 @@ function problem() {
   if (state.status && statusStale()) { return 'E12'; }
   if (LIVE_ROUTES.has(state.route) && state.liveError) { return state.liveError; }
   if (state.route === 'processes' && state.processError) { return state.processError; }
+  if (state.route === 'cooling' && state.controlError) { return state.controlError; }
   return null;
 }
 function renderProblem(code, s) {
@@ -423,6 +425,8 @@ function renderChrome() {
   renderProblem(code, s);
   document.body.classList.toggle('stale', !!s && (statusStale() || !!state.statusError));
   document.body.classList.toggle('live-stale', !!state.live && !liveFresh());
+  // Fan and light readings that could not be refreshed: dimmed, and nothing can be changed.
+  document.body.classList.toggle('control-stale', !!state.control && !!state.controlError);
   const [level, words] = overall(code, s);
   setBadge('connection', ...connection(code, s));
   $('side-dot').className = 'dot ' + level;
@@ -898,6 +902,7 @@ async function change(op, body) {
   return false;
 }
 function canChange() {
+  if (state.controlError) { return false; } // the page may be showing old readings
   const access = object(state.control?.access);
   return access.local === true || access.unlocked === true;
 }
@@ -1131,30 +1136,36 @@ function removePoint(card) {
 function nameField(card) {
   const wrap = el('label', 'field', 'Name (optional)'), input = el('input');
   Object.assign(input, {type: 'text', maxLength: 40, placeholder: 'e.g. Processor fan', value: card.draft.name});
-  input.addEventListener('input', () => { card.draft.name = input.value; card.dirty = true; card.refreshButtons(); });
+  input.addEventListener('input', () => { card.draft.name = input.value; card.touch(); });
   wrap.append(input);
   return wrap;
 }
 async function saveOutput(card) {
+  const version = card.version, setting = settingFrom(card.draft); // what is sent, as it is now
   card.saving = true;
   card.refreshButtons();
-  const ok = await change('fan', {output: card.id, setting: settingFrom(card.draft)});
+  const ok = await change('fan', {output: card.id, setting: JSON.parse(JSON.stringify(setting))});
   card.saving = false;
-  if (ok) { card.dirty = false; toast('Saved. The fan follows it now.'); }
+  if (ok && card.version === version) {
+    card.dirty = false;
+    toast('Saved. The fan follows it now.');
+  } else if (ok) {
+    toast('Saved, but you changed it while saving: press Save again to keep your latest change.');
+  }
   card.refreshButtons();
 }
 function outputCard(out, c) {
   const fans = object(c.fans), temps = list(fans.inventory?.temps);
-  const card = {id: out.id, draft: draftFrom(fans.settings?.[out.id], temps), dirty: false, saving: false, root: el('article', 'card fan-control')};
+  const card = {id: out.id, draft: draftFrom(fans.settings?.[out.id], temps), dirty: false, saving: false, version: 0, root: el('article', 'card fan-control')};
   const title = el('h3'), badgeNode = el('span', 'badge neutral'), now = el('p', 'fan-now'), note = el('p', 'hint');
   const head = el('div', 'card-heading');
   head.append(title, badgeNode);
   const chips = modeChips(card);
-  const fixed = rangeField('Speed', 0, 100, card.draft.fixed, v => { card.draft.fixed = v; card.dirty = true; card.refreshButtons(); });
+  const fixed = rangeField('Speed', 0, 100, card.draft.fixed, v => { card.draft.fixed = v; card.touch(); });
   const curve = el('div', 'curve-box');
-  const editor = curveEditor(() => card.draft.points, canChange, () => { card.dirty = true; card.refreshButtons(); });
+  const editor = curveEditor(() => card.draft.points, canChange, () => card.touch());
   curve.append(sensorSelect(card, temps), editor.svg, presetRow(card));
-  const minimum = rangeField('Never slower than', 20, 100, card.draft.min, v => { card.draft.min = v; card.dirty = true; card.refreshButtons(); });
+  const minimum = rangeField('Never slower than', 20, 100, card.draft.min, v => { card.draft.min = v; card.touch(); });
   const save = button('Save', () => saveOutput(card), 'button small');
   const undo = button('Undo changes', () => { card.draft = draftFrom(state.control?.fans?.settings?.[out.id], temps); card.dirty = false; card.rebuild(); });
   const actions = el('div', 'fan-actions');
@@ -1179,13 +1190,15 @@ function outputCard(out, c) {
     editor.draw();
     card.refreshButtons();
   };
-  card.edited = () => { card.dirty = true; card.rebuild(); };
+  // Every edit has a number, so a save only clears the edits it actually sent.
+  card.touch = () => { card.dirty = true; card.version += 1; card.refreshButtons(); };
+  card.edited = () => { card.touch(); card.rebuild(); };
   card.update = data => updateOutput(card, data, {title, badgeNode, now, note, editor});
   card.rebuild();
   card.update(c);
   return card;
 }
-const OUTPUT_STATES = {controlled: ['running', 'NekoServer'], auto: ['neutral', 'Motherboard']};
+const OUTPUT_STATES = {controlled: ['running', 'NekoServer'], auto: ['neutral', 'Motherboard'], stuck: ['warning', 'Not handed back']};
 function linkedFans(setting, inventory) {
   const ids = values(setting?.fans);
   return list(inventory.fans).filter(f => ids.includes(f.id));
@@ -1236,7 +1249,8 @@ function detectRow(fans) {
   return parts;
 }
 function outputsBadge(c) {
-  if (!c) { return state.controlError ? ['warning', state.controlError] : ['unknown', 'Waiting']; }
+  if (state.controlError) { return ['warning', state.controlError + (c ? ' · old readings' : '')]; }
+  if (!c) { return ['unknown', 'Waiting']; }
   const outputs = list(c.fans?.inventory?.outputs);
   return outputs.length ? ['neutral', outputs.length + ' outputs'] : ['unknown', 'None found'];
 }
@@ -1283,28 +1297,52 @@ function effectSelect(d, chosen, key) {
   wrap.append(select);
   return wrap;
 }
+/* Effects such as a rainbow make their own colours: OpenRGB can't dim them. */
+function effectMakesColours(d, effect) {
+  return !!effect && list(d.effects).some(e => e.name === effect && e.takes_color === false);
+}
+/* A control shows the server's value unless someone is using it right now. */
+function showIfIdle(input, value, heldUntil) {
+  if (document.activeElement === input || Date.now() < heldUntil) { return; }
+  if (input.value !== String(value)) { input.value = value; }
+}
 function lightCard(d) {
   const key = text(d.key), chosen = lightChosen(d), root = el('article', 'card light');
+  let held = 0; // until when the person's own edit wins over refreshed values
+  const hold = () => { held = Date.now() + 2500; };
   const swatch = el('span', 'swatch');
   const head = el('div', 'card-heading');
   head.append(el('h3', '', text(d.name, 'Lighting')), swatch);
   const colorWrap = el('label', 'field', 'Colour'), color = el('input');
   Object.assign(color, {type: 'color', value: chosen.color});
   const sendColor = debounced(v => sendLight(key, {color: v, off: false}));
-  color.addEventListener('input', () => { swatch.style.background = color.value; sendColor(color.value); });
+  color.addEventListener('input', () => { hold(); swatch.style.setProperty('--swatch', color.value); sendColor(color.value); });
   colorWrap.append(color);
   const sendBrightness = debounced(v => sendLight(key, {brightness: v, off: false}));
-  const brightness = rangeField('Brightness', 0, 100, chosen.brightness, sendBrightness);
+  const brightness = rangeField('Brightness', 0, 100, chosen.brightness, v => { hold(); sendBrightness(v); });
+  const effect = effectSelect(d, chosen, key);
+  effect.addEventListener('change', hold);
   const power = button(chosen.off ? 'Turn on' : 'Turn off', () => sendLight(key, {off: !lightChosen(cooling.lights.get(key).data).off}));
-  root.append(head, el('p', 'hint', joined([text(d.kind), d.leds ? d.leds + ' lights' : ''])), colorWrap, brightness, effectSelect(d, chosen, key), power);
+  const own = hint('This effect makes its own colours, so colour and brightness don’t apply to it.');
+  root.append(head, el('p', 'hint', joined([text(d.kind), d.leds ? d.leds + ' lights' : '', text(d.location)])), colorWrap, brightness, effect, own, power);
   const card = {root, data: d};
   card.update = next => {
     card.data = next;
     const now = lightChosen(next);
-    swatch.style.background = now.off ? 'transparent' : now.color;
+    swatch.style.setProperty('--swatch', now.color);
     swatch.classList.toggle('off', now.off);
     power.textContent = now.off ? 'Turn on' : 'Turn off';
+    // After "Apply to all" or a change on another device, the controls follow.
+    showIfIdle(color, now.color, held);
+    const level = brightness.querySelector('input');
+    showIfIdle(level, now.brightness, held);
+    if (Date.now() >= held && document.activeElement !== level) { brightness.querySelector('output').textContent = now.brightness + '%'; }
+    showIfIdle(effect.querySelector('select'), now.effect, held);
+    const ownColours = effectMakesColours(next, now.effect);
+    own.hidden = !ownColours;
     for (const n of root.querySelectorAll('input, select, button')) { n.disabled = !canChange(); }
+    color.disabled = color.disabled || ownColours;
+    brightness.querySelector('input').disabled = !canChange() || ownColours;
   };
   card.update(d);
   return card;

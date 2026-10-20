@@ -88,6 +88,9 @@ pub struct Device {
     pub index: u32,
     pub name: String,
     pub description: String,
+    /// Where it is connected (for example an i2c address); tells identical devices apart.
+    pub location: String,
+    pub serial: String,
     pub kind: &'static str,
     pub modes: Vec<Mode>,
     pub active_mode: i32,
@@ -99,6 +102,7 @@ impl Device {
         let first = self.colors.first().copied().unwrap_or([0, 0, 0]);
         json!({
             "id": self.index.to_string(), "name": self.name, "description": self.description,
+            "location": self.location,
             "kind": self.kind, "leds": self.leds,
             "effects": self.modes.iter().map(|m| json!({"name": m.name, "takes_color": m.takes_color()})).collect::<Vec<_>>(),
             "effect": self.modes.get(self.active_mode.max(0) as usize).map(|m| m.name.clone()),
@@ -180,9 +184,9 @@ pub fn parse_device(index: u32, body: &[u8]) -> Option<Device> {
     let kind = r.i32()?;
     let name = r.text()?;
     let description = r.text()?;
-    for _ in 0..3 {
-        r.text()?; // version, serial, location
-    }
+    r.text()?; // version
+    let serial = r.text()?;
+    let location = r.text()?;
     let mode_count = r.u16()? as usize;
     let active_mode = r.i32()?;
     let modes = (0..mode_count.min(256))
@@ -206,6 +210,8 @@ pub fn parse_device(index: u32, body: &[u8]) -> Option<Device> {
         index,
         name,
         description,
+        location,
+        serial,
         kind: DEVICE_KINDS
             .get(kind.max(0) as usize)
             .copied()
@@ -215,6 +221,42 @@ pub fn parse_device(index: u32, body: &[u8]) -> Option<Device> {
         leds: colors.len().max(leds),
         colors,
     })
+}
+
+/// The name lighting choices are kept under in 0.27.0, before identical devices were
+/// told apart.
+pub fn legacy_identity(d: &Device) -> String {
+    format!("{} · {}", d.name, d.description)
+}
+/// A lasting name for each device, so its lighting comes back after a restart: name and
+/// description, plus where it is connected (or its serial number). Devices that still
+/// look the same (two identical RAM sticks reported without either) are numbered in
+/// the order OpenRGB lists them.
+pub fn identities(devices: &[Device]) -> Vec<String> {
+    let base = devices
+        .iter()
+        .map(|d| {
+            let place = [&d.location, &d.serial]
+                .into_iter()
+                .find(|v| !v.trim().is_empty());
+            match place {
+                Some(p) => format!("{} · {}", legacy_identity(d), p.trim()),
+                None => legacy_identity(d),
+            }
+        })
+        .collect::<Vec<_>>();
+    base.iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let before = base[..i].iter().filter(|x| *x == b).count();
+            let total = base.iter().filter(|x| *x == b).count();
+            if total > 1 {
+                format!("{b} · #{}", before + 1)
+            } else {
+                b.clone()
+            }
+        })
+        .collect()
 }
 
 /// The colour shown when a device is set to `color` at `brightness` percent.
@@ -335,9 +377,18 @@ pub mod tests {
     }
     /// A controller description as an OpenRGB server sends it (protocol 0).
     pub fn device_bytes(name: &str, modes: &[(&str, u32)], leds: usize, matrix: bool) -> Vec<u8> {
+        device_at(name, "HID", modes, leds, matrix)
+    }
+    pub fn device_at(
+        name: &str,
+        location: &str,
+        modes: &[(&str, u32)],
+        leds: usize,
+        matrix: bool,
+    ) -> Vec<u8> {
         let mut b = vec![0u8; 4];
         b.extend_from_slice(&4i32.to_le_bytes()); // LED strip
-        for s in [name, "Desk strip", "1.0", "", "HID"] {
+        for s in [name, "Desk strip", "1.0", "", location] {
             b.extend(text(s));
         }
         b.extend_from_slice(&(modes.len() as u16).to_le_bytes());
@@ -377,6 +428,75 @@ pub mod tests {
             b.extend_from_slice(&[255, 0, 128, 0]);
         }
         b
+    }
+
+    /// Requests a stand-in server received, as (device, request id).
+    pub type Requests = std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>>;
+    /// A stand-in OpenRGB server: answers with `devices` and records every request as
+    /// (device, request id). `delay` makes it slow, like a busy or hung OpenRGB.
+    pub fn fake_server(devices: Vec<Vec<u8>>, delay: Duration) -> (u16, Requests) {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for mut s in listener.incoming().flatten() {
+                let (devices, log) = (devices.clone(), log.clone());
+                std::thread::spawn(move || loop {
+                    let mut head = [0u8; 16];
+                    if s.read_exact(&mut head).is_err() {
+                        break;
+                    }
+                    let word = |i: usize| u32::from_le_bytes(head[i..i + 4].try_into().unwrap());
+                    let (dev, id, size) = (word(4), word(8), word(12) as usize);
+                    let mut data = vec![0; size];
+                    if s.read_exact(&mut data).is_err() {
+                        break;
+                    }
+                    log.lock().unwrap().push((dev, id));
+                    std::thread::sleep(delay);
+                    let reply = match id {
+                        REQUEST_CONTROLLER_COUNT => {
+                            Some((devices.len() as u32).to_le_bytes().to_vec())
+                        }
+                        REQUEST_CONTROLLER_DATA => devices.get(dev as usize).cloned(),
+                        _ => None,
+                    };
+                    if let Some(r) = reply {
+                        if s.write_all(&packet(dev, id, &r)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (port, seen)
+    }
+
+    #[test]
+    fn identical_devices_get_their_own_names() {
+        let modes = [("Direct", 0)];
+        let at = |name, place| parse_device(0, &device_at(name, place, &modes, 2, false)).unwrap();
+        let devices = vec![
+            at("Vengeance", "I2C: /dev/i2c-1, address 0x58"),
+            at("Vengeance", "I2C: /dev/i2c-1, address 0x59"),
+            at("Strip", ""),
+            at("Strip", ""),
+            at("Hub", "HID: /dev/hidraw3"),
+        ];
+        let ids = identities(&devices);
+        assert_eq!(
+            ids,
+            [
+                "Vengeance · Desk strip · I2C: /dev/i2c-1, address 0x58",
+                "Vengeance · Desk strip · I2C: /dev/i2c-1, address 0x59",
+                "Strip · Desk strip · #1",
+                "Strip · Desk strip · #2",
+                "Hub · Desk strip · HID: /dev/hidraw3",
+            ]
+        );
+        assert_eq!(legacy_identity(&devices[0]), "Vengeance · Desk strip");
     }
 
     #[test]
