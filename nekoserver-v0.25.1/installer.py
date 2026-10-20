@@ -30,11 +30,12 @@ class Context:
             atomic_json(path,self.config)
 
 def read_json(path):
-    """A settings or state file: absolute, no '..', no symlinks along the way."""
-    path = Path(path)
-    if not path.is_absolute() or '..' in path.parts:
-        raise InstallerError(f'Expected an absolute path without "..": {path}')
-    with safe_path(path).open(encoding='utf-8') as f:
+    """A settings or state file (.json): absolute, no '..', no symlinks along the way."""
+    try:
+        checked = settings_path(path)
+    except RuntimeError as exc:
+        raise InstallerError(str(exc)) from None
+    with checked.open(encoding='utf-8') as f:
         return json.load(f)
 
 def load_modules(directory):
