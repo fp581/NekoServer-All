@@ -1,5 +1,5 @@
 {
-  "project_name": "NekoServer v0.26.2",
+  "project_name": "NekoServer v0.27.0",
   "timezone": "auto",
   "data_mount": "/srv/nekoserver",
   "media_mount": "/mnt/nekoserver-media",
@@ -369,7 +369,9 @@
     "port": 8787,
     "interval_seconds": 60,
     "smart_interval_seconds": 1800,
-    "install_smartmontools": true
+    "install_smartmontools": true,
+    "fan_control": true,
+    "rgb": true
   },
   "gateway": {
     "services": [

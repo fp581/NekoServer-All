@@ -282,6 +282,53 @@ details.more summary span { color: var(--muted); font-weight: 400; }
 .process-table td:first-child { max-width: 320px; overflow-wrap: anywhere; }
 .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 18px; font-size: 14px; color: var(--muted); }
 
+
+/* ---------- fans & lights ---------- */
+.control-access {
+  display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); margin-bottom: 14px;
+}
+.control-access:empty { display: none; }
+.fan-detect { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+.detect.running { display: flex; gap: 14px; align-items: center; flex: 1; flex-wrap: wrap; }
+.detect.running .meter { flex: 1; min-width: 120px; }
+.fans-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
+#fan-loose:not(:empty) { margin-top: 14px; }
+.fan-control { display: flex; flex-direction: column; gap: 10px; }
+.fan-control .card-heading { margin-bottom: 0; }
+.fan-control .field { margin: 0; }
+.fan-control details.more { margin-top: 0; }
+p.fan-now { font-size: 15px; color: var(--text); margin: 0; font-variant-numeric: tabular-nums; }
+.range-head { display: flex; justify-content: space-between; gap: 12px; }
+.range-head output { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.field.range input { width: 100%; min-height: 32px; accent-color: var(--purple); }
+.field input[type=text], .field input[type=password] {
+  padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); min-height: 44px; min-width: 0;
+}
+.curve-box { display: flex; flex-direction: column; gap: 8px; }
+.curve { display: block; width: 100%; height: auto; touch-action: none; user-select: none; -webkit-user-select: none; }
+.curve .grid { stroke: var(--line); stroke-width: 1; }
+.curve .axis { fill: var(--muted); font-size: 10px; }
+.curve-line { fill: none; stroke: var(--purple); stroke-width: 2.5; stroke-linejoin: round; }
+.curve-area { fill: color-mix(in srgb, var(--purple) 14%, transparent); }
+.curve .handle { fill: var(--surface); stroke: var(--purple); stroke-width: 3; cursor: grab; }
+.curve .handle:active { cursor: grabbing; }
+.curve .handle:focus-visible { outline: none; stroke: var(--pink); stroke-width: 4; }
+.curve-now line { stroke: var(--amber); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.curve-now circle { fill: var(--amber); }
+.presets .button { min-height: 36px; padding: 6px 11px; }
+.fan-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.light { display: flex; flex-direction: column; gap: 10px; }
+.light .field { margin: 0; }
+.swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line); flex-shrink: 0; }
+.swatch.off { background: repeating-linear-gradient(45deg, var(--raised) 0 4px, var(--line) 4px 8px) !important; }
+input[type=color] { width: 100%; height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); padding: 4px; cursor: pointer; }
+.light-all { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
+.light-all input[type=color] { width: 64px; flex-shrink: 0; }
+.light-all .field { margin: 0; min-width: 160px; flex: 1; }
+.unlock { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.unlock .field { flex: 1; margin: 0; min-width: 180px; }
+
 /* ---------- dialog ---------- */
 dialog {
   color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 20px;
@@ -398,6 +445,7 @@ body.tv { font-size: 19px; }
   .search { max-width: none; min-width: 0; flex-basis: 100%; }
   .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2px; padding: 0 2px; }
   .chips button { flex-shrink: 0; }
+  .fan-control .chips { flex-wrap: wrap; overflow: visible; }
   .issue { gap: 10px; flex-wrap: wrap; }
   .issue-icon { display: none; }
   .issue > .badge { order: -1; }

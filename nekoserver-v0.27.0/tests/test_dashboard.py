@@ -145,5 +145,61 @@ class DashboardInstallTests(unittest.TestCase):
                 self.assertIn('Exec=' + str(launcher), tv.launchers({})['nekoserver-dashboard.desktop'])
 
 
+class FanAndLightControlTests(unittest.TestCase):
+    code = Path('/usr/local/lib/nekoserver-dashboard/v1')
+
+    def test_only_the_control_service_runs_as_root_and_it_always_gives_fans_back(self):
+        units = dashboard.control_units(self.code, True)
+        control = units[dashboard.CONTROL]
+        self.assertIn('ExecStart=' + str(self.code / 'nekoserver-runtime') + ' control\n', control)
+        self.assertIn('ExecStopPost=' + str(self.code / 'nekoserver-runtime') + ' control --restore\n', control)
+        self.assertIn('Restart=always', control)
+        self.assertIn('Group=' + dashboard.CONTROL_GROUP, control)
+        self.assertNotIn('ProtectKernelTunables', control)  # fan outputs live in /sys
+        self.assertIn('IPAddressDeny=any', control)
+        self.assertIn('Wants=' + dashboard.OPENRGB, control)
+        openrgb = units[dashboard.OPENRGB]
+        self.assertIn('--server-port 6742', openrgb)
+        self.assertIn('IPAddressDeny=any\nIPAddressAllow=localhost', openrgb)  # never on the network
+        self.assertIn('QT_QPA_PLATFORM=offscreen', openrgb)
+        self.assertNotIn(dashboard.OPENRGB, dashboard.control_units(self.code, False))
+        # The web server stays unprivileged and only gains the control socket's group.
+        web = dashboard.units(Path('/srv/n'), self.code, Path('/etc/x.json'), 8787, 60, control=True)[dashboard.SERVICE]
+        self.assertIn('DynamicUser=yes', web)
+        self.assertIn('SupplementaryGroups=' + dashboard.CONTROL_GROUP, web)
+        self.assertNotIn('SupplementaryGroups', dashboard.units(Path('/srv/n'), self.code, Path('/etc/x.json'), 8787, 60)[dashboard.SERVICE])
+        for name, text in {**units, dashboard.SERVICE: web}.items():
+            self.assertTrue(text.startswith('[Unit]\nDescription=NekoServer '), name)
+
+    def test_switches_are_checked(self):
+        cfg = {'dashboard': {'port': 8787}}
+        self.assertEqual(dashboard.control_options(cfg), (True, True))
+        self.assertEqual(dashboard.control_options({'dashboard': {'rgb': False}}), (True, False))
+        self.assertEqual(dashboard.control_options({'dashboard': {'fan_control': False}}), (False, False))
+        with self.assertRaises(RuntimeError):
+            dashboard.options({'dashboard': {'fan_control': 'yes'}})
+
+    def test_the_pin_is_asked_twice_and_only_passed_to_the_runtime(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(dashboard, 'CONTROL_CONFIG', Path(d)), \
+                mock.patch.object(dashboard.subprocess, 'run') as run, mock.patch('builtins.print'):
+            logs = []
+            with mock.patch.object(dashboard.sys.stdin, 'isatty', return_value=False):
+                self.assertFalse(dashboard.choose_pin(Path('/bin/rt'), logs.append, ask=lambda _: '1234'))
+            run.assert_not_called()
+            with mock.patch.object(dashboard.sys.stdin, 'isatty', return_value=True):
+                answers = iter(['12', '1234', '9999', '2468', '2468'])  # too short, differ, then good
+                self.assertTrue(dashboard.choose_pin(Path('/bin/rt'), logs.append, ask=lambda _: next(answers)))
+                self.assertEqual(run.call_args.args[0], ['/bin/rt', 'control', '--set-pin'])
+                self.assertEqual(run.call_args.kwargs['input'], '2468\n')
+                self.assertNotIn('2468', ' '.join(logs))
+                run.reset_mock()
+                self.assertFalse(dashboard.choose_pin(Path('/bin/rt'), logs.append, ask=lambda _: ''))  # Enter skips
+                run.assert_not_called()
+                (Path(d) / 'pin.json').write_text('{}')
+                self.assertFalse(dashboard.choose_pin(Path('/bin/rt'), logs.append, ask=lambda _: '1111'))  # kept
+                run.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

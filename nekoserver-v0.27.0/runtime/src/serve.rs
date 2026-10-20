@@ -1,7 +1,9 @@
-//! The dashboard's web server: unprivileged, read-only, loopback only.
+//! The dashboard's web server: unprivileged and loopback only.
 //!
 //! It serves the page, the collector's latest snapshot (`/api/status`), live
-//! hardware readings (`/api/live`) and the process list (`/api/processes`). Anything
+//! hardware readings (`/api/live`) and the process list (`/api/processes`). Fan and
+//! lighting changes (`/api/control`) are passed to the root control service over its
+//! private socket; this server never writes to hardware itself. Anything
 //! that goes wrong is answered with a short code and a plain sentence (see ERRORS),
 //! which the page shows as is.
 use crate::{
@@ -13,8 +15,9 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
+    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
     thread,
@@ -28,10 +31,22 @@ pub const ERRORS: &[(&str, u16, &str)] = &[
     ("E10", 503, "Readings not ready yet"),
     ("E11", 503, "Readings could not be read"),
     ("E20", 503, "Live readings unavailable"),
+    ("E21", 503, "Fan and light control unavailable"),
     ("E40", 404, "Page not found"),
     ("E41", 403, "Open the dashboard from its own address"),
     ("E42", 400, "Request not supported"),
+    ("E43", 403, "Enter your PIN to change this"),
+    ("E44", 403, "Wrong PIN"),
+    ("E45", 429, "Too many tries; wait 5 minutes"),
 ];
+/// The HTTP status for a coded answer from the control service.
+fn status_of(code: &str) -> u16 {
+    ERRORS
+        .iter()
+        .find(|e| e.0 == code)
+        .map(|e| e.1)
+        .unwrap_or(503)
+}
 fn error_body(code: &str) -> (u16, Vec<u8>) {
     let (code, status, message) = ERRORS
         .iter()
@@ -75,6 +90,8 @@ fn reply(stream: &mut TcpStream, code: u16, body: &[u8], mime: &str, head: bool)
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        429 => "Too Many Requests",
         431 => "Request Header Fields Too Large",
         _ => "Service Unavailable",
     };
@@ -122,9 +139,53 @@ fn allowed(port: u16, public: Option<&str>) -> (Vec<String>, Vec<String>) {
     (hosts, origins)
 }
 
+/// Largest request body accepted (fan curves and colours are small).
+const MAX_BODY: usize = 4096;
+
+/// Ask the control service (one JSON line each way).
+fn ask_control(socket: &Path, request: &Value) -> std::result::Result<Value, &'static str> {
+    let mut stream = UnixStream::connect(socket).map_err(|_| "E21")?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    writeln!(stream, "{request}").map_err(|_| "E21")?;
+    let mut line = String::new();
+    BufReader::new(stream.take(4_000_000))
+        .read_line(&mut line)
+        .map_err(|_| "E21")?;
+    serde_json::from_str::<Value>(&line)
+        .ok()
+        .filter(Value::is_object)
+        .ok_or("E21")
+}
+
+/// The request the control service gets: only the fields it knows, plus who is asking.
+/// `local` is decided here, never taken from the page.
+pub fn control_request(op: &str, body: &Value, local: bool, token: Option<&str>) -> Value {
+    let mut request = json!({"op": op, "local": local});
+    for key in [
+        "pin",
+        "output",
+        "setting",
+        "device",
+        "color",
+        "brightness",
+        "effect",
+        "off",
+    ] {
+        if let Some(v) = body.get(key) {
+            request[key] = v.clone();
+        }
+    }
+    if let Some(t) = token {
+        request["token"] = json!(t);
+    }
+    request
+}
+
 struct Server {
     assets: PathBuf,
     status: PathBuf,
+    control: PathBuf,
     port: u16,
     public: Option<String>,
     live: Mutex<Live>,
@@ -237,13 +298,17 @@ fn handle(mut stream: TcpStream, server: &Server) {
     }
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
-    if !matches!(req.parse(&buf), Ok(httparse::Status::Complete(_))) {
-        reply_error(&mut stream, "E42", false);
-        return;
-    }
+    let body_start = match req.parse(&buf) {
+        Ok(httparse::Status::Complete(n)) => n,
+        _ => {
+            reply_error(&mut stream, "E42", false);
+            return;
+        }
+    };
     let method = req.method.unwrap_or("");
     let head = method == "HEAD";
-    if method != "GET" && !head {
+    let post = method == "POST";
+    if method != "GET" && !head && !post {
         reply_error(&mut stream, "E42", false);
         return;
     }
@@ -267,18 +332,72 @@ fn handle(mut stream: TcpStream, server: &Server) {
             .map(|v| !origins.iter().any(|o| o.as_bytes() == *v))
             .unwrap_or(false)
         || fetch.iter().any(|v| *v == b"cross-site")
+        // Changes must come from the dashboard page itself (browsers always send
+        // Origin with POST), so another site cannot press the buttons.
+        || (post && (origin.len() != 1 || fetch.iter().any(|v| *v != b"same-origin")))
     {
         reply_error(&mut stream, "E41", head);
         return;
     }
-    if !values("transfer-encoding").is_empty()
-        || cl.len() > 1
-        || cl.first().map(|v| *v != b"0").unwrap_or(false)
-    {
+    let length = match cl.as_slice() {
+        [] => Some(0),
+        [v] => std::str::from_utf8(v)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok()),
+        _ => None,
+    };
+    let Some(length) = length.filter(|n| *n == 0 || (post && *n <= MAX_BODY)) else {
+        reply_error(&mut stream, "E42", head);
+        return;
+    };
+    if !values("transfer-encoding").is_empty() {
         reply_error(&mut stream, "E42", head);
         return;
     }
     let path = req.path.unwrap_or("").split('?').next().unwrap_or("");
+    if path == "/api/control" || path.starts_with("/api/control/") {
+        // The server itself: a loopback address that Tailscale did not forward.
+        let forwarded = [
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "forwarded",
+            "tailscale-user-login",
+        ]
+        .iter()
+        .any(|h| !values(h).is_empty());
+        let local = !forwarded
+            && (hosts[0].starts_with(b"127.0.0.1:") || hosts[0].starts_with(b"localhost:"));
+        let token = values("x-neko-token")
+            .first()
+            .and_then(|v| std::str::from_utf8(v).ok())
+            .map(str::to_string);
+        let mut body = buf[body_start..].to_vec();
+        while body.len() < length && start.elapsed() < Duration::from_secs(3) {
+            let mut chunk = [0u8; 2048];
+            match stream.read(&mut chunk[..(length - body.len()).min(2048)]) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => body.extend_from_slice(&chunk[..n]),
+            }
+        }
+        let result = control(
+            server,
+            path,
+            post,
+            &body[..body.len().min(length)],
+            local,
+            token.as_deref(),
+            length,
+        );
+        match result {
+            Ok((status, b)) => reply(&mut stream, status, &b, "application/json", head),
+            Err(code) => reply_error(&mut stream, code, head),
+        }
+        return;
+    }
+    if post {
+        reply_error(&mut stream, "E42", false);
+        return;
+    }
     #[cfg(feature = "test-fixtures")]
     if path == "/__fixture_metrics" {
         let mut metrics = json!({"fixture":true});
@@ -321,6 +440,43 @@ fn handle(mut stream: TcpStream, server: &Server) {
     }
 }
 
+/// `/api/control` (GET: what can be controlled) and `/api/control/<op>` (POST).
+fn control(
+    server: &Server,
+    path: &str,
+    post: bool,
+    body: &[u8],
+    local: bool,
+    token: Option<&str>,
+    length: usize,
+) -> std::result::Result<(u16, Vec<u8>), &'static str> {
+    let op = match (path, post) {
+        ("/api/control", false) => "status",
+        (p, true) => match p.trim_start_matches("/api/control/") {
+            op @ ("unlock" | "fan" | "light" | "detect") => op,
+            "detect-cancel" => "detect_cancel",
+            _ => return Err("E40"),
+        },
+        _ => return Err("E42"),
+    };
+    let body = match body.len() {
+        0 if length == 0 => json!({}),
+        n if n == length => serde_json::from_slice::<Value>(body)
+            .ok()
+            .filter(Value::is_object)
+            .ok_or("E42")?,
+        _ => return Err("E42"),
+    };
+    let answer = ask_control(&server.control, &control_request(op, &body, local, token))?;
+    let status = match answer["error"].as_str() {
+        Some(code) => status_of(code),
+        None => 200,
+    };
+    serde_json::to_vec(&answer)
+        .map(|b| (status, b))
+        .map_err(|_| "E21")
+}
+
 pub fn run(a: &Args) -> Result<()> {
     if common::root() && !cfg!(feature = "test-fixtures") {
         return Err(Error::new("Unprivileged user required"));
@@ -346,6 +502,7 @@ pub fn run(a: &Args) -> Result<()> {
     let server = Arc::new(Server {
         assets,
         status,
+        control: PathBuf::from(a.value("control", crate::control::SOCKET)),
         port,
         public,
         live: Mutex::new(Live::default()),
@@ -476,6 +633,7 @@ mod tests {
         let server = Arc::new(Server {
             assets: root.join("assets"),
             status: root.join("status.json"),
+            control: root.join("control.sock"),
             port,
             public: None,
             live: Mutex::new(Live::default()),
@@ -514,6 +672,144 @@ mod tests {
         let live = get("/api/live", &host);
         assert!(live.contains("neko-live-v1"), "{live}");
         assert!(get("/api/processes", &host).contains("neko-processes-v1"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Fan and light requests reach the control service only from the page itself,
+    /// with `local` decided by the server and never by the page.
+    #[test]
+    fn control_requests_are_checked_and_forwarded() {
+        use std::os::unix::net::UnixListener;
+        let root = std::env::temp_dir().join(format!("neko-control-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("control.sock");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = Arc::new(Server {
+            assets: root.clone(),
+            status: root.join("status.json"),
+            control: socket.clone(),
+            port,
+            public: Some("neko.tail1234.ts.net".into()),
+            live: Mutex::new(Live::default()),
+        });
+        let worker = server.clone();
+        thread::spawn(move || {
+            for s in listener.incoming().flatten() {
+                handle(s, &worker);
+            }
+        });
+        let send = |request: String| {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            // The server may answer and close before an oversized body is sent.
+            let _ = s.write_all(request.as_bytes());
+            let mut out = Vec::new();
+            let _ = s.read_to_end(&mut out);
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        let local = format!("127.0.0.1:{port}");
+        let post = |path: &str, host: &str, origin: &str, extra: &str, body: &str| {
+            send(format!(
+                "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nSec-Fetch-Site: same-origin\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            ))
+        };
+        let here = format!("http://{local}");
+        // The service is not running yet.
+        assert!(post("/api/control/fan", &local, &here, "", "{}").contains("\"E21\""));
+        // A stand-in service that answers with the request it was given.
+        let service = UnixListener::bind(&socket).unwrap();
+        thread::spawn(move || {
+            for mut s in service.incoming().flatten() {
+                let mut line = String::new();
+                BufReader::new(s.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let answer = if request["pin"] == "0000" {
+                    json!({"ok": false, "error": "E44", "message": "Wrong PIN"})
+                } else {
+                    json!({"ok": true, "seen": request})
+                };
+                writeln!(s, "{answer}").unwrap();
+            }
+        });
+        let seen = |reply: &str| -> Value {
+            serde_json::from_str::<Value>(reply.split("\r\n\r\n").nth(1).unwrap()).unwrap()["seen"]
+                .clone()
+        };
+        let reply = post(
+            "/api/control/fan",
+            &local,
+            &here,
+            "",
+            r#"{"output":"a","setting":{"mode":"auto"},"local":false,"op":"x"}"#,
+        );
+        let request = seen(&reply);
+        assert_eq!(
+            (request["op"].as_str(), request["local"].as_bool()),
+            (Some("fan"), Some(true)),
+            "{reply}"
+        );
+        assert_eq!(request["setting"]["mode"], "auto");
+        // Through Tailscale: not local, even if the page claims otherwise.
+        let remote = "https://neko.tail1234.ts.net:8448";
+        let reply = post(
+            "/api/control/light",
+            "neko.tail1234.ts.net:8448",
+            remote,
+            "X-Forwarded-For: 100.64.0.2\r\nX-Neko-Token: abc\r\n",
+            r#"{"device":"d","local":true}"#,
+        );
+        let request = seen(&reply);
+        assert_eq!(
+            (request["local"].as_bool(), request["token"].as_str()),
+            (Some(false), Some("abc")),
+            "{reply}"
+        );
+        // A loopback Host forwarded by Tailscale is still not the server itself.
+        let reply = post(
+            "/api/control/light",
+            &local,
+            &here,
+            "X-Forwarded-For: 100.64.0.2\r\n",
+            r#"{"device":"d"}"#,
+        );
+        assert_eq!(seen(&reply)["local"], false);
+        // Coded refusals keep their HTTP status.
+        assert!(post(
+            "/api/control/unlock",
+            &local,
+            &here,
+            "",
+            r#"{"pin":"0000"}"#
+        )
+        .starts_with("HTTP/1.1 403"));
+        // Other sites, missing Origin, bad bodies and unknown actions are refused.
+        assert!(
+            post("/api/control/fan", &local, "https://evil.example", "", "{}").contains("\"E41\"")
+        );
+        let no_origin = send(format!(
+            "POST /api/control/fan HTTP/1.1\r\nHost: {local}\r\nContent-Length: 2\r\n\r\n{{}}"
+        ));
+        assert!(no_origin.contains("\"E41\""), "{no_origin}");
+        assert!(post("/api/control/fan", &local, &here, "", "[1]").contains("\"E42\""));
+        assert!(post(
+            "/api/control/fan",
+            &local,
+            &here,
+            "",
+            &"x".repeat(MAX_BODY + 1)
+        )
+        .contains("\"E42\""));
+        assert!(post("/api/control/format-disk", &local, &here, "", "{}").contains("\"E40\""));
+        assert!(post("/api/status", &local, &here, "", "{}").contains("\"E42\""));
+        // Reading what can be controlled is a plain GET.
+        let status = send(format!(
+            "GET /api/control HTTP/1.1\r\nHost: {local}\r\n\r\n"
+        ));
+        assert_eq!(seen(&status)["op"], "status");
         let _ = fs::remove_dir_all(&root);
     }
 }

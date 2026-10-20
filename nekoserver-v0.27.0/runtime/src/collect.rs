@@ -637,6 +637,8 @@ pub(crate) const STARTUP: &[(&str, &str)] = &[
     ("tailscaled.service", "Phone access (Tailscale)"),
     ("nekoserver-dashboard.service", "This dashboard"),
     ("nekoserver-dashboard-collect.timer", "Dashboard readings"),
+    ("nekoserver-control.service", "Fan & light control"),
+    ("nekoserver-openrgb.service", "RGB lighting (OpenRGB)"),
     ("smb.service", "Shared folders (Samba)"),
     ("nekoserver-hdd-policy.service", "Drive power settings"),
     (

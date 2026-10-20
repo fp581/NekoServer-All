@@ -4,7 +4,8 @@ The installer and configuration modules remain Python. The dashboard browser UI 
 
 | Native command | Installed task |
 | --- | --- |
-| serve | Continuously running localhost dashboard HTTP service, including live hardware readings and the process list (unprivileged, read-only) |
+| serve | Continuously running localhost dashboard HTTP service, including live hardware readings and the process list (unprivileged; fan and light changes are only passed to `control`) |
+| control | Root fan-curve and RGB lighting service behind a private socket (`--restore` hands every fan back to the motherboard; `--set-pin` reads a new PIN on standard input) |
 | hardware | Prints what the dashboard can read on this computer (sensors, graphics, network, drives), for checking detection |
 | media-health | Scheduled GET-only local media API and container audit |
 | collect | Scheduled dashboard metrics, disks/SMART, application state and sanitized reports |
