@@ -632,7 +632,7 @@ fn parse_nvidia(out: &str) -> Vec<Value> {
 }
 /// What starts by itself when the computer boots, in people's words. Only units
 /// that are installed are listed.
-const STARTUP: &[(&str, &str)] = &[
+pub(crate) const STARTUP: &[(&str, &str)] = &[
     ("docker.service", "Apps (Docker)"),
     ("tailscaled.service", "Phone access (Tailscale)"),
     ("nekoserver-dashboard.service", "This dashboard"),
@@ -798,16 +798,14 @@ fn partial_reason(missing: &Value) -> String {
         }
         parts.push(text);
     }
-    // The USB copy of the Immich database: missing, stale or without its version note.
-    let database = chars(text(&missing["database"]), 300);
-    if !database.is_empty() {
-        let mut first = database.chars();
-        parts.push(
-            first
-                .next()
-                .map(|c| c.to_uppercase().collect::<String>() + first.as_str())
-                .unwrap_or_default(),
-        );
+    // The USB copy of the Immich database (missing, stale or without its version note),
+    // and a source that could not be copied at all (the Nextcloud folder missing).
+    for key in ["database", "source"] {
+        let problem = chars(text(&missing[key]), 300);
+        let mut first = problem.chars();
+        if let Some(c) = first.next() {
+            parts.push(c.to_uppercase().collect::<String>() + first.as_str());
+        }
     }
     if parts.is_empty() {
         return "Incomplete; see the job's report".to_string();
@@ -1536,6 +1534,13 @@ mod os_tests {
             &json!({"in_use":0,"unsupported_names":0,"files":[],"database":"the newest Immich database copy is 10 days old"}),
         );
         assert_eq!(db, "The newest Immich database copy is 10 days old");
+        let cloud = partial_reason(
+            &json!({"in_use":0,"unsupported_names":0,"files":[],"source":"the Nextcloud files folder is missing, so Nextcloud was not copied"}),
+        );
+        assert_eq!(
+            cloud,
+            "The Nextcloud files folder is missing, so Nextcloud was not copied"
+        );
         let shown = alerts(
             &json!({"backups":[{"id":"external","name":"USB backup","status":"partial","reason":reason}]}),
         );

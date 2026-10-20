@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.26.2 — 2026-10-20
+
+### Fixed (review of v0.26.1)
+- **A missing Nextcloud folder no longer gives a successful weekly backup.** When the Nextcloud files folder was missing, the USB job said "nothing to copy" and could still pass without Nextcloud. It is now recorded as incomplete, with the reason on the dashboard and in notifications.
+- **Service alerts reach your phone.** The new "stopped with an error" and "won't start after a restart" alerts had no notification label, so they were silently dropped (reproduced). They are now sent, and "RECOVERED" is sent only when the service list shows the service enabled or no longer failed (never when the list is missing).
+- **"Restore tried" asks only about backups you have.** It counted placeholder rows for backups that aren't installed, so a server with only app backups (restore tested) showed "1 of 3" (reproduced). Only backups whose schedule is installed (even if switched off) or that have ever run count now.
+- **A failed ownership restore no longer reports success.** The app and host restore wrote "original owners restored" into its report before changing any owner, so a failed `chown` left a report claiming success (reproduced). The report now says "incomplete" until every owner and permission has been applied.
+- **NVIDIA figures are never shown as live when they are old.** They come from the minute-by-minute collector, and were merged into the live readings without checking its age. Each card now shows when its figures were measured, and once the collector is late they are left out with a note instead.
+
+### Changed
+- Version 0.26.2; the release folder is now `nekoserver-v0.26.2`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.26.1 — 2026-10-20
 
 ### Fixed (review of v0.26.0)

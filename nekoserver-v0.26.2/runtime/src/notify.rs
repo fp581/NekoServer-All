@@ -20,6 +20,22 @@ fn label(id: &str) -> Option<String> {
         _ => {}
     }
     let (kind, key) = id.split_once(':')?;
+    if kind == "startup" {
+        // startup:<unit> (won't start after a restart) or startup:<unit>:failed.
+        let (unit, failed) = match key.strip_suffix(":failed") {
+            Some(unit) => (unit, true),
+            None => (key, false),
+        };
+        let name = crate::collect::STARTUP.iter().find(|u| u.0 == unit)?.1;
+        return Some(format!(
+            "{name}: {}",
+            if failed {
+                "stopped with an error"
+            } else {
+                "won't start after a restart"
+            }
+        ));
+    }
     let name = match kind {
         "mount" | "space" | "smart" => match key {
             "data_ssd" => "Application SSD",
@@ -124,7 +140,10 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     let checks = crate::collect::CHECKS
         .iter()
         .map(|(id, _)| format!("integrity:{id}"));
-    for id in apps.chain(jobs).chain(drives).chain(checks) {
+    let services = crate::collect::STARTUP
+        .iter()
+        .flat_map(|(unit, _)| [format!("startup:{unit}"), format!("startup:{unit}:failed")]);
+    for id in apps.chain(jobs).chain(drives).chain(checks).chain(services) {
         if label(&id).is_some() {
             unknown.insert(id);
         }
@@ -150,6 +169,17 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     for row in s["backups"].as_array().unwrap() {
         if row["status"] == "pass" {
             unknown.remove(&format!("backup:{}", row["id"].as_str().unwrap_or("")));
+        }
+    }
+    // A service is good again only when it is listed (the check ran) and is enabled at
+    // boot, or no longer failed: a missing list never counts as recovered.
+    for row in s["startup"].as_array().cloned().unwrap_or_default() {
+        let unit = row["unit"].as_str().unwrap_or("");
+        if row["enabled"] == true {
+            unknown.remove(&format!("startup:{unit}"));
+        }
+        if row["active"].is_string() && row["active"] != "failed" {
+            unknown.remove(&format!("startup:{unit}:failed"));
         }
     }
     // A check is good again only when its latest results list no damaged files.
@@ -524,6 +554,50 @@ mod tests {
         let previous = json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000,"first_seen":900,"sent_level":"warning"}}});
         let (_, e) = plan(&snapshot(2000., json!([])), &previous, 2000., 0, 43200);
         assert_eq!(e, vec![("app:sonarr".into(), true, "recovered".into())]);
+    }
+    #[test]
+    fn service_alerts_notify_and_recover_only_with_evidence() {
+        // Every service the collector watches can raise both of its alerts.
+        for (unit, _) in crate::collect::STARTUP {
+            assert!(
+                label(&format!("startup:{unit}")).is_some(),
+                "startup:{unit}"
+            );
+            assert!(
+                label(&format!("startup:{unit}:failed")).is_some(),
+                "startup:{unit}:failed"
+            );
+        }
+        assert_eq!(
+            label("startup:smb.service:failed").unwrap(),
+            "Shared folders (Samba): stopped with an error"
+        );
+        let alert = json!([{"id":"startup:smb.service:failed","level":"critical"}]);
+        let (_, e) = plan(&snapshot(1000., alert), &json!({}), 1000., 0, 43200);
+        assert_eq!(
+            e,
+            vec![(
+                "startup:smb.service:failed".into(),
+                false,
+                "critical".into()
+            )]
+        );
+        let previous = json!({"format":"neko-notifications-v1","entries":{"startup:smb.service:failed":{"last_sent":1000}}});
+        // The alert is gone but the service list is missing (systemctl failed): no recovery.
+        let (_, e) = plan(&snapshot(2000., json!([])), &previous, 2000., 0, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        // Listed and running again: recovered.
+        let mut s = snapshot(2000., json!([]));
+        s["startup"] = json!([{"unit":"smb.service","enabled":true,"active":"active"}]);
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert_eq!(
+            e,
+            vec![(
+                "startup:smb.service:failed".into(),
+                true,
+                "recovered".into()
+            )]
+        );
     }
     #[test]
     fn unknown_app_is_not_recovered() {

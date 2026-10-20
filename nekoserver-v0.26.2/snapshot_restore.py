@@ -136,14 +136,19 @@ def restore(kind, snapshot, destination, preserve_owners=False):
     rows = manifest['files']
     for row in rows:
         copy_row(kind, snapshot, destination, row)
-    # Privately retain evidence before applying original directory permissions.
+    # Privately retain evidence before applying original directory permissions. Owners
+    # count as restored only after every chown/chmod worked: a failure leaves the
+    # report saying so (the command itself fails too).
     report = {'format': kind.restore_format, 'files': len(rows), 'checksums_verified': True,
-              'original_owners_restored': preserve_owners, **kind.report}
+              'original_owners_restored': False,
+              'ownership': 'incomplete' if preserve_owners else 'not requested', **kind.report}
     if kind.links:
         report.update(sources=manifest.get('sources', []), missing_optional=manifest.get('missing_optional', []))
     atomic_json(destination / 'restore-report.json', report)
     if preserve_owners:
         apply_owners(kind, destination, rows)
+        report.update(original_owners_restored=True, ownership='restored')
+        atomic_json(destination / 'restore-report.json', report)
     return destination
 
 

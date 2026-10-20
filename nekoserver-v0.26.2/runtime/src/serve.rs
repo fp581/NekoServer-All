@@ -149,23 +149,7 @@ impl Server {
     fn live(&self) -> std::result::Result<Vec<u8>, &'static str> {
         let mut value = self.live.lock().map_err(|_| "E20")?.sample();
         if let Ok((_, status)) = self.snapshot() {
-            for extra in status["gpu_telemetry"].as_array().into_iter().flatten() {
-                let bus = extra["bus"].as_str().unwrap_or("").to_lowercase();
-                for gpu in value["gpus"].as_array_mut().into_iter().flatten() {
-                    let id = gpu["id"].as_str().unwrap_or("").to_lowercase();
-                    if bus.len() >= 12
-                        && id.len() >= 12
-                        && bus[bus.len() - 12..] == id[id.len() - 12..]
-                    {
-                        for key in ["name", "percent", "memory_used", "memory_total"] {
-                            if !extra[key].is_null() {
-                                gpu[key] = extra[key].clone();
-                            }
-                        }
-                        gpu["source"] = json!("NVIDIA driver (every minute)");
-                    }
-                }
-            }
+            merge_nvidia(&mut value, &status, common::now());
         }
         serde_json::to_vec(&value).map_err(|_| "E20")
     }
@@ -186,6 +170,41 @@ impl Server {
     }
 }
 
+/// NVIDIA figures come from the collector's snapshot, so they are as old as it is.
+/// Each card gets the time they were measured; once the snapshot is late (two
+/// collection intervals plus 30 s, the page's and acceptance's rule) the load and
+/// memory figures are left out instead of being shown under a "Live" badge.
+fn merge_nvidia(value: &mut Value, status: &Value, now: f64) {
+    let at = status["generated_at"].as_f64().filter(|t| t.is_finite());
+    let interval = status["collect_interval"]
+        .as_u64()
+        .filter(|s| (30..=300).contains(s))
+        .unwrap_or(60) as f64;
+    let current = at.is_some_and(|t| now - t <= 2.0 * interval + 30.0 && t <= now + 60.0);
+    for extra in status["gpu_telemetry"].as_array().into_iter().flatten() {
+        let bus = extra["bus"].as_str().unwrap_or("").to_lowercase();
+        for gpu in value["gpus"].as_array_mut().into_iter().flatten() {
+            let id = gpu["id"].as_str().unwrap_or("").to_lowercase();
+            if bus.len() < 12 || id.len() < 12 || bus[bus.len() - 12..] != id[id.len() - 12..] {
+                continue;
+            }
+            if !extra["name"].is_null() {
+                gpu["name"] = extra["name"].clone();
+            }
+            if current {
+                for key in ["percent", "memory_used", "memory_total"] {
+                    if !extra[key].is_null() {
+                        gpu[key] = extra[key].clone();
+                    }
+                }
+                gpu["sampled_at"] = json!(at);
+                gpu["source"] = json!("NVIDIA driver (every minute)");
+            } else {
+                gpu["source"] = json!("NVIDIA readings are out of date (the collector stopped)");
+            }
+        }
+    }
+}
 fn handle(mut stream: TcpStream, server: &Server) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
@@ -388,6 +407,43 @@ mod tests {
         assert!(!hosts.iter().any(|h| h == "other.tail1234.ts.net:8448"));
     }
 
+    #[test]
+    fn nvidia_figures_carry_their_age_and_expire() {
+        let gpus =
+            || json!({"gpus":[{"id":"0000:01:00.0","name":"NVIDIA graphics","percent":null}]});
+        let telemetry = json!([{"bus":"00000000:01:00.0","name":"NVIDIA GeForce RTX 4060","percent":23.0,"memory_used":1.0e9}]);
+        let mut fresh = gpus();
+        merge_nvidia(
+            &mut fresh,
+            &json!({"generated_at":1000.0,"gpu_telemetry":telemetry}),
+            1030.0,
+        );
+        assert_eq!(fresh["gpus"][0]["percent"], 23.0);
+        assert_eq!(fresh["gpus"][0]["sampled_at"], 1000.0);
+        let mut old = gpus();
+        merge_nvidia(
+            &mut old,
+            &json!({"generated_at":1000.0,"gpu_telemetry":telemetry}),
+            1200.0,
+        );
+        assert!(
+            old["gpus"][0]["percent"].is_null(),
+            "a frozen load is not shown as live"
+        );
+        assert_eq!(old["gpus"][0]["name"], "NVIDIA GeForce RTX 4060");
+        assert!(old["gpus"][0]["source"]
+            .as_str()
+            .unwrap()
+            .contains("out of date"));
+        // A five-minute collection interval keeps a 200-second-old reading current.
+        let mut slow = gpus();
+        merge_nvidia(
+            &mut slow,
+            &json!({"generated_at":1000.0,"collect_interval":300,"gpu_telemetry":telemetry}),
+            1200.0,
+        );
+        assert_eq!(slow["gpus"][0]["percent"], 23.0);
+    }
     #[test]
     fn errors_are_short_coded_sentences() {
         for (code, status, message) in ERRORS {

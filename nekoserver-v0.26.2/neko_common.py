@@ -9,7 +9,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-VERSION = '0.26.1'
+VERSION = '0.26.2'
 
 TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
 ZONEINFO = Path('/usr/share/zoneinfo')

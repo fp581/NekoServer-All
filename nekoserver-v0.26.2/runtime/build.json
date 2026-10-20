@@ -1,15 +1,15 @@
 {
-  "version": "0.26.1",
+  "version": "0.26.2",
   "target": "x86_64-unknown-linux-musl",
   "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
-  "binary_sha256": "91c6b94e962a8a063e4f4f6c978faa5b95d478b0d341b501b1dde015d1888c73",
+  "binary_sha256": "1adf20c8f80ad5ace52a8e1f05c4e8848172031890d769624e282d6dbc524947",
   "source_sha256": {
-    "Cargo.toml": "943f46cd904dcc3e18a6417fc4f8e9ae98928b135fb4a6f3fc598abb8af3cf08",
-    "Cargo.lock": "2c6f34accdaef5e826242c8eedc560db706895a65d65f92785bcbf2502e12d62",
+    "Cargo.toml": "23577128cc02a099c3142f5e4eb93653bbd8052aa20732f815b95aa699711b33",
+    "Cargo.lock": "b472c20e2a798991553079c30125720a5540c1669d3984404eee9fa19a414ea0",
     "build.py": "e28baddf0e9a553c4fbce447185830602c896716afbe4af8719eedff5a74bd8f",
     "src/app_snapshot.rs": "da9e384436eae598d81c822fad6f32e3a90912898e2884df14e07c145a1c5b0f",
-    "src/backup.rs": "cac600ff6c0a22c7cefc7b12cba3e88c9a4303499de44846e3dfadae8a945f2b",
-    "src/collect.rs": "d9cba6c33bd60dc24a1f2a007ffaa0adb26c2637fef170123aa33585bc57e9f4",
+    "src/backup.rs": "da33dabde768014f856bc04dfe8ec30f86d8a23461119a52f3cb15e790aa547e",
+    "src/collect.rs": "ac329495ce4b0accdad9cda3468ee61bbe0f9a3082fccce5f1c9f4f4de219614",
     "src/common.rs": "09cceb3313647485ee99153b679fb664f80ebba69aa2bed9c32fed269e084480",
     "src/heartbeat.rs": "d703981145c7d99ce5a991f19bd10a9a9a9fb80e5afdc0f093aa2453f5247a50",
     "src/host_snapshot.rs": "14d3bbbd916a7c97a03472ea0c0ada54496359423635a631d46d07a39db98bde",
@@ -19,9 +19,9 @@
     "src/maintenance.rs": "0873068c56bd0fd92ac9fa9cdefb19bb388b834396ea402e5969151b605ae681",
     "src/media.rs": "6ea21fde477f9f938093c1dfc3b970bd09747bf16ee010cdd28f2ac96ebaeaea",
     "src/music_backup.rs": "5eefa54c2c145825ae1ee9112d08941b23203035808b7e0e71ba5ab59f234a27",
-    "src/notify.rs": "a0a325e34000f2a82a8e86e07edcd51f1b650ce66fc8d32c76b56c9828a0bf29",
+    "src/notify.rs": "ce0663f15aab826e2f95f8d35deedc35a7a8512de9cf7656aec005c646aefb22",
     "src/os_policy.rs": "2c68f8c9693d9dae74e3df0f6f46b51e53ace4c8c2ab976422b08584bf4a32ca",
-    "src/serve.rs": "7e54e6b90b1e6c3b7aa9a67be078c4f778f8b6dd63ee6afa3bb22736dac6f176",
+    "src/serve.rs": "4cf1132f035ba5ec28ea1f282d031a2dacc386b0b4bae5100d79f9f9f01a8b6d",
     "src/startup.rs": "a07004dda9a3d21b9a05ef3c66dd5e07d157f6258b67b6bccd7f819048f6ce34"
   }
 }
