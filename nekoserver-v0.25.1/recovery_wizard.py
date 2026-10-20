@@ -221,6 +221,13 @@ def copy_new(sources, destination, checked=None):
 VERSIONED = re.compile(r'^(?P<stem>.+)\.neko-(?P<stamp>\d{8}T\d{6}Z)(?:-(?P<n>\d+))?(?:\.(?P<ext>[^.]+))?$')
 
 
+def live_name(key):
+    """Where the live original of a backup copy is: a dated version
+    (photo.neko-20261020T010000Z.jpg) is an earlier state of photo.jpg."""
+    path = Path(key)
+    return str(path.with_name(version_of(path.name)[0]))
+
+
 def version_of(name):
     """(the file's own name, sort key); the first copy (no date) sorts oldest."""
     match = VERSIONED.match(name)
@@ -553,6 +560,10 @@ def repair_one(key, copies, ledgers, original, prompt, output, aside):
     present = [(label, root, Path(root) / key) for label, root in copies]
     sums = {label: sha256_file(path) if path.is_file() else None for label, _, path in present}
     live = sha256_file(original) if original and original.is_file() else None
+    if live is not None and live_name(key) != key and expected is None:
+        # The live file is a later edit of a dated version: it can only stand in for
+        # it when it matches the recorded checksum, and there is none.
+        live = None
     if expected is None:
         expected, good = settle_unrecorded(key, present, sums, live, prompt, output)
         if expected is None:
@@ -594,7 +605,7 @@ def repair_backups(config, prompt, output):
     # A warning is cleared only for the copies it is about, once each was checked:
     # the archive check is about the HDD copy, the USB checks about the USB copies.
     needs = {'archive': {'HDD'}, 'usb_photos': {'HDD', 'USB'}, 'usb_nextcloud': {'USB'}}
-    with lock(config), Usb(config, writable=True) as usb:
+    with lock(config, changes_apps=False), Usb(config, writable=True) as usb:
         copies = [('HDD', archive)] + ([('USB', usb)] if usb else [])
         jobs = [(sorted(set(work['archive']) | set(work['usb_photos'])), copies,
                  data / 'photos/immich-library', ('archive', 'usb_photos'))]
@@ -605,7 +616,7 @@ def repair_backups(config, prompt, output):
         for keys, trees, originals, names in jobs:
             ledgers = [(root, read_ledger(root)) for _, root in trees]
             for key in keys:
-                result, verified = repair_one(key, trees, ledgers, originals / key, prompt, output, aside)
+                result, verified = repair_one(key, trees, ledgers, originals / live_name(key), prompt, output, aside)
                 output(f'  {key}: {result}')
                 for name in names:
                     if needs[name] <= verified:

@@ -533,6 +533,32 @@ class RecoveryWizardTests(unittest.TestCase):
             self.restore_cloud('1', 'yes', 'yes')
         self.assertFalse((self.media / 'restored').exists() and any((self.media / 'restored').iterdir()))
 
+    def test_a_dated_version_is_repaired_from_its_live_original(self):
+        archive, usb = 'hdd/photos/archive', 'usb'
+        dated = 'upload/photo.neko-20261020T010000Z.jpg'
+        self.write(f'{archive}/{dated}', b'rotten')
+        self.ledger(archive, {dated: b'photo as it is now'})
+        self.write('ssd/photos/immich-library/upload/photo.jpg', b'photo as it is now')
+        self.report({'archive': {'damaged': [dated]}})
+        out, left = self.repair(None)
+        self.assertEqual((self.root / archive / dated).read_bytes(), b'photo as it is now')
+        self.assertEqual(left['archive']['damaged'], [])
+        self.assertEqual(recovery_wizard.live_name('a/b.neko-20261020T010000Z-2.jpg'), 'a/b.jpg')
+        self.assertEqual(recovery_wizard.live_name('a/plain.jpg'), 'a/plain.jpg')
+
+    def test_a_dated_version_never_takes_a_later_live_edit(self):
+        archive, usb = 'hdd/photos/archive', 'usb'
+        dated = 'upload/photo.neko-20261020T010000Z.jpg'
+        self.write(f'{archive}/{dated}', b'old version')
+        self.ledger(archive, {dated: b'old version'})
+        self.write('ssd/photos/immich-library/upload/photo.jpg', b'edited since')
+        self.write(f'{archive}/{dated}', b'rotten')
+        self.report({'archive': {'damaged': [dated]}})
+        out, left = self.repair(None)
+        self.assertEqual((self.root / archive / dated).read_bytes(), b'rotten')  # kept untouched
+        self.assertIn('no copy matches its recorded checksum', '\n'.join(out))
+        self.assertEqual(left['archive']['damaged'], [dated])
+
     def test_repair_with_nothing_reported(self):
         out = []
         recovery_wizard.repair_backups(self.config, answers(), out.append)

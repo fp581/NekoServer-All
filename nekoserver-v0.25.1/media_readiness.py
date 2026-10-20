@@ -19,6 +19,10 @@ class ReadClient(Client):
         self.headers.clear()
 
 
+# Jellyfin's answer to a key it does not (or no longer) accept.
+REJECTED=('jellyfin: HTTP 401','jellyfin: HTTP 403')
+
+
 def jellyfin_key(root, settings, server_id):
     """Jellyfin's own NekoServer key; Seerr's link to this server only when Seerr is
     installed and linked. Jellyfin alone never needs Seerr."""
@@ -52,7 +56,12 @@ def check(config, factory=ReadClient):
                 if info.get('StartupWizardCompleted') is not True:
                     raise SetupRequired('Jellyfin first administrator wizard is incomplete')
                 client.headers['X-Emby-Token']=jellyfin_key(root,settings,server_id)
-                values=folders(client)
+                try:
+                    values=folders(client)
+                except RuntimeError as exc:
+                    if str(exc) in REJECTED:
+                        raise SetupRequired('Jellyfin no longer accepts NekoServer\'s key (it was revoked or replaced): run  sudo bash install.sh  again to renew it') from None
+                    raise
                 for category,name,kind in LIBRARIES:
                     value=matching(values,category,name,kind)
                     if not value:raise SetupRequired('Expected movie/TV libraries are missing')

@@ -1,0 +1,8 @@
+[
+  {"name": "own key without seerr", "own_key": "own-key\n", "settings": {}, "server_id": "srv1", "expected": "own-key"},
+  {"name": "own key wins over seerr", "own_key": "own-key", "settings": {"jellyfin": {"serverId": "srv1", "apiKey": "seerr-key"}}, "server_id": "srv1", "expected": "own-key"},
+  {"name": "blank own key falls back to seerr", "own_key": "  \n", "settings": {"jellyfin": {"serverID": "srv1", "apiKey": "seerr-key"}}, "server_id": "srv1", "expected": "seerr-key"},
+  {"name": "seerr linked to another server", "own_key": null, "settings": {"jellyfin": {"serverId": "other", "apiKey": "seerr-key"}}, "server_id": "srv1", "expected": null},
+  {"name": "seerr without key", "own_key": null, "settings": {"jellyfin": {"serverId": "srv1", "apiKey": ""}}, "server_id": "srv1", "expected": null},
+  {"name": "nothing saved", "own_key": null, "settings": {}, "server_id": "srv1", "expected": null}
+]

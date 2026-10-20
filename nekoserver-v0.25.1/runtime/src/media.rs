@@ -64,6 +64,15 @@ fn decoded_chunks(mut bytes: &[u8]) -> Result<Vec<u8>> {
         bytes = &bytes[count + 2..];
     }
 }
+/// A key the app does not (or no longer) accept: setup renews it, checks only report it.
+const REJECTED: &str = "API rejected the key";
+fn success(code: Option<u16>) -> Result<()> {
+    match code {
+        Some(200) => Ok(()),
+        Some(401 | 403) => Err(Error::new(REJECTED)),
+        _ => Err(Error::new("API returned non-success status")),
+    }
+}
 fn get(app: &str, endpoint: &str, auth: Option<(&str, &str)>) -> Result<Value> {
     if !endpoint.starts_with('/') || endpoint.starts_with("//") || endpoint.contains(['\r', '\n']) {
         return Err(Error::new("Invalid local endpoint"));
@@ -118,10 +127,10 @@ fn get(app: &str, endpoint: &str, auth: Option<(&str, &str)>) -> Result<Value> {
         .parse(&bytes[..end])
         .map_err(|_| Error::new("Invalid HTTP response"))?
         .is_complete()
-        || response.code != Some(200)
     {
-        return Err(Error::new("API returned non-success status"));
+        return Err(Error::new("Incomplete HTTP response"));
     }
+    success(response.code)?;
     let lengths = response
         .headers
         .iter()
@@ -418,6 +427,30 @@ fn music_catalogue(data: &Path) -> Result<&'static str> {
     Ok("pass")
 }
 
+/// Jellyfin's own NekoServer key (`secrets/jellyfin-readiness.key`, written by setup);
+/// Seerr's saved link to this server only as a fallback. Jellyfin alone never needs
+/// Seerr. Same rules as `media_readiness.jellyfin_key` in Python.
+fn jellyfin_key(data: &Path, saved: &Value, server_id: &str) -> Option<String> {
+    let own = common::safe(&data.join("secrets/jellyfin-readiness.key"))
+        .ok()
+        .filter(|p| p.is_file())
+        .and_then(|p| common::bytes(&p, 4096).ok())
+        .and_then(|b| String::from_utf8(b).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if !own.is_empty() {
+        return Some(own);
+    }
+    let linked = text(
+        saved
+            .get("serverId")
+            .or_else(|| saved.get("serverID"))
+            .unwrap_or(&Value::Null),
+    );
+    let key = text(&saved["apiKey"]);
+    (!server_id.is_empty() && linked == server_id && !key.is_empty()).then(|| key.to_string())
+}
+
 fn readiness(data: &Path, selected: &[&str]) -> Value {
     let mut rows = json!({});
     let settings = if selected.contains(&"seerr") {
@@ -435,22 +468,21 @@ fn readiness(data: &Path, selected: &[&str]) -> Value {
             if server_id.is_empty() {
                 return Err(Error::new("Jellyfin identity missing"));
             }
-            if info["StartupWizardCompleted"] != true
-                || text(
-                    saved
-                        .get("serverId")
-                        .or_else(|| saved.get("serverID"))
-                        .unwrap_or(&Value::Null),
-                ) != server_id
-                || text(&saved["apiKey"]).is_empty()
-            {
+            if info["StartupWizardCompleted"] != true {
                 return Ok(false);
             }
-            let values = get(
+            let Some(key) = jellyfin_key(data, saved, &server_id) else {
+                return Ok(false);
+            };
+            let values = match get(
                 "jellyfin",
                 "/Library/VirtualFolders",
-                Some(("X-Emby-Token", text(&saved["apiKey"]))),
-            )?;
+                Some(("X-Emby-Token", &key)),
+            ) {
+                // Revoked or replaced: needs setup (which renews it), not a failure.
+                Err(e) if e.to_string() == REJECTED => return Ok(false),
+                other => other?,
+            };
             let libraries = array(&values)?;
             for (dir, kind) in [("/data/movies", "movies"), ("/data/tv", "tvshows")] {
                 let found = libraries
@@ -482,7 +514,7 @@ fn readiness(data: &Path, selected: &[&str]) -> Value {
             &mut rows,
             "jellyfin:current_libraries",
             state,
-            "Check first-run account, saved server identity and authenticated movie/TV libraries.",
+            "Check first-run account, NekoServer's Jellyfin key (rerun setup if it was revoked) and authenticated movie/TV libraries.",
         );
     }
     if selected.contains(&"seerr") {
@@ -780,6 +812,43 @@ pub fn run(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_rejected_key_is_told_apart_from_other_errors() {
+        assert!(success(Some(200)).is_ok());
+        for code in [401, 403] {
+            assert_eq!(success(Some(code)).unwrap_err().to_string(), REJECTED);
+        }
+        for code in [Some(500), Some(404), None] {
+            assert_ne!(success(code).unwrap_err().to_string(), REJECTED);
+        }
+    }
+    /// The same cases `tests/test_review_fixes.py` runs against Python.
+    #[test]
+    fn jellyfin_key_matches_the_shared_fixture() {
+        let cases: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/jellyfin_key_cases.json"))
+                .unwrap();
+        for case in cases.as_array().unwrap() {
+            let name = text(&case["name"]);
+            let root = std::env::temp_dir().join(format!(
+                "neko-jfkey-{}-{}",
+                name.replace(' ', "-"),
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("secrets")).unwrap();
+            if let Some(own) = case["own_key"].as_str() {
+                std::fs::write(root.join("secrets/jellyfin-readiness.key"), own).unwrap();
+            }
+            let got = jellyfin_key(
+                &root,
+                &case["settings"]["jellyfin"],
+                text(&case["server_id"]),
+            );
+            assert_eq!(got.as_deref(), case["expected"].as_str(), "case {name}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
     #[test]
     fn chunked_json_is_decoded() {
         assert_eq!(
