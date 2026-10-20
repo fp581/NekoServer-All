@@ -295,6 +295,24 @@ class JellyfinOnlyReadinessTests(unittest.TestCase):
                     rows = media_readiness.check(cfg, factory=Fake)
             self.assertEqual(next(r for r in rows if r['check'] == 'jellyfin:current_libraries')['status'], 'pass')
 
+    def test_jellyfin_key_matches_the_shared_fixture(self):
+        """The Rust runtime runs the same cases (media.rs jellyfin_key_matches_the_shared_fixture)."""
+        import json
+        import media_readiness
+        import media_libraries
+        cases = json.loads((Path(__file__).parent / 'fixtures/jellyfin_key_cases.json').read_text())
+        for case in cases:
+            with self.subTest(case['name']), tempfile.TemporaryDirectory() as d:
+                if case['own_key'] is not None:
+                    key = media_libraries.readiness_key_path(d)
+                    key.parent.mkdir(parents=True)
+                    key.write_text(case['own_key'])
+                if case['expected'] is None:
+                    with self.assertRaises(media_readiness.SetupRequired):
+                        media_readiness.jellyfin_key(d, case['settings'], case['server_id'])
+                else:
+                    self.assertEqual(media_readiness.jellyfin_key(d, case['settings'], case['server_id']), case['expected'])
+
     def test_the_key_is_created_once_while_signed_in(self):
         import media_libraries
         calls = []
@@ -313,8 +331,63 @@ class JellyfinOnlyReadinessTests(unittest.TestCase):
             path = media_libraries.readiness_key_path(d)
             self.assertEqual(path.read_text().strip(), 'new-key')
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            media_libraries.ensure_readiness_key(Admin(), d)  # already kept: no second key
+            media_libraries.ensure_readiness_key(Admin(), d)  # still active: kept, no second key
             self.assertEqual(sum(1 for m, _ in calls if m == 'POST'), 1)
+            self.assertEqual(path.read_text().strip(), 'new-key')
+
+    def test_a_revoked_or_replaced_key_is_renewed_by_setup(self):
+        import media_libraries
+        logs, posts = [], []
+
+        class Admin:
+            def __init__(self, keys):
+                self.keys = keys
+
+            def call(self, endpoint, method='GET', payload=None):
+                if method == 'POST':
+                    posts.append(endpoint)
+                    self.keys.append({'AppName': media_libraries.READINESS_APP, 'AccessToken': 'fresh-key'})
+                    return {}
+                return {'Items': list(self.keys)}
+        with tempfile.TemporaryDirectory() as d:
+            path = media_libraries.readiness_key_path(d)
+            path.parent.mkdir(parents=True)
+            path.write_text('revoked-key\n')
+            # Replaced: Jellyfin has another active NekoServer key; that one is saved, none created.
+            media_libraries.ensure_readiness_key(Admin([{'AppName': media_libraries.READINESS_APP, 'AccessToken': 'other-key'},
+                                                        {'AppName': 'Seerr', 'AccessToken': 'revoked-key'}]), d, logs.append)
+            self.assertEqual(path.read_text().strip(), 'other-key')
+            self.assertEqual(posts, [])
+            # Revoked with no NekoServer key left: a new one is created and saved.
+            media_libraries.ensure_readiness_key(Admin([]), d, logs.append)
+            self.assertEqual(path.read_text().strip(), 'fresh-key')
+            self.assertEqual(len(posts), 1)
+            self.assertIn('revoked or replaced', logs[0])
+
+    def test_a_rejected_key_is_reported_not_changed_by_checks(self):
+        import media_readiness
+        import media_libraries
+
+        class Jellyfin:
+            def __init__(self, app):
+                self.headers = {}
+
+            def call(self, endpoint, method='GET', payload=None):
+                if endpoint == '/System/Info/Public':
+                    return {'Id': 'srv', 'StartupWizardCompleted': True}
+                raise RuntimeError('jellyfin: HTTP 401')
+
+            def close(self):
+                pass
+        with tempfile.TemporaryDirectory() as d:
+            path = media_libraries.readiness_key_path(d)
+            path.parent.mkdir(parents=True)
+            path.write_text('revoked-key\n')
+            rows = media_readiness.check({'data_mount': d, 'media_mount': d, 'media': {'services': ['jellyfin']}}, factory=Jellyfin)
+            first = next(r for r in rows if r['check'] == 'jellyfin:current_libraries')
+            self.assertEqual(first['status'], 'needs_setup')
+            self.assertIn('run  sudo bash install.sh  again to renew it', first['reason'])
+            self.assertEqual(path.read_text(), 'revoked-key\n')  # untouched
 
 
 class DockerLogTests(unittest.TestCase):

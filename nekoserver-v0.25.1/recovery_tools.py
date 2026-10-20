@@ -19,6 +19,7 @@ from media_libraries import NoRedirect
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+import neko_common
 from neko_common import VERSION, safe_path, mount_path, atomic_json, atomic_write
 from installer import validate_config
 from modules import docker as docker_module
@@ -73,11 +74,19 @@ def mounts(config):
     guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard);guard.verify(config)
 
 @contextmanager
-def lock(config):
+def lock(config,changes_apps=True):
+    """The shared lock that backups and monthly updates hold too. A monthly update can
+    start (and fail, keeping its journal) while this waits, so whatever changes or starts
+    apps checks for an unfinished update again once the lock is held, right before it
+    begins. Docker re-attachment and backup repair (changes_apps=False) stay allowed:
+    they may be what lets a stuck update finish."""
     path=safe_path(Path(config['data_mount'])/'installer/recovery.lock');path.parent.mkdir(parents=True,exist_ok=True)
     with path.open('a') as stream:
         os.fchmod(stream.fileno(),0o600)
         wait_for(stream,sys.stdin.isatty())
+        if changes_apps:
+            blocked=neko_common.pending_maintenance(neko_common.MAINTENANCE_JOURNAL,'Setup stopped before changing anything else.')
+            if blocked:raise RuntimeError(blocked)
         yield
 
 BUSY='A NekoServer backup or monthly update is running right now. Wait for it to finish (usually under an hour), then run  sudo bash install.sh  again.'
@@ -153,7 +162,7 @@ def reattach(config,bundle,apply=False,confirm=''):
     if not apply:return {'status':'needs_setup','reason':'Verified reattachment preview; explicit SSD UUID confirmation required','docker_version':saved['docker_version']}
     require_root()
     if confirm!=config['storage']['data_ssd']['uuid']:raise RuntimeError('Confirm the application SSD UUID with --confirm')
-    with lock(config):
+    with lock(config,changes_apps=False):
         # Recheck disk identities immediately before writing OS configuration.
         mounts(config)
         docker_module.install_storage_guard(config)

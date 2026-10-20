@@ -408,6 +408,49 @@ class UnfinishedMaintenanceTests(unittest.TestCase):
                     installer.execute(args)
             run_modules.assert_not_called()
 
+    def test_setup_rechecks_once_it_holds_the_shared_lock(self):
+        """A monthly update that starts (and fails, keeping its journal) while setup waits
+        for the shared lock must stop setup before it changes or starts any app."""
+        import fcntl
+        import threading
+        import time
+        import neko_common
+        import recovery_tools
+        real_wait = recovery_tools.wait_for
+        with tempfile.TemporaryDirectory() as d:
+            journal = Path(d) / 'maintenance-resume.json'
+            config = {'data_mount': d}
+            lock_file = Path(d) / 'installer/recovery.lock'
+            lock_file.parent.mkdir()
+            ran, errors = [], []
+
+            def setup():
+                try:
+                    with recovery_tools.lock(config):
+                        ran.append('compose up -d')
+                except RuntimeError as exc:
+                    errors.append(str(exc))
+            with mock.patch.object(neko_common, 'MAINTENANCE_JOURNAL', journal), \
+                    mock.patch.object(recovery_tools, 'wait_for',
+                                      lambda stream, patient: real_wait(stream, True, sleep=lambda s: time.sleep(0.02))):
+                with lock_file.open('a') as held:  # the monthly update holds the lock
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    waiting = threading.Thread(target=setup)
+                    waiting.start()
+                    time.sleep(0.1)
+                    journal.write_text(json.dumps({'version': neko_common.VERSION}))  # it fails, journal kept
+                waiting.join(5)
+                self.assertEqual(ran, [])
+                self.assertIn('did not finish', errors[0])
+                self.assertIn('Setup stopped before changing anything else.', errors[0])
+                # Docker re-attachment and backup repair can still run.
+                with recovery_tools.lock(config, changes_apps=False):
+                    ran.append('repair')
+                journal.unlink()
+                with recovery_tools.lock(config):
+                    ran.append('compose up -d')
+            self.assertEqual(ran, ['repair', 'compose up -d'])
+
     def test_install_sh_checks_before_the_system_update(self):
         text = (Path(installer.__file__).parent / 'install.sh').read_text()
         self.assertLess(text.index('maintenance-resume.json'), text.index('pacman -Syu'))

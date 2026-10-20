@@ -187,26 +187,35 @@ def readiness_key_path(root):
     return safe_path(mount_path(str(root)) / 'secrets/jellyfin-readiness.key')
 
 
-def ensure_readiness_key(client, root):
-    """While signed in as administrator: make sure Jellyfin has an API key for
-    NekoServer's read-only library check and keep it privately on the SSD, so the
-    check does not depend on Seerr (which may not be installed)."""
+def ensure_readiness_key(client, root, log=print):
+    """While signed in as administrator: make sure the key kept for NekoServer's read-only
+    library check is one Jellyfin still accepts, so the check does not depend on Seerr
+    (which may not be installed). A kept key that was revoked or replaced (it is no longer
+    among Jellyfin's active NekoServer keys) is renewed; one still active is kept as is.
+    Only setup does this: scheduled checks report a rejected key and never change it."""
     path = readiness_key_path(root)
-    if path.is_file() and path.read_text().strip():
-        return
-    def find():
+    try:
+        kept = path.read_text().strip()
+    except OSError:
+        kept = ''
+
+    def active():
         keys = client.call('/Auth/Keys')
         items = keys.get('Items', []) if isinstance(keys, dict) else []
-        return next((k.get('AccessToken') for k in items if isinstance(k, dict)
-                     and k.get('AppName') == READINESS_APP and k.get('AccessToken')), None)
-    token = find()
-    if not token:
+        return [k['AccessToken'] for k in items if isinstance(k, dict)
+                and k.get('AppName') == READINESS_APP and isinstance(k.get('AccessToken'), str) and k['AccessToken']]
+    tokens = active()
+    if kept and kept in tokens:
+        return
+    if not tokens:
         client.call('/Auth/Keys?' + urllib.parse.urlencode({'app': READINESS_APP}), 'POST', {})
-        token = find()
-    if not token:
+        tokens = active()
+    if not tokens:
         raise RuntimeError('Jellyfin did not create the readiness key')
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    atomic_write(path, token + '\n', 0o600)
+    atomic_write(path, tokens[0] + '\n', 0o600)
+    if kept:
+        log('Jellyfin: NekoServer\'s key was revoked or replaced in Jellyfin; saved its current key')
 
 
 def configure(root, media, apply=False, apps=('jellyfin', 'seerr'), factory=Client, username=input, password=getpass.getpass):

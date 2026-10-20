@@ -54,7 +54,7 @@ APP_PORTS = frozenset({2283, 2284, 4533, 5055, 7878, 8080, 8088, 8096, 8686, 898
 MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
 
 
-def pending_maintenance(journal=MAINTENANCE_JOURNAL):
+def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was changed.'):
     """Why setup must not run yet, or None. An unfinished monthly update must be finished
     (or rolled back) before anything else touches the apps: another version would
     replace the program that can finish it, and even the same version would start the
@@ -71,7 +71,7 @@ def pending_maintenance(journal=MAINTENANCE_JOURNAL):
             'Let it finish (or roll back) before running setup:\n'
             '  sudo systemctl start nekoserver-maintenance-resume.service\n'
             'When that has finished (sudo systemctl status nekoserver-maintenance-resume.service shows it '
-            'exited successfully), run  sudo bash install.sh  again. Nothing was changed.')
+            f'exited successfully), run  sudo bash install.sh  again. {outcome}')
 
 
 def safe_path(path):
