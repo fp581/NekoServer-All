@@ -105,7 +105,7 @@ const LABELS = {
   complete: 'All checked', pending: 'Not finished', outdated: 'Needs recheck'
 };
 const ROUTES = {
-  home: 'Home', apps: 'Your apps', backups: 'Backups', hardware: 'Hardware', sensors: 'Sensors',
+  home: 'Home', apps: 'Your apps', backups: 'Backups', hardware: 'Hardware', sensors: 'Sensors', cooling: 'Fans & lights',
   processes: 'Processes', health: 'Server health', attention: 'Needs attention', help: 'Help'
 };
 /* Pages that show live hardware readings (polled every few seconds). */
@@ -119,9 +119,13 @@ const ERRORS = {
   E11: ['Readings could not be read', 'Usually fixes itself within a minute. If not, run setup again.'],
   E12: ['Readings are out of date', 'The reading service stopped. Help shows the command to check it.'],
   E20: ['Live readings unavailable', 'Hardware readings come back by themselves. If not, restart the dashboard.'],
+  E21: ['Fan and light control unavailable', 'The control service is not running. Help shows the command to check it.'],
   E40: ['Page not found', 'Use the menu to go back.'],
   E41: ['Open the dashboard from its own address', 'Use the address setup gave you (this computer or Tailscale).'],
-  E42: ['Request not supported', 'Reload the page.']
+  E42: ['Request not supported', 'Reload the page.'],
+  E43: ['Enter your PIN to change this', 'Phones, tablets and other computers need the PIN chosen during setup.'],
+  E44: ['Wrong PIN', 'Check the PIN and try again.'],
+  E45: ['Too many tries; wait 5 minutes', 'After five wrong PINs, changes stay locked for 5 minutes.']
 };
 class CodedError extends Error {
   constructor(code) { super(ERRORS[code]?.[0] || 'Error'); this.code = ERRORS[code] ? code : 'E01'; }
@@ -131,7 +135,7 @@ function codeLine(code) { return code + ' · ' + ERRORS[code][0]; }
 /* ---------- state ---------- */
 const state = {
   route: 'home', status: null, statusError: null, live: null, liveError: null,
-  processes: null, processError: null, history: [], issues: [],
+  processes: null, processError: null, control: null, controlError: null, history: [], issues: [],
   appFilter: 'all', processPage: 0, installPrompt: null
 };
 const savedFavorites = readStore('favorites', []);
@@ -139,11 +143,11 @@ const favorites = new Set((Array.isArray(savedFavorites) ? savedFavorites : []).
 const notified = new Set();
 
 /* ---------- data ---------- */
-async function getJson(path, timeoutMs = 8000) {
+async function getJson(path, timeoutMs = 8000, headers = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(path, {cache: 'no-store', signal: controller.signal, credentials: 'same-origin'});
+    const response = await fetch(path, {cache: 'no-store', signal: controller.signal, credentials: 'same-origin', headers});
     const raw = await response.text();
     if (raw.length > 6_000_000) { throw new CodedError('E11'); }
     let body = null;
@@ -176,9 +180,10 @@ function validStatus(raw) {
 const LOADERS = {
   status: async () => { state.status = validStatus(await getJson('/api/status')); },
   live: async () => { state.live = await getJson('/api/live'); remember(state.live); },
-  processes: async () => { state.processes = await getJson('/api/processes'); }
+  processes: async () => { state.processes = await getJson('/api/processes'); },
+  control: async () => { state.control = await getJson('/api/control', 8000, tokenHeader()); }
 };
-const ERROR_FIELD = {status: 'statusError', live: 'liveError', processes: 'processError'};
+const ERROR_FIELD = {status: 'statusError', live: 'liveError', processes: 'processError', control: 'controlError'};
 const loading = {};
 async function load(kind) {
   if (loading[kind]) { return; }
@@ -806,10 +811,6 @@ function voltageRow(v) {
   row.append(el('span', '', text(v.label) + ' · ' + text(v.chip)), el('strong', '', v.value.toFixed(2) + ' V'));
   return row;
 }
-function rgbCard(d) {
-  const effects = values(d.effects);
-  return stat(text(d.name, 'Lighting'), text(d.kind, 'Lighting'), text(d.description), hint(effects.length ? 'Effects: ' + effects.slice(0, 8).join(', ') : 'No effects reported'));
-}
 function sensorBadge(live, sensors) {
   if (!live) { return ['unknown', state.liveError || 'Waiting']; }
   return liveFresh() ? ['neutral', sensors.length + ' found'] : ['warning', 'Last reading ' + ago(live.generated_at)];
@@ -836,9 +837,528 @@ function renderSensors() {
   const volts = of('voltage');
   $('voltage-count').textContent = volts.length ? '(' + volts.length + ')' : '(none reported)';
   put('voltages', volts.map(voltageRow));
-  const rgb = list(object(live.rgb).devices);
-  $('rgb-panel').hidden = !rgb.length;
-  put('rgb', rgb.map(rgbCard));
+}
+
+/* ---------- fans & lights ----------
+ * Changes go to the root control service through the dashboard server. On the server
+ * itself they need nothing more; phones and tablets unlock with the setup PIN. The
+ * cards are built once and then updated in place, so a curve being dragged or a
+ * slider being moved is never replaced by a refresh. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const CURVE = {left: 38, right: 312, top: 12, bottom: 172, tMin: 20, tMax: 100};
+const PRESETS = {
+  Silent: [[30, 20], [50, 30], [65, 50], [78, 80], [88, 100]],
+  Balanced: [[30, 25], [45, 35], [60, 55], [72, 80], [84, 100]],
+  Performance: [[30, 40], [45, 55], [58, 75], [68, 90], [78, 100]]
+};
+const FAN_MODES = [['auto', 'Motherboard'], ['curve', 'Curve'], ['fixed', 'Fixed']];
+const cooling = {outputsKey: '', lightsKey: '', outputs: new Map(), lights: new Map()};
+
+function controlToken() {
+  try { return sessionStorage.getItem('neko-control') || ''; } catch { return ''; }
+}
+function setControlToken(value) {
+  try {
+    if (value) { sessionStorage.setItem('neko-control', value); } else { sessionStorage.removeItem('neko-control'); }
+  } catch { /* the page still works; it asks again next time */ }
+}
+function tokenHeader() {
+  const t = controlToken();
+  return t ? {'X-Neko-Token': t} : {};
+}
+async function postControl(op, body = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch('/api/control/' + op, {
+      method: 'POST', cache: 'no-store', credentials: 'same-origin', signal: controller.signal,
+      headers: {'Content-Type': 'application/json', ...tokenHeader()}, body: JSON.stringify(body)
+    });
+    const answer = object(await response.json());
+    if (answer.error === 'E43') { setControlToken(''); }
+    return answer;
+  } catch {
+    return {ok: false, error: controller.signal.aborted ? 'E02' : 'E01'};
+  } finally { clearTimeout(timer); }
+}
+function controlMessage(answer) {
+  const code = text(answer.error, 'E01');
+  return code + ' · ' + text(answer.message, ERRORS[code]?.[0] || 'Something went wrong');
+}
+/* Send a change; a refused PIN opens the unlock dialog. True when it was accepted. */
+async function change(op, body) {
+  const answer = await postControl(op, body);
+  if (answer.ok) {
+    if (answer.note) { toast(answer.note); }
+    void load('control');
+    return true;
+  }
+  if (answer.error === 'E43' && state.control?.access?.pin_set) { unlockDialog(); }
+  toast(controlMessage(answer));
+  return false;
+}
+function canChange() {
+  const access = object(state.control?.access);
+  return access.local === true || access.unlocked === true;
+}
+
+/* ---------- access ---------- */
+function unlockDialog() {
+  const form = el('form', 'unlock'), input = el('input');
+  Object.assign(input, {type: 'password', inputMode: 'numeric', autocomplete: 'off', maxLength: 8, required: true, id: 'pin-input'});
+  input.pattern = '[0-9]{4,8}';
+  const label = el('label', 'field', 'PIN (4 to 8 digits)');
+  label.append(input);
+  const submit = el('button', 'button', 'Unlock');
+  submit.type = 'submit';
+  form.append(label, submit);
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    submit.disabled = true;
+    const answer = await postControl('unlock', {pin: input.value});
+    submit.disabled = false;
+    if (!answer.ok) { toast(controlMessage(answer)); input.select(); return; }
+    setControlToken(text(answer.token));
+    $('dialog').close();
+    toast('Unlocked on this device until you close it or 12 hours pass.');
+    void load('control');
+  });
+  openDialog('FANS & LIGHTS', 'Unlock changes', [
+    el('p', '', 'Enter the PIN chosen during setup. It is only needed on phones, tablets and other computers.'), form
+  ]);
+  requestAnimationFrame(() => input.focus());
+}
+function lockAgain() {
+  setControlToken('');
+  toast('Locked on this device.');
+  void load('control');
+}
+function accessRow(access) {
+  if (access.local) { return [hint('You are on the server itself, so changes need no PIN.')]; }
+  if (access.unlocked) { return [hint('Unlocked on this device.'), button('Lock', lockAgain)]; }
+  if (access.pin_set) {
+    return [hint('Looking is open to everyone on your Tailscale. Changes from this device need your PIN.'), button('Unlock changes', unlockDialog, 'button small')];
+  }
+  return [hint('Changes are only possible on the server itself. Run setup again to choose a PIN for phones and tablets.')];
+}
+
+/* ---------- curve editor ---------- */
+function svgNode(tag, attrs, parent) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) { n.setAttribute(k, v); }
+  parent?.append(n);
+  return n;
+}
+const curveX = t => CURVE.left + (clamp(t, CURVE.tMin, CURVE.tMax) - CURVE.tMin) / (CURVE.tMax - CURVE.tMin) * (CURVE.right - CURVE.left);
+const curveY = d => CURVE.bottom - clamp(d) / 100 * (CURVE.bottom - CURVE.top);
+/* The same rule the control service follows: flat before the first and after the
+ * last point, straight lines between. */
+function curveDuty(points, t) {
+  if (!points.length) { return 0; }
+  if (t <= points[0][0]) { return points[0][1]; }
+  for (let i = 1; i < points.length; i++) {
+    const [t0, d0] = points[i - 1], [t1, d1] = points[i];
+    if (t <= t1) { return d0 + (d1 - d0) * (t - t0) / (t1 - t0); }
+  }
+  return points.at(-1)[1];
+}
+function curveGrid(svg) {
+  for (const d of [0, 25, 50, 75, 100]) {
+    svgNode('line', {x1: CURVE.left, x2: CURVE.right, y1: curveY(d), y2: curveY(d), class: 'grid'}, svg);
+    svgNode('text', {x: CURVE.left - 6, y: curveY(d) + 4, class: 'axis', 'text-anchor': 'end'}, svg).textContent = d + '%';
+  }
+  for (let t = CURVE.tMin; t <= CURVE.tMax; t += 20) {
+    svgNode('line', {x1: curveX(t), x2: curveX(t), y1: CURVE.top, y2: CURVE.bottom, class: 'grid'}, svg);
+    svgNode('text', {x: curveX(t), y: CURVE.bottom + 16, class: 'axis', 'text-anchor': 'middle'}, svg).textContent = t + '°';
+  }
+}
+/* Where a pointer is, in curve units. */
+function curvePoint(svg, event) {
+  const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(svg.getScreenCTM().inverse());
+  const t = CURVE.tMin + (point.x - CURVE.left) / (CURVE.right - CURVE.left) * (CURVE.tMax - CURVE.tMin);
+  return [Math.round(t), Math.round(clamp((CURVE.bottom - point.y) / (CURVE.bottom - CURVE.top) * 100))];
+}
+/* Keep a moved point between its neighbours, inside the chart. */
+function placePoint(points, i, [t, d]) {
+  const low = i > 0 ? points[i - 1][0] + 1 : CURVE.tMin;
+  const high = i < points.length - 1 ? points[i + 1][0] - 1 : CURVE.tMax;
+  points[i] = [clamp(t, low, high), clamp(d)];
+}
+const ARROWS = {ArrowUp: [0, 5], ArrowDown: [0, -5], ArrowRight: [1, 0], ArrowLeft: [-1, 0]};
+function placeHandle(handle, i, [t, d]) {
+  handle.setAttribute('cx', curveX(t));
+  handle.setAttribute('cy', curveY(d));
+  handle.setAttribute('aria-label', 'Point ' + (i + 1) + ': ' + t + ' °C, ' + d + '% (arrow keys move it)');
+}
+function curveHandle(editor, i) {
+  const handle = svgNode('circle', {r: 9, class: 'handle', tabindex: 0, role: 'slider'});
+  handle.addEventListener('pointerdown', e => {
+    if (!editor.enabled()) { return; }
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    editor.dragging = i;
+  });
+  handle.addEventListener('pointermove', e => {
+    if (editor.dragging !== i) { return; }
+    placePoint(editor.points(), i, curvePoint(editor.svg, e));
+    editor.changed();
+  });
+  const stop = () => { editor.dragging = -1; };
+  handle.addEventListener('pointerup', stop);
+  handle.addEventListener('pointercancel', stop);
+  handle.addEventListener('keydown', e => {
+    const move = ARROWS[e.key];
+    if (!move || !editor.enabled()) { return; }
+    e.preventDefault();
+    const [pt, pd] = editor.points()[i];
+    placePoint(editor.points(), i, [pt + move[0], pd + move[1]]);
+    editor.changed();
+  });
+  return handle;
+}
+/* points(): the draft's points (edited in place); changed(): after an edit. */
+function curveEditor(points, enabled, changed) {
+  const svg = svgNode('svg', {viewBox: '0 0 330 196', class: 'curve'});
+  svg.setAttribute('aria-label', 'Fan curve: speed by temperature');
+  curveGrid(svg);
+  const area = svgNode('path', {class: 'curve-area'}, svg);
+  const line = svgNode('path', {class: 'curve-line'}, svg);
+  const now = svgNode('g', {class: 'curve-now'}, svg);
+  const handles = svgNode('g', {}, svg);
+  const editor = {svg, points, enabled, dragging: -1};
+  editor.draw = () => {
+    const p = points(), path = p.map(([t, d], i) => (i ? 'L' : 'M') + curveX(t).toFixed(1) + ' ' + curveY(d).toFixed(1)).join(' ');
+    line.setAttribute('d', 'M' + CURVE.left + ' ' + curveY(p[0][1]) + ' ' + path.slice(1) + ' L' + CURVE.right + ' ' + curveY(p.at(-1)[1]));
+    area.setAttribute('d', line.getAttribute('d') + ' L' + CURVE.right + ' ' + CURVE.bottom + ' L' + CURVE.left + ' ' + CURVE.bottom + ' Z');
+    // Handles are moved, not replaced, so a drag or keyboard focus carries on.
+    if (handles.children.length !== p.length) { handles.replaceChildren(...p.map((_, i) => curveHandle(editor, i))); }
+    p.forEach((point, i) => placeHandle(handles.children[i], i, point));
+  };
+  editor.changed = () => { changed(); editor.draw(); };
+  editor.marker = (temperature, duty) => {
+    now.replaceChildren();
+    if (!numeric(temperature)) { return; }
+    svgNode('line', {x1: curveX(temperature), x2: curveX(temperature), y1: CURVE.top, y2: CURVE.bottom}, now);
+    svgNode('circle', {cx: curveX(temperature), cy: curveY(duty), r: 5}, now);
+  };
+  editor.draw();
+  return editor;
+}
+
+/* ---------- fan outputs ---------- */
+function outputName(out, setting) {
+  return text(setting?.name) || 'Output ' + text(out.label).replace(/^pwm/, '') + ' · ' + text(out.chip);
+}
+function fanName(fan) { return text(fan.label).replace(/^fan/, 'Fan '); }
+function temperatureName(t) { return text(t.label) + ' · ' + text(t.chip); }
+function draftFrom(setting, temps) {
+  const s = object(setting);
+  return {
+    mode: firstOf([[s.mode === 'curve', 'curve'], [s.mode === 'fixed', 'fixed']], 'auto'),
+    fixed: numeric(s.fixed) ? s.fixed : 60,
+    sensor: text(s.sensor, temps[0]?.id || ''),
+    points: list(s.points).length ? s.points.map(p => [...p]) : PRESETS.Balanced.map(p => [...p]),
+    min: numeric(s.min) ? s.min : 20,
+    name: text(s.name),
+    fans: values(s.fans)
+  };
+}
+function settingFrom(draft) {
+  const setting = {mode: draft.mode, min: draft.min, name: draft.name.trim(), fans: draft.fans};
+  if (draft.mode === 'fixed') { setting.fixed = draft.fixed; }
+  if (draft.mode === 'curve') { Object.assign(setting, {sensor: draft.sensor, points: draft.points}); }
+  return setting;
+}
+function rangeField(label, min, max, value, onInput) {
+  const wrap = el('label', 'field range'), input = el('input'), shown = el('output', '', value + '%');
+  Object.assign(input, {type: 'range', min, max, step: 1, value});
+  input.addEventListener('input', () => { shown.textContent = input.value + '%'; onInput(Number(input.value)); });
+  const head = el('span', 'range-head', label);
+  head.append(shown);
+  wrap.append(head, input);
+  return wrap;
+}
+function modeChips(card) {
+  const chips = el('div', 'chips');
+  chips.setAttribute('role', 'group');
+  chips.setAttribute('aria-label', 'Who sets the speed');
+  for (const [mode, label] of FAN_MODES) {
+    const b = button(label, () => { card.draft.mode = mode; card.edited(); });
+    b.className = '';
+    b.dataset.mode = mode;
+    chips.append(b);
+  }
+  return chips;
+}
+function sensorSelect(card, temps) {
+  const wrap = el('label', 'field', 'Follows'), select = el('select');
+  for (const t of temps) {
+    const option = el('option', '', temperatureName(t));
+    option.value = t.id;
+    select.append(option);
+  }
+  select.value = card.draft.sensor;
+  select.addEventListener('change', () => { card.draft.sensor = select.value; card.edited(); });
+  wrap.append(select);
+  return wrap;
+}
+function presetRow(card) {
+  const row = el('div', 'chips presets');
+  for (const [name, points] of Object.entries(PRESETS)) {
+    row.append(button(name, () => { card.draft.points = points.map(p => [...p]); card.edited(); }, 'button small secondary'));
+  }
+  row.append(button('+ Point', () => addPoint(card), 'button small secondary'), button('− Point', () => removePoint(card), 'button small secondary'));
+  return row;
+}
+/* A new point halfway along the widest gap; the last point can't go below two. */
+function addPoint(card) {
+  const p = card.draft.points;
+  if (p.length >= 8) { toast('A curve has at most 8 points.'); return; }
+  let at = 1;
+  for (let i = 1; i < p.length; i++) {
+    if (p[i][0] - p[i - 1][0] > p[at][0] - p[at - 1][0]) { at = i; }
+  }
+  const t = Math.round((p[at][0] + p[at - 1][0]) / 2);
+  if (t <= p[at - 1][0] || t >= p[at][0]) { toast('No room for another point.'); return; }
+  p.splice(at, 0, [t, Math.round(curveDuty(p, t))]);
+  card.edited();
+}
+function removePoint(card) {
+  if (card.draft.points.length <= 2) { toast('A curve needs at least 2 points.'); return; }
+  card.draft.points.splice(-2, 1);
+  card.edited();
+}
+function nameField(card) {
+  const wrap = el('label', 'field', 'Name (optional)'), input = el('input');
+  Object.assign(input, {type: 'text', maxLength: 40, placeholder: 'e.g. Processor fan', value: card.draft.name});
+  input.addEventListener('input', () => { card.draft.name = input.value; card.dirty = true; card.refreshButtons(); });
+  wrap.append(input);
+  return wrap;
+}
+async function saveOutput(card) {
+  card.saving = true;
+  card.refreshButtons();
+  const ok = await change('fan', {output: card.id, setting: settingFrom(card.draft)});
+  card.saving = false;
+  if (ok) { card.dirty = false; toast('Saved. The fan follows it now.'); }
+  card.refreshButtons();
+}
+function outputCard(out, c) {
+  const fans = object(c.fans), temps = list(fans.inventory?.temps);
+  const card = {id: out.id, draft: draftFrom(fans.settings?.[out.id], temps), dirty: false, saving: false, root: el('article', 'card fan-control')};
+  const title = el('h3'), badgeNode = el('span', 'badge neutral'), now = el('p', 'fan-now'), note = el('p', 'hint');
+  const head = el('div', 'card-heading');
+  head.append(title, badgeNode);
+  const chips = modeChips(card);
+  const fixed = rangeField('Speed', 0, 100, card.draft.fixed, v => { card.draft.fixed = v; card.dirty = true; card.refreshButtons(); });
+  const curve = el('div', 'curve-box');
+  const editor = curveEditor(() => card.draft.points, canChange, () => { card.dirty = true; card.refreshButtons(); });
+  curve.append(sensorSelect(card, temps), editor.svg, presetRow(card));
+  const minimum = rangeField('Never slower than', 20, 100, card.draft.min, v => { card.draft.min = v; card.dirty = true; card.refreshButtons(); });
+  const save = button('Save', () => saveOutput(card), 'button small');
+  const undo = button('Undo changes', () => { card.draft = draftFrom(state.control?.fans?.settings?.[out.id], temps); card.dirty = false; card.rebuild(); });
+  const actions = el('div', 'fan-actions');
+  actions.append(save, undo);
+  const naming = el('details', 'more');
+  naming.append(el('summary', '', 'Name this output'), nameField(card));
+  card.root.append(head, now, note, chips, fixed, curve, minimum, naming, actions);
+  card.refreshButtons = () => {
+    const allowed = canChange();
+    save.disabled = !card.dirty || card.saving || !allowed;
+    undo.disabled = !card.dirty || card.saving;
+    for (const n of card.root.querySelectorAll('input, select, .chips button')) { n.disabled = !allowed; }
+  };
+  card.rebuild = () => {
+    for (const b of chips.children) { b.setAttribute('aria-pressed', String(b.dataset.mode === card.draft.mode)); }
+    fixed.hidden = card.draft.mode !== 'fixed';
+    curve.hidden = card.draft.mode !== 'curve';
+    minimum.hidden = card.draft.mode === 'auto';
+    fixed.querySelector('input').value = card.draft.fixed;
+    minimum.querySelector('input').value = card.draft.min;
+    curve.querySelector('select').value = card.draft.sensor;
+    editor.draw();
+    card.refreshButtons();
+  };
+  card.edited = () => { card.dirty = true; card.rebuild(); };
+  card.update = data => updateOutput(card, data, {title, badgeNode, now, note, editor});
+  card.rebuild();
+  card.update(c);
+  return card;
+}
+const OUTPUT_STATES = {controlled: ['running', 'NekoServer'], auto: ['neutral', 'Motherboard']};
+function linkedFans(setting, inventory) {
+  const ids = values(setting?.fans);
+  return list(inventory.fans).filter(f => ids.includes(f.id));
+}
+function updateOutput(card, c, parts) {
+  const fans = object(c.fans), inventory = object(fans.inventory), saved = fans.settings?.[card.id];
+  const out = list(inventory.outputs).find(o => o.id === card.id) || {};
+  const live = object(fans.state?.[card.id]);
+  const fresh = draftFrom(saved, list(inventory.temps));
+  if (!card.dirty && !card.saving && parts.editor.dragging < 0 && JSON.stringify(fresh) !== JSON.stringify(card.draft)) {
+    card.draft = fresh; // changed elsewhere (another device)
+    card.rebuild();
+  }
+  parts.title.textContent = outputName(out, saved);
+  const [look, label] = OUTPUT_STATES[live.mode] || OUTPUT_STATES.auto;
+  parts.badgeNode.className = 'badge ' + look;
+  parts.badgeNode.textContent = label;
+  const linked = linkedFans(saved, inventory);
+  parts.now.textContent = joined([
+    'Now ' + pct(firstOf([[numeric(live.percent), live.percent]], out.value)),
+    ...linked.map(f => fanName(f) + ' ' + (numeric(f.value) ? Math.round(f.value) + ' RPM' : '—'))
+  ]);
+  parts.note.textContent = text(live.note, linked.length ? '' : 'Which fan this drives is unknown: use Detect fans.');
+  const sensor = list(inventory.temps).find(t => t.id === card.draft.sensor);
+  const temperature = sensor?.value;
+  parts.editor.marker(temperature, Math.max(card.draft.min, curveDuty(card.draft.points, temperature)));
+  card.refreshButtons();
+}
+
+/* ---------- detect ---------- */
+function startDetect() {
+  openDialog('FANS', 'Detect fans', [
+    el('p', '', 'NekoServer sets every fan to full speed, then slows one output at a time to see which fan follows. It takes about a minute per output and the computer will be loud.'),
+    el('p', '', 'It stops by itself if anything gets hot, and you can stop it at any time. The motherboard takes over again afterwards.'),
+    button('Start detecting', async () => { $('dialog').close(); await change('detect', {}); }, 'button')
+  ]);
+}
+function detectRow(fans) {
+  const d = object(fans.detect);
+  if (d.running) {
+    const row = el('div', 'detect running');
+    row.append(el('strong', '', text(d.step, 'Detecting fans…')), meter(count(d.done) / Math.max(1, count(d.total)) * 100), button('Stop', () => change('detect-cancel', {})));
+    return [row];
+  }
+  const parts = [button('Detect fans', startDetect, 'button small')];
+  if (d.error) { parts.push(hint(text(d.error))); }
+  if (d.result) { parts.push(hint('Detection finished. Each output below lists the fans it drives.')); }
+  return parts;
+}
+function outputsBadge(c) {
+  if (!c) { return state.controlError ? ['warning', state.controlError] : ['unknown', 'Waiting']; }
+  const outputs = list(c.fans?.inventory?.outputs);
+  return outputs.length ? ['neutral', outputs.length + ' outputs'] : ['unknown', 'None found'];
+}
+function renderOutputs(c) {
+  const outputs = list(c.fans?.inventory?.outputs);
+  const key = outputs.map(o => o.id).join('|') + '#' + list(c.fans?.inventory?.temps).map(t => t.id).join('|');
+  if (key !== cooling.outputsKey) {
+    cooling.outputsKey = key;
+    cooling.outputs = new Map(outputs.map(o => [o.id, outputCard(o, c)]));
+    put('fan-outputs', outputs.length ? [...cooling.outputs.values()].map(card => card.root) : [empty('No fan outputs found that Linux can control. Many boards need a sensor driver (see Help, “Fans don’t change”).')]);
+    return;
+  }
+  for (const card of cooling.outputs.values()) { card.update(c); }
+}
+function unlinkedFans(c) {
+  const settings = object(c.fans?.settings);
+  const linked = new Set(Object.values(settings).flatMap(s => values(s?.fans)));
+  return list(c.fans?.inventory?.fans).filter(f => !linked.has(f.id));
+}
+
+/* ---------- lighting ---------- */
+function lightEffects(d) {
+  return list(d.effects).filter(e => !['Direct', 'Custom', 'Static'].includes(text(e.name)));
+}
+function lightChosen(d) {
+  const chosen = object(d.chosen);
+  return {color: text(chosen.color, text(d.color, '#ffffff')), brightness: numeric(chosen.brightness) ? chosen.brightness : 100, effect: text(chosen.effect), off: chosen.off === true};
+}
+function sendLight(key, body) { return change('light', {device: key, ...body}); }
+/* Moving a slider sends the last value a moment after it stops. */
+function debounced(fn, ms = 250) {
+  let timer;
+  return value => { clearTimeout(timer); timer = setTimeout(() => fn(value), ms); };
+}
+function effectSelect(d, chosen, key) {
+  const wrap = el('label', 'field', 'Effect'), select = el('select');
+  for (const [value, name] of [['', 'Steady colour'], ...lightEffects(d).map(e => [e.name, e.name])]) {
+    const option = el('option', '', name);
+    option.value = value;
+    select.append(option);
+  }
+  select.value = chosen.effect;
+  select.addEventListener('change', () => sendLight(key, {effect: select.value, off: false}));
+  wrap.append(select);
+  return wrap;
+}
+function lightCard(d) {
+  const key = text(d.key), chosen = lightChosen(d), root = el('article', 'card light');
+  const swatch = el('span', 'swatch');
+  const head = el('div', 'card-heading');
+  head.append(el('h3', '', text(d.name, 'Lighting')), swatch);
+  const colorWrap = el('label', 'field', 'Colour'), color = el('input');
+  Object.assign(color, {type: 'color', value: chosen.color});
+  const sendColor = debounced(v => sendLight(key, {color: v, off: false}));
+  color.addEventListener('input', () => { swatch.style.background = color.value; sendColor(color.value); });
+  colorWrap.append(color);
+  const sendBrightness = debounced(v => sendLight(key, {brightness: v, off: false}));
+  const brightness = rangeField('Brightness', 0, 100, chosen.brightness, sendBrightness);
+  const power = button(chosen.off ? 'Turn on' : 'Turn off', () => sendLight(key, {off: !lightChosen(cooling.lights.get(key).data).off}));
+  root.append(head, el('p', 'hint', joined([text(d.kind), d.leds ? d.leds + ' lights' : ''])), colorWrap, brightness, effectSelect(d, chosen, key), power);
+  const card = {root, data: d};
+  card.update = next => {
+    card.data = next;
+    const now = lightChosen(next);
+    swatch.style.background = now.off ? 'transparent' : now.color;
+    swatch.classList.toggle('off', now.off);
+    power.textContent = now.off ? 'Turn on' : 'Turn off';
+    for (const n of root.querySelectorAll('input, select, button')) { n.disabled = !canChange(); }
+  };
+  card.update(d);
+  return card;
+}
+function applyAll(color, brightness) {
+  for (const card of cooling.lights.values()) { void sendLight(card.data.key, {color, brightness, off: false, effect: ''}); }
+}
+function allLightsRow() {
+  const row = el('div', 'light-all'), color = el('input');
+  Object.assign(color, {type: 'color', value: '#c4b3fa'});
+  color.setAttribute('aria-label', 'Colour for all lights');
+  let level = 100;
+  row.append(color, rangeField('Brightness', 0, 100, level, v => { level = v; }),
+    button('Apply to all', () => applyAll(color.value, level), 'button small'),
+    button('All off', () => { for (const card of cooling.lights.values()) { void sendLight(card.data.key, {off: true}); } }));
+  return row;
+}
+const LIGHT_STATES = {
+  detected: ['neutral', null, ''],
+  none_reported: ['unknown', 'None found', 'OpenRGB is running but found no lighting. Memory and motherboard lights may need a restart after setup (see Help, “Lights don’t change”).'],
+  not_running: ['warning', 'OpenRGB off', 'OpenRGB is not running, so lighting can’t be changed. Help shows the command to check it.']
+};
+function renderLights(c) {
+  const lights = object(c.lights), devices = list(lights.devices);
+  const [look, label, message] = LIGHT_STATES[lights.status] || LIGHT_STATES.not_running;
+  setBadge('light-state', look, label || devices.length + ' found');
+  $('light-all').hidden = devices.length < 2;
+  const key = devices.map(d => d.key).join('|');
+  if (key !== cooling.lightsKey || !devices.length) {
+    cooling.lightsKey = key;
+    cooling.lights = new Map(devices.map(d => [d.key, lightCard(d)]));
+    put('lights', devices.length ? [...cooling.lights.values()].map(card => card.root) : [empty(message)]);
+  }
+  for (const d of devices) { cooling.lights.get(d.key)?.update(d); }
+  if ($('light-all').childElementCount === 0) { put('light-all', [allLightsRow()]); }
+  for (const n of $('light-all').querySelectorAll('input, button')) { n.disabled = !canChange(); }
+}
+
+function renderCooling() {
+  const c = state.control;
+  setBadge('fan-state', ...outputsBadge(c));
+  if (!c) {
+    const waiting = state.controlError ? codeLine(state.controlError) : 'Looking for fans and lights…';
+    put('fan-outputs', [empty(waiting)]);
+    put('lights', [empty(waiting)]);
+    cooling.outputsKey = cooling.lightsKey = '';
+    return;
+  }
+  put('control-access', accessRow(object(c.access)));
+  put('fan-detect', detectRow(object(c.fans)));
+  renderOutputs(c);
+  const loose = unlinkedFans(c);
+  put('fan-loose', loose.length ? [hint('Fans not linked to an output: ' + loose.map(f => fanName(f) + ' (' + (numeric(f.value) ? Math.round(f.value) + ' RPM' : '—') + ')').join(', '))] : []);
+  renderLights(c);
 }
 
 /* ---------- processes ---------- */
@@ -989,6 +1509,8 @@ const GUIDES = {
   heartbeat: {title: 'Outside heartbeat', intro: 'An outside service notices when the whole server goes quiet. Optional.', steps: ['Make sure the monitor runs somewhere other than this server.', 'Check the heartbeat service below.', 'Test it once: you should get an alert when it stops, and another when it’s back.'], unit: 'nekoserver-heartbeat.service'},
   notifications: {title: 'Phone notifications', intro: 'Background notifications and this page’s browser alerts are different things.', steps: ['Set up background notifications with setup.', 'Check the service below. Keep private addresses out of screenshots.', 'Browser alerts only work while this page is open.'], unit: 'nekoserver-notifications.service'},
   updates: {title: 'Updates & monthly maintenance', intro: 'Once a month, NekoServer backs up the apps, tests a restore, then updates them.', steps: ['Check its last result below. Apps are briefly offline during the update.', 'If an update was interrupted, let it finish before changing anything else.', 'Big version jumps wait for you to approve them.'], unit: 'nekoserver-maintenance.service'},
+  fans: {title: 'Fans not found or not changing', intro: 'NekoServer can only set fans that Linux can control. Laptops and some boards keep fans to themselves.', steps: ['Check the control service with the commands below.', 'No outputs listed? Install the “lm_sensors” package, run “sudo sensors-detect”, accept its suggestions, then restart.', 'Fans plugged into a hub or a case controller may only be visible to that device’s own app.'], unit: 'nekoserver-control.service'},
+  lights: {title: 'Lights not found or not changing', intro: 'Lighting goes through OpenRGB, which setup installs and starts by itself.', steps: ['Check the OpenRGB service with the commands below.', 'Memory and motherboard lights need the i2c driver setup switches on: restart the computer once after setup.', 'Some devices aren’t supported by OpenRGB yet: its website lists the ones that are.'], unit: 'nekoserver-openrgb.service'},
   sensors: {title: 'Why a sensor is missing', intro: 'The dashboard finds every sensor Linux reports, automatically.', steps: ['Some motherboards need a driver: for many boards, install the “lm_sensors” package and run “sudo sensors-detect”, then restart.', 'Virtual machines usually have no sensors.', 'NVIDIA graphics need the NVIDIA driver; its readings update once a minute.'], extra: '/usr/local/lib/nekoserver-dashboard/v{version}/nekoserver-runtime hardware'}
 };
 async function copy(value) {
@@ -1032,7 +1554,7 @@ function showGuide(id, requestedUnit) {
   openDialog('GUIDED HELP', guide.title, [el('p', '', guide.intro), steps, ...guideCommands(guide, unit),
     note('Commands only run when you paste them into Konsole on the server. This page never changes anything.')]);
 }
-const HELP_CARDS = [['collector', 'Readings are old or missing', 'Check the service that collects them.'], ['dashboard', 'Live readings stopped', 'Restart the dashboard safely.'], ['recovery', 'Get files back', 'Restore a backup into a separate folder.'], ['apps', 'An app needs a hand', 'Stopped apps, downtime and setup.'], ['remote', 'Use it on your phone', 'Tailscale, app links and logins.'], ['sensors', 'A sensor is missing', 'Why, and how to add one.'], ['acceptance', 'Check it really works', 'Playback, backups and a test restore.'], ['updates', 'About updates', 'Monthly updates and big versions.']];
+const HELP_CARDS = [['collector', 'Readings are old or missing', 'Check the service that collects them.'], ['dashboard', 'Live readings stopped', 'Restart the dashboard safely.'], ['recovery', 'Get files back', 'Restore a backup into a separate folder.'], ['apps', 'An app needs a hand', 'Stopped apps, downtime and setup.'], ['remote', 'Use it on your phone', 'Tailscale, app links and logins.'], ['sensors', 'A sensor is missing', 'Why, and how to add one.'], ['fans', 'Fans don’t change', 'Find your fans and check fan control.'], ['lights', 'Lights don’t change', 'Check OpenRGB and the i2c driver.'], ['acceptance', 'Check it really works', 'Playback, backups and a test restore.'], ['updates', 'About updates', 'Monthly updates and big versions.']];
 function helpCard([id, title, description]) {
   const card = el('article', 'card');
   card.append(el('h3', '', title), el('p', '', description), keyed(button('Show me how →', () => showGuide(id), 'text-button'), 'help-' + id));
@@ -1087,7 +1609,7 @@ function tally(rows) {
 function hardwareCounts() {
   const live = state.live;
   if (!live) { return null; }
-  return {sensors: list(live.sensors).length, gpus: list(live.gpus).length, npus: list(live.npus).length, rgb: object(live.rgb).status};
+  return {sensors: list(live.sensors).length, gpus: list(live.gpus).length, npus: list(live.npus).length, lights: text(state.control?.lights?.status, 'not checked')};
 }
 function diagnostics() {
   const s = state.status;
@@ -1211,7 +1733,7 @@ function route() {
 const PAGES = {
   home: () => { renderHome(); renderAttention(); renderApps(); },
   apps: renderApps, attention: renderAttention, backups: renderBackups, hardware: renderHardware,
-  sensors: renderSensors, processes: renderProcesses, health: renderHealth, help: renderHelp
+  sensors: renderSensors, cooling: renderCooling, processes: renderProcesses, health: renderHealth, help: renderHelp
 };
 function render() {
   if (state.status) { state.issues = collectIssues(state.status); }
@@ -1237,11 +1759,13 @@ function poll(routeChanged = false) {
   every('status', 15000, true);
   every('live', 4000, LIVE_ROUTES.has(state.route));
   every('processes', 5000, state.route === 'processes');
+  every('control', 3000, state.route === 'cooling');
 }
 function refreshNow() {
   void load('status');
   if (LIVE_ROUTES.has(state.route)) { void load('live'); }
   if (state.route === 'processes') { void load('processes'); }
+  if (state.route === 'cooling') { void load('control'); }
 }
 
 /* ---------- start ---------- */

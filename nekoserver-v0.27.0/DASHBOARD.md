@@ -1,6 +1,6 @@
 # NekoServer dashboard
 
-Your server's home page: open your apps, see backups and drives, and watch the hardware (processor, memory, graphics, temperatures, fans, network) live. It is **read-only**: nothing on the server can be changed from it. When something needs a command, it shows the command for you to copy into Konsole.
+Your server's home page: open your apps, see backups and drives, and watch the hardware (processor, memory, graphics, temperatures, fans, network) live, and **set fan curves and RGB lighting**. Apart from fans and lights, nothing on the server can be changed from it. When something needs a command, it shows the command for you to copy into Konsole.
 
 ## Open it
 
@@ -30,7 +30,8 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Your apps** | Every installed app with its state, processor and memory use, and an Open link. Star favourites to keep them first. |
 | **Backups** | Each scheduled backup, whether its files match their SHA-256 checksums, and whether a restore was tried. |
 | **Hardware** | Processor (total, each core, clock, waiting work), memory, every graphics card and AI chip (NPU), network traffic, drive activity, batteries and UPS. Updates every 4 seconds. |
-| **Sensors** | Every temperature sensor (grouped: processor, graphics, drives, motherboard…), fan speeds and fan outputs, power use, voltages, and RGB devices if OpenRGB is running. |
+| **Sensors** | Every temperature sensor (grouped: processor, graphics, drives, motherboard…), fan speeds and fan outputs, power use and voltages. |
+| **Fans & lights** | Fan curves by temperature, fixed speeds or the motherboard's own control for every fan output; finding which fan is on which output; colours, brightness and effects for RGB lighting. |
 | **Processes** | What's running, including inside each app, with processor and memory use. Search and sort. |
 | **Server health** | Drive space and health (SMART), **what starts by itself after a restart**, the outside heartbeat, phone notifications, app checks and waiting updates. |
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
@@ -46,15 +47,26 @@ There is nothing to configure. The dashboard reads what Linux reports:
 - **Graphics cards and AI chips:** every display adapter and NPU, named from the system's PCI list. AMD cards report their load and video memory; Intel graphics report their clock; NVIDIA cards are read through the NVIDIA driver once a minute.
 - **Network and drives:** wired, Wi-Fi and Tailscale traffic; activity of every physical drive.
 - **Batteries and UPS:** a laptop battery or a USB UPS.
-- **RGB lighting:** devices of an **OpenRGB** server running on this computer (its SDK server on port 6742). They are shown, never changed.
 
 A missing reading shows "—" or "No load reading", never a made-up 0. If a sensor you expect is missing, see Help → *A sensor is missing*. Most motherboard chips need `lm_sensors` (`sudo pacman -S lm_sensors`, then `sudo sensors-detect` and a restart). To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.26.2/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.27.0/nekoserver-runtime hardware
 ```
 
-Fans and lighting are **only read**. The motherboard (BIOS) or your fan/RGB app stays in charge of them.
+## Fans & lights
+
+Like a fan-control app, built in (and written in Rust, so it is quick and light):
+
+- **Every fan output is found automatically** (each `pwm` output Linux can control on the motherboard chip, graphics card or cooler). Give one a name if you like ("Processor fan").
+- **Three ways to run an output:** *Motherboard* (the BIOS stays in charge, the default), *Fixed* (one speed), or *Curve*: drag the points (2 to 8) to set the speed for each temperature, and choose which temperature it follows. *Silent*, *Balanced* and *Performance* are ready-made starting points. The yellow line shows the temperature now. Nothing changes until you press **Save**.
+- **Detect fans** finds which fan is on which output: every fan spins up to full speed, then each output is slowed in turn while the fan speeds are watched (about a minute per output, and loud). Stop it whenever you like; it stops by itself if anything gets hot (85 °C).
+- **Safety:** speeds rise at once and fall gently (5% every 2 seconds), so fans don't hunt up and down. A controlled fan never goes below 20% (you can set a higher floor). Every controlled fan goes to full speed at 95 °C, 3 °C below a sensor's own critical limit, or when its temperature can't be read. If the control service stops for any reason, a crash included, every output is handed back to the motherboard.
+- **RGB lighting** goes through **OpenRGB**, which setup installs from Arch's own repository and runs as a service (answering this computer only). Each device gets a colour, brightness, an effect and on/off; *Apply to all* sets every device at once. Your choice comes back after a restart. Memory and motherboard lighting need the i2c driver, which setup switches on; restart once after setup.
+
+**Who can change them:** on the server itself, anyone using the dashboard. Phones, tablets and other computers (through Tailscale) can always look, but need the **PIN** chosen during setup to change anything; a device stays unlocked for 12 hours or until the page is closed. Five wrong PINs lock changes for 5 minutes. Only a slow, salted hash of the PIN is stored (`/etc/nekoserver-control/pin.json`). To choose a new PIN: `sudo rm /etc/nekoserver-control/pin.json`, then run setup again in a terminal.
+
+To leave fans and lights alone completely, set `"fan_control": false` under `"dashboard"` in your settings (or `"rgb": false` for lighting only) and run setup again: the motherboard takes over again.
 
 ## Error codes
 
@@ -68,9 +80,13 @@ When something goes wrong, the dashboard shows a short code at the top of the pa
 | E11 | Readings could not be read | Usually fixes itself within a minute. If not, run setup again. |
 | E12 | Readings are out of date | No new reading for two collection intervals plus 30 seconds (150 s at the default 60 s): Help → *Readings are old or missing*. |
 | E20 | Live readings unavailable | They come back by themselves. If not: `sudo systemctl restart nekoserver-dashboard.service`. Until then, older live readings are dimmed and marked with their time. |
+| E21 | Fan and light control unavailable | The control service isn't running: Help → *Fans don't change*. |
 | E40 | Page not found | Use the menu to go back. |
 | E41 | Open the dashboard from its own address | Use 127.0.0.1:8787 on the server, or the Tailscale address. |
-| E42 | Request not supported | Reload the page. |
+| E42 | Request not supported | Reload the page. (For a fan or light change, the message says what was wrong.) |
+| E43 | Enter your PIN to change this | Phones, tablets and other computers need the PIN chosen during setup. Press *Unlock changes*. |
+| E44 | Wrong PIN | Check the PIN and try again. |
+| E45 | Too many tries; wait 5 minutes | After five wrong PINs, changes stay locked for 5 minutes. |
 
 ## Starts by itself
 
@@ -90,19 +106,21 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.26.2` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.27.0` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ## What runs, and what it can see
 
-Two parts, both from the bundled Rust program (see RUST-RUNTIME.md):
+Three parts, all from the bundled Rust program (see RUST-RUNTIME.md), plus OpenRGB for lighting:
 
 - **The collector** (`nekoserver-dashboard-collect`, root, every minute): drives, SMART, apps and their resource use, backups, checks and what starts at boot. It writes one public snapshot, `/run/nekoserver-dashboard/status.json`, with selected fields only (no passwords, no file lists). Private history and SMART state stay on the SSD; it refuses to read them when the SSD's identity is wrong.
-- **The web server** (`nekoserver-dashboard`, an unprivileged throwaway user): serves the page, the snapshot, live hardware readings and the process list. It listens on 127.0.0.1 only, can't reach Docker, the app SSD or the settings, answers only its own addresses, refuses cross-site requests and has no endpoint that changes anything. Live readings are taken only while a page asks for them.
+- **The web server** (`nekoserver-dashboard`, an unprivileged throwaway user): serves the page, the snapshot, live hardware readings and the process list. It listens on 127.0.0.1 only, can't reach Docker, the app SSD or the settings, answers only its own addresses, refuses cross-site requests and never changes hardware itself: fan and light changes are passed to the control service. Live readings are taken only while a page asks for them.
+- **The control service** (`nekoserver-control`, root, because only root may set fan speeds): the only part that changes hardware. It listens on a private socket that only the web server can use, checks every request (ranges, known outputs, the PIN), and its settings are kept in `/etc/nekoserver-control`. When it stops, the fans go back to the motherboard.
+- **OpenRGB** (`nekoserver-openrgb`): talks to the lighting; it can only be reached from this computer.
 
 Process names are shown, never command lines, environments or user names. The page keeps favourites and settings in your browser only; the summary download in Help contains counts and versions, nothing private.
 
 ```bash
-systemctl status nekoserver-dashboard.service nekoserver-dashboard-collect.timer
+systemctl status nekoserver-dashboard.service nekoserver-dashboard-collect.timer nekoserver-control.service nekoserver-openrgb.service
 sudo journalctl -u nekoserver-dashboard-collect.service -n 50
 ```
 

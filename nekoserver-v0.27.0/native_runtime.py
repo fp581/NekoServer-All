@@ -52,6 +52,7 @@ def acceptance_checks(config,modules):
     if 'dashboard' in modules:
         code=Path('/usr/local/lib/nekoserver-dashboard')/('v'+VERSION)/NAME
         jobs += [('nekoserver-dashboard.service',code,'serve',False),('nekoserver-dashboard-collect.service',code,'collect',False)]
+        if config.get('dashboard',{}).get('fan_control',True):jobs += [('nekoserver-control.service',code,'control',False)]
     if 'server_os' in modules and config.get('server_os',{}).get('hdd_policy','keep_spinning')in ('keep_spinning','idle'):jobs += [('nekoserver-hdd-policy.service',Path('/usr/local/lib/nekoserver-os')/('v'+VERSION)/NAME,'hdd-policy',False)]
     if 'heartbeat' in modules:jobs += [('nekoserver-heartbeat.service',Path('/usr/local/lib/nekoserver-heartbeat')/('v'+VERSION)/NAME,'heartbeat',False)]
     if 'notifications' in modules:jobs += [('nekoserver-notifications.service',Path('/usr/local/lib/nekoserver-notifications')/('v'+VERSION)/NAME,'notify',False)]

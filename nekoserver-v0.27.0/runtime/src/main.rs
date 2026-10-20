@@ -2,6 +2,8 @@ mod app_snapshot;
 mod backup;
 mod collect;
 mod common;
+mod control;
+mod fans;
 mod heartbeat;
 mod host_snapshot;
 mod ledger;
@@ -10,6 +12,7 @@ mod maintenance;
 mod media;
 mod music_backup;
 mod notify;
+mod openrgb;
 mod os_policy;
 mod serve;
 mod startup;
@@ -78,7 +81,7 @@ fn entry() -> Result<()> {
         return serve::hardware();
     }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, heartbeat, storage-guard, gateway-guard, maintenance, maintenance-resume\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, heartbeat, storage-guard, gateway-guard, maintenance, maintenance-resume\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {
@@ -89,7 +92,8 @@ fn entry() -> Result<()> {
         }
         "notify" => vec!["config", "snapshot", "state", "runtime", "test"],
         "media-health" => vec!["config", "output"],
-        "serve" => vec!["assets", "status", "port", "public-host"],
+        "serve" => vec!["assets", "status", "port", "public-host", "control"],
+        "control" => vec!["restore", "set-pin"],
         "collect" => vec!["config", "output", "state"],
         "archive" => vec!["source", "archive", "min-age", "apply"],
         "copy" => vec!["source", "dest", "uuid", "apply"],
@@ -134,7 +138,12 @@ fn entry() -> Result<()> {
         if !allowed.contains(&key) || a.0.contains_key(key) {
             return Err(Error::new("Unknown or repeated option"));
         }
-        let value = if key == "apply" || key == "db-backup" || key == "test" {
+        let value = if key == "apply"
+            || key == "db-backup"
+            || key == "test"
+            || key == "restore"
+            || key == "set-pin"
+        {
             "true".into()
         } else {
             let v = argv
@@ -162,6 +171,7 @@ fn entry() -> Result<()> {
         "app-resume" => app_snapshot::resume_command(&a),
         "media-health" => media::run(&a),
         "serve" => serve::run(&a),
+        "control" => control::run(&a),
         "collect" => collect::run(&a),
         "archive" => {
             backup::archive(

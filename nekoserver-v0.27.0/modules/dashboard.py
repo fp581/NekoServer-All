@@ -1,7 +1,7 @@
 """Local visual health dashboard with a privileged collector and unprivileged web server."""
 import native_runtime
 from acceptance_summary import scope_digest
-import importlib.util,json,os,platform,shutil,subprocess
+import getpass,grp,importlib.util,json,os,platform,shutil,subprocess,sys
 from pathlib import Path
 from neko_common import APP_PORTS,VERSION,safe_path,mount_path,atomic_write,atomic_json
 DEPENDENCIES=['storage','recovery']
@@ -13,13 +13,28 @@ LAUNCHER=Path('/usr/local/bin/nekoserver-dashboard')
 DESKTOP_ENTRY=Path('/usr/share/applications/nekoserver-dashboard.desktop')
 MANAGED='X-NekoServer-Managed=true'
 SERVICE='nekoserver-dashboard.service'
+# Fan and lighting changes: the only root part, reached by the web server over a socket.
+CONTROL='nekoserver-control.service'
+CONTROL_GROUP='nekoserver-control'
+CONTROL_CONFIG=Path('/etc/nekoserver-control')
+OPENRGB='nekoserver-openrgb.service'
+OPENRGB_BINARY=Path('/usr/bin/openrgb')
+# Memory and motherboard lighting is reached over i2c (SMBus).
+I2C_MODULES=Path('/etc/modules-load.d/nekoserver-i2c.conf')
 
 def options(cfg):
     values=cfg.get('dashboard',{});port=values.get('port',8787);interval=values.get('interval_seconds',60);smart=values.get('smart_interval_seconds',1800)
     if type(port) is not int or not 1024<=port<=65535 or port in APP_PORTS or port==cfg.get('media',{}).get('torrent_port'):raise RuntimeError(f'Dashboard port {port} is taken or not allowed: choose a free port from 1024 to 65535 that no app uses (Nextcloud uses 8088, Jellyfin 8096, Immich 2283)')
     if type(interval) is not int or not 30<=interval<=300 or type(smart) is not int or not 300<=smart<=86400:raise RuntimeError('Dashboard collection/SMART intervals are out of range')
     if 'install_smartmontools' in values and type(values['install_smartmontools']) is not bool:raise RuntimeError('SMART package switch must be a boolean')
+    for key in ('fan_control','rgb'):
+        if key in values and type(values[key]) is not bool:raise RuntimeError(f'dashboard.{key} must be true or false')
     return port,interval,smart
+
+def control_options(cfg):
+    """(fan and light control on, OpenRGB lighting on). Lighting needs control."""
+    values=cfg.get('dashboard',{});control=values.get('fan_control',True)
+    return control,control and values.get('rgb',True)
 
 def tailnet_name(cfg):
     """This server's Tailscale name, so the dashboard also answers its private Tailscale
@@ -30,7 +45,29 @@ def tailnet_name(cfg):
         return gateway_tools.tailnode()
     except (RuntimeError,OSError,ValueError,KeyError):return None
 
-def units(data,code,config,port,interval,public=None):
+def control_units(code,lighting):
+    """The root control service (fans, lights) and, with lighting, OpenRGB's server.
+    OpenRGB answers this computer only: systemd drops any other network traffic."""
+    binary=str(code/"nekoserver-runtime")
+    after='After=systemd-modules-load.service'+(' '+OPENRGB+'\nWants='+OPENRGB if lighting else '')
+    found={CONTROL:'[Unit]\nDescription=NekoServer fan and light control\n'+after+'\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
+        f'ExecStart={binary} control\n'
+        # Whenever it stops (a crash too), every fan goes back to the motherboard.
+        f'ExecStopPost={binary} control --restore\n'
+        'Restart=always\nRestartSec=3\nGroup='+CONTROL_GROUP+'\nUMask=0077\n'
+        'RuntimeDirectory=nekoserver-control\nRuntimeDirectoryMode=0750\nRuntimeDirectoryPreserve=restart\n'
+        'NoNewPrivileges=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths='+str(CONTROL_CONFIG)+'\nPrivateTmp=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n'
+        'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE\nRestrictAddressFamilies=AF_UNIX AF_INET\nIPAddressDeny=any\nIPAddressAllow=localhost\n'
+        '[Install]\nWantedBy=multi-user.target\n'}
+    if lighting:
+        found[OPENRGB]=('[Unit]\nDescription=NekoServer lighting (OpenRGB server)\nAfter=systemd-modules-load.service\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
+            f'ExecStart={OPENRGB_BINARY} --server --server-port 6742\n'
+            'Environment=QT_QPA_PLATFORM=offscreen HOME=/var/lib/nekoserver-openrgb XDG_CONFIG_HOME=/var/lib/nekoserver-openrgb\nStateDirectory=nekoserver-openrgb\n'
+            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\nPrivateTmp=yes\nIPAddressDeny=any\nIPAddressAllow=localhost\n'
+            '[Install]\nWantedBy=multi-user.target\n')
+    return found
+
+def units(data,code,config,port,interval,public=None,control=False):
     serve=str(code/"nekoserver-runtime")+" serve"
     collect=str(code/"nekoserver-runtime")+" collect"
     common='NoNewPrivileges=yes\nProtectHome=yes\nProtectSystem=strict\nPrivateTmp=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n'
@@ -38,7 +75,40 @@ def units(data,code,config,port,interval,public=None):
     'nekoserver-dashboard-collect.service':'[Unit]\nDescription=NekoServer dashboard collection\n[Service]\nType=oneshot\nRuntimeDirectory=nekoserver-dashboard\nRuntimeDirectoryMode=0755\nRuntimeDirectoryPreserve=yes\nExecStart='+collect+' --config '+str(config)+' --output /run/nekoserver-dashboard/status.json --state '+str(data/'dashboard-state')+'\nTimeoutStartSec=180\n'+common+'ReadWritePaths=/run/nekoserver-dashboard -'+str(data/'dashboard-state')+'\nRestrictAddressFamilies=AF_UNIX\n',
     'nekoserver-dashboard-collect.timer':f'[Unit]\nDescription=NekoServer periodic dashboard collection\n[Timer]\nOnBootSec=15s\nOnUnitInactiveSec={interval}s\nUnit=nekoserver-dashboard-collect.service\n[Install]\nWantedBy=timers.target\n',
     # Starts with the computer and comes back by itself if it ever stops.
-    SERVICE:'[Unit]\nDescription=NekoServer local dashboard\nWants=nekoserver-dashboard-collect.service\nAfter=network.target nekoserver-dashboard-collect.service\nStartLimitIntervalSec=0\n[Service]\nType=simple\nDynamicUser=yes\nExecStart='+serve+' --assets '+str(code/'dashboard')+f' --status /run/nekoserver-dashboard/status.json --port {port}'+(' --public-host '+public if public else '')+'\nRestart=always\nRestartSec=3\n'+common+'PrivateDevices=yes\nRestrictAddressFamilies=AF_INET AF_UNIX\nInaccessiblePaths=-/run/docker.sock -/var/run/docker.sock '+str(data)+' '+str(config.parent)+'\n[Install]\nWantedBy=multi-user.target\n'}
+    SERVICE:'[Unit]\nDescription=NekoServer local dashboard\nWants=nekoserver-dashboard-collect.service\nAfter=network.target nekoserver-dashboard-collect.service\nStartLimitIntervalSec=0\n[Service]\nType=simple\nDynamicUser=yes\nExecStart='+serve+' --assets '+str(code/'dashboard')+f' --status /run/nekoserver-dashboard/status.json --port {port}'+(' --public-host '+public if public else '')+'\nRestart=always\nRestartSec=3\n'+common+'PrivateDevices=yes\nRestrictAddressFamilies=AF_INET AF_UNIX\nInaccessiblePaths=-/run/docker.sock -/var/run/docker.sock '+str(data)+' '+str(config.parent)+' -'+str(CONTROL_CONFIG)+'\n'
+        # Only the control service's socket: changes are passed on, never made here.
+        +('SupplementaryGroups='+CONTROL_GROUP+'\n' if control else '')+'[Install]\nWantedBy=multi-user.target\n'}
+
+def control_group():
+    try:grp.getgrnam(CONTROL_GROUP)
+    except KeyError:subprocess.run(['groupadd','--system',CONTROL_GROUP],capture_output=True,check=True,timeout=30)
+
+def install_openrgb(log):
+    """OpenRGB from Arch's own repository, plus the i2c driver it uses for memory and
+    motherboard lights. False (lighting skipped) when it can't be installed."""
+    if not OPENRGB_BINARY.exists():
+        if not shutil.which('pacman') or subprocess.run(['pacman','-Si','openrgb'],capture_output=True,timeout=30).returncode:
+            log('Lighting: OpenRGB is not available for this system, so RGB control is skipped');return False
+        subprocess.run(['pacman','-S','--needed','--noconfirm','openrgb'],capture_output=True,check=True,timeout=900)
+    if write_managed(I2C_MODULES,'# Managed by NekoServer: lets OpenRGB reach memory and motherboard lighting.\ni2c-dev\n',0o644,log):
+        subprocess.run(['modprobe','i2c-dev'],capture_output=True,timeout=30)
+    return True
+
+def choose_pin(binary,log,ask=getpass.getpass):
+    """Phones and tablets need a PIN to change fans and lights (the server itself
+    doesn't). Asked once; skipped without a keyboard. Only a slow salted hash is kept."""
+    if (CONTROL_CONFIG/'pin.json').exists():return False
+    if not sys.stdin.isatty():
+        log('Fans & lights: no PIN chosen, so changes work on the server only (run setup in a terminal to choose one)');return False
+    print('\nChoose a PIN (4 to 8 digits) for changing fans and lights from your phone or tablet.\nPress Enter to skip: changes then work on the server itself only.')
+    for _ in range(3):
+        pin=ask('PIN: ').strip()
+        if not pin:log('Fans & lights: no PIN chosen; changes work on the server only');return False
+        if not (pin.isdigit() and 4<=len(pin)<=8):print('A PIN is 4 to 8 digits.');continue
+        if ask('Same PIN again: ').strip()!=pin:print('The two PINs differ.');continue
+        subprocess.run([str(binary),'control','--set-pin'],input=pin+'\n',text=True,capture_output=True,check=True,timeout=120)
+        log('Fans & lights: PIN saved');return True
+    log('Fans & lights: no PIN chosen; changes work on the server only');return False
 
 def launcher(port):
     """A command that opens the dashboard in its own window, without browser tabs or
@@ -105,7 +175,9 @@ def run(ctx):
     payloads={code/'dashboard'/name:(project/'dashboard'/name).read_bytes() for name in ASSETS}
     payloads[code/native_runtime.NAME]=native_runtime.payload(project,cfg)
     public=tailnet_name(cfg)
-    definitions=units(data,code,config,port,interval,public)
+    control,lighting=control_options(cfg)
+    definitions=units(data,code,config,port,interval,public,control)
+    if control:definitions.update(control_units(code,lighting))
     for path,payload in payloads.items():
         safe_path(path)
         if path.exists() and path.read_bytes()!=payload:raise RuntimeError('Installed dashboard release differs; custom files preserved')
@@ -123,6 +195,10 @@ def run(ctx):
             check=subprocess.run(['pacman','-Si','smartmontools'],capture_output=True,timeout=30)
             if check.returncode:raise RuntimeError('smartmontools unavailable; update the system normally and retry')
             subprocess.run(['pacman','-S','--needed','--noconfirm','smartmontools'],capture_output=True,check=True,timeout=900)
+    if control:
+        control_group()
+        if lighting and not install_openrgb(ctx.log):
+            lighting=False;del definitions[OPENRGB];definitions.update(control_units(code,False))
     for folder in public_directories:
         if not folder.exists():
             folder.mkdir(parents=True,mode=0o755);folder.chmod(0o755)
@@ -132,10 +208,17 @@ def run(ctx):
     for name,text in definitions.items():atomic_write(Path('/etc/systemd/system')/name,text,0o644)
     subprocess.run(['systemctl','daemon-reload'],capture_output=True,check=True,timeout=30)
     subprocess.run(['systemctl','start','nekoserver-dashboard-collect.service'],capture_output=True,check=True,timeout=190)
-    for unit in ('nekoserver-dashboard-collect.timer',SERVICE):subprocess.run(['systemctl','enable','--now',unit],capture_output=True,check=True,timeout=30)
-    subprocess.run(['systemctl','restart',SERVICE],capture_output=True,check=True,timeout=30)
+    started=[u for u in (OPENRGB,CONTROL) if u in definitions]
+    stopped=[u for u in (CONTROL,OPENRGB) if u not in definitions and (Path('/etc/systemd/system')/u).exists()]
+    if stopped:subprocess.run(['systemctl','disable','--now',*stopped],capture_output=True,timeout=60) # fans go back to the motherboard
+    if control:
+        CONTROL_CONFIG.mkdir(mode=0o700,exist_ok=True)
+        choose_pin(code/native_runtime.NAME,ctx.log)
+    for unit in ('nekoserver-dashboard-collect.timer',*started,SERVICE):subprocess.run(['systemctl','enable','--now',unit],capture_output=True,check=True,timeout=60)
+    for unit in (*started,SERVICE):subprocess.run(['systemctl','restart',unit],capture_output=True,check=True,timeout=60)
     write_managed(LAUNCHER,launcher(port),0o755,ctx.log)
     write_managed(DESKTOP_ENTRY,desktop_entry(code),0o644,ctx.log)
-    ctx.log(f'NekoServer dashboard: http://127.0.0.1:{port}/ · read-only; backup history starts after updated jobs run')
+    ctx.log(f'NekoServer dashboard: http://127.0.0.1:{port}/ · backup history starts after updated jobs run')
+    if control:ctx.log('Fans & lights: set fan curves'+(' and RGB lighting' if lighting else '')+' on the dashboard\'s "Fans & lights" page')
     ctx.log('Open it from the app menu ("NekoServer Dashboard") for its own window; on a phone or tablet, use "Install app" / "Add to Home Screen"')
     if public:ctx.log(f'Dashboard on your phone (Tailscale on): https://{public}:8448/')

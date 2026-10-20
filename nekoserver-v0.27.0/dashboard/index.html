@@ -31,6 +31,7 @@
     <a class="nav" href="#backups" data-route="backups"><span class="nav-icon" aria-hidden="true">♡</span><span class="nav-text">Backups</span></a>
     <a class="nav" href="#hardware" data-route="hardware"><span class="nav-icon" aria-hidden="true">▥</span><span class="nav-text">Hardware</span></a>
     <a class="nav" href="#sensors" data-route="sensors"><span class="nav-icon" aria-hidden="true">❋</span><span class="nav-text">Sensors</span></a>
+    <a class="nav" href="#cooling" data-route="cooling"><span class="nav-icon" aria-hidden="true">✺</span><span class="nav-text">Fans &amp; lights</span></a>
     <a class="nav" href="#processes" data-route="processes"><span class="nav-icon" aria-hidden="true">≡</span><span class="nav-text">Processes</span></a>
     <a class="nav" href="#health" data-route="health"><span class="nav-icon" aria-hidden="true">◈</span><span class="nav-text">Server health</span></a>
     <a class="nav" href="#attention" data-route="attention"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-text">Needs attention</span><b class="count" data-count="issues">—</b></a>
@@ -135,17 +136,26 @@
   <section class="panel" data-page="sensors">
     <header class="section-head"><div><span class="eyebrow">AIRFLOW</span><h2>Fans</h2><p>Fan speeds and how hard the motherboard drives them.</p></div></header>
     <div id="fans" class="card-grid auto"></div>
-    <p class="section-note">The motherboard (firmware) stays in charge of the fans. This page only reads them; change fan curves in the BIOS or your fan app.</p>
+    <p class="section-note">To set fan speeds or curves, open <a class="text-link" href="#cooling">Fans &amp; lights</a>.</p>
   </section>
   <section class="panel" data-page="sensors">
     <header class="section-head"><div><span class="eyebrow">POWER</span><h2>Power &amp; voltages</h2></div></header>
     <div id="power" class="card-grid auto"></div>
     <details class="more"><summary>Voltages <span id="voltage-count"></span></summary><div id="voltages" class="row-list compact"></div></details>
   </section>
-  <section class="panel" data-page="sensors" id="rgb-panel" hidden>
-    <header class="section-head"><div><span class="eyebrow">A LITTLE PERSONALITY</span><h2>RGB lighting</h2><p>Devices reported by OpenRGB on this computer.</p></div></header>
-    <div id="rgb" class="card-grid auto"></div>
-    <p class="section-note">Change colours and effects in OpenRGB. The dashboard only shows what it reports.</p>
+  <!-- FANS & LIGHTS -->
+  <section class="panel" data-page="cooling">
+    <header class="section-head"><div><span class="eyebrow">COOL AND QUIET</span><h2>Fan control</h2><p>Choose how fast each fan output spins: by temperature (a curve), at a fixed speed, or left to the motherboard.</p></div><span class="badge unknown" id="fan-state">Waiting</span></header>
+    <div id="control-access" class="control-access"></div>
+    <div id="fan-detect" class="fan-detect"></div>
+    <div id="fan-outputs" class="card-grid fans-grid"></div>
+    <div id="fan-loose"></div>
+    <p class="section-note">Safety first: every fan goes to full speed at 95 °C (or near a sensor’s own limit) and if its temperature can’t be read. While NekoServer controls a fan it never goes below 20%. If NekoServer stops, the motherboard takes over again.</p>
+  </section>
+  <section class="panel" data-page="cooling">
+    <header class="section-head"><div><span class="eyebrow">A LITTLE PERSONALITY</span><h2>RGB lighting</h2><p>Colours and effects for the lighting OpenRGB finds on this computer. Your choice comes back after a restart.</p></div><span class="badge unknown" id="light-state">Waiting</span></header>
+    <div id="light-all" class="light-all-box" hidden></div>
+    <div id="lights" class="card-grid auto"></div>
   </section>
 
   <!-- PROCESSES -->

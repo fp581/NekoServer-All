@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.27.0 — 2026-10-20
+
+### Added
+- **Fan control that really controls the fans.** The new *Fans & lights* page finds every fan output Linux can drive (motherboard chip, graphics card, cooler) and runs each one by a temperature curve, at a fixed speed, or leaves it to the motherboard. Curves are edited by dragging their points (or with the arrow keys), with *Silent*, *Balanced* and *Performance* presets, a minimum speed, and a live marker for the temperature now. Written in Rust like the rest of the runtime.
+- **Detect fans.** A guided test finds which fan is on which output: all fans to full speed, then each output slowed in turn while the speeds are watched. It can be stopped at any time, stops by itself at 85 °C, and always hands the fans back to the motherboard.
+- **RGB lighting that changes.** OpenRGB is installed from Arch's own repository and runs as a service on this computer only (with the i2c driver for memory and motherboard lights). Each device gets a colour, brightness, an effect and on/off, plus *Apply to all*; choices come back after a restart.
+- **A PIN for phones and tablets.** On the server itself changes need nothing more. Other devices (through Tailscale) can always look, but need the PIN chosen during setup to change fans or lights; five wrong tries lock changes for 5 minutes. Only a slow, salted hash is kept.
+- New error codes: E21 (fan and light control unavailable), E43 (PIN needed), E44 (wrong PIN), E45 (too many tries). Help has two new guides, *Fans don't change* and *Lights don't change*.
+
+### Safety
+- Hardware is changed only by a new root service, `nekoserver-control`, reached over a private socket that only the dashboard's (still unprivileged) web server can use. Every request is checked: known outputs, sensors and lights, sensible ranges, and changes only from the dashboard page itself.
+- Fans speed up at once and slow down gently; a controlled fan never goes below 20%; every controlled fan goes to full speed at 95 °C, near a sensor's own limit, or when its temperature can't be read. Whenever the service stops (a crash too) every output is handed back to the motherboard.
+- `"fan_control": false` (or `"rgb": false`) under `"dashboard"` turns it off; setup then gives the fans back to the motherboard.
+
+### Changed
+- Version 0.27.0; the release folder is now `nekoserver-v0.27.0`.
+- RGB devices moved from *Sensors* to *Fans & lights*; live readings no longer ask OpenRGB every minute.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+- Run setup in a terminal to choose the PIN; without one, fans and lights can be changed on the server only.
+
 ## v0.26.2 — 2026-10-20
 
 ### Fixed (review of v0.26.1)

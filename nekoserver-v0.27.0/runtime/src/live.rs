@@ -2,14 +2,14 @@
 //!
 //! Everything comes from what Linux exposes to an ordinary user (/proc and /sys), so
 //! the dashboard's web server can read it without root. Nothing here writes to
-//! hardware: fan speeds, RGB lighting and processes are only reported. A reading
+//! hardware: fan speeds and processes are only reported (changes go through the root
+//! control service, see control.rs). A reading
 //! the kernel does not expose stays `null` ("unavailable"), never 0.
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs,
-    io::{Read, Write},
-    net::{SocketAddr, TcpStream},
+    io::Read,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -17,7 +17,6 @@ use std::{
 /// Readings are cached briefly so several open dashboards share one sample.
 const LIVE_EVERY: Duration = Duration::from_secs(2);
 const PROCESSES_EVERY: Duration = Duration::from_secs(3);
-const RGB_EVERY: Duration = Duration::from_secs(60);
 const MAX_PROCESSES: usize = 5000;
 const MAX_SENSORS: usize = 256;
 /// Chips never read every few seconds. drivetemp asks SATA drives for their
@@ -30,12 +29,10 @@ pub struct Live {
     proc: PathBuf,
     sys: PathBuf,
     pci_ids: Vec<PathBuf>,
-    rgb_port: u16,
     previous: Option<Counters>,
     processes_before: Option<ProcessTicks>,
     live: Option<(Instant, Value)>,
     processes: Option<(Instant, Value)>,
-    rgb: Option<(Instant, Value)>,
     names: HashMap<String, Option<String>>,
 }
 
@@ -116,12 +113,10 @@ impl Live {
                 "/usr/share/hwdata/pci.ids".into(),
                 "/usr/share/misc/pci.ids".into(),
             ],
-            rgb_port: 6742,
             previous: None,
             processes_before: None,
             live: None,
             processes: None,
-            rgb: None,
             names: HashMap::new(),
         }
     }
@@ -186,7 +181,6 @@ impl Live {
             "power": self.power_supplies(),
             "network": network,
             "disks": disks,
-            "rgb": self.rgb(),
         })
     }
 
@@ -728,23 +722,6 @@ impl Live {
         json!({"format": "neko-processes-v1", "generated_at": crate::common::now(),
             "rows": rows, "count": count, "skipped": skipped, "truncated": truncated})
     }
-
-    /// RGB devices from an OpenRGB SDK server that is already running on this
-    /// computer (read-only: names and effects; nothing is scanned or changed).
-    fn rgb(&mut self) -> Value {
-        if let Some((at, v)) = &self.rgb {
-            if at.elapsed() < RGB_EVERY {
-                return v.clone();
-            }
-        }
-        let value = match openrgb_devices(self.rgb_port) {
-            Ok(devices) if devices.is_empty() => json!({"status": "none_reported", "devices": []}),
-            Ok(devices) => json!({"status": "detected", "devices": devices}),
-            Err(_) => json!({"status": "not_running", "devices": []}),
-        };
-        self.rgb = Some((Instant::now(), value.clone()));
-        value
-    }
 }
 
 /// People-friendly groups for hwmon chips.
@@ -811,98 +788,6 @@ fn container_of(cgroup: &str) -> Option<String> {
             (id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())).then(|| id.to_string())
         })
     })
-}
-
-/// OpenRGB SDK (protocol 0, read-only requests only).
-fn openrgb_devices(port: u16) -> std::io::Result<Vec<Value>> {
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(300))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-    let request = |stream: &mut TcpStream, device: u32, id: u32| -> std::io::Result<Vec<u8>> {
-        let mut head = b"ORGB".to_vec();
-        for n in [device, id, 0] {
-            head.extend_from_slice(&n.to_le_bytes());
-        }
-        stream.write_all(&head)?;
-        let mut reply = [0u8; 16];
-        stream.read_exact(&mut reply)?;
-        let size = u32::from_le_bytes(reply[12..16].try_into().unwrap()) as usize;
-        if &reply[..4] != b"ORGB" || size > 4_000_000 {
-            return Err(std::io::Error::other("Not an OpenRGB server"));
-        }
-        let mut body = vec![0; size];
-        stream.read_exact(&mut body)?;
-        Ok(body)
-    };
-    let count = request(&mut stream, 0, 0)?;
-    let count = u32::from_le_bytes(
-        count
-            .get(..4)
-            .ok_or(std::io::ErrorKind::InvalidData)?
-            .try_into()
-            .unwrap(),
-    );
-    let mut devices = vec![];
-    for index in 0..count.min(32) {
-        let body = request(&mut stream, index, 1)?;
-        if let Some(device) = parse_openrgb_device(index, &body) {
-            devices.push(device);
-        }
-    }
-    Ok(devices)
-}
-
-/// Name, description and effect names from an OpenRGB controller description.
-fn parse_openrgb_device(index: u32, body: &[u8]) -> Option<Value> {
-    let mut at = 8; // data size (u32), device type (i32)
-    let text = |at: &mut usize| -> Option<String> {
-        let len = u16::from_le_bytes(body.get(*at..*at + 2)?.try_into().ok()?) as usize;
-        let raw = body.get(*at + 2..*at + 2 + len)?;
-        *at += 2 + len;
-        Some(clean(&String::from_utf8_lossy(raw).replace('\0', ""), 80))
-    };
-    let kind = i32::from_le_bytes(body.get(4..8)?.try_into().ok()?);
-    let name = text(&mut at)?;
-    let description = text(&mut at)?;
-    for _ in 0..3 {
-        text(&mut at)?; // version, serial, location
-    }
-    let modes = u16::from_le_bytes(body.get(at..at + 2)?.try_into().ok()?) as usize;
-    at += 2 + 4; // active mode (i32)
-    let mut effects = vec![];
-    for _ in 0..modes.min(64) {
-        effects.push(text(&mut at)?);
-        at += 4 * 9; // value, flags, speed min/max, colors min/max, speed, direction, color mode
-        let colors = u16::from_le_bytes(body.get(at..at + 2)?.try_into().ok()?) as usize;
-        at += 2 + 4 * colors;
-    }
-    let kinds = [
-        "Motherboard",
-        "Memory",
-        "Graphics card",
-        "Cooler",
-        "LED strip",
-        "Keyboard",
-        "Mouse",
-        "Mouse mat",
-        "Headset",
-        "Headset stand",
-        "Gamepad",
-        "Light",
-        "Speaker",
-        "Virtual",
-        "Storage",
-        "Case",
-        "Microphone",
-        "Accessory",
-        "Keypad",
-    ];
-    Some(json!({
-        "id": index.to_string(), "name": name, "description": description,
-        "kind": kinds.get(kind as usize).copied().unwrap_or("Lighting"),
-        "effects": effects,
-    }))
 }
 
 #[cfg(test)]
@@ -974,7 +859,6 @@ mod tests {
             "1000000",
         );
         let mut live = Live::new(&t.0.join("proc"), &t.0.join("sys"));
-        live.rgb_port = 1; // nothing listens there
         live.take(false);
         machine(&t, 200, 3000, 1000);
         let v = live.take(true);
@@ -995,7 +879,6 @@ mod tests {
         assert_eq!(disks[0]["model"], "Example SSD");
         assert_eq!(disks[0]["size"], 1_024_000.0);
         assert!(disks[0]["read_bps"].as_f64().unwrap() > 0.0);
-        assert_eq!(v["rgb"]["status"], "not_running");
     }
 
     #[test]
@@ -1003,7 +886,6 @@ mod tests {
         let t = Tree::new("boot");
         machine(&t, 100, 1000, 0);
         let mut live = Live::new(&t.0.join("proc"), &t.0.join("sys"));
-        live.rgb_port = 1;
         live.take(false);
         t.put("proc/sys/kernel/random/boot_id", "boot-2");
         let v = live.take(true);
@@ -1208,35 +1090,5 @@ mod tests {
             Some(id.clone())
         );
         assert_eq!(container_of("0::/user.slice/user-1000.slice"), None);
-    }
-
-    #[test]
-    fn an_openrgb_description_gives_name_and_effects() {
-        let mut body = vec![0u8; 4];
-        body.extend_from_slice(&4i32.to_le_bytes()); // LED strip
-        let text = |s: &str| {
-            let mut b = ((s.len() + 1) as u16).to_le_bytes().to_vec();
-            b.extend_from_slice(s.as_bytes());
-            b.push(0);
-            b
-        };
-        for s in ["Strip", "Desk strip", "1.0", "", "HID"] {
-            let t = text(s);
-            body.extend(t);
-        }
-        body.extend_from_slice(&2u16.to_le_bytes());
-        body.extend_from_slice(&0i32.to_le_bytes());
-        for (name, colors) in [("Static", 1u16), ("Rainbow", 0)] {
-            let t = text(name);
-            body.extend(t);
-            body.extend(vec![0u8; 36]);
-            body.extend_from_slice(&colors.to_le_bytes());
-            body.extend(vec![0u8; 4 * colors as usize]);
-        }
-        let v = parse_openrgb_device(3, &body).unwrap();
-        assert_eq!(v["name"], "Strip");
-        assert_eq!(v["kind"], "LED strip");
-        assert_eq!(v["effects"], json!(["Static", "Rainbow"]));
-        assert!(parse_openrgb_device(0, &body[..20]).is_none());
     }
 }

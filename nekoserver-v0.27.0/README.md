@@ -1,4 +1,4 @@
-# NekoServer v0.26.2
+# NekoServer v0.27.0
 
 NekoServer turns a PC running **Arch Linux** or **Nyarch** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -18,7 +18,7 @@ It does **not** install Linux and it **never formats a drive**. You prepare thos
 | **Navidrome** | Stream your music to phones and browsers | SSD |
 | **Immich** | Back up and browse photos and videos from your phone | SSD |
 | **Nextcloud** | Your own private cloud drive (like Google Drive) | HDD |
-| **Dashboard** | One page for your apps, backups, drives and live hardware: processor, graphics, temperatures, fans, network. Works on phone and tablet, installable as an app | |
+| **Dashboard** | One page for your apps, backups, drives and live hardware: processor, graphics, temperatures, fans, network. Fan curves and RGB lighting (OpenRGB) too. Works on phone and tablet, installable as an app | |
 | **Tailscale** | Use your apps from anywhere, privately, on your own devices | |
 
 Also included: shared folders on your home network (Samba) and, if you want them, watching on a TV connected to the server (Steam Big Picture) and phone alerts when something fails (ntfy).
@@ -52,7 +52,7 @@ Open a **terminal**, logged in as your normal user, and run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer---Arch-based-media-server.git
-cd NekoServer---Arch-based-media-server/nekoserver-v0.26.2
+cd NekoServer---Arch-based-media-server/nekoserver-v0.27.0
 sudo bash install.sh
 ```
 
@@ -103,7 +103,7 @@ These addresses are **private**: they work only on devices signed in to your Tai
 
 **On other devices at home** you can also use your server's home address (first, in your router, reserve that address for the server, usually called "DHCP reservation" or "static lease"; otherwise it can change after a restart and the home addresses stop working), for example `https://192.168.1.20:8442` for the app menu (ports 8443–8447 for the apps, as above). Browsers warn about the certificate the first time, because your server made its own; [GATEWAY.md](GATEWAY.md) explains how to trust it. The Tailscale addresses have normal certificates and never warn.
 
-**The dashboard** shows your apps, backups, drives, alerts and live hardware (processor, memory, graphics, every temperature sensor and fan it can find, network, processes). On the server it is at `http://127.0.0.1:8787` (or **NekoServer Dashboard** in the app menu); on your phone or laptop (Tailscale on) at `https://yourserver.tailXXXX.ts.net:8448`, also on the phone setup page. It is read-only: nothing can be changed from it. On a phone or tablet, choose *Add to Home Screen* / *Install app* to use it like an app. To keep it on the server only, set `"remote": false` under `"dashboard"`. Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are only reachable from the server's own browser, on purpose.
+**The dashboard** shows your apps, backups, drives, alerts and live hardware (processor, memory, graphics, every temperature sensor and fan it can find, network, processes). On the server it is at `http://127.0.0.1:8787` (or **NekoServer Dashboard** in the app menu); on your phone or laptop (Tailscale on) at `https://yourserver.tailXXXX.ts.net:8448`, also on the phone setup page. Apart from fan curves and RGB lighting (*Fans & lights*; phones and tablets need the PIN chosen during setup), nothing can be changed from it. On a phone or tablet, choose *Add to Home Screen* / *Install app* to use it like an app. To keep it on the server only, set `"remote": false` under `"dashboard"`. Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are only reachable from the server's own browser, on purpose.
 
 ---
 
