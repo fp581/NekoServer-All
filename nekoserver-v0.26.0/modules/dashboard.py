@@ -70,10 +70,10 @@ def write_managed(path,text,mode,log):
 
 COLLECTOR_SETTINGS=Path('/etc/nekoserver-dashboard/config.json')
 
-def collector_settings(cfg,smart):
+def collector_settings(cfg,smart,interval=60):
     """What the dashboard collector reads, including the fingerprint of the settings an
     acceptance report must match."""
-    clean={k:cfg[k] for k in ('data_mount','media_mount','external_backup_mount','storage')};clean['media']={'services':cfg['media']['services']};clean['photos']={'deploy_immich':cfg.get('photos',{}).get('deploy_immich',False),'archive_interval_minutes':cfg.get('photos',{}).get('archive_interval_minutes',60),'backup_schedule':cfg.get('photos',{}).get('backup_schedule','legacy')};clean['music']={'backup_enabled':cfg.get('music',{}).get('backup_enabled',True)};clean['monitoring']={'enabled':cfg.get('monitoring',{}).get('enabled',True),'interval_minutes':cfg.get('monitoring',{}).get('interval_minutes',60)};clean['dashboard']={'smart_interval_seconds':smart};clean['heartbeat']={'interval_seconds':cfg.get('heartbeat',{}).get('interval_seconds',300)};clean['runtime']={'backend':cfg.get('runtime',{}).get('backend')};clean['gateway']={k:cfg.get('gateway',{}).get(k) for k in ('services','lan_ip','lan_cidr')}
+    clean={k:cfg[k] for k in ('data_mount','media_mount','external_backup_mount','storage')};clean['media']={'services':cfg['media']['services']};clean['photos']={'deploy_immich':cfg.get('photos',{}).get('deploy_immich',False),'archive_interval_minutes':cfg.get('photos',{}).get('archive_interval_minutes',60),'backup_schedule':cfg.get('photos',{}).get('backup_schedule','legacy')};clean['music']={'backup_enabled':cfg.get('music',{}).get('backup_enabled',True)};clean['monitoring']={'enabled':cfg.get('monitoring',{}).get('enabled',True),'interval_minutes':cfg.get('monitoring',{}).get('interval_minutes',60)};clean['dashboard']={'smart_interval_seconds':smart,'interval_seconds':interval};clean['heartbeat']={'interval_seconds':cfg.get('heartbeat',{}).get('interval_seconds',300)};clean['runtime']={'backend':cfg.get('runtime',{}).get('backend')};clean['gateway']={k:cfg.get('gateway',{}).get(k) for k in ('services','lan_ip','lan_cidr')}
     clean['nextcloud']={'enabled':cfg.get('nextcloud',{}).get('enabled',False)}
     clean['acceptance_scope']=scope_digest(cfg)
     return clean
@@ -84,7 +84,8 @@ def refresh(cfg,log,target=None):
     the final configuration. Nothing happens when the dashboard is not installed."""
     target=target or COLLECTOR_SETTINGS
     if not target.is_file():return False
-    wanted=collector_settings(cfg,options(cfg)[2])
+    _port,interval,smart=options(cfg)
+    wanted=collector_settings(cfg,smart,interval)
     try:
         current=json.loads(target.read_text())
     except (OSError,ValueError):
@@ -127,7 +128,7 @@ def run(ctx):
             folder.mkdir(parents=True,mode=0o755);folder.chmod(0o755)
     for path,payload in payloads.items():
         if not path.exists():atomic_write(path,payload,0o755 if path.name==native_runtime.NAME else 0o644)
-    atomic_json(config,collector_settings(cfg,smart));safe_path(data/'dashboard-state').mkdir(mode=0o700,exist_ok=True)
+    atomic_json(config,collector_settings(cfg,smart,interval));safe_path(data/'dashboard-state').mkdir(mode=0o700,exist_ok=True)
     for name,text in definitions.items():atomic_write(Path('/etc/systemd/system')/name,text,0o644)
     subprocess.run(['systemctl','daemon-reload'],capture_output=True,check=True,timeout=30)
     subprocess.run(['systemctl','start','nekoserver-dashboard-collect.service'],capture_output=True,check=True,timeout=190)

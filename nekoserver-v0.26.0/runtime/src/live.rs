@@ -20,6 +20,11 @@ const PROCESSES_EVERY: Duration = Duration::from_secs(3);
 const RGB_EVERY: Duration = Duration::from_secs(60);
 const MAX_PROCESSES: usize = 5000;
 const MAX_SENSORS: usize = 256;
+/// Chips never read every few seconds. drivetemp asks SATA drives for their
+/// temperature, and on some hard drives that resets the spin-down timer, so an open
+/// dashboard would keep the media HDD awake. Those temperatures come from the
+/// collector's SMART check instead (every 30 minutes, never waking a sleeping drive).
+const SKIPPED_CHIPS: [&str; 1] = ["drivetemp"];
 
 pub struct Live {
     proc: PathBuf,
@@ -432,6 +437,9 @@ impl Live {
         let mut rows = vec![];
         for chip in children(&self.sys.join("class/hwmon")) {
             let driver = clean(&read(&chip.join("name")), 40);
+            if SKIPPED_CHIPS.contains(&driver.as_str()) {
+                continue;
+            }
             let device = fs::canonicalize(chip.join("device")).ok();
             let model = device
                 .as_ref()
@@ -1016,6 +1024,8 @@ mod tests {
         t.put("sys/class/hwmon/hwmon1/pwm2_enable", "5");
         t.put("sys/class/hwmon/hwmon1/in0_input", "1104");
         t.put("sys/class/hwmon/hwmon1/temp9_input", "-273000"); // unplugged probe
+        t.put("sys/class/hwmon/hwmon3/name", "drivetemp");
+        t.put("sys/class/hwmon/hwmon3/temp1_input", "41000");
         t.put("sys/class/hwmon/hwmon10/name", "amdgpu");
         t.put("sys/class/hwmon/hwmon10/power1_average", "35000000");
         t.put("sys/devices/nvme0/model", "Example NVMe 1TB");
@@ -1049,6 +1059,10 @@ mod tests {
         assert!(!rows.iter().any(|r| r["id"] == "hwmon1:temp9"));
         assert_eq!(find("hwmon10:power1")["value"], 35.0);
         assert_eq!(find("hwmon2:temp1")["chip"], "nvme · Example NVMe 1TB");
+        assert!(
+            !rows.iter().any(|r| r["id"] == "hwmon3:temp1"),
+            "drive temperatures that can wake a hard drive are not read live"
+        );
         // hwmon2 is listed before hwmon10.
         let order = rows
             .iter()

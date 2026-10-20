@@ -15,7 +15,8 @@ import sys
 
 import guided_setup
 from neko_common import (QUARANTINE, atomic_json, backup_files, copy_checked, ensure_room, read_ledger,
-                         record_ledger, settings_path, sha256_file, valid_ledger_path)
+                         record_ledger, settings_path, sha256_file, valid_ledger_path, usb_mount_options,
+                         private_mount_options)
 
 ROOT = Path(__file__).resolve().parent
 # The weekly USB backup holds this lock while it mounts, copies and unmounts the drive.
@@ -337,6 +338,7 @@ class Usb:
         self.mount = Path(config.get('external_backup_mount', '/mnt/nekoserver-photos'))
         photos = config.get('photos', {})
         self.uuid = photos.get('external_backup_uuid', '')
+        self.fstype = photos.get('external_backup_fstype', 'ext4')
         self.mounted_here = False
         self.lock = None
 
@@ -352,23 +354,37 @@ class Usb:
             raise RuntimeError('the weekly backup is using the USB drive right now. '
                                'Try again when it has finished (usually within an hour)') from None
         self.lock = fd
+        try:
+            return self.open()
+        except BaseException:
+            # A refused or failed open still unmounts what it mounted and frees the drive.
+            self.__exit__()
+            raise
+
+    def open(self):
         if subprocess.run(['findmnt', '-n', '--mountpoint', str(self.mount)],
                           capture_output=True).returncode != 0:
             if not (Path('/dev/disk/by-uuid') / self.uuid).exists():
                 return None
             self.mount.mkdir(parents=True, exist_ok=True)
-            options = ('rw' if self.writable else 'ro') + ',nosuid,nodev,noexec'
+            options = usb_mount_options(self.fstype, self.writable)
             if subprocess.run(['mount', '-o', options, f'UUID={self.uuid}', str(self.mount)],
                               capture_output=True, timeout=60).returncode != 0:
                 return None
             self.mounted_here = True
-        found = subprocess.run(['findmnt', '-n', '-o', 'UUID', '--mountpoint', str(self.mount)],
-                               capture_output=True, text=True).stdout.strip()
-        return self.mount if found.lower() == self.uuid.lower() else None
+        found = subprocess.run(['findmnt', '-n', '-o', 'UUID,OPTIONS', '--mountpoint', str(self.mount)],
+                               capture_output=True, text=True).stdout.split()
+        if len(found) != 2 or found[0].lower() != self.uuid.lower():
+            return None
+        if not private_mount_options(found[1], self.fstype):
+            raise RuntimeError('the USB drive is mounted so that other accounts on this computer could read '
+                               'it. Unmount it (sudo umount ' + str(self.mount) + ') and try again: it is then mounted privately')
+        return self.mount
 
     def __exit__(self, *exc):
         try:
             if self.mounted_here:
+                self.mounted_here = False
                 subprocess.run(['umount', str(self.mount)], capture_output=True, timeout=60)
         finally:
             if self.lock is not None:

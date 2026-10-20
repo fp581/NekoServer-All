@@ -204,9 +204,6 @@ class UpgradeMigrationTests(unittest.TestCase):
                 self.assertEqual(self.previous(name), [])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class OnboardingCompletionTests(unittest.TestCase):
     """v0.25.1: witnessed playback never blocks setup; it is recorded or shown as pending."""
@@ -467,3 +464,52 @@ class StrictImportTests(unittest.TestCase):
         self.assertEqual(result['copied'], 2)
         copied = sorted(p.name for p in Path(result['destination']).rglob('*') if p.is_file())
         self.assertEqual(copied, ['single.flac', 'track.flac'])
+
+
+class ClockAndUsbPrivacyTests(unittest.TestCase):
+    def test_a_future_full_check_record_does_not_postpone_checks(self):
+        from modules import capacity
+        now = 1_800_000_000.0
+        self.assertFalse(capacity.due_since(now - 86400, now))
+        self.assertTrue(capacity.due_since(now - 28 * 86400, now))
+        self.assertTrue(capacity.due_since(0.0, now))
+        self.assertTrue(capacity.due_since(float('nan'), now))
+        self.assertTrue(capacity.due_since(1_900_000_000.0, now))            # recorded in "2030"
+        self.assertTrue(capacity.due_since(1_900_000_000.0, now + 28 * 86400))
+        self.assertFalse(capacity.due_since(now + 60, now))                    # small clock difference
+
+    def test_exfat_backup_drives_are_mounted_for_root_only(self):
+        self.assertEqual(neko_common.usb_mount_options('ext4', True), 'rw,nosuid,nodev,noexec')
+        options = neko_common.usb_mount_options('exfat', True)
+        self.assertIn('fmask=0177', options)
+        self.assertTrue(neko_common.private_mount_options(options, 'exfat'))
+        readable = 'rw,nosuid,nodev,relatime,uid=0,gid=0,fmask=0022,dmask=0022,iocharset=utf8'
+        self.assertFalse(neko_common.private_mount_options(readable, 'exfat'))
+        self.assertFalse(neko_common.private_mount_options('rw,uid=1000,gid=1000,fmask=0177,dmask=0077', 'exfat'))
+        self.assertTrue(neko_common.private_mount_options('rw,relatime', 'ext4'))
+
+    def test_the_restore_helper_refuses_a_readable_exfat_mount(self):
+        import recovery_wizard
+        with tempfile.TemporaryDirectory() as d:
+            config = {'external_backup_mount': d, 'photos': {'external_backup_uuid': 'AB-CD', 'external_backup_fstype': 'exfat'}}
+
+            def run(argv, **kw):
+                out = 'AB-CD rw,relatime,uid=0,gid=0,fmask=0022,dmask=0022' if 'UUID,OPTIONS' in argv else ''
+                return mock.Mock(returncode=0, stdout=out)
+            with mock.patch.object(recovery_wizard, 'USB_LOCK', Path(d) / 'lock'), \
+                    mock.patch.object(recovery_wizard.subprocess, 'run', run):
+                with self.assertRaisesRegex(RuntimeError, 'other accounts'):
+                    with recovery_wizard.Usb(config, writable=True):
+                        pass
+
+            def private(argv, **kw):
+                out = 'AB-CD rw,relatime,uid=0,gid=0,fmask=0177,dmask=0077' if 'UUID,OPTIONS' in argv else ''
+                return mock.Mock(returncode=0, stdout=out)
+            with mock.patch.object(recovery_wizard, 'USB_LOCK', Path(d) / 'lock'), \
+                    mock.patch.object(recovery_wizard.subprocess, 'run', private):
+                with recovery_wizard.Usb(config) as usb:
+                    self.assertEqual(usb, Path(d))
+
+
+if __name__ == '__main__':
+    unittest.main()

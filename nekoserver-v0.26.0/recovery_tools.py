@@ -46,17 +46,25 @@ def digest(path):
     return h.hexdigest()
 
 def regular_files(root):
+    """Every file under root, sorted, listed strictly: a folder or file that can't be read,
+    a symlink or a special file stops the job (neko_common.UnreadableEntries) instead of
+    being left out. Planning, copying and verifying a snapshot all use this one listing,
+    so a file missing from the copy can't also be missing from its manifest."""
     root=safe_path(root)
     if not root.is_dir():raise RuntimeError('Recovery source directory missing')
-    result=[]
-    for base,dirs,files in os.walk(root,followlinks=False):
-        for name in dirs:
-            if (Path(base)/name).is_symlink():raise RuntimeError('Symlink in recovery tree')
-        for name in files:
-            path=safe_path(Path(base)/name)
-            if not path.is_file():raise RuntimeError('Non-regular file in recovery tree')
-            result.append(path)
-    return sorted(result)
+    return sorted(path for path,_size in neko_common.strict_files(root))
+
+def stopped_cleanly(base,services):
+    """After `compose stop`: each stopped service's container exists, no longer runs, and
+    was not killed (exit 137 or out of memory). A forced stop can leave half-written app
+    data, which a snapshot would copy faithfully. Same rule as the nightly app snapshot."""
+    ids=command(base+['ps','-a','-q',*services]).split()
+    if len(ids)<len(services):raise RuntimeError('A stopped Immich service has no container; snapshot not taken')
+    for row in json.loads(command(DOCKER+['inspect',*ids])):
+        state=row.get('State',{}) if isinstance(row,dict) else {}
+        if state.get('Running') is not False:raise RuntimeError('Immich is still running after being stopped; snapshot not taken')
+        if state.get('ExitCode')==137 or state.get('OOMKilled'):
+            raise RuntimeError('Immich did not shut down cleanly (it was killed); snapshot not taken. Let it start and settle, then try again')
 
 def copy_verified(source,target):
     source=safe_path(source);target=safe_path(target);before=source.stat()
@@ -280,6 +288,7 @@ def snapshot(config,destination,apply=False):
         try:
             if resume:
                 paused=True;command(base+['stop','-t','60',*resume],180)
+                stopped_cleanly(base,resume)
             # Rescan after writers stop, including all original/generated/profile/marker files.
             files=regular_files(upload)
             database_bytes=sum(p.stat().st_size for p in regular_files(database))

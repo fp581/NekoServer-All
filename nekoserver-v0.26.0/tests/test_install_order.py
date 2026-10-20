@@ -317,6 +317,67 @@ class HardwareVideoLockTests(unittest.TestCase):
             self.assertEqual(calls, ['storage', 'immich', 'apps'])
 
 
+class ManualSnapshotTests(unittest.TestCase):
+    """The manual Immich snapshot (recovery_tools): nothing silently left out, and no
+    copy of an app that was killed instead of stopped."""
+
+    def broken_listing(self, bad):
+        import neko_common
+        real = neko_common.os.walk
+
+        def walk(top, onerror=None, **kw):
+            for folder, dirs, files in real(top, **kw):
+                if Path(folder) == bad:
+                    onerror(PermissionError(13, 'Permission denied', str(bad)))
+                    dirs[:] = []
+                    continue
+                yield folder, dirs, files
+        return mock.patch.object(neko_common.os, 'walk', walk)
+
+    def test_an_unreadable_album_stops_the_snapshot(self):
+        import recovery_tools as rt
+        import neko_common
+        with tempfile.TemporaryDirectory() as d:
+            album = Path(d) / 'library/album'
+            album.mkdir(parents=True)
+            (album / 'photo.jpg').write_bytes(b'photo')
+            (Path(d) / 'library/other.jpg').write_bytes(b'other')
+            self.assertEqual(len(rt.regular_files(Path(d) / 'library')), 2)
+            with self.broken_listing(album):
+                with self.assertRaises(neko_common.UnreadableEntries) as caught:
+                    rt.regular_files(Path(d) / 'library')
+            self.assertIn('album', str(caught.exception))
+            # A snapshot whose listing fails keeps its .incomplete marker (not restorable).
+            snap = Path(d) / 'snap'
+            snap.mkdir()
+            (snap / '.incomplete').write_text('{}')
+            with self.assertRaisesRegex(RuntimeError, 'Incomplete snapshot'):
+                rt.verify_snapshot(snap)
+
+    def test_a_killed_app_is_not_snapshotted(self):
+        import recovery_tools as rt
+        states = []
+
+        def command(argv, timeout=60, stdin=None, stdout=None):
+            if 'inspect' in argv:
+                return json.dumps(states)
+            return 'abc123\n'
+        with mock.patch.object(rt, 'command', command):
+            states[:] = [{'State': {'Running': False, 'ExitCode': 0, 'OOMKilled': False}}]
+            rt.stopped_cleanly(['docker', 'compose'], ['immich-server'])
+            for bad, why in (({'Running': True}, 'still running'), ({'Running': False, 'ExitCode': 137}, 'killed'),
+                             ({'Running': False, 'ExitCode': 0, 'OOMKilled': True}, 'killed')):
+                states[:] = [{'State': bad}]
+                with self.assertRaisesRegex(RuntimeError, why):
+                    rt.stopped_cleanly(['docker', 'compose'], ['immich-server'])
+
+        def no_container(argv, timeout=60, stdin=None, stdout=None):
+            return ''
+        with mock.patch.object(rt, 'command', no_container):
+            with self.assertRaisesRegex(RuntimeError, 'no container'):
+                rt.stopped_cleanly(['docker', 'compose'], ['immich-server'])
+
+
 class SnapshotUnderLockTests(unittest.TestCase):
     def test_the_snapshot_records_the_version_that_made_the_database(self):
         # A monthly update finishes (v1.0.0 -> v2.0.0) while the snapshot waits for the
@@ -340,6 +401,8 @@ class SnapshotUnderLockTests(unittest.TestCase):
                 yield
 
             def command(argv, timeout=60, stdin=None, stdout=None):
+                if 'inspect' in argv:  # stopped cleanly
+                    return json.dumps([{'State': {'Running': False, 'ExitCode': 0, 'OOMKilled': False}}])
                 if 'ps' in argv:
                     return 'database\nimmich-server\n'
                 if 'exec' in argv:

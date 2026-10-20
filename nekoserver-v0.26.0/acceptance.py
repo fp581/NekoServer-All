@@ -9,7 +9,7 @@ import guided_setup
 import permission_checks
 import os_checks
 from modules import docker as docker_module,tv
-from neko_common import VERSION,safe_path,atomic_json
+from neko_common import VERSION,safe_path,atomic_json,reading_max_age
 from acceptance_summary import scope_digest
 from media_libraries import NoRedirect
 import urllib.request
@@ -153,7 +153,7 @@ def dashboard_check(port,now):
             payload=response.read(2000001)
         if len(payload)>2000000:return False
         value=json.loads(payload);stamp=health.number(value.get('generated_at'),0,now+60)
-        return value.get('format')=='neko-dashboard-v1' and stamp is not None and now-stamp<=150
+        return value.get('format')=='neko-dashboard-v1' and stamp is not None and now-stamp<=reading_max_age(value.get('collect_interval'))
     except (OSError,ValueError,TypeError,AttributeError):return False
 
 OPTIONAL=('tv','notifications','heartbeat')

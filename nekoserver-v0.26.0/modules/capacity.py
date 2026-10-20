@@ -2,6 +2,7 @@
 import glob
 import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 import subprocess
@@ -9,7 +10,7 @@ import tempfile
 import time
 
 import guided_setup
-from neko_common import regular_files
+from neko_common import regular_files, usb_mount_options
 
 DEPENDENCIES = ['storage']
 DESCRIPTION = 'Check there is enough space on the SSD, HDD and USB drive before installing'
@@ -143,7 +144,16 @@ def full_check_due(config):
         last = float(json.loads(report.read_text()).get('at', 0))
     except (OSError, ValueError, TypeError, AttributeError):
         last = 0.0
-    return time.time() - last >= FULL_CHECK_DAYS * 86400
+    return due_since(last, time.time())
+
+
+def due_since(last, now):
+    """Same rule as the backup program (backup.rs due_since): no valid record, older than
+    4 weeks, or in the future (a check made while the clock was wrong must not postpone
+    the next one for years once the clock is corrected) means a full check is due."""
+    if not math.isfinite(last) or last <= 0 or last > now + 300:
+        return True
+    return now - last >= FULL_CHECK_DAYS * 86400
 
 
 def copied(source, target):
@@ -179,7 +189,7 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def usb_room(uuid, pairs, full=False):
+def usb_room(uuid, pairs, full=False, fstype='ext4'):
     """(free bytes, bytes still to copy) on the USB drive, or None if it is not attached.
     A drive that is not open anywhere is opened read-only, measured and closed again;
     nothing on it is changed."""
@@ -193,7 +203,7 @@ def usb_room(uuid, pairs, full=False):
         if targets and targets[0].strip():
             return measure(Path(targets[0].strip()), pairs, full)
         with tempfile.TemporaryDirectory(prefix='neko-usb-') as folder:
-            opened = subprocess.run(['mount', '-o', 'ro,nosuid,nodev,noexec', 'UUID=' + uuid, folder],
+            opened = subprocess.run(['mount', '-o', usb_mount_options(fstype), 'UUID=' + uuid, folder],
                                     capture_output=True, timeout=60)
             if opened.returncode:
                 return None
@@ -233,7 +243,7 @@ def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=ne
     photos = max(used(data / 'photos/immich-library'), used(archive_folder(config)))
     cloud = used(media / 'cloud/files')
     room = usb_space(config.get('photos', {}).get('external_backup_uuid', ''), usb_sources(config),
-                     full=full_check_due(config))
+                     full=full_check_due(config), fstype=config.get('photos', {}).get('external_backup_fstype', 'ext4'))
     if room is not None:
         # What the next copy must write (new files, changed files, this week's database
         # copy) plus room to grow. Old versions already on the drive are never reused.

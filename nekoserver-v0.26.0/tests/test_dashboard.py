@@ -68,6 +68,40 @@ class DashboardFilesTests(unittest.TestCase):
             self.assertIn(name, dashboard.ASSETS)
 
 
+class ReadingFreshnessTests(unittest.TestCase):
+    def test_late_readings_use_the_configured_interval_everywhere(self):
+        import neko_common
+        self.assertEqual(neko_common.reading_max_age(60), 150)
+        self.assertEqual(neko_common.reading_max_age(300), 630)
+        self.assertEqual(neko_common.reading_max_age('x'), 150)
+        # The page uses the same rule (statusStale in app.js).
+        self.assertIn('return 2 * interval + 30;', APP)
+        settings = dashboard.collector_settings(
+            {'data_mount': '/srv', 'media_mount': '/m', 'external_backup_mount': '/u', 'storage': {}, 'media': {'services': []}},
+            1800, 300)
+        self.assertEqual(settings['dashboard']['interval_seconds'], 300)
+        self.assertIn('"collect_interval"', (ROOT / 'runtime/src/collect.rs').read_text())
+
+    def test_the_acceptance_check_accepts_a_five_minute_schedule(self):
+        import io
+        import json
+        import time
+        from unittest import mock
+        import acceptance
+        now = time.time()
+
+        def answer(age, interval):
+            body = json.dumps({'format': 'neko-dashboard-v1', 'generated_at': now - age, 'collect_interval': interval}).encode()
+            response = mock.MagicMock(status=200)
+            response.read = io.BytesIO(body).read
+            response.__enter__.return_value = response
+            return response
+        with mock.patch.object(acceptance.OPENER, 'open', return_value=answer(200, 300)):
+            self.assertTrue(acceptance.dashboard_check(8787, now))
+        with mock.patch.object(acceptance.OPENER, 'open', return_value=answer(200, 60)):
+            self.assertFalse(acceptance.dashboard_check(8787, now))
+
+
 class DashboardInstallTests(unittest.TestCase):
     def test_the_web_server_starts_with_the_computer_and_comes_back(self):
         units = dashboard.units(Path('/srv/nekoserver'), Path('/usr/local/lib/x'), Path('/etc/x.json'), 8787, 60)

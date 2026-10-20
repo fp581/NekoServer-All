@@ -97,6 +97,41 @@ def regular_files(root):
                 yield path, info.st_size
 
 
+def reading_max_age(interval):
+    """How old the dashboard's readings may be before they count as late: two collection
+    intervals plus 30 seconds for a slow run (150 s at the default 60 s). The page uses
+    the same rule (statusStale in dashboard/app.js); `interval` comes from the snapshot."""
+    if type(interval) is not int or not 30 <= interval <= 300:
+        interval = 60
+    return 2 * interval + 30
+
+
+# exFAT has no owners or permissions (chmod is silently ignored): the mount options
+# alone decide who can read the backup copies, so it is mounted for root only. Same
+# options as the backup program (backup.rs usb_mount_options).
+PRIVATE_EXFAT = 'uid=0,gid=0,fmask=0177,dmask=0077'
+
+
+def usb_mount_options(fstype, writable=False):
+    options = ('rw' if writable else 'ro') + ',nosuid,nodev,noexec'
+    return options + ',' + PRIVATE_EXFAT if fstype == 'exfat' else options
+
+
+def private_mount_options(options, fstype):
+    """Are these (findmnt) mount options root-only? Always for filesystems with real
+    permissions; exFAT needs uid/gid 0 and masks hiding everything from others."""
+    if fstype != 'exfat':
+        return True
+    found = dict(o.split('=', 1) for o in options.split(',') if '=' in o)
+
+    def hidden(key):
+        try:
+            return int(found[key], 8) & 0o077 == 0o077
+        except (KeyError, ValueError):
+            return False
+    return found.get('uid', '0') == '0' and found.get('gid', '0') == '0' and hidden('fmask') and hidden('dmask')
+
+
 LEDGER_NAME = '.neko-ledger.json'   # checksum ledger at the root of a backup tree
 QUARANTINE = 'neko-damaged'         # damaged copies kept aside at the root; never data
 

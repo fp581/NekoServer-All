@@ -304,6 +304,9 @@ dialog .guide-note, .guide-note { font-size: 13px; padding: 11px 13px; border-le
 footer { display: flex; justify-content: space-between; gap: 15px; font-size: 13px; color: var(--muted); padding: 4px 3px 16px; }
 /* Old snapshot: dim what came from it (live hardware readings stay bright). */
 body.stale #apps, body.stale #backups, body.stale #protection, body.stale #drives, body.stale #startup { opacity: .7; }
+/* Old live readings (the live feed failed): dim them too. */
+body.live-stale #load-cards, body.live-stale #cpu-cores, body.live-stale #network, body.live-stale #disk-io,
+body.live-stale #temperatures, body.live-stale #fans, body.live-stale #power { opacity: .6; }
 .tabbar { display: none; }
 
 /* ---------- larger text (settings) ---------- */

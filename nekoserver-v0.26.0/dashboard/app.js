@@ -197,10 +197,23 @@ function remember(live) {
   });
   if (state.history.length > 90) { state.history.shift(); }
 }
+/* Readings are late after two collection intervals plus 30 s (150 s at the default
+ * 60 s). Same rule as reading_max_age in neko_common.py, used by the acceptance check. */
+function statusMaxAge(s) {
+  const interval = Number.isInteger(s?.collect_interval) && s.collect_interval >= 30 && s.collect_interval <= 300 ? s.collect_interval : 60;
+  return 2 * interval + 30;
+}
 function statusStale() {
   const s = state.status;
-  return !s || nowSeconds() - s.generated_at > 150 || s.generated_at > nowSeconds() + 60;
+  return !s || nowSeconds() - s.generated_at > statusMaxAge(s) || s.generated_at > nowSeconds() + 60;
 }
+/* Live readings are current only while their feed works and the last one is recent. */
+function liveFresh() {
+  const live = state.live;
+  return !!live && !state.liveError && numeric(live.generated_at) && Math.abs(nowSeconds() - live.generated_at) <= 30;
+}
+/* The live readings to show as current, or null (the page then says what it shows). */
+function currentLive() { return liveFresh() ? state.live : null; }
 function criticalCount() { return state.issues.filter(i => i.level === 'critical').length; }
 
 /* ---------- shared pieces ---------- */
@@ -238,6 +251,16 @@ function stat(label, value, detail, extra) {
   return card;
 }
 function hint(message) { return el('p', 'hint', message); }
+/* A stable name for a control that is rebuilt on refresh, so keyboard and controller
+ * focus can return to it (see withFocus). */
+function keyed(node, key) { node.dataset.focus = key; return node; }
+function withFocus(draw) {
+  const key = document.activeElement?.dataset?.focus;
+  draw();
+  if (!key) { return; }
+  const again = [...document.querySelectorAll('[data-focus]')].find(n => n.dataset.focus === key);
+  again?.focus({preventScroll: true});
+}
 function empty(message) { return el('p', 'empty', message); }
 function cardHeading(title, badgeNode) {
   const head = el('div', 'card-heading');
@@ -273,6 +296,12 @@ const ALERT_GUIDES = [
   [id => id.includes('update'), 'updates']
 ];
 function guideFor(id) { return ALERT_GUIDES.find(([matches]) => matches(id))?.[1] || 'general'; }
+/* The service an alert is about, for the guide's log commands. */
+function unitFor(id) {
+  const [kind, name] = id.split(':');
+  if (kind === 'job') { return JOB_UNITS[name] || null; }
+  return kind === 'startup' ? name : null;
+}
 function issueCollector() {
   const rows = [], seen = new Set();
   const add = (id, title, detail, guide, level = 'warning', unit = null) => {
@@ -286,7 +315,7 @@ function alertIssues(s, add) {
   const busy = s.backups.some(j => ['applications', 'maintenance'].includes(j.id) && j.status === 'running');
   for (const alert of s.alerts) {
     const raw = text(alert.id), id = raw.startsWith('backup:') ? 'job:' + raw.slice(7) : raw;
-    const unit = id.startsWith('job:') ? JOB_UNITS[id.split(':')[1]] || null : null;
+    const unit = unitFor(id);
     const note = id.startsWith('app:') && busy ? ' A backup or monthly update is running, so this may be expected.' : '';
     add(id || 'alert-' + s.alerts.indexOf(alert), text(alert.title, 'Server needs attention'), text(alert.detail, 'Open the guide to review it.') + note, guideFor(id), severity(alert.level === 'critical'), unit);
   }
@@ -345,8 +374,7 @@ function collectIssues(s) {
 function problem() {
   if (state.statusError) { return state.statusError; }
   if (state.status && statusStale()) { return 'E12'; }
-  const livePage = LIVE_ROUTES.has(state.route) && state.route !== 'home';
-  if (livePage && state.liveError) { return state.liveError; }
+  if (LIVE_ROUTES.has(state.route) && state.liveError) { return state.liveError; }
   if (state.route === 'processes' && state.processError) { return state.processError; }
   return null;
 }
@@ -380,6 +408,7 @@ function renderChrome() {
   const code = problem(), s = state.status;
   renderProblem(code, s);
   document.body.classList.toggle('stale', !!s && (statusStale() || !!state.statusError));
+  document.body.classList.toggle('live-stale', !!state.live && !liveFresh());
   const [level, words] = overall(code, s);
   setBadge('connection', ...connection(code, s));
   $('side-dot').className = 'dot ' + level;
@@ -393,7 +422,7 @@ function renderChrome() {
 function heroStatus() {
   const critical = criticalCount(), issues = state.issues.length;
   return firstOf([
-    [statusStale(), ['unknown', 'Readings not current']],
+    [statusStale() || state.statusError, ['unknown', 'Readings not current']],
     [critical, ['critical', critical + ' urgent']],
     [issues, ['warning', issues + ' to review']]
   ], ['pass', 'Everything looks good']);
@@ -414,22 +443,22 @@ function renderSummaries(s) {
   $('summary-apps').textContent = running + ' of ' + apps.length + ' running';
   $('summary-backups').textContent = backupSummary(s);
   $('summary-storage').textContent = freeSpace(s.storage.find(d => d.id === 'media_hdd') || s.storage[0]);
-  $('summary-uptime').textContent = duration(state.live?.cpu?.uptime_seconds ?? s.metrics.uptime_seconds);
+  $('summary-uptime').textContent = duration(currentLive()?.cpu?.uptime_seconds ?? s.metrics.uptime_seconds);
 }
 /* Live readings when the page has them, else the collector's latest minute. */
 function glanceProcessor(s) {
-  const live = state.live, h = state.history;
+  const live = currentLive(), h = live ? state.history : [];
   const series = h.length > 1 ? h.map(r => r.cpu) : s.history.map(r => r.cpu);
   return stat('Processor', pct(live?.cpu?.percent ?? s.metrics.cpu_percent), text(live?.cpu?.name ?? s.metrics.cpu_model, 'Waiting for a second reading'), spark(series, 100));
 }
 function glanceMemory(s) {
-  const live = object(state.live?.memory), m = s.metrics;
+  const live = object(currentLive()?.memory), m = s.metrics;
   const percent = live.percent ?? m.memory_percent, used = live.used ?? m.memory_used;
   const detail = numeric(used) ? bytes(used) + ' of ' + bytes(live.total ?? m.memory_total) : 'Waiting for a reading';
   return stat('Memory', pct(percent), detail, meter(percent, percent >= 90 ? 'hot' : ''));
 }
 function processorTemperature(s) {
-  const temps = list(state.live?.sensors).filter(x => x.kind === 'temperature' && x.group === 'Processor').map(x => x.value);
+  const temps = list(currentLive()?.sensors).filter(x => x.kind === 'temperature' && x.group === 'Processor').map(x => x.value);
   return temps.length ? Math.max(...temps) : s.metrics.temperature;
 }
 function glanceTemperature(s) {
@@ -439,7 +468,7 @@ function glanceTemperature(s) {
 }
 function glanceNetwork() {
   const h = state.history, last = h.at(-1);
-  if (!last) { return stat('Network', '—', 'Waiting for live readings', spark([], 0, 'alt')); }
+  if (!last || !liveFresh()) { return stat('Network', '—', state.liveError ? codeLine(state.liveError) : 'Waiting for live readings', spark([], 0, 'alt')); }
   return stat('Network', '↓ ' + rate(last.receive), '↑ ' + rate(last.send) + ' sent', spark(h.map(r => r.receive), 0, 'alt'));
 }
 function renderHome() {
@@ -483,6 +512,7 @@ function favoriteButton(id, name) {
     if (!saveStore('favorites', [...favorites])) { toast('Saved for this visit only: this browser blocks storage.'); }
     render();
   }, 'favorite');
+  keyed(star, 'favorite-' + id);
   star.setAttribute('aria-pressed', String(on));
   star.setAttribute('aria-label', on ? 'Remove ' + name + ' from favourites' : 'Add ' + name + ' to favourites');
   return star;
@@ -495,10 +525,10 @@ function openControl(app, spec) {
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
     a.setAttribute('aria-label', 'Open ' + spec.name);
-    return a;
+    return keyed(a, 'open-' + app.id);
   }
   // Server apps and Steam explain how to reach them; YouTube always has an address.
-  return button('How to open', () => showGuide('remote'), 'text-button');
+  return keyed(button('How to open', () => showGuide('remote'), 'text-button'), 'open-' + app.id);
 }
 function appCard(app, old) {
   const spec = CATALOG[app.id], card = el('article', 'app-card'), top = el('div', 'app-top'), bottom = el('div', 'app-bottom');
@@ -534,7 +564,7 @@ function renderApps() {
 /* ---------- attention ---------- */
 function issueRow(issue) {
   const row = el('article', 'issue ' + issue.level), body = el('div', 'issue-body'), actions = el('div', 'issue-actions');
-  actions.append(button('What should I do?', () => showGuide(issue.guide, issue.unit)));
+  actions.append(keyed(button('What should I do?', () => showGuide(issue.guide, issue.unit)), 'issue-' + issue.id));
   body.append(el('h3', '', issue.title), el('p', '', issue.detail), actions);
   row.append(el('span', 'issue-icon', issue.level === 'critical' ? '!' : '◇'), body, badge(issue.level));
   return row;
@@ -567,20 +597,46 @@ function recentCopies(jobs) {
   const unchecked = !jobs.length || jobs.some(j => !numeric(j.last_success) || !j.timer?.installed || !j.timer?.active);
   return firstOf([[bad, ['warning', bad + ' need a look']], [unchecked, ['unknown', 'Not all checked']]], ['pass', 'All OK']);
 }
+/* A checksum result counts only with a believable date, and only while it is recent:
+ * the checks run with the backups, at least every two weeks. */
+const INTEGRITY_MAX_AGE = 14 * 86400;
+function checkDated(check) { return numeric(check.at) && check.at > 0 && check.at <= nowSeconds() + 60; }
+function checkOverdue(check) { return nowSeconds() - check.at > INTEGRITY_MAX_AGE; }
 function filesIntact(checks) {
   const damaged = checks.reduce((n, c) => n + integrityBad(c), 0), unverified = checks.reduce((n, c) => n + count(c.unverified), 0);
   return firstOf([
     [damaged, ['fail', damaged + ' files']],
+    [checks.some(c => !checkDated(c)), ['unknown', 'Check not dated']],
+    [checks.some(checkOverdue), ['stale', 'Check overdue']],
     [unverified, ['unknown', unverified + ' not yet checked']],
     [checks.length, ['pass', 'Checksums match']]
   ], ['unknown', 'No check yet']);
 }
+/* Which witnessed restore test covers each kind of backup (acceptance.py manual tests). */
+const RESTORE_TESTS = {
+  database: 'independent_restore', archive: 'independent_restore', external: 'independent_restore',
+  applications: 'app_restore', host: 'host_restore'
+};
+const RESTORE_NAMES = {independent_restore: 'photos', app_restore: 'apps', host_restore: 'host & user files'};
+/* Restore confidence for the backups this server actually makes: each needs its own
+ * witnessed restore test. A completed checklist that doesn't include them proves nothing. */
+function restoreTried(s) {
+  const needed = [...new Set(s.backups.map(j => RESTORE_TESTS[j.id]).filter(Boolean))];
+  if (!needed.length) { return {result: ['unknown', 'Nothing to test'], words: 'No backup that can be restore-tested is set up yet.'}; }
+  const trusted = !['unknown', 'outdated'].includes(s.acceptance.status);
+  const passed = new Set(trusted ? list(s.acceptance.manual_checks).filter(c => c.status === 'pass').map(c => c.id) : []);
+  const tested = needed.filter(id => passed.has(id)), untested = needed.filter(id => !passed.has(id));
+  const names = ids => ids.map(id => RESTORE_NAMES[id]).join(', ');
+  if (!untested.length) { return {result: ['pass', 'Yes'], words: 'Tested and recorded: ' + names(tested) + '.'}; }
+  if (!tested.length) { return {result: ['needs_setup', 'Not yet'], words: 'Not tested yet: ' + names(untested) + '. Try each once, so you know it works.'}; }
+  return {result: ['warning', tested.length + ' of ' + needed.length], words: 'Tested: ' + names(tested) + '. Not yet: ' + names(untested) + '.'};
+}
 function renderProtection(s, fresh) {
-  const old = ['unknown', 'Old reading'], done = s.acceptance.status === 'complete' && fresh;
+  const old = ['unknown', 'Old reading'], restore = restoreTried(s);
   put('protection', [
     protectionItem('RECENT COPIES', fresh ? recentCopies(s.backups) : old, 'Each scheduled backup and whether its last run worked.'),
     protectionItem('FILES INTACT', fresh ? filesIntact(s.integrity) : old, 'Every copied file is compared with its SHA-256 checksum.'),
-    protectionItem('RESTORE TRIED', done ? ['pass', 'Yes'] : ['needs_setup', 'Not yet'], done ? 'A restore was tested and recorded.' : 'Try a restore once, so you know it works.')
+    protectionItem('RESTORE TRIED', fresh ? restore.result : old, restore.words)
   ]);
 }
 function backupBadge(job, fresh) {
@@ -596,21 +652,23 @@ function backupCard(job, fresh) {
   card.append(cardHeading(text(job.name, 'Backup'), backupBadge(job, fresh)), el('p', '', 'Last good copy: ' + ago(job.last_success)), el('p', '', nextRun(timer)));
   if (timer.installed && !timer.active) { card.append(el('p', 'reason', 'The schedule is turned off.')); }
   if (job.reason) { card.append(el('p', 'reason', text(job.reason))); }
-  card.append(button('Help & logs', () => showGuide('backup', JOB_UNITS[job.id]), 'text-button'));
+  card.append(keyed(button('Help & logs', () => showGuide('backup', JOB_UNITS[job.id]), 'text-button'), 'backup-' + job.id));
   return card;
 }
 function integrityResult(check) {
   const damaged = integrityBad(check), unverified = count(check.unverified);
   return firstOf([
     [damaged, {state: 'fail', label: 'Needs repair', words: damaged + ' damaged or missing files.'}],
+    [!checkDated(check), {state: 'unknown', label: 'Not dated', words: 'This check has no valid date, so its result can’t be relied on.'}],
+    [checkOverdue(check), {state: 'stale', label: 'Overdue', words: 'A newer check is overdue; this result may no longer hold.'}],
     [unverified, {state: 'warning', label: 'Partly checked', words: unverified + ' files not checked yet.'}]
-  ], {state: 'pass', label: 'Matches', words: 'Every recorded file matches.'});
+  ], {state: 'pass', label: 'Matches', words: 'Every recorded file matched.'});
 }
 function integrityRow(check, fresh) {
   const row = el('div', 'row'), body = el('div'), result = integrityResult(check);
   const repaired = count(check.repaired) ? ' · ' + count(check.repaired) + ' repaired' : '';
-  body.append(el('h3', '', text(check.name, 'Checksum check')), el('p', '', result.words + ' Checked ' + ago(check.at) + repaired + '.'));
-  if (integrityBad(check)) { body.append(button('Repair guide', () => showGuide('integrity'), 'text-button')); }
+  body.append(el('h3', '', text(check.name, 'Checksum check')), el('p', '', result.words + ' Last recorded check: ' + ago(check.at) + repaired + '.'));
+  if (integrityBad(check)) { body.append(keyed(button('Repair guide', () => showGuide('integrity'), 'text-button'), 'repair-' + check.id)); }
   row.append(body, fresh ? badge(result.state, result.label) : badge('unknown', 'Old reading'));
   return row;
 }
@@ -689,7 +747,12 @@ function batteryCard(b) {
   return stat(b.kind === 'UPS' ? 'UPS' : 'Battery', pct(b.percent), joined([text(b.name), text(b.status)]), meter(b.percent, count(b.percent) < 20 ? 'hot' : ''));
 }
 function liveBadge() {
-  return firstOf([[state.liveError, ['warning', state.liveError]], [state.live, ['pass', 'Live']]], ['unknown', 'Waiting']);
+  const kept = state.live ? ' · last reading ' + ago(state.live.generated_at) : '';
+  return firstOf([
+    [state.liveError, ['warning', state.liveError + kept]],
+    [state.live && !liveFresh(), ['warning', 'Last reading ' + ago(state.live?.generated_at)]],
+    [state.live, ['pass', 'Live']]
+  ], ['unknown', 'Waiting']);
 }
 function renderHardware() {
   const live = state.live;
@@ -737,12 +800,24 @@ function rgbCard(d) {
   const effects = values(d.effects);
   return stat(text(d.name, 'Lighting'), text(d.kind, 'Lighting'), text(d.description), hint(effects.length ? 'Effects: ' + effects.slice(0, 8).join(', ') : 'No effects reported'));
 }
+function sensorBadge(live, sensors) {
+  if (!live) { return ['unknown', state.liveError || 'Waiting']; }
+  return liveFresh() ? ['neutral', sensors.length + ' found'] : ['warning', 'Last reading ' + ago(live.generated_at)];
+}
+/* Hard drive temperatures come from the collector's SMART check (every 30 minutes,
+ * never waking a sleeping drive): reading them live could keep a drive awake. */
+function driveTemperatures() {
+  return list(state.status?.storage).filter(d => numeric(d.smart?.temperature)).map(d => ({
+    kind: 'temperature', group: 'Drives', label: text(d.name, 'Drive'), value: d.smart.temperature,
+    chip: 'health check ' + ago(d.smart.checked_at)
+  }));
+}
 function renderSensors() {
   const live = state.live, sensors = list(live?.sensors);
   const of = kind => sensors.filter(s => s.kind === kind);
-  setBadge('sensor-count', live ? 'neutral' : 'unknown', live ? sensors.length + ' found' : state.liveError || 'Waiting');
+  setBadge('sensor-count', ...sensorBadge(live, sensors));
   if (!live) { put('temperatures', [empty(state.liveError ? codeLine(state.liveError) : 'Looking for sensors…')]); return; }
-  const temps = of('temperature'), groups = [...new Set(temps.map(t => t.group))];
+  const temps = [...of('temperature'), ...driveTemperatures()], groups = [...new Set(temps.map(t => t.group))];
   put('temperatures', groups.length ? groups.map(g => temperatureGroup(g, temps)) : [empty('No temperature sensors reported. A virtual machine or missing driver can hide them (see Help).')]);
   const fans = [...of('fan').map(fanCard), ...of('fan_duty').map(dutyCard)];
   put('fans', fans.length ? fans : [empty('No fan sensors reported. Many cases connect fans so only the motherboard sees them.')]);
@@ -823,15 +898,17 @@ function driveCard(disk, old) {
   if (smart.reason && smart.status !== 'pass') { card.append(hint(text(smart.reason))); }
   return card;
 }
+/* Starting at boot and working now are separate: a failed service is never green. */
+function startupBadge(u) {
+  if (u.active === 'failed') { return badge('fail', u.enabled ? 'Failed (starts at boot)' : 'Failed'); }
+  if (!u.enabled) { return badge('warning', 'Won’t start after a restart'); }
+  return badge('pass', u.active === 'active' ? 'Starts by itself · on' : 'Starts by itself');
+}
 function startupRow(u) {
   const row = el('div', 'row'), body = el('div');
   body.append(el('h3', '', text(u.name, u.unit)), el('p', 'mono', text(u.unit)));
-  if (u.enabled) {
-    row.append(body, badge('pass', u.active === 'active' ? 'Starts by itself · on' : 'Starts by itself'));
-  } else {
-    body.append(button('How to fix', () => showGuide('startup'), 'text-button'));
-    row.append(body, badge('warning', 'Won’t start after a restart'));
-  }
+  if (u.active === 'failed' || !u.enabled) { body.append(keyed(button('How to fix', () => showGuide('startup', u.unit), 'text-button'), 'startup-' + u.unit)); }
+  row.append(body, startupBadge(u));
   return row;
 }
 const MONITOR_RESULTS = {pass: 'The last check-in worked.', fail: 'The last attempt failed.', stale: 'No recent result.'};
@@ -841,7 +918,7 @@ function monitorMessage(v) {
 }
 function monitorCard(title, value, guide, old) {
   const card = el('article', 'card'), v = object(value);
-  card.append(cardHeading(title, badge(old ? 'unknown' : v.status)), el('p', '', monitorMessage(v)), button('Set up & check', () => showGuide(guide), 'text-button'));
+  card.append(cardHeading(title, badge(old ? 'unknown' : v.status)), el('p', '', monitorMessage(v)), keyed(button('Set up & check', () => showGuide(guide), 'text-button'), 'monitor-' + guide));
   return card;
 }
 function readinessNote(media) {
@@ -892,7 +969,7 @@ const GUIDES = {
   collector: {title: 'Dashboard readings are old or missing', intro: 'The page can open even when the reading service has stopped.', steps: ['On the server, open Konsole.', 'Check the reading service and its schedule with the commands below.', 'Make sure the app SSD is connected, then run setup again if it still fails.'], unit: 'nekoserver-dashboard-collect.service', extra: 'systemctl status nekoserver-dashboard-collect.timer --no-pager'},
   dashboard: {title: 'Restart the dashboard', intro: 'Live readings come from the dashboard service itself. Restarting it is safe.', steps: ['On the server, open Konsole.', 'Run the restart command below, then reload this page.'], unit: 'nekoserver-dashboard.service', extra: 'sudo systemctl restart nekoserver-dashboard.service'},
   apps: {title: 'An app is stopped or not responding', intro: 'First check whether a backup or monthly update explains it.', steps: ['Open Backups and look for a running job. Let it finish.', 'Try the app again. On a phone, turn on Tailscale.', 'Still stuck? Look at Docker on the server, or run setup again: it restarts what should be running.'], unit: 'docker.service', extra: 'sudo docker ps -a', setup: true},
-  startup: {title: 'Make it start by itself again', intro: 'Something is installed but won’t start when the computer is switched on.', steps: ['Run setup again: it switches every NekoServer part back on.', 'Or switch on just that part with “sudo systemctl enable --now <name>” (the name is shown under it).'], unit: null, setup: true},
+  startup: {title: 'Get a service running again', intro: 'A part of the server has stopped with an error, or won’t start when the computer is switched on.', steps: ['Read its log with the commands below: the last lines usually say why.', 'Run setup again: it switches every NekoServer part back on and starts it.', 'Or start just that part with “sudo systemctl enable --now <name>” (the name is shown under it).'], unit: null, setup: true},
   backup: {title: 'Check a backup', intro: 'Keep the copies you have. One failed run doesn’t mean older backups are bad.', steps: ['Check the reason shown, free space, and that the backup drive is connected.', 'Look at the log below. For damaged or missing files, use the repair guide.', 'Fix the cause, then let the next scheduled run go (or run setup again).'], unit: null},
   recovery: {title: 'Get your files back', intro: 'The recovery helper restores into a separate folder first, so nothing is overwritten.', steps: ['Connect the backup drive you want to use.', 'On the server, open Konsole and start the recovery helper below.', 'Pick the backup and a new folder. Check the files before replacing anything.'], recover: true},
   integrity: {title: 'Repair a damaged or missing copy', intro: 'A checksum warning needs a copy that still matches. Never delete the other copies.', steps: ['Connect the USB backup drive if you have one, so both copies are checked.', 'Start the recovery helper below and choose “Repair damaged backup copies”.', 'If no copy matches, keep everything and ask for help rather than guessing.'], recover: true},
@@ -940,14 +1017,15 @@ function guideCommands(guide, unit) {
 function showGuide(id, requestedUnit) {
   const guide = GUIDES[id] || GUIDES.general, steps = el('ol');
   for (const step of guide.steps) { steps.append(el('li', '', step)); }
-  const unit = Object.values(JOB_UNITS).includes(requestedUnit) ? requestedUnit : guide.unit;
+  const listed = list(state.status?.startup).some(u => u.unit === requestedUnit);
+  const unit = Object.values(JOB_UNITS).includes(requestedUnit) || listed ? requestedUnit : guide.unit;
   openDialog('GUIDED HELP', guide.title, [el('p', '', guide.intro), steps, ...guideCommands(guide, unit),
     note('Commands only run when you paste them into Konsole on the server. This page never changes anything.')]);
 }
 const HELP_CARDS = [['collector', 'Readings are old or missing', 'Check the service that collects them.'], ['dashboard', 'Live readings stopped', 'Restart the dashboard safely.'], ['recovery', 'Get files back', 'Restore a backup into a separate folder.'], ['apps', 'An app needs a hand', 'Stopped apps, downtime and setup.'], ['remote', 'Use it on your phone', 'Tailscale, app links and logins.'], ['sensors', 'A sensor is missing', 'Why, and how to add one.'], ['acceptance', 'Check it really works', 'Playback, backups and a test restore.'], ['updates', 'About updates', 'Monthly updates and big versions.']];
 function helpCard([id, title, description]) {
   const card = el('article', 'card');
-  card.append(el('h3', '', title), el('p', '', description), button('Show me how →', () => showGuide(id), 'text-button'));
+  card.append(el('h3', '', title), el('p', '', description), keyed(button('Show me how →', () => showGuide(id), 'text-button'), 'help-' + id));
   return card;
 }
 function errorRow([code, [title, fix]]) {
@@ -1127,8 +1205,10 @@ const PAGES = {
 };
 function render() {
   if (state.status) { state.issues = collectIssues(state.status); }
-  renderChrome();
-  PAGES[state.route]();
+  withFocus(() => {
+    renderChrome();
+    PAGES[state.route]();
+  });
   notify();
 }
 
@@ -1158,11 +1238,11 @@ function refreshNow() {
 function chooseFilter(chosen) {
   state.appFilter = chosen.dataset.filter;
   for (const n of document.querySelectorAll('[data-filter]')) { n.setAttribute('aria-pressed', String(n === chosen)); }
-  renderApps();
+  withFocus(renderApps);
 }
 function turnProcessPage(change) { state.processPage = change(state.processPage); renderProcesses(); }
 window.addEventListener('hashchange', route);
-$('app-search').addEventListener('input', renderApps);
+$('app-search').addEventListener('input', () => withFocus(renderApps));
 for (const b of document.querySelectorAll('[data-filter]')) { b.addEventListener('click', () => chooseFilter(b)); }
 for (const b of document.querySelectorAll('[data-guide]')) { b.addEventListener('click', () => showGuide(b.dataset.guide)); }
 $('refresh').addEventListener('click', refreshNow);
