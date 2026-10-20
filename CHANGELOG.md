@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.25.1 — 2026-10-20
+
+### Fixed (from an outside review)
+- **A verified file that disappears is now reported.** The checks only re-hashed the files that were still there, so a backed-up file deleted from the HDD archive (and from Immich) went unnoticed: the archive audit and the USB copy both passed (reproduced). Every run now compares the ledger's full list with the files actually present. A file missing from the HDD whose USB copy still matches is reported as *missing* and can be put back from the USB drive with **Repair damaged backup copies**; a file gone (or damaged) everywhere is CRITICAL. Missing files show on the dashboard and raise an alert.
+- **A restore stops when a verified file is missing.** A restore whose ledger listed two files with only one left on the drive succeeded with "1 files matched" (reproduced). Before anything is chosen or copied, every file the ledger lists for the folder (or Nextcloud user) being restored must be present; otherwise the restore stops and names the missing files.
+- **No setup while a monthly update is unfinished, even of the same version.** The check before setup only blocked an unfinished update started by another version; with the same version, setup went on and started Nextcloud before the pending rollback (reproduced in a simulation). Any unfinished monthly update now stops setup first, with the command that finishes or rolls it back.
+- **Repair clears a warning only for copies it actually checked.** With the USB drive unplugged, repair checked only the HDD copy but also cleared the USB copy's warning (reproduced). Now a warning is cleared only when every copy it is about was checked: the USB warnings stay until the drive is connected, and the repair says so.
+- **A clock jump never deletes the newest app or host snapshot.** Nightly app and host snapshots are pruned by the time in their names; with a snapshot dated in the future, a new one could be deleted right away (reproduced with retention 1). The snapshot just made is never removed, as for database copies since v0.24.6.
+
+### Fixed (setup flow, from a wider review)
+- **Setup can reach "ready" without looping on playback.** The media check always listed a real playback test as pending, so onboarding stayed unfinished however often it ran, and your confirmation was ignored (reproduced). Only automatic configuration checks now decide whether onboarding is finished. A real playback test is asked for once, afterwards: a yes is recorded; skipping it still finishes setup, and the finishing screen says "Playback verification pending".
+- **Phone setup runs after everything it links to.** The Tailscale and phone step ran before the dashboard was installed but already asked you to test the dashboard on the phone. It now runs after all apps, the dashboard and the TV step, and the dashboard is only offered (and routed) once it is installed.
+- **The dashboard's settings fingerprint uses the final setup choices.** Choices made after the dashboard step (TV, heartbeat, ...) changed the fingerprint an acceptance report must match, so a fresh report read as "outdated" (reproduced). The dashboard's collector settings are written again from the final configuration at the end of every setup run.
+- **Jellyfin's check no longer needs Seerr.** The Jellyfin library check used the key stored in Seerr's settings, so a Jellyfin-only setup could never pass it (reproduced). Setup now creates Jellyfin's own NekoServer API key the one time it signs in as administrator, kept privately on the SSD (`secrets/jellyfin-readiness.key`, root only); Seerr's link is used only when Seerr is installed.
+- **A media import no longer skips folders it cannot read.** The importer's folder walk ignored listing errors, so an unreadable album on a local drive or SMB/NFS share was left out and the import still said "copied" (reproduced). Imports now use the same strict listing as restores: if any folder or file of a source cannot be read, nothing is copied from that source, it is marked incomplete, and the report names the unreadable paths (relative to the source; the source's own location stays private). Files still being written (`.part`, `.tmp`, `.crdownload`, `.!qB`, `.neko-part`) are explicitly excluded.
+- **Container logs are size-limited.** Docker keeps container logs forever by default, one way for the SSD to fill up. NekoServer's Docker settings now cap each container's log at 3 files of 10 MB, without overriding a log driver or limits you chose yourself. Containers made before keep unlimited logs until they are recreated after Docker restarts (a reboot, then the monthly update or rerunning setup); the acceptance check lists any that still do.
+
+### Changed
+- Version 0.25.1; the release folder is now `nekoserver-v0.25.1`. Two long functions were split for readability (no change in behaviour).
+- **Steadier checksum ledger lock.** Opening a ledger now retries a busy lock for up to 2 seconds before reporting another writer: a program started at the same moment by another thread can briefly hold a copy of the lock (seen as an occasional test failure in CI). Paths read from the command line or settings are validated before use (installer state files, Jellyfin's key file).
+- **Slimmer release.** Removed `INSTALLATION-GUIDE.pdf`, a v0.21.0 walk-through nothing linked to any more (the README is the current guide). Out-of-date guidance in the docs was corrected: old install paths and commands (for example NOTIFICATIONS.md's test command pointed at v0.15.1), DASHBOARD.md's claims that the dashboard is local-only and can still run in Python, and "use the v0.10.0 installer" in RECOVERY.md. DASHBOARD, NEXTCLOUD, HEARTBEAT and SERVER-OS guides are now linked from the README. Upgrade code for older releases is kept on purpose: it moves existing servers forward safely and protects old backups.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.25.0 — 2026-10-19
 
 ### Added: checksum ledger and integrity rules for every backup
