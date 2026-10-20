@@ -49,7 +49,7 @@
       <div><div class="eyebrow">NEKO CONTROL ROOM</div><h1 id="page-title">Home</h1></div>
     </div>
     <div class="top-actions">
-      <span id="connection" class="badge unknown" role="status">Connecting</span>
+      <output id="connection" class="badge unknown">Connecting</output>
       <button class="icon-button" id="refresh" type="button" title="Refresh now" aria-label="Refresh readings now">↻</button>
       <button class="icon-button" id="preferences" type="button" title="Settings" aria-label="Open settings">⚙</button>
     </div>
@@ -93,12 +93,12 @@
     <header class="section-head"><div><span class="eyebrow">OPEN SOMETHING GOOD</span><h2>Your apps</h2><p data-only="apps">Star your favourites to keep them first.</p></div><a href="#apps" class="text-link" data-only="home">All apps →</a></header>
     <div class="app-controls" data-only="apps">
       <label class="search"><span class="sr-only">Find an app</span><span aria-hidden="true">⌕</span><input id="app-search" type="search" placeholder="Find an app…" autocomplete="off"></label>
-      <div class="chips" role="group" aria-label="Show">
+      <fieldset class="chips"><legend class="sr-only">Show</legend>
         <button type="button" data-filter="all" aria-pressed="true">All</button>
         <button type="button" data-filter="favorites" aria-pressed="false">Favourites</button>
         <button type="button" data-filter="everyday" aria-pressed="false">Everyday</button>
         <button type="button" data-filter="manage" aria-pressed="false">Management</button>
-      </div>
+      </fieldset>
     </div>
     <div class="app-grid" id="apps"><p class="empty">Your installed apps will appear here.</p></div>
     <p class="section-note" id="app-access-note" data-only="apps"></p>
@@ -156,7 +156,7 @@
       <label class="select">Sort by <select id="process-sort"><option value="cpu">Processor</option><option value="memory">Memory</option><option value="name">Name</option><option value="pid">Number</option></select></label>
     </div>
     <div class="table-scroll"><table class="process-table"><thead><tr><th scope="col">Process</th><th scope="col">App</th><th scope="col" class="num">Processor</th><th scope="col" class="num">Memory</th><th scope="col" class="num">Number</th></tr></thead><tbody id="process-rows"></tbody></table></div>
-    <div class="pager"><button class="button small secondary" type="button" id="process-prev">← Previous</button><span id="process-page" role="status"></span><button class="button small secondary" type="button" id="process-next">Next →</button></div>
+    <div class="pager"><button class="button small secondary" type="button" id="process-prev">← Previous</button><output id="process-page"></output><button class="button small secondary" type="button" id="process-next">Next →</button></div>
     <p class="section-note" id="process-note"></p>
   </section>
 
@@ -208,6 +208,6 @@
   <div class="dialog-head"><div><span class="eyebrow" id="dialog-eyebrow">GUIDED HELP</span><h2 id="dialog-title">Help</h2></div><button id="close-dialog" class="icon-button" type="button" aria-label="Close">×</button></div>
   <div id="dialog-content"></div>
 </dialog>
-<div id="toast" class="toast" role="status" hidden></div>
+<output id="toast" class="toast" hidden></output>
 </body>
 </html>

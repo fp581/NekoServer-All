@@ -275,7 +275,7 @@ function collectIssues(s) {
     else if (job.timer?.installed && !numeric(job.last_success) && job.status !== 'running') add('job:' + job.id, name + ' has not succeeded yet', 'Wait for (or start) its first run before relying on it.', 'backup', 'warning', JOB_UNITS[job.id]);
     if ((job.timer?.installed || numeric(job.last_success)) && !job.timer?.active) add('timer:' + job.id, name + ' schedule is off', 'Its schedule is missing or stopped, so no new copies are made.', 'backup', 'warning', JOB_UNITS[job.id]);
   }
-  for (const check of s.integrity) if (integrityBad(check)) add('integrity:' + check.id, text(check.name, 'Backup copy') + ' has damaged or missing files', integrityBad(check) + ' files need a look. Keep every copy and use the repair guide.', 'integrity', 'critical');
+  for (const check of s.integrity) { if (integrityBad(check)) add('integrity:' + check.id, text(check.name, 'Backup copy') + ' has damaged or missing files', integrityBad(check) + ' files need a look. Keep every copy and use the repair guide.', 'integrity', 'critical'); }
   if (s.acceptance?.status !== 'complete') add('acceptance', 'Finish checking your server', 'A backup is only proven once a restore has been tried. The checklist walks you through it.', 'acceptance');
   if (s.media?.status === 'stale') add('media-report', 'App checks are out of date', 'The last detailed app check is overdue.', 'apps');
   return rows.sort((a, b) => (a.level === 'critical' ? 0 : 1) - (b.level === 'critical' ? 0 : 1));
@@ -304,7 +304,7 @@ function renderChrome() {
   $('side-state').textContent = !s ? (code ? codeLine(code) : 'Connecting') : code ? 'Readings not current' : critical ? 'Needs attention' : state.issues.length ? 'A few things to review' : 'All good';
   if (s) $('version').textContent = 'NekoServer v' + s.version;
   for (const n of document.querySelectorAll('[data-count=issues]')) { n.textContent = s ? state.issues.length : '—'; if (n.classList.contains('tab-count')) n.hidden = !state.issues.length; }
-  for (const n of document.querySelectorAll('[data-count=apps]')) n.textContent = s ? serverApps(s).length : '—';
+  for (const n of document.querySelectorAll('[data-count=apps]')) { n.textContent = s ? serverApps(s).length : '—'; }
   $('footer-status').textContent = s ? 'Readings from ' + ago(s.generated_at) : 'Waiting for readings';
 }
 
@@ -475,7 +475,7 @@ function renderHardware() {
     const value = numeric(g.percent) ? pct(g.percent) : numeric(g.clock_mhz) && numeric(g.clock_max_mhz) && g.clock_max_mhz > 0 ? Math.round(g.clock_mhz / g.clock_max_mhz * 100) + '% clock' : 'No load reading';
     cards.push(stat(text(g.name, 'Graphics'), value, detail || 'Graphics', numeric(g.percent) ? spark(h.map(r => r.gpus?.[g.id]), 100) : el('p', 'hint', g.source ? text(g.source) : 'This driver doesn’t report a load.')));
   }
-  for (const n of list(live.npus)) cards.push(stat(text(n.name, 'AI accelerator'), numeric(n.percent) ? pct(n.percent) : 'No load reading', 'AI chip · ' + text(n.driver, 'no driver'), numeric(n.percent) ? meter(n.percent) : el('p', 'hint', 'Its driver doesn’t report a load.')));
+  for (const n of list(live.npus)) { cards.push(stat(text(n.name, 'AI accelerator'), numeric(n.percent) ? pct(n.percent) : 'No load reading', 'AI chip · ' + text(n.driver, 'no driver'), numeric(n.percent) ? meter(n.percent) : el('p', 'hint', 'Its driver doesn’t report a load.'))); }
   if (numeric(values(cpu.load)[0])) cards.push(stat('Waiting work', cpu.load[0].toFixed(2), 'Average over 1, 5 and 15 minutes: ' + cpu.load.map(v => v.toFixed(2)).join(' · '), el('p', 'hint', 'Below ' + (cpu.logical_cpus || 1) + ' means the processor keeps up.')));
   put('load-cards', cards);
   put('cpu-cores', values(cpu.cores).length ? cpu.cores.map((v, i) => { const c = el('div', 'core'); c.append(el('span', '', '#' + (i + 1)), el('strong', '', pct(v)), meter(v)); return c; }) : [empty('Core readings appear after the second sample.')]);
@@ -590,7 +590,7 @@ function renderHealth() {
   put('updates', s.updates.length ? [(() => {
     const box = el('div', 'callout');
     box.append(el('strong', '', 'Bigger updates waiting for you'));
-    for (const u of s.updates) box.append(el('p', '', text(u.name, u.app) + ': ' + text(u.current) + ' → ' + text(u.available)));
+    for (const u of s.updates) { box.append(el('p', '', text(u.name, u.app) + ': ' + text(u.current) + ' → ' + text(u.available))); }
     box.append(button('About updates', () => showGuide('updates'), 'text-button'));
     return box;
   })()] : []);
@@ -634,7 +634,7 @@ function openDialog(eyebrow, title, children) {
 }
 function showGuide(id, requestedUnit) {
   const guide = GUIDES[id] || GUIDES.general, nodes = [el('p', '', guide.intro)], steps = el('ol');
-  for (const step of guide.steps) steps.append(el('li', '', step));
+  for (const step of guide.steps) { steps.append(el('li', '', step)); }
   nodes.push(steps);
   const unit = Object.values(JOB_UNITS).includes(requestedUnit) ? requestedUnit : guide.unit;
   if (unit) nodes.push(commandBox('systemctl status ' + unit + ' --no-pager\nsudo journalctl -u ' + unit + ' -n 60 --no-pager'));
@@ -726,7 +726,7 @@ function preferences() {
 function notify() {
   if (statusStale() || !('Notification' in window) || Notification.permission !== 'granted' || readStore('notify', false) !== true) return;
   const urgent = state.issues.filter(i => i.level === 'critical');
-  for (const id of [...notified]) if (!urgent.some(i => i.id === id)) notified.delete(id);
+  for (const id of [...notified]) { if (!urgent.some(i => i.id === id)) notified.delete(id); }
   for (const issue of urgent.slice(0, 3)) {
     if (notified.has(issue.id)) continue;
     notified.add(issue.id);
@@ -759,8 +759,8 @@ function route() {
     a.classList.toggle('active', active);
     if (active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
-  for (const n of document.querySelectorAll('[data-page]')) n.hidden = !n.dataset.page.split(' ').includes(state.route);
-  for (const n of document.querySelectorAll('[data-only]')) n.hidden = n.dataset.only !== state.route;
+  for (const n of document.querySelectorAll('[data-page]')) { n.hidden = !n.dataset.page.split(' ').includes(state.route); }
+  for (const n of document.querySelectorAll('[data-only]')) { n.hidden = n.dataset.only !== state.route; }
   if (hash === 'help-errors') requestAnimationFrame(() => $('help-errors').scrollIntoView()); else window.scrollTo({top: 0, behavior: 'instant'});
   render();
   poll(true);
@@ -786,8 +786,8 @@ const timers = {};
 function every(kind, ms, wanted) {
   clearInterval(timers[kind]);
   if (!wanted) return;
-  load(kind);
-  timers[kind] = setInterval(() => { if (!document.hidden) load(kind); }, ms);
+  void load(kind);
+  timers[kind] = setInterval(() => { if (!document.hidden) void load(kind); }, ms);
 }
 function poll(routeChanged = false) {
   if (!routeChanged && timers.status) return;
@@ -801,11 +801,11 @@ window.addEventListener('hashchange', route);
 $('app-search').addEventListener('input', renderApps);
 for (const b of document.querySelectorAll('[data-filter]')) b.addEventListener('click', () => {
   state.appFilter = b.dataset.filter;
-  for (const n of document.querySelectorAll('[data-filter]')) n.setAttribute('aria-pressed', String(n === b));
+  for (const n of document.querySelectorAll('[data-filter]')) { n.setAttribute('aria-pressed', String(n === b)); }
   renderApps();
 });
-for (const b of document.querySelectorAll('[data-guide]')) b.addEventListener('click', () => showGuide(b.dataset.guide));
-$('refresh').addEventListener('click', () => { load('status'); if (LIVE_ROUTES.includes(state.route)) load('live'); if (state.route === 'processes') load('processes'); });
+for (const b of document.querySelectorAll('[data-guide]')) { b.addEventListener('click', () => showGuide(b.dataset.guide)); }
+$('refresh').addEventListener('click', () => { void load('status'); if (LIVE_ROUTES.includes(state.route)) void load('live'); if (state.route === 'processes') void load('processes'); });
 $('preferences').addEventListener('click', preferences);
 $('more').addEventListener('click', moreMenu);
 $('export').addEventListener('click', diagnostics);
@@ -817,7 +817,7 @@ $('process-prev').addEventListener('click', () => { state.processPage--; renderP
 $('process-next').addEventListener('click', () => { state.processPage++; renderProcesses(); });
 $('problem-link').addEventListener('click', e => { e.preventDefault(); location.hash = 'help-errors'; });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyPreferences);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { load('status'); if (LIVE_ROUTES.includes(state.route)) load('live'); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { void load('status'); if (LIVE_ROUTES.includes(state.route)) void load('live'); } });
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); state.installPrompt = e; if (state.route === 'help') renderHelp(); });
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => { /* works without it */ });
 setInterval(() => { if (!document.hidden) renderChrome(); }, 30000); // "x min ago" and staleness move on their own

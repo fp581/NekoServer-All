@@ -46,7 +46,7 @@ class DashboardFilesTests(unittest.TestCase):
 
     def test_error_codes_are_explained_everywhere(self):
         page_codes = set(re.findall(r'^\s+(E\d\d): \[', APP, re.M))
-        self.assertTrue(server_codes() <= page_codes, server_codes() - page_codes)
+        self.assertLessEqual(server_codes(), page_codes)
         guide = (ROOT / 'DASHBOARD.md').read_text()
         for code in page_codes:
             self.assertIn('| ' + code + ' |', guide, code)
