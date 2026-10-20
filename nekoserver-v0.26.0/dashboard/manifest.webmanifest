@@ -1,0 +1,18 @@
+{
+  "name": "NekoServer",
+  "short_name": "NekoServer",
+  "description": "Your home server: apps, backups, hardware and sensors.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#14151f",
+  "theme_color": "#14151f",
+  "categories": ["utilities"],
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+    {"src": "logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
+  ]
+}

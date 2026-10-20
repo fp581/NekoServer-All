@@ -6,7 +6,12 @@ from pathlib import Path
 from neko_common import APP_PORTS,VERSION,safe_path,mount_path,atomic_write,atomic_json
 DEPENDENCIES=['storage','recovery']
 DESCRIPTION='Install the localhost visual dashboard, read-only collector and local alerts'
-ASSETS=('index.html','style.css','app.js','logo.svg')
+# The page's files; runtime/src/serve.rs serves exactly these (checked by a test).
+ASSETS=('index.html','style.css','app.js','sw.js','logo.svg','manifest.webmanifest','icon-192.png','icon-512.png','apple-touch-icon.png')
+# Opens the dashboard in its own window from the desktop's app menu.
+LAUNCHER=Path('/usr/local/bin/nekoserver-dashboard')
+DESKTOP_ENTRY=Path('/usr/share/applications/nekoserver-dashboard.desktop')
+MANAGED='X-NekoServer-Managed=true'
 SERVICE='nekoserver-dashboard.service'
 
 def options(cfg):
@@ -32,7 +37,36 @@ def units(data,code,config,port,interval,public=None):
     return {
     'nekoserver-dashboard-collect.service':'[Unit]\nDescription=NekoServer dashboard collection\n[Service]\nType=oneshot\nRuntimeDirectory=nekoserver-dashboard\nRuntimeDirectoryMode=0755\nRuntimeDirectoryPreserve=yes\nExecStart='+collect+' --config '+str(config)+' --output /run/nekoserver-dashboard/status.json --state '+str(data/'dashboard-state')+'\nTimeoutStartSec=180\n'+common+'ReadWritePaths=/run/nekoserver-dashboard -'+str(data/'dashboard-state')+'\nRestrictAddressFamilies=AF_UNIX\n',
     'nekoserver-dashboard-collect.timer':f'[Unit]\nDescription=NekoServer periodic dashboard collection\n[Timer]\nOnBootSec=15s\nOnUnitInactiveSec={interval}s\nUnit=nekoserver-dashboard-collect.service\n[Install]\nWantedBy=timers.target\n',
-    SERVICE:'[Unit]\nDescription=NekoServer local dashboard\nWants=nekoserver-dashboard-collect.service\nAfter=nekoserver-dashboard-collect.service\n[Service]\nType=simple\nDynamicUser=yes\nExecStart='+serve+' --assets '+str(code/'dashboard')+f' --status /run/nekoserver-dashboard/status.json --port {port}'+(' --public-host '+public if public else '')+'\nRestart=on-failure\n'+common+'PrivateDevices=yes\nRestrictAddressFamilies=AF_INET AF_UNIX\nInaccessiblePaths=-/run/docker.sock -/var/run/docker.sock '+str(data)+' '+str(config.parent)+'\n[Install]\nWantedBy=multi-user.target\n'}
+    # Starts with the computer and comes back by itself if it ever stops.
+    SERVICE:'[Unit]\nDescription=NekoServer local dashboard\nWants=nekoserver-dashboard-collect.service\nAfter=network.target nekoserver-dashboard-collect.service\nStartLimitIntervalSec=0\n[Service]\nType=simple\nDynamicUser=yes\nExecStart='+serve+' --assets '+str(code/'dashboard')+f' --status /run/nekoserver-dashboard/status.json --port {port}'+(' --public-host '+public if public else '')+'\nRestart=always\nRestartSec=3\n'+common+'PrivateDevices=yes\nRestrictAddressFamilies=AF_INET AF_UNIX\nInaccessiblePaths=-/run/docker.sock -/var/run/docker.sock '+str(data)+' '+str(config.parent)+'\n[Install]\nWantedBy=multi-user.target\n'}
+
+def launcher(port):
+    """A command that opens the dashboard in its own window, without browser tabs or
+    bars: an installed Chromium-family browser in app mode, otherwise the default
+    browser."""
+    url=f'http://127.0.0.1:{port}/'
+    return ('#!/bin/sh\n# Managed by NekoServer: opens the dashboard in its own window.\n'
+            f'url={url}\n'
+            'for browser in chromium google-chrome-stable google-chrome brave microsoft-edge-stable vivaldi-stable; do\n'
+            '  if command -v "$browser" >/dev/null 2>&1; then exec "$browser" --app="$url" --class=NekoServer; fi\n'
+            'done\n'
+            'if command -v firefox >/dev/null 2>&1; then exec firefox --new-window "$url"; fi\n'
+            'exec xdg-open "$url"\n')
+
+
+def desktop_entry(code):
+    return ('[Desktop Entry]\nType=Application\nName=NekoServer Dashboard\nComment=Your home server: apps, backups, hardware and sensors\n'
+            f'Exec={LAUNCHER}\nIcon={code/"dashboard"/"icon-512.png"}\nTerminal=false\nCategories=System;Monitor;\nStartupWMClass=NekoServer\n{MANAGED}\n')
+
+
+def write_managed(path,text,mode,log):
+    """Write a file NekoServer owns; one someone else made at that place is kept."""
+    path=safe_path(path)
+    if path.exists() and 'Managed by NekoServer' not in path.read_text(errors='replace') and MANAGED not in path.read_text(errors='replace'):
+        log(f'Dashboard: kept your own {path}');return False
+    if not path.exists() or path.read_text()!=text:atomic_write(path,text,mode)
+    return True
+
 
 COLLECTOR_SETTINGS=Path('/etc/nekoserver-dashboard/config.json')
 
@@ -99,5 +133,8 @@ def run(ctx):
     subprocess.run(['systemctl','start','nekoserver-dashboard-collect.service'],capture_output=True,check=True,timeout=190)
     for unit in ('nekoserver-dashboard-collect.timer',SERVICE):subprocess.run(['systemctl','enable','--now',unit],capture_output=True,check=True,timeout=30)
     subprocess.run(['systemctl','restart',SERVICE],capture_output=True,check=True,timeout=30)
+    write_managed(LAUNCHER,launcher(port),0o755,ctx.log)
+    write_managed(DESKTOP_ENTRY,desktop_entry(code),0o644,ctx.log)
     ctx.log(f'NekoServer dashboard: http://127.0.0.1:{port}/ · read-only; backup history starts after updated jobs run')
+    ctx.log('Open it from the app menu ("NekoServer Dashboard") for its own window; on a phone or tablet, use "Install app" / "Add to Home Screen"')
     if public:ctx.log(f'Dashboard on your phone (Tailscale on): https://{public}:8448/')

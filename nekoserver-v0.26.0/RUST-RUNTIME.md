@@ -4,7 +4,8 @@ The installer and configuration modules remain Python. The dashboard browser UI 
 
 | Native command | Installed task |
 | --- | --- |
-| serve | Continuously running localhost dashboard HTTP service |
+| serve | Continuously running localhost dashboard HTTP service, including live hardware readings and the process list (unprivileged, read-only) |
+| hardware | Prints what the dashboard can read on this computer (sensors, graphics, network, drives), for checking detection |
 | media-health | Scheduled GET-only local media API and container audit |
 | collect | Scheduled dashboard metrics, disks/SMART, application state and sanitized reports |
 | preservation | Weekly original-photo archive and Immich database dump |

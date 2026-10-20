@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.26.0 — 2026-10-20
+
+### New dashboard
+- **A new dashboard, in Rust, replacing the old one.** Same cat and colours, rebuilt for everyday use: Home (what needs attention, apps, storage and live readings), Your apps (with each app's processor and memory use), Backups, **Hardware**, **Sensors**, **Processes**, Server health, Needs attention and Help.
+- **Hardware and sensors are found automatically** by the dashboard's own web server, with no setup and without root: processor (total, each core, clock, waiting work), memory and swap, every graphics card and AI chip (named from the system's PCI list; AMD load and video memory, Intel clock, NVIDIA through the collector), every hardware-monitoring chip (temperatures, fans, fan outputs, power, voltages; thermal zones when no chip reports a temperature), network traffic per card and Tailscale, drive activity, batteries and UPS, and RGB devices of a running OpenRGB server. Readings are taken only while a page asks for them. Nothing is ever written to fans, lighting or processes. `nekoserver-runtime hardware` prints what it finds.
+- **Processes**, with the app each one belongs to (ffmpeg → Jellyfin). Names only: never command lines, environments or users.
+- **Phone, tablet and TV:** a bottom tab bar on phones, an icon rail on tablets, larger touch targets and text (Settings → Large or TV).
+- **Use it like an app instead of a browser tab:** it can be installed on phones, tablets and computers (Add to Home Screen / Install app) and opens in its own window. If the server can't be reached, the page still opens and says why. On the server, **NekoServer Dashboard** in the app menu opens it in an app window (Chromium, Chrome, Brave, Edge or Vivaldi when installed; otherwise the normal browser).
+- **Short error codes** (E01 … E42) with one plain sentence each, shown at the top of the page and explained in Help and DASHBOARD.md.
+- **Starts by itself:** the dashboard restarts if it ever stops (Restart=always). Server health lists what starts with the computer (Docker and the apps, Tailscale, the dashboard, Samba, the resume services, the schedules), and Needs attention warns when one of them is switched off.
+
+### Fixed
+- **Upgrading from v0.25.1 works.** The follow-up fixes below were merged while the release still called itself 0.25.1 everywhere inside (Python, the Rust runtime, its build manifest and install paths). Releases are installed into immutable per-version folders, so installing it over the real v0.25.1 was refused ("Installed release differs; refusing overwrite" and "Existing native runtime differs; custom file preserved", reproduced). This release is consistently 0.26.0 (0.25.2 to 0.25.31 were not used as internal versions), and a test now checks that the folder, Python, Cargo, config, README, CI and the install paths in the guides all name the same version. The immutable-file protection is unchanged.
+
+### Fixed (follow-up review of v0.25.1)
+- **Jellyfin-only setups pass the monthly check too.** The Python check used Jellyfin's own key, but the bundled runtime (used by the monthly update and the dashboard) still read the key only from Seerr's settings, so a Jellyfin-only server stayed "needs setup" and monthly maintenance was blocked (reproduced). The runtime now reads `secrets/jellyfin-readiness.key` first, exactly like Python, and both are tested against the same cases.
+- **An update that starts while setup waits now stops setup.** Setup checked for an unfinished monthly update only before it began; a step waiting for the shared lock while an update started (and failed) then went on and started apps (reproduced). Every step that changes or starts apps now checks again once it holds the lock. Docker re-attachment and backup repair stay allowed, since they can be what lets a stuck update finish.
+- **Repair finds the live original of a dated version.** A damaged `photo.neko-20261020T010000Z.jpg` was looked up in Immich under that dated name, so a live `photo.jpg` that still matched its recorded checksum was never used (reproduced). Repair now looks for `photo.jpg` and uses it only when its SHA-256 matches the ledger.
+- **A revoked or replaced Jellyfin key is renewed by setup.** Setup kept NekoServer's Jellyfin key as long as its file was not empty, so a key revoked in Jellyfin stayed in use and the check kept failing even after rerunning setup (reproduced). Setup, while signed in as administrator, now compares the kept key with Jellyfin's active NekoServer keys and saves the current one (or creates a new one) when it is gone. Scheduled checks never change credentials: they report "Jellyfin no longer accepts NekoServer's key" and say to rerun setup.
+
+### Changed
+- Version 0.26.0; the release folder is now `nekoserver-v0.26.0`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.25.1 — 2026-10-20
 
 ### Fixed (from an outside review)
@@ -16,12 +42,6 @@
 - **Jellyfin's check no longer needs Seerr.** The Jellyfin library check used the key stored in Seerr's settings, so a Jellyfin-only setup could never pass it (reproduced). Setup now creates Jellyfin's own NekoServer API key the one time it signs in as administrator, kept privately on the SSD (`secrets/jellyfin-readiness.key`, root only); Seerr's link is used only when Seerr is installed.
 - **A media import no longer skips folders it cannot read.** The importer's folder walk ignored listing errors, so an unreadable album on a local drive or SMB/NFS share was left out and the import still said "copied" (reproduced). Imports now use the same strict listing as restores: if any folder or file of a source cannot be read, nothing is copied from that source, it is marked incomplete, and the report names the unreadable paths (relative to the source; the source's own location stays private). Files still being written (`.part`, `.tmp`, `.crdownload`, `.!qB`, `.neko-part`) are explicitly excluded.
 - **Container logs are size-limited.** Docker keeps container logs forever by default, one way for the SSD to fill up. NekoServer's Docker settings now cap each container's log at 3 files of 10 MB, without overriding a log driver or limits you chose yourself. Containers made before keep unlimited logs until they are recreated after Docker restarts (a reboot, then the monthly update or rerunning setup); the acceptance check lists any that still do.
-
-### Fixed (follow-up review)
-- **Jellyfin-only setups pass the monthly check too.** The Python check used Jellyfin's own key, but the bundled runtime (used by the monthly update and the dashboard) still read the key only from Seerr's settings, so a Jellyfin-only server stayed "needs setup" and monthly maintenance was blocked (reproduced). The runtime now reads `secrets/jellyfin-readiness.key` first, exactly like Python, and both are tested against the same cases.
-- **An update that starts while setup waits now stops setup.** Setup checked for an unfinished monthly update only before it began; a step waiting for the shared lock while an update started (and failed) then went on and started apps (reproduced). Every step that changes or starts apps now checks again once it holds the lock. Docker re-attachment and backup repair stay allowed, since they can be what lets a stuck update finish.
-- **Repair finds the live original of a dated version.** A damaged `photo.neko-20261020T010000Z.jpg` was looked up in Immich under that dated name, so a live `photo.jpg` that still matched its recorded checksum was never used (reproduced). Repair now looks for `photo.jpg` and uses it only when its SHA-256 matches the ledger.
-- **A revoked or replaced Jellyfin key is renewed by setup.** Setup kept NekoServer's Jellyfin key as long as its file was not empty, so a key revoked in Jellyfin stayed in use and the check kept failing even after rerunning setup (reproduced). Setup, while signed in as administrator, now compares the kept key with Jellyfin's active NekoServer keys and saves the current one (or creates a new one) when it is gone. Scheduled checks never change credentials: they report "Jellyfin no longer accepts NekoServer's key" and say to rerun setup.
 
 ### Changed
 - Version 0.25.1; the release folder is now `nekoserver-v0.25.1`. Two long functions were split for readability (no change in behaviour).

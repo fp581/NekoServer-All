@@ -423,7 +423,52 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, bool, boo
     }
     Ok((json!(disks), data_ok, media_ok))
 }
-fn applications(cfg: &Value) -> Value {
+/// Bytes from a size Docker prints ("512MiB", "1.2GiB", "800kB").
+fn docker_size(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let split = text.find(|c: char| c.is_ascii_alphabetic())?;
+    let value = text[..split].trim().parse::<f64>().ok()?;
+    let unit = match &text[split..] {
+        "B" => 1.0,
+        "kB" | "KB" => 1e3,
+        "KiB" => 1024.0,
+        "MB" => 1e6,
+        "MiB" => 1024.0 * 1024.0,
+        "GB" => 1e9,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        "TB" => 1e12,
+        "TiB" => 1024f64.powi(4),
+        _ => return None,
+    };
+    Some((value * unit).round())
+}
+/// CPU (% of one core) and memory of each running container, keyed by short ID.
+fn docker_stats(output: &str) -> std::collections::HashMap<String, (f64, f64)> {
+    let mut out = std::collections::HashMap::new();
+    for line in output.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let id = text(&v["ID"]);
+        let cpu = text(&v["CPUPerc"])
+            .trim_end_matches('%')
+            .parse::<f64>()
+            .ok();
+        let memory = text(&v["MemUsage"]).split('/').next().and_then(docker_size);
+        if let (12.., Some(cpu), Some(memory)) = (id.len(), cpu, memory) {
+            out.insert(id[..12].to_string(), (cpu, memory));
+        }
+    }
+    out
+}
+/// The NekoServer app a container belongs to (its Compose project is neko-<app>).
+fn app_of(labels: &std::collections::BTreeMap<String, String>) -> Option<&str> {
+    let app = labels
+        .get("com.docker.compose.project")?
+        .strip_prefix("neko-")?;
+    APPS.iter().find(|a| a.0 == app).map(|a| a.0)
+}
+fn applications(cfg: &Value) -> (Value, Value) {
     let (code, s) = probe(
         &[
             "docker",
@@ -449,6 +494,37 @@ fn applications(cfg: &Value) -> Value {
             }
         }
     }
+    // Which app each container belongs to (the dashboard names processes by it),
+    // and how much CPU and memory each app's containers use together.
+    let mut containers = serde_json::Map::new();
+    for (labels, v) in &records {
+        if let (Some(app), id) = (app_of(labels), text(&v["ID"])) {
+            if id.len() >= 12 {
+                containers.insert(id[..12].to_string(), json!(app));
+            }
+        }
+    }
+    let usage = if records.iter().any(|(_, v)| v["State"] == "running") {
+        let (code, out) = probe(
+            &[
+                "docker",
+                "--host",
+                "unix:///var/run/docker.sock",
+                "stats",
+                "--no-stream",
+                "--format",
+                "{{json .}}",
+            ],
+            30,
+        );
+        if code == 0 {
+            docker_stats(&out)
+        } else {
+            Default::default()
+        }
+    } else {
+        Default::default()
+    };
     let services = cfg["media"]["services"]
         .as_array()
         .cloned()
@@ -505,9 +581,117 @@ fn applications(cfg: &Value) -> Value {
         } else if found.len() > 1 {
             state = "ambiguous";
         }
-        out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"url":format!("http://127.0.0.1:{port}/")}));
+        let mine = containers
+            .iter()
+            .filter(|(_, owner)| *owner == app)
+            .filter_map(|(id, _)| usage.get(id))
+            .collect::<Vec<_>>();
+        let (cpu, memory) = if mine.is_empty() {
+            (Value::Null, Value::Null)
+        } else {
+            (
+                json!(round(mine.iter().map(|u| u.0).sum::<f64>())),
+                json!(mine.iter().map(|u| u.1).sum::<f64>()),
+            )
+        };
+        out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"url":format!("http://127.0.0.1:{port}/"),"cpu_percent":cpu,"memory_used":memory}));
     }
-    json!(out)
+    (json!(out), Value::Object(containers))
+}
+/// NVIDIA cards: only root can ask the driver, so the collector does it for the
+/// dashboard (which matches each row to its card by PCI address).
+fn gpu_telemetry() -> Value {
+    let (code, out) = probe(
+        &[
+            "nvidia-smi",
+            "--query-gpu=pci.bus_id,name,utilization.gpu,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ],
+        5,
+    );
+    if code != 0 {
+        return json!([]);
+    }
+    json!(parse_nvidia(&out))
+}
+fn parse_nvidia(out: &str) -> Vec<Value> {
+    out.lines()
+        .take(16)
+        .filter_map(|line| {
+            let f = line.split(',').map(str::trim).collect::<Vec<_>>();
+            if f.len() != 5 || !f[0].contains(':') {
+                return None;
+            }
+            let n = |s: &str| s.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0);
+            Some(json!({"bus": chars(f[0], 20), "name": chars(f[1], 100),
+                "percent": n(f[2]).filter(|v| *v <= 100.0),
+                "memory_used": n(f[3]).map(|m| m * 1024.0 * 1024.0),
+                "memory_total": n(f[4]).map(|m| m * 1024.0 * 1024.0)}))
+        })
+        .collect()
+}
+/// What starts by itself when the computer boots, in people's words. Only units
+/// that are installed are listed.
+const STARTUP: &[(&str, &str)] = &[
+    ("docker.service", "Apps (Docker)"),
+    ("tailscaled.service", "Phone access (Tailscale)"),
+    ("nekoserver-dashboard.service", "This dashboard"),
+    ("nekoserver-dashboard-collect.timer", "Dashboard readings"),
+    ("smb.service", "Shared folders (Samba)"),
+    ("nekoserver-hdd-policy.service", "Drive power settings"),
+    (
+        "nekoserver-app-resume.service",
+        "Restart apps after an interrupted backup",
+    ),
+    (
+        "nekoserver-host-resume.service",
+        "Finish an interrupted host backup",
+    ),
+    (
+        "nekoserver-maintenance-resume.service",
+        "Finish an interrupted monthly update",
+    ),
+    ("nekoserver-app-backup.timer", "Nightly app backup"),
+    ("nekoserver-host-backup.timer", "Nightly host backup"),
+    ("nekoserver-music-backup.timer", "Music backup"),
+    ("nekoserver-photo-backup.timer", "USB photo backup"),
+    ("nekoserver-maintenance.timer", "Monthly update"),
+    ("nekoserver-media-health.timer", "App health checks"),
+    ("nekoserver-heartbeat.timer", "Outside heartbeat"),
+    ("nekoserver-notifications.timer", "Phone notifications"),
+];
+fn startup() -> Value {
+    let mut args = vec![
+        "systemctl",
+        "show",
+        "--property=Id,LoadState,UnitFileState,ActiveState",
+    ];
+    args.extend(STARTUP.iter().map(|u| u.0));
+    let (code, out) = probe(&args, 15);
+    if code != 0 {
+        return json!([]);
+    }
+    json!(parse_startup(&out))
+}
+fn parse_startup(out: &str) -> Vec<Value> {
+    out.split("\n\n")
+        .filter_map(|block| {
+            let fields = block
+                .lines()
+                .filter_map(|l| l.split_once('='))
+                .collect::<std::collections::HashMap<_, _>>();
+            let id = *fields.get("Id")?;
+            let label = STARTUP.iter().find(|u| u.0 == id)?.1;
+            if fields.get("LoadState") != Some(&"loaded") {
+                return None;
+            }
+            let file = fields.get("UnitFileState").copied().unwrap_or("");
+            // "static" units start because something else needs them.
+            let enabled = ["enabled", "enabled-runtime", "static", "alias"].contains(&file);
+            Some(json!({"unit": id, "name": label, "enabled": enabled,
+                "active": fields.get("ActiveState").copied().unwrap_or("unknown")}))
+        })
+        .collect()
 }
 fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
     let mut out = vec![];
@@ -905,6 +1089,20 @@ fn alerts(s: &Value) -> Value {
     let mut add = |id: String, level: &str, title: String, detail: &str| {
         out.push(json!({"id":id,"level":level,"title":title,"detail":detail}))
     };
+    for unit in s["startup"].as_array().into_iter().flatten() {
+        // Schedules can be off on purpose (the backup cards show those); the
+        // services everything else depends on must start with the computer.
+        let name = text(&unit["unit"]);
+        let core = !name.ends_with(".timer") || name == "nekoserver-dashboard-collect.timer";
+        if core && unit["enabled"] == false {
+            add(
+                format!("startup:{}", text(&unit["unit"])),
+                "warning",
+                format!("{} won't start after a restart", text(&unit["name"])),
+                "It is installed but not set to start when the computer boots. Run setup again to fix it.",
+            );
+        }
+    }
     if let Some(disks) = s["storage"].as_array() {
         for d in disks {
             let id = text(&d["id"]);
@@ -1138,8 +1336,12 @@ pub fn run(a: &Args) -> Result<()> {
     let mut history=previous["history"].as_array().map(|rows|rows.iter().rev().take(119).filter_map(|v|{let t=num(&v["at"],0.0,now).as_f64()?;if now-t>7200.0{return None}Some(json!({"at":v["at"],"cpu":num(&v["cpu"],0.0,100.0),"memory":num(&v["memory"],0.0,100.0),"temperature":num(&v["temperature"],-10.0,150.0)}))}).collect::<Vec<_>>()).unwrap_or_default();
     history.reverse();
     history.push(json!({"at":now,"cpu":host["cpu_percent"],"memory":host["memory_percent"],"temperature":host["temperature"]}));
-    let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":applications(&cfg),"backups":backups(&cfg,now,ok),"media":media(&cfg,now,ok),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
+    let (apps, containers) = applications(&cfg);
+    let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":apps,"backups":backups(&cfg,now,ok),"media":media(&cfg,now,ok),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
     result["notifications"] = notification_status(now);
+    result["containers"] = containers;
+    result["gpu_telemetry"] = gpu_telemetry();
+    result["startup"] = startup();
     result["updates"] = updates(&cfg, media_ok);
     result["integrity"] = integrity(data, ok);
     result["alerts"] = alerts(&result);
@@ -1168,6 +1370,55 @@ pub fn run(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn docker_stats_become_per_app_usage() {
+        assert_eq!(docker_size("512MiB"), Some(536870912.0));
+        assert_eq!(docker_size("1.5GiB"), Some(1610612736.0));
+        assert_eq!(docker_size("800kB"), Some(800000.0));
+        assert_eq!(docker_size("lots"), None);
+        let rows = docker_stats("{\"ID\":\"0123456789abcdef\",\"CPUPerc\":\"12.50%\",\"MemUsage\":\"256MiB / 7.6GiB\"}\nnot json\n{\"ID\":\"short\",\"CPUPerc\":\"1%\",\"MemUsage\":\"1MiB / 1GiB\"}");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows["0123456789ab"], (12.5, 268435456.0));
+        let labels = [(
+            "com.docker.compose.project".to_string(),
+            "neko-immich".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(app_of(&labels), Some("immich"));
+        let other = [(
+            "com.docker.compose.project".to_string(),
+            "someone-else".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(app_of(&other), None);
+    }
+    #[test]
+    fn nvidia_rows_and_startup_units_are_read() {
+        let gpus = parse_nvidia(
+            "00000000:01:00.0, NVIDIA GeForce RTX 4060, 23, 1024, 8188\nbroken line\n",
+        );
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0]["percent"], 23.0);
+        assert_eq!(gpus[0]["memory_used"], 1073741824.0);
+        let units = parse_startup("Id=docker.service\nLoadState=loaded\nUnitFileState=disabled\nActiveState=active\n\nId=tailscaled.service\nLoadState=not-found\nUnitFileState=\nActiveState=inactive\n\nId=nekoserver-dashboard.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=active");
+        assert_eq!(
+            units.len(),
+            2,
+            "uninstalled units are not listed: {units:?}"
+        );
+        assert_eq!(units[0]["enabled"], false);
+        assert_eq!(units[1]["name"], "This dashboard");
+        let shown = alerts(&json!({ "startup": units }));
+        let row = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == "startup:docker.service")
+            .unwrap();
+        assert_eq!(row["title"], "Apps (Docker) won't start after a restart");
+    }
     #[test]
     fn damaged_backup_copies_reach_the_dashboard_and_raise_an_alert() {
         let data =
