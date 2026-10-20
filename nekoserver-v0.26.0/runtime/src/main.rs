@@ -5,6 +5,7 @@ mod common;
 mod heartbeat;
 mod host_snapshot;
 mod ledger;
+mod live;
 mod maintenance;
 mod media;
 mod music_backup;
@@ -72,8 +73,12 @@ fn entry() -> Result<()> {
         );
         return Ok(());
     }
+    if mode == "hardware" {
+        // What the dashboard can read on this computer (no options, read-only).
+        return serve::hardware();
+    }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, heartbeat, storage-guard, gateway-guard, maintenance, maintenance-resume\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, heartbeat, storage-guard, gateway-guard, maintenance, maintenance-resume\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {

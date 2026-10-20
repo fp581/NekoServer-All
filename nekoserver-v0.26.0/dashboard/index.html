@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14151f">
+<meta name="color-scheme" content="dark light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="NekoServer">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>NekoServer · Home</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+
+<aside class="sidebar" aria-label="NekoServer">
+  <a class="brand" href="#home" aria-label="NekoServer home">
+    <img src="logo.svg" width="42" height="42" alt="">
+    <span class="brand-name">Neko<strong>Server</strong><small>YOUR LITTLE HOME CLOUD</small></span>
+  </a>
+  <nav class="nav-list" aria-label="Main navigation">
+    <a class="nav" href="#home" data-route="home"><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-text">Home</span></a>
+    <a class="nav" href="#apps" data-route="apps"><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-text">Your apps</span><b class="count" data-count="apps">—</b></a>
+    <a class="nav" href="#backups" data-route="backups"><span class="nav-icon" aria-hidden="true">♡</span><span class="nav-text">Backups</span></a>
+    <a class="nav" href="#hardware" data-route="hardware"><span class="nav-icon" aria-hidden="true">▥</span><span class="nav-text">Hardware</span></a>
+    <a class="nav" href="#sensors" data-route="sensors"><span class="nav-icon" aria-hidden="true">❋</span><span class="nav-text">Sensors</span></a>
+    <a class="nav" href="#processes" data-route="processes"><span class="nav-icon" aria-hidden="true">≡</span><span class="nav-text">Processes</span></a>
+    <a class="nav" href="#health" data-route="health"><span class="nav-icon" aria-hidden="true">◈</span><span class="nav-text">Server health</span></a>
+    <a class="nav" href="#attention" data-route="attention"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-text">Needs attention</span><b class="count" data-count="issues">—</b></a>
+    <a class="nav" href="#help" data-route="help"><span class="nav-icon" aria-hidden="true">?</span><span class="nav-text">Help</span></a>
+  </nav>
+  <div class="sidebar-bottom">
+    <div class="connection-mini"><i class="dot unknown" id="side-dot"></i><span id="side-state">Connecting</span></div>
+    <small id="version">NekoServer</small>
+  </div>
+</aside>
+
+<main id="main" tabindex="-1">
+  <header class="topbar">
+    <div class="title">
+      <img class="topbar-logo" src="logo.svg" width="34" height="34" alt="">
+      <div><div class="eyebrow">NEKO CONTROL ROOM</div><h1 id="page-title">Home</h1></div>
+    </div>
+    <div class="top-actions">
+      <span id="connection" class="badge unknown" role="status">Connecting</span>
+      <button class="icon-button" id="refresh" type="button" title="Refresh now" aria-label="Refresh readings now">↻</button>
+      <button class="icon-button" id="preferences" type="button" title="Settings" aria-label="Open settings">⚙</button>
+    </div>
+  </header>
+
+  <div id="problem" class="banner warning" role="alert" hidden>
+    <strong id="problem-title"></strong><span id="problem-detail"></span>
+    <a class="banner-link" href="#help-errors" id="problem-link">What does this mean?</a>
+  </div>
+
+  <!-- HOME -->
+  <section class="hero" data-page="home">
+    <div class="hero-copy">
+      <span class="eyebrow">A PLACE FOR EVERYTHING YOU LOVE</span>
+      <h2>Welcome home.</h2>
+      <p>Your movies, music, photos and files. <br>One familiar place to find them.</p>
+      <div class="hero-bottom"><span class="badge unknown" id="overall">Waiting for readings</span><span id="updated">No readings yet</span></div>
+    </div>
+    <div class="hero-art" aria-hidden="true"><span class="orbit one"></span><span class="orbit two"></span><span class="twinkle a">✧</span><span class="twinkle b">✦</span><img src="logo.svg" width="136" height="136" alt=""></div>
+  </section>
+
+  <section class="summary-strip" data-page="home" aria-label="Server summary">
+    <a href="#apps" class="summary"><span class="summary-icon">▦</span><span class="summary-text"><small>Apps</small><strong id="summary-apps">—</strong></span></a>
+    <a href="#backups" class="summary"><span class="summary-icon rose">♡</span><span class="summary-text"><small>Backups</small><strong id="summary-backups">—</strong></span></a>
+    <a href="#health" class="summary"><span class="summary-icon mint">◫</span><span class="summary-text"><small>Storage</small><strong id="summary-storage">—</strong></span></a>
+    <a href="#hardware" class="summary"><span class="summary-icon amber">◷</span><span class="summary-text"><small>Running for</small><strong id="summary-uptime">—</strong></span></a>
+  </section>
+
+  <section class="panel" data-page="home attention">
+    <header class="section-head"><div><span class="eyebrow">NEXT STEPS</span><h2>What needs your attention</h2></div><a href="#attention" class="text-link" data-only="home">View all →</a></header>
+    <div id="attention-list"><p class="empty">Waiting for a health snapshot.</p></div>
+  </section>
+
+  <section class="panel" data-page="home">
+    <header class="section-head"><div><span class="eyebrow">RIGHT NOW</span><h2>Your server at a glance</h2></div><a href="#hardware" class="text-link">Hardware →</a></header>
+    <div class="glance" id="glance"></div>
+  </section>
+
+  <!-- APPS -->
+  <section class="panel" data-page="home apps">
+    <header class="section-head"><div><span class="eyebrow">OPEN SOMETHING GOOD</span><h2>Your apps</h2><p data-only="apps">Star your favourites to keep them first.</p></div><a href="#apps" class="text-link" data-only="home">All apps →</a></header>
+    <div class="app-controls" data-only="apps">
+      <label class="search"><span class="sr-only">Find an app</span><span aria-hidden="true">⌕</span><input id="app-search" type="search" placeholder="Find an app…" autocomplete="off"></label>
+      <div class="chips" role="group" aria-label="Show">
+        <button type="button" data-filter="all" aria-pressed="true">All</button>
+        <button type="button" data-filter="favorites" aria-pressed="false">Favourites</button>
+        <button type="button" data-filter="everyday" aria-pressed="false">Everyday</button>
+        <button type="button" data-filter="manage" aria-pressed="false">Management</button>
+      </div>
+    </div>
+    <div class="app-grid" id="apps"><p class="empty">Your installed apps will appear here.</p></div>
+    <p class="section-note" id="app-access-note" data-only="apps"></p>
+  </section>
+
+  <!-- BACKUPS -->
+  <section class="panel" data-page="backups">
+    <header class="section-head"><div><span class="eyebrow">A LITTLE PEACE OF MIND</span><h2>Backups &amp; protection</h2><p>Last good copies, next runs and whether a restore was tried.</p></div><button class="button small secondary" type="button" data-guide="recovery">How to recover</button></header>
+    <div id="protection" class="protection"></div>
+    <div id="backups" class="card-grid two"><p class="empty">Backup history is loading.</p></div>
+    <div id="integrity" class="row-list"></div>
+    <div id="restore-status"></div>
+  </section>
+
+  <!-- HARDWARE -->
+  <section class="panel" data-page="hardware">
+    <header class="section-head"><div><span class="eyebrow">KNOW YOUR HARDWARE</span><h2>How hard it's working</h2><p>Processor, memory, graphics and AI chips. Updates every few seconds.</p></div><span class="badge unknown" id="live-state">Waiting</span></header>
+    <div id="load-cards" class="card-grid auto"></div>
+    <h3 class="sub-head">Processor cores</h3>
+    <div id="cpu-cores" class="core-grid"></div>
+  </section>
+  <section class="panel" data-page="hardware">
+    <header class="section-head"><div><span class="eyebrow">FOLLOW THE DATA</span><h2>Network &amp; drives</h2><p>What's moving in and out right now.</p></div></header>
+    <div id="network" class="card-grid auto"></div>
+    <div id="disk-io" class="card-grid auto"></div>
+    <div id="batteries" class="card-grid auto"></div>
+  </section>
+
+  <!-- SENSORS -->
+  <section class="panel" data-page="sensors">
+    <header class="section-head"><div><span class="eyebrow">KEEP YOUR WORLD COOL</span><h2>Temperatures</h2><p>Every temperature sensor this computer reports, found automatically.</p></div><span class="badge unknown" id="sensor-count">Waiting</span></header>
+    <div id="temperatures" class="sensor-groups"></div>
+  </section>
+  <section class="panel" data-page="sensors">
+    <header class="section-head"><div><span class="eyebrow">AIRFLOW</span><h2>Fans</h2><p>Fan speeds and how hard the motherboard drives them.</p></div></header>
+    <div id="fans" class="card-grid auto"></div>
+    <p class="section-note">The motherboard (firmware) stays in charge of the fans. This page only reads them; change fan curves in the BIOS or your fan app.</p>
+  </section>
+  <section class="panel" data-page="sensors">
+    <header class="section-head"><div><span class="eyebrow">POWER</span><h2>Power &amp; voltages</h2></div></header>
+    <div id="power" class="card-grid auto"></div>
+    <details class="more"><summary>Voltages <span id="voltage-count"></span></summary><div id="voltages" class="row-list compact"></div></details>
+  </section>
+  <section class="panel" data-page="sensors" id="rgb-panel" hidden>
+    <header class="section-head"><div><span class="eyebrow">A LITTLE PERSONALITY</span><h2>RGB lighting</h2><p>Devices reported by OpenRGB on this computer.</p></div></header>
+    <div id="rgb" class="card-grid auto"></div>
+    <p class="section-note">Change colours and effects in OpenRGB. The dashboard only shows what it reports.</p>
+  </section>
+
+  <!-- PROCESSES -->
+  <section class="panel" data-page="processes">
+    <header class="section-head"><div><span class="eyebrow">WHAT'S RUNNING</span><h2>Processes</h2><p>Programs running on the server, including inside your apps. Only names are shown.</p></div><span class="badge neutral" id="process-count">Waiting</span></header>
+    <div class="process-controls">
+      <label class="search"><span class="sr-only">Find a process</span><span aria-hidden="true">⌕</span><input type="search" id="process-search" placeholder="Name, app or number…" autocomplete="off"></label>
+      <label class="select">Sort by <select id="process-sort"><option value="cpu">Processor</option><option value="memory">Memory</option><option value="name">Name</option><option value="pid">Number</option></select></label>
+    </div>
+    <div class="table-scroll"><table class="process-table"><thead><tr><th scope="col">Process</th><th scope="col">App</th><th scope="col" class="num">Processor</th><th scope="col" class="num">Memory</th><th scope="col" class="num">Number</th></tr></thead><tbody id="process-rows"></tbody></table></div>
+    <div class="pager"><button class="button small secondary" type="button" id="process-prev">← Previous</button><span id="process-page" role="status"></span><button class="button small secondary" type="button" id="process-next">Next →</button></div>
+    <p class="section-note" id="process-note"></p>
+  </section>
+
+  <!-- HEALTH -->
+  <section class="panel" data-page="health">
+    <header class="section-head"><div><span class="eyebrow">ROOM TO BREATHE</span><h2>Drives</h2><p>Space and drive health (SMART).</p></div></header>
+    <div id="drives" class="card-grid three"></div>
+    <p class="section-note">A sleeping drive is not woken to check it, so its health can show as "Not checked yet".</p>
+  </section>
+  <section class="panel" data-page="health">
+    <header class="section-head"><div><span class="eyebrow">AFTER A RESTART</span><h2>Starts by itself</h2><p>What comes back on its own when the computer is switched on.</p></div></header>
+    <div id="startup" class="row-list"></div>
+  </section>
+  <section class="panel" data-page="health">
+    <header class="section-head"><div><span class="eyebrow">BEYOND "RUNNING"</span><h2>Checks &amp; monitoring</h2></div></header>
+    <div id="monitoring" class="card-grid two"></div>
+    <div id="readiness" class="row-list"></div>
+    <div id="updates"></div>
+  </section>
+
+  <!-- HELP -->
+  <section class="panel" data-page="help">
+    <header class="section-head"><div><span class="eyebrow">YOU DON'T HAVE TO GUESS</span><h2>Help when you need it</h2><p>Clear next steps, with the exact commands when you want them.</p></div></header>
+    <div class="card-grid two" id="help-cards"></div>
+  </section>
+  <section class="panel" data-page="help" id="help-errors">
+    <header class="section-head"><div><span class="eyebrow">ERROR CODES</span><h2>What an error code means</h2></div></header>
+    <div id="error-codes" class="row-list"></div>
+  </section>
+  <section class="panel" data-page="help">
+    <header class="section-head"><div><span class="eyebrow">ON YOUR PHONE, TABLET OR PC</span><h2>Use it like an app</h2></div></header>
+    <div id="install-help"></div>
+    <div class="callout"><strong>Sharing a problem?</strong><p>Download a short summary with versions and status counts only: no file paths, addresses or passwords. Read it before sharing.</p><button class="button secondary" type="button" id="export">Download summary</button></div>
+  </section>
+
+  <footer><span>Your server. Your things. <span class="rose">✦</span></span><span id="footer-status">Waiting for readings</span></footer>
+</main>
+</div>
+
+<nav class="tabbar" aria-label="Quick navigation">
+  <a href="#home" data-route="home"><span aria-hidden="true">⌂</span>Home</a>
+  <a href="#apps" data-route="apps"><span aria-hidden="true">▦</span>Apps</a>
+  <a href="#hardware" data-route="hardware"><span aria-hidden="true">▥</span>Hardware</a>
+  <a href="#attention" data-route="attention"><span aria-hidden="true">◇<b class="tab-count" data-count="issues" hidden></b></span>Attention</a>
+  <button type="button" id="more"><span aria-hidden="true">☰</span>More</button>
+</nav>
+
+<dialog id="dialog" aria-labelledby="dialog-title">
+  <div class="dialog-head"><div><span class="eyebrow" id="dialog-eyebrow">GUIDED HELP</span><h2 id="dialog-title">Help</h2></div><button id="close-dialog" class="icon-button" type="button" aria-label="Close">×</button></div>
+  <div id="dialog-content"></div>
+</dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

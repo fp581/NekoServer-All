@@ -523,3 +523,28 @@ class UsbPickerTests(unittest.TestCase):
         only_hdd = {'blockdevices': self.INVENTORY['blockdevices'][:2]}
         with self.assertRaisesRegex(RuntimeError, 'drive of its own'):
             photo_backup.select_external(copy.deepcopy(self.CONFIG), only_hdd, input_fn=lambda q='': '1', out_fn=lambda s: None)
+
+
+class ReleaseIdentityTests(unittest.TestCase):
+    def test_every_part_of_the_release_names_the_same_version(self):
+        """Releases are installed into immutable per-version folders (installer/releases/vX,
+        /usr/local/lib/nekoserver-*/vX). Two different releases with the same version
+        collide there and the upgrade is refused, so every place that names it must agree."""
+        import re
+        from neko_common import VERSION
+        project = Path(installer.__file__).parent
+        repo = project.parent
+        self.assertEqual(project.name, 'nekoserver-v' + VERSION)
+        cargo = (project / 'runtime/Cargo.toml').read_text()
+        self.assertEqual(re.search(r'^version = "([^"]+)"', cargo, re.M)[1], VERSION)
+        lock = (project / 'runtime/Cargo.lock').read_text()
+        self.assertIn(f'name = "nekoserver-runtime"\nversion = "{VERSION}"', lock)
+        self.assertEqual(json.loads((project / 'config.json').read_text())['project_name'], 'NekoServer v' + VERSION)
+        self.assertTrue((project / 'README.md').read_text().startswith(f'# NekoServer v{VERSION}\n'))
+        ci = repo / '.github/workflows/ci.yml'
+        if ci.is_file():  # not shipped inside a release folder copied on its own
+            self.assertIn(f'RELEASE_DIR: nekoserver-v{VERSION}', ci.read_text())
+        for doc in project.glob('*.md'):
+            for found in re.findall(r'(?:releases|nekoserver-[a-z]+)/v(\d+\.\d+\.\d+)', doc.read_text()):
+                self.assertEqual(found, VERSION, doc.name)
+

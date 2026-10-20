@@ -58,7 +58,10 @@ def launchers(config):
     for app,name,port in [('jellyfin','Jellyfin',8096),('navidrome','Music',4533),('seerr','Requests',5055)]:
         if app in config.get('media',{}).get('services',[]):files['nekoserver-'+app+'.desktop']=desktop_entry(name,f'/usr/bin/firefox --new-window http://127.0.0.1:{port}/','applications-multimedia')
     port=config.get('dashboard',{}).get('port',8787)
-    if type(port) is int and 1024<=port<=65535:files['nekoserver-dashboard.desktop']=desktop_entry('Control Room',f'/usr/bin/firefox --new-window http://127.0.0.1:{port}/','utilities-system-monitor')
+    if type(port) is int and 1024<=port<=65535:
+        # The dashboard's own launcher opens it in an app window (see modules/dashboard.py).
+        from modules.dashboard import LAUNCHER
+        files['nekoserver-dashboard.desktop']=desktop_entry('Control Room',str(LAUNCHER) if LAUNCHER.is_file() else f'/usr/bin/firefox --new-window http://127.0.0.1:{port}/','utilities-system-monitor')
     return files
 
 
