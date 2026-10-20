@@ -122,7 +122,7 @@ def private_mount_options(options, fstype):
     permissions; exFAT needs uid/gid 0 and masks hiding everything from others."""
     if fstype != 'exfat':
         return True
-    found = dict(o.split('=', 1) for o in options.split(',') if '=' in o)
+    found = {key: value for key, _, value in (o.partition('=') for o in options.split(',') if '=' in o)}
 
     def hidden(key):
         try:
@@ -242,12 +242,21 @@ def file_entry(path, problems):
     return None
 
 
+def plain_folder(value):
+    """A folder about to be walked, checked first (folder paths come from settings
+    files): absolute, with no '..' and no symlinks along the way."""
+    text = str(value)
+    if '\x00' in text or '..' in Path(text).parts or not Path(text).is_absolute():
+        raise RuntimeError('A folder to read must be a plain absolute path: ' + text)
+    return safe_path(Path(text))
+
+
 def strict_files(root, skip=None, skip_dirs=()):
     """Every regular file under `root` as (path, size), strictly: an unreadable folder or
     file, a symlink or a special file is an error, never silently left out. `skip(here,
     name)` names files that are not data (temporary or partial files); `skip_dirs` are
     folder names left out at the top level. Used by restores and media imports."""
-    root = Path(root)
+    root = plain_folder(root)
     problems, out = [], []
 
     def unreadable(error):

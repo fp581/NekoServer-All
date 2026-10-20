@@ -258,7 +258,10 @@ function withFocus(draw) {
   const key = document.activeElement?.dataset?.focus;
   draw();
   if (!key) { return; }
-  const again = [...document.querySelectorAll('[data-focus]')].find(n => n.dataset.focus === key);
+  let again = null;
+  for (const n of document.querySelectorAll('[data-focus]')) {
+    if (n.dataset.focus === key) { again = n; break; }
+  }
   again?.focus({preventScroll: true});
 }
 function empty(message) { return el('p', 'empty', message); }
@@ -762,7 +765,7 @@ function renderHardware() {
   const cards = [processorCard(cpu), memoryCard(object(live.memory)), ...list(live.gpus).map(gpuCard), ...list(live.npus).map(npuCard), waitingWorkCard(cpu)];
   put('load-cards', cards.filter(Boolean));
   const cores = values(cpu.cores);
-  put('cpu-cores', cores.length ? cores.map(coreCell) : [empty('Core readings appear after the second sample.')]);
+  put('cpu-cores', cores.length ? cores.map((value, index) => coreCell(value, index)) : [empty('Core readings appear after the second sample.')]);
   const networks = list(live.network);
   put('network', networks.length ? networks.map(networkCard) : [empty('No network card reported.')]);
   put('disk-io', list(live.disks).map(diskCard));
@@ -1148,7 +1151,7 @@ function preferences() {
 function notify() {
   if (statusStale() || !alertsOn()) { return; }
   const urgent = state.issues.filter(i => i.level === 'critical');
-  for (const id of [...notified]) {
+  for (const id of notified) { // deleting while iterating a Set is safe
     if (!urgent.some(i => i.id === id)) { notified.delete(id); }
   }
   for (const issue of urgent.slice(0, 3).filter(i => !notified.has(i.id))) {
