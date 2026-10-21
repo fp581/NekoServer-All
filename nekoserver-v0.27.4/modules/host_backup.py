@@ -47,8 +47,40 @@ def settings(config):
     return opts
 
 
-def guard(config):
-    """Resolve the selected desktop identity at install time, never at timer time."""
+def previous_user(target=None):
+    """The account host snapshots already back up (None when not installed yet)."""
+    try:
+        saved = json.loads((target or PRIVATE).read_text()).get('host_backup', {})
+    except (OSError, ValueError, AttributeError):
+        return None
+    try:
+        if isinstance(saved.get('user'), str):
+            return pwd.getpwnam(saved['user'])
+        if type(saved.get('steam_uid')) is int:
+            return pwd.getpwuid(saved['steam_uid'])
+    except KeyError:
+        return None
+    return None
+
+
+def choose_user(config, opts, previous):
+    selected = opts.get('user', 'auto')
+    if selected == 'auto':
+        # Keep backing up the same person: setup run later by another administrator
+        # (or with sudo from another account) must not switch whose files are copied.
+        if previous is not None:
+            return previous
+        selected = os.environ.get('SUDO_USER') or config.get('tv', {}).get('user', 'auto')
+    if selected == 'auto':
+        return pwd.getpwuid(config.get('media', {}).get('uid', 1000))
+    if isinstance(selected, str) and re.fullmatch(r'[a-z_][a-z0-9_-]*[$]?', selected):
+        return pwd.getpwnam(selected)
+    raise RuntimeError('Choose a valid host backup user')
+
+
+def guard(config, previous=None):
+    """Resolve the selected desktop identity at install time, never at timer time.
+    With user "auto", the account chosen the first time stays chosen."""
     opts = settings(config)
     sources = []
     def add(path, optional=True):
@@ -68,11 +100,7 @@ def guard(config):
         add(path)
     user = None
     if opts.get('steam', True) or opts.get('extra_paths'):
-        selected = opts.get('user', 'auto')
-        if selected == 'auto': selected = os.environ.get('SUDO_USER') or config.get('tv', {}).get('user', 'auto')
-        if selected == 'auto': user = pwd.getpwuid(config.get('media', {}).get('uid', 1000))
-        elif isinstance(selected, str) and re.fullmatch(r'[a-z_][a-z0-9_-]*[$]?', selected): user = pwd.getpwnam(selected)
-        else: raise RuntimeError('Choose a valid host backup user')
+        user = choose_user(config, opts, previous)
         home = safe_path(user.pw_dir)
         if user.pw_uid < 1000 or not home.is_absolute() or not home.is_dir() or home.stat().st_uid != user.pw_uid:
             raise RuntimeError('Host backup needs an existing non-root user with an owned home')
@@ -98,6 +126,7 @@ def guard(config):
         add('/var/lib/samba')
     value = native_runtime.storage_config(config)
     value['host_backup'] = {'sources': sources, 'samba': samba, 'steam_uid': user.pw_uid if user and opts.get('steam', True) else None,
+                            'user': user.pw_name if user else None,
                             'minimum_free_bytes': opts.get('minimum_free_gb', 2)*1024**3,
                             'keep_snapshots': opts.get('keep_snapshots', 14)}
     return value
@@ -111,7 +140,7 @@ def refresh(config, log, target=None):
     if not target.is_file():
         return False
     try:
-        wanted = guard(config)
+        wanted = guard(config, previous_user(target))
     except (KeyError, RuntimeError) as exc:
         log(f'Host snapshots: list not refreshed ({exc})')
         return False
@@ -147,7 +176,7 @@ def run(context):
     if os.geteuid() != 0:
         raise RuntimeError('Host snapshots require root and runtime.backend=rust')
     verify_storage(context.config)
-    try: options = guard(context.config)
+    try: options = guard(context.config, previous_user())
     except KeyError:
         return {'status': 'needs_setup', 'reason': 'Set host_backup.user to the existing desktop user and reapply'}
     project = Path(__file__).resolve().parents[1]

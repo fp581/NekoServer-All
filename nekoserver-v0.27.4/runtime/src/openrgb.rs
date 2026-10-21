@@ -57,6 +57,17 @@ pub struct Mode {
     colors: Vec<[u8; 3]>,
 }
 impl Mode {
+    /// A mode that shows LEDs' own colours (where a steady colour is set), not an
+    /// animation.
+    pub fn is_steady(&self) -> bool {
+        const MODE_COLORS_PER_LED: u32 = 1;
+        ["direct", "custom", "static"].contains(&self.name.to_lowercase().as_str())
+            || self.color_mode == MODE_COLORS_PER_LED
+    }
+    /// The colours this effect runs with (empty when it makes its own).
+    pub fn effect_colors(&self) -> &[[u8; 3]] {
+        &self.colors
+    }
     /// Does this effect take colours chosen by the user?
     pub fn takes_color(&self) -> bool {
         self.colors_max > 0
@@ -230,7 +241,9 @@ pub fn legacy_identity(d: &Device) -> String {
 }
 /// A serial number that really tells devices apart: not empty, not a placeholder
 /// ("0000", "Default string"…), and not shared with another device.
-fn usable_serial<'a>(d: &'a Device, all: &[Device]) -> Option<&'a str> {
+/// `same_name_only`: count a clash only between devices with the same name (0.27.3 on);
+/// 0.27.2 counted it between any devices.
+fn serial_checked<'a>(d: &'a Device, all: &[Device], same_name_only: bool) -> Option<&'a str> {
     let serial = d.serial.trim();
     let placeholder = serial.len() < 4
         || serial
@@ -248,7 +261,10 @@ fn usable_serial<'a>(d: &'a Device, all: &[Device]) -> Option<&'a str> {
     // the same serial string can come and go without renaming this one.
     let shared = all
         .iter()
-        .filter(|o| o.serial.trim() == serial && legacy_identity(o) == legacy_identity(d))
+        .filter(|o| {
+            o.serial.trim() == serial
+                && (!same_name_only || legacy_identity(o) == legacy_identity(d))
+        })
         .count()
         > 1;
     (!placeholder && !shared).then_some(serial)
@@ -290,11 +306,14 @@ fn numbered(base: Vec<String>) -> Vec<String> {
 /// and description, plus a usable serial number or else a stable connection place.
 /// Devices that still look the same are numbered in the order OpenRGB lists them.
 pub fn identities(devices: &[Device]) -> Vec<String> {
+    identities_with(devices, true)
+}
+fn identities_with(devices: &[Device], same_name_only: bool) -> Vec<String> {
     numbered(
         devices
             .iter()
             .map(|d| {
-                match usable_serial(d, devices)
+                match serial_checked(d, devices, same_name_only)
                     .map(|s| format!("serial {s}"))
                     .or_else(|| stable_location(d))
                 {
@@ -306,8 +325,9 @@ pub fn identities(devices: &[Device]) -> Vec<String> {
     )
 }
 /// The names earlier releases kept lighting under, for each device: 0.27.0 (name and
-/// description) and 0.27.1 (plus the raw location or serial).
-pub fn earlier_identities(devices: &[Device]) -> Vec<[String; 2]> {
+/// description), 0.27.1 (plus the raw location or serial) and 0.27.2 (a serial only
+/// when no other device at all had it, else the stable location). Newest last.
+pub fn earlier_identities(devices: &[Device]) -> Vec<[String; 3]> {
     let v1 = numbered(
         devices
             .iter()
@@ -322,10 +342,11 @@ pub fn earlier_identities(devices: &[Device]) -> Vec<[String; 2]> {
             })
             .collect(),
     );
+    let v2 = identities_with(devices, false);
     devices
         .iter()
-        .zip(v1)
-        .map(|(d, v1)| [legacy_identity(d), v1])
+        .zip(v1.into_iter().zip(v2))
+        .map(|(d, (v1, v2))| [legacy_identity(d), v1, v2])
         .collect()
 }
 
@@ -510,6 +531,13 @@ pub mod tests {
         b
     }
 
+    /// Put a device in mode `active`, with that mode's colour mode and colours.
+    pub fn in_mode(d: &mut Device, active: i32, color_mode: u32, colors: Vec<[u8; 3]>) {
+        d.active_mode = active;
+        let m = &mut d.modes[active as usize];
+        m.color_mode = color_mode;
+        m.colors = colors;
+    }
     /// Requests a stand-in server received, as (device, request id).
     pub type Requests = std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>>;
     /// A stand-in OpenRGB server: answers with `devices` and records every request as

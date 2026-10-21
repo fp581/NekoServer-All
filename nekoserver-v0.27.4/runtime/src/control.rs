@@ -183,21 +183,31 @@ fn shows(d: &openrgb::Device, want: &Value) -> bool {
         .and_then(openrgb::parse_color)
         .unwrap_or([255, 255, 255]);
     let brightness = want["brightness"].as_u64().unwrap_or(100).min(100) as u8;
+    let on = want["off"] != true && brightness > 0;
+    let expected = if on {
+        openrgb::dimmed(color, brightness)
+    } else {
+        [0, 0, 0]
+    };
+    let Some(active) = d.modes.get(d.active_mode.max(0) as usize) else {
+        return false;
+    };
     let effect = want["effect"]
         .as_str()
         .filter(|e| !e.is_empty() && !["Direct", "Custom"].contains(e));
-    if want["off"] != true && brightness > 0 {
-        if let Some(effect) = effect {
-            let active = d.modes.get(d.active_mode.max(0) as usize);
-            return active.is_some_and(|m| m.name == effect);
+    match effect.filter(|_| on) {
+        // An effect: the right one, running with the chosen colour when it takes one.
+        Some(effect) => {
+            active.name == effect
+                && (!active.takes_color()
+                    || (!active.effect_colors().is_empty()
+                        && active.effect_colors().iter().all(|c| *c == expected)))
+        }
+        // A steady colour (or off): a steady mode, every LED showing that colour.
+        None => {
+            active.is_steady() && !d.colors.is_empty() && d.colors.iter().all(|c| *c == expected)
         }
     }
-    let expected = if want["off"] == true || brightness == 0 {
-        [0, 0, 0]
-    } else {
-        openrgb::dimmed(color, brightness)
-    };
-    !d.colors.is_empty() && d.colors.iter().all(|c| *c == expected)
 }
 fn light_from(request: &Value, previous: &Value) -> std::result::Result<Value, Value> {
     let mut want = if previous.is_object() {
@@ -262,7 +272,8 @@ impl Lighting {
         Ok((client, named))
     }
     /// Choices saved by earlier releases under other names (0.27.0: name and
-    /// description; 0.27.1: plus the raw location) move to each device's lasting name.
+    /// description; 0.27.1: plus the raw location; 0.27.2: serial only when no other
+    /// device had it) move to each device's lasting name.
     /// A name several devices shared gives its choice to all of them, as before.
     fn adopt_legacy(&mut self, named: &[(String, openrgb::Device)]) {
         let devices = named.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>();
@@ -272,7 +283,7 @@ impl Lighting {
             if self.chosen.get(key).is_some() {
                 continue;
             }
-            // The 0.27.1 name is the more specific one, so it is tried first.
+            // The newest earlier name is the most specific one, so it is tried first.
             if let Some(want) = olds
                 .iter()
                 .rev()
@@ -793,7 +804,7 @@ fn read_journal(path: &Path) -> Journal {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Journal::Absent,
         Err(_) => Journal::Unreadable,
         Ok(text) => match serde_json::from_str::<Value>(&text) {
-            Ok(v) if v.is_object() => Journal::Records(v),
+            Ok(v) if fans::originals_valid(&v) => Journal::Records(v),
             _ => Journal::Unreadable,
         },
     }
@@ -1528,6 +1539,126 @@ mod tests {
         s.lights.lock().unwrap().devices = None;
         let status = answer(&s, &json!({"op": "status"}));
         assert_eq!(status["lights"]["devices"][0]["chosen"]["color"], "#123456");
+    }
+
+    /// A record with missing or wrong fields is never "restored" (that switched the fan
+    /// to mode 2 and deleted the record): it is kept and reported.
+    #[test]
+    fn malformed_recovery_records_are_kept_not_applied() {
+        let board = fans::tests::Board::new("journal-fields");
+        let run = board.0.join("run");
+        fs::create_dir_all(&run).unwrap();
+        let output = fans::discover(&board.hwmon()).outputs[0].id.clone();
+        board.set("pwm1_enable", "1"); // taken over by NekoServer
+        for bad in [
+            json!({&output: {"enable": "", "pwm": "128"}}),
+            json!({&output: {"enable": 5, "pwm": "128"}}),
+            json!({&output: {"enable": "5", "pwm": "300"}}),
+            json!({&output: {"enable": "5"}}),
+            json!({&output: "5"}),
+        ] {
+            common::atomic_json(&run.join(JOURNALS[0]), &bad).unwrap();
+            let (restored, _) = restore_journals(&board.hwmon(), &run);
+            assert_eq!(restored, 0, "{bad}");
+            assert_eq!(board.get("pwm1_enable"), "1", "nothing changed for {bad}");
+            assert_eq!(
+                common::json(&run.join(JOURNALS[0]), 100000),
+                bad,
+                "kept as it was"
+            );
+            assert_eq!(unreadable_journals(&run), vec![run.join(JOURNALS[0])]);
+            assert!(report_unreadable(&run).is_some());
+        }
+        // A record with valid fields still works.
+        common::atomic_json(
+            &run.join(JOURNALS[0]),
+            &json!({&output: {"enable": "5", "pwm": "128"}}),
+        )
+        .unwrap();
+        assert_eq!(restore_journals(&board.hwmon(), &run).0, 1);
+        assert_eq!(board.get("pwm1_enable"), "5");
+    }
+
+    /// A reset device is noticed whatever it shows instead: another colour, another
+    /// brightness, an effect with the wrong colour, or an animation.
+    #[test]
+    fn a_device_shows_its_choice_only_when_everything_matches() {
+        let body = openrgb::tests::device_bytes(
+            "Strip",
+            &[("Direct", 0), ("Breathing", 1), ("Rainbow", 0)],
+            2,
+            false,
+        );
+        let device = || openrgb::parse_device(0, &body).unwrap(); // LEDs at #ff0080, Direct
+        let steady = json!({"color": "#ff0080", "brightness": 100});
+        assert!(shows(&device(), &steady));
+        assert!(!shows(&device(), &json!({"color": "#00ff00"})));
+        assert!(
+            !shows(&device(), &json!({"color": "#ff0080", "brightness": 50})),
+            "brightness counts"
+        );
+        // An animation that happens to leave the LED colours alone is not a steady colour.
+        let mut rainbow = device();
+        openrgb::tests::in_mode(&mut rainbow, 2, 0, vec![]);
+        assert!(!shows(&rainbow, &steady));
+        assert!(
+            shows(&rainbow, &json!({"effect": "Rainbow"})),
+            "an effect with its own colours"
+        );
+        // An effect that takes a colour must run with the chosen one, dimmed.
+        let mut breathing = device();
+        openrgb::tests::in_mode(&mut breathing, 1, 2, vec![openrgb::dimmed([0, 255, 0], 40)]);
+        assert!(shows(
+            &breathing,
+            &json!({"effect": "Breathing", "color": "#00ff00", "brightness": 40})
+        ));
+        assert!(!shows(
+            &breathing,
+            &json!({"effect": "Breathing", "color": "#00ff00", "brightness": 100})
+        ));
+        assert!(!shows(
+            &breathing,
+            &json!({"effect": "Breathing", "color": "#ff0000", "brightness": 40})
+        ));
+        assert!(!shows(&breathing, &json!({"effect": "Rainbow"})));
+        // Off: a steady mode with every LED dark.
+        let mut dark = device();
+        dark.colors = vec![[0, 0, 0]; 2];
+        assert!(shows(&dark, &json!({"off": true, "color": "#ff0080"})));
+        assert!(!shows(&device(), &json!({"off": true})));
+    }
+
+    /// Two different devices with the same serial string: 0.27.2 named them by their
+    /// i2c place, 0.27.3 by serial. Choices saved by 0.27.2 must follow.
+    #[test]
+    fn lighting_saved_by_0_27_2_moves_to_the_serial_names() {
+        let modes = [("Direct", 0)];
+        let stick =
+            |name, place| openrgb::tests::device_full(name, "SAME5678", place, &modes, 2, false);
+        let devices = vec![
+            stick("Vengeance", "I2C: /dev/i2c-1, address 0x58"),
+            stick("Dominator", "I2C: /dev/i2c-1, address 0x59"),
+        ];
+        let (port, _) = openrgb::tests::fake_server(devices, Duration::ZERO);
+        let board = fans::tests::Board::new("v272");
+        let s = service(&board, None, port);
+        s.lights.lock().unwrap().chosen = json!({
+            "Vengeance · Desk strip · I2C: i2c, address 0x58": {"color": "#111111"},
+            "Dominator · Desk strip · I2C: i2c, address 0x59": {"color": "#222222"},
+        });
+        let status = answer(&s, &json!({"op": "status"}));
+        let shown = status["lights"]["devices"].as_array().unwrap();
+        assert_eq!(shown[0]["key"], "Vengeance · Desk strip · serial SAME5678");
+        assert_eq!(shown[0]["chosen"]["color"], "#111111");
+        assert_eq!(shown[1]["chosen"]["color"], "#222222");
+        let mut l = s.lights.lock().unwrap();
+        assert_eq!(l.chosen.as_object().unwrap().len(), 2, "{}", l.chosen);
+        assert!(l.apply(None).is_ok(), "every saved light found");
+        let saved = common::json(&board.0.join("config/lights.json"), 100000);
+        assert_eq!(
+            saved["Dominator · Desk strip · serial SAME5678"]["color"],
+            "#222222"
+        );
     }
 
     #[test]

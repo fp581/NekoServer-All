@@ -1,5 +1,5 @@
 {
-  "version": "0.27.3",
+  "version": "0.27.4",
   "target": "x86_64-unknown-linux-musl",
   "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
   "binary_sha256": "6793bb1b275a83f20f647070034a9738290efed05ef00996430fb23c3829d0f2",

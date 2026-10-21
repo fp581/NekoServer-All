@@ -9,7 +9,7 @@ Your server's home page: open your apps, see backups and drives, and watch the h
 | On the server | **http://127.0.0.1:8787/**, or **NekoServer Dashboard** in the app menu (opens in its own window) |
 | Phone, tablet or another computer | **https://yourserver.tailXXXX.ts.net:8448/** with Tailscale switched on (setup prints your exact address) |
 
-The Tailscale address only works for devices signed in to your own Tailscale account (Tailscale Serve, never Funnel). To keep the dashboard on the server only, set `"remote": false` under `"dashboard"` in your settings and run `sudo bash install.sh` again. The port 8787 can be changed with `"port"` under `"dashboard"`.
+The Tailscale address only works for devices signed in to your own Tailscale account (Tailscale Serve, never Funnel). To keep the dashboard on the server only, set `"remote": false` under `"dashboard"` in your settings and run `sudo bash install.sh` again. Connecting Tailscale after the dashboard was installed is fine: the next setup run gives the dashboard its Tailscale address. The port 8787 can be changed with `"port"` under `"dashboard"`.
 
 ### Use it like an app (no Chrome needed)
 
@@ -51,7 +51,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 A missing reading shows "—" or "No load reading", never a made-up 0. If a sensor you expect is missing, see Help → *A sensor is missing*. Most motherboard chips need `lm_sensors` (`sudo pacman -S lm_sensors`, then `sudo sensors-detect` and a restart). To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.27.3/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.27.4/nekoserver-runtime hardware
 ```
 
 ## Fans & lights
@@ -107,7 +107,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.27.3` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.27.4` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ## What runs, and what it can see
 

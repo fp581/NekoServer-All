@@ -1,4 +1,4 @@
-# NekoServer v0.27.3
+# NekoServer v0.27.4
 
 NekoServer turns a PC running **Arch Linux** or **Nyarch** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -52,7 +52,7 @@ Open a **terminal**, logged in as your normal user, and run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer---Arch-based-media-server.git
-cd NekoServer---Arch-based-media-server/nekoserver-v0.27.3
+cd NekoServer---Arch-based-media-server/nekoserver-v0.27.4
 sudo bash install.sh
 ```
 

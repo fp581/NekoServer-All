@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.27.4 — 2026-10-21
+
+### Fixed (review of v0.27.3)
+- **A damaged fan record is never "restored".** A recovery record with missing or wrong fields (valid JSON otherwise) switched the fan to mode 2, reported success and deleted the record. Records are now checked field by field; one that isn't a real setting is kept, moved aside and reported, and nothing is changed.
+- **A save can't be undone by an older reading.** A reading asked for just before saving 80 % could arrive afterwards and put 40 % back in the editor, and renaming the fan then saved 40 % over the good change (reproduced). Readings asked for before the last save are no longer taken into the editor.
+- **"All off" (and "Apply to all") win over edits still on their way.** A colour change sent a moment later could turn a light back on (reproduced).
+- **A reset device is noticed whatever it shows.** The check accepted the right effect with the wrong colour or brightness, and an animation as a steady colour. It now checks the effect and its colour, or a steady mode with every light at the chosen colour.
+- **Remote access set up after the dashboard now reaches it.** With the dashboard installed before Tailscale was connected, setting up remote access created the phone address, but the dashboard refused it (E41, reproduced). Every setup run now gives the dashboard its current Tailscale name (and restarts it) when that changed.
+- **Lighting saved by 0.27.2 isn't lost.** Two different devices sharing a serial string were named by their i2c place in 0.27.2 and by serial in 0.27.3, and the 0.27.2 names weren't moved over (reproduced: both lights lost their choice). 0.27.2 names are now moved too.
+- **Host snapshots keep backing up the same person.** With `"user": "auto"`, setup run by another administrator replaced the first user's Steam backup with their own. The account chosen the first time now stays chosen until it is named differently.
+
+### Changed
+- Version 0.27.4; the release folder is now `nekoserver-v0.27.4`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.3 — 2026-10-21
 
 ### Fixed (review of v0.27.2)

@@ -252,5 +252,58 @@ class SwitchingOffAndBackupTests(unittest.TestCase):
         self.assertIn('host_backup', installer.REFRESHED)
 
 
+class HostBackupUserTests(unittest.TestCase):
+    def test_auto_keeps_the_account_chosen_the_first_time(self):
+        from unittest import mock
+        from modules import host_backup
+        first, admin = mock.Mock(pw_name='nekofan', pw_uid=1000), mock.Mock(pw_name='admin2', pw_uid=1001)
+        users = {'nekofan': first, 'admin2': admin}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(host_backup.pwd, 'getpwnam', side_effect=users.__getitem__), \
+                mock.patch.object(host_backup.pwd, 'getpwuid', side_effect={1000: first, 1001: admin}.__getitem__), \
+                mock.patch.dict(host_backup.os.environ, {'SUDO_USER': 'admin2'}):
+            target = Path(d) / 'host.json'
+            self.assertIsNone(host_backup.previous_user(target))
+            # Not installed yet: the person running setup.
+            self.assertIs(host_backup.choose_user({}, {'user': 'auto'}, None), admin)
+            # Installed for nekofan: another administrator running setup changes nothing.
+            target.write_text('{"host_backup": {"user": "nekofan"}}')
+            self.assertIs(host_backup.choose_user({}, {'user': 'auto'}, host_backup.previous_user(target)), first)
+            # Lists from before 0.27.4 only kept the Steam account's number.
+            target.write_text('{"host_backup": {"steam_uid": 1000}}')
+            self.assertIs(host_backup.previous_user(target), first)
+            # A user named in the settings always wins.
+            self.assertIs(host_backup.choose_user({}, {'user': 'admin2'}, first), admin)
+
+
+class RemoteAccessLaterTests(unittest.TestCase):
+    def test_remote_access_set_up_later_reaches_the_web_service(self):
+        from unittest import mock
+        unit = dashboard.units(Path('/srv/n'), Path('/usr/local/lib/nekoserver-dashboard/v1'), Path('/etc/x.json'), 8787, 60)[dashboard.SERVICE]
+        self.assertNotIn('--public-host', unit)  # installed before Tailscale was connected
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(dashboard, 'systemctl') as ctl:
+            path = Path(d) / dashboard.SERVICE
+            path.write_text(unit)
+            logs = []
+            with mock.patch.object(dashboard, 'tailnet_name', return_value='neko.tail1234.ts.net'):
+                self.assertTrue(dashboard.refresh_public_host({}, logs.append, path))
+                self.assertIn('--port 8787 --public-host neko.tail1234.ts.net\n', path.read_text())
+                self.assertIn(('restart', dashboard.SERVICE), [c.args for c in ctl.call_args_list])
+                ctl.reset_mock()
+                self.assertFalse(dashboard.refresh_public_host({}, logs.append, path))  # already right
+                ctl.assert_not_called()
+            # A new Tailscale name replaces the old one; remote access off removes it.
+            with mock.patch.object(dashboard, 'tailnet_name', return_value='neko2.tail1234.ts.net'):
+                self.assertTrue(dashboard.refresh_public_host({}, logs.append, path))
+            self.assertEqual(path.read_text().count('--public-host'), 1)
+            self.assertIn('neko2.tail1234.ts.net', path.read_text())
+            with mock.patch.object(dashboard, 'tailnet_name', return_value=None):
+                self.assertTrue(dashboard.refresh_public_host({}, logs.append, path))
+            self.assertEqual(path.read_text(), unit)
+            # A unit someone else wrote is left alone.
+            path.write_text('[Service]\nExecStart=/x serve --port 1\n')
+            with mock.patch.object(dashboard, 'tailnet_name', return_value='neko.tail1234.ts.net'):
+                self.assertFalse(dashboard.refresh_public_host({}, logs.append, path))
+
+
 if __name__ == '__main__':
     unittest.main()
