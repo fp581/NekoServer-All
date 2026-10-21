@@ -51,7 +51,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 A missing reading shows "—" or "No load reading", never a made-up 0. If a sensor you expect is missing, see Help → *A sensor is missing*. Most motherboard chips need `lm_sensors` (`sudo pacman -S lm_sensors`, then `sudo sensors-detect` and a restart). To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.27.6/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.27.7/nekoserver-runtime hardware
 ```
 
 ## Fans & lights
@@ -66,7 +66,7 @@ Like a fan-control app, built in (and written in Rust, so it is quick and light)
 
 **Who can change them:** on the server itself, anyone using the dashboard. Phones, tablets and other computers (through Tailscale) can always look, but need the **PIN** chosen during setup to change anything; a device stays unlocked for 12 hours or until the page is closed. Five wrong PINs lock changes for 5 minutes. Only a slow, salted hash of the PIN is stored (`/etc/nekoserver-control/pin.json`). To choose a new PIN: `sudo rm /etc/nekoserver-control/pin.json`, then run setup again in a terminal.
 
-To leave fans and lights alone completely, set `"fan_control": false` under `"dashboard"` in your settings (or `"rgb": false` for lighting only) and run setup again: the motherboard takes over again.
+To leave fans and lights alone completely, set `"fan_control": false` under `"dashboard"` in your settings (or `"rgb": false` for lighting only) and run setup again: the motherboard takes over again. With `"rgb": false` NekoServer leaves lighting completely alone: it never reads or changes it, not even through an OpenRGB you run yourself.
 
 ## Error codes
 
@@ -107,7 +107,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.27.6` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.27.7` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ## What runs, and what it can see
 

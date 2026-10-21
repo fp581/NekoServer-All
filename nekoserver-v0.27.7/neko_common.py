@@ -10,7 +10,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.27.6'
+VERSION = '0.27.7'
 
 TIMEZONE_PATTERN = re.compile(r'UTC|[A-Za-z_]+(?:/[A-Za-z0-9_+-]+)+')
 ZONEINFO = Path('/usr/share/zoneinfo')

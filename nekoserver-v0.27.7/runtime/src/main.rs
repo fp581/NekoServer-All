@@ -93,7 +93,7 @@ fn entry() -> Result<()> {
         "notify" => vec!["config", "snapshot", "state", "runtime", "test"],
         "media-health" => vec!["config", "output"],
         "serve" => vec!["assets", "status", "port", "public-host", "control"],
-        "control" => vec!["restore", "set-pin"],
+        "control" => vec!["restore", "set-pin", "no-lights"],
         "collect" => vec!["config", "output", "state"],
         "archive" => vec!["source", "archive", "min-age", "apply"],
         "copy" => vec!["source", "dest", "uuid", "apply"],
@@ -143,6 +143,7 @@ fn entry() -> Result<()> {
             || key == "test"
             || key == "restore"
             || key == "set-pin"
+            || key == "no-lights"
         {
             "true".into()
         } else {

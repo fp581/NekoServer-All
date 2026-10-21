@@ -66,7 +66,8 @@ def control_units(code,lighting):
     binary=str(code/"nekoserver-runtime")
     after='After=systemd-modules-load.service'+(' '+OPENRGB+'\nWants='+OPENRGB if lighting else '')
     found={CONTROL:'[Unit]\nDescription=NekoServer fan and light control\n'+after+'\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
-        f'ExecStart={binary} control\n'
+        # Lighting off: the service never reads, asks or changes any lighting.
+        f'ExecStart={binary} control'+('' if lighting else ' --no-lights')+'\n'
         # Whenever it stops (a crash too), every fan goes back to the motherboard.
         f'ExecStopPost={binary} control --restore\n'
         'Restart=always\nRestartSec=3\nGroup='+CONTROL_GROUP+'\nUMask=0077\n'
@@ -252,15 +253,18 @@ def systemctl(*args,timeout=60):
 CONTROL_JOURNALS=(Path('/run/nekoserver-control/originals.json'),Path('/run/nekoserver-control/originals-detect.json'))
 
 def stop_control(units):
-    """Fan and light control switched off: the services must really stop, and every
-    fan must be back with the motherboard, before setup carries on."""
+    """Fan and light control (or just lighting) switched off: the services must really
+    stop, and when fan control stops every fan must be back with the motherboard,
+    before setup carries on."""
     result=subprocess.run(['systemctl','disable','--now',*units],capture_output=True,text=True,timeout=120, check=False)
     if result.returncode:
         raise RuntimeError('Fan and light control could not be switched off ('+(result.stderr or '').strip()[:200]+'). Check: systemctl status '+' '.join(units))
     for unit in units:
         if subprocess.run(['systemctl','is-active','--quiet',unit],timeout=30,check=False).returncode==0:
             raise RuntimeError(f'{unit} is still running after being switched off. Check: systemctl status {unit}')
-    if any(p.exists() for p in CONTROL_JOURNALS):
+    # Fan records are only left over when the fan service itself stopped: while it runs
+    # (lighting switched off on its own) they belong to the fans it still controls.
+    if CONTROL in units and any(p.exists() for p in CONTROL_JOURNALS):
         raise RuntimeError('Fan control stopped, but some fans did not go back to the motherboard. Check the fans, then run: sudo systemctl start nekoserver-control.service (it keeps trying), or restart the computer')
 
 def start_services(definitions,code,control,log):

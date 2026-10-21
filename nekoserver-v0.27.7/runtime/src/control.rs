@@ -516,17 +516,24 @@ pub struct Service {
     pub gate: Mutex<Gate>,
     /// The last lighting answer, shown while OpenRGB is busy answering someone else.
     shown_lights: Mutex<Value>,
+    /// Lighting switched on in setup. When off, OpenRGB is never asked or changed.
+    lighting: bool,
 }
 impl Service {
-    pub fn new(fans: Fans, lights: Lighting, gate: Gate) -> Arc<Self> {
+    /// `lighting`: switched on in setup (when off, OpenRGB is never asked or changed).
+    pub fn new(fans: Fans, lights: Lighting, gate: Gate, lighting: bool) -> Arc<Self> {
         Arc::new(Service {
             fans: Mutex::new(fans),
             lights: Mutex::new(lights),
             gate: Mutex::new(gate),
             shown_lights: Mutex::new(json!({"status": "not_running", "devices": []})),
+            lighting,
         })
     }
     fn lights_status(&self) -> Value {
+        if !self.lighting {
+            return json!({"status": "disabled", "devices": []});
+        }
         let fresh = self.lights.try_lock().ok().map(|mut l| l.status());
         let mut shown = self.shown_lights.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(v) = fresh {
@@ -585,6 +592,9 @@ pub fn answer(service: &Arc<Service>, request: &Value) -> Value {
                 f.cancel.store(true, Ordering::SeqCst);
             }
             json!({"ok": true})
+        }
+        "light" if !service.lighting => {
+            refuse("E42", "Lighting is switched off in setup (\"rgb\": false)")
         }
         "light" => service
             .lights
@@ -959,8 +969,10 @@ pub fn run(a: &Args) -> Result<()> {
     }
     let pin = Some(common::json(&config.join("pin.json"), 64000))
         .filter(|v| v["format"] == "neko-pin-v1");
+    // With lighting switched off in setup, saved lighting is not even read.
+    let lighting = !a.flag("no-lights");
     let chosen = Some(common::json(&config.join("lights.json"), 1_000_000))
-        .filter(Value::is_object)
+        .filter(|v| lighting && v.is_object())
         .unwrap_or_else(|| json!({}));
     let controller = Controller::new(fans::discover(&hwmon), load_settings(&config));
     let mut fans_state = Fans::new(controller, config.clone(), run_dir.clone());
@@ -970,9 +982,12 @@ pub fn run(a: &Args) -> Result<()> {
         fans_state,
         Lighting::new(chosen, openrgb::PORT, config),
         Gate::new(pin),
+        lighting,
     );
     serve_socket(service.clone())?;
-    retry_lights(service.clone());
+    if lighting {
+        retry_lights(service.clone());
+    }
     let mut rediscovered = Instant::now();
     while !STOP.load(Ordering::SeqCst) {
         if let Ok(mut f) = service.fans.lock() {
@@ -1024,6 +1039,7 @@ mod tests {
             Fans::new(controller, config, run_dir),
             lights,
             Gate::new(pin.map(|p| pin_record(p, "salt"))),
+            true,
         )
     }
     fn first_output(s: &Arc<Service>, n: usize) -> String {
@@ -1662,6 +1678,48 @@ mod tests {
         assert_eq!(
             saved["Dominator · Desk strip · serial SAME5678"]["color"],
             "#222222"
+        );
+    }
+
+    /// RGB switched off in setup: OpenRGB is never asked or changed, even when one is
+    /// running (its own app with the SDK server on), and lighting changes are refused.
+    #[test]
+    fn lighting_switched_off_never_touches_openrgb() {
+        let body = openrgb::tests::device_bytes("Strip", &[("Direct", 0)], 2, false);
+        let (port, seen) = openrgb::tests::fake_server(vec![body], Duration::ZERO);
+        let board = fans::tests::Board::new("no-lights");
+        let config = board.0.join("config");
+        let run_dir = board.0.join("run");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&run_dir).unwrap();
+        let controller = Controller::new(fans::discover(&board.hwmon()), BTreeMap::new());
+        let s = Service::new(
+            Fans::new(controller, config.clone(), run_dir),
+            Lighting::new(json!({}), port, config),
+            Gate::new(None),
+            false,
+        );
+        let status = answer(&s, &json!({"op": "status"}));
+        assert_eq!(status["lights"]["status"], "disabled");
+        let r = answer(
+            &s,
+            &json!({"op": "light", "local": true, "device": "Strip · Desk strip · HID", "color": "#ff0000"}),
+        );
+        assert_eq!(r["error"], "E42");
+        assert!(r["message"].as_str().unwrap().contains("switched off"));
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "OpenRGB was never contacted"
+        );
+        // Fans still work.
+        let output = first_output(&s, 0);
+        assert_eq!(
+            answer(
+                &s,
+                &json!({"op": "fan", "local": true, "output": output, "setting": {"mode": "fixed", "fixed": 50}})
+            )["ok"],
+            true
         );
     }
 

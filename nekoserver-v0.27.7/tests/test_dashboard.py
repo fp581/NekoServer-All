@@ -163,6 +163,9 @@ class FanAndLightControlTests(unittest.TestCase):
         self.assertIn('IPAddressDeny=any\nIPAddressAllow=localhost', openrgb)  # never on the network
         self.assertIn('QT_QPA_PLATFORM=offscreen', openrgb)
         self.assertNotIn(dashboard.OPENRGB, dashboard.control_units(self.code, False))
+        # Lighting off: the fan service is told so, and never touches lighting.
+        self.assertIn(' control --no-lights\n', dashboard.control_units(self.code, False)[dashboard.CONTROL])
+        self.assertNotIn('--no-lights', control)
         # The web server stays unprivileged and only gains the control socket's group.
         web = dashboard.units(Path('/srv/n'), self.code, Path('/etc/x.json'), 8787, 60, control=True)[dashboard.SERVICE]
         self.assertIn('DynamicUser=yes', web)
@@ -225,6 +228,35 @@ class SwitchingOffAndBackupTests(unittest.TestCase):
                     dashboard.stop_control([dashboard.CONTROL])
             self.assertIn('did not go back', str(err.exception))
 
+    def test_switching_off_only_lighting_keeps_fans_under_control(self):
+        """RGB off, fan control on: setup stops OpenRGB only, and the fan records of the
+        fans still under control are expected, not a failure."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            units = Path(d) / 'units'
+            units.mkdir()
+            journal = Path(d) / 'originals.json'
+            journal.write_text('{"x": {"enable": "5", "pwm": "128"}}')  # a fan under control
+            for name, text in dashboard.control_units(Path('/x'), True).items():
+                (units / name).write_text(text)  # RGB was on before
+            definitions = dashboard.control_units(Path('/x'), False)  # now RGB off
+            definitions[dashboard.SERVICE] = 'unit'
+            calls = []
+            def run(args, **_):
+                calls.append(args)
+                return mock.Mock(returncode=3 if 'is-active' in args else 0, stderr='')
+            with mock.patch.object(dashboard, 'SYSTEMD_UNITS', units), \
+                    mock.patch.object(dashboard, 'CONTROL_JOURNALS', (journal,)), \
+                    mock.patch.object(dashboard, 'CONTROL_CONFIG', Path(d) / 'cfg'), \
+                    mock.patch.object(dashboard, 'choose_pin'), \
+                    mock.patch.object(dashboard, 'systemctl') as ctl, \
+                    mock.patch.object(dashboard.subprocess, 'run', side_effect=run):
+                dashboard.start_services(definitions, Path('/x'), True, lambda *_: None)
+            self.assertIn(['systemctl', 'disable', '--now', dashboard.OPENRGB], calls)
+            self.assertFalse(any(dashboard.CONTROL in c for c in calls), 'fan control is not stopped')
+            self.assertIn(('restart', dashboard.CONTROL), [c.args for c in ctl.call_args_list])
+            self.assertTrue(journal.exists())
+
     def test_control_keeps_its_records_when_it_stops(self):
         unit = dashboard.control_units(Path('/x'), False)[dashboard.CONTROL]
         self.assertIn('RuntimeDirectoryPreserve=yes', unit)
@@ -268,7 +300,7 @@ class HostBackupUserTests(unittest.TestCase):
             # Installed for nekofan: another administrator running setup changes nothing.
             target.write_text('{"host_backup": {"user": "nekofan"}}')
             self.assertIs(host_backup.choose_user({}, {'user': 'auto'}, host_backup.previous_user(target)), first)
-            # Lists from before 0.27.6 only kept the Steam account's number.
+            # Lists from before 0.27.7 only kept the Steam account's number.
             target.write_text('{"host_backup": {"steam_uid": 1000}}')
             self.assertIs(host_backup.previous_user(target), first)
             # A user named in the settings always wins.
@@ -358,6 +390,15 @@ class SharedNamesTests(unittest.TestCase):
         import gateway_tools
         self.assertEqual(int(self.rust_const('serve.rs', 'PUBLIC_PORT')), gateway_tools.DASHBOARD_PORT)
 
+
+
+class BackupWordingTests(unittest.TestCase):
+    def test_setup_says_what_happens_to_older_app_snapshots(self):
+        from modules import app_backup
+        self.assertIn('newest 14', app_backup.retention(app_backup.keep_snapshots({})))
+        self.assertIn('deleted', app_backup.retention(14))
+        self.assertIn('none are deleted', app_backup.retention(0))
+        self.assertNotIn('No automatic backup deletion', (Path(app_backup.__file__)).read_text())
 
 if __name__ == '__main__':
     unittest.main()
