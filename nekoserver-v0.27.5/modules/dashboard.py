@@ -13,6 +13,7 @@ LAUNCHER=Path('/usr/local/bin/nekoserver-dashboard')
 DESKTOP_ENTRY=Path('/usr/share/applications/nekoserver-dashboard.desktop')
 MANAGED='X-NekoServer-Managed=true'
 SERVICE='nekoserver-dashboard.service'
+SERVICE_UNIT=Path('/etc/systemd/system')/SERVICE
 # Fan and lighting changes: the only root part, reached by the web server over a socket.
 CONTROL='nekoserver-control.service'
 CONTROL_GROUP='nekoserver-control'
@@ -36,14 +37,25 @@ def control_options(cfg):
     values=cfg.get('dashboard',{});control=values.get('fan_control',True)
     return control,control and values.get('rgb',True)
 
-def tailnet_name(cfg):
+def tailnet_name(cfg,known=None):
     """This server's Tailscale name, so the dashboard also answers its private Tailscale
-    address (read-only, your devices only). None when Tailscale is off or not set up."""
+    address (your devices only). None when remote access is switched off. When Tailscale
+    can't be asked right now (not connected yet, restarting), the name already in use
+    (`known`) is kept: a passing failure must not take the phone's access away."""
     if cfg.get('dashboard',{}).get('remote',True) is not True:return None
     try:
         import gateway_tools
         return gateway_tools.tailnode()
-    except (RuntimeError,OSError,ValueError,KeyError):return None
+    except (RuntimeError,OSError,ValueError,KeyError):return known
+
+def public_host_of(unit):
+    """The Tailscale name a web service definition answers (None without one)."""
+    found=re.search(r'^ExecStart=.* serve .*--public-host (\S+)',unit or '',re.M)
+    return found.group(1) if found else None
+
+def installed_unit():
+    try:return SERVICE_UNIT.read_text()
+    except OSError:return None
 
 def control_units(code,lighting):
     """The root control service (fans, lights) and, with lighting, OpenRGB's server.
@@ -148,8 +160,6 @@ def collector_settings(cfg,smart,interval=60):
     clean['acceptance_scope']=scope_digest(cfg)
     return clean
 
-SERVICE_UNIT=Path('/etc/systemd/system')/SERVICE
-
 def with_public_host(unit,public):
     """The web service's definition with its Tailscale name set (or removed)."""
     lines=unit.split('\n')
@@ -166,7 +176,7 @@ def refresh_public_host(cfg,log,unit_path=None):
     if not unit_path.is_file():return False
     current=unit_path.read_text()
     if not current.startswith('[Unit]\nDescription=NekoServer '):return False
-    wanted=with_public_host(current,tailnet_name(cfg))
+    wanted=with_public_host(current,tailnet_name(cfg,public_host_of(current)))
     if wanted==current:return False
     atomic_write(unit_path,wanted,0o644)
     systemctl('daemon-reload',timeout=30)
@@ -277,7 +287,7 @@ def run(ctx):
     code=safe_path(Path('/usr/local/lib/nekoserver-dashboard')/('v'+VERSION));config=safe_path(COLLECTOR_SETTINGS)
     payloads={code/'dashboard'/name:(project/'dashboard'/name).read_bytes() for name in ASSETS}
     payloads[code/native_runtime.NAME]=native_runtime.payload(project,cfg)
-    public=tailnet_name(cfg)
+    public=tailnet_name(cfg,public_host_of(installed_unit()))
     control,lighting=control_options(cfg)
     definitions=units(data,code,config,port,interval,public,control)
     if control:definitions.update(control_units(code,lighting))

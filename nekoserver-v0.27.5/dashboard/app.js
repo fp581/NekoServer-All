@@ -1146,12 +1146,15 @@ function nameField(card) {
   return wrap;
 }
 async function saveOutput(card) {
-  const version = card.version, setting = settingFrom(card.draft); // what is sent, as it is now
+  const version = card.version, setting = structuredClone(settingFrom(card.draft)); // what is sent, as it is now
   card.saving = true;
   card.refreshButtons();
-  const ok = await change('fan', {output: card.id, setting: structuredClone(setting)});
+  const ok = await change('fan', {output: card.id, setting});
   card.saving = false;
-  if (ok) { card.savedAt = Date.now(); } // readings asked before this are older than the save
+  if (ok) {
+    card.savedAt = Date.now(); // readings asked before this are older than the save
+    card.acknowledged = setting; // what the server now has: Undo goes back to this
+  }
   if (ok && card.version === version) {
     card.dirty = false;
     toast('Saved. The fan follows it now.');
@@ -1162,7 +1165,7 @@ async function saveOutput(card) {
 }
 function outputCard(out, c) {
   const fans = object(c.fans), temps = list(fans.inventory?.temps);
-  const card = {id: out.id, draft: draftFrom(fans.settings?.[out.id], temps), dirty: false, saving: false, version: 0, savedAt: 0, root: el('article', 'card fan-control')};
+  const card = {id: out.id, draft: draftFrom(fans.settings?.[out.id], temps), dirty: false, saving: false, version: 0, savedAt: 0, acknowledged: fans.settings?.[out.id], root: el('article', 'card fan-control')};
   const title = el('h3'), badgeNode = el('span', 'badge neutral'), now = el('p', 'fan-now'), note = el('p', 'hint');
   const head = el('div', 'card-heading');
   head.append(title, badgeNode);
@@ -1173,7 +1176,7 @@ function outputCard(out, c) {
   curve.append(sensorSelect(card, temps), editor.svg, presetRow(card));
   const minimum = rangeField('Never slower than', 20, 100, card.draft.min, v => { card.draft.min = v; card.touch(); });
   const save = button('Save', () => saveOutput(card), 'button small');
-  const undo = button('Undo changes', () => { card.draft = draftFrom(state.control?.fans?.settings?.[out.id], temps); card.dirty = false; card.rebuild(); });
+  const undo = button('Undo changes', () => { card.draft = draftFrom(card.acknowledged, temps); card.dirty = false; card.rebuild(); });
   const actions = el('div', 'fan-actions');
   actions.append(save, undo);
   const naming = el('details', 'more');
@@ -1220,6 +1223,7 @@ function updateOutput(card, c, parts) {
   const fresh = draftFrom(saved, list(inventory.temps));
   // A reading asked for before the last save shows the old setting: never adopt it.
   const current = (state.controlAsked ?? 0) >= card.savedAt;
+  if (current) { card.acknowledged = saved; } // the server's setting (also from another device)
   if (current && !card.dirty && !card.saving && parts.editor.dragging < 0 && JSON.stringify(fresh) !== JSON.stringify(card.draft)) {
     card.draft = fresh; // changed elsewhere (another device)
     card.rebuild();

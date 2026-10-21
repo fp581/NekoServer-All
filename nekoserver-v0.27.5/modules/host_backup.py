@@ -78,48 +78,65 @@ def choose_user(config, opts, previous):
     raise RuntimeError('Choose a valid host backup user')
 
 
+def system_paths():
+    """Host settings and NekoServer's own units, always backed up when present."""
+    paths = ['/etc/systemd/system/'+name for name in
+             ('nekoserver-host-backup.service', 'nekoserver-host-backup.timer', 'nekoserver-host-resume.service')]
+    paths += HOST_FILES + HOST_DIRS
+    # Preserve only NekoServer units/drop-ins, not unrelated host services.
+    paths += [str(p) for p in sorted(Path('/etc/systemd/system').glob('nekoserver-*'))
+              if not p.is_symlink() and str(p) not in paths]
+    return paths + ['/etc/systemd/system/docker.service.d', '/etc/systemd/system/smb.service.d']
+
+
+def owned_home(user):
+    home = safe_path(user.pw_dir)
+    if user.pw_uid < 1000 or not home.is_absolute() or not home.is_dir() or home.stat().st_uid != user.pw_uid:
+        raise RuntimeError('Host backup needs an existing non-root user with an owned home')
+    return home
+
+
+def steam_paths(home):
+    """Native Arch Steam. Root symlinks are resolved only here, within this home."""
+    steam = home/'.local/share/Steam'
+    if not steam.exists() and (home/'.steam/steam').exists():
+        steam = home/'.steam/steam'
+    if steam.exists():
+        steam = steam.resolve(strict=True)
+        if home not in steam.parents:
+            raise RuntimeError('Steam root outside selected home; configure explicit extra paths')
+    return [steam/name for name in ('config', 'userdata', 'steamapps/compatdata')]
+
+
+def extra_path(config, home, value):
+    path = safe_path(value)
+    media = Path(config['media_mount'])
+    if not path.is_absolute() or not any(root in path.parents for root in (home, Path(config['data_mount']), media)):
+        raise RuntimeError('Extra paths must be inside the selected home or verified storage')
+    if path == media/'backups' or media/'backups' in path.parents:
+        raise RuntimeError('Backup recursion refused')
+    return path
+
+
 def guard(config, previous=None):
     """Resolve the selected desktop identity at install time, never at timer time.
     With user "auto", the account chosen the first time stays chosen."""
     opts = settings(config)
     sources = []
     def add(path, optional=True):
-        path = Path(path)
-        sources.append({'id': 'source'+str(len(sources)), 'path': str(path), 'optional': optional})
+        sources.append({'id': 'source'+str(len(sources)), 'path': str(Path(path)), 'optional': optional})
     add(Path(config['data_mount'])/'installer/releases')
     add(Path(config['data_mount'])/'gateway')
-    for name in ('nekoserver-host-backup.service', 'nekoserver-host-backup.timer', 'nekoserver-host-resume.service'):
-        add('/etc/systemd/system/'+name)
-    for path in HOST_FILES + HOST_DIRS:
-        add(path)
-    # Preserve only NekoServer units/drop-ins, not unrelated host services.
-    units = Path('/etc/systemd/system')
-    for p in sorted(units.glob('nekoserver-*')):
-        if not p.is_symlink() and str(p) not in {v['path'] for v in sources}: add(p)
-    for path in ('/etc/systemd/system/docker.service.d', '/etc/systemd/system/smb.service.d'):
+    for path in system_paths():
         add(path)
     user = None
     if opts.get('steam', True) or opts.get('extra_paths'):
         user = choose_user(config, opts, previous)
-        home = safe_path(user.pw_dir)
-        if user.pw_uid < 1000 or not home.is_absolute() or not home.is_dir() or home.stat().st_uid != user.pw_uid:
-            raise RuntimeError('Host backup needs an existing non-root user with an owned home')
-        if opts.get('steam', True):
-            # Native Arch Steam. Root symlinks are resolved only here, within this home.
-            steam = home/'.local/share/Steam'
-            if not steam.exists() and (home/'.steam/steam').exists(): steam = home/'.steam/steam'
-            if steam.exists():
-                steam = steam.resolve(strict=True)
-                if home not in steam.parents: raise RuntimeError('Steam root outside selected home; configure explicit extra paths')
-            for name in ('config', 'userdata', 'steamapps/compatdata'):
-                add(steam/name)
+        home = owned_home(user)
+        for path in steam_paths(home) if opts.get('steam', True) else []:
+            add(path)
         for value in opts.get('extra_paths', []):
-            path = safe_path(value)
-            if not path.is_absolute() or not any(root in path.parents for root in (home, Path(config['data_mount']), Path(config['media_mount']))):
-                raise RuntimeError('Extra paths must be inside the selected home or verified storage')
-            if path == Path(config['media_mount'])/'backups' or Path(config['media_mount'])/'backups' in path.parents:
-                raise RuntimeError('Backup recursion refused')
-            add(path, False)
+            add(extra_path(config, home, value), False)
     samba = opts.get('samba', True)
     if samba:
         add('/etc/samba')
@@ -132,6 +149,12 @@ def guard(config, previous=None):
     return value
 
 
+def expected(config, target=None):
+    """What the installed list should hold: the same answer for setup, refresh and the
+    acceptance check (the account already backed up stays chosen)."""
+    return guard(config, previous_user(target))
+
+
 def refresh(config, log, target=None):
     """After every setup step: an existing host snapshot list is brought up to date
     (new releases add places to back up), even when only another part of the server
@@ -140,7 +163,7 @@ def refresh(config, log, target=None):
     if not target.is_file():
         return False
     try:
-        wanted = guard(config, previous_user(target))
+        wanted = expected(config, target)
     except (KeyError, RuntimeError) as exc:
         log(f'Host snapshots: list not refreshed ({exc})')
         return False
@@ -176,7 +199,7 @@ def run(context):
     if os.geteuid() != 0:
         raise RuntimeError('Host snapshots require root and runtime.backend=rust')
     verify_storage(context.config)
-    try: options = guard(context.config, previous_user())
+    try: options = expected(context.config)
     except KeyError:
         return {'status': 'needs_setup', 'reason': 'Set host_backup.user to the existing desktop user and reapply'}
     project = Path(__file__).resolve().parents[1]

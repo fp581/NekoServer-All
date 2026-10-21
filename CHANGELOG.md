@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.27.5 — 2026-10-21
+
+### Fixed (review of v0.27.4)
+- **Undo can't bring back an old fan speed.** After saving 80 %, Undo read the page's older reading and put 40 % back, which a later name-only save then sent (reproduced). Each fan now remembers the setting the server last confirmed, and Undo returns to that.
+- **A passing Tailscale problem no longer removes the phone address.** When Tailscale couldn't be asked during setup (not connected yet, restarting), the dashboard's Tailscale name was removed as if remote access had been switched off. The name already in use is now kept; it is only removed when remote access is switched off.
+- **The acceptance check expects the same backup account as setup.** Setup keeps backing up the first account, but the check worked out the account again from whoever ran it and reported "needs setup". Both now use the same answer.
+
+### Changed
+- Version 0.27.5; the release folder is now `nekoserver-v0.27.5`.
+- Code check: the host snapshot list is built in small steps, and a dashboard constant moved to the top of its file.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.4 — 2026-10-21
 
 ### Fixed (review of v0.27.3)

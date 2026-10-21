@@ -19,10 +19,10 @@ You need a 64-bit PC with Arch or Nyarch installed, plus an SSD, an HDD and a US
 
 ```bash
 git clone https://github.com/fp581/NekoServer---Arch-based-media-server.git
-cd NekoServer---Arch-based-media-server/nekoserver-v0.27.4
+cd NekoServer---Arch-based-media-server/nekoserver-v0.27.5
 ```
 
-Then follow the step-by-step guide: **[nekoserver-v0.27.4/README.md](nekoserver-v0.27.4/README.md)**.
+Then follow the step-by-step guide: **[nekoserver-v0.27.5/README.md](nekoserver-v0.27.5/README.md)**.
 
 ## More
 

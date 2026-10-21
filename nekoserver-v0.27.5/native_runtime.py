@@ -86,7 +86,7 @@ def acceptance_checks(config,modules):
                 good=good and rc==0 and str(binary)+' app-resume --config /etc/nekoserver-backups/applications.json' in recovery
             if command=='host-snapshot':
                 from modules import host_backup
-                good=good and health.read_json('/etc/nekoserver-backups/host.json')==host_backup.guard(config) and '--config /etc/nekoserver-backups/host.json' in loaded
+                good=good and health.read_json('/etc/nekoserver-backups/host.json')==host_backup.expected(config) and '--config /etc/nekoserver-backups/host.json' in loaded
                 rc,recovery=health.run(['systemctl','show',unit,'--property=ExecStopPost'])
                 good=good and rc==0 and str(binary)+' host-resume --config /etc/nekoserver-backups/host.json' in recovery
             if command=='hdd-policy':

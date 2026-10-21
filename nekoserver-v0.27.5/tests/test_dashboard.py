@@ -268,7 +268,7 @@ class HostBackupUserTests(unittest.TestCase):
             # Installed for nekofan: another administrator running setup changes nothing.
             target.write_text('{"host_backup": {"user": "nekofan"}}')
             self.assertIs(host_backup.choose_user({}, {'user': 'auto'}, host_backup.previous_user(target)), first)
-            # Lists from before 0.27.4 only kept the Steam account's number.
+            # Lists from before 0.27.5 only kept the Steam account's number.
             target.write_text('{"host_backup": {"steam_uid": 1000}}')
             self.assertIs(host_backup.previous_user(target), first)
             # A user named in the settings always wins.
@@ -303,6 +303,39 @@ class RemoteAccessLaterTests(unittest.TestCase):
             path.write_text('[Service]\nExecStart=/x serve --port 1\n')
             with mock.patch.object(dashboard, 'tailnet_name', return_value='neko.tail1234.ts.net'):
                 self.assertFalse(dashboard.refresh_public_host({}, logs.append, path))
+
+
+class TailscaleLookupTests(unittest.TestCase):
+    def test_a_passing_tailscale_failure_keeps_the_phone_address(self):
+        from unittest import mock
+        unit = dashboard.units(Path('/srv/n'), Path('/usr/local/lib/nekoserver-dashboard/v1'), Path('/etc/x.json'), 8787, 60,
+                               public='neko.tail1234.ts.net')[dashboard.SERVICE]
+        self.assertEqual(dashboard.public_host_of(unit), 'neko.tail1234.ts.net')
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(dashboard, 'systemctl') as ctl:
+            path = Path(d) / dashboard.SERVICE
+            path.write_text(unit)
+            import gateway_tools
+            with mock.patch.object(gateway_tools, 'tailnode', side_effect=RuntimeError('Authenticate Tailscale')):
+                self.assertFalse(dashboard.refresh_public_host({}, lambda *_: None, path))
+                self.assertEqual(path.read_text(), unit, 'kept while Tailscale is away')
+                ctl.assert_not_called()
+                # Never set up: nothing to keep.
+                self.assertIsNone(dashboard.tailnet_name({}))
+            # Remote access switched off on purpose: removed.
+            self.assertTrue(dashboard.refresh_public_host({'dashboard': {'remote': False}}, lambda *_: None, path))
+            self.assertIsNone(dashboard.public_host_of(path.read_text()))
+
+    def test_acceptance_expects_the_account_setup_keeps(self):
+        from unittest import mock
+        from modules import host_backup
+        alice = mock.Mock(pw_name='alice')
+        with mock.patch.object(host_backup, 'previous_user', return_value=alice), \
+                mock.patch.object(host_backup, 'guard', return_value='for alice') as guard:
+            self.assertEqual(host_backup.expected({'x': 1}), 'for alice')
+        guard.assert_called_once_with({'x': 1}, alice)
+        source = (Path(__file__).resolve().parents[1] / 'native_runtime.py').read_text()
+        self.assertIn('host_backup.expected(config)', source)
+        self.assertNotIn('host_backup.guard(config)', source)
 
 
 if __name__ == '__main__':
