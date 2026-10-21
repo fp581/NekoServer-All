@@ -300,7 +300,7 @@ class HostBackupUserTests(unittest.TestCase):
             # Installed for nekofan: another administrator running setup changes nothing.
             target.write_text('{"host_backup": {"user": "nekofan"}}')
             self.assertIs(host_backup.choose_user({}, {'user': 'auto'}, host_backup.previous_user(target)), first)
-            # Lists from before 0.27.7 only kept the Steam account's number.
+            # Lists from before 0.27.8 only kept the Steam account's number.
             target.write_text('{"host_backup": {"steam_uid": 1000}}')
             self.assertIs(host_backup.previous_user(target), first)
             # A user named in the settings always wins.

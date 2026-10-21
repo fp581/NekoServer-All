@@ -971,9 +971,13 @@ pub fn run(a: &Args) -> Result<()> {
         .filter(|v| v["format"] == "neko-pin-v1");
     // With lighting switched off in setup, saved lighting is not even read.
     let lighting = !a.flag("no-lights");
-    let chosen = Some(common::json(&config.join("lights.json"), 1_000_000))
-        .filter(|v| lighting && v.is_object())
-        .unwrap_or_else(|| json!({}));
+    let chosen = if lighting {
+        Some(common::json(&config.join("lights.json"), 1_000_000))
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}))
+    } else {
+        json!({})
+    };
     let controller = Controller::new(fans::discover(&hwmon), load_settings(&config));
     let mut fans_state = Fans::new(controller, config.clone(), run_dir.clone());
     let _ = fans_state.controller.adopt_originals(left); // the journal already holds them

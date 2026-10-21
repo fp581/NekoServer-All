@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.27.8 — 2026-10-21
+
+### Changed
+- With `"rgb": false` the fan and light service no longer even opens the saved lighting file (it already ignored it).
+- Version 0.27.8; the release folder is now `nekoserver-v0.27.8`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.7 — 2026-10-21
 
 ### Fixed
