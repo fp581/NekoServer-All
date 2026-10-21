@@ -279,21 +279,27 @@ OUR_POLICY = '#!/bin/sh\n# NekoServer: no service starts while packages install.
 
 
 def _deb822(text):
-    """The stanzas of a deb822 file as {lower-case field name: value}. A value can go on
-    over lines that start with a space or tab (a lone "." is an empty line)."""
+    """The stanzas of a deb822 file as {lower-case field name: value}."""
     for stanza in text.replace('\r\n', '\n').split('\n\n'):
-        fields, name = {}, None
-        for line in stanza.splitlines():
-            if line.startswith('#'):
-                continue
-            if line[:1] in (' ', '\t') and name:
-                fields[name] += '\n' + ('' if line.strip() == '.' else line.strip())
-            elif ':' in line:
-                name, value = line.split(':', 1)
-                name = name.strip().lower()
-                fields[name] = value.strip()
+        fields = _deb822_fields(stanza)
         if fields:
             yield fields
+
+
+def _deb822_fields(stanza):
+    """One stanza's fields. A value can go on over lines that start with a space or tab
+    (a lone "." is an empty line); comment lines are skipped."""
+    fields, name = {}, None
+    for line in stanza.splitlines():
+        if line.startswith('#'):
+            continue
+        if line[:1] in (' ', '\t') and name:
+            fields[name] += '\n' + ('' if line.strip() == '.' else line.strip())
+        elif ':' in line:
+            name, value = line.split(':', 1)
+            name = name.strip().lower()
+            fields[name] = value.strip()
+    return fields
 
 
 def _stanzas(path, text):
@@ -625,7 +631,8 @@ class Debian(Family):
             raise RuntimeError('systemd could not report on ' + ', '.join(units) + ': ' + _reason(result))
         states = {}
         for block in result.stdout.split('\n\n'):
-            fields = {key: value for key, value in (line.split('=', 1) for line in block.splitlines() if '=' in line)}
+            fields = {key.strip(): value.strip() for key, value in (line.split('=', 1) for line in block.splitlines()
+                                                                    if '=' in line)}
             if fields.get('Id'):
                 states[fields['Id']] = fields
         return states
