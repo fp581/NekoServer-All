@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -90,8 +91,9 @@ class InstallTest(unittest.TestCase):
         self.assertFalse(any(argv[1] == '-S' for argv in pacman.calls))
 
     def test_failure_names_the_packages_and_the_reason(self):
+        family = host.Arch(FakePacman(fail=True))
         with self.assertRaisesRegex(RuntimeError, r'Installing b failed: error: target not found'):
-            host.Arch(FakePacman(fail=True)).install(['b'])
+            family.install(['b'])
 
     def test_available(self):
         family = host.Arch(FakePacman(offered={'caddy'}))
@@ -121,6 +123,9 @@ class FakeApt:
         self.disable_fails = False
         self.stays_enabled = set()
         self.on_install = None
+        self.masked = set()
+        self.masked_during_install = None
+        self.install_error = None
 
     def __call__(self, argv, **kwargs):
         self.calls.append(argv)
@@ -145,6 +150,7 @@ class FakeApt:
     def install(self, argv):
         policy = self.root / 'usr/sbin/policy-rc.d'
         self.policy_during_install = policy.read_text() if policy.exists() else None
+        self.masked_during_install = set(self.masked)
         names = argv[5:]
         done = names if self.fail_after is None else names[:self.fail_after]
         for name in done:
@@ -153,6 +159,8 @@ class FakeApt:
                 self.units[unit] = {'LoadState': 'loaded', 'UnitFileState': 'enabled', 'ActiveState': 'inactive'}
         if self.on_install:
             self.on_install(done)
+        if self.install_error:
+            raise self.install_error
         failed = len(done) < len(names)
         return subprocess.CompletedProcess(argv, 100 if failed else 0, '', 'E: Sub-process /usr/bin/dpkg returned an error code (1)' if failed else '')
 
@@ -162,8 +170,13 @@ class FakeApt:
             blocks = []
             for unit in units:
                 state = self.units.get(unit, {'LoadState': 'not-found', 'UnitFileState': '', 'ActiveState': 'inactive'})
+                if unit in self.masked:
+                    state = {**state, 'LoadState': 'masked', 'UnitFileState': 'masked'}
                 blocks.append('Id=' + unit + '\n' + '\n'.join(k + '=' + v for k, v in state.items()))
             return subprocess.CompletedProcess(argv, 0, '\n\n'.join(blocks) + '\n', '')
+        if argv[1] in ('mask', 'unmask'):
+            units = {a for a in argv[2:] if not a.startswith('--')}
+            self.masked = self.masked | units if argv[1] == 'mask' else self.masked - units
         if argv[1] == 'disable':
             if self.disable_fails:
                 return subprocess.CompletedProcess(argv, 1, '', 'Failed to disable unit: Access denied')
@@ -175,6 +188,19 @@ class FakeApt:
 
     def enabled(self):
         return sorted(u for u, s in self.units.items() if s['UnitFileState'] == 'enabled')
+
+
+# Holds dpkg's lock the way apt does, as if a cut-off installation were still working.
+HOLD_DPKG_LOCK = ('import fcntl, sys, time\n'
+                  'f = open(sys.argv[1], "a"); fcntl.lockf(f, fcntl.LOCK_EX)\n'
+                  'print("held", flush=True); time.sleep(30)')
+
+
+def stop(process):
+    process.kill()
+    process.wait()
+    if process.stdout:
+        process.stdout.close()
 
 
 KEY = b'-----BEGIN PGP PUBLIC KEY BLOCK-----\n'
@@ -206,6 +232,11 @@ class DebianTest(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text)
         return target
+
+    def packaged_example(self, text='# example\n'):
+        """smb.conf as Samba's package writes it, with ucf's record of it."""
+        self.file('etc/samba/smb.conf', text)
+        self.file('var/lib/ucf/hashfile', hashlib.md5(text.encode()).hexdigest() + '  /etc/samba/smb.conf\n')
 
     def journal(self):
         return self.root / host.Debian.journal.lstrip('/')
@@ -263,7 +294,7 @@ class DebianTest(unittest.TestCase):
     def test_partly_failed_installation_is_tidied_before_the_error(self):
         apt = FakeApt(fail_after=1)
         family = self.family(apt)
-        apt.on_install = lambda done: 'samba' in done and self.file('etc/samba/smb.conf', '# example\n')
+        apt.on_install = lambda done: 'samba' in done and self.packaged_example()
         with self.assertRaisesRegex(RuntimeError, 'Installing samba, caddy failed: E: Sub-process'):
             family.install(['samba', 'caddy'])
         self.assertIn('samba', apt.installed)
@@ -276,7 +307,7 @@ class DebianTest(unittest.TestCase):
         # An earlier run was cut off after Samba installed: its record is all that's left.
         apt = FakeApt(installed={'samba'})
         apt.units['smbd.service'] = {'LoadState': 'loaded', 'UnitFileState': 'enabled', 'ActiveState': 'active'}
-        self.file('etc/samba/smb.conf', '# example\n')
+        self.packaged_example()
         self.file(host.Debian.journal, json.dumps({'format': 'neko-package-install-v1', 'packages': ['samba'],
                                                     'before': {'samba_config_existed': False}}))
         self.file('usr/sbin/policy-rc.d', host.OUR_POLICY)
@@ -302,8 +333,9 @@ class DebianTest(unittest.TestCase):
     def test_a_service_that_stays_enabled_is_an_error(self):
         apt = FakeApt()
         apt.stays_enabled = {'docker.socket'}
+        family = self.family(apt)
         with self.assertRaisesRegex(RuntimeError, 'Could not switch off docker.socket'):
-            self.family(apt).install(['docker'])
+            family.install(['docker'])
 
     def test_units_that_are_not_installed_or_masked_are_left_alone(self):
         apt = FakeApt()
@@ -312,10 +344,88 @@ class DebianTest(unittest.TestCase):
         disabled = next(argv for argv in apt.calls if argv[:2] == ['systemctl', 'disable'])
         self.assertNotIn('samba-ad-dc.service', disabled)
 
+    def test_new_services_are_protected_until_switched_off(self):
+        apt = FakeApt()
+        self.family(apt).install(['samba'])
+        self.assertEqual(apt.masked_during_install, {'smbd.service', 'nmbd.service'})
+        self.assertIn('exit 101', apt.policy_during_install)
+        self.assertEqual(apt.masked, set())
+        self.assertEqual(apt.enabled(), [])
+        self.assertFalse((self.root / 'usr/sbin/policy-rc.d').exists())
+
+    def test_a_mask_the_package_set_itself_stays(self):
+        apt = FakeApt()
+        self.file('var/lib/systemd/deb-systemd-helper-masked/nmbd.service')
+        self.family(apt).install(['samba'])
+        self.assertEqual(apt.masked, {'nmbd.service'})
+
+    def test_timed_out_installation_is_tidied_once_the_tools_stop(self):
+        apt = FakeApt()
+        apt.install_error = subprocess.TimeoutExpired(['apt-get'], 900)
+        family = self.family(apt)
+        with self.assertRaisesRegex(RuntimeError, 'Installing samba did not finish within 15 minutes'):
+            family.install(['samba'])
+        self.assertEqual(apt.enabled(), [])
+        self.assertEqual(apt.masked, set())
+        self.assertFalse(self.journal().exists())
+        self.assertFalse((self.root / 'usr/sbin/policy-rc.d').exists())
+
+    def test_protection_stays_while_the_tools_are_still_busy(self):
+        apt = FakeApt()
+        apt.install_error = subprocess.TimeoutExpired(['apt-get'], 900)
+        family = self.family(apt)
+        family.wait = 0
+        lock = self.file('var/lib/dpkg/lock-frontend')
+        holder = subprocess.Popen([sys.executable, '-c', HOLD_DPKG_LOCK, str(lock)], stdout=subprocess.PIPE)
+        self.addCleanup(stop, holder)
+        holder.stdout.readline()
+        with self.assertRaisesRegex(RuntimeError, 'did not finish'):
+            family.install(['samba'])
+        # Nothing was tidied while dpkg may still be working: all protection is still in place.
+        self.assertTrue(self.journal().exists())
+        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service'})
+        self.assertEqual((self.root / 'usr/sbin/policy-rc.d').read_text(), host.OUR_POLICY)
+        stop(holder)
+        self.family(apt).reconcile()
+        self.assertFalse(self.journal().exists())
+        self.assertEqual(apt.masked, set())
+        self.assertFalse((self.root / 'usr/sbin/policy-rc.d').exists())
+
+    def test_failed_switch_off_keeps_services_masked(self):
+        apt = FakeApt()
+        apt.disable_fails = True
+        family = self.family(apt)
+        with self.assertRaisesRegex(RuntimeError, 'Could not switch off'):
+            family.install(['caddy'])
+        self.assertEqual(apt.masked, {'caddy.service'})
+        self.assertEqual((self.root / 'usr/sbin/policy-rc.d').read_text(), host.OUR_POLICY)
+
+    def test_another_setups_installation_is_never_touched(self):
+        # The first setup is still installing: its record, policy and lock are live.
+        self.file(host.Debian.journal, json.dumps({'format': 'neko-package-install-v1', 'packages': ['samba'],
+                                                    'before': {'new_units': ['smbd.service']}}))
+        self.file('usr/sbin/policy-rc.d', host.OUR_POLICY)
+        lock = self.file('run/nekoserver-packages.lock')
+        holder = subprocess.Popen(['flock', str(lock), 'sleep', '30'])
+        self.addCleanup(stop, holder)
+        for _ in range(100):
+            if subprocess.run(['flock', '-n', str(lock), 'true'], check=False).returncode:
+                break
+            time.sleep(0.05)
+        second = self.family()
+        second.wait = 0
+        with self.assertRaisesRegex(RuntimeError, 'Another NekoServer setup is installing packages'):
+            second.reconcile()
+        with self.assertRaisesRegex(RuntimeError, 'Another NekoServer setup is installing packages'):
+            second.install(['hdparm'])
+        self.assertTrue(self.journal().exists())
+        self.assertTrue((self.root / 'usr/sbin/policy-rc.d').exists())
+
     def test_unreadable_record_stops(self):
         self.file(host.Debian.journal, '{broken')
+        family = self.family()
         with self.assertRaisesRegex(RuntimeError, 'Unreadable record'):
-            self.family().install(['hdparm'])
+            family.install(['hdparm'])
 
     # Samba's packaged example
 
@@ -328,8 +438,7 @@ class DebianTest(unittest.TestCase):
         apt = FakeApt()
 
         def written(done):
-            self.file('etc/samba/smb.conf', '# example\n')
-            self.file('var/lib/ucf/hashfile', hashlib.md5(b'# example\n').hexdigest() + '  /etc/samba/smb.conf\n')
+            self.packaged_example()
             self.file('etc/samba/smb.conf', '# example, edited\n')
         apt.on_install = written
         self.family(apt).install(['samba'])
@@ -338,12 +447,22 @@ class DebianTest(unittest.TestCase):
     def test_unchanged_example_matches_its_record(self):
         apt = FakeApt()
 
-        def written(done):
-            self.file('etc/samba/smb.conf', '# example\n')
-            self.file('var/lib/ucf/hashfile', hashlib.md5(b'# example\n').hexdigest() + '  /etc/samba/smb.conf\n')
-        apt.on_install = written
+        apt.on_install = lambda done: self.packaged_example()
         self.family(apt).install(['samba'])
         self.assertTrue((self.root / 'etc/samba/smb.conf.packaged').exists())
+
+    def test_without_a_package_record_the_file_stays(self):
+        # Interrupted installation, then someone edits smb.conf; ucf has no record of it.
+        self.file('etc/samba/smb.conf', '# edited by hand\n')
+        for hashfile in (None, 'abc123  /etc/other.conf\n'):
+            with self.subTest(hashfile=hashfile):
+                self.file(host.Debian.journal, json.dumps({'format': 'neko-package-install-v1', 'packages': ['samba'],
+                                                            'before': {'samba_config_existed': False}}))
+                if hashfile:
+                    self.file('var/lib/ucf/hashfile', hashfile)
+                self.family().reconcile()
+                self.assertEqual((self.root / 'etc/samba/smb.conf').read_text(), '# edited by hand\n')
+                self.assertFalse((self.root / 'etc/samba/smb.conf.packaged').exists())
 
     # Starting services while installing
 
@@ -357,8 +476,9 @@ class DebianTest(unittest.TestCase):
         policy = self.file('usr/sbin/policy-rc.d', '#!/bin/sh\nexit 0\n')
         policy.chmod(0o755)
         apt = FakeApt()
+        family = self.family(apt)
         with self.assertRaisesRegex(RuntimeError, 'would let docker.service, docker.socket start'):
-            self.family(apt).install(['docker'])
+            family.install(['docker'])
         self.assertFalse(any(argv[:2] == ['apt-get', 'install'] for argv in apt.calls))
         self.assertEqual(policy.read_text(), '#!/bin/sh\nexit 0\n')
 
@@ -398,8 +518,9 @@ class DebianTest(unittest.TestCase):
 
     def test_debians_own_docker_is_never_mixed_in(self):
         apt = FakeApt(installed={'docker.io'})
+        family = self.family(apt)
         with self.assertRaisesRegex(RuntimeError, r'own Docker packages installed \(docker.io\)'):
-            self.family(apt).install(['docker'])
+            family.install(['docker'])
         self.assertFalse(any(argv[:2] == ['apt-get', 'install'] for argv in apt.calls))
         self.assertFalse((self.root / 'etc/apt/sources.list.d/docker.list').exists())
 
@@ -415,6 +536,60 @@ class DebianTest(unittest.TestCase):
                 self.assertEqual(self.keys, [])
                 self.assertFalse((self.root / 'etc/apt/sources.list.d/docker.list').exists())
                 source.unlink()
+
+    def test_deb822_values_on_their_own_lines_count(self):
+        self.file('etc/apt/sources.list.d/docker.sources',
+                  'Types: deb\nuris:\n https://mirror.example/\n https://download.docker.com/linux/ubuntu\n'
+                  'Suites: noble\nComponents: stable\nSigned-By:\n -----BEGIN PGP PUBLIC KEY BLOCK-----\n .\n'
+                  ' abc\n -----END PGP PUBLIC KEY BLOCK-----\n')
+        self.family().install(['docker'])
+        self.assertEqual(self.keys, [])
+        self.assertFalse((self.root / 'etc/apt/sources.list.d/docker.list').exists())
+
+    def test_repair_removes_our_duplicate_before_apt_runs(self):
+        family = self.family()
+        family.add_repository(host.TAILSCALE)
+        family.add_repository(host.DOCKER)
+        self.file('etc/apt/sources.list.d/tailscale.sources', 'URIs: https://pkgs.tailscale.com/stable/ubuntu\n')
+        apt = FakeApt()
+        self.family(apt).repair()
+        self.assertFalse((self.root / 'etc/apt/sources.list.d/tailscale.list').exists())
+        self.assertTrue((self.root / 'etc/apt/sources.list.d/docker.list').exists())   # the only one: kept
+        self.assertEqual(apt.calls, [])   # no apt command needed
+
+    def test_upgrade_with_everything_installed_moves_the_tailscale_key(self):
+        legacy_key = self.file('usr/share/keyrings/tailscale-archive-keyring.gpg', 'old key')
+        self.file('etc/apt/sources.list.d/tailscale.list',
+                  'deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] '
+                  'https://pkgs.tailscale.com/stable/ubuntu noble main\n')
+        apt = FakeApt(installed={real for name in host.APP_PACKAGES for real in self.family().names(name)})
+        family = self.family(apt)
+        host.bootstrap(family, log=lambda line: None)
+        self.assertFalse(any(argv[:2] == ['apt-get', 'install'] for argv in apt.calls))   # nothing to install
+        self.assertIn('signed-by=/etc/apt/keyrings/tailscale-archive-keyring.gpg',
+                      (self.root / 'etc/apt/sources.list.d/tailscale.list').read_text())
+        self.assertEqual((self.root / 'etc/apt/keyrings/tailscale-archive-keyring.gpg').read_bytes(), KEY)
+        self.assertTrue(legacy_key.exists())   # not ours to delete: apt simply stops using it
+
+    def test_offline_upgrade_keeps_a_working_definition(self):
+        self.file('usr/share/keyrings/tailscale-archive-keyring.gpg', 'old key')
+        legacy = ('deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] '
+                  'https://pkgs.tailscale.com/stable/ubuntu noble main\n')
+        listing = self.file('etc/apt/sources.list.d/tailscale.list', legacy)
+        family = self.family()
+        family.fetch = mock.Mock(side_effect=OSError('network unreachable'))
+        logged = []
+        family.repair(logged.append)
+        self.assertEqual(listing.read_text(), legacy)
+        self.assertIn('network unreachable', logged[0])
+
+    def test_restored_definition_without_its_key_needs_the_network(self):
+        self.family().add_repository(host.DOCKER)
+        (self.root / 'etc/apt/keyrings/docker.asc').unlink()
+        family = self.family()
+        family.fetch = mock.Mock(side_effect=OSError('network unreachable'))
+        with self.assertRaisesRegex(RuntimeError, 'docker repository key is missing and could not be downloaded'):
+            family.repair()
 
     def test_switched_off_or_commented_definitions_do_not_count(self):
         self.file('etc/apt/sources.list.d/old.sources', 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\n'
@@ -432,8 +607,9 @@ class DebianTest(unittest.TestCase):
 
     def test_someone_elses_file_with_our_name_is_never_overwritten(self):
         self.file('etc/apt/sources.list.d/docker.list', '# my notes\n')
+        family = self.family()
         with self.assertRaisesRegex(RuntimeError, 'docker.list is someone else'):
-            self.family().install(['docker'])
+            family.install(['docker'])
         self.assertEqual((self.root / 'etc/apt/sources.list.d/docker.list').read_text(), '# my notes\n')
 
     def test_tailscale_key_is_kept_with_the_backed_up_settings(self):
@@ -476,6 +652,11 @@ class BootstrapTest(unittest.TestCase):
 
     def test_command_line(self):
         self.assertEqual(host.main([]), 2)
+        self.assertEqual(host.main(['other']), 2)
+        family = mock.Mock()
+        with mock.patch('host.current', return_value=family):
+            self.assertEqual(host.main(['repair']), 0)
+        family.repair.assert_called_once_with()
         with mock.patch('host.bootstrap', side_effect=RuntimeError('no')):
             self.assertEqual(host.main(['bootstrap']), 1)
 

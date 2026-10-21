@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.28.2 — 2026-10-21
+
+### Fixed (every Linux)
+- **A failed monthly update can no longer leave photos or files out of step with their database.** The updated apps used to start on their usual ports before every check had finished, so phones could reconnect and upload, edit or delete in that window. If a later check then failed, the rollback restored the old Immich and Nextcloud databases but not the photo library or user files, which aren't in the monthly snapshot. That could leave uploads with no database entry, or database entries pointing at deleted files.
+  - While Immich and Nextcloud are checked, they run on a random port on this computer only, with no background jobs (no Nextcloud cron, Immich API only).
+  - The update is committed (journal phase `committed`) only after every check and the media audit have passed. Only then do the two apps open up again.
+  - A failure before the commit rolls back while nothing could have changed those files. A failure after it keeps the update and only retries opening the apps up.
+  - Tests run the whole sequence with stand-ins for Docker and induce failures at each step. A real Docker run with an induced failure still needs to be done on a server.
+
+### Fixed (Debian / Ubuntu)
+- **An installation that times out is tidied up too.** The tidy-up ran only when apt finished on its own. A timeout skipped it, while the "don't start services" policy was already gone. Newly installed Samba services stayed enabled, so a restart before the next setup run could start them before their drive guards existed. Now:
+  - The new services are masked before installing, so they cannot start, not even after a restart.
+  - After any interruption, setup waits until apt and dpkg have really stopped, then tidies up.
+  - The masks and the policy are removed only once the services are confirmed switched off. If that fails, they stay for the next run.
+  - A mask the package set itself (`samba-ad-dc`) is left alone.
+- **Two setups can't step on each other.**
+  - `install.sh` takes a setup lock before doing anything, and the installer keeps it until setup ends; a second `sudo bash install.sh` stops right away.
+  - Every package job takes a separate package lock: installing, tidying up and repairing repositories.
+  - Tidying up a half-done installation now happens inside the installer's lock. A second process can no longer mistake a running installation for an abandoned one and remove its record and start protection.
+- **Repository entries written over several lines are recognised.** In deb822 `.sources` files, a value can continue on the next lines (`URIs:` with the address underneath), and field names are not case-sensitive. NekoServer missed such entries and added a second, conflicting definition.
+- **Repository problems are repaired before apt first runs.** A duplicate definition left by 0.28.0 made the first `apt-get update` fail before the repair could happen. `install.sh` now runs `python3 host.py repair` first.
+- **Upgrades move the Tailscale key even when nothing needs installing.** The repair now updates NekoServer's own repository definitions on every run:
+  - 0.28.0's Tailscale list moves to the key under `/etc/apt/keyrings`.
+  - A missing key is downloaded again.
+  - Offline, a definition that still works is kept as it is.
+- **Samba's `smb.conf` is moved aside only when Debian's record proves it is the untouched example.** That record is the checksum `ucf` keeps for it. Without the record, the file stays, and the Samba step asks you to review it.
+
+### Changed
+- Code cleanup from SonarCloud's review of 0.28.1, with no change in behaviour:
+  - The base package adapter's `prepare` no longer returns an unused default.
+  - Two `dict(...)` calls became dictionary comprehensions.
+  - Tests that expect an error now make only the call that should fail inside the check.
+- Version 0.28.2; the release folder is now `nekoserver-v0.28.2`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.28.1 — 2026-10-21
 
 ### Fixed (Debian / Ubuntu)

@@ -35,6 +35,13 @@ if "$apply"; then
         echo 'Run it with sudo:  sudo bash install.sh' >&2
         exit 1
     fi
+    # One setup at a time, held until setup ends (the installer inherits it). A second
+    # one stops here, before it touches packages, their records or any service.
+    exec 9>>/run/nekoserver-setup.lock
+    if ! flock -n 9; then
+        echo 'Another NekoServer setup is running. Let it finish, then run  sudo bash install.sh  again.' >&2
+        exit 1
+    fi
     # Never use a package manager on an unsupported distribution, and never a partial
     # upgrade on Arch.
     if [[ ! -r /etc/os-release ]]; then
@@ -65,6 +72,11 @@ if "$apply"; then
         echo 'An earlier system update needs a restart first.' >&2
         echo 'Restart the PC now (sudo reboot), then run  sudo bash install.sh  again.' >&2
         exit 3
+    fi
+    if [[ "$family" == debian ]] && command -v python3 >/dev/null; then
+        # An older NekoServer could leave a second definition of Docker's or Tailscale's
+        # repository, which stops apt from working at all: removed before apt first runs.
+        python3 "$ROOT/host.py" repair
     fi
     if ! "$recover" && [[ -e /etc/nekoserver-backups/maintenance-resume.json ]]; then
         # An unfinished monthly update can only be finished by the version that started
