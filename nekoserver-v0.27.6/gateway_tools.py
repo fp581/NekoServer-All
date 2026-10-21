@@ -15,7 +15,7 @@ ROOT=Path(__file__).resolve().parent
 OCC_GET,OCC_SET,OCC_DELETE='config:system:get','config:system:set','config:system:delete'
 
 def command(args,timeout=30,env=None):
-    try:p=subprocess.run(args,capture_output=True,text=True,timeout=timeout,env=env)
+    try:p=subprocess.run(args,capture_output=True,text=True,timeout=timeout,env=env,check=False)
     except (OSError,subprocess.TimeoutExpired):raise RuntimeError('Gateway command unavailable or timed out; inspect locally') from None
     if p.returncode:raise RuntimeError('Gateway command failed; inspect local setup and HTTPS permissions')
     return p.stdout
@@ -101,8 +101,8 @@ def hashes(payloads):return {str(p):hashlib.sha256(v if isinstance(v,bytes) else
 
 def preflight(payloads,ledger):
     previous=health.read_json(ledger).get('sha256',{})
-    for p,content in payloads.items():
-        p=safe_path(p);desired=content if isinstance(content,bytes) else content.encode()
+    for path,content in payloads.items():
+        p=safe_path(path);desired=content if isinstance(content,bytes) else content.encode()
         if p.exists() and p.read_bytes()!=desired and hashlib.sha256(p.read_bytes()).hexdigest()!=previous.get(str(p)):raise RuntimeError('Unmanaged or modified gateway file preserved; inspect before applying')
 
 def port_preflight(config):

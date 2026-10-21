@@ -15,4 +15,4 @@ def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--config',type=Path,default=Path(__file__).with_name('config.json'));p.add_argument('--export',required=True,type=Path);a=p.parse_args();print('Public CA certificate exported. SHA-256 fingerprint: '+export(json.loads(safe_path(a.config).read_text()),a.export))
 if __name__=='__main__':
     try:main()
-    except Exception:raise SystemExit('Certificate export failed; verify mounts, CA and a new destination. No private key is exported.')
+    except Exception:raise SystemExit('Certificate export failed; verify mounts, CA and a new destination. No private key is exported.') from None

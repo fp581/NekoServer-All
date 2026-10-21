@@ -133,7 +133,7 @@ def configure_indexers(root, apply, config=None):
                 if config is not None:
                     import guided_setup
                     from types import SimpleNamespace
-                    def present():
+                    def present(entry=entry):
                         return any(row.get('name') == entry.get('name') and
                                    row.get('implementation') == entry.get('implementation')
                                    for row in request('prowlarr', key, '/indexer'))

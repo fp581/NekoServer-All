@@ -21,7 +21,7 @@ def check_mount(path):
     if not p.is_absolute() or not p.is_dir() or p.is_symlink():
         raise RuntimeError(f'Expected existing non-symlink absolute mount directory: {p}')
     cmd = subprocess.run(['findmnt', '-n', '-o', 'TARGET', '--mountpoint', str(p)],
-                         capture_output=True, text=True, timeout=10)
+                         capture_output=True, text=True, timeout=10, check=False)
     if cmd.returncode or cmd.stdout.strip() != str(p):
         raise RuntimeError(f'Dedicated filesystem must be mounted at {p}; refusing to deploy')
     src = subprocess.run(['findmnt', '-n', '-o', 'SOURCE', '--mountpoint', str(p)],
@@ -30,7 +30,7 @@ def check_mount(path):
 
 
 def run_cmd(cmd, timeout=120):
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     if result.returncode:
         raise RuntimeError(f'{" ".join(cmd[:4])} failed: {result.stderr[-500:]}')
     return result.stdout.strip()
@@ -176,7 +176,7 @@ def _run(context):
                 # Our own output for this template, before a host/option change
                 # (GPU appeared or vanished, peer port opened, changed or closed).
                 candidates.append((current, f'compose.before-{int(time.time())}.yaml'))
-            for previous, backup_name in candidates:
+            for previous, backup_name in candidates:  # noqa: B007 (used after the loop)
                 if current == previous:
                     break
             else:
@@ -260,7 +260,7 @@ def adopt_seerr_folder(folder, uid, gid, log=print):
 
 
 def network_exists():
-    return subprocess.run(['docker', 'network', 'inspect', 'nekoserver-media'], capture_output=True, timeout=15).returncode == 0
+    return subprocess.run(['docker', 'network', 'inspect', 'nekoserver-media'], capture_output=True, timeout=15, check=False).returncode == 0
 
 
 def run(context):

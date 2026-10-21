@@ -16,7 +16,7 @@ def run(ctx):
     if os.geteuid()!=0:raise RuntimeError('Root required')
     cfg=ctx.config;data=Path(cfg['data_mount']);media=Path(cfg['media_mount']);opts=cfg['photos']
     for p in (data,media):
-        if p.is_symlink() or subprocess.run(['findmnt','-n','--mountpoint',str(p)],stdout=subprocess.DEVNULL).returncode:raise RuntimeError(f'Missing mount: {p}')
+        if p.is_symlink() or subprocess.run(['findmnt','-n','--mountpoint',str(p)],stdout=subprocess.DEVNULL,check=False).returncode:raise RuntimeError(f'Missing mount: {p}')
     runtime=data/'installer'/'runtime'/('v'+VERSION)
     interval=opts.get('archive_interval_minutes',360);age=opts.get('archive_min_age_seconds',600)
     if not isinstance(interval,int) or interval<15 or not isinstance(age,int) or age<60:raise RuntimeError('Invalid archive interval/age')
@@ -44,8 +44,8 @@ def run(ctx):
         service=SYSTEMD_UNITS/(name+'.service');timer=SYSTEMD_UNITS/(name+'.timer')
         service_text=f'[Unit]\nDescription={name}\nRequiresMountsFor={data} {media}\n[Service]\nType=oneshot\nExecStart={cmd}\n'
         timer_text=f'[Unit]\nDescription={name} timer\n[Timer]\n{calendar}\n[Install]\nWantedBy=timers.target\n'
-        for target,content in ((service,service_text),(timer,timer_text)):
-            content=content.replace('\\n','\n')
+        for target,text in ((service,service_text),(timer,timer_text)):
+            content=text.replace('\\n','\n')
             if target.exists() and target.read_text()!=content:
                 previous=target.read_text()
                 # Require this unit's exact managed description before updating it.

@@ -102,11 +102,11 @@ def install_openrgb(log):
     """OpenRGB from Arch's own repository, plus the i2c driver it uses for memory and
     motherboard lights. False (lighting skipped) when it can't be installed."""
     if not OPENRGB_BINARY.exists():
-        if not shutil.which('pacman') or subprocess.run(['pacman','-Si','openrgb'],capture_output=True,timeout=30).returncode:
+        if not shutil.which('pacman') or subprocess.run(['pacman','-Si','openrgb'],capture_output=True,timeout=30,check=False).returncode:
             log('Lighting: OpenRGB is not available for this system, so RGB control is skipped');return False
         subprocess.run(['pacman','-S','--needed','--noconfirm','openrgb'],capture_output=True,check=True,timeout=900)
     if write_managed(I2C_MODULES,'# Managed by NekoServer: lets OpenRGB reach memory and motherboard lighting.\ni2c-dev\n',0o644,log):
-        subprocess.run(['modprobe','i2c-dev'],capture_output=True,timeout=30)
+        subprocess.run(['modprobe','i2c-dev'],capture_output=True,timeout=30,check=False)
     return True
 
 def choose_pin(binary,log,ask=getpass.getpass):
@@ -168,8 +168,8 @@ def with_public_host(unit,public):
     lines=unit.split('\n')
     for i,line in enumerate(lines):
         if line.startswith('ExecStart=') and ' serve ' in line:
-            line=re.sub(r' --public-host \S+','',line)
-            lines[i]=line+(' --public-host '+public if public else '')
+            plain=re.sub(r' --public-host \S+','',line)
+            lines[i]=plain+(' --public-host '+public if public else '')
     return '\n'.join(lines)
 
 def refresh_public_host(cfg,log,unit_path=None):
@@ -225,7 +225,7 @@ def check_existing(payloads,definitions,folders):
 def install_smart(cfg,log):
     if not cfg.get('dashboard',{}).get('install_smartmontools',True) or shutil.which('smartctl'):return
     if not shutil.which('pacman'):log('SMART readings unavailable: install smartmontools for this OS');return
-    if subprocess.run(['pacman','-Si','smartmontools'],capture_output=True,timeout=30).returncode:raise RuntimeError('smartmontools unavailable; update the system normally and retry')
+    if subprocess.run(['pacman','-Si','smartmontools'],capture_output=True,timeout=30,check=False).returncode:raise RuntimeError('smartmontools unavailable; update the system normally and retry')
     subprocess.run(['pacman','-S','--needed','--noconfirm','smartmontools'],capture_output=True,check=True,timeout=900)
 
 def prepare_control(code,definitions,lighting,log):
@@ -254,11 +254,11 @@ CONTROL_JOURNALS=(Path('/run/nekoserver-control/originals.json'),Path('/run/neko
 def stop_control(units):
     """Fan and light control switched off: the services must really stop, and every
     fan must be back with the motherboard, before setup carries on."""
-    result=subprocess.run(['systemctl','disable','--now',*units],capture_output=True,text=True,timeout=120)
+    result=subprocess.run(['systemctl','disable','--now',*units],capture_output=True,text=True,timeout=120, check=False)
     if result.returncode:
         raise RuntimeError('Fan and light control could not be switched off ('+(result.stderr or '').strip()[:200]+'). Check: systemctl status '+' '.join(units))
     for unit in units:
-        if subprocess.run(['systemctl','is-active','--quiet',unit],timeout=30).returncode==0:
+        if subprocess.run(['systemctl','is-active','--quiet',unit],timeout=30,check=False).returncode==0:
             raise RuntimeError(f'{unit} is still running after being switched off. Check: systemctl status {unit}')
     if any(p.exists() for p in CONTROL_JOURNALS):
         raise RuntimeError('Fan control stopped, but some fans did not go back to the motherboard. Check the fans, then run: sudo systemctl start nekoserver-control.service (it keeps trying), or restart the computer')

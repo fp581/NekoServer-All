@@ -88,7 +88,7 @@ def validate_config(config):
         options = config.setdefault(group, {})
         if not isinstance(options, dict):raise InstallerError(group+' must be an object')
         for key, value in defaults.items():options.setdefault(key, value)
-    for name,entry in config.get('modules',{}).items():
+    for entry in config.get('modules',{}).values():
         if not isinstance(entry,dict) or type(entry.get('enabled',False)) is not bool:raise InstallerError('Module enable switches must be booleans')
     for names in config.get('profiles',{}).values():
         if not isinstance(names,list) or any(not isinstance(name,str) for name in names) or len(set(names))!=len(names):raise InstallerError('Profiles must contain unique module names')

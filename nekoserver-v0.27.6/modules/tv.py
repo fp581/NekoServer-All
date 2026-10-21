@@ -121,8 +121,8 @@ def run(ctx):
     autostart=safe_path(home/'.config/autostart/nekoserver-steam.desktop')
     if opts.get('autostart_big_picture',False):destinations[autostart]=files['nekoserver-steam.desktop']
     # Inspect every launcher/ancestor before any packages, power settings or files change.
-    for path,text in destinations.items():
-        path=safe_path(path)
+    for given,text in destinations.items():
+        path=safe_path(given)
         if path.exists() and (not path.is_file() or path.read_text()!=text):raise RuntimeError('Existing TV launcher differs; custom shortcut preserved')
         if path.exists() and (path.stat().st_uid!=user.pw_uid or not path.stat().st_mode & 0o100):raise RuntimeError('Existing TV launcher ownership/executable mode needs review; file preserved')
         for ancestor in (path.parent,*path.parent.parents):

@@ -47,4 +47,4 @@ if __name__ == '__main__':
         raise SystemExit(main())
     except (RuntimeError, OSError, ValueError, KeyboardInterrupt, EOFError):
         print('Account setup incomplete; saved choices preserved. No credentials printed.', file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from None

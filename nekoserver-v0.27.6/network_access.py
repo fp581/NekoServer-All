@@ -2,7 +2,7 @@
 import ipaddress,json,re,subprocess
 
 def command(args):
-    try:p=subprocess.run(args,capture_output=True,text=True,timeout=10)
+    try:p=subprocess.run(args,capture_output=True,text=True,timeout=10,check=False)
     except (OSError,subprocess.TimeoutExpired):raise RuntimeError("LAN interface inspection unavailable") from None
     if p.returncode:raise RuntimeError("LAN interface inspection failed")
     return p.stdout

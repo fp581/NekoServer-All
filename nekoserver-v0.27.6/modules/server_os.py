@@ -111,9 +111,9 @@ def run(context):
     atomic_json(guard, hdd_guard(context.config))
     write_units({HDD_UNIT: unit(binary, guard, context.config)})
     subprocess.run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
-    result = subprocess.run(['systemctl', 'enable', HDD_UNIT], capture_output=True, timeout=190)
+    result = subprocess.run(['systemctl', 'enable', HDD_UNIT], capture_output=True, timeout=190, check=False)
     if result.returncode:
         return {'status': 'needs_setup', 'reason': 'No-sleep/log limits installed; HDD command failed or hardware is unsupported. Inspect the policy service; no blanket drive setting was used'}
-    repeated=subprocess.run(['systemctl','restart',HDD_UNIT],capture_output=True,timeout=190)
+    repeated=subprocess.run(['systemctl','restart',HDD_UNIT],capture_output=True,timeout=190,check=False)
     if repeated.returncode:return {'status':'needs_setup','reason':'HDD policy rerun failed; inspect the managed service'}
     context.log('Verified SATA media HDD policy applied at boot: '+policy+'; firmware/bridge behavior still needs hardware verification.')

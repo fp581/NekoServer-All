@@ -4,8 +4,8 @@ from neko_common import safe_path
 
 def retire(paths, run):
     existing = []
-    for path in paths:
-        path = safe_path(path)
+    for given in paths:
+        path = safe_path(given)
         if not path.exists():
             continue
         lines = path.read_text().splitlines()

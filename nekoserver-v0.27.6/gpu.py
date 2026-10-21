@@ -20,7 +20,7 @@ def graphics(lspci=None):
     """Vendors of the display adapters: 'intel', 'amd' and/or 'nvidia'."""
     if lspci is None:
         try:
-            lspci = subprocess.run(['lspci', '-mm'], capture_output=True, text=True, timeout=30).stdout
+            lspci = subprocess.run(['lspci', '-mm'], capture_output=True, text=True, timeout=30, check=False).stdout
         except (OSError, subprocess.SubprocessError):
             lspci = ''
     found = []

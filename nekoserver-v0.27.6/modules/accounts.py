@@ -31,7 +31,7 @@ def finish_pending(ctx, pending):
     """Keep saved choices; open manual setup only for accounts the API could not finish."""
     remaining = []
     for app in pending:
-        def verify():
+        def verify(app=app):
             with lock(ctx.config):
                 return not account_setup.provision(ctx.config, [app], output=ctx.log)
         title, port = account_store.APPS[app]

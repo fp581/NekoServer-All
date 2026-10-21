@@ -13,7 +13,7 @@ DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and 
 
 
 def call(argv):
-    p = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
     if p.returncode:
         raise RuntimeError(f'{argv[0]} failed: {p.stderr.strip()[:400]}')
     return p.stdout.strip()
@@ -184,7 +184,7 @@ def run(context):
     specs = mount_specs(context.config)
     for _, uuid, fstype, target in specs:
         validate_device(uuid, fstype)  # raises if the drive identity is wrong
-        current = subprocess.run(['findmnt', '-n', '-o', 'SOURCE', '--mountpoint', target], capture_output=True, text=True)
+        current = subprocess.run(['findmnt', '-n', '-o', 'SOURCE', '--mountpoint', target], capture_output=True, text=True, check=False)
         if current.returncode == 0:
             mounted = current.stdout.strip().split('[')[0]
             if not Path(mounted).exists() or Path(mounted).resolve() != source_path(uuid):
@@ -195,7 +195,7 @@ def run(context):
     call(['systemctl', 'daemon-reload'])
     for _, uuid, _, target in specs:
         Path(target).mkdir(parents=True, exist_ok=True)
-        if subprocess.run(['findmnt', '-n', '--mountpoint', target], stdout=subprocess.DEVNULL).returncode != 0:
+        if subprocess.run(['findmnt', '-n', '--mountpoint', target], stdout=subprocess.DEVNULL, check=False).returncode != 0:
             call(['mount', target])
         current = call(['findmnt', '-n', '-o', 'SOURCE', '--mountpoint', target]).split('[')[0]
         if not Path(current).exists() or Path(current).resolve() != source_path(uuid):

@@ -8,8 +8,11 @@ import urllib.request
 from neko_common import app_port, local_opener
 
 
+QBITTORRENT_PORT=app_port('qbittorrent')
+
+
 class Client:
-    def __init__(self,port=app_port('qbittorrent')):
+    def __init__(self,port=QBITTORRENT_PORT):
         self.base=f'http://127.0.0.1:{port}'
         self.jar=http.cookiejar.CookieJar()
         self.opener=local_opener(urllib.request.HTTPCookieProcessor(self.jar))

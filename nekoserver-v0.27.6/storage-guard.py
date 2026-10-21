@@ -15,7 +15,7 @@ def verify(config):
         if not expected:
             raise RuntimeError(f'{key}: no configured UUID')
         result = subprocess.run(['findmnt', '-n', '-o', 'UUID,FSTYPE', '--mountpoint', str(path)],
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=10, check=False)
         fields = result.stdout.strip().split()
         if result.returncode or fields != [expected, config['storage'][key]['fstype']]:
             raise RuntimeError(f'{key}: missing or wrong filesystem at {path}')

@@ -25,7 +25,7 @@ def share_config(settings,media,user):
     return '\n'.join(out)
 
 def call(args,timeout=180):
-    p=subprocess.run(args,text=True,capture_output=True,timeout=timeout)
+    p=subprocess.run(args,text=True,capture_output=True,timeout=timeout, check=False)
     if p.returncode:raise RuntimeError(f'{args[0]} failed: {p.stderr[-500:]}')
     return p.stdout.strip()
 
@@ -81,7 +81,7 @@ def run(context):
     call(['systemctl','daemon-reload'])
     call(['systemctl','enable','--now','smb'],timeout=40)
     call(['systemctl','restart','smb'],timeout=40)
-    account=subprocess.run(['pdbedit','-L','-u',user],capture_output=True,text=True,timeout=15)
+    account=subprocess.run(['pdbedit','-L','-u',user],capture_output=True,text=True,timeout=15,check=False)
     has_account=account.returncode==0 and any(line.startswith(user+':') for line in account.stdout.splitlines())
     if not has_account:
         if not sys.stdin.isatty():
@@ -91,7 +91,7 @@ def run(context):
         print('\nShared folders: choose a password for opening the server\'s folders from other '
               'computers (user: '+user+'). Type it twice; nothing is shown while you type.')
         subprocess.run(['smbpasswd','-a',user],check=True)
-        account=subprocess.run(['pdbedit','-L','-u',user],capture_output=True,text=True,timeout=15)
+        account=subprocess.run(['pdbedit','-L','-u',user],capture_output=True,text=True,timeout=15,check=False)
         if account.returncode or not any(line.startswith(user+':') for line in account.stdout.splitlines()):
             raise RuntimeError('Samba user was not retained; inspect local authentication setup')
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')

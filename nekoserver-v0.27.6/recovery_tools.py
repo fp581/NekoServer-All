@@ -29,7 +29,7 @@ FORMAT='neko-immich-snapshot-v1'
 
 def command(argv, timeout=60, stdin=None, stdout=None):
     # Never print command output: Compose can render passwords, SQL can contain personal data.
-    try:result=subprocess.run(argv,stdin=stdin,stdout=stdout if stdout is not None else subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout)
+    try:result=subprocess.run(argv,stdin=stdin,stdout=stdout if stdout is not None else subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout, check=False)
     except (OSError,subprocess.TimeoutExpired):raise RuntimeError('Recovery command unavailable or timed out: '+argv[0]) from None
     if result.returncode:raise RuntimeError('Recovery command failed: '+argv[0]+'; inspect the service locally')
     if stdout is not None:return ''
@@ -162,7 +162,7 @@ def reattach(config,bundle,apply=False,confirm=''):
         installed=command(argv).strip()
         if not installed.startswith('Docker version '+saved['docker_version']+','):raise RuntimeError('Install the checkpoint Docker version for both client and daemon before reattachment; upgrades require separate validation')
     for unit in ('docker.service','docker.socket'):
-        result=subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15)
+        result=subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False)
         if result.returncode==0:raise RuntimeError('Stop Docker service and socket before reattachment')
     daemon=safe_path(Path('/etc/docker/daemon.json'))
     desired=docker_module.prepare_daemon_config(daemon,target)
@@ -184,7 +184,7 @@ def reattach(config,bundle,apply=False,confirm=''):
             if actual['docker_version']!=saved['docker_version']:raise RuntimeError('Running Docker version differs from checkpoint')
         except BaseException:
             # A failed adoption must not keep a mismatched daemon running.
-            stopped=subprocess.run(['systemctl','stop','docker.service','docker.socket'],capture_output=True,timeout=30)
+            stopped=subprocess.run(['systemctl','stop','docker.service','docker.socket'],capture_output=True,timeout=30,check=False)
             if stopped.returncode:raise RuntimeError('Post-start verification failed and Docker could not be stopped; inspect service/socket locally') from None
             raise
     return {'status':'needs_setup','reason':'Docker store reattached; rerun deployment profiles and verify applications/reboots before acceptance'}
@@ -353,7 +353,7 @@ def isolated_model(model,meta,workspace,port):
             env['DB_HOSTNAME']='database';env['REDIS_HOSTNAME']='redis';env['IMMICH_MACHINE_LEARNING_URL']='http://immich-machine-learning:3003'
             service['environment']=env
         # Self-hosted integrations cannot call out through the internal test network.
-        for key,value in env.items():
+        for value in env.values():
             if value is not None and '$' in str(value):raise RuntimeError('Unresolved environment interpolation in snapshot')
         for volume in source.get('volumes',[]):
             if volume.get('source')=='/etc/localtime':continue

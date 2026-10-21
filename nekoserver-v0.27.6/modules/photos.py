@@ -11,7 +11,7 @@ ROOT_UID = 0  # setup files must belong to root (tests run as a normal user)
 def checked_mount(target):
     target=Path(target)
     if not target.is_dir() or target.is_symlink(): raise RuntimeError(f'Missing/symlink mount: {target}')
-    p=subprocess.run(['findmnt','-n','-o','TARGET','--mountpoint',str(target)],capture_output=True,text=True)
+    p=subprocess.run(['findmnt','-n','-o','TARGET','--mountpoint',str(target)],capture_output=True,text=True,check=False)
     if p.returncode or p.stdout.strip()!=str(target): raise RuntimeError(f'Expected distinct mounted filesystem: {target}')
     return subprocess.check_output(['findmnt','-n','-o','SOURCE','--mountpoint',str(target)],text=True).strip()
 

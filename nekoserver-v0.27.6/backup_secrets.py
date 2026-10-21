@@ -44,7 +44,7 @@ def openssl(args, data=b'', password=None, timeout=120):
         fds = (read,)
         args = [a.replace('{fd}', str(read)) for a in args]
     try:
-        result = subprocess.run(['openssl', *args], input=data, capture_output=True, pass_fds=fds, timeout=timeout)
+        result = subprocess.run(['openssl', *args], input=data, capture_output=True, pass_fds=fds, timeout=timeout, check=False)
     finally:
         for fd in fds:
             os.close(fd)
@@ -69,7 +69,7 @@ def is_sudo_password(user, password):
     """True when ``password`` lets ``user`` run sudo (forced fresh check, no cache)."""
     try:
         result = subprocess.run(['runuser', '-u', user, '--', 'sudo', '-k', '-S', '-p', '', '-v'],
-                                input=(password + '\n').encode(), capture_output=True, timeout=30)
+                                input=(password + '\n').encode(), capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0

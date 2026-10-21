@@ -363,17 +363,17 @@ class Usb:
 
     def open(self):
         if subprocess.run(['findmnt', '-n', '--mountpoint', str(self.mount)],
-                          capture_output=True).returncode != 0:
+                          capture_output=True, check=False).returncode != 0:
             if not (Path('/dev/disk/by-uuid') / self.uuid).exists():
                 return None
             self.mount.mkdir(parents=True, exist_ok=True)
             options = usb_mount_options(self.fstype, self.writable)
             if subprocess.run(['mount', '-o', options, f'UUID={self.uuid}', str(self.mount)],
-                              capture_output=True, timeout=60).returncode != 0:
+                              capture_output=True, timeout=60, check=False).returncode != 0:
                 return None
             self.mounted_here = True
         found = subprocess.run(['findmnt', '-n', '-o', 'UUID,OPTIONS', '--mountpoint', str(self.mount)],
-                               capture_output=True, text=True).stdout.split()
+                               capture_output=True, text=True, check=False).stdout.split()
         if len(found) != 2 or found[0].lower() != self.uuid.lower():
             return None
         if not private_mount_options(found[1], self.fstype):
@@ -385,7 +385,7 @@ class Usb:
         try:
             if self.mounted_here:
                 self.mounted_here = False
-                subprocess.run(['umount', str(self.mount)], capture_output=True, timeout=60)
+                subprocess.run(['umount', str(self.mount)], capture_output=True, timeout=60, check=False)
         finally:
             if self.lock is not None:
                 os.close(self.lock)
@@ -394,7 +394,7 @@ class Usb:
 
 def tool(name, *args):
     """Run one of NekoServer's restore tools; True on success."""
-    return subprocess.run([sys.executable, str(ROOT / name), *args]).returncode == 0
+    return subprocess.run([sys.executable, str(ROOT / name), *args], check=False).returncode == 0
 
 
 def restore_photos(config, prompt, output):

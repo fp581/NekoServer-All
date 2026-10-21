@@ -13,7 +13,7 @@ PORTS=app_ports(MEDIA_APPS)
 ARR={'sonarr':'v3','radarr':'v3','lidarr':'v1','prowlarr':'v1'}
 
 def docker(*args):
-    p=subprocess.run(['docker',*args],capture_output=True,text=True,timeout=15)
+    p=subprocess.run(['docker',*args],capture_output=True,text=True,timeout=15,check=False)
     if p.returncode: raise RuntimeError('Docker inspection unavailable')
     return p.stdout
 

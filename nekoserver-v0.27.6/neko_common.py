@@ -445,7 +445,7 @@ def publish_no_replace(temp, target):
         rename.restype = ctypes.c_int
         if rename(-100, os.fsencode(temp), -100, os.fsencode(target), 1) != 0:
             code = ctypes.get_errno()
-            raise OSError(code, os.strerror(code), str(target))
+            raise OSError(code, os.strerror(code), str(target)) from exc
     else:
         temp.unlink()
     directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -491,7 +491,7 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd')):
             raise RuntimeError('Storage identity is not configured')
         result = subprocess.run(
             ['findmnt', '-n', '-o', 'UUID,FSTYPE', '--mountpoint', str(path)],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=10, check=False)
         if result.returncode or result.stdout.split() != [expected['uuid'], expected['fstype']]:
             raise RuntimeError('Storage identity mismatch; refusing private data access')
         identities.append(expected['uuid'])

@@ -34,7 +34,7 @@ def run(args, timeout=8):
         return None, ''
     try:
         p = subprocess.run([m.group(0) for m in plain], capture_output=True, text=True, timeout=timeout,
-                           env={**os.environ, 'LC_ALL': 'C', 'TZ': 'UTC'})
+                           env={**os.environ, 'LC_ALL': 'C', 'TZ': 'UTC'}, check=False)
         return p.returncode, p.stdout[:2000000]
     except (OSError, subprocess.TimeoutExpired):
         return None, ''

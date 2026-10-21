@@ -24,7 +24,7 @@ def source_folder(source):
         value=source.get('mounted_path')
         if not value:raise RuntimeError('Remote source needs an already mounted local folder')
         path=safe_path(value)
-        result=subprocess.run(['findmnt','-n','-o','FSTYPE','--target',str(path)],capture_output=True,text=True,timeout=10)
+        result=subprocess.run(['findmnt','-n','-o','FSTYPE','--target',str(path)],capture_output=True,text=True,timeout=10,check=False)
         if result.returncode or result.stdout.strip() not in ('cifs','nfs','nfs4'):
             raise RuntimeError('Remote folder is not on a verified SMB/NFS mount')
     elif source.get('type')=='local':path=safe_path(source['path'])
@@ -64,8 +64,8 @@ def copy_source(source,media,apply=False,uid=None,gid=None):
     except UnreadableEntries as exc:
         raise IncompleteSource([Path(p).relative_to(folder).as_posix() if Path(p).is_relative_to(folder) else '.'
                                 for p,_ in exc.problems]) from None
-    for current,_ in sorted(found):
-        current=safe_path(current)
+    for found_path,_ in sorted(found):
+        current=safe_path(found_path)
         dest=safe_path(target/current.relative_to(folder))
         if dest.exists():
             if not dest.is_file() or digest(current)!=digest(dest):raise RuntimeError('Existing imported file differs; refusing overwrite')

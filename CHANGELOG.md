@@ -12,6 +12,8 @@
   - in the Rust runtime: one HTTPS delivery (heartbeat and notifications), one way to open a backup job, stage and publish a snapshot (app and host snapshots), one "move without replacing", one fan-speed conversion, one table of error sentences;
   - on the page: one way to show fan speeds and temperatures.
 - Duplicated code measured with jscpd: 14 copies (145 lines) before, 2 short ones (27 lines) left.
+- **Bug-risk fixes found by a full Python lint pass (ruff):** helper functions inside loops now keep the value of their own loop pass; errors re-raised inside error handlers keep (or deliberately drop) their cause; loop variables are no longer overwritten; default arguments no longer call functions when a file is loaded; and every `subprocess.run` that checks the result itself now says so (`check=False`).
+- **The shared command and report helpers are stricter:** only known programs with plain arguments are run, and only plain absolute paths are read (found by SonarCloud after the move).
 - New tests check that names the installer and the runtime share (fan recovery files, settings folder, phone address port) stay the same in both.
 - Version 0.27.6; the release folder is now `nekoserver-v0.27.6`.
 

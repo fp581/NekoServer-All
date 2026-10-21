@@ -130,7 +130,7 @@ def qr_svg(text):
         return ''
     try:
         result = subprocess.run(['qrencode', '-t', 'SVG', '-m', '1', '-o', '-', '--', text],
-                                capture_output=True, text=True, timeout=15)
+                                capture_output=True, text=True, timeout=15, check=False)
     except (OSError, subprocess.SubprocessError):
         return ''
     out = result.stdout
@@ -144,7 +144,7 @@ def ensure_qrencode():
         return
     try:
         subprocess.run(['pacman', '-S', '--needed', '--noconfirm', 'qrencode'],
-                       capture_output=True, timeout=600)
+                       capture_output=True, timeout=600, check=False)
     except (OSError, subprocess.SubprocessError):
         pass
 

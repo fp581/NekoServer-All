@@ -13,7 +13,7 @@ DESCRIPTION = 'Install Tailscale; open browser authorization and verify the conn
 
 
 def run_cmd(args, timeout=240):
-    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=False)
     if result.returncode:
         raise RuntimeError(args[0] + ' failed; inspect the local service/package status')
     return result.stdout.strip()
@@ -22,7 +22,7 @@ def run_cmd(args, timeout=240):
 def connected():
     try:
         result = subprocess.run(['tailscale', 'status', '--json'], text=True,
-                                capture_output=True, timeout=20)
+                                capture_output=True, timeout=20, check=False)
         return result.returncode == 0 and json.loads(result.stdout).get('BackendState') == 'Running'
     except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
         return False
@@ -32,7 +32,7 @@ def login_targets():
     # tailscale up emits consecutive JSON objects, including AuthURL before login.
     # Bound its wait; the daemon retains the approval flow after this CLI exits.
     result = subprocess.run(['tailscale', 'up', '--json', '--timeout=3s'],
-                            text=True, capture_output=True, timeout=12)
+                            text=True, capture_output=True, timeout=12, check=False)
     remaining = result.stdout.strip()
     decoder = json.JSONDecoder()
     while remaining:

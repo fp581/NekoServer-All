@@ -33,7 +33,7 @@ def used_bytes(path):
         return 0
     try:
         result = subprocess.run(['du', '-s', '-B1', '--apparent-size', '--', str(path)],
-                                capture_output=True, text=True, timeout=900)
+                                capture_output=True, text=True, timeout=900, check=False)
         return int(result.stdout.split()[0]) if result.returncode == 0 else 0
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
         return 0
@@ -198,19 +198,19 @@ def usb_room(uuid, pairs, full=False, fstype='ext4'):
         return None
     try:
         found = subprocess.run(['findmnt', '-n', '-o', 'TARGET', '--source', 'UUID=' + uuid],
-                               capture_output=True, text=True, timeout=20)
+                               capture_output=True, text=True, timeout=20, check=False)
         targets = found.stdout.split('\n') if found.returncode == 0 else []
         if targets and targets[0].strip():
             return measure(Path(targets[0].strip()), pairs, full)
         with tempfile.TemporaryDirectory(prefix='neko-usb-') as folder:
             opened = subprocess.run(['mount', '-o', usb_mount_options(fstype), 'UUID=' + uuid, folder],
-                                    capture_output=True, timeout=60)
+                                    capture_output=True, timeout=60, check=False)
             if opened.returncode:
                 return None
             try:
                 return measure(Path(folder), pairs, full)
             finally:
-                subprocess.run(['umount', folder], capture_output=True, timeout=60)
+                subprocess.run(['umount', folder], capture_output=True, timeout=60, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
 

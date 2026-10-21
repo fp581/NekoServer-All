@@ -37,7 +37,10 @@ def validate(value):
         raise RuntimeError('Invalid private music token')
 
 
-def inspect(value, base=f"http://127.0.0.1:{app_port('navidrome')}"):
+NAVIDROME = f"http://127.0.0.1:{app_port('navidrome')}"
+
+
+def inspect(value, base=NAVIDROME):
     validate(value)
     if not re.fullmatch(r'http://127\.0\.0\.1:[0-9]{1,5}', base):
         raise RuntimeError('Music setup only contacts the local server')

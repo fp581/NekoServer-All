@@ -102,7 +102,7 @@ def containers(config,photos=False):
             try:
                 values=json.loads(out);v=values[0] if rc==0 and isinstance(values,list) and len(values)==1 else {};labels=v.get('Config',{}).get('Labels',{});running=v.get('State',{}).get('Status')=='running';healthy=v.get('State',{}).get('Health',{}).get('Status','not_defined') not in ('unhealthy','starting');exact=labels.get('com.docker.compose.project')=='neko-'+app and labels.get('com.docker.compose.service')==svc
                 binds=[m for m in v.get('Mounts',[]) if isinstance(m,dict) and m.get('Type')=='bind']
-                def bound(source,targets,readonly=False):return any(m.get('Source')==source and m.get('Destination') in targets and (not readonly or m.get('RW') is False) for m in binds)
+                def bound(source,targets,readonly=False,binds=binds):return any(m.get('Source')==source and m.get('Destination') in targets and (not readonly or m.get('RW') is False) for m in binds)
                 if app=='immich':
                     expected=str(Path(config['data_mount'])/'photos/immich-library') if svc=='immich-server' else str(Path(config['data_mount'])/'appdata/immich/postgres') if svc=='database' else None
                     targets=('/data','/usr/src/app/upload') if svc=='immich-server' else ('/var/lib/postgresql/data',)
