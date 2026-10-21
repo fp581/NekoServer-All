@@ -11,6 +11,13 @@ DEPENDENCIES = ['media', 'recovery']
 DESCRIPTION = 'Nightly private media application snapshots with automatic restart recovery'
 
 
+def retention(keep):
+    """What happens to older snapshots, as setup says it."""
+    if keep == 0:
+        return 'Every snapshot is kept (none are deleted automatically).'
+    return f'The newest {keep} complete snapshots are kept; older ones are deleted after each successful run.'
+
+
 def keep_snapshots(config):
     """Nightly snapshots to keep on the HDD; 0 keeps every one (pre-v0.21.1 behaviour)."""
     keep = config.get('app_backup', {}).get('keep_snapshots', 14)
@@ -81,4 +88,4 @@ def run(context):
         ['systemctl', 'enable', '--now', 'nekoserver-app-backup.timer'],
     ):
         subprocess.run(command, check=True, capture_output=True, timeout=1200)
-    context.log('Nightly private app snapshots enabled on media HDD; apps stop briefly during each run. No automatic backup deletion.')
+    context.log('Nightly private app snapshots enabled on media HDD; apps stop briefly during each run. '+retention(keep_snapshots(context.config)))

@@ -1398,6 +1398,7 @@ function allLightsRow() {
 const LIGHT_STATES = {
   detected: ['neutral', null, ''],
   none_reported: ['unknown', 'None found', 'OpenRGB is running but found no lighting. Memory and motherboard lights may need a restart after setup (see Help, “Lights don’t change”).'],
+  disabled: ['neutral', 'Switched off', 'RGB lighting is switched off in setup ("rgb": false), so NekoServer leaves your lights alone.'],
   not_running: ['warning', 'OpenRGB off', 'OpenRGB is not running, so lighting can’t be changed. Help shows the command to check it.']
 };
 function renderLights(c) {

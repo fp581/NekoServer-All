@@ -35,7 +35,7 @@ Symlinks, sockets, FIFOs, devices and nested filesystems inside an app's folder 
 
 Snapshots contain API keys and possibly passwords. Directories are private (`0700`), payload files and manifests are private (`0600`), owned by the root backup worker. Original ownership/modes are recorded rather than exposing the backup copy. Copy the **whole snapshot** to another protected device or off-machine location and verify it there. Image IDs are recorded for diagnosis; container images themselves are not backed up or guaranteed available upstream.
 
-Custom writable mounts, shared appdata writers, symlinks/hardlinks, special files and nested filesystem mounts are refused. Review such a failed backup locally instead of assuming a partial snapshot covers everything. Unsupported files are never silently skipped. Compose folders and installer bundles must be stable while the snapshot runs.
+Custom writable mounts and app folders shared with another container are refused: the run fails and says why, so review it locally instead of assuming a partial snapshot covers everything. Symlinks, special files and nested filesystems inside an app's folder are skipped and listed under `skipped` in the manifest (see above), and hard-linked files are copied as ordinary files; nothing is skipped without being listed. Compose folders and installer bundles must be stable while the snapshot runs: a file that changes, appears or disappears during the copy makes the run fail.
 
 ## Verify and restore into a separate directory
 

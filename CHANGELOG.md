@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.27.7 — 2026-10-21
+
+### Fixed
+- **Switching off only RGB lighting no longer stops setup.** With fan control still on, setup stopped OpenRGB and then took the records of the fans still under control as a sign that fans had not gone back to the motherboard, and stopped with that error (reproduced). Those records are now only checked when fan control itself is switched off.
+
+- **`"rgb": false` now really leaves lighting alone.** Setup removed NekoServer's OpenRGB service, but the fan and light service still read the saved lighting, asked OpenRGB every few seconds and set its saved colours again, so an OpenRGB you run yourself (its app with the SDK server on) could be overwritten. The service is now told lighting is off: it never reads, asks or changes lighting, and the page says lighting is switched off.
+- **Setup tells the truth about old app snapshots.** It said "No automatic backup deletion", although by default the newest 14 complete snapshots are kept and older ones deleted. It now says what the setting does (and "none are deleted" only with `0`).
+- **The app backup guide no longer contradicts itself.** One paragraph said symlinks, hard links, special files and nested filesystems make the backup fail; they are skipped and listed (hard links copied as ordinary files), as the guide already said earlier. Only custom writable mounts and folders shared with another container make it fail.
+
+### Changed
+- Version 0.27.7; the release folder is now `nekoserver-v0.27.7`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.6 — 2026-10-21
 
 ### Changed (code cleanup; no change in what the server does)
