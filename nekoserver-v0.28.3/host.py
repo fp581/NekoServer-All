@@ -160,8 +160,8 @@ class Family:
         packages did that NekoServer manages itself."""
 
     def packaged_example(self, absolute):
-        """This settings file is known to be its package's untouched example."""
-        return False
+        """This settings file is known to be its package's untouched example (families
+        without a record of what their packages wrote never know: None)."""
 
     def reconcile(self):
         """Finish an installation that stopped part-way, now or in an earlier run: the

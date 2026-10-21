@@ -446,8 +446,9 @@ class DebianTest(unittest.TestCase):
         self.assertTrue(self.journal().exists())
         self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service'})
         self.assertEqual((self.root / 'usr/sbin/policy-rc.d').read_text(), host.OUR_POLICY)
+        retry = self.family(apt)
         with self.assertRaisesRegex(RuntimeError, 'dpkg could not finish setting up'):
-            self.family(apt).reconcile()
+            retry.reconcile()
 
     def test_dpkg_still_working_after_apt_stopped_is_waited_for(self):
         apt = FakeApt()
