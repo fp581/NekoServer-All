@@ -281,6 +281,11 @@ def start_services(definitions,code,control,log):
     for unit in ('nekoserver-dashboard-collect.timer',*started,SERVICE):systemctl('enable','--now',unit)
     for unit in (*started,SERVICE):systemctl('restart',unit)
 
+def asset_payloads(project,code):
+    """The dashboard page's files from a release folder (this one, or the copy preserved
+    on the SSD for reinstalling), keyed by where they are installed."""
+    return {code/'dashboard'/name:(project/'dashboard'/name).read_bytes() for name in ASSETS}
+
 def run(ctx):
     port,interval,smart=options(ctx.config)
     if not ctx.apply:ctx.log('Local dashboard available with --apply at http://127.0.0.1:'+str(port));return
@@ -289,7 +294,7 @@ def run(ctx):
     cfg=ctx.config;data=mount_path(cfg['data_mount']);project=Path(__file__).resolve().parents[1]
     spec=importlib.util.spec_from_file_location('dashboard_storage_guard',project/'storage-guard.py');guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard);guard.verify(cfg)
     code=safe_path(Path('/usr/local/lib/nekoserver-dashboard')/('v'+VERSION));config=safe_path(COLLECTOR_SETTINGS)
-    payloads={code/'dashboard'/name:(project/'dashboard'/name).read_bytes() for name in ASSETS}
+    payloads=asset_payloads(project,code)
     payloads[code/native_runtime.NAME]=native_runtime.payload(project,cfg)
     public=tailnet_name(cfg,public_host_of(installed_unit()))
     control,lighting=control_options(cfg)
