@@ -249,8 +249,6 @@ def execute(args, root=ROOT):
     found=capabilities.detect()
     capabilities.report(found)
     capabilities.require(found)
-    # Packages an earlier installation left half-done are tidied before any step runs.
-    host.current().reconcile()
     path=safe_path('/run/nekoserver-install.lock')
     fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
     try:
@@ -259,6 +257,9 @@ def execute(args, root=ROOT):
             raise InstallerError('Installer lock must be a private root-owned regular file')
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise InstallerError('Another NekoServer installation is active') from None
+        # Packages an earlier installation left half-done are tidied before any step runs
+        # (under the package lock, so never another setup's installation in progress).
+        host.current().reconcile()
         return _execute(args, root)
     finally:
         os.close(fd)

@@ -41,7 +41,10 @@ A family can also override:
 
 - `prepare(missing)`, run before installing: conflict checks and vendor repositories. Debian refuses its own `docker.io` next to Docker's packages, and adds Docker's and Tailscale's repositories unless someone already defined them. It returns what `settle` must know about the system as it was before: whether `smb.conf` existed, and which services were already there.
 - `settle(packages, before)`, run after installing, including after a failed one: undo what the packages did on their own. Debian's packages enable their services, so the new ones are switched off (and checked) until NekoServer's own steps start them on the right drive. Services that existed before are never touched.
-- `journal`: where an installation is recorded before it starts, so one that fails or is cut off is tidied up by `reconcile()` at the next install or setup run.
+- `journal`: where an installation is recorded before it starts, so one that fails, times out or is cut off is tidied up by `reconcile()`, at once when the package tools have stopped, or else at the next install or setup run.
+- `protect(before)`, run just before installing: Debian masks the new services and writes a `policy-rc.d`, and both stay until `settle` has switched the services off.
+- `locked()`: one package job at a time across processes (`/run/nekoserver-packages.lock`). `install.sh` also holds `/run/nekoserver-setup.lock` for the whole setup.
+- `repair()`: brings NekoServer's own package-manager settings up to date on every setup run, whether or not anything needs installing. `install.sh` runs it (`python3 host.py repair`) before the package manager first runs.
 - `reboot_pending(root)`: Debian and Ubuntu leave `/run/reboot-required` after an update that needs a restart.
 
 - `packages` maps NekoServer's package names (the Arch names) to the family's own name or names, for example `'docker-compose': 'docker-compose-plugin'`.
