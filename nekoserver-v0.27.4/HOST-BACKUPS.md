@@ -11,7 +11,7 @@ systemctl status nekoserver-host-backup.timer
 
 ## Scope and setup
 
-Default schedule: 05:15, with missed runs caught up after boot. `host_backup.user` identifies an existing non-root desktop account (`auto` uses the sudo/TV account, then the configured media UID). Paths/identity are resolved during setup and retained in the private guard. Reapply after moving Steam or adding an external Steam library. Steam must be closed, including running games, Wine and Proton workloads. The worker never kills a game/session or logs into Steam. A busy Steam process or failed process probe records a failed run; the dashboard/notification worker reports it. If Steam is normally left open overnight, close it before running the backup; this phase does not forcibly interrupt TV use.
+Default schedule: 05:15, with missed runs caught up after boot. `host_backup.user` identifies an existing non-root desktop account (`auto` uses the sudo/TV account, then the configured media UID, the first time; after that the same account stays chosen, even when another administrator runs setup. Name the account in `host_backup.user` to change it). Paths/identity are resolved during setup and retained in the private guard. Reapply after moving Steam or adding an external Steam library. Steam must be closed, including running games, Wine and Proton workloads. The worker never kills a game/session or logs into Steam. A busy Steam process or failed process probe records a failed run; the dashboard/notification worker reports it. If Steam is normally left open overnight, close it before running the backup; this phase does not forcibly interrupt TV use.
 
 Included, when present:
 

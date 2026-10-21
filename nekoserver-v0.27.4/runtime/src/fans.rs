@@ -266,6 +266,25 @@ pub struct Original {
     pub enable: String,
     pub pwm: String,
 }
+impl Original {
+    /// A mode number and a speed of 0–255, as Linux reports them.
+    pub fn valid(&self) -> bool {
+        (1..=2).contains(&self.enable.len())
+            && self.enable.bytes().all(|b| b.is_ascii_digit())
+            && self.pwm.parse::<u32>().is_ok_and(|n| n <= 255)
+    }
+}
+/// Every entry of a journal is a valid record (a damaged one is kept, not used).
+pub fn originals_valid(saved: &Value) -> bool {
+    saved.as_object().is_some_and(|m| {
+        m.values().all(|o| {
+            o.as_object().is_some_and(|f| {
+                f.get("enable").is_some_and(Value::is_string)
+                    && f.get("pwm").is_some_and(Value::is_string)
+            })
+        })
+    }) && originals_from(saved).values().all(Original::valid)
+}
 
 /// Follows the saved settings, one step every couple of seconds.
 pub struct Controller {
@@ -506,22 +525,17 @@ enum HandBack {
 }
 /// Put the firmware's setting back, and check that it took. False when it didn't.
 pub fn restore_output(out: &Channel, original: &Original) -> bool {
-    if !out.intact() {
+    // A record that isn't a real setting is never "put back" (that could switch the
+    // fan to a mode it never had): it stays, to be checked.
+    if !original.valid() || !out.intact() {
         return false;
     }
     // Manual with a fixed value before: put that value back too.
-    if original.enable == "1"
-        && !original.pwm.is_empty()
-        && write(&out.path(""), &original.pwm).is_err()
-    {
+    if original.enable == "1" && write(&out.path(""), &original.pwm).is_err() {
         return false;
     }
-    let enable = if original.enable.is_empty() {
-        "2"
-    } else {
-        &original.enable
-    };
-    write(&out.path("_enable"), enable).is_ok() && read(&out.path("_enable")) == enable
+    write(&out.path("_enable"), &original.enable).is_ok()
+        && read(&out.path("_enable")) == original.enable
 }
 
 /// Which fans each output drives: all outputs to full speed, then one at a time to

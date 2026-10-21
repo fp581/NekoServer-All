@@ -182,7 +182,12 @@ const LOADERS = {
   status: async () => { state.status = validStatus(await getJson('/api/status')); },
   live: async () => { state.live = await getJson('/api/live'); remember(state.live); },
   processes: async () => { state.processes = await getJson('/api/processes'); },
-  control: async () => { state.control = await getJson('/api/control', 8000, tokenHeader()); }
+  control: async () => {
+    // When this reading was asked for: a save confirmed after that is newer than it.
+    const asked = Date.now();
+    state.control = await getJson('/api/control', 8000, tokenHeader());
+    state.controlAsked = asked;
+  }
 };
 const ERROR_FIELD = {status: 'statusError', live: 'liveError', processes: 'processError', control: 'controlError'};
 const loading = {};
@@ -1146,6 +1151,7 @@ async function saveOutput(card) {
   card.refreshButtons();
   const ok = await change('fan', {output: card.id, setting: structuredClone(setting)});
   card.saving = false;
+  if (ok) { card.savedAt = Date.now(); } // readings asked before this are older than the save
   if (ok && card.version === version) {
     card.dirty = false;
     toast('Saved. The fan follows it now.');
@@ -1156,7 +1162,7 @@ async function saveOutput(card) {
 }
 function outputCard(out, c) {
   const fans = object(c.fans), temps = list(fans.inventory?.temps);
-  const card = {id: out.id, draft: draftFrom(fans.settings?.[out.id], temps), dirty: false, saving: false, version: 0, root: el('article', 'card fan-control')};
+  const card = {id: out.id, draft: draftFrom(fans.settings?.[out.id], temps), dirty: false, saving: false, version: 0, savedAt: 0, root: el('article', 'card fan-control')};
   const title = el('h3'), badgeNode = el('span', 'badge neutral'), now = el('p', 'fan-now'), note = el('p', 'hint');
   const head = el('div', 'card-heading');
   head.append(title, badgeNode);
@@ -1212,7 +1218,9 @@ function updateOutput(card, c, parts) {
   const out = list(inventory.outputs).find(o => o.id === card.id) || {};
   const live = object(fans.state?.[card.id]);
   const fresh = draftFrom(saved, list(inventory.temps));
-  if (!card.dirty && !card.saving && parts.editor.dragging < 0 && JSON.stringify(fresh) !== JSON.stringify(card.draft)) {
+  // A reading asked for before the last save shows the old setting: never adopt it.
+  const current = (state.controlAsked ?? 0) >= card.savedAt;
+  if (current && !card.dirty && !card.saving && parts.editor.dragging < 0 && JSON.stringify(fresh) !== JSON.stringify(card.draft)) {
     card.draft = fresh; // changed elsewhere (another device)
     card.rebuild();
   }
@@ -1330,13 +1338,14 @@ function lightCard(d) {
   const effect = effectSelect(d, chosen, key);
   effect.addEventListener('change', hold);
   const power = button(chosen.off ? 'Turn on' : 'Turn off', () => {
-    sendColor.cancel();
-    sendBrightness.cancel();
+    card.cancelQueued();
     void sendLight(key, {off: !lightChosen(cooling.lights.get(key).data).off});
   });
   const own = hint('This effect makes its own colours, so colour and brightness don’t apply to it.');
   root.append(head, el('p', 'hint', joined([text(d.kind), d.leds ? d.leds + ' lights' : '', text(d.location)])), colorWrap, brightness, effect, own, power);
   const card = {root, data: d};
+  // Edits still waiting to be sent; any later action on this light wins over them.
+  card.cancelQueued = () => { sendColor.cancel(); sendBrightness.cancel(); };
   card.update = next => {
     card.data = next;
     const now = lightChosen(next);
@@ -1359,7 +1368,16 @@ function lightCard(d) {
   return card;
 }
 function applyAll(color, brightness) {
-  for (const card of cooling.lights.values()) { void sendLight(card.data.key, {color, brightness, off: false, effect: ''}); }
+  for (const card of cooling.lights.values()) {
+    card.cancelQueued();
+    void sendLight(card.data.key, {color, brightness, off: false, effect: ''});
+  }
+}
+function allOff() {
+  for (const card of cooling.lights.values()) {
+    card.cancelQueued();
+    void sendLight(card.data.key, {off: true});
+  }
 }
 function allLightsRow() {
   const row = el('div', 'light-all'), color = el('input');
@@ -1368,7 +1386,7 @@ function allLightsRow() {
   let level = 100;
   row.append(color, rangeField('Brightness', 0, 100, level, v => { level = v; }),
     button('Apply to all', () => applyAll(color.value, level), 'button small'),
-    button('All off', () => { for (const card of cooling.lights.values()) { void sendLight(card.data.key, {off: true}); } }));
+    button('All off', allOff));
   return row;
 }
 const LIGHT_STATES = {

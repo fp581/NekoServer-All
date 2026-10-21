@@ -1,7 +1,7 @@
 """Local visual health dashboard with a privileged collector and unprivileged web server."""
 import native_runtime
 from acceptance_summary import scope_digest
-import getpass,grp,importlib.util,json,os,platform,shutil,subprocess,sys
+import getpass,grp,importlib.util,json,os,platform,re,shutil,subprocess,sys
 from pathlib import Path
 from neko_common import APP_PORTS,VERSION,safe_path,mount_path,atomic_write,atomic_json
 DEPENDENCIES=['storage','recovery']
@@ -148,12 +148,40 @@ def collector_settings(cfg,smart,interval=60):
     clean['acceptance_scope']=scope_digest(cfg)
     return clean
 
+SERVICE_UNIT=Path('/etc/systemd/system')/SERVICE
+
+def with_public_host(unit,public):
+    """The web service's definition with its Tailscale name set (or removed)."""
+    lines=unit.split('\n')
+    for i,line in enumerate(lines):
+        if line.startswith('ExecStart=') and ' serve ' in line:
+            line=re.sub(r' --public-host \S+','',line)
+            lines[i]=line+(' --public-host '+public if public else '')
+    return '\n'.join(lines)
+
+def refresh_public_host(cfg,log,unit_path=None):
+    """Remote access set up after the dashboard: the web service must also answer its
+    Tailscale name, or the phone gets E41. Rewritten and restarted only on a change."""
+    unit_path=unit_path or SERVICE_UNIT
+    if not unit_path.is_file():return False
+    current=unit_path.read_text()
+    if not current.startswith('[Unit]\nDescription=NekoServer '):return False
+    wanted=with_public_host(current,tailnet_name(cfg))
+    if wanted==current:return False
+    atomic_write(unit_path,wanted,0o644)
+    systemctl('daemon-reload',timeout=30)
+    systemctl('restart',SERVICE)
+    log('Dashboard: now also answers its Tailscale address')
+    return True
+
 def refresh(cfg,log,target=None):
     """After every setup step: settings chosen after the dashboard step (TV, heartbeat,
-    ...) are part of its fingerprint, so its collector settings are written again from
-    the final configuration. Nothing happens when the dashboard is not installed."""
+    remote access, ...) are part of its fingerprint, so its collector settings are
+    written again from the final configuration, and the web service learns a Tailscale
+    name set up later. Nothing happens when the dashboard is not installed."""
     target=target or COLLECTOR_SETTINGS
     if not target.is_file():return False
+    refresh_public_host(cfg,log)
     _port,interval,smart=options(cfg)
     wanted=collector_settings(cfg,smart,interval)
     try:
