@@ -2,6 +2,13 @@
 
 ## v0.28.2 — 2026-10-21
 
+### Fixed (every Linux)
+- **A failed monthly update can no longer leave photos or files out of step with their database.** The updated apps used to start on their usual ports before every check had finished, so phones could reconnect and upload, edit or delete in that window. If a later check then failed, the rollback restored the old Immich and Nextcloud databases but not the photo library or user files, which aren't in the monthly snapshot. That could leave uploads with no database entry, or database entries pointing at deleted files.
+  - While Immich and Nextcloud are checked, they run on a random port on this computer only, with no background jobs (no Nextcloud cron, Immich API only).
+  - The update is committed (journal phase `committed`) only after every check and the media audit have passed. Only then do the two apps open up again.
+  - A failure before the commit rolls back while nothing could have changed those files. A failure after it keeps the update and only retries opening the apps up.
+  - Tests run the whole sequence with stand-ins for Docker and induce failures at each step. A real Docker run with an induced failure still needs to be done on a server.
+
 ### Fixed (Debian / Ubuntu)
 - **An installation that times out is tidied up too.** The tidy-up ran only when apt finished on its own. A timeout skipped it, while the "don't start services" policy was already gone. Newly installed Samba services stayed enabled, so a restart before the next setup run could start them before their drive guards existed. Now:
   - The new services are masked before installing, so they cannot start, not even after a restart.
