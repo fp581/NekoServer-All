@@ -6,14 +6,19 @@ use for the packages NekoServer needs, what its services are called and which of
 settings files belong in host backups. See PORTING.md for how a family is added.
 
 Run as  python3 host.py bootstrap  (install.sh does) to install the system packages
-the apps need.
+the apps need, and  python3 host.py repair  to undo repository settings an older
+NekoServer left that stop the package manager working (install.sh runs it first).
 """
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 from types import MappingProxyType
@@ -132,9 +137,23 @@ class Family:
         raise NotImplementedError
 
     def prepare(self, missing):
-        """Before installing: check for conflicts and add vendor repositories. Returns
+        """Before installing: check for conflicts and add vendor repositories. May return
         what settle() must know about the system as it was before (kept in the journal)."""
-        return {}
+
+    def protect(self, before):
+        """Just before installing: keep the new services from starting until settle()."""
+
+    def wait_until_idle(self):
+        """After an installation was cut off: wait until the package tools have stopped."""
+
+    def repair(self, log=print):
+        """Bring NekoServer's own package-manager settings up to date (an older release
+        may have left some that stop the package manager working)."""
+
+    @contextlib.contextmanager
+    def locked(self):
+        """One NekoServer package job at a time, whichever process runs it."""
+        yield
 
     def settle(self, packages, before):
         """After installing, also after a failed or interrupted one: undo anything the
@@ -143,6 +162,10 @@ class Family:
     def reconcile(self):
         """Finish an installation that stopped part-way, now or in an earlier run: the
         packages it did install are tidied up (settle) before anything else happens."""
+        with self.locked():
+            self._reconcile()
+
+    def _reconcile(self):
         if self.journal is None:
             return
         record = self.path(self.journal)
@@ -164,22 +187,42 @@ class Family:
         upgraded. Raises RuntimeError with the package manager's reason on failure."""
         if not self.ready():
             raise RuntimeError(self.label + ' package manager (' + self.manager + ') not found')
-        self.reconcile()
-        missing = [name for name in wanted if not self.installed(name)]
-        if not missing:
-            return []
-        before = self.prepare(missing)
+        with self.locked():
+            self._reconcile()
+            missing = [name for name in wanted if not self.installed(name)]
+            if missing:
+                self._install_missing(missing, timeout)
+            return missing
+
+    def _install_missing(self, missing, timeout):
+        before = self.prepare(missing) or {}
         if self.journal is not None:
             atomic_write(self.path(self.journal), json.dumps(
                 {'format': 'neko-package-install-v1', 'packages': missing, 'before': before}) + '\n')
         # Only the parts that are missing: a package already there is never reinstalled
         # or upgraded (that would restart a Docker someone already runs, for example).
-        result = self._install([real for name in missing for real in self.names(name) if not self.has(real)], timeout)
+        names = [real for name in missing for real in self.names(name) if not self.has(real)]
+        try:
+            self.protect(before)
+            result = self._install(names, timeout)
+        except subprocess.TimeoutExpired:
+            self._after_interruption()
+            raise RuntimeError('Installing ' + ', '.join(missing) + ' did not finish within '
+                               + str(timeout // 60) + ' minutes; run setup again') from None
+        except BaseException:
+            self._after_interruption()
+            raise
         # Packages can be installed even when the whole command failed: tidy them first.
-        self.reconcile()
+        self._reconcile()
         if result.returncode:
             raise RuntimeError('Installing ' + ', '.join(missing) + ' failed: ' + _reason(result))
-        return missing
+
+    def _after_interruption(self):
+        """Tidy up once the package tools have stopped. If that isn't possible now, the
+        record and the start protection stay for the next setup run."""
+        with contextlib.suppress(OSError, RuntimeError, subprocess.SubprocessError):
+            self.wait_until_idle()
+            self._reconcile()
 
 
 class Arch(Family):
@@ -226,17 +269,40 @@ TAILSCALE = Repository('tailscale', 'https://pkgs.tailscale.com/stable/',
 # Debian's samba package writes an example smb.conf; NekoServer writes its own.
 SAMBA_CONFIG = '/etc/samba/smb.conf'
 POLICY = '/usr/sbin/policy-rc.d'
+# Held by NekoServer for each package job (install, tidy-up, repository repair).
+PACKAGE_LOCK = '/run/nekoserver-packages.lock'
+# Held by apt and dpkg while they work.
+DPKG_LOCK = '/var/lib/dpkg/lock-frontend'
+# deb-systemd-helper's record of units a package masked itself.
+PACKAGE_MASKS = '/var/lib/systemd/deb-systemd-helper-masked'
 OUR_POLICY = '#!/bin/sh\n# NekoServer: no service starts while packages install.\nexit 101\n'
 
 
+def _deb822(text):
+    """The stanzas of a deb822 file as {lower-case field name: value}. A value can go on
+    over lines that start with a space or tab (a lone "." is an empty line)."""
+    for stanza in text.replace('\r\n', '\n').split('\n\n'):
+        fields, name = {}, None
+        for line in stanza.splitlines():
+            if line.startswith('#'):
+                continue
+            if line[:1] in (' ', '\t') and name:
+                fields[name] += '\n' + ('' if line.strip() == '.' else line.strip())
+            elif ':' in line:
+                name, value = line.split(':', 1)
+                name = name.strip().lower()
+                fields[name] = value.strip()
+        if fields:
+            yield fields
+
+
 def _stanzas(path, text):
-    """The enabled source entries of a one-line .list file or a deb822 .sources file."""
+    """The repository addresses of the enabled entries in a one-line .list file or a
+    deb822 .sources file."""
     if path.suffix == '.sources':
-        for stanza in text.split('\n\n'):
-            fields = dict(line.split(':', 1) for line in stanza.splitlines()
-                          if ':' in line and not line.startswith(('#', ' ')))
-            if fields.get('Enabled', 'yes').strip().lower() != 'no':
-                yield fields.get('URIs', '')
+        for fields in _deb822(text):
+            if fields.get('enabled', 'yes').strip().lower() != 'no':
+                yield from fields.get('uris', '').split()
     else:
         yield from (line for line in text.splitlines() if line.split()[:1] in (['deb'], ['deb-src']))
 
@@ -271,14 +337,19 @@ class Debian(Family):
     # start on the system disk), so they are kept from starting and left switched off.
     autostarted = MappingProxyType({
         'docker': ('docker.service', 'docker.socket'), 'caddy': ('caddy.service',),
-        'samba': ('smbd.service', 'nmbd.service', 'samba-ad-dc.service'), 'tailscale': ('tailscaled.service',)})
+        # (samba-ad-dc.service comes masked by the package itself and is left as it is.)
+        'samba': ('smbd.service', 'nmbd.service'), 'tailscale': ('tailscaled.service',)})
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
+
+    wait = 1800           # seconds to wait for another package job to finish
+    sleep = staticmethod(time.sleep)
 
     def __init__(self, run=subprocess.run, release=None, fetch=_fetch):
         super().__init__(run, release)
         self.fetch = fetch
         self.refreshed = False
+        self.holding = 0      # nested package jobs in this process
         if self.ubuntu():
             self.packages = MappingProxyType({**type(self).packages, 'firefox': 'firefox'})
 
@@ -373,6 +444,82 @@ class Debian(Family):
         self.refreshed = False
         return True
 
+    @contextlib.contextmanager
+    def locked(self):
+        if self.holding:
+            self.holding += 1
+            try:
+                yield
+            finally:
+                self.holding -= 1
+            return
+        path = self.path(PACKAGE_LOCK)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as handle:
+            waited = 0
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if waited >= self.wait:
+                        raise RuntimeError('Another NekoServer setup is installing packages; let it finish, '
+                                           'then run setup again') from None
+                    self.sleep(5)
+                    waited += 5
+            self.holding = 1
+            try:
+                yield
+            finally:
+                self.holding = 0
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def wait_until_idle(self):
+        """apt and dpkg hold their lock while they work, also after the apt-get that
+        started them was stopped."""
+        lock = self.path(DPKG_LOCK)
+        waited = 0
+        while lock.exists():
+            with lock.open('a') as handle:
+                try:
+                    fcntl.lockf(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.lockf(handle, fcntl.LOCK_UN)
+                    return
+                except OSError:
+                    pass
+            if waited >= self.wait:
+                raise RuntimeError('The package tools are still busy')
+            self.sleep(5)
+            waited += 5
+
+    def repair(self, log=print):
+        """Bring NekoServer's own repository definitions up to date, whether or not any
+        package needs installing (on an upgrade, everything usually is installed):
+        - 0.28.0 could add Docker's or Tailscale's repository next to someone else's
+          definition of it, which stops apt from working at all: its copy goes;
+        - 0.28.0 kept Tailscale's key outside host backups: it moves to /etc/apt/keyrings;
+        - a restored definition whose key is missing gets the key back."""
+        with self.locked():
+            system, codename = self.vendor_release()
+            for repository in dict.fromkeys(self.repositories.values()):
+                listing = self.path('/etc/apt/sources.list.d/' + repository.name + '.list')
+                if listing not in self.sources(repository.address) \
+                        or not self._ours(repository, listing, system, codename):
+                    continue
+                try:
+                    self.add_repository(repository)
+                except (OSError, RuntimeError) as exc:
+                    if not self._usable(listing):
+                        raise RuntimeError('The ' + repository.name + ' repository key is missing and could not '
+                                           'be downloaded: ' + str(exc)) from None
+                    log('Keeping the ' + repository.name + ' repository as it is for now (' + str(exc) + ')')
+
+    def _usable(self, listing):
+        """The key the definition points to is there (apt can use it as it is)."""
+        found = re.search(r'signed-by=([^\s\]]+)', listing.read_text(errors='replace'))
+        key = self.path(found.group(1)) if found else None
+        return bool(key and key.is_file() and key.stat().st_size)
+
     def prepare(self, missing):
         self.refuse_conflicts(missing)
         for repository in dict.fromkeys(self.repositories[name] for name in missing if name in self.repositories):
@@ -380,8 +527,22 @@ class Debian(Family):
         self.refresh()
         units = [unit for name in missing for unit in self.autostarted.get(name, ())]
         existing = self.existing_units(units)
-        self.check_policy([unit for unit in units if unit not in existing])
-        return {'samba_config_existed': self.path(SAMBA_CONFIG).exists(), 'units_before': existing}
+        new = [unit for unit in units if unit not in existing]
+        self.check_policy(new)
+        return {'samba_config_existed': self.path(SAMBA_CONFIG).exists(), 'units_before': existing,
+                'new_units': new}
+
+    def protect(self, before):
+        """The new services are masked (they can't start, not even after a restart) and
+        policy-rc.d stops the packages from starting anything while they install. Both
+        stay until settle() has switched the services off."""
+        new = before.get('new_units', [])
+        if new:
+            result = self._call(['systemctl', 'mask', '--quiet', *new], 60)
+            if result.returncode:
+                raise RuntimeError('Could not keep ' + ', '.join(new) + ' from starting: ' + _reason(result))
+        if not self.path(POLICY).exists():
+            atomic_write(self.path(POLICY), OUR_POLICY.encode(), 0o755)
 
     def refuse_conflicts(self, missing):
         if not {'docker', 'docker-compose'} & set(missing):
@@ -413,31 +574,39 @@ class Debian(Family):
                                'again, then move it back.')
 
     def _install(self, names, timeout):
-        policy = self.path(POLICY)
-        ours = not policy.exists()
-        if ours:
-            # Tells the packages not to start their services while installing.
-            atomic_write(policy, OUR_POLICY.encode(), 0o755)
-        try:
-            return self._call(['apt-get', 'install', '-y', '-o', 'Dpkg::Options::=--force-confold', *names], timeout)
-        finally:
-            if ours:
-                policy.unlink(missing_ok=True)
+        return self._call(['apt-get', 'install', '-y', '-o', 'Dpkg::Options::=--force-confold', *names], timeout)
 
-    def reconcile(self):
+    def _reconcile(self):
+        super()._reconcile()
+        # Start protection goes only once nothing is left to tidy up.
         policy = self.path(POLICY)
         if policy.is_file() and policy.read_text(errors='replace') == OUR_POLICY:
-            policy.unlink()       # left behind by an installation that was cut off
-        super().reconcile()
+            policy.unlink()
 
     def settle(self, packages, before):
         self.set_aside_samba_example(packages, before)
         existing = before.get('units_before', [])
-        self.switch_off([unit for name in packages for unit in self.autostarted.get(name, ()) if unit not in existing])
+        new = [unit for name in packages for unit in self.autostarted.get(name, ()) if unit not in existing]
+        self.unmask([unit for unit in new if unit in before.get('new_units', [])])
+        try:
+            self.switch_off(new)
+        except RuntimeError:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                self._call(['systemctl', 'mask', '--quiet', *new], 60)   # stay protected until next time
+            raise
+
+    def unmask(self, units):
+        """Lift NekoServer's own masks; one a package set itself stays."""
+        ours = [unit for unit in units if not self.path(PACKAGE_MASKS + '/' + unit).exists()]
+        if ours:
+            result = self._call(['systemctl', 'unmask', '--quiet', *ours], 60)
+            if result.returncode:
+                raise RuntimeError('Could not unmask ' + ', '.join(ours) + ': ' + _reason(result))
 
     def set_aside_samba_example(self, packages, before):
         """Samba's packaged example smb.conf, never anyone's own: it must not have existed
-        before, and must still be what the package wrote (ucf's record of it)."""
+        before, and ucf's record of what the package wrote must say it is unchanged. With
+        no such record it stays, and the Samba step asks for it to be reviewed."""
         config = self.path(SAMBA_CONFIG)
         if 'samba' not in packages or before.get('samba_config_existed', True) or not config.is_file():
             return
@@ -446,8 +615,8 @@ class Debian(Family):
         except OSError:
             records = []
         recorded = [line.split()[0] for line in records if line.split()[1:] == [SAMBA_CONFIG]]
-        if recorded and recorded[-1] != _md5(config):
-            return                # changed since it was installed: someone's settings
+        if not recorded or recorded[-1] != _md5(config):
+            return                # changed since it was installed, or unknown: someone's settings
         config.replace(config.with_name('smb.conf.packaged'))
 
     def unit_states(self, units):
@@ -456,7 +625,7 @@ class Debian(Family):
             raise RuntimeError('systemd could not report on ' + ', '.join(units) + ': ' + _reason(result))
         states = {}
         for block in result.stdout.split('\n\n'):
-            fields = dict(line.split('=', 1) for line in block.splitlines() if '=' in line)
+            fields = {key: value for key, value in (line.split('=', 1) for line in block.splitlines() if '=' in line)}
             if fields.get('Id'):
                 states[fields['Id']] = fields
         return states
@@ -520,16 +689,18 @@ def service(wanted, path=OS_RELEASE):
 def bootstrap(family=None, log=print):
     """Install every system package the apps need, before setup starts."""
     family = family or current()
+    family.repair(log)
     log('Installing the packages the apps need: ' + ', '.join(APP_PACKAGES))
     family.install(APP_PACKAGES)
 
 
 def main(argv):
-    if argv != ['bootstrap']:
-        print('usage: python3 host.py bootstrap', file=sys.stderr)
+    commands = {'bootstrap': bootstrap, 'repair': lambda: current().repair()}
+    if len(argv) != 1 or argv[0] not in commands:
+        print('usage: python3 host.py bootstrap|repair', file=sys.stderr)
         return 2
     try:
-        bootstrap()
+        commands[argv[0]]()
     except (RuntimeError, OSError) as exc:
         print('ERROR: ' + str(exc), file=sys.stderr)
         return 1
