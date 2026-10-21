@@ -1144,7 +1144,7 @@ async function saveOutput(card) {
   const version = card.version, setting = settingFrom(card.draft); // what is sent, as it is now
   card.saving = true;
   card.refreshButtons();
-  const ok = await change('fan', {output: card.id, setting: JSON.parse(JSON.stringify(setting))});
+  const ok = await change('fan', {output: card.id, setting: structuredClone(setting)});
   card.saving = false;
   if (ok && card.version === version) {
     card.dirty = false;

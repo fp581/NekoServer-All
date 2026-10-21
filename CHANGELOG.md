@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.27.2 — 2026-10-20
+
+### Fixed (review of v0.27.1)
+- **Fan recovery records are never deleted early.** When a fan couldn't be handed back and the combined record couldn't be saved, both records were deleted; detection also deleted its record without checking that moving it had worked. Now a record is removed only after its replacement is safely on disk, and if saving fails both stay exactly as they were. When both records name the same fan, the one from before NekoServer touched it wins.
+- **Detect fans won't start while a fan isn't back with the motherboard.** Otherwise it could record NekoServer's own manual setting as the "original" and later put that back. It now refuses with a short explanation.
+- **An unreadable fan speed is no longer read as a slowdown.** A failed reading counted as 0 RPM, so detection could link a fan to the wrong output. Readings are retried, and a fan whose speed stays unreadable is left out of that measurement.
+- **Lighting keeps its device after a restart.** A device was named by its connection path first, even `/dev/hidrawN`, which Linux may renumber. Now a usable unique serial number comes first, then a stable place (HID paths left out, i2c bus numbers dropped, slot addresses kept). Choices saved by 0.27.0 and 0.27.1 move to the new names.
+
+### Changed
+- Version 0.27.2; the release folder is now `nekoserver-v0.27.2`.
+- Code check: the installer's file checks are split into three small steps, and the page copies a fan setting with `structuredClone`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.1 — 2026-10-20
 
 ### Fixed (review of v0.27.0)

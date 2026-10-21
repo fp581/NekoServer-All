@@ -51,7 +51,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 A missing reading shows "—" or "No load reading", never a made-up 0. If a sensor you expect is missing, see Help → *A sensor is missing*. Most motherboard chips need `lm_sensors` (`sudo pacman -S lm_sensors`, then `sudo sensors-detect` and a restart). To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.27.1/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.27.2/nekoserver-runtime hardware
 ```
 
 ## Fans & lights
@@ -60,9 +60,9 @@ Like a fan-control app, built in (and written in Rust, so it is quick and light)
 
 - **Every fan output is found automatically** (each `pwm` output Linux can control on the motherboard chip, graphics card or cooler). Give one a name if you like ("Processor fan").
 - **Three ways to run an output:** *Motherboard* (the BIOS stays in charge, the default), *Fixed* (one speed), or *Curve*: drag the points (2 to 8) to set the speed for each temperature, and choose which temperature it follows. *Silent*, *Balanced* and *Performance* are ready-made starting points. The yellow line shows the temperature now. Nothing changes until you press **Save**.
-- **Detect fans** finds which fan is on which output: every fan spins up to full speed, then each output is slowed in turn while the fan speeds are watched (about a minute per output, and loud). Stop it whenever you like; it stops by itself if anything gets hot (85 °C) or a temperature can no longer be read, and it won't start when no temperature can be read at all.
+- **Detect fans** finds which fan is on which output: every fan spins up to full speed, then each output is slowed in turn while the fan speeds are watched (about a minute per output, and loud). Stop it whenever you like; it stops by itself if anything gets hot (85 °C) or a temperature can no longer be read, and it won't start when no temperature can be read at all, or while a fan hasn't gone back to the motherboard. A fan whose speed can't be read is left out rather than guessed.
 - **Safety:** speeds rise at once and fall gently (5% every 2 seconds), so fans don't hunt up and down. A controlled fan never goes below 20% (you can set a higher floor). Every controlled fan goes to full speed at 95 °C, 3 °C below a sensor's own critical limit, or when its temperature can't be read. If the control service stops for any reason, a crash included, every output is handed back to the motherboard: the motherboard's own setting is written down before a fan is changed, and kept until it has really been put back. A fan the motherboard won't take back runs at full speed (shown as *Not handed back*) while NekoServer keeps trying.
-- **RGB lighting** goes through **OpenRGB**, which setup installs from Arch's own repository and runs as a service (answering this computer only). Each device gets a colour, brightness, an effect and on/off; *Apply to all* sets every device at once. Your choice comes back after a restart, also for a device that shows up later. Effects that make their own colours (a rainbow, say) can't be dimmed, so colour and brightness are switched off for them. Identical devices (two matching RAM sticks) are told apart by where they are connected. Memory and motherboard lighting need the i2c driver, which setup switches on; restart once after setup.
+- **RGB lighting** goes through **OpenRGB**, which setup installs from Arch's own repository and runs as a service (answering this computer only). Each device gets a colour, brightness, an effect and on/off; *Apply to all* sets every device at once. Your choice comes back after a restart, also for a device that shows up later. Effects that make their own colours (a rainbow, say) can't be dimmed, so colour and brightness are switched off for them. Identical devices (two matching RAM sticks) are told apart by their serial number, or else by where they are connected (a slot address, never a path Linux may renumber after a restart). Memory and motherboard lighting need the i2c driver, which setup switches on; restart once after setup.
 
 **Who can change them:** on the server itself, anyone using the dashboard. Phones, tablets and other computers (through Tailscale) can always look, but need the **PIN** chosen during setup to change anything; a device stays unlocked for 12 hours or until the page is closed. Five wrong PINs lock changes for 5 minutes. Only a slow, salted hash of the PIN is stored (`/etc/nekoserver-control/pin.json`). To choose a new PIN: `sudo rm /etc/nekoserver-control/pin.json`, then run setup again in a terminal.
 
@@ -107,7 +107,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.27.1` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.27.2` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ## What runs, and what it can see
 

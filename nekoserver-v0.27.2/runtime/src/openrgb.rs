@@ -228,23 +228,45 @@ pub fn parse_device(index: u32, body: &[u8]) -> Option<Device> {
 pub fn legacy_identity(d: &Device) -> String {
     format!("{} · {}", d.name, d.description)
 }
-/// A lasting name for each device, so its lighting comes back after a restart: name and
-/// description, plus where it is connected (or its serial number). Devices that still
-/// look the same (two identical RAM sticks reported without either) are numbered in
-/// the order OpenRGB lists them.
-pub fn identities(devices: &[Device]) -> Vec<String> {
-    let base = devices
-        .iter()
-        .map(|d| {
-            let place = [&d.location, &d.serial]
-                .into_iter()
-                .find(|v| !v.trim().is_empty());
-            match place {
-                Some(p) => format!("{} · {}", legacy_identity(d), p.trim()),
-                None => legacy_identity(d),
-            }
-        })
-        .collect::<Vec<_>>();
+/// A serial number that really tells devices apart: not empty, not a placeholder
+/// ("0000", "Default string"…), and not shared with another device.
+fn usable_serial<'a>(d: &'a Device, all: &[Device]) -> Option<&'a str> {
+    let serial = d.serial.trim();
+    let placeholder = serial.len() < 4
+        || serial
+            .chars()
+            .all(|c| c == serial.chars().next().unwrap_or('0'))
+        || [
+            "default string",
+            "to be filled by o.e.m.",
+            "none",
+            "n/a",
+            "unknown",
+        ]
+        .contains(&serial.to_lowercase().as_str());
+    let shared = all.iter().filter(|o| o.serial.trim() == serial).count() > 1;
+    (!placeholder && !shared).then_some(serial)
+}
+/// Where a device is connected, without the parts Linux may number differently after a
+/// restart: HID paths (/dev/hidrawN) are left out entirely, and an i2c bus number is
+/// dropped (the address on it stays).
+fn stable_location(d: &Device) -> Option<String> {
+    let place = d.location.trim();
+    if place.is_empty() || place.contains("hidraw") {
+        return None;
+    }
+    let mut out = String::new();
+    let mut rest = place;
+    while let Some(at) = rest.find("/dev/i2c-") {
+        out.push_str(&rest[..at]);
+        out.push_str("i2c");
+        rest = rest[at + "/dev/i2c-".len()..].trim_start_matches(|c: char| c.is_ascii_digit());
+    }
+    out.push_str(rest);
+    Some(out)
+}
+/// Numbers devices that still look the same, in the order OpenRGB lists them.
+fn numbered(base: Vec<String>) -> Vec<String> {
     base.iter()
         .enumerate()
         .map(|(i, b)| {
@@ -256,6 +278,48 @@ pub fn identities(devices: &[Device]) -> Vec<String> {
                 b.clone()
             }
         })
+        .collect()
+}
+/// A lasting name for each device, so its lighting comes back after a restart: name
+/// and description, plus a usable serial number or else a stable connection place.
+/// Devices that still look the same are numbered in the order OpenRGB lists them.
+pub fn identities(devices: &[Device]) -> Vec<String> {
+    numbered(
+        devices
+            .iter()
+            .map(|d| {
+                match usable_serial(d, devices)
+                    .map(|s| format!("serial {s}"))
+                    .or_else(|| stable_location(d))
+                {
+                    Some(p) => format!("{} · {p}", legacy_identity(d)),
+                    None => legacy_identity(d),
+                }
+            })
+            .collect(),
+    )
+}
+/// The names earlier releases kept lighting under, for each device: 0.27.0 (name and
+/// description) and 0.27.1 (plus the raw location or serial).
+pub fn earlier_identities(devices: &[Device]) -> Vec<[String; 2]> {
+    let v1 = numbered(
+        devices
+            .iter()
+            .map(|d| {
+                match [&d.location, &d.serial]
+                    .into_iter()
+                    .find(|v| !v.trim().is_empty())
+                {
+                    Some(p) => format!("{} · {}", legacy_identity(d), p.trim()),
+                    None => legacy_identity(d),
+                }
+            })
+            .collect(),
+    );
+    devices
+        .iter()
+        .zip(v1)
+        .map(|(d, v1)| [legacy_identity(d), v1])
         .collect()
 }
 
@@ -386,9 +450,19 @@ pub mod tests {
         leds: usize,
         matrix: bool,
     ) -> Vec<u8> {
+        device_full(name, "", location, modes, leds, matrix)
+    }
+    pub fn device_full(
+        name: &str,
+        serial: &str,
+        location: &str,
+        modes: &[(&str, u32)],
+        leds: usize,
+        matrix: bool,
+    ) -> Vec<u8> {
         let mut b = vec![0u8; 4];
         b.extend_from_slice(&4i32.to_le_bytes()); // LED strip
-        for s in [name, "Desk strip", "1.0", "", location] {
+        for s in [name, "Desk strip", "1.0", serial, location] {
             b.extend(text(s));
         }
         b.extend_from_slice(&(modes.len() as u16).to_le_bytes());
@@ -475,28 +549,55 @@ pub mod tests {
     }
 
     #[test]
-    fn identical_devices_get_their_own_names() {
+    fn identical_devices_get_their_own_lasting_names() {
         let modes = [("Direct", 0)];
-        let at = |name, place| parse_device(0, &device_at(name, place, &modes, 2, false)).unwrap();
+        let dev = |name, serial, place| {
+            parse_device(0, &device_full(name, serial, place, &modes, 2, false)).unwrap()
+        };
         let devices = vec![
-            at("Vengeance", "I2C: /dev/i2c-1, address 0x58"),
-            at("Vengeance", "I2C: /dev/i2c-1, address 0x59"),
-            at("Strip", ""),
-            at("Strip", ""),
-            at("Hub", "HID: /dev/hidraw3"),
+            dev("Vengeance", "", "I2C: /dev/i2c-1, address 0x58"),
+            dev("Vengeance", "", "I2C: /dev/i2c-1, address 0x59"),
+            dev("Strip", "", ""),
+            dev("Strip", "0000", ""),
+            dev("Hub", "", "HID: /dev/hidraw3"),
+            dev("Keyboard", "KB7731A", "HID: /dev/hidraw5"),
+            dev("Mouse", "SAME01", "HID: /dev/hidraw6"),
+            dev("Mouse", "SAME01", "HID: /dev/hidraw7"),
         ];
-        let ids = identities(&devices);
         assert_eq!(
-            ids,
+            identities(&devices),
             [
-                "Vengeance · Desk strip · I2C: /dev/i2c-1, address 0x58",
-                "Vengeance · Desk strip · I2C: /dev/i2c-1, address 0x59",
+                "Vengeance · Desk strip · I2C: i2c, address 0x58",
+                "Vengeance · Desk strip · I2C: i2c, address 0x59",
                 "Strip · Desk strip · #1",
                 "Strip · Desk strip · #2",
-                "Hub · Desk strip · HID: /dev/hidraw3",
+                "Hub · Desk strip",
+                "Keyboard · Desk strip · serial KB7731A",
+                "Mouse · Desk strip · #1",
+                "Mouse · Desk strip · #2",
             ]
         );
-        assert_eq!(legacy_identity(&devices[0]), "Vengeance · Desk strip");
+        // After a restart Linux numbers buses and HID paths differently: same names.
+        let moved = vec![
+            dev("Vengeance", "", "I2C: /dev/i2c-4, address 0x58"),
+            dev("Keyboard", "KB7731A", "HID: /dev/hidraw1"),
+            dev("Hub", "", "HID: /dev/hidraw9"),
+        ];
+        assert_eq!(
+            identities(&moved),
+            [
+                "Vengeance · Desk strip · I2C: i2c, address 0x58",
+                "Keyboard · Desk strip · serial KB7731A",
+                "Hub · Desk strip",
+            ]
+        );
+        let earlier = earlier_identities(&devices);
+        assert_eq!(earlier[0][0], "Vengeance · Desk strip");
+        assert_eq!(
+            earlier[0][1],
+            "Vengeance · Desk strip · I2C: /dev/i2c-1, address 0x58"
+        );
+        assert_eq!(earlier[5][1], "Keyboard · Desk strip · HID: /dev/hidraw5");
     }
 
     #[test]

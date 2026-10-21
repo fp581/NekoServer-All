@@ -238,29 +238,30 @@ impl Lighting {
             .collect();
         Ok((client, named))
     }
-    /// Choices saved by 0.27.0 under "name · description" move to each matching
-    /// device's own name (all of them, as they shared that choice until now).
+    /// Choices saved by earlier releases under other names (0.27.0: name and
+    /// description; 0.27.1: plus the raw location) move to each device's lasting name.
+    /// A name several devices shared gives its choice to all of them, as before.
     fn adopt_legacy(&mut self, named: &[(String, openrgb::Device)]) {
-        let legacy = named
-            .iter()
-            .map(|(_, d)| openrgb::legacy_identity(d))
-            .filter(|k| self.chosen.get(k).is_some())
-            .collect::<std::collections::BTreeSet<_>>();
-        for old in legacy {
-            let want = self.chosen[&old].clone();
-            for (key, d) in named {
-                if openrgb::legacy_identity(d) == old
-                    && key != &old
-                    && self.chosen.get(key).is_none()
-                {
-                    self.chosen[key] = want.clone();
-                }
+        let devices = named.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>();
+        let earlier = openrgb::earlier_identities(&devices);
+        let current = named.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>();
+        for ((key, _), olds) in named.iter().zip(&earlier) {
+            if self.chosen.get(key).is_some() {
+                continue;
             }
-            if !named.iter().any(|(key, _)| key == &old) {
-                if let Some(map) = self.chosen.as_object_mut() {
-                    map.remove(&old);
-                }
+            // The 0.27.1 name is the more specific one, so it is tried first.
+            if let Some(want) = olds
+                .iter()
+                .rev()
+                .find_map(|old| self.chosen.get(old).cloned())
+            {
+                self.chosen[key] = want;
             }
+        }
+        if let Some(map) = self.chosen.as_object_mut() {
+            map.retain(|k, _| {
+                current.contains(&k.as_str()) || !earlier.iter().flatten().any(|o| o == k)
+            });
         }
     }
     fn devices(&mut self) -> Option<&Vec<(String, openrgb::Device)>> {
@@ -620,7 +621,15 @@ fn start_detect(service: &Arc<Service>) -> Value {
         );
     }
     f.cancel.store(false, Ordering::SeqCst);
-    f.controller.release_all(); // detection drives every output itself
+    // Detection drives every output itself, so each must first be back with the
+    // motherboard: otherwise it would record NekoServer's own setting as the original.
+    if !f.controller.release_all() {
+        f.detecting.store(false, Ordering::SeqCst);
+        return refuse(
+            "E42",
+            "A fan didn't go back to the motherboard, so detection can't start",
+        );
+    }
     let inventory = f.controller.inventory.clone();
     let total = inventory.outputs.len();
     f.detect = json!({"running": true, "done": 0, "total": total, "step": "Starting"});
@@ -650,9 +659,9 @@ fn start_detect(service: &Arc<Service>) -> Value {
         if let Ok(mut f) = service.fans.lock() {
             detect_finished(&mut f, result);
             // Outputs that refused to go back: the fan loop keeps trying them.
+            // Detection's journal is removed only once the main one holds them.
             let left = std::mem::take(&mut probe.originals);
-            if !left.is_empty() {
-                f.controller.adopt_originals(left);
+            if !left.is_empty() && f.controller.adopt_originals(left).is_ok() {
                 let _ = fs::remove_file(f.run_dir.join(JOURNALS[1]));
             }
         }
@@ -689,18 +698,26 @@ pub fn restore(hwmon: &Path, saved: &Value) -> (usize, BTreeMap<String, fans::Or
 }
 /// Every journal (fan control and detection). What could not be put back stays in the
 /// main journal, so the next attempt (or the service, when it starts) tries again.
+///
+/// Detection's journal goes first, the main one last: for an output in both, the main
+/// journal holds the setting from before NekoServer touched it, so that one wins. A
+/// journal is only removed once nothing in it is left to do, or once what is left has
+/// been safely written to the main journal.
 fn restore_journals(hwmon: &Path, run_dir: &Path) -> (usize, BTreeMap<String, fans::Original>) {
     let (mut restored, mut left) = (0, BTreeMap::new());
-    for name in JOURNALS {
+    for name in JOURNALS.iter().rev() {
         let (n, rest) = restore(hwmon, &common::json(&run_dir.join(name), 1_000_000));
         restored += n;
-        left.extend(rest);
+        left.extend(rest); // the main journal's entries, read last, take precedence
     }
-    let kept = left.is_empty()
-        || common::atomic_json(&run_dir.join(JOURNALS[0]), &fans::originals_json(&left)).is_ok();
-    for name in &JOURNALS[usize::from(!left.is_empty() && kept)..] {
-        let _ = fs::remove_file(run_dir.join(name));
-    }
+    let main = run_dir.join(JOURNALS[0]);
+    if left.is_empty() {
+        for name in JOURNALS {
+            let _ = fs::remove_file(run_dir.join(name));
+        }
+    } else if common::atomic_json(&main, &fans::originals_json(&left)).is_ok() {
+        let _ = fs::remove_file(run_dir.join(JOURNALS[1]));
+    } // else: both journals stay exactly as they were
     (restored, left)
 }
 
@@ -825,7 +842,7 @@ pub fn run(a: &Args) -> Result<()> {
         .unwrap_or_else(|| json!({}));
     let controller = Controller::new(fans::discover(&hwmon), load_settings(&config));
     let mut fans_state = Fans::new(controller, config.clone(), run_dir.clone());
-    fans_state.controller.adopt_originals(left);
+    let _ = fans_state.controller.adopt_originals(left); // the journal already holds them
     let service = Service::new(
         fans_state,
         Lighting::new(chosen, openrgb::PORT, config),
@@ -1287,6 +1304,74 @@ mod tests {
         assert!(s.fans.lock().unwrap().controller.originals.is_empty());
     }
 
+    fn block(path: &Path) {
+        // A path that can't be replaced: a folder with something in it.
+        let _ = fs::remove_file(path);
+        fs::create_dir_all(path).unwrap();
+        fs::write(path.join("x"), "").unwrap();
+    }
+
+    /// Records of fans not yet handed back are never deleted before their replacement
+    /// is safely on disk.
+    #[test]
+    fn recovery_records_survive_a_failed_save() {
+        let board = fans::tests::Board::new("journal-save");
+        let run = board.0.join("run");
+        fs::create_dir_all(&run).unwrap();
+        let output = fans::discover(&board.hwmon()).outputs[0].id.clone();
+        let record = json!({&output: {"enable": "5", "pwm": "128"}});
+        common::atomic_json(&run.join(JOURNALS[1]), &record).unwrap();
+        block(&board.hwmon().join("hwmon1/pwm1_enable")); // the output refuses
+        block(&run.join(JOURNALS[0])); // and the main journal can't be written
+        let (_, left) = restore_journals(&board.hwmon(), &run);
+        assert!(left.contains_key(&output));
+        assert_eq!(
+            common::json(&run.join(JOURNALS[1]), 100000),
+            record,
+            "kept as it was"
+        );
+    }
+
+    #[test]
+    fn detection_wont_start_while_a_fan_isnt_back() {
+        let board = fans::tests::Board::new("detect-stuck");
+        let s = service(&board, None, 1);
+        let output = first_output(&s, 0);
+        answer(
+            &s,
+            &json!({"op": "fan", "local": true, "output": output, "setting": {"mode": "fixed", "fixed": 40}}),
+        );
+        block(&board.hwmon().join("hwmon1/pwm1_enable"));
+        let r = answer(&s, &json!({"op": "detect", "local": true}));
+        assert_eq!(r["error"], "E42");
+        assert!(r["message"].as_str().unwrap().contains("didn't go back"));
+        assert!(!s.fans.lock().unwrap().detecting.load(Ordering::SeqCst));
+        // NekoServer's own setting was never recorded as the original.
+        let journal = common::json(&board.0.join("run").join(JOURNALS[0]), 100000);
+        assert_eq!(journal[&output]["enable"], "5");
+        assert!(!board.0.join("run").join(JOURNALS[1]).exists());
+    }
+
+    /// When detection can't hand a fan back and its record can't be moved to the main
+    /// journal, detection's own journal stays.
+    #[test]
+    fn detection_keeps_its_journal_until_the_records_are_moved() {
+        let board = fans::tests::Board::new("detect-move");
+        let s = service(&board, None, 1);
+        let run = board.0.join("run");
+        assert_eq!(
+            answer(&s, &json!({"op": "detect", "local": true}))["ok"],
+            true
+        );
+        thread::sleep(Duration::from_millis(300));
+        block(&board.hwmon().join("hwmon1/pwm1_enable"));
+        block(&run.join(JOURNALS[0]));
+        s.stop_detection();
+        let kept = fans::originals_from(&common::json(&run.join(JOURNALS[1]), 100000));
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(kept.values().next().unwrap().enable, "5");
+    }
+
     /// Lighting stays pending until every saved device has been found and sent its
     /// lighting, so a device that shows up late still gets it.
     #[test]
@@ -1306,6 +1391,34 @@ mod tests {
             seen.lock().unwrap().iter().any(|(_, id)| *id == 1050),
             "the strip was still set"
         );
+    }
+
+    /// A choice saved by 0.27.1 under a /dev/hidraw path moves to the device's
+    /// lasting name (its serial number), and keeps working when the path changes.
+    #[test]
+    fn lighting_saved_under_a_changing_path_moves_to_the_serial() {
+        let modes = [("Direct", 0)];
+        let keyboard =
+            |path| openrgb::tests::device_full("Keyboard", "KB7731A", path, &modes, 2, false);
+        let (port, _) =
+            openrgb::tests::fake_server(vec![keyboard("HID: /dev/hidraw5")], Duration::ZERO);
+        let board = fans::tests::Board::new("hidraw");
+        let s = service(&board, None, port);
+        s.lights.lock().unwrap().chosen =
+            json!({"Keyboard · Desk strip · HID: /dev/hidraw5": {"color": "#123456"}});
+        let status = answer(&s, &json!({"op": "status"}));
+        let device = &status["lights"]["devices"][0];
+        assert_eq!(device["key"], "Keyboard · Desk strip · serial KB7731A");
+        assert_eq!(device["chosen"]["color"], "#123456");
+        let chosen = s.lights.lock().unwrap().chosen.clone();
+        assert_eq!(chosen.as_object().unwrap().len(), 1, "{chosen}");
+        // After a restart the same keyboard is /dev/hidraw2: same name, same colour.
+        let (port, _) =
+            openrgb::tests::fake_server(vec![keyboard("HID: /dev/hidraw2")], Duration::ZERO);
+        s.lights.lock().unwrap().port = port;
+        s.lights.lock().unwrap().devices = None;
+        let status = answer(&s, &json!({"op": "status"}));
+        assert_eq!(status["lights"]["devices"][0]["chosen"]["color"], "#123456");
     }
 
     #[test]

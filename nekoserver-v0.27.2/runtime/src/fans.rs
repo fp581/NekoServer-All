@@ -377,11 +377,14 @@ impl Controller {
     }
     /// Firmware settings not yet put back (after a crash, or by detection), kept so
     /// this controller keeps trying.
-    pub fn adopt_originals(&mut self, originals: BTreeMap<String, Original>) {
+    pub fn adopt_originals(
+        &mut self,
+        originals: BTreeMap<String, Original>,
+    ) -> std::io::Result<()> {
         for (id, o) in originals {
             self.originals.entry(id).or_insert(o);
         }
-        let _ = self.save_journal();
+        self.save_journal()
     }
     /// One control step: every output to its target speed (or back to the firmware).
     pub fn step(&mut self) {
@@ -469,10 +472,21 @@ pub fn detect<F: FnMut(&Controller, u64) -> bool>(
     control: &mut Controller,
     mut wait: F,
 ) -> Result<BTreeMap<String, Vec<String>>, String> {
-    control.release_all();
+    if !control.release_all() {
+        return Err("A fan didn't go back to the motherboard, so detection can't start".into());
+    }
     let outputs = control.inventory.outputs.clone();
     let fans = control.inventory.fans.clone();
-    let rpm = |f: &Channel| number(&f.path("_input")).unwrap_or(0.0);
+    // A speed that can't be read is unknown, never 0 RPM (which would look like a
+    // slowdown): read again a few times, then leave that fan out of this measurement.
+    let rpm = |f: &Channel| {
+        (0..3).find_map(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            number(&f.path("_input")).filter(|v| v.is_finite() && *v >= 0.0)
+        })
+    };
     let set = |c: &mut Controller, out: &Channel, pct: f64| -> Result<(), String> {
         c.take_over(out)
             .and_then(|_| {
@@ -502,9 +516,9 @@ pub fn detect<F: FnMut(&Controller, u64) -> bool>(
             }
             let slowed = fans
                 .iter()
-                .filter(|f| {
-                    let before = baseline[&f.id];
-                    before >= 100.0 && rpm(f) <= before * 0.7
+                .filter(|f| match (baseline[&f.id], rpm(f)) {
+                    (Some(before), Some(now)) => before >= 100.0 && now <= before * 0.7,
+                    _ => false,
                 })
                 .map(|f| f.id.clone())
                 .collect::<Vec<_>>();
@@ -736,5 +750,29 @@ pub mod tests {
         })
         .is_err());
         assert_eq!(b.get("pwm1_enable"), "5");
+    }
+
+    /// A speed that stops reading is unknown, not a slowdown: it never pairs a fan
+    /// with the wrong output.
+    #[test]
+    fn an_unreadable_fan_speed_is_never_taken_for_a_slowdown() {
+        let b = Board::new("detect-rpm");
+        let mut c = Controller::new(discover(&b.hwmon()), BTreeMap::new());
+        let mut calls = 0;
+        let found = detect(&mut c, |_, seconds| {
+            b.spin();
+            calls += 1;
+            if seconds == 7 && calls == 2 {
+                b.set("fan2_input", "read error"); // while output 1 is tested
+            }
+            true
+        })
+        .unwrap();
+        let first = &found[&c.inventory.outputs[0].id];
+        assert_eq!(
+            first,
+            &vec![c.inventory.fans[0].id.clone()],
+            "fan 2 not taken for output 1"
+        );
     }
 }

@@ -164,19 +164,27 @@ def refresh(cfg,log,target=None):
     atomic_json(target,wanted);log('Dashboard: settings refreshed with the final setup choices')
     return True
 
-def check_existing(payloads,definitions,folders):
-    """Stop before changing anything when files, units or folders someone else changed
-    are in the way."""
+def check_payloads(payloads):
     for path,payload in payloads.items():
         safe_path(path)
-        if path.exists() and path.read_bytes()!=payload:raise RuntimeError('Installed dashboard release differs; custom files preserved')
-        if path.name==native_runtime.NAME and path.exists() and path.stat().st_mode&0o005!=0o005:raise RuntimeError('Dashboard native executable must be readable/executable by its unprivileged account; review its permissions')
+        if not path.exists():continue
+        if path.read_bytes()!=payload:raise RuntimeError('Installed dashboard release differs; custom files preserved')
+        if path.name==native_runtime.NAME and path.stat().st_mode&0o005!=0o005:raise RuntimeError('Dashboard native executable must be readable/executable by its unprivileged account; review its permissions')
+
+def check_units(definitions):
     for name in definitions:
         path=safe_path(Path('/etc/systemd/system')/name)
         if path.exists() and not path.read_text().startswith('[Unit]\nDescription=NekoServer '):raise RuntimeError('Unmanaged dashboard systemd unit preserved')
+
+def check_folders(folders):
     for folder in folders:
         safe_path(folder)
         if folder.exists() and (not folder.is_dir() or folder.stat().st_mode&0o005!=0o005):raise RuntimeError('Existing dashboard asset directory permissions block its unprivileged account; review locally')
+
+def check_existing(payloads,definitions,folders):
+    """Stop before changing anything when files, units or folders someone else changed
+    are in the way."""
+    check_payloads(payloads);check_units(definitions);check_folders(folders)
 
 def install_smart(cfg,log):
     if not cfg.get('dashboard',{}).get('install_smartmontools',True) or shutil.which('smartctl'):return
