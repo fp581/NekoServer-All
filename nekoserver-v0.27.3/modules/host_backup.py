@@ -1,4 +1,5 @@
 """Configure private Rust host/Steam/Samba snapshots and staged recovery."""
+import json
 import os
 from pathlib import Path
 import pwd
@@ -12,10 +13,16 @@ DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Nightly host, Steam and standalone Samba snapshots; staged restore only'
 HOST_FILES = ('/etc/fstab', '/etc/hostname', '/etc/hosts', '/etc/locale.conf',
               '/etc/vconsole.conf', '/etc/pacman.conf', '/etc/pacman.d/mirrorlist',
-              '/etc/passwd', '/etc/group', '/etc/docker/daemon.json')
+              '/etc/passwd', '/etc/group', '/etc/docker/daemon.json',
+              # The i2c driver OpenRGB needs for memory and motherboard lighting.
+              '/etc/modules-load.d/nekoserver-i2c.conf')
 HOST_DIRS = ('/etc/nekoserver-backups', '/etc/nekoserver-os', '/etc/nekoserver-notifications',
              '/etc/nekoserver-gateway', '/etc/nekoserver-heartbeat', '/etc/systemd/sleep.conf.d',
-             '/etc/systemd/logind.conf.d', '/etc/systemd/journald.conf.d')
+             '/etc/systemd/logind.conf.d', '/etc/systemd/journald.conf.d',
+             # Fan curves, lighting choices and the PIN hash; the dashboard's settings;
+             # OpenRGB's own settings.
+             '/etc/nekoserver-control', '/etc/nekoserver-dashboard', '/var/lib/nekoserver-openrgb')
+PRIVATE = Path('/etc/nekoserver-backups/host.json')
 
 
 def settings(config):
@@ -96,6 +103,29 @@ def guard(config):
     return value
 
 
+def refresh(config, log, target=None):
+    """After every setup step: an existing host snapshot list is brought up to date
+    (new releases add places to back up), even when only another part of the server
+    was set up. Nothing happens when host snapshots are not installed."""
+    target = target or PRIVATE
+    if not target.is_file():
+        return False
+    try:
+        wanted = guard(config)
+    except (KeyError, RuntimeError) as exc:
+        log(f'Host snapshots: list not refreshed ({exc})')
+        return False
+    try:
+        current = json.loads(target.read_text())
+    except (OSError, ValueError):
+        current = None
+    if current == wanted:
+        return False
+    atomic_json(target, wanted)
+    log('Host snapshots: list of places to back up refreshed')
+    return True
+
+
 def definitions(config, binary, private):
     time = settings(config).get('time', '05:15')
     resume = f'{binary} host-resume --config {private}'
@@ -122,7 +152,7 @@ def run(context):
         return {'status': 'needs_setup', 'reason': 'Set host_backup.user to the existing desktop user and reapply'}
     project = Path(__file__).resolve().parents[1]
     binary = native_runtime.deploy(project, context.config, Path(context.config['data_mount'])/'installer/runtime'/('v'+VERSION))
-    private = safe_path('/etc/nekoserver-backups/host.json')
+    private = safe_path(PRIVATE)
     units = definitions(context.config, binary, private)
     for name in units:
         path = safe_path(Path('/etc/systemd/system')/name)

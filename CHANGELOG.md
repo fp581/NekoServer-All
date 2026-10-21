@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.27.3 — 2026-10-21
+
+### Fixed (review of v0.27.2)
+- **Fixed speeds keep their safety net.** A fan at a fixed speed kept running slowly when every temperature reading disappeared (only curves were covered). Losing every temperature now sends every controlled fan to full speed.
+- **Failing fan speed sensors can't delay the safety checks.** Each unreadable speed sensor added up to 0.4 s of retries without checking temperatures or Stop, so ten failing sensors delayed the next check by 4 s (reproduced). All fans are now read together, and retries wait through the same safety checks as the rest of detection, at most twice per measurement.
+- **Detect fans respects a sensor's own critical limit.** It only stopped at 85 °C, so a sensor with a 70 °C limit could run hot while fans were slowed. Detection now stops on the same limits as normal fan control, with its 85 °C ceiling on top.
+- **A fan output that moved is never confused with another chip.** Linux reuses hwmon numbers; an old path could point at a different chip before the next look (reproduced: an unrelated chip's fan changed). Outputs now keep their resolved device folder and are checked to be the same chip on the same device before every change; a moved output is looked for again at once.
+- **"Full speed" is claimed only when it was set.** When a fan refused to go back to the motherboard and full speed couldn't be set either, the page still said full speed. It now says the speed couldn't be set.
+- **A fan is only taken over when its own setting can be read.** Otherwise its original setting would be unknown and couldn't be put back.
+- **Damaged recovery records are kept and reported.** A record that couldn't be read was treated as empty and deleted. It is now kept (moved aside when the service starts), never written over, and the page and the restore command say so.
+- **Conflicting recovery records can't undo a good restore.** Both records are now merged first, the main one winning, and each fan is restored once.
+- **Lighting names moved at start are saved at once,** so lighting survives a restart that renumbers a device even if the dashboard was never opened.
+- **Another device with the same serial no longer renames yours.** Serial clashes now only count between devices with the same name.
+- **Lighting comes back after a device or OpenRGB reset.** NekoServer now checks every 10 seconds that each device still shows its choice, and sends it again when not.
+- **Switching fan control off in setup is checked.** Failures stopping the services were ignored. Setup now stops with a clear message if the services keep running or a fan didn't go back to the motherboard (the record is kept when the service stops, so it can be checked).
+- **Turn off wins over a colour still on its way.** A colour change sent a moment later turned the lights back on.
+- **Undo shows what will be saved.** The speed labels and the name kept the discarded values.
+- **Host snapshots include the new settings.** Fan curves, lighting choices, the PIN hash, the dashboard settings, OpenRGB's settings and the i2c driver setting were not backed up. They are now, and every setup run brings an existing list of places up to date.
+
+### Changed
+- Version 0.27.3; the release folder is now `nekoserver-v0.27.3`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+- Run setup once so host snapshots pick up the new settings.
+
 ## v0.27.2 — 2026-10-20
 
 ### Fixed (review of v0.27.1)

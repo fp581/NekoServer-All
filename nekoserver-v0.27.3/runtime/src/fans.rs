@@ -26,9 +26,11 @@ const STEP_DOWN: f64 = 5.0;
 const SKIPPED_CHIPS: [&str; 1] = ["drivetemp"];
 
 fn read(path: &Path) -> String {
-    fs::read_to_string(path)
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    read_ok(path).unwrap_or_default()
+}
+/// A reading that worked (None when the file couldn't be read at all).
+fn read_ok(path: &Path) -> Option<String> {
+    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
 }
 fn number(path: &Path) -> Option<f64> {
     read(path).parse::<f64>().ok().filter(|v| v.is_finite())
@@ -42,7 +44,10 @@ fn write(path: &Path, value: &str) -> std::io::Result<()> {
 pub struct Channel {
     /// Stable across boots: "<chip>@<device path>/<file>", e.g. "nct6798@/sys/devices/platform/nct6775.656/pwm2".
     pub id: String,
+    /// The chip's own folder (resolved, never the reusable /sys/class/hwmon/hwmonN).
     pub dir: PathBuf,
+    /// The device the chip belongs to, checked before every change.
+    pub device: PathBuf,
     pub file: String,
     pub label: String,
     pub chip: String,
@@ -51,6 +56,15 @@ impl Channel {
     fn path(&self, suffix: &str) -> PathBuf {
         self.dir.join(format!("{}{suffix}", self.file))
     }
+    /// Still the same chip on the same device. Linux reuses hwmon numbers when chips
+    /// come and go, so a folder found earlier may now belong to another chip.
+    pub fn intact(&self) -> bool {
+        read_ok(&self.dir.join("name")).as_deref() == Some(self.chip.as_str())
+            && device_of(&self.dir) == self.device
+    }
+}
+fn device_of(dir: &Path) -> PathBuf {
+    fs::canonicalize(dir.join("device")).unwrap_or_else(|_| dir.to_path_buf())
 }
 #[derive(Clone, Debug, Default)]
 pub struct Inventory {
@@ -71,7 +85,8 @@ pub fn discover(hwmon: &Path) -> Inventory {
         if chip.is_empty() || SKIPPED_CHIPS.contains(&chip.as_str()) {
             continue;
         }
-        let device = fs::canonicalize(dir.join("device")).unwrap_or_else(|_| dir.clone());
+        let dir = fs::canonicalize(&dir).unwrap_or(dir);
+        let device = device_of(&dir);
         let mut files = fs::read_dir(&dir)
             .map(|r| {
                 r.flatten()
@@ -106,6 +121,7 @@ pub fn discover(hwmon: &Path) -> Inventory {
             list.push(Channel {
                 id: format!("{chip}@{}/{base}", device.display()),
                 dir: dir.clone(),
+                device: device.clone(),
                 file: base.clone(),
                 label: if label.is_empty() {
                     default_label
@@ -261,6 +277,8 @@ pub struct Controller {
     pub status: BTreeMap<String, Value>,
     /// Where `originals` is kept for `control --restore` (None only in tests).
     journal: Option<PathBuf>,
+    /// An output moved or vanished: look for the outputs again soon.
+    pub rediscover: bool,
 }
 /// The journal's form: {output id: {"enable": …, "pwm": …}}.
 pub fn originals_json(originals: &BTreeMap<String, Original>) -> Value {
@@ -295,6 +313,7 @@ impl Controller {
             last: BTreeMap::new(),
             status: BTreeMap::new(),
             journal: None,
+            rediscover: false,
         }
     }
     pub fn with_journal(mut self, path: PathBuf) -> Self {
@@ -316,6 +335,15 @@ impl Controller {
     }
     /// Any sensor at its critical temperature (less 3 °C), or at 95 °C: everything to full.
     pub fn emergency(&self) -> Option<String> {
+        // Without a single temperature, overheating can't be noticed: full speed.
+        if !self
+            .inventory
+            .temps
+            .iter()
+            .any(|t| self.temperature(&t.id).is_some())
+        {
+            return Some("no temperature can be read".to_string());
+        }
         self.inventory.temps.iter().find_map(|t| {
             let v = number(&t.path("_input"))? / 1000.0;
             let crit = number(&t.path("_crit"))
@@ -326,14 +354,20 @@ impl Controller {
         })
     }
     fn take_over(&mut self, out: &Channel) -> std::io::Result<()> {
+        if !out.intact() {
+            self.rediscover = true;
+            return Err(std::io::Error::other("The output moved"));
+        }
         if !self.originals.contains_key(&out.id) {
-            self.originals.insert(
-                out.id.clone(),
-                Original {
-                    enable: read(&out.path("_enable")),
-                    pwm: read(&out.path("")),
-                },
-            );
+            // Only taken over when its own setting is known, so it can be put back.
+            let enable = read_ok(&out.path("_enable"))
+                .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+                .ok_or_else(|| std::io::Error::other("Its setting can't be read"))?;
+            let pwm = read_ok(&out.path(""))
+                .filter(|v| v.parse::<u32>().is_ok_and(|n| n <= 255))
+                .ok_or_else(|| std::io::Error::other("Its speed can't be read"))?;
+            self.originals
+                .insert(out.id.clone(), Original { enable, pwm });
             // Recorded first: if the journal can't be written, the fan isn't touched.
             if let Err(e) = self.save_journal() {
                 self.originals.remove(&out.id);
@@ -349,23 +383,34 @@ impl Controller {
     /// When the output refuses, its firmware setting stays recorded (in memory and in the
     /// journal) so it is tried again, and the fan is set to full speed meanwhile.
     pub fn release(&mut self, id: &str) -> bool {
+        self.hand_back(id) == HandBack::Back
+    }
+    fn hand_back(&mut self, id: &str) -> HandBack {
         let Some(original) = self.originals.get(id).cloned() else {
-            return true;
+            return HandBack::Back;
         };
-        let out = self.inventory.outputs.iter().find(|o| o.id == id).cloned();
-        if !out
-            .as_ref()
-            .is_some_and(|out| restore_output(out, &original))
-        {
-            if let Some(out) = out {
-                let _ = write(&out.path(""), "255");
-            }
-            return false;
+        let out = self
+            .inventory
+            .outputs
+            .iter()
+            .find(|o| o.id == id && o.intact())
+            .cloned();
+        let Some(out) = out else {
+            self.rediscover = true; // moved or gone: found again by the next look
+            return HandBack::Unknown;
+        };
+        if !restore_output(&out, &original) {
+            let full = write(&out.path(""), "255").is_ok() && read(&out.path("")) == "255";
+            return if full {
+                HandBack::FullSpeed
+            } else {
+                HandBack::Unknown
+            };
         }
         self.originals.remove(id);
         self.last.remove(id);
         let _ = self.save_journal(); // a stale entry only restores the same setting again
-        true
+        HandBack::Back
     }
     /// True when every output is back with the firmware.
     pub fn release_all(&mut self) -> bool {
@@ -374,6 +419,14 @@ impl Controller {
             all &= self.release(&id);
         }
         all
+    }
+    /// The page's view of an output that should be with the motherboard.
+    fn released_state(&mut self, id: &str, note: Option<&str>) -> Value {
+        match self.hand_back(id) {
+            HandBack::Back => json!({"mode": "auto", "note": note}),
+            HandBack::FullSpeed => json!({"mode": "stuck", "percent": 100.0, "note": NOT_BACK}),
+            HandBack::Unknown => json!({"mode": "stuck", "note": NOT_BACK_UNKNOWN}),
+        }
     }
     /// Firmware settings not yet put back (after a crash, or by detection), kept so
     /// this controller keeps trying.
@@ -393,11 +446,7 @@ impl Controller {
             let setting = self.settings.get(&out.id).cloned();
             let target = match setting.as_ref().map(|s| &s.mode) {
                 None | Some(Mode::Automatic) => {
-                    let state = if self.release(&out.id) {
-                        json!({"mode": "auto"})
-                    } else {
-                        json!({"mode": "stuck", "percent": 100.0, "note": NOT_BACK})
-                    };
+                    let state = self.released_state(&out.id, None);
                     self.status.insert(out.id.clone(), state);
                     continue;
                 }
@@ -433,11 +482,10 @@ impl Controller {
                 }
                 Err(_) => {
                     // Can't drive it: give it back to the firmware rather than leave it stuck.
-                    let state = if self.release(&out.id) {
-                        json!({"mode": "auto", "note": "This output refused the new speed, so the motherboard is in charge"})
-                    } else {
-                        json!({"mode": "stuck", "note": NOT_BACK})
-                    };
+                    let state = self.released_state(
+                        &out.id,
+                        Some("NekoServer couldn't control this output, so the motherboard is in charge"),
+                    );
                     self.status.insert(out.id.clone(), state);
                 }
             }
@@ -446,8 +494,21 @@ impl Controller {
 }
 const NOT_BACK: &str =
     "The motherboard didn't take this fan back, so it runs at full speed; NekoServer keeps trying";
+const NOT_BACK_UNKNOWN: &str =
+    "The motherboard didn't take this fan back and its speed couldn't be set; NekoServer keeps trying. Check the fans";
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum HandBack {
+    Back,
+    /// Not back, but set to full speed meanwhile.
+    FullSpeed,
+    /// Not back, and full speed couldn't be set either.
+    Unknown,
+}
 /// Put the firmware's setting back, and check that it took. False when it didn't.
 pub fn restore_output(out: &Channel, original: &Original) -> bool {
+    if !out.intact() {
+        return false;
+    }
     // Manual with a fixed value before: put that value back too.
     if original.enable == "1"
         && !original.pwm.is_empty()
@@ -478,14 +539,30 @@ pub fn detect<F: FnMut(&Controller, u64) -> bool>(
     let outputs = control.inventory.outputs.clone();
     let fans = control.inventory.fans.clone();
     // A speed that can't be read is unknown, never 0 RPM (which would look like a
-    // slowdown): read again a few times, then leave that fan out of this measurement.
-    let rpm = |f: &Channel| {
-        (0..3).find_map(|attempt| {
-            if attempt > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+    // slowdown). All fans are read together; the ones that failed are read again after
+    // a short wait that still watches temperatures, Stop and shutdown (at most twice,
+    // so one measurement never takes more than about two seconds, however many fans
+    // fail). A fan that stays unreadable is left out of that measurement.
+    let rpm = |f: &Channel| number(&f.path("_input")).filter(|v| v.is_finite() && *v >= 0.0);
+    let measure = |c: &Controller, wait: &mut F| -> Result<BTreeMap<String, Option<f64>>, String> {
+        let mut speeds = fans
+            .iter()
+            .map(|f| (f.id.clone(), rpm(f)))
+            .collect::<BTreeMap<_, _>>();
+        for _ in 0..2 {
+            if speeds.values().all(Option::is_some) {
+                break;
             }
-            number(&f.path("_input")).filter(|v| v.is_finite() && *v >= 0.0)
-        })
+            if !wait(c, 1) {
+                return Err("Stopped".to_string());
+            }
+            for f in &fans {
+                if speeds[&f.id].is_none() {
+                    speeds.insert(f.id.clone(), rpm(f));
+                }
+            }
+        }
+        Ok(speeds)
     };
     let set = |c: &mut Controller, out: &Channel, pct: f64| -> Result<(), String> {
         c.take_over(out)
@@ -504,19 +581,17 @@ pub fn detect<F: FnMut(&Controller, u64) -> bool>(
         if !wait(control, 6) {
             return Err("Stopped".to_string());
         }
-        let baseline = fans
-            .iter()
-            .map(|f| (f.id.clone(), rpm(f)))
-            .collect::<BTreeMap<_, _>>();
+        let baseline = measure(control, &mut wait)?;
         let mut found = BTreeMap::new();
         for out in &outputs {
             set(control, out, 35.0)?;
             if !wait(control, 7) {
                 return Err("Stopped".to_string());
             }
+            let now = measure(control, &mut wait)?;
             let slowed = fans
                 .iter()
-                .filter(|f| match (baseline[&f.id], rpm(f)) {
+                .filter(|f| match (baseline[&f.id], now[&f.id]) {
                     (Some(before), Some(now)) => before >= 100.0 && now <= before * 0.7,
                     _ => false,
                 })
@@ -752,6 +827,50 @@ pub mod tests {
         assert_eq!(b.get("pwm1_enable"), "5");
     }
 
+    /// Unreadable fan speeds never pause the safety checks: every wait between reads
+    /// goes through `wait` (which watches temperatures and Stop), and a measurement
+    /// gives up on them after two short retries.
+    #[test]
+    fn failed_fan_speeds_never_hold_up_the_safety_checks() {
+        let b = Board::new("detect-many-bad");
+        for n in 1..=10 {
+            b.set(&format!("fan{n}_input"), "read error");
+        }
+        let mut c = Controller::new(discover(&b.hwmon()), BTreeMap::new());
+        assert_eq!(c.inventory.fans.len(), 10);
+        let mut last = std::time::Instant::now();
+        let mut longest = std::time::Duration::ZERO;
+        let mut retries = 0;
+        let found = detect(&mut c, |_, seconds| {
+            longest = longest.max(last.elapsed());
+            retries += usize::from(seconds == 1);
+            last = std::time::Instant::now();
+            true
+        })
+        .unwrap();
+        assert!(
+            longest < std::time::Duration::from_millis(100),
+            "{longest:?}"
+        );
+        assert_eq!(
+            retries,
+            2 * (1 + c.inventory.outputs.len()),
+            "two short retries per measurement"
+        );
+        assert!(
+            found.values().all(Vec::is_empty),
+            "unreadable fans are left out"
+        );
+        // Stop (or heat) during a retry ends detection, fans back with the firmware.
+        let mut calls = 0;
+        let stopped = detect(&mut c, |_, seconds| {
+            calls += 1;
+            seconds != 1
+        });
+        assert!(stopped.is_err() && calls == 2);
+        assert_eq!(b.get("pwm1_enable"), "5");
+    }
+
     /// A speed that stops reading is unknown, not a slowdown: it never pairs a fan
     /// with the wrong output.
     #[test]
@@ -773,6 +892,112 @@ pub mod tests {
             first,
             &vec![c.inventory.fans[0].id.clone()],
             "fan 2 not taken for output 1"
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_extra_tests {
+    use super::*;
+    #[test]
+    fn review_fixed_speed_fails_safe_when_all_temperature_readings_disappear() {
+        let b = tests::Board::new("review-fixed-blind");
+        let inv = discover(&b.hwmon());
+        let out = inv.outputs[0].id.clone();
+        let setting = setting_from(&json!({"mode":"fixed","fixed":25})).unwrap();
+        let mut c = Controller::new(inv, BTreeMap::from([(out, setting)]));
+        c.step();
+        fs::remove_file(b.hwmon().join("hwmon1/temp1_input")).unwrap();
+        c.step();
+        assert_eq!(
+            b.get("pwm1"),
+            "255",
+            "loss of all temperature monitoring must trigger full speed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_hotplug_tests {
+    use super::*;
+    #[test]
+    fn review_reused_hwmon_number_must_not_control_an_unrelated_chip() {
+        let b = tests::Board::new("review-hwmon-reuse");
+        let inv = discover(&b.hwmon());
+        let id = inv.outputs[0].id.clone();
+        let setting = setting_from(&json!({"mode":"fixed","fixed":25})).unwrap();
+        let mut c = Controller::new(inv, BTreeMap::from([(id, setting)]));
+        fs::rename(b.hwmon().join("hwmon1"), b.hwmon().join("hwmon9")).unwrap();
+        let other = b.hwmon().join("hwmon1");
+        fs::create_dir_all(&other).unwrap();
+        for (k, v) in [
+            ("name", "unrelated_chip"),
+            ("pwm1", "180"),
+            ("pwm1_enable", "5"),
+            ("temp1_input", "45000"),
+        ] {
+            fs::write(other.join(k), v).unwrap();
+        }
+        c.step();
+        assert_eq!(
+            fs::read_to_string(other.join("pwm1")).unwrap(),
+            "180",
+            "old channel path now controls another chip"
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_fault_tests {
+    use super::*;
+    #[test]
+    fn review_takeover_requires_a_readable_original_mode() {
+        let b = tests::Board::new("review-unreadable-original");
+        let inv = discover(&b.hwmon());
+        let output = inv.outputs[0].id.clone();
+        fs::write(b.hwmon().join("hwmon1/pwm1_enable"), [0xff]).unwrap();
+        let mut c = Controller::new(
+            inv,
+            BTreeMap::from([(
+                output,
+                setting_from(&json!({"mode":"fixed","fixed":25})).unwrap(),
+            )]),
+        );
+        c.step();
+        assert_eq!(
+            b.get("pwm1"),
+            "128",
+            "controller took over even though its original mode could not be read"
+        );
+    }
+    #[test]
+    fn review_full_speed_is_not_claimed_when_the_emergency_write_fails() {
+        let b = tests::Board::new("review-refused-full-speed");
+        let inv = discover(&b.hwmon());
+        let output = inv.outputs[0].id.clone();
+        let mut c = Controller::new(
+            inv,
+            BTreeMap::from([(
+                output.clone(),
+                setting_from(&json!({"mode":"fixed","fixed":40})).unwrap(),
+            )]),
+        );
+        c.step();
+        for f in ["pwm1", "pwm1_enable"] {
+            let p = b.hwmon().join("hwmon1").join(f);
+            fs::remove_file(&p).unwrap();
+            fs::create_dir(&p).unwrap();
+        }
+        c.settings.insert(
+            output.clone(),
+            setting_from(&json!({"mode":"auto"})).unwrap(),
+        );
+        c.step();
+        assert_ne!(
+            c.status[&output]["percent"],
+            json!(100.0),
+            "full speed claimed despite refused PWM write: {}",
+            c.status[&output]
         );
     }
 }
