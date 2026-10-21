@@ -201,5 +201,56 @@ class FanAndLightControlTests(unittest.TestCase):
                 run.assert_not_called()
 
 
+class SwitchingOffAndBackupTests(unittest.TestCase):
+    def test_setup_stops_when_fan_control_cant_be_switched_off(self):
+        from unittest import mock
+        failed = mock.Mock(returncode=1, stderr='simulated stop failure')
+        with mock.patch.object(Path, 'exists', return_value=True), mock.patch.object(dashboard, 'systemctl') as ctl, \
+                mock.patch.object(dashboard.subprocess, 'run', return_value=failed):
+            with self.assertRaises(RuntimeError) as err:
+                dashboard.start_services({dashboard.SERVICE: 'unit'}, Path('/unused'), False, lambda *_: None)
+        self.assertIn('could not be switched off', str(err.exception))
+        self.assertNotIn(('restart', dashboard.SERVICE), [c.args for c in ctl.call_args_list])
+
+    def test_setup_stops_when_a_fan_was_not_handed_back(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            journal = Path(d) / 'originals.json'
+            journal.write_text('{"x": {"enable": "5", "pwm": "128"}}')
+            stopped = mock.Mock(returncode=0, stderr='')
+            inactive = mock.Mock(returncode=3)
+            with mock.patch.object(dashboard, 'CONTROL_JOURNALS', (journal,)), \
+                    mock.patch.object(dashboard.subprocess, 'run', side_effect=[stopped, inactive]):
+                with self.assertRaises(RuntimeError) as err:
+                    dashboard.stop_control([dashboard.CONTROL])
+            self.assertIn('did not go back', str(err.exception))
+
+    def test_control_keeps_its_records_when_it_stops(self):
+        unit = dashboard.control_units(Path('/x'), False)[dashboard.CONTROL]
+        self.assertIn('RuntimeDirectoryPreserve=yes', unit)
+
+    def test_host_snapshots_include_fan_light_and_dashboard_settings(self):
+        from modules import host_backup
+        for path in ('/etc/nekoserver-control', '/etc/nekoserver-dashboard', '/var/lib/nekoserver-openrgb'):
+            self.assertIn(path, host_backup.HOST_DIRS)
+        self.assertIn(str(dashboard.I2C_MODULES), host_backup.HOST_FILES)
+        self.assertIn(str(dashboard.CONTROL_CONFIG), host_backup.HOST_DIRS)
+
+    def test_an_installed_host_snapshot_list_is_refreshed(self):
+        from unittest import mock
+        from modules import host_backup
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / 'host.json'
+            logs = []
+            with mock.patch.object(host_backup, 'guard', return_value={'host_backup': {'sources': ['new']}}):
+                self.assertFalse(host_backup.refresh({}, logs.append, target))  # not installed
+                target.write_text('{"host_backup": {"sources": ["old"]}}')
+                self.assertTrue(host_backup.refresh({}, logs.append, target))
+                self.assertIn('new', target.read_text())
+                self.assertFalse(host_backup.refresh({}, logs.append, target))  # already current
+        import installer
+        self.assertIn('host_backup', installer.REFRESHED)
+
+
 if __name__ == '__main__':
     unittest.main()

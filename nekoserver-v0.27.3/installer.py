@@ -212,14 +212,19 @@ def _execute(args, root=ROOT):
                     stream.write(old_log.read_text())
             os.chmod(log_path,0o600)
         atomic_json_write(state_path, states)
-    if args.apply and states.get('dashboard', {}).get('status') == complete_status and 'dashboard' in modules:
-        # Later steps can change settings the dashboard's fingerprint covers.
-        try:
-            modules['dashboard']['object'].refresh(config, log)
-        except (OSError, RuntimeError, ValueError) as exc:
-            log(f'Dashboard settings not refreshed: {exc}')
+    for name in REFRESHED:
+        if args.apply and states.get(name, {}).get('status') == complete_status and name in modules:
+            # Later steps (or a newer release) can change what these keep: written again
+            # from the final configuration, even when only another step ran.
+            try:
+                modules[name]['object'].refresh(config, log)
+            except (OSError, RuntimeError, ValueError) as exc:
+                log(f'{name}: settings not refreshed: {exc}')
     log(f'Finished: {len(plan) - len(failures)} passed; {len(failures)} failed/blocked/incomplete; log={log_path}')
     return 1 if failures else 0
+
+# Steps whose saved settings are brought up to date after every run.
+REFRESHED = ('dashboard', 'host_backup')
 
 def execute(args, root=ROOT):
     if not args.apply:

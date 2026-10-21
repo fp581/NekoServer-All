@@ -17,6 +17,7 @@ Included, when present:
 
 - Selected OS identity/mount/locale/package-manager settings and user/group ID references (not shadow passwords).
 - Docker daemon settings, SSD gateway state/CA and NekoServer power/notification/gateway/backup settings and installed NekoServer service definitions/drop-ins.
+- Dashboard settings, fan curves, lighting choices and the fan-and-light PIN hash (`/etc/nekoserver-dashboard`, `/etc/nekoserver-control`), OpenRGB's settings (`/var/lib/nekoserver-openrgb`) and the i2c driver setting for memory and motherboard lighting. Every setup run brings an existing list of places up to date, so upgrading adds these too.
 - Preserved SSD installer release bundles, so a standalone host backup also retains the recovery code/configuration.
 - Native Steam's config, userdata and the default library's compatdata. Flatpak Steam, additional Steam libraries, native-game save folders and mods/game files outside these folders require explicit extra paths. Downloadable game binaries are not copied by default.
 - `/etc/samba` and `/var/lib/samba`, for the managed standalone Samba installation. The worker refuses unmanaged Samba configuration or detected AD/DC, winbind and NetBIOS writers. At runtime, testparm must confirm state/private database directories inside these trees and the tdbsam backend; other locations/backends are refused.

@@ -1184,8 +1184,12 @@ function outputCard(out, c) {
     fixed.hidden = card.draft.mode !== 'fixed';
     curve.hidden = card.draft.mode !== 'curve';
     minimum.hidden = card.draft.mode === 'auto';
-    fixed.querySelector('input').value = card.draft.fixed;
-    minimum.querySelector('input').value = card.draft.min;
+    // Every control and label shows the draft (after Undo, or a change elsewhere).
+    for (const [field, value] of [[fixed, card.draft.fixed], [minimum, card.draft.min]]) {
+      field.querySelector('input').value = value;
+      field.querySelector('output').textContent = value + '%';
+    }
+    naming.querySelector('input').value = card.draft.name;
     curve.querySelector('select').value = card.draft.sensor;
     editor.draw();
     card.refreshButtons();
@@ -1244,6 +1248,7 @@ function detectRow(fans) {
     return [row];
   }
   const parts = [button('Detect fans', startDetect, 'button small')];
+  if (fans.recovery) { parts.unshift(el('p', 'hint reason', text(fans.recovery))); }
   if (d.error) { parts.push(hint(text(d.error))); }
   if (d.result) { parts.push(hint('Detection finished. Each output below lists the fans it drives.')); }
   return parts;
@@ -1283,7 +1288,9 @@ function sendLight(key, body) { return change('light', {device: key, ...body}); 
 /* Moving a slider sends the last value a moment after it stops. */
 function debounced(fn, ms = 250) {
   let timer;
-  return value => { clearTimeout(timer); timer = setTimeout(() => fn(value), ms); };
+  const call = value => { clearTimeout(timer); timer = setTimeout(() => fn(value), ms); };
+  call.cancel = () => clearTimeout(timer); // a later action (Turn off) wins over it
+  return call;
 }
 function effectSelect(d, chosen, key) {
   const wrap = el('label', 'field', 'Effect'), select = el('select');
@@ -1322,7 +1329,11 @@ function lightCard(d) {
   const brightness = rangeField('Brightness', 0, 100, chosen.brightness, v => { hold(); sendBrightness(v); });
   const effect = effectSelect(d, chosen, key);
   effect.addEventListener('change', hold);
-  const power = button(chosen.off ? 'Turn on' : 'Turn off', () => sendLight(key, {off: !lightChosen(cooling.lights.get(key).data).off}));
+  const power = button(chosen.off ? 'Turn on' : 'Turn off', () => {
+    sendColor.cancel();
+    sendBrightness.cancel();
+    void sendLight(key, {off: !lightChosen(cooling.lights.get(key).data).off});
+  });
   const own = hint('This effect makes its own colours, so colour and brightness don’t apply to it.');
   root.append(head, el('p', 'hint', joined([text(d.kind), d.leds ? d.leds + ' lights' : '', text(d.location)])), colorWrap, brightness, effect, own, power);
   const card = {root, data: d};

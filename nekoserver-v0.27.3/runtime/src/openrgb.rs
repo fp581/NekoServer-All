@@ -244,7 +244,13 @@ fn usable_serial<'a>(d: &'a Device, all: &[Device]) -> Option<&'a str> {
             "unknown",
         ]
         .contains(&serial.to_lowercase().as_str());
-    let shared = all.iter().filter(|o| o.serial.trim() == serial).count() > 1;
+    // Only devices that would get the same name matter: another kind of device with
+    // the same serial string can come and go without renaming this one.
+    let shared = all
+        .iter()
+        .filter(|o| o.serial.trim() == serial && legacy_identity(o) == legacy_identity(d))
+        .count()
+        > 1;
     (!placeholder && !shared).then_some(serial)
 }
 /// Where a device is connected, without the parts Linux may number differently after a
@@ -659,5 +665,27 @@ pub mod tests {
         assert_eq!(parse_color("#ff88zz"), None);
         assert_eq!(dimmed([200, 100, 0], 50), [100, 50, 0]);
         assert_eq!(dimmed([200, 100, 0], 0), [0, 0, 0]);
+    }
+}
+
+#[cfg(test)]
+mod review_extra_tests {
+    use super::*;
+    #[test]
+    fn review_unrelated_device_with_same_serial_must_not_rename_a_saved_device() {
+        let dev = |name, place| {
+            parse_device(
+                0,
+                &tests::device_full(name, "SHARED123", place, &[("Direct", 0)], 2, false),
+            )
+            .unwrap()
+        };
+        let keyboard = dev("Keyboard", "HID: /dev/hidraw1");
+        let before = identities(std::slice::from_ref(&keyboard))[0].clone();
+        let after = identities(&[keyboard, dev("Mouse", "HID: /dev/hidraw2")])[0].clone();
+        assert_eq!(
+            after, before,
+            "plugging in an unrelated device changes the existing saved key"
+        );
     }
 }

@@ -176,6 +176,29 @@ fn apply_light(
         _ => client.set_color(d, shown),
     }
 }
+/// What a device reports matches the choice: its effect, or its LEDs' colour.
+fn shows(d: &openrgb::Device, want: &Value) -> bool {
+    let color = want["color"]
+        .as_str()
+        .and_then(openrgb::parse_color)
+        .unwrap_or([255, 255, 255]);
+    let brightness = want["brightness"].as_u64().unwrap_or(100).min(100) as u8;
+    let effect = want["effect"]
+        .as_str()
+        .filter(|e| !e.is_empty() && !["Direct", "Custom"].contains(e));
+    if want["off"] != true && brightness > 0 {
+        if let Some(effect) = effect {
+            let active = d.modes.get(d.active_mode.max(0) as usize);
+            return active.is_some_and(|m| m.name == effect);
+        }
+    }
+    let expected = if want["off"] == true || brightness == 0 {
+        [0, 0, 0]
+    } else {
+        openrgb::dimmed(color, brightness)
+    };
+    !d.colors.is_empty() && d.colors.iter().all(|c| *c == expected)
+}
 fn light_from(request: &Value, previous: &Value) -> std::result::Result<Value, Value> {
     let mut want = if previous.is_object() {
         previous.clone()
@@ -272,10 +295,10 @@ impl Lighting {
         if !fresh {
             self.devices = self.ask().ok().map(|(_, named)| (Instant::now(), named));
             if let Some((_, named)) = self.devices.take() {
-                let before = self.chosen.clone();
-                self.adopt_legacy(&named);
-                if before != self.chosen && self.save().is_err() {
-                    self.chosen = before; // tried again next time
+                let _ = self.migrate(&named); // kept for the next look when it can't be saved
+                                              // A device that was reset or reconnected shows something else again.
+                if !self.all_showing(&named) {
+                    self.pending = true;
                 }
                 self.devices = Some((Instant::now(), named));
             }
@@ -287,7 +310,9 @@ impl Lighting {
     /// missing for now (still starting, unplugged) keeps it pending.
     fn apply(&mut self, only: Option<&str>) -> std::io::Result<()> {
         let (mut client, named) = self.ask()?;
-        self.adopt_legacy(&named);
+        // Names moved from an earlier release are saved before anything counts as done.
+        self.migrate(&named)
+            .map_err(|_| std::io::Error::other("Lighting names couldn't be saved"))?;
         let wanted = self
             .chosen
             .as_object()
@@ -305,11 +330,30 @@ impl Lighting {
                 missing -= 1;
             }
         }
-        self.devices = Some((Instant::now(), named));
+        self.devices = None; // read again, so the next look sees what they show now
         if missing > 0 {
             return Err(std::io::Error::other("Not every light was found"));
         }
         Ok(())
+    }
+    /// Move choices saved under earlier names, and save that at once: otherwise they
+    /// could work until a restart renumbers a device, and then be lost.
+    fn migrate(&mut self, named: &[(String, openrgb::Device)]) -> Result<()> {
+        let before = self.chosen.clone();
+        self.adopt_legacy(named);
+        if before != self.chosen {
+            if let Err(e) = self.save() {
+                self.chosen = before;
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+    /// Every device with a saved choice shows it now.
+    fn all_showing(&self, named: &[(String, openrgb::Device)]) -> bool {
+        named
+            .iter()
+            .all(|(key, d)| self.chosen.get(key).is_none_or(|want| shows(d, want)))
     }
     fn status(&mut self) -> Value {
         self.devices(); // may move choices saved under older names
@@ -370,6 +414,8 @@ pub struct Fans {
     detect: Value,
     /// The detection worker, waited for before the service exits.
     worker: Option<JoinHandle<()>>,
+    /// A recovery record that couldn't be read at start (shown on the page).
+    recovery: Option<String>,
     config: PathBuf,
     run_dir: PathBuf,
 }
@@ -387,6 +433,7 @@ impl Fans {
             cancel: Arc::new(AtomicBool::new(false)),
             detect: json!({"running": false}),
             worker: None,
+            recovery: None,
             config,
             run_dir,
         }
@@ -400,7 +447,7 @@ impl Fans {
     fn status(&self) -> Value {
         json!({"inventory": fans::inventory_json(&self.controller.inventory),
             "settings": settings_json(&self.controller), "state": self.controller.status,
-            "detect": self.detect, "floor": fans::MIN_FLOOR})
+            "detect": self.detect, "floor": fans::MIN_FLOOR, "recovery": self.recovery})
     }
     fn change(&mut self, request: &Value) -> Value {
         let id = request["output"].as_str().unwrap_or("");
@@ -550,6 +597,11 @@ fn detect_unsafe(c: &Controller, watched: &[String]) -> Option<&'static str> {
         .collect::<Vec<_>>();
     if readings.iter().any(Option::is_none) {
         return Some("Detection stopped: a temperature could no longer be read");
+    }
+    // The same limits as normal fan control (near a sensor's own critical limit, or
+    // 95 °C), with detection's lower 85 °C ceiling on top.
+    if c.emergency().is_some() {
+        return Some("Detection stopped: a sensor reached its critical temperature");
     }
     readings
         .iter()
@@ -703,22 +755,65 @@ pub fn restore(hwmon: &Path, saved: &Value) -> (usize, BTreeMap<String, fans::Or
 /// journal holds the setting from before NekoServer touched it, so that one wins. A
 /// journal is only removed once nothing in it is left to do, or once what is left has
 /// been safely written to the main journal.
+///
+/// Both journals are merged first (the main one wins for an output in both) and each
+/// output is restored once. A journal that can't be read is never deleted or written
+/// over: it is kept for diagnosis, and `unreadable_journals` reports it.
 fn restore_journals(hwmon: &Path, run_dir: &Path) -> (usize, BTreeMap<String, fans::Original>) {
-    let (mut restored, mut left) = (0, BTreeMap::new());
+    let mut merged = BTreeMap::new();
     for name in JOURNALS.iter().rev() {
-        let (n, rest) = restore(hwmon, &common::json(&run_dir.join(name), 1_000_000));
-        restored += n;
-        left.extend(rest); // the main journal's entries, read last, take precedence
-    }
-    let main = run_dir.join(JOURNALS[0]);
-    if left.is_empty() {
-        for name in JOURNALS {
-            let _ = fs::remove_file(run_dir.join(name));
+        if let Journal::Records(records) = read_journal(&run_dir.join(name)) {
+            merged.extend(fans::originals_from(&records)); // main, read last, wins
         }
-    } else if common::atomic_json(&main, &fans::originals_json(&left)).is_ok() {
-        let _ = fs::remove_file(run_dir.join(JOURNALS[1]));
-    } // else: both journals stay exactly as they were
+    }
+    let (restored, left) = restore(hwmon, &fans::originals_json(&merged));
+    let bad = unreadable_journals(run_dir);
+    let main = run_dir.join(JOURNALS[0]);
+    let keep_main = left.is_empty()
+        || (!bad.contains(&main)
+            && common::atomic_json(&main, &fans::originals_json(&left)).is_ok());
+    if keep_main {
+        for name in JOURNALS {
+            let path = run_dir.join(name);
+            let needed = path == main && !left.is_empty();
+            if !needed && !bad.contains(&path) {
+                let _ = fs::remove_file(path);
+            }
+        }
+    } // else: every journal stays exactly as it was
     (restored, left)
+}
+enum Journal {
+    Absent,
+    Records(Value),
+    Unreadable,
+}
+fn read_journal(path: &Path) -> Journal {
+    match fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Journal::Absent,
+        Err(_) => Journal::Unreadable,
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(v) if v.is_object() => Journal::Records(v),
+            _ => Journal::Unreadable,
+        },
+    }
+}
+/// Journals that exist but can't be read (damaged): kept, and reported.
+fn unreadable_journals(run_dir: &Path) -> Vec<PathBuf> {
+    JOURNALS
+        .iter()
+        .map(|n| run_dir.join(n))
+        .filter(|p| matches!(read_journal(p), Journal::Unreadable))
+        .collect()
+}
+fn report_unreadable(run_dir: &Path) -> Option<String> {
+    let bad = unreadable_journals(run_dir);
+    (!bad.is_empty()).then(|| {
+        format!(
+            "A fan recovery record can't be read and was kept for checking: {}. Check that every fan is back with the motherboard (Help, Fans don't change)",
+            bad.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+        )
+    })
 }
 
 fn serve_socket(service: Arc<Service>) -> Result<()> {
@@ -774,6 +869,7 @@ fn retry_lights(service: Arc<Service>) {
     thread::spawn(move || {
         while !STOP.load(Ordering::SeqCst) {
             if let Ok(mut l) = service.lights.lock() {
+                l.devices(); // notices a reset or reconnected device (sets pending)
                 if l.pending && l.apply(None).is_ok() {
                     l.pending = false;
                 }
@@ -808,6 +904,9 @@ pub fn run(a: &Args) -> Result<()> {
     if a.flag("restore") {
         let (n, left) = restore_journals(&hwmon, &run_dir);
         println!("Fans: {n} outputs handed back to the motherboard");
+        if let Some(problem) = report_unreadable(&run_dir) {
+            return Err(Error::new(&problem));
+        }
         if !left.is_empty() {
             return Err(Error::new(
                 "Some fan outputs did not go back to the motherboard; they are retried when the service starts",
@@ -835,6 +934,14 @@ pub fn run(a: &Args) -> Result<()> {
     // Anything left from a run that ended without its cleanup goes back first; what
     // refuses stays with the controller, which keeps trying (at full speed meanwhile).
     let (_, left) = restore_journals(&hwmon, &run_dir);
+    // A damaged record is moved aside (never written over) and reported on the page.
+    let recovery = report_unreadable(&run_dir);
+    if let Some(problem) = &recovery {
+        eprintln!("{problem}");
+        for bad in unreadable_journals(&run_dir) {
+            let _ = fs::rename(&bad, bad.with_extension("json.unreadable"));
+        }
+    }
     let pin = Some(common::json(&config.join("pin.json"), 64000))
         .filter(|v| v["format"] == "neko-pin-v1");
     let chosen = Some(common::json(&config.join("lights.json"), 1_000_000))
@@ -843,6 +950,7 @@ pub fn run(a: &Args) -> Result<()> {
     let controller = Controller::new(fans::discover(&hwmon), load_settings(&config));
     let mut fans_state = Fans::new(controller, config.clone(), run_dir.clone());
     let _ = fans_state.controller.adopt_originals(left); // the journal already holds them
+    fans_state.recovery = recovery;
     let service = Service::new(
         fans_state,
         Lighting::new(chosen, openrgb::PORT, config),
@@ -854,7 +962,8 @@ pub fn run(a: &Args) -> Result<()> {
     while !STOP.load(Ordering::SeqCst) {
         if let Ok(mut f) = service.fans.lock() {
             if !f.detecting.load(Ordering::SeqCst) {
-                if rediscovered.elapsed() > Duration::from_secs(60) {
+                if rediscovered.elapsed() > Duration::from_secs(60) || f.controller.rediscover {
+                    f.controller.rediscover = false;
                     // A driver loaded late (or a card added): pick up its outputs.
                     f.controller.inventory = fans::discover(&hwmon);
                     rediscovered = Instant::now();
@@ -1476,5 +1585,129 @@ mod tests {
             .collect::<Vec<_>>();
         // name, count, data, then: custom mode + LEDs, effect, custom mode + LEDs (off).
         assert_eq!(ids, vec![50, 0, 1, 1100, 1050, 1101, 1100, 1050]);
+    }
+}
+
+#[cfg(test)]
+mod review_extra_tests {
+    use super::*;
+    #[test]
+    fn review_detection_respects_a_lower_sensor_critical_limit() {
+        let b = fans::tests::Board::new("review-detect-critical");
+        b.set("temp1_crit", "70000");
+        b.set("temp1_input", "75000");
+        let c = Controller::new(fans::discover(&b.hwmon()), BTreeMap::new());
+        assert!(
+            c.emergency().is_some(),
+            "normal fan control recognizes the critical temperature"
+        );
+        let watched = readable_temps(&c);
+        assert!(
+            detect_unsafe(&c, &watched).is_some(),
+            "detection must also recognize the critical temperature"
+        );
+    }
+    #[test]
+    fn review_main_journal_success_clears_a_failed_duplicate_detection_record() {
+        let b = fans::tests::Board::new("review-journal-priority");
+        let run = b.0.join("run");
+        fs::create_dir_all(&run).unwrap();
+        let output = fans::discover(&b.hwmon()).outputs[0].id.clone();
+        common::atomic_json(
+            &run.join(JOURNALS[0]),
+            &json!({&output:{"enable":"5","pwm":"128"}}),
+        )
+        .unwrap();
+        common::atomic_json(
+            &run.join(JOURNALS[1]),
+            &json!({&output:{"enable":"1","pwm":"255"}}),
+        )
+        .unwrap();
+        let pwm = b.hwmon().join("hwmon1/pwm1");
+        fs::remove_file(&pwm).unwrap();
+        fs::create_dir(&pwm).unwrap();
+        let (restored, left) = restore_journals(&b.hwmon(), &run);
+        assert_eq!(restored, 1);
+        assert_eq!(b.get("pwm1_enable"), "5");
+        assert!(
+            left.is_empty(),
+            "firmware was restored, but stale manual record survives: {left:?}"
+        );
+    }
+    #[test]
+    fn review_corrupt_journal_is_reported_and_retained_for_diagnosis() {
+        let b = fans::tests::Board::new("review-invalid-journal");
+        let run = b.0.join("run");
+        fs::create_dir_all(&run).unwrap();
+        let path = run.join(JOURNALS[1]);
+        fs::write(&path, b"{truncated").unwrap();
+        let (_, left) = restore_journals(&b.hwmon(), &run);
+        assert!(
+            path.exists(),
+            "unreadable recovery data was silently treated as empty and deleted; left={left:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod review_rgb_extra_tests {
+    use super::*;
+    #[test]
+    fn review_startup_apply_persists_migrated_lighting_names() {
+        let b = fans::tests::Board::new("review-rgb-startup");
+        let config = b.0.join("config");
+        fs::create_dir_all(&config).unwrap();
+        let body = openrgb::tests::device_full(
+            "Keyboard",
+            "KB7731A",
+            "HID: /dev/hidraw5",
+            &[("Direct", 0)],
+            2,
+            false,
+        );
+        let (port, _) = openrgb::tests::fake_server(vec![body], Duration::ZERO);
+        let old = json!({"Keyboard · Desk strip · HID: /dev/hidraw5":{"color":"#123456"}});
+        common::atomic_json(&config.join("lights.json"), &old).unwrap();
+        let mut lighting = Lighting::new(old, port, config.clone());
+        lighting.apply(None).unwrap();
+        let saved = common::json(&config.join("lights.json"), 100000);
+        assert!(
+            saved
+                .get("Keyboard · Desk strip · serial KB7731A")
+                .is_some(),
+            "migration only in memory; saved={saved}"
+        );
+    }
+    #[test]
+    fn review_restarted_openrgb_is_reconfigured_even_after_an_earlier_success() {
+        let b = fans::tests::Board::new("review-rgb-restart");
+        let config = b.0.join("config");
+        fs::create_dir_all(&config).unwrap();
+        let body = openrgb::tests::device_full(
+            "Keyboard",
+            "KB7731A",
+            "HID: /dev/hidraw5",
+            &[("Direct", 0)],
+            2,
+            false,
+        );
+        let (port, _) = openrgb::tests::fake_server(vec![body.clone()], Duration::ZERO);
+        let mut lighting = Lighting::new(
+            json!({"Keyboard · Desk strip · serial KB7731A":{"color":"#00ff00"}}),
+            port,
+            config,
+        );
+        lighting.apply(None).unwrap();
+        lighting.pending = false;
+        let (port2, seen) = openrgb::tests::fake_server(vec![body], Duration::ZERO);
+        lighting.port = port2;
+        lighting.devices = None;
+        let status = lighting.status();
+        assert_eq!(status["devices"][0]["chosen"]["color"], "#00ff00");
+        assert!(
+            lighting.pending,
+            "fresh server's actual colour is #ff0080, but no retry is scheduled; packets={:?}",
+            seen.lock().unwrap()
+        );
     }
 }
