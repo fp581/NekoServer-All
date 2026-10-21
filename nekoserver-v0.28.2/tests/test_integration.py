@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -155,6 +156,8 @@ class InstallScriptTests(unittest.TestCase):
         text = re.sub(r'(?m)^exec python3 .*$', 'echo "START $*" >> "$LOG"', text)
         text = re.sub(r'(?m)^    python3 "\$ROOT/host.py" bootstrap$', '    echo BOOTSTRAP >> "$LOG"', text)
         text = text.replace('/run/reboot-required', str(self.root / 'reboot-required'))
+        text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
+        text = re.sub(r'(?m)^        python3 "\$ROOT/host.py" repair$', '        echo REPAIR >> "$LOG"', text)
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
         script = self.root / 'install.sh'
         script.write_text(text)
@@ -190,6 +193,26 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('PACMAN', log)
         self.assertLess(log.index('APT-GET update'), log.index('BOOTSTRAP'))
         self.assertLess(log.index('BOOTSTRAP'), log.index('START --wizard'))
+
+    def test_debian_repairs_repositories_before_apt_first_runs(self):
+        self.use_debian()
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(log.index('REPAIR'), log.index('APT-GET update'))
+
+    def test_a_second_setup_stops_before_any_change(self):
+        lock = self.root / 'setup.lock'
+        holder = subprocess.Popen(['flock', str(lock), 'sleep', '30'])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        for _ in range(50):
+            if subprocess.run(['flock', '-n', str(lock), 'true'], check=False).returncode:
+                break
+            time.sleep(0.1)
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Another NekoServer setup is running', result.stderr)
+        self.assertEqual(log, '')
 
     def test_debian_pending_restart_stops_before_any_change(self):
         self.use_debian('ID=debian\n')
