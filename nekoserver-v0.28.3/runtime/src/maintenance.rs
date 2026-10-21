@@ -772,7 +772,7 @@ fn health(
                 }
                 // Authenticated real database/file operations, without storing a user's password.
                 let token = format!("neko-maintenance-{}", std::process::id());
-                let script=format!("require '/var/www/html/lib/base.php'; $u=\\OC::$server->getUserManager()->get(\"admin\"); if(!$u){{exit(3);}} $root=\\OC::$server->getUserFolder($u->getUID()); $n='{token}'; if($root->nodeExists($n)){{exit(4);}} $f=$root->newFile($n); $f->putContent('{token}'); if($f->getContent()!=='{token}'){{exit(5);}} $f->delete();");
+                let script=format!("require '/var/www/html/lib/base.php'; $u=\\OC::$server->getUserManager()->get(\"admin\"); if(!$u){{exit(3);}} $root=\\OC::$server->getUserFolder($u->getUID()); $n='{token}'; if($root->nodeExists($n)){{exit(4);}} $f=$root->newFile($n); $f->putContent('{token}'); if($f->getContent()!=='{token}'){{exit(5);}} $t=null; try{{$t=\\OC::$server->get(\\OCA\\Files_Trashbin\\Trash\\ITrashManager::class); $t->pauseTrash();}}catch(\\Throwable $e){{$t=null;}} $f->delete(); if($t){{$t->resumeTrash();}}");
                 // Use the recorded initial administrator username instead of assuming it is admin.
                 let cfg = load(&scratch.join("config.json"))?;
                 let user = cfg["nextcloud"]["admin_user"].as_str().unwrap_or("admin");
@@ -1233,6 +1233,7 @@ fn scrub_snapshot(snapshot: &Path) -> Result<()> {
             .to_string();
         let model = name.ends_with("-old.json")
             || name.ends_with("-new.json")
+            || name.ends_with("-quarantine.json")
             || name.ends_with("-rehearsal.json")
             || name == "result.json";
         if !model || !fs::symlink_metadata(&path)?.is_file() {
@@ -1766,7 +1767,12 @@ fn go_live(
     }
     verify()?;
     commit()?;
-    open_up(names, snapshot, start, check)
+    open_up(names, snapshot, start, check).map_err(|e| {
+        Error::new(&format!(
+            "Update installed, but Immich/Nextcloud could not be opened up again ({e}); \
+             nekoserver-maintenance-resume.service retries this, without rolling back"
+        ))
+    })
 }
 fn open_up(
     names: &[String],
@@ -2200,6 +2206,33 @@ mod tests {
         // Finished runs' work folders are removed.
         clear_work(&data);
         assert!(!work.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn scrub_blanks_passwords_in_every_saved_model() {
+        let root = scratch("scrub-models");
+        let model =
+            json!({"services":{"database":{"environment":{"POSTGRES_PASSWORD":"pw","TZ":"UTC"}}}});
+        for name in [
+            "immich-old.json",
+            "immich-new.json",
+            "immich-quarantine.json",
+            "nextcloud-quarantine.json",
+        ] {
+            fs::write(root.join(name), model.to_string()).unwrap();
+        }
+        scrub_snapshot(&root).unwrap();
+        for name in [
+            "immich-old.json",
+            "immich-new.json",
+            "immich-quarantine.json",
+            "nextcloud-quarantine.json",
+        ] {
+            let saved: Value = serde_json::from_slice(&fs::read(root.join(name)).unwrap()).unwrap();
+            let env = &saved["services"]["database"]["environment"];
+            assert_eq!(env["POSTGRES_PASSWORD"], REMOVED, "{name}");
+            assert_eq!(env["TZ"], "UTC", "{name}");
+        }
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -2824,7 +2857,9 @@ mod tests {
     #[test]
     fn a_failure_after_the_commit_keeps_the_update() {
         let (result, steps) = rehearse("check nextcloud-new.json");
-        assert!(result.is_err());
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("Update installed"), "{message}");
+        assert!(message.contains("without rolling back"), "{message}");
         let commit = steps.iter().position(|s| s == "commit journal").unwrap();
         let opened = steps
             .iter()
