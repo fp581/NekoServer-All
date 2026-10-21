@@ -193,20 +193,24 @@ def log_rotation_finding(unbounded):
                           'keep unlimited logs until they are recreated after Docker restarts (a reboot, then the '
                           'monthly update or rerunning setup).')
 
+def accepted_modules(config,modules):
+    """The planned steps that have something to accept: not optional extras you turned
+    down ("wanted": false), nor extras this Linux can't have yet."""
+    return [m for m in modules if not (m in OPTIONAL and config.get(m,{}).get('wanted') is False)
+            and not (m=='tv' and not tv.available())]
+
 def inspect(config,profile='full',now=None):
     now=time.time() if now is None else now;run={'format':'neko-acceptance-v1','version':VERSION,'generated_at':now,'run_id':str(uuid.uuid4()),'profile':profile,'automatic':[],'manual':[],'scope':'selected deployment profile; manual results are user reported'}
     checks=run['automatic'];add=lambda *x:checks.append(item(*x))
     try:
         installer.validate_config(config)
         if profile not in config['profiles']:raise ValueError()
-        modules=installer.ordered(installer.load_modules(ROOT/'modules'),config['profiles'][profile])
-        # Optional extras you turned down ("wanted": false) have nothing to accept.
-        modules=[m for m in modules if not (m in OPTIONAL and config.get(m,{}).get('wanted') is False)]
+        modules=accepted_modules(config,installer.ordered(installer.load_modules(ROOT/'modules'),config['profiles'][profile]))
         run['config_fingerprint']=fingerprint(config,profile);run['dashboard_scope']=scope_digest(config)
     except (OSError,RuntimeError,ValueError,TypeError,KeyError,installer.InstallerError):
         add('configuration','Configuration and profile','fail','Configuration or selected dependency profile is invalid.');return summarize(run)
     add('configuration','Configuration and profile','pass','Selected profile and dependency plan are valid.')
-    supported=recovery_tools.host_supported();add('host','Supported recovery host','pass' if supported else 'needs_setup','Nyarch/Arch x86_64 detected.' if supported else 'Supported Nyarch/Arch x86_64 installation required; Bazzite needs separate validation.')
+    supported=recovery_tools.host_supported();add('host','Supported recovery host','pass' if supported else 'needs_setup','Supported x86_64 Linux (Arch/Nyarch or Debian/Ubuntu) detected.' if supported else 'A supported x86_64 Linux is required: Arch/Nyarch or Debian/Ubuntu.')
     matched={}
     for role,name in (('data_ssd','Application SSD'),('media_hdd','Media HDD')):
         spec=config['storage'][role];path=config['data_mount' if role=='data_ssd' else 'media_mount'];value=health.mount_info(path,spec['uuid'],spec['fstype']);matched[role]=value['status']=='mounted';add('mount:'+role,name,'pass' if matched[role] else 'needs_setup' if value['status']=='not_configured' else 'fail','Configured UUID and filesystem verified.' if matched[role] else 'Configure and mount the intended drive; no private data is inspected on a mismatch.')

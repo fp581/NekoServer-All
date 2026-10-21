@@ -300,7 +300,7 @@ class HostBackupUserTests(unittest.TestCase):
             # Installed for nekofan: another administrator running setup changes nothing.
             target.write_text('{"host_backup": {"user": "nekofan"}}')
             self.assertIs(host_backup.choose_user({}, {'user': 'auto'}, host_backup.previous_user(target)), first)
-            # Lists from before 0.28.0 only kept the Steam account's number.
+            # Lists from before 0.27.4 only kept the Steam account's number.
             target.write_text('{"host_backup": {"steam_uid": 1000}}')
             self.assertIs(host_backup.previous_user(target), first)
             # A user named in the settings always wins.
@@ -399,6 +399,32 @@ class BackupWordingTests(unittest.TestCase):
         self.assertIn('deleted', app_backup.retention(14))
         self.assertIn('none are deleted', app_backup.retention(0))
         self.assertNotIn('No automatic backup deletion', (Path(app_backup.__file__)).read_text())
+
+
+class PreservedBundleTest(unittest.TestCase):
+    """The installer copy kept on the SSD must be able to set the dashboard up again."""
+
+    def test_preserved_bundle_reinstalls_the_dashboard(self):
+        from unittest import mock
+
+        from modules import recovery
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(recovery.os.path, 'ismount', return_value=True):
+            dest = recovery.preserve(Path(tmp), ROOT, {'data_mount': tmp})
+            payloads = dashboard.asset_payloads(dest, Path('/code'))
+            self.assertEqual(sorted(path.name for path in payloads), sorted(dashboard.ASSETS))
+            for path, data in payloads.items():
+                self.assertEqual(data, (ROOT / 'dashboard' / path.name).read_bytes())
+
+    def test_bundle_keeps_every_release_file(self):
+        from modules import recovery
+        kept = {path.relative_to(ROOT) for path in recovery.bundle_files(ROOT)}
+        skipped = {Path('config.json')}  # the bundle keeps the server's own settings instead
+        release = {path.relative_to(ROOT) for path in ROOT.rglob('*') if path.is_file()}
+        # Not part of a release: tests, build output and tool caches.
+        release = {rel for rel in release if rel.parts[0] != 'tests' and rel.parts[:2] != ('runtime', 'target')
+                   and not any(part == '__pycache__' or part.startswith('.') for part in rel.parts)}
+        self.assertEqual(sorted(map(str, release - kept - skipped)), [])
+
 
 if __name__ == '__main__':
     unittest.main()

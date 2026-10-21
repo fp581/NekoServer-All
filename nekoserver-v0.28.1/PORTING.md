@@ -33,20 +33,22 @@ class Arch(Family):
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
 
     def available(self, wanted): ...  # the repositories offer it
-    def installed(self, wanted): ...
+    def has(self, package): ...       # this one package is installed
     def _install(self, names, timeout): ...
 ```
 
 A family can also override:
 
-- `prepare(missing)`, run before installing: conflict checks and vendor repositories. Debian refuses its own `docker.io` next to Docker's packages, and adds Docker's and Tailscale's repositories.
-- `settle(missing)`, run after installing: undo what the packages did on their own. Debian's packages enable and start their services, so they are switched off again until NekoServer's own steps start them on the right drive.
+- `prepare(missing)`, run before installing: conflict checks and vendor repositories. Debian refuses its own `docker.io` next to Docker's packages, and adds Docker's and Tailscale's repositories unless someone already defined them. It returns what `settle` must know about the system as it was before: whether `smb.conf` existed, and which services were already there.
+- `settle(packages, before)`, run after installing, including after a failed one: undo what the packages did on their own. Debian's packages enable their services, so the new ones are switched off (and checked) until NekoServer's own steps start them on the right drive. Services that existed before are never touched.
+- `journal`: where an installation is recorded before it starts, so one that fails or is cut off is tidied up by `reconcile()` at the next install or setup run.
 - `reboot_pending(root)`: Debian and Ubuntu leave `/run/reboot-required` after an update that needs a restart.
 
 - `packages` maps NekoServer's package names (the Arch names) to the family's own name or names, for example `'docker-compose': 'docker-compose-plugin'`.
 - `services` maps a service to its systemd unit when the name differs. Samba is `smb.service` on Arch and Fedora, but `smbd.service` on Debian and Ubuntu.
 - `settings` lists the family's package-manager settings, which host backups keep.
-- `install()` is shared. It installs only the packages that are missing and never upgrades the rest of the system.
+- `install()` is shared. It installs only the packages that are missing, never reinstalls or upgrades one that is there, and never upgrades the rest of the system.
+- Commands whose output is read run with `LC_ALL=C`, so they answer in English on every system.
 
 Shared code must never call a package manager itself. `tests/test_host.py` fails if `pacman`, `apt-get` or `dpkg` appears outside `host.py`. The only other place is `install.sh`, which installs Python and the basic tools before `host.py` can run, then calls `python3 host.py bootstrap` for the apps' packages.
 
