@@ -126,11 +126,15 @@ class FakeApt:
         self.masked = set()
         self.masked_during_install = None
         self.install_error = None
+        self.unconfigured = []    # packages dpkg --audit reports as not set up
+        self.configure_fails = False
+        self.protected_while_configuring = None
 
     def __call__(self, argv, **kwargs):
         self.calls.append(argv)
         self.envs.append(kwargs.get('env', {}))
-        handler = {'apt-cache': self.cache, 'dpkg-query': self.dpkg, 'systemctl': self.systemctl}.get(argv[0])
+        handler = {'apt-cache': self.cache, 'dpkg-query': self.dpkg, 'systemctl': self.systemctl,
+                   'dpkg': self.dpkg_tool}.get(argv[0])
         if handler:
             return handler(argv)
         if argv[:2] == ['apt-get', 'install']:
@@ -146,6 +150,16 @@ class FakeApt:
     def dpkg(self, argv):
         ok = argv[3] in self.installed
         return subprocess.CompletedProcess(argv, 0 if ok else 1, 'install ok installed' if ok else '', '')
+
+    def dpkg_tool(self, argv):
+        if argv[1] == '--audit':
+            return subprocess.CompletedProcess(argv, 0, ''.join(n + ' not configured\n' for n in self.unconfigured), '')
+        policy = self.root / 'usr/sbin/policy-rc.d'
+        self.protected_while_configuring = (set(self.masked), policy.exists())
+        if self.configure_fails:
+            return subprocess.CompletedProcess(argv, 1, '', 'dpkg: error processing package samba (--configure)')
+        self.unconfigured = []
+        return subprocess.CompletedProcess(argv, 0, '', '')
 
     def install(self, argv):
         policy = self.root / 'usr/sbin/policy-rc.d'
@@ -267,6 +281,23 @@ class DebianTest(unittest.TestCase):
         self.assertFalse((self.root / 'usr/sbin/policy-rc.d').exists())
         self.assertEqual(apt.enabled(), [])
         self.assertEqual(sorted(apt.units), ['caddy.service', 'nmbd.service', 'smbd.service'])
+
+    def test_lmde_uses_the_debian_release_name(self):
+        family = self.family(release={'ID': 'linuxmint', 'ID_LIKE': 'debian', 'VERSION_CODENAME': 'faye',
+                                      'DEBIAN_CODENAME': 'bookworm'})
+        self.assertEqual(family.vendor_release(), ('debian', 'bookworm'))
+        mint = self.family(release={'ID': 'linuxmint', 'ID_LIKE': 'ubuntu debian', 'VERSION_CODENAME': 'wilma',
+                                    'UBUNTU_CODENAME': 'noble'})
+        self.assertEqual(mint.vendor_release(), ('ubuntu', 'noble'))
+
+    def test_packaged_example_needs_the_package_record(self):
+        family = self.family()
+        self.assertFalse(family.packaged_example('/etc/samba/smb.conf'))   # no file, no record
+        self.packaged_example()
+        self.assertTrue(family.packaged_example('/etc/samba/smb.conf'))
+        self.file('etc/samba/smb.conf', '# edited\n')
+        self.assertFalse(family.packaged_example('/etc/samba/smb.conf'))
+        self.assertFalse(host.Arch(FakePacman()).packaged_example('/etc/samba/smb.conf'))
 
     def test_package_names(self):
         ubuntu = self.family()
@@ -391,6 +422,55 @@ class DebianTest(unittest.TestCase):
         self.assertEqual(apt.masked, set())
         self.assertFalse((self.root / 'usr/sbin/policy-rc.d').exists())
 
+    def test_packages_left_unset_up_are_set_up_while_still_protected(self):
+        apt = FakeApt()
+        apt.install_error = subprocess.TimeoutExpired(['apt-get'], 900)
+        apt.on_install = lambda done: setattr(apt, 'unconfigured', ['samba'])
+        family = self.family(apt)
+        with self.assertRaisesRegex(RuntimeError, 'did not finish'):
+            family.install(['samba'])
+        self.assertEqual(apt.protected_while_configuring, ({'smbd.service', 'nmbd.service'}, True))
+        self.assertEqual(apt.unconfigured, [])
+        self.assertEqual(apt.masked, set())
+        self.assertEqual(apt.enabled(), [])
+        self.assertFalse(self.journal().exists())
+
+    def test_set_up_that_fails_keeps_everything_protected(self):
+        apt = FakeApt()
+        apt.install_error = subprocess.TimeoutExpired(['apt-get'], 900)
+        apt.on_install = lambda done: setattr(apt, 'unconfigured', ['samba'])
+        apt.configure_fails = True
+        family = self.family(apt)
+        with self.assertRaisesRegex(RuntimeError, 'did not finish'):
+            family.install(['samba'])
+        self.assertTrue(self.journal().exists())
+        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service'})
+        self.assertEqual((self.root / 'usr/sbin/policy-rc.d').read_text(), host.OUR_POLICY)
+        retry = self.family(apt)
+        with self.assertRaisesRegex(RuntimeError, 'dpkg could not finish setting up'):
+            retry.reconcile()
+
+    def test_dpkg_still_working_after_apt_stopped_is_waited_for(self):
+        apt = FakeApt()
+        apt.install_error = subprocess.TimeoutExpired(['apt-get'], 900)
+        family = self.family(apt)
+        family.wait = 0
+        lock = self.file('var/lib/dpkg/lock')    # dpkg's own lock; apt's is free
+        holder = subprocess.Popen([sys.executable, '-c', HOLD_DPKG_LOCK, str(lock)], stdout=subprocess.PIPE)
+        self.addCleanup(stop, holder)
+        holder.stdout.readline()
+        with self.assertRaisesRegex(RuntimeError, 'did not finish'):
+            family.install(['samba'])
+        self.assertTrue(self.journal().exists())
+        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service'})
+
+    def test_someone_elses_half_set_up_packages_are_left_to_them(self):
+        apt = FakeApt()
+        apt.unconfigured = ['postfix']
+        self.family(apt).install(['hdparm'])
+        self.assertFalse(any(argv[:2] == ['dpkg', '--configure'] for argv in apt.calls))
+        self.assertEqual(apt.unconfigured, ['postfix'])
+
     def test_failed_switch_off_keeps_services_masked(self):
         apt = FakeApt()
         apt.disable_fails = True
@@ -481,6 +561,20 @@ class DebianTest(unittest.TestCase):
             family.install(['docker'])
         self.assertFalse(any(argv[:2] == ['apt-get', 'install'] for argv in apt.calls))
         self.assertEqual(policy.read_text(), '#!/bin/sh\nexit 0\n')
+
+    def test_a_policy_that_hangs_refuses_nothing(self):
+        policy = self.file('usr/sbin/policy-rc.d', '#!/bin/sh\nsleep 60\n')
+        policy.chmod(0o755)
+        apt = FakeApt()
+        family = self.family(apt)
+
+        def run(argv, **kwargs):
+            if argv[0].endswith('policy-rc.d'):
+                raise subprocess.TimeoutExpired(argv, 30)
+            return apt(argv, **kwargs)
+        family.run = run
+        with self.assertRaisesRegex(RuntimeError, 'would let caddy.service start'):
+            family.install(['caddy'])
 
     def test_permissive_policy_is_fine_for_packages_without_services(self):
         policy = self.file('usr/sbin/policy-rc.d', '#!/bin/sh\nexit 0\n')
