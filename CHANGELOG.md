@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.28.3 — 2026-10-21
+
+### Fixed (every Linux)
+- **Passwords no longer stay in monthly snapshots.** The definitions of Immich and Nextcloud as they run during the checks (`*-quarantine.json`, new in 0.28.2) hold the same database passwords as the other saved definitions. When the update was over they were not blanked like the others, so the passwords stayed in plain text in the snapshot on the HDD. They are blanked now; snapshots from 0.28.2 are cleaned at the next monthly run.
+- **Nextcloud's file check leaves nothing behind.** Before and after each update, the check writes a small test file in the administrator's files and deletes it. The deleted file went to the trash bin, so one was left there every month. After a rollback, it was also a file the restored database knew nothing about. The trash bin is now paused for that one deletion, where Nextcloud allows it.
+- **A failure after the update is committed says so.** If Immich or Nextcloud could not be opened up again, the message read like a failed update. It now says the update is installed and that the resume service retries opening them up, without rolling back.
+
+### Fixed (Debian / Ubuntu)
+- **Setup waits for dpkg as well as apt.** When an installation is cut off, apt-get stops and lets go of its lock, but the dpkg it started can keep working. Setup only checked apt's lock, so it could tidy up while dpkg was still installing. It now waits until dpkg's own lock is free too.
+- **Packages left half set up are finished under protection.** A cut-off installation can leave packages unpacked but not set up. Setting them up later by hand (`dpkg --configure -a`) would start their services with nothing holding them back. Now NekoServer finishes setting them up itself while their services are still masked and kept from starting, then switches them off as usual. If that fails, the services stay protected and setup says what went wrong. Half-set-up packages that have nothing to do with NekoServer's installation are left to whoever installed them.
+- **LMDE (Linux Mint Debian Edition) gets the right Docker and Tailscale repositories.** Its release name (`faye`) is not a Debian one; the Debian release it is built on (`DEBIAN_CODENAME`, `bookworm`) is used, as Ubuntu-based systems already use theirs.
+- **A `policy-rc.d` that hangs or can't run** made setup stop with a Python error. It now counts as not refusing, so setup stops with the usual explanation of how to move it aside.
+- **Samba's unchanged example installed before NekoServer** (for example with `smbclient`) stopped setup with "Existing unmanaged smb.conf; review manually". When Debian's record proves the file is the untouched example, the message now says so and how to move it aside. NekoServer still doesn't move it by itself, because Samba may be in use for something else.
+
+### Changed
+- Version 0.28.3; the release folder is now `nekoserver-v0.28.3`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.28.2 — 2026-10-21
 
 ### Fixed (every Linux)

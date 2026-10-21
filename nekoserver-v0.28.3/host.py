@@ -159,6 +159,10 @@ class Family:
         """After installing, also after a failed or interrupted one: undo anything the
         packages did that NekoServer manages itself."""
 
+    def packaged_example(self, absolute):
+        """This settings file is known to be its package's untouched example (families
+        without a record of what their packages wrote never know: None)."""
+
     def reconcile(self):
         """Finish an installation that stopped part-way, now or in an earlier run: the
         packages it did install are tidied up (settle) before anything else happens."""
@@ -271,8 +275,9 @@ SAMBA_CONFIG = '/etc/samba/smb.conf'
 POLICY = '/usr/sbin/policy-rc.d'
 # Held by NekoServer for each package job (install, tidy-up, repository repair).
 PACKAGE_LOCK = '/run/nekoserver-packages.lock'
-# Held by apt and dpkg while they work.
-DPKG_LOCK = '/var/lib/dpkg/lock-frontend'
+# Held while they work: apt's (released if apt-get is stopped) and dpkg's own (held
+# until dpkg itself has finished, also when the apt-get that started it was stopped).
+DPKG_LOCKS = ('/var/lib/dpkg/lock-frontend', '/var/lib/dpkg/lock')
 # deb-systemd-helper's record of units a package masked itself.
 PACKAGE_MASKS = '/var/lib/systemd/deb-systemd-helper-masked'
 OUR_POLICY = '#!/bin/sh\n# NekoServer: no service starts while packages install.\nexit 101\n'
@@ -311,6 +316,21 @@ def _stanzas(path, text):
                 yield from fields.get('uris', '').split()
     else:
         yield from (line for line in text.splitlines() if line.split()[:1] in (['deb'], ['deb-src']))
+
+
+def _free(lock):
+    """Nobody holds this lock file (a missing one is free too)."""
+    if not lock.exists():
+        return True
+    try:
+        with lock.open('a') as handle:
+            fcntl.lockf(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.lockf(handle, fcntl.LOCK_UN)
+            return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
 
 
 def _md5(path):
@@ -368,7 +388,8 @@ class Debian(Family):
         if self.ubuntu():
             # Derivatives such as Linux Mint name the Ubuntu release they are built on.
             return 'ubuntu', (self.release.get('UBUNTU_CODENAME') or codename).lower()
-        return 'debian', codename.lower()
+        # Derivatives such as LMDE name the Debian release they are built on.
+        return 'debian', (self.release.get('DEBIAN_CODENAME') or codename).lower()
 
     @classmethod
     def reboot_pending(cls, root='/'):
@@ -481,22 +502,25 @@ class Debian(Family):
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
     def wait_until_idle(self):
-        """apt and dpkg hold their lock while they work, also after the apt-get that
-        started them was stopped."""
-        lock = self.path(DPKG_LOCK)
+        """Wait until neither apt nor dpkg is working any more."""
         waited = 0
-        while lock.exists():
-            with lock.open('a') as handle:
-                try:
-                    fcntl.lockf(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    fcntl.lockf(handle, fcntl.LOCK_UN)
-                    return
-                except OSError:
-                    pass
+        while not all(_free(self.path(lock)) for lock in DPKG_LOCKS):
             if waited >= self.wait:
                 raise RuntimeError('The package tools are still busy')
             self.sleep(5)
             waited += 5
+
+    def finish_configuring(self, names):
+        """Packages an interrupted installation left unpacked but not set up are set up
+        now, while their services are still kept from starting: run later by hand
+        (dpkg --configure -a), their setup would start those services unprotected."""
+        pending = self._call(['dpkg', '--audit'], 60).stdout
+        if not any(re.search(r'(?m)^\s*' + re.escape(name) + r'(:\S+)?\s', pending) for name in names):
+            return              # nothing of this installation (someone else's is theirs)
+        result = self._call(['dpkg', '--configure', '-a'], 1800)
+        if result.returncode:
+            raise RuntimeError('dpkg could not finish setting up the packages: ' + _reason(result)
+                               + '. Their services stay switched off; fix the problem, then run setup again.')
 
     def repair(self, log=print):
         """Bring NekoServer's own repository definitions up to date, whether or not any
@@ -572,12 +596,20 @@ class Debian(Family):
         policy = self.path(POLICY)
         if not policy.exists() or policy.read_text(errors='replace') == OUR_POLICY:
             return
-        allowed = [unit for unit in units if self._call([str(policy), unit, 'start'], 30).returncode != 101]
+        allowed = [unit for unit in units if not self._refuses(policy, unit)]
         if allowed:
             raise RuntimeError(str(POLICY) + ' (someone else\'s) would let ' + ', '.join(allowed) + ' start while '
                                'installing, before NekoServer has its drive and settings ready. Move it aside '
                                'for the installation (sudo mv ' + POLICY + ' ' + POLICY + '.saved), run setup '
                                'again, then move it back.')
+
+    def _refuses(self, policy, unit):
+        """The policy answers "not allowed" (101) to starting this service. One that hangs
+        or can't run refuses nothing."""
+        try:
+            return self._call([str(policy), unit, 'start'], 30).returncode == 101
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     def _install(self, names, timeout):
         return self._call(['apt-get', 'install', '-y', '-o', 'Dpkg::Options::=--force-confold', *names], timeout)
@@ -590,6 +622,7 @@ class Debian(Family):
             policy.unlink()
 
     def settle(self, packages, before):
+        self.finish_configuring([real for name in packages for real in self.names(name)])
         self.set_aside_samba_example(packages, before)
         existing = before.get('units_before', [])
         new = [unit for name in packages for unit in self.autostarted.get(name, ()) if unit not in existing]
@@ -614,16 +647,19 @@ class Debian(Family):
         before, and ucf's record of what the package wrote must say it is unchanged. With
         no such record it stays, and the Samba step asks for it to be reviewed."""
         config = self.path(SAMBA_CONFIG)
-        if 'samba' not in packages or before.get('samba_config_existed', True) or not config.is_file():
-            return
+        if 'samba' in packages and not before.get('samba_config_existed', True) and self.packaged_example(SAMBA_CONFIG):
+            config.replace(config.with_name('smb.conf.packaged'))
+
+    def packaged_example(self, absolute):
+        """This settings file is still exactly what its package wrote (ucf's checksum of it).
+        Without that record nothing is assumed: it may be someone's settings."""
+        path = self.path(absolute)
         try:
             records = self.path('/var/lib/ucf/hashfile').read_text(errors='replace').splitlines()
         except OSError:
-            records = []
-        recorded = [line.split()[0] for line in records if line.split()[1:] == [SAMBA_CONFIG]]
-        if not recorded or recorded[-1] != _md5(config):
-            return                # changed since it was installed, or unknown: someone's settings
-        config.replace(config.with_name('smb.conf.packaged'))
+            return False
+        recorded = [line.split()[0] for line in records if line.split()[1:] == [absolute]]
+        return bool(recorded) and path.is_file() and recorded[-1] == _md5(path)
 
     def unit_states(self, units):
         result = self._call(['systemctl', 'show', *units, '--property=Id,LoadState,UnitFileState,ActiveState'], 60)

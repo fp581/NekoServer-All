@@ -64,6 +64,11 @@ def run(context):
     desired=share_config(settings,media,user)
     # Safest: don't modify a pre-existing unmanaged Samba installation.
     if main.exists() and main.read_text()!='[global]\n   include = /etc/samba/nekoserver.conf\n':
+        if family.packaged_example(str(main)):
+            # Installed before NekoServer (with smbclient, say) and never edited.
+            raise RuntimeError('/etc/samba/smb.conf is the Samba package\'s unchanged example, not your settings. '
+                               'If you don\'t use Samba for anything else, move it aside '
+                               '(sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.packaged) and run setup again.')
         raise RuntimeError('Existing unmanaged /etc/samba/smb.conf; refusing to alter it. Review manually.')
     if managed.exists() and managed.read_text()!=desired:
         legacy=dict(settings);legacy['share_mode']='tailnet'
