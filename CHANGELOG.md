@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.28.0 — 2026-10-21
+
+The first release of **NekoServer All**, the edition for all major Linux distributions. NekoServer for Arch continues separately.
+
+### Added
+- **Debian 12+ and Ubuntu 24.04+** (and systems built on them, such as Linux Mint 22). This is new and not yet proven on a real install, so try it on a spare PC or a virtual machine first.
+  - `install.sh` only refreshes the package lists (`apt-get update`) and installs just what NekoServer needs. It never upgrades the rest of the system. If an earlier update is waiting for a restart (`/run/reboot-required`), it stops and asks for the restart before changing anything.
+  - **Docker comes from Docker's official repository** (`docker-ce` with the Compose plugin) and Tailscale from Tailscale's. Their signing keys and repository lists are added only when no list for them exists yet. If Debian's own Docker packages (`docker.io`, `podman-docker` and so on) are installed, setup stops and asks you to remove them, rather than mixing the two.
+  - Debian's packages start their services as they install. NekoServer prevents that while installing and leaves Docker, Caddy, Samba (with NetBIOS) and Tailscale switched off afterwards. Each one's own setup step switches it on once its drive and settings are ready, so Docker still never starts on the system disk.
+  - Samba's example `smb.conf` from the package is moved aside to `smb.conf.packaged`. NekoServer then writes its own, as on Arch. A `smb.conf` that existed before is never touched.
+  - Samba runs as `smbd.service`. The dashboard, notifications and the host backup find whichever Samba service is installed.
+  - Host backups keep apt's sources, keys and preferences, plus `/etc/default/locale` and `/etc/default/keyboard`, instead of pacman's settings.
+  - Package names are mapped; for example, the video drivers are `intel-media-va-driver`, `mesa-va-drivers` and `vainfo`. OpenRGB lighting is skipped when the system's repositories don't offer it.
+  - The TV step (Steam Big Picture) is skipped on Debian and Ubuntu for now.
+- **Setup checks the computer first.** Before changing anything, every setup run lists what it found and stops when a requirement is missing. The requirements are an x86-64 processor, Python 3.11 or newer, systemd 247 or newer, a supported Linux family and no restart pending from an earlier update. Docker and Compose versions, control groups v2, SELinux, AppArmor, a switched-on firewall (ufw, firewalld, nftables) and whether a desktop runs are reported as well (`capabilities.py`).
+- **One place knows the Linux family** (`host.py`): its package manager, package names, service names, vendor repositories and the settings files that belong in host backups. [PORTING.md](nekoserver-v0.28.0/PORTING.md) explains how another family is added.
+
+### Changed
+- Every module that installed packages called `pacman` itself (Docker, Compose, Samba, Tailscale, Caddy, OpenRGB, smartmontools, hdparm, video drivers, the TV packages, Firefox/xdg-utils and qrencode). They now all ask `host.py`, and a test fails if `pacman`, `apt-get` or `dpkg` appears anywhere else. On Arch the same packages are installed in the same way.
+- `install.sh` installs the apps' packages through `python3 host.py bootstrap` on both families. Arch still runs its full `pacman -Syu` first.
+- `neko_common.arch_host()` was replaced by `host.supported()`.
+- The guides say which steps differ between Arch and Debian/Ubuntu.
+- CI runs on pushes to `main`.
+- Version 0.28.0; the release folder is now `nekoserver-v0.28.0`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.8 — 2026-10-21
 
 ### Changed
