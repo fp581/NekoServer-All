@@ -748,11 +748,10 @@ fn health(
                 }
                 count += 1;
             }
-            let expected = if ["immich", "nextcloud"].contains(&name) {
-                4
-            } else {
-                1
-            };
+            // Every service of this model (a quarantined Nextcloud runs without its cron).
+            let expected = load(file)?["services"]
+                .as_object()
+                .map_or(0, serde_json::Map::len);
             if count != expected {
                 return Err(Error::new("Missing healthy services"));
             }
@@ -1016,6 +1015,29 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     }
     let snapshot = PathBuf::from(string(&journal, "snapshot")?);
     let phase = string(&journal, "phase")?.to_string();
+    if phase == "committed" {
+        // The update stands: finish opening the apps up, never roll back.
+        let names: Vec<String> = journal["models"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let wait = cfg["maintenance"]["health_wait_seconds"]
+            .as_u64()
+            .unwrap_or(300);
+        open_up(
+            &names,
+            &snapshot,
+            &|file, name| live(file, name),
+            &|file, name| health(file, &format!("neko-{name}"), name, wait, false, &snapshot),
+        )?;
+        fs::remove_file(JOURNAL)?;
+        fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+        scrub_all(Path::new(string(cfg, "media_mount")?));
+        clear_work(Path::new(string(cfg, "data_mount")?));
+        return Ok(());
+    }
     if ["updating", "restoring"].contains(&phase.as_str()) {
         let snapshot_manifest = verify(&snapshot)?;
         for (name, _) in journal["models"].as_object().unwrap() {
@@ -1666,6 +1688,101 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
         json!({"keep":keep,"kept":kept,"removed":removed,"incomplete_not_removed":unmanaged,"held_back":held_back}),
     )
 }
+fn live(file: &Path, name: &str) -> Result<()> {
+    compose(
+        file,
+        &format!("neko-{name}"),
+        &["up", "-d", "--pull", "never"],
+    )
+    .map(|_| ())
+}
+/// Apps whose user files (photos, Nextcloud files) the monthly snapshot leaves out: a
+/// rollback restores their database but not their files, so nothing may change those
+/// files until the update is committed.
+fn guarded(name: &str) -> bool {
+    database_only_table(name).is_some()
+}
+/// The updated app as it runs while it is checked, before the update is committed: no
+/// client can reach it (its port is a random one on this computer only, so the gateway,
+/// Tailscale and phones get nothing) and it does no background work of its own
+/// (no Nextcloud cron; Immich answers requests but runs no jobs).
+fn quarantined(model: &Value, name: &str) -> Result<Value> {
+    let mut model = model.clone();
+    let services = model["services"]
+        .as_object_mut()
+        .ok_or_else(|| Error::new("Invalid model"))?;
+    if name == "nextcloud" {
+        services.remove("cron");
+    }
+    for (service, v) in services.iter_mut() {
+        if let Some(ports) = v.get_mut("ports").and_then(Value::as_array_mut) {
+            for p in ports {
+                p["published"] = json!("0");
+                p["host_ip"] = json!("127.0.0.1");
+            }
+        }
+        if name == "immich" && service == "immich-server" {
+            if !v["environment"].is_object() {
+                v["environment"] = json!({});
+            }
+            v["environment"]["IMMICH_WORKERS_INCLUDE"] = json!("api");
+        }
+    }
+    Ok(model)
+}
+fn candidate_file(snapshot: &Path, name: &str, committed: bool) -> PathBuf {
+    let kind = if guarded(name) && !committed {
+        "quarantine"
+    } else {
+        "new"
+    };
+    snapshot.join(format!("{name}-{kind}.json"))
+}
+/// Start and check the updated apps, commit, and only then let clients reach the apps
+/// whose user files a rollback cannot restore. A failure before the commit rolls back
+/// (nothing has changed those files); after it, the update stands and only the opening
+/// up is repeated (resume, phase "committed").
+fn go_live(
+    names: &[String],
+    updated: &Value,
+    snapshot: &Path,
+    start: &dyn Fn(&Path, &str) -> Result<()>,
+    check: &dyn Fn(&Path, &str) -> Result<()>,
+    verify: impl FnOnce() -> Result<()>,
+    commit: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    for name in names {
+        common::atomic_json(&candidate_file(snapshot, name, true), &updated[name])?;
+        if guarded(name) {
+            common::atomic_json(
+                &candidate_file(snapshot, name, false),
+                &quarantined(&updated[name], name)?,
+            )?;
+        }
+        start(&candidate_file(snapshot, name, false), name)?;
+    }
+    for name in names {
+        check(&candidate_file(snapshot, name, false), name)?;
+    }
+    verify()?;
+    commit()?;
+    open_up(names, snapshot, start, check)
+}
+fn open_up(
+    names: &[String],
+    snapshot: &Path,
+    start: &dyn Fn(&Path, &str) -> Result<()>,
+    check: &dyn Fn(&Path, &str) -> Result<()>,
+) -> Result<()> {
+    let opened: Vec<&String> = names.iter().filter(|n| guarded(n)).collect();
+    for name in &opened {
+        start(&candidate_file(snapshot, name, true), name)?;
+    }
+    for name in &opened {
+        check(&candidate_file(snapshot, name, true), name)?;
+    }
+    Ok(())
+}
 fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
@@ -1866,36 +1983,33 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     }
     common::stage("starting the updated apps");
     // Originals have remained stopped since the consistent backup; no writes are lost.
-    for name in &names {
-        let file = snapshot.join(format!("{name}-new.json"));
-        common::atomic_json(&file, &updated[name])?;
-        compose(
-            &file,
-            &format!("neko-{name}"),
-            &["up", "-d", "--pull", "never"],
-        )?;
-    }
-    for name in &names {
-        health(
-            &snapshot.join(format!("{name}-new.json")),
-            &format!("neko-{name}"),
-            name,
-            cfg["maintenance"]["health_wait_seconds"]
-                .as_u64()
-                .unwrap_or(300),
-            false,
-            &snapshot,
-        )?;
-    }
-    integrations(cfgpath, cfg)?;
-    mounts(cfgpath, cfg, false)?;
-    // Persist successful image identities for installer reruns and reboot reproducibility.
-    for name in &names {
-        write_override(cfg, name, &updated[name])?;
-    }
-    common::atomic_json(
-        &snapshot.join("result.json"),
-        &json!({"status":"pass","updated_at":common::now(),"restore_test":"pass","snapshot":"hdd","images":updated}),
+    let wait = cfg["maintenance"]["health_wait_seconds"]
+        .as_u64()
+        .unwrap_or(300);
+    let start = |file: &Path, name: &str| live(file, name);
+    let check = |file: &Path, name: &str| {
+        health(file, &format!("neko-{name}"), name, wait, false, &snapshot)
+    };
+    go_live(
+        &names,
+        &updated,
+        &snapshot,
+        &start,
+        &check,
+        || integrations(cfgpath, cfg).and_then(|_| mounts(cfgpath, cfg, false)),
+        || {
+            // Persist successful image identities for installer reruns and reboot reproducibility.
+            for name in &names {
+                write_override(cfg, name, &updated[name])?;
+            }
+            common::atomic_json(
+                &snapshot.join("result.json"),
+                &json!({"status":"pass","updated_at":common::now(),"restore_test":"pass","snapshot":"hdd","images":updated}),
+            )?;
+            let mut journal = load(Path::new(JOURNAL))?;
+            journal["phase"] = json!("committed");
+            save_journal(&journal)
+        },
     )?;
     fs::remove_file(JOURNAL)?;
     fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
@@ -2593,5 +2707,129 @@ mod tests {
             .get("container_name")
             .is_none());
         assert_eq!(clone["services"]["jellyfin"]["ports"][0]["published"], "0");
+    }
+    fn models() -> Value {
+        let port = |n: u16| json!([{"host_ip":"127.0.0.1","published":n.to_string(),"target":n}]);
+        json!({
+            "immich": {"services": {
+                "immich-server": {"image":"sha256:1","ports":port(2283),"environment":{"DB_HOSTNAME":"database"}},
+                "immich-machine-learning": {"image":"sha256:2"},
+                "redis": {"image":"sha256:3"},
+                "database": {"image":"sha256:4"}}},
+            "nextcloud": {"services": {
+                "nextcloud": {"image":"sha256:5","ports":port(8081)},
+                "cron": {"image":"sha256:5"},
+                "redis": {"image":"sha256:6"},
+                "database": {"image":"sha256:7"}}},
+            "jellyfin": {"services": {"jellyfin": {"image":"sha256:8","ports":port(8096)}}}
+        })
+    }
+    #[test]
+    fn checked_apps_with_user_files_are_unreachable_and_idle() {
+        let all = models();
+        let immich = quarantined(&all["immich"], "immich").unwrap();
+        let server = &immich["services"]["immich-server"];
+        assert_eq!(server["ports"][0]["published"], "0");
+        assert_eq!(server["ports"][0]["host_ip"], "127.0.0.1");
+        assert_eq!(server["environment"]["IMMICH_WORKERS_INCLUDE"], "api");
+        assert_eq!(server["environment"]["DB_HOSTNAME"], "database");
+        assert_eq!(immich["services"].as_object().unwrap().len(), 4);
+        let nextcloud = quarantined(&all["nextcloud"], "nextcloud").unwrap();
+        assert!(nextcloud["services"].get("cron").is_none());
+        assert_eq!(
+            nextcloud["services"]["nextcloud"]["ports"][0]["published"],
+            "0"
+        );
+        // The production model itself is untouched.
+        assert_eq!(
+            all["nextcloud"]["services"]["nextcloud"]["ports"][0]["published"],
+            "8081"
+        );
+        assert!(guarded("immich") && guarded("nextcloud") && !guarded("jellyfin"));
+    }
+    /// Runs go_live with stand-ins for docker; `fail` names the step that fails.
+    fn rehearse(fail: &str) -> (Result<()>, Vec<String>) {
+        let snapshot = scratch(&format!("go-live-{}", fail.replace([' ', '/'], "-")));
+        let names: Vec<String> = ["immich", "nextcloud", "jellyfin"]
+            .map(String::from)
+            .to_vec();
+        let steps = std::cell::RefCell::new(Vec::<String>::new());
+        let step = |kind: &str, file: &Path| -> Result<()> {
+            let label = format!("{kind} {}", file.file_name().unwrap().to_string_lossy());
+            steps.borrow_mut().push(label.clone());
+            if label == fail {
+                Err(Error::new("induced failure"))
+            } else {
+                Ok(())
+            }
+        };
+        let start = |file: &Path, _: &str| step("start", file);
+        let check = |file: &Path, _: &str| step("check", file);
+        let result = go_live(
+            &names,
+            &models(),
+            &snapshot,
+            &start,
+            &check,
+            || step("verify", Path::new("integrations")),
+            || step("commit", Path::new("journal")),
+        );
+        let _ = fs::remove_dir_all(&snapshot);
+        (result, steps.into_inner())
+    }
+    #[test]
+    fn nothing_reaches_user_files_before_the_update_commits() {
+        let (result, steps) = rehearse("");
+        result.unwrap();
+        assert_eq!(
+            steps,
+            [
+                "start immich-quarantine.json",
+                "start nextcloud-quarantine.json",
+                "start jellyfin-new.json",
+                "check immich-quarantine.json",
+                "check nextcloud-quarantine.json",
+                "check jellyfin-new.json",
+                "verify integrations",
+                "commit journal",
+                "start immich-new.json",
+                "start nextcloud-new.json",
+                "check immich-new.json",
+                "check nextcloud-new.json",
+            ]
+        );
+    }
+    #[test]
+    fn a_failed_check_rolls_back_before_clients_could_write() {
+        for fail in [
+            "check nextcloud-quarantine.json",
+            "check jellyfin-new.json",
+            "verify integrations",
+        ] {
+            let (result, steps) = rehearse(fail);
+            assert!(result.is_err(), "{fail}");
+            // No commit, and the apps with user files never ran reachable or with jobs.
+            assert!(
+                !steps.iter().any(|s| s == "commit journal"),
+                "{fail}: {steps:?}"
+            );
+            assert!(
+                !steps
+                    .iter()
+                    .any(|s| s == "start immich-new.json" || s == "start nextcloud-new.json"),
+                "{fail}: {steps:?}"
+            );
+        }
+    }
+    #[test]
+    fn a_failure_after_the_commit_keeps_the_update() {
+        let (result, steps) = rehearse("check nextcloud-new.json");
+        assert!(result.is_err());
+        let commit = steps.iter().position(|s| s == "commit journal").unwrap();
+        let opened = steps
+            .iter()
+            .position(|s| s == "start nextcloud-new.json")
+            .unwrap();
+        assert!(commit < opened);
     }
 }
