@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.27.6 — 2026-10-21
+
+### Changed (code cleanup; no change in what the server does)
+- **Removed unused code.** The old Python dashboard collector (replaced by the Rust one in 0.26.0) is gone; the small checks setup, the gateway and the acceptance checker still use moved to `status_checks.py`. A full scan for unused functions, variables, imports, page code, styles and page elements finds nothing left.
+- **One definition instead of copies:**
+  - one list of apps with their names and ports (`neko_common.APPS`), used by setup, checks, accounts, the TV shortcuts and the phone page (it was typed out in nine places);
+  - one way to talk to the apps without proxies or redirects (`local_opener`, was three copies plus eight hand-built openers);
+  - one place for systemd units and their "managed by NekoServer" check (`check_units` / `write_units`, was eight copies);
+  - one Seerr sign-in, one check for source addresses;
+  - in the Rust runtime: one HTTPS delivery (heartbeat and notifications), one way to open a backup job, stage and publish a snapshot (app and host snapshots), one "move without replacing", one fan-speed conversion, one table of error sentences;
+  - on the page: one way to show fan speeds and temperatures.
+- Duplicated code measured with jscpd: 14 copies (145 lines) before, 2 short ones (27 lines) left.
+- **Bug-risk fixes found by a full Python lint pass (ruff):** helper functions inside loops now keep the value of their own loop pass; errors re-raised inside error handlers keep (or deliberately drop) their cause; loop variables are no longer overwritten; default arguments no longer call functions when a file is loaded; and every `subprocess.run` that checks the result itself now says so (`check=False`).
+- **The shared command and report helpers are stricter:** only known programs with plain arguments are run, and only plain absolute paths are read (found by SonarCloud after the move).
+- New tests check that names the installer and the runtime share (fan recovery files, settings folder, phone address port) stay the same in both.
+- Version 0.27.6; the release folder is now `nekoserver-v0.27.6`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
+## v0.27.5 — 2026-10-21
+
+### Fixed (review of v0.27.4)
+- **Undo can't bring back an old fan speed.** After saving 80 %, Undo read the page's older reading and put 40 % back, which a later name-only save then sent (reproduced). Each fan now remembers the setting the server last confirmed, and Undo returns to that.
+- **A passing Tailscale problem no longer removes the phone address.** When Tailscale couldn't be asked during setup (not connected yet, restarting), the dashboard's Tailscale name was removed as if remote access had been switched off. The name already in use is now kept; it is only removed when remote access is switched off.
+- **The acceptance check expects the same backup account as setup.** Setup keeps backing up the first account, but the check worked out the account again from whoever ran it and reported "needs setup". Both now use the same answer.
+
+### Changed
+- Version 0.27.5; the release folder is now `nekoserver-v0.27.5`.
+- Code check: the host snapshot list is built in small steps, and a dashboard constant moved to the top of its file.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.4 — 2026-10-21
 
 ### Fixed (review of v0.27.3)

@@ -1,0 +1,108 @@
+"""Install weekly systemd photo backup, run as root, fail closed if USB missing."""
+import native_runtime
+import os, re, subprocess, sys, json
+from pathlib import Path
+from neko_common import VERSION, safe_path, mount_path, relative_path, atomic_write, atomic_json, host_timezone, SYSTEMD_UNITS
+DEPENDENCIES=['storage','photo_preservation']
+DESCRIPTION='Install weekly add-only external photo backup timer (requires --apply and external UUID)'
+
+SYSTEM_MOUNTS=('/','/boot','/boot/efi','/home','/var')
+BACKUP_FILESYSTEMS=('ext4','xfs','btrfs','exfat')
+
+def disk_layout(config, inventory):
+    """([(filesystem row, its physical disk)], disks holding the system, the SSD or the HDD)."""
+    forbidden={u for u in (config.get('storage',{}).get(k,{}).get('uuid') for k in ('data_ssd','media_hdd')) if u}
+    rows=[];busy_disks=set()
+    def walk(row,disk=None):
+        physical=row.get('name') if row.get('type')=='disk' else disk
+        if row.get('uuid') in forbidden or row.get('mountpoint') in SYSTEM_MOUNTS:busy_disks.add(physical)
+        rows.append((row,physical))
+        for child in row.get('children',[]):walk(child,physical)
+    for row in inventory.get('blockdevices',[]):walk(row)
+    return rows,busy_disks,forbidden
+
+def eligible(config, inventory):
+    """Filesystems that may hold the USB backup. It must be on its own physical disk: a
+    partition of the system disk, the SSD or the media HDD would be lost together with
+    what it is meant to protect."""
+    rows,busy_disks,forbidden=disk_layout(config, inventory)
+    def usable_mount(mount):
+        return not mount or mount==config['external_backup_mount'] or (isinstance(mount,str) and mount.startswith(('/run/media/','/media/')))
+    return [{**row,'physical_disk':physical} for row,physical in rows
+            if row.get('type') in ('disk','part') and row.get('uuid') and row['uuid'] not in forbidden
+            and row.get('fstype') in BACKUP_FILESYSTEMS and usable_mount(row.get('mountpoint'))
+            and physical and physical not in busy_disks]
+
+def shared_disk(config, inventory, uuid):
+    """Why a saved USB drive cannot be used (it shares a disk with the system, the SSD
+    or the HDD), or None. A drive that is not plugged in is checked by the weekly job."""
+    rows,busy_disks,_=disk_layout(config, inventory)
+    for row,physical in rows:
+        if row.get('uuid')==uuid and physical in busy_disks:
+            return (f'The saved USB backup drive (UUID {uuid}) is a partition of /dev/{physical}, which also holds '
+                    'the system, the SSD or the media HDD. One disk failure would lose both copies. '
+                    'Choose a separate drive: remove "external_backup_uuid" under "photos" in your settings and run setup again.')
+    return None
+
+def select_external(config, inventory, input_fn=input, out_fn=print):
+    """Explicitly identify a formatted external filesystem; never guess or format."""
+    candidates=eligible(config, inventory)
+    if len({v['uuid'] for v in candidates})!=len(candidates):raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')
+    if not candidates:raise RuntimeError('No eligible backup drive: it must be a formatted drive of its own, not a partition of the system disk, the SSD or the media HDD; connect it first')
+    for index,row in enumerate(candidates,1):out_fn(f"  {index}) /dev/{row['name']} {row.get('size','')} {row['fstype']} UUID={row['uuid']} mounted={row.get('mountpoint') or '-'}")
+    answer=input_fn('Choose the USB backup drive by number (Enter to skip for now): ').strip()
+    if not answer.isdigit() or not 1<=int(answer)<=len(candidates):raise RuntimeError('External backup selection aborted')
+    chosen=candidates[int(answer)-1]
+    if input_fn(f"Type {chosen['name']} to confirm it is the USB backup drive: ").strip() not in (chosen['name'],'/dev/'+chosen['name'],chosen['uuid']):raise RuntimeError('External backup drive confirmation failed')
+    config.setdefault('photos',{}).update(external_backup_uuid=chosen['uuid'],external_backup_fstype=chosen['fstype'])
+    return chosen
+
+def command_line(config,binary,guard,uuid,fstype,source,dest):
+    """The runtime command the weekly timer runs (tests check it against the real program)."""
+    cmd=f'{binary} weekly --config {guard} --uuid {uuid} --fstype {fstype} --source {source} --dest {dest} --media-root {config["media_mount"]} --data {config["data_mount"]}'
+    if config.get('nextcloud',{}).get('enabled',False):
+        # Nextcloud user files get the same add-only weekly copy as photos.
+        cmd+=' --cloud '+str(Path(config['media_mount'])/'cloud/files')
+    return cmd
+
+def run(ctx):
+    opts=ctx.config.setdefault('photos',{})
+    if not ctx.apply:
+        ctx.log('Weekly photo backup available; --apply installs timer with external UUID.');return
+    if os.geteuid()!=0: raise RuntimeError('Root required')
+    uuid=opts.get('external_backup_uuid','').strip()
+    if not uuid:
+        if not sys.stdin.isatty():
+            return {'status':'needs_setup','reason':'Connect the external photo disk and rerun photo_backup interactively to confirm its UUID'}
+        from modules.storage import inventory_now
+        select_external(ctx.config,inventory_now(),out_fn=ctx.log)
+        uuid=opts['external_backup_uuid']
+        if hasattr(ctx,'persist_config'):
+            ctx.persist_config()
+        elif getattr(ctx,'config_path',None):
+            saved=json.loads(ctx.config_path.read_text());saved['photos']=opts;atomic_json(ctx.config_path,saved)
+    if not re.fullmatch(r'[A-Za-z0-9-]{8,80}',uuid): raise RuntimeError('Set photos.external_backup_uuid from lsblk -f')
+    from modules.storage import inventory_now
+    problem=shared_disk(ctx.config,inventory_now(),uuid)
+    if problem: raise RuntimeError(problem)
+    fstype=opts.get('external_backup_fstype','ext4')
+    if fstype not in BACKUP_FILESYSTEMS: raise RuntimeError('Unexpected backup filesystem')
+    for key in ('data_ssd','media_hdd'):
+        if uuid==ctx.config.get('storage',{}).get(key,{}).get('uuid'): raise RuntimeError('USB UUID must differ from SSD/HDD')
+    source=safe_path(Path(ctx.config['media_mount'])/relative_path(opts.get('archive_dir','photos/archive')))
+    if source.is_symlink() or not source.is_dir(): raise RuntimeError(f'Archive folder missing: {source}')
+    dest=mount_path(ctx.config['external_backup_mount'])
+    if not dest.is_absolute() or str(dest) in ('/','/home','/mnt','/srv') or dest.is_symlink(): raise RuntimeError('Unsafe USB destination')
+    when=opts.get('backup_time','03:00');day=opts.get('backup_weekday','Sun')
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',when) or day not in ('Mon','Tue','Wed','Thu','Fri','Sat','Sun'): raise RuntimeError('Invalid schedule')
+    unit=SYSTEMD_UNITS/'nekoserver-photo-backup.service';timer=SYSTEMD_UNITS/'nekoserver-photo-backup.timer'
+    binary=native_runtime.deploy(Path(__file__).resolve().parents[1],ctx.config,Path(ctx.config['data_mount'])/'installer'/'runtime'/('v'+VERSION))
+    cmd=command_line(ctx.config,binary,native_runtime.backup_guard(ctx.config),uuid,fstype,source,dest)
+    service='[Unit]\nDescription=NekoServer add-only USB backup of photos and Nextcloud files\nRequiresMountsFor='+ctx.config['media_mount']+'\nAfter=nekoserver-immich-db-backup.service\n[Service]\nType=oneshot\nExecStart='+cmd+'\n'
+    schedule='[Unit]\nDescription=Weekly NekoServer photo backup\n[Timer]\nOnCalendar='+day+' *-*-* '+when+':00 '+host_timezone(ctx.config)+'\nPersistent=true\n[Install]\nWantedBy=timers.target\n'
+    for path,text in ((unit,service),(timer,schedule)):
+        if path.exists() and path.read_text()!=text and 'NekoServer' not in path.read_text() and 'nekoserver-' not in path.read_text(): raise RuntimeError(f'Unmanaged systemd unit differs: {path}')
+    atomic_write(unit,service,0o644);atomic_write(timer,schedule,0o644)
+    subprocess.run(['systemctl','daemon-reload'],check=True)
+    subprocess.run(['systemctl','enable','--now',timer.name],check=True)
+    ctx.log('Enabled weekly USB copy of Immich photos/videos'+(' and Nextcloud files' if '--cloud' in cmd else '')+'; when the USB drive is absent the run fails visibly instead of writing to the OS disk')
