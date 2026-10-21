@@ -7,6 +7,8 @@ import subprocess
 import native_runtime
 from neko_common import SYSTEMD_UNITS, VERSION, atomic_json, atomic_write, check_units, safe_path, verify_storage, write_units
 
+HDD_UNIT = 'nekoserver-hdd-policy.service'
+
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Disable OS sleep, bound system logs and configure verified media HDD standby'
 TARGETS = ('sleep.target', 'suspend.target', 'hibernate.target', 'hybrid-sleep.target', 'suspend-then-hibernate.target')
@@ -91,10 +93,10 @@ def run(context):
     # IdleAction is also loaded on the next normal reboot.
     context.log('OS sleep/hibernation blocked; journal bounds installed. Display blanking may remain enabled.')
     if policy == 'unchanged':
-        previous=safe_path(SYSTEMD_UNITS/'nekoserver-hdd-policy.service')
+        previous=safe_path(SYSTEMD_UNITS/HDD_UNIT)
         if previous.exists():
             if 'Description=NekoServer verified media HDD standby policy\n' not in previous.read_text():raise RuntimeError('Unmanaged HDD unit preserved')
-            subprocess.run(['systemctl','disable','--now','nekoserver-hdd-policy.service'],check=True,capture_output=True,timeout=30)
+            subprocess.run(['systemctl','disable','--now',HDD_UNIT],check=True,capture_output=True,timeout=30)
         context.log('No HDD command issued; earlier managed boot policy disabled. Restore previously changed hardware settings explicitly if needed.')
         return
     verify_storage(context.config)
@@ -105,13 +107,13 @@ def run(context):
         return {'status': 'needs_setup', 'reason': 'No-sleep/log limits installed; install hdparm then reapply server_os for the SATA HDD policy'}
     binary = native_runtime.deploy(Path(__file__).resolve().parents[1], context.config, Path('/usr/local/lib/nekoserver-os') / ('v' + VERSION))
     guard = safe_path('/etc/nekoserver-os/storage.json')
-    check_units(['nekoserver-hdd-policy.service'], 'HDD policy')
+    check_units([HDD_UNIT], 'HDD policy')
     atomic_json(guard, hdd_guard(context.config))
-    write_units({'nekoserver-hdd-policy.service': unit(binary, guard, context.config)})
+    write_units({HDD_UNIT: unit(binary, guard, context.config)})
     subprocess.run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
-    result = subprocess.run(['systemctl', 'enable', 'nekoserver-hdd-policy.service'], capture_output=True, timeout=190)
+    result = subprocess.run(['systemctl', 'enable', HDD_UNIT], capture_output=True, timeout=190)
     if result.returncode:
         return {'status': 'needs_setup', 'reason': 'No-sleep/log limits installed; HDD command failed or hardware is unsupported. Inspect the policy service; no blanket drive setting was used'}
-    repeated=subprocess.run(['systemctl','restart','nekoserver-hdd-policy.service'],capture_output=True,timeout=190)
+    repeated=subprocess.run(['systemctl','restart',HDD_UNIT],capture_output=True,timeout=190)
     if repeated.returncode:return {'status':'needs_setup','reason':'HDD policy rerun failed; inspect the managed service'}
     context.log('Verified SATA media HDD policy applied at boot: '+policy+'; firmware/bridge behavior still needs hardware verification.')

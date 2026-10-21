@@ -50,8 +50,11 @@ def tailnet_name(cfg,known=None):
 
 def public_host_of(unit):
     """The Tailscale name a web service definition answers (None without one)."""
-    found=re.search(r'^ExecStart=.* serve .*--public-host (\S+)',unit or '',re.M)
-    return found.group(1) if found else None
+    for line in (unit or '').split('\n'):
+        words=line.split()
+        if line.startswith('ExecStart=') and 'serve' in words and '--public-host' in words[:-1]:
+            return words[words.index('--public-host')+1]
+    return None
 
 def installed_unit():
     try:return SERVICE_UNIT.read_text()

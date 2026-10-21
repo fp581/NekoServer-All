@@ -23,6 +23,8 @@ HOST_DIRS = ('/etc/nekoserver-backups', '/etc/nekoserver-os', '/etc/nekoserver-n
              # OpenRGB's own settings.
              '/etc/nekoserver-control', '/etc/nekoserver-dashboard', '/var/lib/nekoserver-openrgb')
 PRIVATE = Path('/etc/nekoserver-backups/host.json')
+BACKUP_UNIT, BACKUP_TIMER = 'nekoserver-host-backup.service', 'nekoserver-host-backup.timer'
+RESUME_UNIT = 'nekoserver-host-resume.service'
 
 
 def settings(config):
@@ -80,8 +82,7 @@ def choose_user(config, opts, previous):
 
 def system_paths():
     """Host settings and NekoServer's own units, always backed up when present."""
-    own = ('nekoserver-host-backup.service', 'nekoserver-host-backup.timer', 'nekoserver-host-resume.service')
-    paths = [str(SYSTEMD_UNITS/name) for name in own] + list(HOST_FILES) + list(HOST_DIRS)
+    paths = [str(SYSTEMD_UNITS/name) for name in (BACKUP_UNIT, BACKUP_TIMER, RESUME_UNIT)] + list(HOST_FILES) + list(HOST_DIRS)
     # Preserve only NekoServer units/drop-ins, not unrelated host services.
     paths += [str(p) for p in sorted(SYSTEMD_UNITS.glob('nekoserver-*'))
               if not p.is_symlink() and str(p) not in paths]
@@ -183,10 +184,10 @@ def definitions(config, binary, private):
     resume = f'{binary} host-resume --config {private}'
     mounts = f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\n'
     return {
-        'nekoserver-host-backup.service': '[Unit]\nDescription=NekoServer host and user snapshot\n'+mounts+
+        BACKUP_UNIT: '[Unit]\nDescription=NekoServer host and user snapshot\n'+mounts+
             '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec=5min\n',
-        'nekoserver-host-backup.timer': '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'+f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
-        'nekoserver-host-resume.service': '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'+mounts+
+        BACKUP_TIMER: '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'+f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
+        RESUME_UNIT: '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'+mounts+
             '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=5min\n'+f'ExecStart={resume}\n[Install]\nWantedBy=multi-user.target\n',
     }
 
@@ -209,6 +210,6 @@ def run(context):
     check_units(units, 'host backup')
     atomic_json(private, options)
     write_units(units)
-    for command in (['systemctl','daemon-reload'], ['systemctl','enable','--now','nekoserver-host-resume.service'], ['systemctl','enable','--now','nekoserver-host-backup.timer']):
+    for command in (['systemctl','daemon-reload'], ['systemctl','enable','--now',RESUME_UNIT], ['systemctl','enable','--now',BACKUP_TIMER]):
         subprocess.run(command, check=True, capture_output=True, timeout=300)
     context.log('Host/Steam/Samba timer installed; no first snapshot assumed. Extra save/share folders require explicit selection; independent restore remains pending.')

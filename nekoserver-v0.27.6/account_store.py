@@ -10,10 +10,11 @@ import string
 from neko_common import APPS as CATALOG, atomic_json, atomic_write, ensure_directory, safe_path
 
 # Each account: (what it is, the app's local port).
+ADMIN = ' administrator'
 APPS = {account: (CATALOG[app][0] + role, CATALOG[app][2]) for account, app, role in (
-    ('jellyfin', 'jellyfin', ' administrator'), ('navidrome', 'navidrome', ' administrator'),
+    ('jellyfin', 'jellyfin', ADMIN), ('navidrome', 'navidrome', ADMIN),
     ('navidrome_listener', 'navidrome', ' listener (non-admin)'),
-    *((app, app, ' administrator') for app in
+    *((app, app, ADMIN) for app in
       ('sonarr', 'radarr', 'lidarr', 'prowlarr', 'qbittorrent', 'seerr', 'immich', 'nextcloud')))}
 EMAIL_LOGINS = {'immich', 'seerr'}
 STATES = {'planned', 'started', 'verified', 'needs_setup'}
