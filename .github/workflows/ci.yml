@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [NekoServer---Arch-based-media-server]
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_DIR: nekoserver-v0.27.8
+  RELEASE_DIR: nekoserver-v0.28.0
   # Pinned so lint results and the shipped binary only change when this line does.
   # Matches the rustc recorded in runtime/build.json.
   RUST_TOOLCHAIN: "1.99.1"
