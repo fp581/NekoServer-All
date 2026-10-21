@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.28.1 — 2026-10-21
+
+### Fixed (Debian / Ubuntu)
+- **A package installation that fails part-way is tidied up.** apt can install some packages and then fail. Before, the error came before the tidy-up, and a retry skipped the packages that were already in. Their services stayed switched on for the next restart, before NekoServer's drive guards existed. Samba's example `smb.conf` also stayed, so the Samba step refused it. Now each installation is recorded first (`/var/lib/nekoserver-host/package-install.json`), with what the system was like before. Whatever got installed is tidied up even when apt fails, and an installation cut off earlier is finished at the start of the next setup run.
+- **Samba's example settings are told apart from yours.** The packaged `smb.conf` is set aside only when none existed before the installation and the file is still exactly what the package wrote (`ucf`'s record of it). An `smb.conf` you edited is never moved.
+- **Existing repository definitions are respected.** Docker's and Tailscale's repositories are recognised by their address in every source file: `.list` or deb822 `.sources`, whatever the file is called, switched-off and commented entries excepted. A second definition with a different key made apt stop working ("Conflicting values set for option Signed-By"). NekoServer now adds its own only when there is none. If it finds its own next to someone else's, it removes its own. A file that has NekoServer's name but isn't NekoServer's is never overwritten.
+- **Package checks work in every language.** The package tools and `systemctl` now run with `LC_ALL=C`, because their output is read: French apt prints `Candidat :`, so Caddy, video drivers, smartmontools and OpenRGB looked unavailable.
+- **The Tailscale repository key is in host backups.** It now lives in `/etc/apt/keyrings` with the other keys. Restored repository settings whose key is missing get the key downloaded again. 0.28.0's Tailscale list is moved to the new key place.
+- **Someone else's `policy-rc.d` can't let services start early.** If one exists, it must already refuse to start the services being installed. If it doesn't, setup stops before installing and explains how to move it aside for the installation. One left behind by an interrupted installation is removed.
+- **Switching services off is checked.** After installing, setup checks that each new service is really disabled and stopped. If one isn't, setup stops and tells you the command. Services that aren't installed or are masked are left alone.
+- **A Docker you already run is left running.** Installing only a missing part (Buildx, say) no longer reinstalls or upgrades the rest. It also no longer stops and disables Docker's service. Only services that are new with this installation are switched off, and packages already there are never reinstalled.
+- **TV setup is "Not available on this system"** on Debian/Ubuntu, instead of passing. It isn't counted as done or as waiting. The finishing screen lists it on its own, and acceptance no longer asks for TV evidence there.
+
+### Fixed
+- **The installer copy kept on the SSD can set the dashboard up again.** It kept the dashboard's page, styles, scripts and logo, but not its app manifest and icons (`manifest.webmanifest`, `icon-192.png`, `icon-512.png`, `apple-touch-icon.png`). So after an OS rebuild, running dashboard setup from that copy stopped with "file not found"; the dashboard already installed kept working. The whole dashboard folder is now kept. A test checks that the kept copy has every file of the release, except tests and the template settings, and that dashboard setup can load its files from it.
+
+### Changed
+- The acceptance report's host check names both supported families.
+- Version 0.28.1; the release folder is now `nekoserver-v0.28.1`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.28.0 — 2026-10-21
 
 The first release of **NekoServer All**, the edition for all major Linux distributions. NekoServer for Arch continues separately.

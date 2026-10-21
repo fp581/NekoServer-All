@@ -31,7 +31,7 @@ def _read(root, path):
 
 def _output(run, argv):
     try:
-        result = run(argv, capture_output=True, text=True, timeout=15, check=False)
+        result = run(argv, capture_output=True, text=True, timeout=15, check=False, env=host.environment())
     except (OSError, subprocess.SubprocessError):
         return ''
     return result.stdout.strip() if result.returncode == 0 else ''

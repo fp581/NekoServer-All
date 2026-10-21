@@ -101,14 +101,19 @@ def power_setup(user,home):
     return {'check':'tv:idle_suspend','status':'pass' if not result.returncode and not saved.returncode and saved.stdout.strip()=="'nothing'" else 'needs_setup'}
 
 
+UNAVAILABLE_REASON='TV setup needs Arch Linux or Nyarch for now (Steam is packaged differently on other systems)'
+
+def available():
+    """TV setup can run on this Linux."""
+    return host.detect() is host.Arch
+
 def run(ctx):
     if not ctx.apply:ctx.log('TV setup available through the tv/full profile with --apply');return
     if os.geteuid()!=0:raise RuntimeError('TV package installation requires sudo')
     if platform.machine()!='x86_64' or not host.supported():raise RuntimeError('TV installation is not supported on this system yet')
+    if not available():
+        return {'status':'unavailable','reason':UNAVAILABLE_REASON}
     family=host.current()
-    if family.name!='arch':
-        # Steam and its 32-bit graphics libraries are packaged differently elsewhere.
-        ctx.log('TV setup: available on Arch Linux / Nyarch only for now; skipped');return
     if not shutil.which('runuser'):raise RuntimeError('runuser is required to configure the desktop user safely')
     if guided_setup.wanted(ctx,'tv','Use a TV connected to this server',[
             'If a TV is plugged into this PC, NekoServer installs Steam Big Picture, adds app',
