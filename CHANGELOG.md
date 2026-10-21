@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.27.6 — 2026-10-21
+
+### Changed (code cleanup; no change in what the server does)
+- **Removed unused code.** The old Python dashboard collector (replaced by the Rust one in 0.26.0) is gone; the small checks setup, the gateway and the acceptance checker still use moved to `status_checks.py`. A full scan for unused functions, variables, imports, page code, styles and page elements finds nothing left.
+- **One definition instead of copies:**
+  - one list of apps with their names and ports (`neko_common.APPS`), used by setup, checks, accounts, the TV shortcuts and the phone page (it was typed out in nine places);
+  - one way to talk to the apps without proxies or redirects (`local_opener`, was three copies plus eight hand-built openers);
+  - one place for systemd units and their "managed by NekoServer" check (`check_units` / `write_units`, was eight copies);
+  - one Seerr sign-in, one check for source addresses;
+  - in the Rust runtime: one HTTPS delivery (heartbeat and notifications), one way to open a backup job, stage and publish a snapshot (app and host snapshots), one "move without replacing", one fan-speed conversion, one table of error sentences;
+  - on the page: one way to show fan speeds and temperatures.
+- Duplicated code measured with jscpd: 14 copies (145 lines) before, 2 short ones (27 lines) left.
+- New tests check that names the installer and the runtime share (fan recovery files, settings folder, phone address port) stay the same in both.
+- Version 0.27.6; the release folder is now `nekoserver-v0.27.6`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.27.5 — 2026-10-21
 
 ### Fixed (review of v0.27.4)
