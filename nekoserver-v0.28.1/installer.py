@@ -10,6 +10,7 @@ import os
 import sys
 from pathlib import Path
 import capabilities
+import host
 from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path, pending_maintenance
 
 ROOT = Path(__file__).resolve().parent
@@ -165,6 +166,7 @@ def _execute(args, root=ROOT):
     states = dict(previous) if args.apply else {}
     complete_status='success' if args.apply else 'inspected'
     failures = []
+    unavailable = []
     def log(message):
         stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
         text = f'[{stamp}] {message}'
@@ -196,6 +198,10 @@ def _execute(args, root=ROOT):
             if isinstance(result,dict) and result.get('status')=='needs_setup':
                 states[name]={'status':'needs_setup','reason':result.get('reason','Setup incomplete')}
                 failures.append(name);log(f'NEEDS SETUP {name}')
+            elif isinstance(result,dict) and result.get('status')==UNAVAILABLE:
+                # An optional extra this Linux can't have yet: neither done nor waiting.
+                states[name]={'status':UNAVAILABLE,'reason':result.get('reason','Not available on this system')}
+                unavailable.append(name);log(f'UNAVAILABLE {name}: {states[name]["reason"]}')
             else:
                 states[name] = {'status': complete_status, 'timestamp': dt.datetime.now(dt.timezone.utc).isoformat()}
                 log(f'PASS {name}')
@@ -221,8 +227,13 @@ def _execute(args, root=ROOT):
                 modules[name]['object'].refresh(config, log)
             except (OSError, RuntimeError, ValueError) as exc:
                 log(f'{name}: settings not refreshed: {exc}')
-    log(f'Finished: {len(plan) - len(failures)} passed; {len(failures)} failed/blocked/incomplete; log={log_path}')
+    log(f'Finished: {len(plan) - len(failures) - len(unavailable)} passed; '
+        + (f'{len(unavailable)} not available on this system; ' if unavailable else '')
+        + f'{len(failures)} failed/blocked/incomplete; log={log_path}')
     return 1 if failures else 0
+
+# What an optional step returns when this Linux can't have it (yet).
+UNAVAILABLE = 'unavailable'
 
 # Steps whose saved settings are brought up to date after every run.
 REFRESHED = ('dashboard', 'host_backup')
@@ -238,6 +249,8 @@ def execute(args, root=ROOT):
     found=capabilities.detect()
     capabilities.report(found)
     capabilities.require(found)
+    # Packages an earlier installation left half-done are tidied before any step runs.
+    host.current().reconcile()
     path=safe_path('/run/nekoserver-install.lock')
     fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
     try:

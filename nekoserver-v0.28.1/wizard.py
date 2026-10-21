@@ -152,6 +152,7 @@ def finishing_screen(config, states, page=None, output=print):
               {'status': 'missing', 'reason': 'did not run (no record of this step)'} for n in plan}
     by_status = {status: [n for n in plan if states[n].get('status') in group]
                  for status, group in (('done', ('success',)), ('waiting', ('needs_setup',)),
+                                       ('unavailable', ('unavailable',)),
                                        ('broken', ('failed', 'blocked', 'running', 'missing')))}
     sorted_out = {n for names in by_status.values() for n in names}
     unknown = [n for n in plan if n not in sorted_out]
@@ -161,7 +162,8 @@ def finishing_screen(config, states, page=None, output=print):
     output('\n' + line)
     output('  NekoServer is ready!' if complete else '  NekoServer is almost ready')
     output(line)
-    output(f'\nDone: {len(by_status["done"])} of {len(plan)} steps.')
+    output(f'\nDone: {len(by_status["done"])} of {len(plan) - len(by_status["unavailable"])} steps.')
+    show_steps('Not available on this system:', by_status['unavailable'], states, 'not available', output)
     show_steps('Still needs you:', by_status['waiting'], states, 'unfinished', output)
     show_steps('Did not finish:', by_status['broken'], states, 'stopped before finishing', output)
     show_addresses(data, output)
