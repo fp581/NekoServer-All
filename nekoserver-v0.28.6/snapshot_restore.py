@@ -15,6 +15,10 @@ import sys
 from neko_common import safe_path, atomic_json, ensure_directory, ensure_room
 
 
+# What the restore did, written into the new folder next to the files.
+REPORT_NAME = 'restore-report.json'
+
+
 @dataclass(frozen=True)
 class Kind:
     """What differs between the two nightly snapshot kinds."""
@@ -148,13 +152,13 @@ def restore(kind, snapshot, destination, preserve_owners=False):
               'ownership': 'incomplete' if preserve_owners else 'not requested', **kind.report}
     if kind.links:
         report.update(sources=manifest.get('sources', []), missing_optional=manifest.get('missing_optional', []))
-    atomic_json(destination / 'restore-report.json', report)
+    atomic_json(destination / REPORT_NAME, report)
     if preserve_owners:
         apply_owners(kind, destination, rows)
         report.update(original_owners_restored=True, ownership='restored')
-        atomic_json(destination / 'restore-report.json', report)
+        atomic_json(destination / REPORT_NAME, report)
     report['times_restored'] = apply_times(kind, destination, rows)
-    atomic_json(destination / 'restore-report.json', report)
+    atomic_json(destination / REPORT_NAME, report)
     return destination
 
 
