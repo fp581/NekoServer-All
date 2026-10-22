@@ -16,13 +16,16 @@ def options(config):
     # create_desktop_shortcut: whether the desktop step adds a Music shortcut.
     if not isinstance(opts, dict) or type(opts.get('create_desktop_shortcut', True)) is not bool:
         raise RuntimeError('Invalid music desktop shortcut setting')
-    if 'navidrome' not in config.get('media', {}).get('services', []):
-        raise RuntimeError('Music setup requires navidrome in media.services')
     return opts
 
 
 def run(ctx):
     options(ctx.config)
+    if 'navidrome' not in ctx.config.get('media', {}).get('services', []):
+        # A server without the music player (taken out of media.services): nothing to do
+        # here, and the rest of setup goes ahead. The music backup still keeps Lidarr's music.
+        ctx.log('Music: Navidrome is not among your apps ("services" under "media"); no music player to set up')
+        return
     if not ctx.apply:
         ctx.log('Music: Navidrome browser player, Amperfy on iPhone and optional Feishin desktop client')
         return

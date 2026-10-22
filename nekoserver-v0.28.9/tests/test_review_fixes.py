@@ -144,6 +144,200 @@ class TorrentPortTests(unittest.TestCase):
         self.assertEqual(acceptance.peer_bindings(None, config), set())
 
 
+class MediaManifestRewriteTests(unittest.TestCase):
+    """The media step replaces its own unedited manifests after a settings or timezone
+    change, instead of failing every later setup run; a hand-edited one is left alone."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dest = Path(self.tmp.name) / 'sonarr' / 'compose.yaml'
+        self.dest.parent.mkdir()
+        self.template = (ROOT / 'compose' / 'sonarr.yaml').read_text()
+
+    def values(self, uid=1000, tz='UTC'):
+        return ('/srv/nekoserver', '/mnt/nekoserver-media', uid, 1000, tz, '127.0.0.1')
+
+    def test_a_written_manifest_is_replaced_after_a_settings_change(self):
+        old = media.render(self.template, *self.values())
+        self.dest.write_text(old)
+        media.remember(self.dest, old)
+        moved = ('/srv/neko-ssd', '/mnt/nekoserver-media', 1000, 1000, 'Asia/Jerusalem', '127.0.0.1')
+        backup, current = media.replacement('sonarr', self.dest, self.template, media.render(self.template, *moved), moved)
+        self.assertEqual((backup.parent, current), (self.dest.parent, old))
+        self.assertRegex(backup.name, r'^compose\.before-\d+\.yaml$')
+
+    def test_another_app_user_is_refused_with_what_to_do(self):
+        for name in ('sonarr', 'seerr'):   # PUID/PGID and user:
+            with self.subTest(name=name):
+                template = (ROOT / 'compose' / f'{name}.yaml').read_text()
+                old = media.render(template, *self.values())
+                self.dest.write_text(old)
+                media.remember(self.dest, old)
+                new = media.render(template, *self.values(uid=1500))
+                with self.assertRaisesRegex(RuntimeError, 'from 1000:1000 to 1500:1000.*Put media.uid'):
+                    media.replacement(name, self.dest, template, new, self.values(uid=1500))
+
+    def test_a_manifest_from_before_the_record_is_recognised_after_a_timezone_change(self):
+        self.dest.write_text(media.render(self.template, *self.values()))
+        new = media.render(self.template, *self.values(tz='Asia/Jerusalem'))
+        self.assertIn('TZ: "Asia/Jerusalem"', new)
+        self.assertTrue(media.replacement('sonarr', self.dest, self.template, new, self.values(tz='Asia/Jerusalem')))
+
+    def test_a_hand_edited_manifest_is_left_alone(self):
+        old = media.render(self.template, *self.values())
+        media.remember(self.dest, old)
+        self.dest.write_text(old.replace('restart: unless-stopped', 'restart: always'))
+        new = media.render(self.template, *self.values(tz='Asia/Jerusalem'))
+        with self.assertRaisesRegex(RuntimeError, 'changed by hand.*rename it'):
+            media.replacement('sonarr', self.dest, self.template, new, self.values(tz='Asia/Jerusalem'))
+
+
+class NotificationTopicTests(unittest.TestCase):
+    """A topic set in my-config.json gets its token asked; a change of topic is confirmed
+    instead of failing the step on every run."""
+    NEW, OLD = 'https://ntfy.sh/new-topic', 'https://ntfy.sh/old-topic'
+
+    def ctx(self, interactive):
+        from types import SimpleNamespace
+        return SimpleNamespace(apply=interactive, config={'guided_setup': {'enabled': True}})
+
+    def switch(self, interactive, current, answers=('yes',)):
+        from modules import notifications
+        replies = iter(answers)
+        with mock.patch('sys.stdin.isatty', return_value=interactive), mock.patch('builtins.print'):
+            return notifications.switch(self.ctx(interactive), self.NEW, current, 'tk_old',
+                                        prompt=lambda _: next(replies), ask=lambda _: 'tk_new')
+
+    def test_a_first_topic_from_the_settings_gets_its_token(self):
+        self.assertEqual(self.switch(True, ''), (self.NEW, 'tk_new'))
+        self.assertEqual(self.switch(False, ''), (self.NEW, 'tk_old'))   # nobody to ask
+
+    def test_a_change_of_topic_is_confirmed(self):
+        self.assertEqual(self.switch(True, self.OLD, ('yes',)), (self.NEW, 'tk_new'))
+        kept = self.switch(True, self.OLD, ('no',))
+        self.assertEqual(kept['status'], 'needs_setup')
+        self.assertIn('Put it back in notifications.endpoint', kept['reason'])
+        unattended = self.switch(False, self.OLD)
+        self.assertEqual(unattended['status'], 'needs_setup')
+        self.assertIn('--module notifications --apply', unattended['reason'])
+
+
+class SourceWizardTests(unittest.TestCase):
+    """A typed "yes" adds a source and copies it; it never silently counts as no."""
+    def wizard(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('source_wizard', ROOT / 'source-wizard.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def collect(self, answers):
+        replies = iter(answers)
+        with mock.patch('builtins.print'):
+            return self.wizard().collect({}, lambda _: next(replies))['sources']
+
+    def test_yes_is_yes(self):
+        sources = self.collect(['yes', 'movies', 'local', 'Old films', '/mnt/old/films', 'YES', 'no'])
+        self.assertEqual(sources, [{'category': 'movies', 'type': 'local', 'name': 'Old films',
+                                    'path': '/mnt/old/films', 'copy_to_library': True}])
+
+    def test_an_unclear_answer_is_asked_again_and_enter_means_no(self):
+        sources = self.collect(['sure', 'y', 'tv', 'local', 'Shows', '/mnt/shows', '', ''])
+        self.assertEqual([s['copy_to_library'] for s in sources], [False])
+
+    def test_ctrl_d_keeps_the_sources_added_so_far(self):
+        def answers():
+            yield from ['y', 'music', 'local', 'Songs', '/mnt/songs', 'n']
+            raise EOFError
+        replies = answers()
+        with mock.patch('builtins.print'):
+            sources = self.wizard().collect({}, lambda _: next(replies))['sources']
+        self.assertEqual([s['name'] for s in sources], ['Songs'])
+
+
+class JellyfinLibraryLoginTests(unittest.TestCase):
+    """A mistyped Jellyfin password is something to do again, not a failed step."""
+    def test_a_refused_password_needs_setup(self):
+        import media_libraries
+
+        class Refusing:
+            def __init__(self):
+                self.headers = {}
+
+            def call(self, endpoint, method='GET', payload=None):
+                if endpoint == '/System/Info/Public':
+                    return {'Id': 'server', 'StartupWizardCompleted': True}
+                if endpoint == '/Users/AuthenticateByName':
+                    raise RuntimeError('jellyfin: HTTP 401')
+                raise AssertionError(endpoint)
+
+            def close(self):
+                pass
+        with tempfile.TemporaryDirectory() as d:
+            rows = media_libraries.configure(Path(d), Path(d), True, ('jellyfin',), factory=lambda app: Refusing(),
+                                             username=lambda _: 'admin', password=lambda _: 'typo')
+        self.assertEqual([r['status'] for r in rows], ['needs_setup'])
+        self.assertIn('did not accept that administrator username and password', rows[0]['reason'])
+
+
+class ConnectorChoiceTests(unittest.TestCase):
+    """A mistyped number in the connector's lists is asked again, not a failed step."""
+    def choose(self, answers):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('media_connect', ROOT / 'media-connect.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        replies = iter(answers)
+
+        def ask(_):
+            value = next(replies)
+            if value is EOFError:
+                raise EOFError
+            return value
+        items = [{'name': 'Standard', 'id': 1}, {'name': 'Lossless', 'id': 2}]
+        with mock.patch('builtins.print'):
+            return module.choose(items, 'Choose', ask=ask)
+
+    def test_a_wrong_number_is_asked_again(self):
+        self.assertEqual(self.choose(['7', 'two', '2'])['id'], 2)
+
+    def test_ctrl_d_stops_the_connector_cleanly(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('media_connect', ROOT / 'media-connect.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as d:
+            config = Path(d) / 'config.json'
+            config.write_text(json.dumps({'data_mount': d, 'media_mount': d, 'media': {'services': ['prowlarr']}}))
+            with mock.patch.object(module.os.path, 'ismount', return_value=True), \
+                    mock.patch.object(module, 'configure_indexers', side_effect=EOFError), \
+                    mock.patch('builtins.print') as shown:
+                self.assertEqual(module.main(['--config', str(config), '--indexers']), 1)
+        self.assertIn('indexers: incomplete (stopped)', str(shown.call_args_list))
+
+    def test_skips(self):
+        self.assertIsNone(self.choose(['']))
+        self.assertIsNone(self.choose([EOFError]))
+        self.assertIsNone(self.choose(['0', '9', 'x']))   # three tries, then skipped
+
+
+class WithoutNavidromeTests(unittest.TestCase):
+    """Navidrome taken out of media.services: setup goes ahead, the music step has nothing to do."""
+    def test_the_full_setup_is_not_refused(self):
+        import installer
+        from config_checks import validate
+        from modules import music
+        config = json.loads((ROOT / 'config.json').read_text())
+        config['media']['services'].remove('navidrome')
+        plan = installer.ordered(installer.load_modules(ROOT / 'modules'), config['profiles']['full'])
+        self.assertIn('music', plan)
+        validate(config, plan)
+        logged = []
+        ctx = mock.Mock(config=config, apply=True, log=logged.append)
+        self.assertIsNone(music.run(ctx))
+        self.assertIn('Navidrome is not among your apps', logged[0])
+
+
 class NextcloudImageTests(unittest.TestCase):
     def test_new_major_waits_for_early_fixes(self):
         from modules import nextcloud

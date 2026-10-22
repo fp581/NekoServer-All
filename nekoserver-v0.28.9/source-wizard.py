@@ -48,41 +48,64 @@ def validate_source(source):
         raise ValueError('Unknown source type')
     return source
 
-def ask(prompt, default=''):
-    tail = f' [{default}]' if default else ''
-    answer = input(f'{prompt}{tail}: ').strip()
-    return answer or default
+def agreed(question, reader):
+    """yes or y: True; no, n or Enter: False. Anything else is asked again (a typed
+    "yes" must never count as no)."""
+    while True:
+        answer = reader(question + ' [yes/no, Enter = no]: ').strip().lower()
+        if answer in ('yes', 'y'):
+            return True
+        if answer in ('', 'no', 'n'):
+            return False
+        print('Please type yes or no.')
+
 
 def collect(existing=None, input_fn=None):
-    # Keep injected input local to this invocation; do not mutate global input.
-    reader=input if input_fn is None else input_fn
-    def ask(prompt,default=''):
-        tail=f' [{default}]' if default else ''
-        return reader(f'{prompt}{tail}: ').strip() or default
+    """The source list with the ones added now; Ctrl+D stops adding and keeps them."""
     sources = list((existing or {}).get('sources', []))
+    try:
+        add_sources(sources, input if input_fn is None else input_fn)
+    except EOFError:
+        print()
+    return {'schema_version': 1, 'sources': sources}
+
+
+def add_sources(sources, reader):
     print('Source wizard: source references only; nothing will be downloaded or mounted.')
-    while ask('Add source? (y/n)', 'n').lower() == 'y':
-        category = ask('Category (movies/tv/music)').lower()
-        kind = ask('Type (local/remote/indexer)').lower()
-        label = ask('Display name')
-        if not label or any(ch in label for ch in '\r\n\x00'):
-            print('Invalid name; try again')
-            continue
-        field = 'path' if kind == 'local' else 'uri'
-        value = ask('Absolute folder path' if kind == 'local' else 'Reference URL (no passwords)')
+    while agreed('Add a media source?', reader):
         try:
-            candidate={'category': category, 'type': kind, 'name': label, field: value}
-            if kind=='remote':
-                mounted=ask('Already mounted local folder (blank to defer)')
-                if mounted:candidate['mounted_path']=mounted
-            candidate = validate_source(candidate)
-            if kind in ('local','remote'):
-                candidate['copy_to_library']=ask('Copy this folder into its managed library (music on SSD, video on HDD) during onboarding? (y/n)','n').lower()=='y'
-            sources.append(candidate)
-            print('Added (configuration only).')
+            candidate = one_source(reader)
         except ValueError as exc:
             print('Not added:', exc)
-    return {'schema_version': 1, 'sources': sources}
+            continue
+        if candidate:
+            sources.append(candidate)
+            print('Added (configuration only).')
+
+
+def one_source(reader):
+    """One source typed in, checked; None for an unusable name (asked again)."""
+    def ask(prompt):
+        return reader(prompt + ': ').strip()
+    category = ask('Category (movies/tv/music)').lower()
+    kind = ask('Type (local/remote/indexer)').lower()
+    label = ask('Display name')
+    if not label or any(ch in label for ch in '\r\n\x00'):
+        print('Invalid name; try again')
+        return None
+    field = 'path' if kind == 'local' else 'uri'
+    candidate = {'category': category, 'type': kind, 'name': label,
+                 field: ask('Absolute folder path' if kind == 'local' else 'Reference URL (no passwords)')}
+    if kind == 'remote':
+        mounted = ask('Already mounted local folder (blank to defer)')
+        if mounted:
+            candidate['mounted_path'] = mounted
+    candidate = validate_source(candidate)
+    if kind in ('local', 'remote'):
+        candidate['copy_to_library'] = agreed('Copy this folder into its managed library (music on SSD, '
+                                              'video on HDD) during onboarding?', reader)
+    return candidate
+
 
 def main():
     parser = argparse.ArgumentParser(description='NekoServer media source wizard')
