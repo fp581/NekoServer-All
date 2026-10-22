@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.28.8 — 2026-10-22
+
+### Fixed (every Linux)
+- **Nights with Steam open can't delete the last backup of your Steam saves.** Snapshots made while Steam was open (without its files) counted towards `keep_snapshots` like any other, so a few such nights retired the last snapshot that had them. The newest snapshot with Steam's files is now kept until a newer one has them.
+- **A restart cut off part-way is finished only when no backup or update needs the apps stopped.** At start, the control service started what an interrupted restart had stopped right away, without the shared lock or the check for an unfinished backup or update. It now waits for both, as a restart from the dashboard does, retrying every 30 seconds. Its record also moved from `/run` to `/etc/nekoserver-control`, so it survives a restart of the computer.
+- **Setup no longer says "NekoServer is ready!" when the first checkup found problems.** The wizard ignored the checkup's result. A backup that finished but left something out (Steam open, say) counted as done, and checks still waiting for setup weren't listed. The checkup now reads each backup's own report (done, done in part, or did not finish) and lists every check that didn't pass. The finishing screen and the exit code include it.
+- **"Restore newest" never takes a file of its own for an older version.** With a recorded version of `report.txt`, an older-looking `report.neko-20250101T120000Z.txt` saved in its own right was still treated as a version of it, and only one file came back. A dated copy now counts as a version only when the backup recorded it, or its note names it as the current copy. Older unrecorded versions come back as files of their own.
+- **The unencrypted password list is checked before it is restored.** Taking it out of a monthly snapshot made without a backup key skipped the snapshot's checksum, so a changed archive gave changed passwords. `data.tar` is now checked against its recorded checksum first.
+- **The monthly Nextcloud check only removes its own test files.** A test file left by a cut-off check was cleaned up by name prefix (`neko-maintenance-…`), which could match a file of yours. Each test file's exact name is now written down before it is made. Only those are removed, and only while they still hold what NekoServer wrote.
+- **Btrfs drives mount the same tree after a restart.** A Btrfs drive already mounted with a subvolume (`subvol=@data`, say) got an fstab line without it, so a restart mounted the filesystem's default tree instead and the apps' files looked missing. The subvolume is now remembered in the settings (`storage.<drive>.subvolume`), written into fstab, checked after mounting, and part of the drive identity every backup checks.
+- **TV setup finishes on KDE and XFCE.** The step asked for a GNOME power setting that other desktops don't have, and stayed "needs setup" although sleep was already blocked system-wide by the server-OS step. The system-wide block now counts on every desktop; GNOME's own setting is still switched off where it exists.
+- **Nextcloud on its own gets its password step.** `--module nextcloud` failed with "Complete the account_credentials prompts before Nextcloud setup", because that step was only reached through the full and cloud profiles. Nextcloud now depends on it.
+- **Repairing accounts leaves switched-off apps alone.** Running only the accounts step tried every login ever saved, including apps you had since switched off (whose containers are gone), and then asked you to finish setting them up. It now works on the apps set up in the settings; the other logins stay saved for when those apps come back.
+- **A drive under /home is refused before anything is installed.** Such a mount passed the settings check, but NekoServer's services (dashboard, gateway, alerts) run with systemd's ProtectHome and can't see `/home`, `/root` or `/run/user`. The message now says to mount it under `/srv` or `/mnt`.
+- **The HDD power setting works on a Btrfs drive.** For a Btrfs subvolume, the mount source reads `/dev/sdb1[/media]`; the drive-policy service took the whole text for a device name and refused it ("Simple physical device path required"), leaving the server-OS step unfinished. The device is now taken from before the bracket; the identity checks stay.
+- **A PIN typed in another script's digits asks again instead of failing the step.** Setup accepted digits such as `١٢٣٤٥٦` (Python counts them as digits), the control service refused them, and the dashboard step failed. Setup now takes 0-9 only, and a PIN the service refuses is asked again.
+- **Setup on a server that is already set up:**
+  - **Shared folders follow your settings.** A share added, Immich switched on, write access, or another account made the Samba step fail for good with "Existing Samba config differs". NekoServer's own share file is now rewritten; only a file someone else wrote, or widening Tailscale-only sharing to the home network (confirm with `"allow_tailnet_to_lan": true`), stops setup.
+  - **`my-config.json` stays yours to edit.** The first setup run saved it as root's (readable by root only), though the guide says to edit it and run setup again. It keeps its owner now.
+  - **Changing `data_mount` works.** The shipped settings also carried `"persistent_root"` under `"docker"`, which had to match, so the edit the guide invites made setup refuse to start. The line is gone from the template (Docker always uses the app SSD), and an old settings file with it gets a message that says what to do.
+  - **The gateway list follows the apps set up.** Left as shipped, `"services"` under `"gateway"` names every app, so a server without Immich or Nextcloud failed both gateway steps. The shipped list now follows your apps; a list you edited is used as it is, and an app in it that isn't set up is named.
+  - **A Tailscale address failure says why.** With MagicDNS and HTTPS already on, a failure to set up the addresses (an app not running, say) sent you to the DNS settings page over and over without the reason. The reason is reported, and the step waits for you. Checks in every guided step now show the error they hit.
+- **Setup messages and prompts:**
+  - **Docker Compose failures say why.** Immich, Nextcloud and the server-OS step reported only "exit status 1"; the command's own message is in the log now.
+  - **A mistyped Samba password is asked again** (up to 3 times) instead of failing the shared-folders step.
+  - **A wrong number at the home-network question is asked again**; three wrong ones (or Ctrl+D) leave the choice for next time.
+  - **Enter at the USB-drive question skips it, as offered**, instead of failing the step; Ctrl+D does the same.
+  - **Choosing no backup key (three mismatches) still installs the monthly update**; its snapshots keep the password files unencrypted until a key exists, as the message says.
+  - **Ctrl+D at any question** is recorded with a reason instead of a blank one; Ctrl+C while packages install ends with a short message, not a traceback.
+  - The timezone message says when the PC's timezone couldn't be read and UTC is used; the dry-run messages show the configured backup times; "Docker: not installed yet" is no longer shown when Docker is installed but not started; an NVIDIA-only PC without `lspci` gets the NVIDIA explanation; a bundled copy that differs, and a changed Nextcloud setting, say what to do.
+- **Timezone from `/etc/timezone` too.** On Debian and Ubuntu images where `/etc/localtime` is a copied file rather than a link, the PC's timezone couldn't be read and every backup silently ran at UTC times. `/etc/timezone` is read now, and one-word zones such as `Japan` or `CET` are accepted.
+- **install.sh:** too old a Debian or Ubuntu (Python 3.11 needs Debian 12 or Ubuntu 24.04) is refused before apt runs, with the release named; free space is measured in MB (df rounded 4.1 GB up to 5); dpkg never asks about an edited settings file; the message after a kernel update no longer says "nothing else was changed"; a network timeout or HTTP error while repairing repositories is reported, not a traceback; the install time limit in the message matches the real one.
+- **Health-check probes during onboarding** go to the apps directly (no proxy, no redirects), so a proxy kept by sudo can't make every app look down.
+- **The Docker storage guard check** accepts a `data_mount` with a trailing slash; the recovery checkpoint no longer fails on a settings file without `media.uid`.
+- **Switching Immich off removes its photo schedules.** Its weekly photo and database backups stayed scheduled and ran against the stopped Immich. They are now stopped and removed (one you wrote yourself is kept). The USB copy of Nextcloud's files keeps its own schedule.
+
+### Changed
+- Code tidied after the 0.28.7 review (no change in behaviour):
+  - named constants for the photo archive's default folder and the encrypted password list's file name;
+  - simpler parsing of Debian dependency entries;
+  - plainer code for the graphics-device decision;
+  - single-call exception tests.
+- Version 0.28.8; the release folder is now `nekoserver-v0.28.8`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.28.7 — 2026-10-22
 
 ### Added
