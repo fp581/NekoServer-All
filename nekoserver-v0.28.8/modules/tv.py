@@ -16,6 +16,7 @@ DESCRIPTION='Install native Steam, graphics/controller support and TV launch sho
 SCHEMA='org.gnome.settings-daemon.plugins.power'
 POWER_KEY='sleep-inactive-ac-type'
 REPORT='reports/tv-setup.json'
+IDLE_CHECK='tv:idle_suspend'
 
 
 def command(argv, timeout=30):
@@ -97,15 +98,15 @@ def power_setup(user,home,run=command,blocked=None):
     counts; GNOME's own suspend-on-AC setting is switched off too where it exists, so
     its power panel agrees. Other desktops have no such setting to change here."""
     if (blocked or (lambda:sleep_blocked(run)))():
-        return {'check':'tv:idle_suspend','status':'pass','reason':'sleep is blocked system-wide'}
+        return {'check':IDLE_CHECK,'status':'pass','reason':'sleep is blocked system-wide'}
     if not shutil.which('gsettings') or not shutil.which('dbus-run-session'):
-        return {'check':'tv:idle_suspend','status':'needs_setup','reason':'Disable automatic AC suspend in desktop power settings to keep the server running'}
+        return {'check':IDLE_CHECK,'status':'needs_setup','reason':'Disable automatic AC suspend in desktop power settings to keep the server running'}
     def call(args):return run(user_command(user,home,['dbus-run-session','--','gsettings',*args]))
     writable=call(['writable',SCHEMA,POWER_KEY])
     if writable.returncode or writable.stdout.strip()!='true':
-        return {'check':'tv:idle_suspend','status':'needs_setup','reason':'GNOME AC suspend setting unavailable/locked; review desktop power settings'}
+        return {'check':IDLE_CHECK,'status':'needs_setup','reason':'GNOME AC suspend setting unavailable/locked; review desktop power settings'}
     result=call(['set',SCHEMA,POWER_KEY,'nothing']);saved=call(['get',SCHEMA,POWER_KEY])
-    return {'check':'tv:idle_suspend','status':'pass' if not result.returncode and not saved.returncode and saved.stdout.strip()=="'nothing'" else 'needs_setup'}
+    return {'check':IDLE_CHECK,'status':'pass' if not result.returncode and not saved.returncode and saved.stdout.strip()=="'nothing'" else 'needs_setup'}
 
 
 def keep_awake(user,home,log):

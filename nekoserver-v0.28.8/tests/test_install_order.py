@@ -959,8 +959,9 @@ class UsbCopyWithoutImmichTests(unittest.TestCase):
         units.mkdir()
         (units / 'nekoserver-immich-db-backup.timer').write_text('[Unit]\nDescription=mine\n')
         ctx = mock.Mock(apply=True, config=self.config, log=lambda message: None)
+        run = mock.Mock()
         with self.assertRaisesRegex(RuntimeError, 'Unmanaged schedule preserved'):
-            photo_preservation.switch_off(ctx, units, mock.Mock())
+            photo_preservation.switch_off(ctx, units, run)
         self.assertTrue((units / 'nekoserver-immich-db-backup.timer').exists())
 
     def test_the_runtime_accepts_a_copy_without_photos(self):

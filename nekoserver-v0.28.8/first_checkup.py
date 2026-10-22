@@ -66,13 +66,8 @@ def inspect(config):
     return sum(c.get('status') == 'pass' for c in checks), problems
 
 
-def run(config, output=print, run=subprocess.run, checks=inspect):
-    """Returns True when every backup and check passed."""
-    output('\nFirst checkup and backup')
-    output('Everything is set up, so the first backups run now instead of tonight, and the')
-    output('whole server is checked once. This takes a few minutes to an hour, depending on')
-    output('how much is on the drives. You can stop it with Ctrl+C; the backups then run at')
-    output('their usual times.\n')
+def run_jobs(config, output, run):
+    """Runs each scheduled backup once; returns the ones that did not fully pass."""
     failed = []
     for unit, label, report in JOBS:
         if not scheduled(unit, run):
@@ -87,6 +82,17 @@ def run(config, output=print, run=subprocess.run, checks=inspect):
             output(f'    done in part: {why}')
         else:
             output(f'    did not finish{": " + why if why else ""}. Its log:  journalctl -u {unit}.service -n 50')
+    return failed
+
+
+def run(config, output=print, run=subprocess.run, checks=inspect):
+    """Returns True when every backup and check passed."""
+    output('\nFirst checkup and backup')
+    output('Everything is set up, so the first backups run now instead of tonight, and the')
+    output('whole server is checked once. This takes a few minutes to an hour, depending on')
+    output('how much is on the drives. You can stop it with Ctrl+C; the backups then run at')
+    output('their usual times.\n')
+    failed = run_jobs(config, output, run)
     try:
         passed, problems = checks(config)
     except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:

@@ -579,5 +579,33 @@ class ClockAndUsbPrivacyTests(unittest.TestCase):
                     self.assertEqual(usb, Path(d))
 
 
+class SonarRefactorTests(unittest.TestCase):
+    """Helpers split out for Sonar keep their behaviour."""
+    def test_docker_rows_before_and_after_install(self):
+        import capabilities
+        rows = {r['name']: r['found'] for r in capabilities.docker_rows('', '', False)}
+        self.assertEqual(rows, {'docker': 'not installed yet (setup installs it)',
+                                'compose': 'not installed yet (setup installs it)'})
+        rows = {r['name']: r['found'] for r in capabilities.docker_rows('', '', True)}
+        self.assertIn('not started yet', rows['docker'])
+        self.assertEqual(rows['compose'], 'checked once Docker runs')
+        rows = capabilities.docker_rows('27.1', '2.29', True)
+        self.assertEqual([(r['found'], r['ok']) for r in rows], [('27.1', True), ('2.29', True)])
+
+    def test_run_jobs_lists_only_backups_that_did_not_pass(self):
+        import first_checkup
+        jobs = [('a', 'A', 'a.json'), ('b', 'B', 'b.json'), ('c', 'C', 'c.json')]
+        results = {'a.json': ('pass', ''), 'b.json': ('partial', 'one folder skipped')}
+        lines = []
+        with mock.patch.object(first_checkup, 'JOBS', jobs), \
+                mock.patch.object(first_checkup, 'scheduled', return_value=True), \
+                mock.patch.object(first_checkup, 'start', side_effect=lambda unit, run: unit != 'c'), \
+                mock.patch.object(first_checkup, 'outcome', side_effect=lambda config, report: results[report]):
+            failed = first_checkup.run_jobs({}, lines.append, None)
+        self.assertEqual(failed, ['b', 'c'])
+        self.assertIn('    done in part: one folder skipped', lines)
+        self.assertTrue(any('journalctl -u c.service' in line for line in lines))
+
+
 if __name__ == '__main__':
     unittest.main()

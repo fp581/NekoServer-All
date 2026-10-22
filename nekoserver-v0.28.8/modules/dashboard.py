@@ -139,9 +139,9 @@ def choose_pin(binary,log,ask=getpass.getpass):
     for _ in range(3):
         pin=ask('PIN: ').strip()
         if not pin:log('Dashboard: no PIN chosen; fans and lights change on the server only, and app controls stay off');return False
-        # The digits 0-9 only, as the control service accepts them (str.isdigit also
-        # takes other scripts' digits, which it would refuse).
-        if not (re.fullmatch(r'[0-9]{6,8}',pin)):print('A PIN is 6 to 8 digits (0-9).');continue
+        # The digits 0-9 only, as the control service accepts them (without re.ASCII,
+        # \d and str.isdigit also take other scripts' digits, which it would refuse).
+        if not re.fullmatch(r'\d{6,8}',pin,re.ASCII):print('A PIN is 6 to 8 digits (0-9).');continue
         if ask('Same PIN again: ').strip()!=pin:print('The two PINs differ.');continue
         saved=subprocess.run([str(binary),'control','--set-pin'],input=pin+'\n',text=True,capture_output=True,check=False,timeout=120)
         if saved.returncode:print('That PIN was not accepted ('+(saved.stderr.strip() or 'no reason given')+'). Try another.');continue
