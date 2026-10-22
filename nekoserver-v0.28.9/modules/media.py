@@ -1,5 +1,6 @@
 """Deploy isolated media Compose projects with guarded SSD/HDD mounts."""
 from neko_common import compose_image_override
+import hashlib
 import os
 import re
 import time
@@ -116,6 +117,73 @@ def without_host_adaptations(text):
     return re.sub(r' {6}- "(\d+):\1/(?:tcp|udp)"\n', '', text)
 
 
+TIMEZONE_LINE = re.compile(r'^( +TZ: )"[^"\n]*"$', re.MULTILINE)
+# The checksum of the manifest this step last wrote, next to it: a later run then
+# knows its own unedited file whatever setting changed since (media.uid, a drive, the
+# PC's timezone), and replaces it after keeping a copy.
+WRITTEN = '.neko-written'
+
+
+def checksum(text):
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def written_by_us(dest, current):
+    record = dest.parent / WRITTEN
+    if record.is_symlink() or not record.is_file():
+        return False
+    return record.read_text(encoding='utf-8').strip() == checksum(current)
+
+
+def remember(dest, content):
+    atomic_write(safe_path(dest.parent / WRITTEN), checksum(content) + '\n', 0o640)
+
+
+def app_user(text):
+    """The uid:gid a rendered manifest runs its app as (PUID/PGID or user:)."""
+    found = re.search(r'PUID: "(\d+)"\n +PGID: "(\d+)"', text) or re.search(r'user: "(\d+):(\d+)"', text)
+    return ':'.join(found.groups()) if found else None
+
+
+def same_user(current, rendered):
+    """Navidrome and Seerr run as media.uid:gid and can't read settings and music that
+    belong to someone else, so another user is never switched to on a rerun."""
+    before, after = app_user(current), app_user(rendered)
+    if before != after:
+        raise RuntimeError(f'media.uid/gid changed from {before} to {after}, but the apps\' settings and library '
+                           f'files belong to {before}. Put media.uid and media.gid back in my-config.json')
+
+
+def same_but_host(current, rendered):
+    """Our own output for this template before a host, option or timezone change (the
+    GPU appeared or vanished, the peer port opened or closed, the PC's timezone was
+    set). Servers set up before the checksum record are recognised this way."""
+    def plain(text):
+        return TIMEZONE_LINE.sub(r'\1""', without_host_adaptations(text))
+    return plain(current) == plain(rendered)
+
+
+def replacement(name, dest, template, rendered, values):
+    """(backup file, current text) when the manifest at ``dest`` is an unedited one of
+    ours that may be replaced; raises when it was edited by someone."""
+    current = dest.read_text(encoding='utf-8')
+    candidates = [(render(old, *values), backup) for old, backup in previous_templates(name, template)]
+    if written_by_us(dest, current):
+        same_user(current, rendered)
+        candidates.append((current, f'compose.before-{int(time.time())}.yaml'))
+    elif same_but_host(current, rendered):
+        candidates.append((current, f'compose.before-{int(time.time())}.yaml'))
+    previous = next((backup for text, backup in candidates if text == current), None)
+    if previous is None:
+        raise RuntimeError(f'{dest} was changed by hand, so setup leaves it alone. To let setup write a fresh one '
+                           f'(with your current settings), rename it, for example to compose.mine.yaml, and run '
+                           f'setup again; your copy stays next to it')
+    backup = safe_path(dest.parent / previous)
+    if backup.exists() and backup.read_text() != current:
+        raise RuntimeError(f'Template backup {backup} differs; preserved for review')
+    return backup, current
+
+
 def render(template, data, media, uid, gid, tz, bind):
     substitutions = dict(DATA=str(data), MEDIA=str(media), UID=str(uid), GID=str(gid), TZ=tz, BIND=bind)
     output = template
@@ -166,25 +234,12 @@ def _run(context):
         if dest.is_symlink():
             raise RuntimeError(f'Refusing symlink manifest: {dest}')
         template = (project_root / 'compose' / f'{name}.yaml').read_text(encoding='utf-8')
-        rendered = render(template, data, media, uid, gid, tz, bind)
+        values = (data, media, uid, gid, tz, bind)
+        rendered = render(template, *values)
         desired = adapt_to_host(name, rendered, peer_port=torrent_port(settings))
         if dest.exists() and dest.read_text(encoding='utf-8') != desired:
-            # Replace only an unedited copy of a template we shipped earlier.
-            current = dest.read_text(encoding='utf-8')
-            candidates = [(render(old, data, media, uid, gid, tz, bind), backup) for old, backup in previous_templates(name, template)]
-            if without_host_adaptations(current) == without_host_adaptations(rendered):
-                # Our own output for this template, before a host/option change
-                # (GPU appeared or vanished, peer port opened, changed or closed).
-                candidates.append((current, f'compose.before-{int(time.time())}.yaml'))
-            for previous, backup_name in candidates:  # noqa: B007 (used after the loop)
-                if current == previous:
-                    break
-            else:
-                raise RuntimeError(f'{dest} has local edits or different settings; refusing to overwrite it')
-            backup = safe_path(dest.parent/backup_name)
-            if backup.exists() and backup.read_text() != previous:
-                raise RuntimeError(f'Template backup {backup} differs; preserved for review')
-            migrations[name] = (backup, previous)
+            # Replace only an unedited copy of ours (an earlier template included).
+            migrations[name] = replacement(name, dest, template, rendered, values)
         manifests[name] = (dest, desired)
     for name in selected:
         for path in (configs / name, compose_dir / name):
@@ -228,6 +283,7 @@ def _run(context):
             atomic_write(dest,content,0o640)
         elif not dest.exists():
             atomic_write(dest, content, 0o640)
+        remember(dest, content)
         try:
             run_cmd(['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest), 'config', '-q'], timeout=30)
             verify_storage(context.config)

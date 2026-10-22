@@ -279,6 +279,16 @@ class CapacityTests(unittest.TestCase):
         _, warn = self.assess(500, 4000, usb=30, photos=100, pending=5, dump=20)
         self.assertTrue(any('still has to add 25 GB' in w for w in warn))
 
+    def test_a_rerun_never_reads_every_photo_for_the_four_weekly_check(self):
+        seen = []
+        usb = lambda uuid, pairs, full=False, **_: seen.append(full) or (500 * GIB, 0)
+        common = {'free': lambda p: 900 * GIB, 'used': lambda p: 0, 'usb_space': usb, 'dump': lambda c: 0,
+                  'unarchived': lambda c: 0}
+        with mock.patch.object(capacity, 'full_check_due', return_value=True):
+            capacity.assess(self.CONFIG, **common)
+            capacity.assess(self.CONFIG, thorough=False, **common)
+        self.assertEqual(seen, [True, False])
+
     def test_pending_counts_only_new_and_changed_files(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
