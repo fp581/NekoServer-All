@@ -502,7 +502,9 @@ class StrictImportTests(unittest.TestCase):
                 mock.patch.object(source_import, 'publish_no_replace', side_effect=publish_then_unmount), \
                 mock.patch.object(source_import.os, 'geteuid', return_value=0), \
                 mock.patch.object(source_import, 'ensure_directory', side_effect=lambda path, *a: Path(path).mkdir(parents=True, exist_ok=True)):
-            config = {'media_mount': str(self.media), 'data_mount': str(self.media), 'media': {'uid': 1000, 'gid': 1000}}
+            # Files owned by this test's own user: CI runs the tests without root.
+            owner = {'uid': os.getuid() or 1000, 'gid': os.getgid() or 1000}
+            config = {'media_mount': str(self.media), 'data_mount': str(self.media), 'media': owner}
             source = {'type': 'local', 'path': str(self.source), 'category': 'music'}
             with self.assertRaises(source_import.DriveGone):
                 source_import.run(config, [source, source], apply=True)
