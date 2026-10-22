@@ -37,7 +37,7 @@ def lan_ports(config):
 def owned_listeners(config):
     """ip:port pairs the running NekoServer home gateway itself listens on (its own ports
     are not "taken")."""
-    path=Path('/etc/nekoserver-gateway/lan.json');ledger=health.read_json(Path(config['data_mount'])/'gateway/lan-managed.json');old=health.read_json(path)
+    path=LAN_CONFIG;ledger=health.read_json(Path(config['data_mount'])/'gateway/lan-managed.json');old=health.read_json(path)
     rc,_=health.run(['systemctl','is-active','--quiet','nekoserver-gateway-lan.service'])
     owned=set()
     if rc==0 and path.is_file() and ledger.get('sha256',{}).get(str(path))==hashlib.sha256(path.read_bytes()).hexdigest():
@@ -57,7 +57,7 @@ def choose_lan_ports(ctx):
     address never changes once given out)."""
     config=ctx.config;ip,_=lan(config);ports=lan_ports(config);owned=owned_listeners(config)
     taken=set(ports.values());changed=[]
-    for app,port in list(ports.items()):
+    for app,port in ports.items():
         if ip+':'+str(port) in owned or port_free(ip,port):continue
         spare=next((p for p in SPARE_PORTS if p not in taken and port_free(ip,p)),None)
         if spare is None:raise RuntimeError(f'Port {port} on {ip} is used by another program, and none of the spare ports {SPARE_PORTS.start}-{SPARE_PORTS.stop-1} is free either')
@@ -68,6 +68,8 @@ def choose_lan_ports(ctx):
         config.setdefault('gateway',{})['lan_ports']=ports;save_settings(ctx)
     return ports
 
+LAN_CONFIG=Path('/etc/nekoserver-gateway/lan.json')   # the home gateway's Caddy settings
+HTTPS='https://'
 OCC_GET,OCC_SET,OCC_DELETE='config:system:get','config:system:set','config:system:delete'
 
 def command(args,timeout=30,env=None):
@@ -196,7 +198,7 @@ def port_preflight(config):
 def _apply_lan(config):
     recovery_tools.require_root();recovery_tools.mounts(config);verify_lan(config);readiness(config)
     data=Path(config['data_mount']);state=safe_path(data/'gateway/caddy-state');code=safe_path(Path('/usr/local/lib/nekoserver-gateway')/('v'+VERSION));web=Path('/usr/local/share/nekoserver-gateway/lan');ledger=data/'gateway/lan-managed.json'
-    payloads={Path('/etc/nekoserver-gateway/lan.json'):json.dumps(lan_model(config,web),indent=2)+'\n',SYSTEMD_UNITS/'nekoserver-gateway-lan.service':unit(config,code,state),web/'index.html':portal(config,lan(config)[0])}
+    payloads={LAN_CONFIG:json.dumps(lan_model(config,web),indent=2)+'\n',SYSTEMD_UNITS/'nekoserver-gateway-lan.service':unit(config,code,state),web/'index.html':portal(config,lan(config)[0])}
     payloads[code/native_runtime.NAME]=native_runtime.payload(ROOT,config)
     preflight(payloads,ledger);port_preflight(config)
     if not shutil.which('caddy'):
@@ -217,7 +219,7 @@ def _apply_lan(config):
         if not permission_checks.access(existing,user.pw_uid,{user.pw_gid},5 if existing==folder else 1):
             raise RuntimeError('Existing gateway directory blocks service traversal; review its permissions')
     with tempfile.TemporaryDirectory(prefix='neko-caddy-validate-') as folder:
-        test=Path(folder)/'lan.json';test.write_text(payloads[Path('/etc/nekoserver-gateway/lan.json')]);command(['caddy','validate','--config',str(test)],env={**os.environ,'XDG_DATA_HOME':folder,'XDG_CONFIG_HOME':folder})
+        test=Path(folder)/'lan.json';test.write_text(payloads[LAN_CONFIG]);command(['caddy','validate','--config',str(test)],env={**os.environ,'XDG_DATA_HOME':folder,'XDG_CONFIG_HOME':folder})
     # Configuration validity is checked before replacing managed files or restarting our service.
     recovery_tools.mounts(config);verify_lan(config)
     for folder in public:ensure_directory(folder,0o755)
@@ -230,7 +232,7 @@ def _apply_lan(config):
     try:command(['systemctl','restart','nekoserver-gateway-lan.service'])
     except RuntimeError:
         command(['systemctl','stop','nekoserver-gateway-lan.service']);raise
-    report={'format':'neko-gateway-v1','mode':'lan','portal':'https://'+lan(config)[0]+':'+str(lan_ports(config)['portal'])+'/','services':selected(config),'status':'configured','client_acceptance':'needs_setup','reason':'Trust the private LAN CA on each client, then verify login, uploads, streaming and forbidden-source access.'};atomic_json(data/'reports/gateway-lan.json',report);return report
+    report={'format':'neko-gateway-v1','mode':'lan','portal':HTTPS+lan(config)[0]+':'+str(lan_ports(config)['portal'])+'/','services':selected(config),'status':'configured','client_acceptance':'needs_setup','reason':'Trust the private LAN CA on each client, then verify login, uploads, streaming and forbidden-source access.'};atomic_json(data/'reports/gateway-lan.json',report);return report
 
 def canonical(value):
     if not isinstance(value,dict):raise RuntimeError('Cannot inspect Tailscale Serve configuration')
@@ -314,7 +316,7 @@ def _apply_tailnet(config):
             for port in current['TCP']:command(['tailscale','serve','--bg','--https='+port,'off'])
         raise RuntimeError(f'Tailscale addresses not set up ({exc}). The addresses were switched off again until the next run') from None
     atomic_json(ledger,{'format':'neko-tailnet-owned-v1','host':host,'owned':target,'status':'configured'})
-    result={'format':'neko-gateway-v1','mode':'tailnet','status':'configured','client_acceptance':'needs_setup','services':apps,'links':{**{a:'https://'+host+':'+str(APPS[a][2])+'/' for a in apps},**({'dashboard':'https://'+host+':'+str(DASHBOARD_PORT)+'/'} if board else {})},'reason':'Restrict tailnet policy to intended users/devices and verify each application login and streaming/upload from a client.'};atomic_json(Path(config['data_mount'])/'reports/gateway-tailnet.json',result);return result
+    result={'format':'neko-gateway-v1','mode':'tailnet','status':'configured','client_acceptance':'needs_setup','services':apps,'links':{**{a:HTTPS+host+':'+str(APPS[a][2])+'/' for a in apps},**({'dashboard':HTTPS+host+':'+str(DASHBOARD_PORT)+'/'} if board else {})},'reason':'Restrict tailnet policy to intended users/devices and verify each application login and streaming/upload from a client.'};atomic_json(Path(config['data_mount'])/'reports/gateway-tailnet.json',result);return result
 
 def apply_lan(config):
     recovery_tools.require_root();recovery_tools.mounts(config)
@@ -353,7 +355,7 @@ def configure_cloud_origin(config, host, port):
     if isinstance(previous,str) and previous.endswith(':'+str(port)):
         command(base+[OCC_DELETE,'overwritehost'])
     cli=get('overwrite.cli.url')
-    if not (isinstance(cli,str) and cli.startswith('https://') and cli.endswith(':'+str(port))):
+    if not (isinstance(cli,str) and cli.startswith(HTTPS) and cli.endswith(':'+str(port))):
         command(base+[OCC_SET,'overwrite.cli.url','--value=https://'+host+':'+str(port)])
     for index,proxy in enumerate(cloud_proxies(compose)):
         command(base+[OCC_SET,'trusted_proxies',str(index),'--value='+proxy])

@@ -467,13 +467,16 @@ class SetupDownloadTests(unittest.TestCase):
     def test_offline_limited_and_gone(self):
         import urllib.error
         api = 'https://api.github.com/repos/immich-app/immich/releases/latest'
+        offline = self.failing(urllib.error.URLError('Temporary failure in name resolution'))
         with self.assertRaisesRegex(RuntimeError, 'Finding the current Immich release: could not download .*Temporary failure.*connected to the internet'):
-            neko_common.fetch(api, 'Finding the current Immich release', 1000, opener=self.failing(urllib.error.URLError('Temporary failure in name resolution')))
+            neko_common.fetch(api, 'Finding the current Immich release', 1000, opener=offline)
+        limited = self.failing(urllib.error.HTTPError(api, 403, 'rate limit exceeded', {}, None))
         with self.assertRaisesRegex(RuntimeError, 'GitHub is limiting requests.*wait an hour'):
-            neko_common.fetch(api, 'Finding the current Immich release', 1000, opener=self.failing(urllib.error.HTTPError(api, 403, 'rate limit exceeded', {}, None)))
+            neko_common.fetch(api, 'Finding the current Immich release', 1000, opener=limited)
         gone = 'https://github.com/immich-app/immich/releases/download/v9.9.9/docker-compose.yml'
+        missing = self.failing(urllib.error.HTTPError(gone, 404, 'Not Found', {}, None))
         with self.assertRaisesRegex(RuntimeError, 'answered HTTP 404'):
-            neko_common.fetch(gone, 'Downloading Immich v9.9.9\'s compose file', 1000, opener=self.failing(urllib.error.HTTPError(gone, 404, 'Not Found', {}, None)))
+            neko_common.fetch(gone, 'Downloading Immich v9.9.9\'s compose file', 1000, opener=missing)
 
     def test_a_good_answer_is_returned_with_a_user_agent(self):
         seen = []
