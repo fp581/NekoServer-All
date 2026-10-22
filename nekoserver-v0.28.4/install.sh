@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# One-time bootstrap for Arch/Nyarch and Debian/Ubuntu. Scheduled work uses the bundled Rust runtime.
+set -euo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Where the system update downloads packages; its disk is checked before updating.
+system_path=/var/cache/pacman
+[[ -d "$system_path" ]] || system_path=/
+# No options: the guided setup wizard. It installs, so it needs the same checks as --apply.
+if (( $# == 0 )); then
+    set -- --wizard
+fi
+apply=false
+readonly_mode=false
+recover=false
+full=false
+previous=''
+for arg in "$@"; do
+    case "$arg" in
+        --apply) apply=true ;;
+        --wizard) apply=true; full=true ;;
+        --recover) apply=true; recover=true ;;
+        --check|--dry-run|--help|-h) readonly_mode=true ;;
+    esac
+    [[ "$previous" == --profile && "$arg" == full ]] && full=true
+    [[ "$arg" == --profile=full ]] && full=true
+    previous="$arg"
+done
+if "$apply" && "$readonly_mode"; then
+    echo 'Use --apply separately from --check, --dry-run, or --help.' >&2
+    exit 2
+fi
+
+if "$apply"; then
+    if (( EUID != 0 )); then
+        echo 'Run it with sudo:  sudo bash install.sh' >&2
+        exit 1
+    fi
+    # One setup at a time, held until setup ends (the installer inherits it). A second
+    # one stops here, before it touches packages, their records or any service.
+    exec 9>>/run/nekoserver-setup.lock
+    if ! flock -n 9; then
+        echo 'Another NekoServer setup is running. Let it finish, then run  sudo bash install.sh  again.' >&2
+        exit 1
+    fi
+    # Never use a package manager on an unsupported distribution, and never a partial
+    # upgrade on Arch.
+    if [[ ! -r /etc/os-release ]]; then
+        echo 'Cannot identify the host distribution.' >&2
+        exit 1
+    fi
+    . /etc/os-release
+    distro=" ${ID:-} ${ID_LIKE:-} "
+    if [[ "$distro" == *' arch '* || "$distro" == *' nyarch '* ]] && command -v pacman >/dev/null; then
+        family=arch
+        clean_hint='sudo pacman -Sc'
+    elif [[ "$distro" == *' debian '* || "$distro" == *' ubuntu '* ]] && command -v apt-get >/dev/null; then
+        family=debian
+        clean_hint='sudo apt-get clean'
+        system_path=/var/cache/apt
+        [[ -d "$system_path" ]] || system_path=/
+        export DEBIAN_FRONTEND=noninteractive
+        # Ubuntu's needrestart could restart running services (a Docker someone already
+        # runs) after an install; apt waits for automatic security updates to finish.
+        export NEEDRESTART_SUSPEND=1 NEEDRESTART_MODE=l
+        apt_wait=(-o DPkg::Lock::Timeout=600)
+    else
+        echo 'Automatic setup supports Arch Linux / Nyarch (with pacman) and Debian / Ubuntu (with apt).' >&2
+        exit 1
+    fi
+    if [[ "$(uname -m)" != x86_64 ]] || ! command -v systemctl >/dev/null; then
+        echo 'An x86_64 systemd host is required.' >&2
+        exit 1
+    fi
+    if [[ "$family" == debian && -e /run/reboot-required ]]; then
+        # An earlier update is only finished after a restart; change no service before it.
+        echo 'An earlier system update needs a restart first.' >&2
+        echo 'Restart the PC now (sudo reboot), then run  sudo bash install.sh  again.' >&2
+        exit 3
+    fi
+    if [[ "$family" == debian ]] && ! "$recover" && command -v python3 >/dev/null; then
+        # An older NekoServer could leave a second definition of Docker's or Tailscale's
+        # repository, which stops apt from working at all: removed before apt first runs.
+        # Recovery skips it: it must open from local backups, also without a network.
+        python3 "$ROOT/host.py" repair
+    fi
+    if ! "$recover" && [[ -e /etc/nekoserver-backups/maintenance-resume.json ]]; then
+        # An unfinished monthly update can only be finished by the version that started
+        # it; stop before the system update or any NekoServer file is replaced.
+        if ! command -v python3 >/dev/null; then
+            echo 'A monthly update did not finish. Run  sudo systemctl start nekoserver-maintenance-resume.service  first, then run  sudo bash install.sh  again.' >&2
+            exit 1
+        fi
+        if ! NEKO_ROOT="$ROOT" python3 -I -c 'import os, sys; sys.path.insert(0, os.environ["NEKO_ROOT"]); import neko_common; m = neko_common.pending_maintenance(); m and sys.exit(m)'; then
+            exit 1
+        fi
+    fi
+    if ! "$recover"; then
+        # The update and packages go on the system disk; the apps and data go on the SSD
+        # and HDD, which the wizard checks once you have picked them. Stop before changing
+        # anything when the system disk is too full for a safe update.
+        # GNU df: --output cannot be combined with -P. A failed measurement is reported
+        # plainly and does not stop the install (the package manager checks space again itself).
+        system_free=''
+        if df_output=$(df -B1G --output=avail "$system_path" 2>&1); then
+            system_free=$(printf '%s\n' "$df_output" | tail -n 1 | tr -dc '0-9')
+        fi
+        if [[ -z "$system_free" ]]; then
+            echo "Could not measure the free space on the system disk ($system_path); continuing." >&2
+            echo 'Make sure at least 5 GB is free there before the update.' >&2
+        elif (( system_free < 5 )); then
+            echo "The system disk has only ${system_free} GB free. The system update and the packages" >&2
+            echo 'need at least 5 GB there (your apps and files go on the SSD and HDD instead).' >&2
+            echo "Free some space (for example: $clean_hint), then run  sudo bash install.sh  again." >&2
+            exit 1
+        fi
+        # Recovery skips this so restoring never depends on the network.
+        if [[ "$family" == debian ]]; then
+            # Debian and Ubuntu: refresh the package lists only and install just what is
+            # needed. Upgrading the rest of the system stays your own routine.
+            echo 'Refreshing the package lists (apt-get update).'
+            apt-get "${apt_wait[@]}" update
+        else
+            # Arch supports only full upgrades: refresh and upgrade everything first, so the
+            # apps and their dependencies install at their current versions and match each
+            # other.
+            echo 'Updating the system first (pacman -Syu). This can take a while.'
+            if pacman -Q archlinux-keyring >/dev/null 2>&1; then
+                # Arch's recommended order: a current keyring before the upgrade it signs.
+                pacman -Sy --needed --noconfirm archlinux-keyring
+            fi
+            pacman -Syu --noconfirm
+            if [[ ! -d "/usr/lib/modules/$(uname -r)" ]]; then
+                echo
+                echo 'A new Linux kernel was installed by the update.'
+                echo 'Restart the PC now (sudo reboot), then run  sudo bash install.sh  again.'
+                echo 'Nothing else was changed; it starts from here next time.'
+                exit 3
+            fi
+        fi
+    fi
+    packages=()
+    # Check commands as well as packages: an installed but incomplete package
+    # must not be mistaken for a usable prerequisite.
+    # package:commands it provides, in each family's package names.
+    if [[ "$family" == debian ]]; then
+        prerequisites=( \
+            'python3:python3' \
+            'util-linux:lsblk findmnt blkid flock runuser' 'mount:mount umount' \
+            'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
+            'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
+        certificates=(ca-certificates)
+    else
+        prerequisites=( \
+            'python:python3' \
+            'util-linux:lsblk findmnt blkid mount umount flock runuser' \
+            'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
+            'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
+        certificates=(ca-certificates ca-certificates-utils)
+    fi
+    for entry in "${prerequisites[@]}"; do
+        package="${entry%%:*}"
+        for command_name in ${entry#*:}; do
+            if ! command -v "$command_name" >/dev/null; then
+                packages+=("$package")
+                break
+            fi
+        done
+    done
+    if [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then
+        packages+=("${certificates[@]}")
+    fi
+    if ((${#packages[@]})); then
+        printf 'Checking repository availability for missing prerequisites: %s\n' "${packages[*]}"
+        # Check the complete set before changing anything.
+        if [[ "$family" == debian ]]; then
+            apt-get "${apt_wait[@]}" install -y --no-install-recommends -- "${packages[@]}"
+        else
+            pacman -Si -- "${packages[@]}" >/dev/null
+            pacman -S --needed --noconfirm -- "${packages[@]}"
+        fi
+    fi
+    for entry in "${prerequisites[@]}"; do
+        for command_name in ${entry#*:}; do
+            if ! command -v "$command_name" >/dev/null; then
+                echo "Prerequisite still missing: $command_name. Repair package ${entry%%:*} before retrying." >&2
+                exit 1
+            fi
+        done
+    done
+fi
+if ! command -v python3 >/dev/null; then
+    echo 'Python 3.11+ is missing. Running  sudo bash install.sh  installs it' >&2
+    echo 'Read-only check/dry-run modes never install packages.' >&2
+    exit 1
+fi
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+    echo 'Python 3.11+ is required; bring the host up to date before retrying.' >&2
+    exit 1
+fi
+if "$apply" && "$full"; then
+    # Every system package the apps need that is not inside their containers (host.py
+    # APP_PACKAGES), installed up front so a missing one stops the setup before it
+    # starts. Installing does not start Docker; its setup step does that on the SSD.
+    python3 "$ROOT/host.py" bootstrap
+fi
+exec python3 "$ROOT/installer.py" "$@"
