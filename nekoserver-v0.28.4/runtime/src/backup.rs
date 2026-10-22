@@ -394,14 +394,6 @@ fn mark_latest(target: &Path, current: &str, apply: bool) -> Result<()> {
     }
     common::atomic(&marker, current.as_bytes(), 0o600)
 }
-/// Immich's own folder marker (`.immich`, written so Immich can tell its folders are
-/// mounted). Everything else in its upload and library folders is someone's original,
-/// whatever its format: Immich keeps uploads under their own extension, and accepts
-/// many more formats (JFIF, JPE, JP2, PSD, SVG, MXF, many camera RAW files...) than any
-/// list here would stay in step with, so none is left out by its name.
-fn immich_marker(path: &Path) -> bool {
-    path.file_name().is_some_and(|n| n == ".immich")
-}
 fn walk<F: FnMut(&Path) -> Result<()>>(root: &Path, f: &mut F) -> Result<()> {
     common::safe(root)?;
     for path in list(root)? {
@@ -644,10 +636,10 @@ pub fn archive_checked(
         if !root.is_dir() {
             return Err(Error::new("Immich section must be a directory"));
         }
+        // Every regular file in Immich's upload and library folders is kept, whatever
+        // its name or format, so formats Immich adds later are backed up too. Symlinks
+        // and special files still stop the run (walk), and every copy is checked.
         walk(&root, &mut |path| {
-            if immich_marker(path) {
-                return Ok(());
-            }
             let meta = fs::metadata(path)?;
             let modified = meta.mtime() as f64 + meta.mtime_nsec() as f64 / 1e9;
             if now - modified < age as f64 {
@@ -2371,10 +2363,13 @@ mod tests {
             write(&path, name.as_bytes());
             old(&path);
         }
-        write(&library.join("upload/.immich"), b"");
-        old(&library.join("upload/.immich"));
+        // Immich's folder markers too: a restore needs them, and Immich checks for them.
+        for marker in ["upload/.immich", "library/.immich"] {
+            write(&library.join(marker), b"");
+            old(&library.join(marker));
+        }
         let copied = archive(&library, &hdd, true, 60, Check::Quick).unwrap();
-        assert_eq!(copied, names.len() as u64);
+        assert_eq!(copied, names.len() as u64 + 2);
         for name in names {
             assert_eq!(
                 fs::read(hdd.join("upload/u").join(name)).unwrap(),
@@ -2382,8 +2377,10 @@ mod tests {
                 "{name}"
             );
         }
-        // Immich's folder marker is its own, not an original.
-        assert!(!hdd.join("upload/.immich").exists());
+        assert!(hdd.join("upload/.immich").is_file() && hdd.join("library/.immich").is_file());
+        // A symlink in Immich's folders still stops the run instead of being followed.
+        std::os::unix::fs::symlink("/etc/passwd", library.join("upload/u/link.jpg")).unwrap();
+        assert!(archive(&library, &hdd, true, 60, Check::Quick).is_err());
         let _ = fs::remove_dir_all(root);
     }
     #[test]

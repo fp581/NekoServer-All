@@ -304,8 +304,10 @@ def restart_owed(config,base=None):
     `recover.py resume`."""
     if not SNAPSHOT_RESUME.exists():return []
     try:
-        saved=json.loads(SNAPSHOT_RESUME.read_text());services=saved['services']
-        if saved.get('format')!='neko-immich-snapshot-resume-v1' or not isinstance(services,list) or not set(services)<=SERVICES-{'database'}:raise ValueError
+        saved=json.loads(SNAPSHOT_RESUME.read_text());listed=saved['services']
+        if saved.get('format')!='neko-immich-snapshot-resume-v1' or not isinstance(listed,list) or not set(listed)<=SERVICES-{'database'}:raise ValueError
+        # Names taken from Immich's fixed service list, not from the file's own text.
+        services=[name for name in sorted(SERVICES) if name in listed]
     except (OSError,ValueError,KeyError,TypeError):raise RuntimeError('Unreadable record of Immich services to restart: '+str(SNAPSHOT_RESUME)) from None
     base=base or compose_args(config)
     if services:command(base+['start',*services],180)

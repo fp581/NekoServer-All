@@ -339,6 +339,9 @@ class HardwareVideoAppsTests(unittest.TestCase):
             ctx.config = {'data_mount': data, **config}
             checked, configured, chipped = [], [], []
 
+            def give_chip(*_):
+                chipped.append('immich')
+
             def apps_on(cfg, choice, log, apps=None):
                 done = {}
                 for app in apps:
@@ -352,7 +355,7 @@ class HardwareVideoAppsTests(unittest.TestCase):
                     mock.patch.object(hv.gpu, 'render_nodes', return_value={}), \
                     mock.patch.object(hv, 'install_drivers'), \
                     mock.patch.object(hv, 'apps_on', apps_on), \
-                    mock.patch.object(hv, 'give_immich_the_chip', lambda *a: chipped.append('immich')), \
+                    mock.patch.object(hv, 'give_immich_the_chip', side_effect=give_chip), \
                     mock.patch('recovery_tools.mounts'), \
                     mock.patch('recovery_tools.lock', return_value=mock.MagicMock()), \
                     mock.patch('neko_common.verify_storage'):
@@ -419,9 +422,15 @@ class HardwareVideoLockTests(unittest.TestCase):
             calls = []
             lock_file = Path(data) / 'installer/recovery.lock'
             lock_file.parent.mkdir(parents=True)
+            def give_chip(*_):
+                calls.append('immich')
+
+            def apps_on(*_, **__):
+                calls.append('apps')
+                return {}
             with mock.patch.object(recovery_tools, 'mounts'), \
-                    mock.patch.object(hv, 'give_immich_the_chip', lambda *a: calls.append('immich')), \
-                    mock.patch.object(hv, 'apps_on', lambda *a, **k: calls.append('apps') or {}), \
+                    mock.patch.object(hv, 'give_immich_the_chip', side_effect=give_chip), \
+                    mock.patch.object(hv, 'apps_on', side_effect=apps_on), \
                     mock.patch.object(recovery_tools.sys.stdin, 'isatty', return_value=False):
                 with lock_file.open('a') as held:  # a backup or monthly update is running
                     fcntl.flock(held, fcntl.LOCK_EX)

@@ -127,6 +127,14 @@ def give_immich_the_chip(config, log, run=subprocess.run):
     return True
 
 
+def configure_app(app, chip, entry, client):
+    """Turn hardware transcoding on in one app, with this chip's method."""
+    _, node, jellyfin_method, immich_method = chip
+    if app == 'jellyfin':
+        return configure_jellyfin(entry, jellyfin_method, node, client)
+    return configure_immich(entry, immich_method, client)
+
+
 SOFTWARE = 'converts video in software: the chip did not pass the video check inside it'
 
 
@@ -143,9 +151,6 @@ def apps_on(config, choices, log, client_factory=None, apps=None, check=decodes)
             done[app] = SOFTWARE
             log(app.capitalize() + ' hardware video: ' + done[app])
             continue
-        _, node, jellyfin_method, immich_method = chip
-        configure = {'jellyfin': lambda e, c: configure_jellyfin(e, jellyfin_method, node, c),
-                     'immich': lambda e, c: configure_immich(e, immich_method, c)}[app]
         entry = account_store.get(config, app) if account_store.enabled(config) else None
         if not entry:
             done[app] = 'needs your login: turn it on in the app (see HARDWARE-VIDEO.md)'
@@ -153,7 +158,7 @@ def apps_on(config, choices, log, client_factory=None, apps=None, check=decodes)
         client = client_factory(app)
         try:
             account_setup.wait(app, client, 180)
-            done[app] = configure(entry, client)
+            done[app] = configure_app(app, chip, entry, client)
         except (RuntimeError, OSError, KeyError, ValueError) as exc:
             done[app] = 'not changed (' + str(exc) + ')'
         finally:
