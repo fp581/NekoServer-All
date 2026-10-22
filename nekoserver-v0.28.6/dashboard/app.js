@@ -1558,15 +1558,20 @@ function appMenu(app) {
   const st = appState(app);
   return {title: CATALOG[app.id].name, subtitle: LABELS[st] || 'Status unknown', items: [restartItem(app.id)]};
 }
+/* A program started from another app (Firefox from a terminal, say) belongs to that
+ * app's group: closing goes to the whole group, so the menu says so. */
+function desktopMenu(r, name) {
+  const label = text(r.desktop, name);
+  const inside = !label.toLowerCase().includes(name.toLowerCase().split(' ')[0]) && !name.toLowerCase().includes(label.toLowerCase());
+  const what = inside ? label + ' and everything started from it' : 'it';
+  return {title: inside ? name + ' · part of ' + label : label, subtitle: 'Opened on the desktop', items: [
+    {label: inside ? 'Close ' + label : 'Close app', detail: 'Asks ' + what + ' to quit, like closing its window', run: () => closeDesktop(r, false)},
+    {label: inside ? 'Force close ' + label + '…' : 'Force close…', detail: 'Stops ' + what + ' at once: unsaved work is lost', danger: true, run: () => confirmForce(r, label)}
+  ]};
+}
 function processMenu(r) {
   const name = text(r.name, 'This program');
-  if (r.kind === 'desktop') {
-    const label = text(r.desktop, name);
-    return {title: label, subtitle: 'Opened on the desktop', items: [
-      {label: 'Close app', detail: 'Asks it to quit, like closing its window', run: () => closeDesktop(r, false)},
-      {label: 'Force close…', detail: 'Stops it at once: unsaved work is lost', danger: true, run: () => confirmForce(r, label)}
-    ]};
-  }
+  if (r.kind === 'desktop') { return desktopMenu(r, name); }
   if (r.kind === 'app' || r.kind === 'app_part') {
     const app = CATALOG[r.app]?.name || r.app;
     const items = r.kind === 'app_part'

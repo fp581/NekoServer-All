@@ -54,14 +54,22 @@ impl Actions {
     fn entries(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Value>> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
-    /// Record a new action; false while one for the same target still runs.
-    fn begin(&self, key: &str, value: Value) -> bool {
+    /// Record a new action; false while one for the same target still runs (or, with
+    /// `alone`, while any action of the same kind does: one app restarts at a time).
+    fn begin(&self, key: &str, value: Value, alone: bool) -> bool {
         let mut map = self.entries();
-        if map.get(key).is_some_and(|v| v["state"] == "running") {
+        let kind = value["kind"].clone();
+        if map
+            .iter()
+            .any(|(k, v)| v["state"] == "running" && (k == key || (alone && v["kind"] == kind)))
+        {
             return false;
         }
         map.insert(key.to_string(), value);
         true
+    }
+    fn forget(&self, key: &str) {
+        self.entries().remove(key);
     }
     fn update(&self, key: &str, fields: Value) {
         if let (Some(entry), Some(fields)) = (self.entries().get_mut(key), fields.as_object()) {
@@ -71,10 +79,12 @@ impl Actions {
             entry["at"] = json!(common::now());
         }
     }
-    fn running(&self, kind: &str) -> bool {
+    /// Whether a restart is still stopping or starting parts (not just waiting for the
+    /// app to answer): stopping the service then would leave the app half stopped.
+    pub fn changing_apps(&self) -> bool {
         self.entries()
             .values()
-            .any(|v| v["kind"] == kind && v["state"] == "running")
+            .any(|v| v["kind"] == "app" && v["state"] == "running" && v["phase"] != "checking")
     }
     /// What the page shows: running actions, and finished ones for 10 minutes.
     pub fn list(&self) -> Value {
@@ -97,7 +107,9 @@ fn started(key: &str) -> Value {
 /* ---------- server apps ---------- */
 
 /// The parts of an app that are restarted, in the order they start (they stop in
-/// the reverse order). The database and cache are never among them.
+/// the reverse order). The first is the app itself and must exist; the others are
+/// optional (Immich's machine learning can be left out; Nextcloud's cron too). The
+/// database and cache are never among them.
 pub fn restart_plan(app: &str) -> Vec<&'static str> {
     match app {
         "immich" => vec!["immich-server", "immich-machine-learning"],
@@ -176,12 +188,6 @@ impl Restart<'_> {
         };
         let name = app_name(app);
         let key = format!("app:{app}");
-        if self.actions.running("app") {
-            return refused(
-                "E47",
-                "Another app is restarting. Wait for it to finish, then try again.",
-            );
-        }
         if let Some(job) = unfinished_job(&journals()) {
             return refused("E47", &format!("{job} is still waiting to be finished, and it starts and stops apps itself. NekoServer finishes it on its own (or at the next restart of the computer); try again after that."));
         }
@@ -189,23 +195,34 @@ impl Restart<'_> {
             Ok(path) => path,
             Err(_) => return refused("E47", "The app drive or media drive isn't the one in your settings, so nothing was restarted. Server health shows which drive is missing."),
         };
-        let Ok(held) = common::lock(&lock) else {
-            return refused("E47", &format!("A backup or the monthly update is running right now. Restarting {name} could disturb it, so wait for it to finish (Backups shows which one), then try again."));
-        };
+        // Recorded first, so two requests at once can't both take the lock.
         if !self.actions.begin(
             &key,
             json!({"key": key, "kind": "app", "target": app, "label": name,
-            "verb": "restart", "state": "running", "message": format!("Restarting {name}…"),
-            "began": common::now(), "at": common::now()}),
+            "verb": "restart", "state": "running", "phase": "stopping",
+            "message": format!("Restarting {name}…"), "began": common::now(), "at": common::now()}),
+            true,
         ) {
-            return refused("E47", &format!("{name} is already restarting."));
+            return refused(
+                "E47",
+                "An app is already restarting. Wait for it to finish, then try again.",
+            );
         }
+        let Ok(held) = common::lock(&lock) else {
+            self.actions.forget(&key);
+            return refused("E47", &format!("A backup or the monthly update is running right now. Restarting {name} could disturb it, so wait for it to finish (Backups shows which one), then try again."));
+        };
         let (actions, key2, app) = (self.actions.clone(), key.clone(), app.to_string());
         thread::spawn(move || {
             let result = restart_app(&app, |step| {
+                let doing = if step == "checking" {
+                    "checking it answers"
+                } else {
+                    step
+                };
                 actions.update(
                     &key2,
-                    json!({"message": format!("Restarting {}… ({step})", app_name(&app))}),
+                    json!({"phase": step, "message": format!("Restarting {}… ({doing})", app_name(&app))}),
                 )
             });
             drop(held);
@@ -257,7 +274,7 @@ fn docker(args: &[&str], timeout: u64) -> Result<String> {
     all.extend_from_slice(args);
     match common::command(&all, timeout)? {
         (0, out) => Ok(out),
-        _ => Err(Error::new("Docker refused to stop or start it")),
+        _ => Err(Error::new("Docker refused the request. Check Server health → Starts by itself, or run setup again")),
     }
 }
 /// Stop the app's parts (never its database or cache), start them again in order, then
@@ -271,12 +288,13 @@ fn restart_app(app: &str, progress: impl Fn(&str)) -> Result<&'static str> {
     let found = containers(app)?;
     let ids = plan
         .iter()
-        .map(|s| {
-            found.get(*s).cloned().ok_or_else(|| {
-                Error::new("one of its parts is missing; run setup again to put it back")
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+        .filter_map(|s| found.get(*s).cloned())
+        .collect::<Vec<_>>();
+    if !found.contains_key(plan[0]) {
+        return Err(Error::new(
+            "its container is missing; run setup again to put it back",
+        ));
+    }
     progress("stopping");
     // Whatever happens while stopping, every part is started again afterwards: a part
     // left stopped would stay stopped (Docker doesn't restart what was stopped on purpose).
@@ -286,15 +304,21 @@ fn restart_app(app: &str, progress: impl Fn(&str)) -> Result<&'static str> {
         .map(|id| docker(&["stop", "--time", "60", id], 120))
         .collect::<Vec<_>>();
     progress("starting");
-    for id in &ids {
-        docker(&["start", id], 120)?;
+    // Every part is started, whatever happened to the others: a part left stopped
+    // would stay stopped until the next restart of the computer.
+    let started = ids
+        .iter()
+        .map(|id| docker(&["start", id], 120))
+        .collect::<Vec<_>>();
+    if started.iter().any(Result::is_err) {
+        return Err(Error::new("Docker couldn't start every part of it again. Check Server health → Starts by itself, or run setup again, which starts what should be running"));
     }
     let note = if stopped.iter().any(Result::is_err) {
         " (Docker couldn't stop every part, so some kept running instead of restarting)"
     } else {
         ""
     };
-    progress("checking it answers");
+    progress("checking");
     let deadline = Instant::now() + START_LIMIT;
     let port = app_port(app);
     loop {
@@ -375,15 +399,23 @@ impl Host {
     fn desktop(&self, pid: u32) -> Option<live::Desktop> {
         live::desktop_of(&fs::read_to_string(self.proc.join(format!("{pid}/cgroup"))).ok()?)
     }
-    /// Every process of the desktop app, from its cgroup.
+    /// Every process of the desktop app, from its cgroup and any groups below it.
     fn members(&self, path: &str) -> Vec<u32> {
-        fs::read_to_string(
-            self.cgroup
-                .join(path.trim_start_matches('/'))
-                .join("cgroup.procs"),
-        )
-        .map(|s| s.lines().filter_map(|l| l.trim().parse().ok()).collect())
-        .unwrap_or_default()
+        let mut pids = vec![];
+        let mut folders = vec![self.cgroup.join(path.trim_start_matches('/'))];
+        while let Some(folder) = folders.pop() {
+            if let Ok(listed) = fs::read_to_string(folder.join("cgroup.procs")) {
+                pids.extend(listed.lines().filter_map(|l| l.trim().parse::<u32>().ok()));
+            }
+            for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) && folders.len() < 200 {
+                    folders.push(entry.path());
+                }
+            }
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        pids
     }
     /// Signal each process still in the app. Each is checked again right before (through
     /// a pidfd, so a number Linux has just given to another process is never signalled).
@@ -449,7 +481,7 @@ impl Close<'_> {
         let label = app.label.clone();
         if !self.actions.begin(&key, json!({"key": key, "kind": "desktop", "target": app.path, "pid": self.pid,
             "label": label, "verb": verb, "state": "running", "message": format!("{doing} {label}…"),
-            "began": common::now(), "at": common::now()}))
+            "began": common::now(), "at": common::now()}), false)
         {
             return refused("E47", &format!("{label} is already being closed."));
         }
@@ -591,13 +623,22 @@ mod tests {
     #[test]
     fn actions_run_one_at_a_time_and_finished_ones_expire() {
         let actions = Actions::default();
-        let entry =
-            json!({"key": "app:jellyfin", "kind": "app", "state": "running", "at": common::now()});
-        assert!(actions.begin("app:jellyfin", entry.clone()));
-        assert!(!actions.begin("app:jellyfin", entry.clone()));
-        assert!(actions.running("app"));
+        let running = |key: &str, kind: &str| json!({"key": key, "kind": kind, "state": "running", "phase": "stopping", "at": common::now()});
+        assert!(actions.begin("app:jellyfin", running("app:jellyfin", "app"), true));
+        assert!(!actions.begin("app:jellyfin", running("app:jellyfin", "app"), true));
+        // One app at a time; a desktop app may close meanwhile.
+        assert!(!actions.begin("app:immich", running("app:immich", "app"), true));
+        assert!(actions.begin("desktop:/x", running("desktop:/x", "desktop"), false));
+        assert!(actions.changing_apps());
+        actions.update("app:jellyfin", json!({"phase": "checking"}));
+        assert!(
+            !actions.changing_apps(),
+            "waiting for an answer is safe to interrupt"
+        );
         actions.update("app:jellyfin", json!({"state": "done"}));
-        assert!(!actions.running("app"));
+        assert!(actions.begin("app:immich", running("app:immich", "app"), true));
+        actions.forget("app:immich");
+        actions.forget("desktop:/x");
         assert_eq!(actions.list().as_array().unwrap().len(), 1);
         actions.entries().get_mut("app:jellyfin").unwrap()["at"] =
             json!(common::now() - KEEP_FINISHED - 1.0);
