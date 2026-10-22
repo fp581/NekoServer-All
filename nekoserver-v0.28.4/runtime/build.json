@@ -1,0 +1,30 @@
+{
+  "version": "0.28.4",
+  "target": "x86_64-unknown-linux-musl",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "binary_sha256": "ac92f8418bb2466e3682e760c64f8985d0a7dfda6d95b55b89be67992c9d75b3",
+  "source_sha256": {
+    "Cargo.toml": "21bdd8fc2acf6d4827a737539b6994e32ff8bcda4cb9b42411e7d452cbc2e674",
+    "Cargo.lock": "7202c2127db95818ef70646433c2c0a5a265c4d2cdfe2dd572a4dfbb79e00be1",
+    "build.py": "e28baddf0e9a553c4fbce447185830602c896716afbe4af8719eedff5a74bd8f",
+    "src/app_snapshot.rs": "7f4e01c07358f55edc13a157eff8cc8af134daf1282ef90457eb269d76ea1ebe",
+    "src/backup.rs": "e857d9fdc144fe6e18e73248cdb6ad72ba5aceb8b832be2a92dcb46b4325bbdd",
+    "src/collect.rs": "531a5d99043828433a4ee6bfd012ae6a149377654f943ed02ac7af8b64e4ae14",
+    "src/common.rs": "e6b2651c4f9fb9c24c082a4ddfbc9432ee156ed9e8d7be7aee7bf13cdab5f1d0",
+    "src/control.rs": "78b524246e817221487979d40eb1c6f8e6c06ced98d5a0cf2669ecb329648c03",
+    "src/fans.rs": "6fed9f6f0d7290976ccf75112411384cb14e7861aa017e56c5baa3d4902182dc",
+    "src/heartbeat.rs": "1f99dcd81eddf2157eaad3109837361aed37ab1af4b3b0123cdd067ae9096bac",
+    "src/host_snapshot.rs": "9fb54c4d97053c3abde0e732d91fb7d86ed6144cb97c2e88363e334f8df109ad",
+    "src/ledger.rs": "5a895f6a9f24d361afc81ff68b79eb27b85e8f1e036aec68a167c8f37364f6ca",
+    "src/live.rs": "ce1763bea94a81ad290a22e0f7db3a7132e5c00a637ea63197bafd246a245950",
+    "src/main.rs": "1bc43e819aca30753323212955fd67cba58e3e112f9097ca78652d77785fc802",
+    "src/maintenance.rs": "228833f90264536967c5fbb69a6a56448df793b26957160085d26e6eb5bed5f5",
+    "src/media.rs": "250d2ad2c26e12f24922009083f55b19b8486831479cdf5f70090df00fad1456",
+    "src/music_backup.rs": "831fc6b742d0f7bc909508556c617694d5a42fc50d4474f5fe51057c090637c8",
+    "src/notify.rs": "af2ecddce570cda8fc6a3dd88e96efa0f075941e80768b8c8a105b3b651e2ebf",
+    "src/openrgb.rs": "cd1a48112c69a3543ba58d881e8ef18e3abbd9b80f1728ad6d15dd49ccacc24f",
+    "src/os_policy.rs": "7e9d6a5653cb6094711b16dc478541e41ce160638816066c83789c4cbe4241e5",
+    "src/serve.rs": "a80497ccc55d928a914276a89e13c2d0a15379113ae39a5969fe76905d4501cd",
+    "src/startup.rs": "f91433efd22d3857218d793c579e1bfda42bf96056b699f9cbf844dd6eb970ae"
+  }
+}

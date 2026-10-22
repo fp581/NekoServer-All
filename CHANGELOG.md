@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.28.4 — 2026-10-21
+
+### Fixed (every Linux)
+- **Every Immich original is now archived, whatever its format.** The photo archive copied only files with extensions on its own list. Files Immich accepts but the list lacked (`.jfif`, `.jpe`, `.jp2`, `.psd`, `.svg`, `.mxf`, several camera RAW formats) were left out without a word, and the job still reported success. The USB photo backup copies that archive, so they were missing there too. Now every regular file in Immich's upload and library folders is archived, whatever its name or extension, including Immich's own `.immich` folder markers, so formats Immich adds in later versions are covered too. Every copy is still checked by checksum, a file that changes while it is copied is not kept, and symlinks or special files still stop the run. The next archive run copies the files that were left out before.
+- **Immich comes back after a manual snapshot that was cut off.** The manual Immich snapshot (`recover.py snapshot`) stops Immich's services and restarted them only in a `finally` block. That never runs after a power cut, an out-of-memory kill or `kill -9`, so Immich stayed offline until restarted by hand. Before stopping anything, the snapshot now records which services it stopped and installs a one-time boot hook. At the next boot, the hook (or `sudo python3 recover.py resume`, or the next snapshot) starts them again. The record and the hook are removed only once they are confirmed running.
+- **A second graphics chip is tried when the first fails.** On a machine with Intel and AMD graphics, only Intel was checked. If it failed, both apps went to software even though the AMD chip might have worked. Each app now gets the first chip, Intel first, that passes the check inside that app.
+- **The finishing screen shows the dashboard at its real address.** With `dashboard.port` changed (to 8899, say), it still said `http://127.0.0.1:8787`. It now uses the configured port, and the default port is written in one place instead of seven.
+- **Sonarr, Radarr and Lidarr could change the media library while an update was still being checked.** They started normally, with a writable library and their background jobs running. An import, rename or delete in that window stayed after a rollback, while their databases went back, so the two could disagree. While checked they now see the library read-only, keeping their ports for the media connection audit. After the commit they start as usual.
+- **Hardware video works with only one of Jellyfin and Immich.** With Immich but not Jellyfin, the chip was checked inside a Jellyfin that doesn't exist, so Immich was never switched over. With Jellyfin but not Immich, setup said "needs setup: Immich" for an app you turned off. Now only the apps this server runs are checked, each inside its own container, and only those count towards finishing the step. A chip that fails one app's check leaves that app in software; that is a result, not a step left to do.
+- **A backup that systemd can't even start now raises an alert.** Its worker writes no report then, so the dashboard showed "Unknown — No recorded successful run" for ever, and nothing reached the phone. The collector now reads the backup service's own result: a run systemd couldn't start or that crashed counts as failed, with an alert. A backup that has never succeeded becomes overdue one interval plus a day after its schedule was set up.
+- **A monthly update that failed before its snapshot no longer leaves passwords behind.** The saved app definitions (`*-old.json`, with database passwords) are written before the recovery journal exists. When an early check failed there was nothing to roll back, so they stayed in plain text in the snapshot folder on the HDD (root-only). They are now blanked after any failed run; a run a journal still needs is left alone.
+- **Immich set up with its own worker split** (`IMMICH_WORKERS_EXCLUDE` in its settings) was left with no worker at all while the monthly update checked it, so every update failed its checks and rolled back. The exclusion is set aside for the check.
+
+### Fixed (Debian / Ubuntu)
+- **A package you hold** (`apt-mark hold docker-ce`, say) counted as not installed. Setup then tried to install it again, and apt refused because held packages may not change. Held packages now count as installed and are left alone.
+- **Ubuntu's automatic security updates no longer make setup fail at random.** When they were running, apt stopped at once because dpkg was busy. apt now waits for them, up to 10 minutes.
+- **Ubuntu's needrestart can no longer restart your running services during setup.** After an install it may restart services that use updated libraries, a Docker you already run included. It is switched off for NekoServer's package installs.
+- **A new setup run waits for a cut-off installation that is still working.** After an interruption, setup already waited for apt and dpkg before tidying up. But a fresh setup run went straight into the tidy-up, so it could remove the record, the service masks and the start policy while a surviving dpkg was still installing. Every tidy-up now waits until apt and dpkg have stopped. If they are still busy, it keeps everything protected and says so. A `dpkg --audit` that fails also stops the tidy-up rather than counting as "nothing unfinished".
+- **Finishing half-installed packages touches only NekoServer's.** It used `dpkg --configure -a`, which also sets up any unrelated package that is waiting (a half-installed Postfix, say), along with its problems. Now only this installation's packages and the unfinished packages they depend on are set up; others are left as they were.
+- **Recovery works offline.** `install.sh --recover` repaired the Docker and Tailscale repositories first. Without a network, a missing signing key stopped it before the recovery wizard opened. Recovery now skips that repair; a recovery step that installs packages does what it needs then.
+- **Ubuntu-based systems that name only Ubuntu** in their os-release (elementary OS, for one) passed `install.sh` and then failed at "not supported yet". They are recognised as Debian/Ubuntu everywhere.
+
+### Changed
+- The README treats Arch Linux, Nyarch, Debian and Ubuntu alike, and no longer points to the Arch-only edition, which is retired.
+- Version 0.28.4; the release folder is now `nekoserver-v0.28.4`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.28.3 — 2026-10-21
 
 ### Fixed (every Linux)

@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_DIR: nekoserver-v0.28.3
+  RELEASE_DIR: nekoserver-v0.28.4
   # Pinned so lint results and the shipped binary only change when this line does.
   # Matches the rustc recorded in runtime/build.json.
   RUST_TOOLCHAIN: "1.99.1"
@@ -78,7 +78,15 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+      - name: cargo test --locked
+        # A failing test is also named as an annotation, readable without the full log.
+        run: |
+          set -o pipefail
+          if ! cargo test --locked 2>&1 | tee "$RUNNER_TEMP/rust-tests.log"; then
+            grep -E "^test .* FAILED$|panicked at|^thread '.*' panicked|assertion" "$RUNNER_TEMP/rust-tests.log" \
+              | head -20 | sed 's/^/::error title=Rust test::/'
+            exit 1
+          fi
 
   runtime-manifest:
     name: Bundled runtime matches its sources
