@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.28.5 — 2026-10-22
+
+### Added
+- **Restart or close apps from the dashboard**: right-click on a computer, like a task manager, or tap the ⋯ button on a phone or tablet (it stands out there, since phones have no right-click):
+  - **Server apps** (on *Your apps*, or any of their programs on *Processes*): **Restart app** stops the whole app and starts it again in order, then waits until it runs and answers. Its database and cache keep running: Immich restarts its server and machine learning, Nextcloud its web part and background jobs.
+  - **Desktop apps** (opened on the server's own desktop): **Close app** asks it to quit. If it is still running 10 seconds later, the page says so and offers **Force close**, which warns first that unsaved work is lost.
+  - The page shows *Stopping…* or *Restarting…*, then the result. A failure says why (it stopped again, its health check fails, it doesn't answer yet) and what to do.
+  - **Protected**: databases and caches inside apps, backups, the monthly update, system services, the desktop itself and NekoServer are never stopped from here. Their menu says so.
+  - **Every app action needs the PIN, on every device, the server too.** Without a PIN, app controls stay off.
+  - **Backups and updates come first.** A restart waits while a backup or the monthly update runs, or while a cut-off one still has to be finished (new error E47). Only one app restarts at a time.
+  - Restarts and closes are done by the control service (root), which checks each request itself. The web server still can't stop anything, and closing goes only to processes in a desktop session's own app group.
+- **The Apps page shows each app's health.** It comes from the app's own health check: Docker's where the app has one, otherwise the hourly app check that asks it for a page. *Not responding* never comes from processor use alone, because converting a video can rightly use every core.
+
+### Fixed (every Linux)
+- **Long file names no longer stop a backup.** Copies were written as `name.neko-part` first, so a file whose name was 246 bytes or longer (255 is allowed) failed. A version of an edit (`name.neko-<date>.ext`) failed from about 224 bytes. The copy in progress now has a short name of its own. Dated versions and current-version notes that would be too long keep the start of the name plus a short code, and the full name is kept in the folder's `.neko-names.json`. The recovery wizard uses it to restore the file under its own name. This affects the photo archive, the USB copies and Nextcloud.
+- **The USB drive keeps its checksum records when the HDD's are lost.** The weekly mirror replaced the USB's ledger with the HDD's. With the HDD's ledger gone, that left the USB with an empty one, which no longer said which copy of a damaged file is the good one. Both ledgers are now read and combined; neither loses a record, and a run that fails part way leaves the USB's ledger as it was. Two ledgers that record different checksums decide nothing: both copies are kept and reported. An unreadable USB ledger is set aside, never overwritten.
+- **Nextcloud files whose names differ only in upper/lower case** (`Documents/report.pdf` and `documents/report.pdf`) are no longer merged on an exFAT USB drive. exFAT takes them as one name, so the two folders became one and the files looked like versions of each other. The first keeps its place; the others are left out and listed, and the backup shows as incomplete. An ext4 drive keeps them apart.
+- **Restores give files their original modification times back.** Host and app snapshot restores set every file to today's date, which confuses synchronisation and tools that compare ages. Saved times are now set again on files and folders. Nightly app snapshots now record them too; host snapshots already did.
+- **Immich uses the graphics chip that passed the check.** Setup set the method (`qsv` for Intel, say) but not the device, so on a computer with two chips Immich could pick the other one (an AMD chip with Intel's method) and fail. The tested device is now set as Immich's preferred hardware device.
+- **The boot hook that restarts Immich after a cut-off snapshot works from a folder with spaces.** Its command wasn't quoted, so `Neko Server/recover.py` became two arguments and Immich stayed stopped. The paths are now quoted for systemd. The hook uses the installer copy that setup keeps on the SSD, which isn't moved or deleted like a download folder can be.
+- **LAN folder sharing finishes on the first setup run.** With `share_mode: "lan"` and automatic LAN settings, Samba said "Needs setup" because only the LAN gateway step chose the home-network address, and that step ran after Samba. Samba and the gateway now share one choice, made by whichever runs first, so sharing folders no longer needs the HTTPS gateway.
+- **Nextcloud with server-side encryption is no longer reported as backed up.** With Nextcloud's *Encryption* app on, the weekly USB copy took the encrypted files but not the keys needed to read them (`files_encryption`). The checksums passed, and the copy still could not be read after losing the server. The weekly backup now detects encryption and reports itself as incomplete, saying why. The recovery wizard warns that such files can't be read instead of suggesting an upload. Encryption is off by default.
+- **Onboarding finishes with only Navidrome, or only qBittorrent.** Setup always asks onboarding to connect apps, and onboarding stopped with "No supported connectors selected" when none of the chosen apps had anything to connect. Running setup again didn't help. Onboarding now checks those apps' accounts and readiness and carries on.
+- **A media import stops as soon as its drive is gone.** The import checked the drives before it started and again only after copying everything. If the HDD was unmounted midway, the next files went into the empty folder underneath, on the system disk, and could fill it. The drive is now checked before each file and again before each one is published, and the whole import stops at once.
+- **The backup password is chosen and typed twice, never taken from sudo.** Setup checked the password by running `sudo -v` with it. Under a passwordless sudo rule that succeeds whatever was typed, so a typo could become the backup password unnoticed. Setup now asks for a backup password (at least 8 characters, your login password is fine), typed twice. Keys made before keep opening with the sudo password you had then.
+- **Monthly snapshots without a backup key say what they really hold.** Setup said the app password files would be left out, but the monthly job kept them in `data.tar`, unencrypted (readable by root only), so a restore still has them. That behaviour is kept, and now setup, every monthly run's log, the snapshot's manifest (`"password_files": "unencrypted_in_data_tar"`) and MONTHLY-MAINTENANCE.md all say so.
+- **The Rust test that failed in CI now and then is fixed.** Its stand-in for OpenRGB answered after 4 seconds while the client waits 3, so it passed only when the system happened to deliver early. It now answers within the client's limit and still proves the fans never wait for the lights.
+
+### Fixed (Debian / Ubuntu)
+- **Finishing half-installed packages no longer sets up unneeded alternatives.** For a dependency with a choice (`A | B`), both counted as needed, so an unfinished B was set up even when A was installed. Now nothing is added when one choice is already set up (or provided by an installed package); otherwise only the first unfinished one is.
+
+### Changed
+- NEXTCLOUD.md says what is really backed up. The monthly snapshot holds Nextcloud's application, settings and database, not your files; those get the weekly USB copy. The monthly restore test proves the restored database, not the whole app with your files.
+- The control service (`nekoserver-control`) runs whenever the dashboard is installed, because app controls need it. With fan control switched off (`"fan_control": false`), it never takes over a fan, and any fan it held goes back to the motherboard. Setup checks that before carrying on.
+- Version 0.28.5; the release folder is now `nekoserver-v0.28.5`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+- No PIN yet? Run setup again in a terminal to choose one; app controls stay off without it.
+
 ## v0.28.4 — 2026-10-21
 
 ### Fixed (every Linux)
