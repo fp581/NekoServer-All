@@ -23,6 +23,8 @@ from neko_common import VERSION, systemd_arg, safe_path, mount_path, atomic_json
 from installer import validate_config
 from modules import docker as docker_module
 
+# The settings file, next to the installer and in its preserved copy on the SSD.
+CONFIG_NAME='config.json'
 DOCKER=['docker','--host','unix:///var/run/docker.sock']
 SERVICES={'database','redis','immich-server','immich-machine-learning'}
 FORMAT='neko-immich-snapshot-v1'
@@ -143,7 +145,7 @@ def verify_bundle(bundle,config):
         rel=Path(name)
         if rel.is_absolute() or '..' in rel.parts or not re.fullmatch(r'[0-9a-f]{64}',expected):raise RuntimeError('Invalid preserved installer checksum entry')
         if digest(bundle/rel)!=expected:raise RuntimeError('Preserved installer checksum mismatch')
-    saved=json.loads(safe_path(bundle/'config.json').read_text())
+    saved=json.loads(safe_path(bundle/CONFIG_NAME).read_text())
     for key in ('data_mount','media_mount','storage'):
         if saved.get(key)!=config.get(key):raise RuntimeError('Preserved installer storage configuration differs')
     return manifest['version']
@@ -288,7 +290,7 @@ def hook_command(config,config_path):
     (with its configuration copy) is preferred: it stays where it is, while the folder
     setup was run from may be moved, renamed or deleted before the next boot."""
     bundle=Path(config['data_mount'])/'installer/releases'/('v'+VERSION)
-    script,settings=bundle/'recover.py',bundle/'config.json'
+    script,settings=bundle/'recover.py',bundle/CONFIG_NAME
     if not (script.is_file() and settings.is_file()):
         script,settings=Path(__file__).resolve().with_name('recover.py'),Path(config_path).resolve()
     return ' '.join(systemd_arg(a) for a in ('/usr/bin/python3',script,'--config',settings,'resume'))
@@ -348,7 +350,7 @@ def snapshot(config,destination,apply=False,config_path=None):
         atomic_json(destination/'.incomplete',{'reason':'Snapshot is not usable until manifest publication','source_project':'neko-immich','resume_services':resume})
         try:
             if resume:
-                owe_restart(config,config_path or Path(__file__).with_name('config.json'),resume)
+                owe_restart(config,config_path or Path(__file__).with_name(CONFIG_NAME),resume)
                 command(base+['stop','-t','60',*resume],180)
                 stopped_cleanly(base,resume)
             # Rescan after writers stop, including all original/generated/profile/marker files.

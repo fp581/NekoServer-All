@@ -281,7 +281,7 @@ details.more summary span { color: var(--muted); font-weight: 400; }
 .process-table th { color: var(--muted); font-weight: 600; font-size: 13px; }
 .process-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .process-table td small { display: block; font-size: 12px; color: var(--muted); }
-.process-table td:first-child { max-width: 320px; overflow-wrap: anywhere; }
+.process-table td:first-child { max-width: 320px; overflow-wrap: anywhere; position: relative; padding-right: 52px; }
 .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 18px; font-size: 14px; color: var(--muted); }
 
 
@@ -391,7 +391,6 @@ body.tv { font-size: 19px; }
 }
 .menu-button:hover { border-color: var(--line); color: var(--text); }
 .app-corner { display: inline-flex; align-items: center; }
-.process-table td:first-child { position: relative; padding-right: 52px; }
 .process-table .menu-button { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
 .process-table td small.busy, .action-note.warning { color: var(--amber); }
 .action-note { margin: 10px 0 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }

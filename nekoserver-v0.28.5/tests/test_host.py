@@ -531,8 +531,9 @@ class DebianTest(unittest.TestCase):
         def interrupted(done):
             apt.unconfigured = ['samba', 'libwbclient-alt', 'postfix', 'samba-common', 'samba-common-alt']
         apt.on_install = interrupted
+        family = self.family(apt)
         with self.assertRaisesRegex(RuntimeError, 'did not finish'):
-            self.family(apt).install(['samba'])
+            family.install(['samba'])
         # Of a choice nothing met yet, only the first unfinished one is set up.
         self.assertEqual(apt.configured, [['samba', 'samba-common']])
         self.assertEqual(apt.unconfigured, ['libwbclient-alt', 'postfix', 'samba-common-alt'])
