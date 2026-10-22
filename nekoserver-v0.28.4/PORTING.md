@@ -76,6 +76,6 @@ Shared code must never call a package manager itself. `tests/test_host.py` fails
 
 | Family | Status |
 | --- | --- |
-| Arch Linux / Nyarch | Supported |
-| Debian 12+ / Ubuntu 24.04+ (and systems built on them) | New in 0.28.0, not yet proven on a real install; TV setup is Arch-only for now |
+| Arch Linux / Nyarch (and systems built on them) | Supported; not yet proven on a real install |
+| Debian 12+ / Ubuntu 24.04+ (and systems built on them) | Supported; not yet proven on a real install. TV setup is Arch/Nyarch-only for now |
 | Fedora, openSUSE | Later |

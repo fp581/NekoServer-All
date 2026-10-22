@@ -23,6 +23,7 @@
 - **Ubuntu-based systems that name only Ubuntu** in their os-release (elementary OS, for one) passed `install.sh` and then failed at "not supported yet". They are recognised as Debian/Ubuntu everywhere.
 
 ### Changed
+- The README treats Arch Linux, Nyarch, Debian and Ubuntu alike, and no longer points to the Arch-only edition, which is retired.
 - Version 0.28.4; the release folder is now `nekoserver-v0.28.4`.
 
 ### Upgrade notes

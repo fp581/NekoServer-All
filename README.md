@@ -1,4 +1,4 @@
-# NekoServer All
+# NekoServer
 
 **Turn a Linux PC into a home media server**, with your own video library, phone photo backup, music streaming and private cloud drive, set up by one guided installer.
 
@@ -15,7 +15,7 @@ The installer creates every app account, connects the apps to each other, and wa
 
 ## Get started
 
-This is the edition of NekoServer for all major Linux distributions. **It runs on Arch Linux, Nyarch, Debian 12+ and Ubuntu 24.04+**, with more to come. Debian and Ubuntu support is new and not yet proven on a real install, so try it on a spare PC or a virtual machine first. For the Arch-only edition, see [NekoServer for Arch](https://github.com/fp581/NekoServer---Arch-based-media-server).
+NekoServer runs on **Arch Linux, Nyarch, Debian 12+ and Ubuntu 24.04+** (and systems built on them, such as Linux Mint), with more to come. It hasn't been proven on a real install yet, so try it on a spare PC or a virtual machine first.
 
 You need a 64-bit PC with one of those installed, plus an SSD, an HDD and a USB drive, already formatted.
 
