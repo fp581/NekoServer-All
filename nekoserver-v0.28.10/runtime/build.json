@@ -2,10 +2,10 @@
   "version": "0.28.10",
   "target": "x86_64-unknown-linux-musl",
   "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
-  "binary_sha256": "38da567ab74c21a1a264361435472afb5038d644e04dc0472986d3abca9e0fdc",
+  "binary_sha256": "961e71d20300375409465423a329af51b99dceb5807c1e54e82f453029a0ecd1",
   "source_sha256": {
-    "Cargo.toml": "7471baf15031b0bcb610c109d0293c7672ee02c9f13cf3a83a8dfbdd2ef3f0b2",
-    "Cargo.lock": "7517b0cd47da31327f12b73e0bf12a5aea92966d225d649d5291a7ad685553f4",
+    "Cargo.toml": "3436454b7fe68f7f25b9a8d48a277f76bc060952d5094da24a79da69bc9c2942",
+    "Cargo.lock": "a9f6ff36e24dfdef99a0adaa2f384005ea222e1de7ef81c1545228a05e790f48",
     "build.py": "e28baddf0e9a553c4fbce447185830602c896716afbe4af8719eedff5a74bd8f",
     "src/app_snapshot.rs": "63665a820c3f14f8660209eebd1770908ca8dce6cd702f2de898b76ec61c0326",
     "src/apps.rs": "8cf6a1e06163ee36c8d448612f6ffa2dfedd58cd5b904dac33e257243547ab04",
