@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,24 +43,43 @@ class DriveGone(Exception):
     (not just this source), before anything more is written."""
 
 
+# The kernel's table of what is mounted where (a fixed file, read fresh each time).
+MOUNT_TABLE=Path('/proc/self/mountinfo')
+
+
+def mount_id(root):
+    """The kernel's ID of the mount at `root`, or None when nothing is mounted there. A
+    new mount (the drive plugged in again, or another one) gets a new ID."""
+    found=None
+    for line in MOUNT_TABLE.read_text(encoding='utf-8',errors='replace').splitlines():
+        fields=line.split()
+        # Spaces and other odd characters appear as octal escapes (\040 for a space).
+        point=re.sub(r'\\([0-7]{3})',lambda m:chr(int(m[1],8)),fields[4]) if len(fields)>4 else None
+        if point==str(root):found=fields[0]   # the last one mounted there is the one in use
+    return found
+
+
 class DriveGuard:
     """The destination's own drive, remembered while it is mounted. Checked before each
     file and again before it is published: if the drive was unmounted, a copy would land
     in the empty folder underneath, on the system disk, and could fill it."""
     def __init__(self,root):
         self.root=Path(root)
-        if not os.path.ismount(self.root):raise DriveGone('Destination drive is not mounted')
-        self.device=os.stat(self.root).st_dev
+        self.mount=mount_id(self.root)
+        if self.mount is None:raise DriveGone('Destination drive is not mounted')
+        self.device=None   # the drive's own device number, from the first folder checked
 
     def check(self,path):
         path=Path(path)
         while not path.exists() and path!=self.root and self.root in path.parents:
             path=path.parent   # a folder still to be made: check where it will be made
         try:
-            same=os.path.ismount(self.root) and os.stat(self.root).st_dev==self.device and os.stat(path).st_dev==self.device
+            device=os.stat(path).st_dev
         except OSError:
-            same=False
-        if not same:raise DriveGone('The destination drive is no longer mounted; the import stopped before writing more')
+            device=None
+        if self.device is None:self.device=device
+        if mount_id(self.root)!=self.mount or device is None or device!=self.device:
+            raise DriveGone('The destination drive is no longer mounted; the import stopped before writing more')
 
 
 class IncompleteSource(RuntimeError):
@@ -94,11 +114,8 @@ def import_file(current,dest,stat,uid,gid,guard=None):
     finally:temp.unlink(missing_ok=True)
 
 
-def copy_source(source,media,apply=False,uid=None,gid=None,guard=None):
-    category=source.get('category')
-    if category not in ('movies','tv','music'):raise RuntimeError('Invalid media category')
-    folder=source_folder(source)
-    if folder is None:return {'status':'reference_only','copied':0,'reason':'Configure this indexer through Prowlarr'}
+def import_target(folder,media,category):
+    """This source's own folder in the library, checked not to overlap the source."""
     identity=hashlib.sha256((category+'\0'+str(folder.resolve())).encode()).hexdigest()[:16]
     target=safe_path(Path(media)/'library'/category/('source-'+identity))
     if folder.resolve()==target.resolve() or folder.resolve() in target.resolve().parents or target.resolve() in folder.resolve().parents:
@@ -106,21 +123,37 @@ def copy_source(source,media,apply=False,uid=None,gid=None,guard=None):
     # No source may be inside this managed category, even under a different import namespace.
     managed=(Path(media)/'library'/category).resolve()
     if folder.resolve()==managed or managed in folder.resolve().parents:raise RuntimeError('Source already belongs to this managed library')
-    entries=[];required=0
-    # Strict listing: a folder that cannot be read makes this source incomplete
-    # (nothing is copied), instead of silently leaving an album out.
+    return target
+
+
+def planned_copies(folder,target):
+    """[(file, where it goes, its stat)] for every file not imported yet. Strict listing:
+    a folder that cannot be read makes this source incomplete (nothing is copied),
+    instead of silently leaving an album out."""
     try:
         found=strict_files(folder,lambda here,name:name.endswith(TEMPORARY))
     except UnreadableEntries as exc:
         raise IncompleteSource([Path(p).relative_to(folder).as_posix() if Path(p).is_relative_to(folder) else '.'
                                 for p,_ in exc.problems]) from None
+    entries=[]
     for found_path,_ in sorted(found):
         current=safe_path(found_path)
         dest=safe_path(target/current.relative_to(folder))
         if dest.exists():
             if not dest.is_file() or digest(current)!=digest(dest):raise RuntimeError('Existing imported file differs; refusing overwrite')
             continue
-        entries.append((current,dest,current.stat()));required+=current.stat().st_size
+        entries.append((current,dest,current.stat()))
+    return entries
+
+
+def copy_source(source,media,apply=False,uid=None,gid=None,guard=None):
+    category=source.get('category')
+    if category not in ('movies','tv','music'):raise RuntimeError('Invalid media category')
+    folder=source_folder(source)
+    if folder is None:return {'status':'reference_only','copied':0,'reason':'Configure this indexer through Prowlarr'}
+    target=import_target(folder,media,category)
+    entries=planned_copies(folder,target)
+    required=sum(stat.st_size for _,_,stat in entries)
     if required>shutil.disk_usage(media).free:raise RuntimeError('Not enough free space on target library filesystem')
     for current,dest,stat in entries:
         if apply:import_file(current,dest,stat,uid,gid,guard)

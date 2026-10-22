@@ -234,9 +234,12 @@ def version_parts(name):
     return fitted(stem, NAME_MAX - VERSION_TAG - len(ext.encode()), name), ext
 
 
+LATEST_SUFFIX = '.neko-latest'     # the note naming a file's current saved copy
+
+
 def latest_note(name):
     """The name of the note saying which saved copy of `name` is current."""
-    return '.' + fitted(name, NAME_MAX - len('.') - len('.neko-latest'), name) + '.neko-latest'
+    return '.' + fitted(name, NAME_MAX - len('.') - len(LATEST_SUFFIX), name) + LATEST_SUFFIX
 
 
 def partial_name(name):
@@ -397,7 +400,7 @@ def strict_files(root, skip=None, skip_dirs=()):
 
 def not_backup_data(here, root, name):
     """The tree's own ledger, notes and partial files: kept next to the data, not data."""
-    return (name.startswith('.neko-') or name.endswith(('.neko-latest', '.neko-part'))
+    return (name.startswith('.neko-') or name.endswith((LATEST_SUFFIX, '.neko-part'))
             or (here == root and name.startswith(LEDGER_NAME)))
 
 

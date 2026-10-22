@@ -488,17 +488,25 @@ class StrictImportTests(unittest.TestCase):
         copied = sorted(p.name for p in Path(result['destination']).rglob('*') if p.is_file())
         self.assertEqual(copied, ['single.flac', 'track.flac'])
 
+    def mount_table(self, mount_id=40, mounted=True):
+        """A stand-in for the kernel's mount table (/proc/self/mountinfo)."""
+        point = str(self.media).replace(' ', '\\040')
+        table = Path(self.tmp.name) / 'mountinfo'
+        table.write_text('22 1 8:1 / / rw - ext4 /dev/sda1 rw\n'
+                         + (f'{mount_id} 22 8:17 / {point} rw - ext4 /dev/sdb1 rw\n' if mounted else ''))
+        return table
+
     def test_an_unmounted_drive_stops_the_import_before_the_next_file(self):
         """The drive drops out after the first file: nothing more is written into the
         folder underneath (the system disk), and the whole import stops."""
         import source_import
-        mounted = {'yes': True}
         real_publish = source_import.publish_no_replace
 
         def publish_then_unmount(temp, dest):
             real_publish(temp, dest)
-            mounted['yes'] = False      # the USB cable is pulled, say
-        with mock.patch.object(source_import.os.path, 'ismount', side_effect=lambda _: mounted['yes']), \
+            self.mount_table(mounted=False)      # the USB cable is pulled, say
+        with mock.patch.object(source_import, 'MOUNT_TABLE', self.mount_table()), \
+                mock.patch.object(source_import.os.path, 'ismount', return_value=True), \
                 mock.patch.object(source_import, 'publish_no_replace', side_effect=publish_then_unmount), \
                 mock.patch.object(source_import.os, 'geteuid', return_value=0), \
                 mock.patch.object(source_import, 'ensure_directory', side_effect=lambda path, *a: Path(path).mkdir(parents=True, exist_ok=True)):
@@ -508,18 +516,21 @@ class StrictImportTests(unittest.TestCase):
             source = {'type': 'local', 'path': str(self.source), 'category': 'music'}
             with self.assertRaises(source_import.DriveGone):
                 source_import.run(config, [source, source], apply=True)
-        copied = [p for p in (self.media / 'library').rglob('*.flac')]
+        copied = list((self.media / 'library').rglob('*.flac'))
         self.assertEqual(len(copied), 1)
         self.assertFalse(any(p.name.endswith('.neko-part') for p in self.media.rglob('*')))
 
-    def test_a_drive_swapped_for_another_filesystem_is_noticed(self):
+    def test_another_drive_mounted_in_its_place_is_noticed(self):
         import source_import
-        with mock.patch.object(source_import.os.path, 'ismount', return_value=True):
+        with mock.patch.object(source_import, 'MOUNT_TABLE', self.mount_table(40)):
             guard = source_import.DriveGuard(self.media)
             guard.check(self.media)
-            guard.device += 1          # what is mounted there now is another filesystem
+            self.mount_table(41)       # unplugged and plugged in again, or another drive
             with self.assertRaises(source_import.DriveGone):
                 guard.check(self.media)
+            self.mount_table(mounted=False)
+            with self.assertRaises(source_import.DriveGone):
+                source_import.DriveGuard(self.media)
 
 
 class ClockAndUsbPrivacyTests(unittest.TestCase):
