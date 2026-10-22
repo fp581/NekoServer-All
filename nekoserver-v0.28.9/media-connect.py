@@ -63,15 +63,23 @@ def field_set(fields, name, value):
     return False
 
 
-def choose(items, prompt):
+def choose(items, prompt, ask=input, attempts=3):
+    """The item picked by its number; None when skipped (blank or Ctrl+D). A number not
+    in the list is asked again rather than failing the step."""
     for i, item in enumerate(items, 1):
         print(f" {i:3d}. {item.get('name') or item.get('implementationName') or item.get('implementation')}")
-    answer = input(f'{prompt} (number, blank to skip): ').strip()
-    if not answer:
-        return None
-    if not answer.isdecimal() or not 1 <= int(answer) <= len(items):
-        raise ValueError('Invalid selection')
-    return items[int(answer)-1]
+    for _ in range(attempts):
+        try:
+            answer = ask(f'{prompt} (number, blank to skip): ').strip()
+        except EOFError:
+            print()
+            return None
+        if not answer:
+            return None
+        if answer.isdecimal() and 1 <= int(answer) <= len(items):
+            return items[int(answer)-1]
+        print(f'Type a number from 1 to {len(items)}, or press Enter to skip.')
+    return None
 
 
 def configure_indexers(root, apply, config=None):
@@ -324,10 +332,11 @@ def main(argv=None):
             if label=='download clients' and 'qbittorrent' not in selected:
                 raise RuntimeError('qBittorrent is not selected for deployment')
             action()
-        except (RuntimeError, ValueError, OSError, KeyboardInterrupt) as exc:
-            print(f'{label}: incomplete ({exc})',file=sys.stderr)
+        except (RuntimeError, ValueError, OSError, KeyboardInterrupt, EOFError) as exc:
+            # Ctrl+C or Ctrl+D: nobody is answering any more, so stop asking.
+            print(f'{label}: incomplete ({str(exc) or "stopped"})',file=sys.stderr)
             failures.append(label)
-            if isinstance(exc,KeyboardInterrupt): break
+            if isinstance(exc,(KeyboardInterrupt,EOFError)): break
     return 1 if failures else 0
 
 if __name__ == '__main__':

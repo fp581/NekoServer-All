@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.28.9 — 2026-10-22
+
+### Fixed (every Linux)
+- **Setup runs again after the PC's timezone changes.** The media apps' settings files carry the timezone, and setup replaced one only when it matched what the current settings would write. With `"timezone": "auto"` (the default), setting the PC's timezone after setup made every later run fail the media step with "has local edits or different settings". Setup now keeps a checksum of each file it writes (`.neko-written` next to it), so it recognises its own unedited file whatever changed (timezone, a drive, the graphics chip) and replaces it after keeping a copy. Files from earlier releases are recognised when only the timezone differs. A file changed by hand is still left alone, and the message says how to get a fresh one. Changing `media.uid`/`gid` is still refused, now with a clear message: Navidrome and Seerr couldn't read their own settings and music as another user.
+- **The drive space check no longer reads every photo when setup runs again.** On a re-run the result is only shown, yet the 4-weekly checksum comparison of the USB copies could read the whole photo archive on both drives (an hour or more on a big library). Re-runs now compare by size and date; a new install still checks in full.
+- **Phone alerts: a topic set in my-config.json gets its access token, and can be changed.** With `notifications.endpoint` set in the settings, setup never asked for the token, so a protected topic refused every alert. Changing the topic later failed the step on every run. Setup now asks for the new topic's token and, when alerts already go elsewhere, asks you to confirm the switch. Without a terminal, alerts keep going to the earlier topic and setup says how to switch.
+- **A guided setup without Navidrome goes ahead.** Taking Navidrome out of `media.services` made the whole setup refuse to start ("Music setup requires navidrome"). The music step now says there is no music player to set up; the music backup still keeps Lidarr's music.
+- **"yes" means yes when adding media sources.** The source questions accepted only `y`: typing `yes` added nothing, and for "Copy this folder…?" it meant no, without a word. Both now take yes/no (Enter = no) and ask again otherwise; Ctrl+D keeps the sources added so far.
+- **A typo in the media connector's lists is asked again.** A number outside the list (choosing an indexer or Lidarr's profiles) failed the step, and onboarding then stopped setup. It is now asked again (Enter or Ctrl+D skips). Ctrl+D elsewhere in the connector stops it cleanly instead of with a Python error.
+- **A mistyped Jellyfin password during library setup asks you to try again**, instead of failing onboarding with "rerun after checking the service". (Only when saved app accounts are turned off.)
+- **Too old a Python says what to do.** On a system based on an older release (Linux Mint 21 is Ubuntu 22.04), install.sh said "bring the host up to date", which doesn't bring Python 3.11. It now names the version found and the releases that have 3.11.
+
 ## v0.28.8 — 2026-10-22
 
 ### Fixed (every Linux)

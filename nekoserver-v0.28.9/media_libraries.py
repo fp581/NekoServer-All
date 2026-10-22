@@ -81,6 +81,29 @@ def matching(values, category, name, kind):
     return None
 
 
+def sign_in(client, user, secret):
+    """Sign the client in as a Jellyfin administrator (the password is not kept)."""
+    if not secret:
+        raise SetupRequired('A nonempty administrator password is required')
+    try:
+        auth = client.call('/Users/AuthenticateByName', 'POST', {'Username': user, 'Pw': secret})
+    except RuntimeError as exc:
+        if str(exc) != 'jellyfin: HTTP 401':
+            raise
+        # A typing mistake: something to do again, not a broken Jellyfin.
+        raise SetupRequired('Jellyfin did not accept that administrator username and password; '
+                            'run  sudo bash install.sh  again and type them as you set them in Jellyfin') from None
+    if not isinstance(auth, dict) or not isinstance(auth.get('AccessToken'), str) or not auth['AccessToken']:
+        raise SetupRequired('Jellyfin administrator authentication was not verified')
+    client.headers['X-Emby-Token'] = auth['AccessToken']
+    if 'Authorization' in client.headers:
+        client.headers['Authorization'] += ', Token="' + auth['AccessToken'] + '"'
+    user_info = auth.get('User')
+    policy = user_info.get('Policy') if isinstance(user_info, dict) else None
+    if not isinstance(policy, dict) or policy.get('IsAdministrator') is not True:
+        raise SetupRequired('Jellyfin administrator authentication was not verified')
+
+
 def jellyfin(client, media, apply, username, password):
     info = client.call('/System/Info/Public')
     if not isinstance(info, dict) or not info.get('Id'):
@@ -90,20 +113,7 @@ def jellyfin(client, media, apply, username, password):
     user = username('Jellyfin administrator username (blank to skip): ').strip()
     if not user:
         raise SetupRequired('Administrator authentication skipped')
-    secret = password('Jellyfin administrator password: ')
-    if not secret:
-        raise SetupRequired('A nonempty administrator password is required')
-    auth = client.call('/Users/AuthenticateByName', 'POST', {'Username': user, 'Pw': secret})
-    del secret
-    if not isinstance(auth, dict) or not isinstance(auth.get('AccessToken'), str) or not auth['AccessToken']:
-        raise SetupRequired('Jellyfin administrator authentication was not verified')
-    client.headers['X-Emby-Token'] = auth['AccessToken']
-    if 'Authorization' in client.headers:
-        client.headers['Authorization'] += ', Token="' + auth['AccessToken'] + '"'
-    user_info=auth.get('User')
-    policy=user_info.get('Policy') if isinstance(user_info,dict) else None
-    if not isinstance(policy,dict) or policy.get('IsAdministrator') is not True:
-        raise SetupRequired('Jellyfin administrator authentication was not verified')
+    sign_in(client, user, password('Jellyfin administrator password: '))
     results = [row('jellyfin:administrator', 'pass')]
     ids = []
     for category, name, kind in LIBRARIES:

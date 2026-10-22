@@ -225,8 +225,11 @@ def gib(value):
 
 
 def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=newest_dump_bytes,
-           unarchived=awaiting_archive):
-    """Return (problems that stop the install, warnings worth confirming)."""
+           unarchived=awaiting_archive, thorough=True):
+    """Return (problems that stop the install, warnings worth confirming). Not
+    `thorough` (a re-run, where the result is only logged): the USB copies are compared
+    by size and date only, never read in full for the 4-weekly checksum comparison, which
+    would read every photo on both drives each time setup is run again."""
     data, media = Path(config['data_mount']), Path(config['media_mount'])
     stop, warn = [], []
     for name, path, (minimum, recommended), purpose in (
@@ -244,7 +247,7 @@ def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=ne
     photos = max(used(data / 'photos/immich-library'), used(archive_folder(config)))
     cloud = used(media / 'cloud/files')
     room = usb_space(config.get('photos', {}).get('external_backup_uuid', ''), usb_sources(config),
-                     full=full_check_due(config), fstype=config.get('photos', {}).get('external_backup_fstype', 'ext4'))
+                     full=thorough and full_check_due(config), fstype=config.get('photos', {}).get('external_backup_fstype', 'ext4'))
     if room is not None:
         # What the next copy must write (new files, changed files, this week's database
         # copy) plus room to grow. Old versions already on the drive are never reused.
@@ -273,8 +276,9 @@ def run(ctx, prompt=input, output=print):
     if not ctx.apply:
         ctx.log('Capacity check runs after the drives are chosen')
         return
-    stop, warn = assess(ctx.config)
-    if installed(ctx.config):
+    rerun = installed(ctx.config)
+    stop, warn = assess(ctx.config, thorough=not rerun)
+    if rerun:
         # The minimums are for a new install. Afterwards the drives fill with your own
         # photos and files; say so, but never block the rest of a re-run.
         for line in stop + warn:
