@@ -554,7 +554,7 @@ def fetch(url, what, limit, timeout=30, opener=None, headers=None):
             raise RuntimeError(f'{what}: GitHub is limiting requests from this address right now (HTTP {exc.code}); '
                                'wait an hour and run setup again') from None
         raise RuntimeError(f'{what}: {url} answered HTTP {exc.code}; try again later') from None
-    except (OSError, TimeoutError) as exc:
+    except OSError as exc:
         raise RuntimeError(f'{what}: could not download {url} ({getattr(exc, "reason", exc)}). Check that this PC '
                            'is connected to the internet, then run setup again') from None
 

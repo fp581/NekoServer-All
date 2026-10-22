@@ -14,6 +14,7 @@ LAUNCHER=Path('/usr/local/bin/nekoserver-dashboard')
 DESKTOP_ENTRY=Path('/usr/share/applications/nekoserver-dashboard.desktop')
 MANAGED='X-NekoServer-Managed=true'
 SERVICE='nekoserver-dashboard.service'
+EXEC_START='ExecStart='
 SERVICE_UNIT=SYSTEMD_UNITS/SERVICE
 # Fan and lighting changes: the only root part, reached by the web server over a socket.
 CONTROL='nekoserver-control.service'
@@ -51,7 +52,7 @@ def own_port(unit):
     """The port the installed dashboard service already listens on (None without one)."""
     for line in (unit or '').split('\n'):
         words=line.split()
-        if line.startswith('ExecStart=') and 'serve' in words and '--port' in words[:-1]:
+        if line.startswith(EXEC_START) and 'serve' in words and '--port' in words[:-1]:
             return int(words[words.index('--port')+1]) if words[words.index('--port')+1].isdigit() else None
     return None
 
@@ -103,7 +104,7 @@ def public_host_of(unit):
     """The Tailscale name a web service definition answers (None without one)."""
     for line in (unit or '').split('\n'):
         words=line.split()
-        if line.startswith('ExecStart=') and 'serve' in words and '--public-host' in words[:-1]:
+        if line.startswith(EXEC_START) and 'serve' in words and '--public-host' in words[:-1]:
             return words[words.index('--public-host')+1]
     return None
 
@@ -235,7 +236,7 @@ def with_public_host(unit,public):
     """The web service's definition with its Tailscale name set (or removed)."""
     lines=unit.split('\n')
     for i,line in enumerate(lines):
-        if line.startswith('ExecStart=') and ' serve ' in line:
+        if line.startswith(EXEC_START) and ' serve ' in line:
             plain=re.sub(r' --public-host \S+','',line)
             lines[i]=plain+(' --public-host '+public if public else '')
     return '\n'.join(lines)
