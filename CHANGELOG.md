@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.28.10 — 2026-10-22
+
+### Fixed (every Linux)
+- **An app added later gets its login asked before it starts.** `sudo bash install.sh --module media --apply` (or `--module photos`) started a newly added app without choosing its login, so the next setup took the app for one already set up ("Existing app data: enter the current login") although nobody had ever made one. Both steps now choose the logins first, as Nextcloud already did.
+- **A new home address from the router is asked again instead of failing.** When the router gave the server another address, LAN folder sharing and the home HTTPS addresses failed on every setup run with "Configured LAN address/subnet is not on an active physical LAN interface". Setup now says the address changed and asks for the home network again (without a terminal, it says to run setup in one).
+- **Docker already used on this PC: setup says what to do.** It stopped with "use separate migration script" or "manual migration required", but no such script or guide existed. The message now names the folder Docker uses and points to a new section in STORAGE.md with the steps. Existing Docker data is still never moved or deleted automatically.
+- **The Docker recovery checkpoint says why it wasn't saved**, instead of a fixed "Verified classic overlay2 Docker checkpoint still required".
+- **Picking the drives: a typo is asked again, and "no drive" says why.** A wrong number, or a mistyped name at "Type sdb1 to confirm", ended the storage step (and with it the whole setup), and the USB backup picker did the same. Both now ask again (Enter still stops). When no drive can be used, setup lists each drive it found and why: formatted NTFS/exFAT/FAT (with how to format it as ext4), or already in use at another folder (with how to unmount it). The system disk is never listed.
+- **Opening a setup page never installs a browser.** When Firefox wasn't installed (a Chrome or Chromium user), each sign-in page installed it first; on Ubuntu that is the Firefox snap, a large download in the middle of a step. Pages now open in the browser you already have.
+- **The gateway and Tailscale steps say what failed.** "Gateway command failed; inspect local setup and HTTPS permissions" and "systemctl failed; inspect the local service/package status" now name the command and its own error line.
+- **A drive you already mount from /etc/fstab: the message says what to do.** "Conflicting existing fstab entry" now shows the line, explains that NekoServer mounts the drive itself (with options that let the PC start when a drive is missing), and says to take the line out and unmount the drive.
+- **Docker's or Tailscale's repository key can't be downloaded: the reason is named.** Without internet, setup ended with a bare "<urlopen error …>"; on a brand-new Ubuntu release the makers don't package for yet, with "HTTP Error 404". Setup now says which it is and what to do.
+- **Your own smb.conf no longer blocks shared folders.** On a PC where Samba was set up by hand before, setup said only "refusing to alter it. Review manually." It now says how to move the file aside, or how to keep your own shares as well: add `include = /etc/samba/nekoserver.conf` to your `[global]` section, and setup accepts the file as it is.
+- **Shared folders and the TV keep their account.** Both took "the person who ran sudo" on every run, so setup run later by another administrator (or with sudo from a second account) silently moved the shares to that person and set the TV up for them. Both now keep the account chosen the first time; `networking.samba_user` and `tv.user` name another on purpose (settings table in README.md).
+- **A firewall that is on: the message names the ports.** It said "allow your home network to reach Samba (port 445) and the home address (gateway port)"; it now names ports 8442-8447 and gives the ufw command, and says Tailscale needs no rule.
+- **A command that fails inside a step is reported with its own words.** The summary said "Command '[…]' returned non-zero exit status 1"; it now says which command failed and what it printed (or how long it ran before timing out).
+
+### Changed
+- **Files of earlier releases are tidied up.** Each release installs its own copy of the runtime in five places on the system disk and one on the SSD, and kept them for good (20 MB per release). When a setup run has finished, copies that no service uses any more are removed, and release bundles older than the two newest go too (Docker's start-guard folder included). The current release, and any folder a service still points at, are never touched.
+- Sonar: two exception tests make a single call inside `assertRaises`.
+
 ## v0.28.9 — 2026-10-22
 
 ### Fixed (every Linux)
