@@ -51,7 +51,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 A missing reading shows "—" or "No load reading", never a made-up 0. If a sensor you expect is missing, see Help → *A sensor is missing*. Most motherboard chips need `lm_sensors` (`sudo pacman -S lm_sensors` on Arch, `sudo apt-get install lm-sensors` on Debian/Ubuntu, then `sudo sensors-detect` and a restart). To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.28.5/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.28.6/nekoserver-runtime hardware
 ```
 
 ## Fans & lights
@@ -73,7 +73,7 @@ To leave fans and lights alone completely, set `"fan_control": false` under `"da
 On a computer, right-click an app on **Your apps**, or a program on **Processes**, like in the Windows Task Manager. **On a phone or tablet, tap the ⋯ button** next to it (phones have no right-click). With the keyboard, use the ⋯ button or the context-menu key.
 
 - **Server apps** (Jellyfin, Immich, Nextcloud and the others): **Restart app** stops the app and starts it again, all of its parts together and in order, then waits until it runs and answers again (up to 4 minutes). Its **database and cache keep running**: Immich restarts its server and machine learning, Nextcloud its web part and its background jobs. The card shows *Restarting…*, then the result.
-- **Desktop apps** (anything opened on the server's own desktop, such as Firefox, Steam or Dolphin): **Close app** asks every window of it to quit, the way logging out does. If it is still running after 10 seconds (it may be asking whether to save a file, or not responding), the page says so and offers **Force close**, which stops it at once. **Unsaved work in it is lost**, so Force close always asks first.
+- **Desktop apps** (anything opened on the server's own desktop, such as Firefox, Steam or Dolphin): **Close app** asks every window of it to quit, the way logging out does. A program started from another app (Firefox opened from a terminal, say) belongs to that app's group, and the menu says so: closing goes to the whole group, the terminal included. If it is still running after 10 seconds (it may be asking whether to save a file, or not responding), the page says so and offers **Force close**, which stops it at once. **Unsaved work in it is lost**, so Force close always asks first.
 - **Protected, never stopped from here**: databases and caches inside apps, backups, the monthly update, system services, the desktop itself (panel, window manager, sound) and NekoServer. Their menu says so.
 
 **Every one of these needs the PIN, on every device, the server itself too** (fans and lights don't need it on the server). The page asks for it the first time; it stays unlocked on that device for 12 hours or until the page is closed. Without a PIN (none chosen during setup), app controls stay off: run setup again in a terminal to choose one.
@@ -123,7 +123,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.28.5` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.28.6` (one folder per release; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ## What runs, and what it can see
 

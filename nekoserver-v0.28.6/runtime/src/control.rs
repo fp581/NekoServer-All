@@ -1123,14 +1123,10 @@ pub fn run(a: &Args) -> Result<()> {
             thread::sleep(Duration::from_millis(100));
         }
     }
-    // An app being restarted is never left half stopped: wait for it (setup restarts
-    // this service; systemd allows 90 seconds).
+    // An app being restarted is never left half stopped: its parts are stopped and
+    // started again before this service ends (setup restarts it; the unit allows 240 s).
     let waiting = Instant::now();
-    while service.actions.list().as_array().is_some_and(|a| {
-        a.iter()
-            .any(|v| v["kind"] == "app" && v["state"] == "running")
-    }) && waiting.elapsed() < Duration::from_secs(80)
-    {
+    while service.actions.changing_apps() && waiting.elapsed() < Duration::from_secs(200) {
         thread::sleep(Duration::from_millis(250));
     }
     // Detection first (it hands its fans back itself), then the curves.
