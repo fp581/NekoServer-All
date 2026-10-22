@@ -559,6 +559,7 @@ fn applications(cfg: &Value, report: Option<&MediaReport>) -> (Value, Value, Val
             .collect::<Vec<_>>();
         let mut state = if code != 0 { "unknown" } else { "missing" };
         let mut health = "unknown";
+        let mut up_for = None;
         if found.len() == 1 {
             let v = &found[0].1;
             state = if [
@@ -576,6 +577,7 @@ fn applications(cfg: &Value, report: Option<&MediaReport>) -> (Value, Value, Val
                 "unknown"
             };
             let status = text(&v["Status"]);
+            up_for = uptime_seconds(status);
             health = if status.contains("(unhealthy)") {
                 "unhealthy"
             } else if status.contains("(health: starting)") {
@@ -601,7 +603,7 @@ fn applications(cfg: &Value, report: Option<&MediaReport>) -> (Value, Value, Val
                 json!(mine.iter().map(|u| u.1).sum::<f64>()),
             )
         };
-        out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"responding":responding(report,app),"url":format!("http://127.0.0.1:{port}/"),"cpu_percent":cpu,"memory_used":memory}));
+        out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"responding":responding(report,app,up_for),"url":format!("http://127.0.0.1:{port}/"),"cpu_percent":cpu,"memory_used":memory}));
     }
     (
         json!(out),
@@ -984,16 +986,48 @@ fn media_report(cfg: &Value, now: f64, ok: bool) -> Option<MediaReport> {
 /// Whether an app answered its last check over HTTP (true/false), or null when that
 /// isn't known: no current check, or the app wasn't running. Processor use never
 /// counts: video conversion can rightly keep every core busy.
-fn responding(report: Option<&MediaReport>, app: &str) -> Value {
+fn responding(report: Option<&MediaReport>, app: &str, up_for: Option<f64>) -> Value {
     let Some(report) = report.filter(|r| r.status == "current") else {
         return Value::Null;
     };
+    // A check made before the app last started says nothing about this start (the app
+    // was restarted since, from the dashboard, say): not known until the next check.
+    if let (Some(age), Some(up)) = (report.age, up_for) {
+        if age > up {
+            return Value::Null;
+        }
+    }
     let check = &report.saved["services"][app];
     match (check["container"].as_str(), &check["http_status"]) {
         (Some("running"), Value::Number(_)) => json!(true),
         (Some("running"), Value::Null) => json!(false),
         _ => Value::Null,
     }
+}
+/// How long a container has been up, from Docker's "Up 5 minutes (healthy)" / "Up About
+/// an hour" / "Up 3 days": a lower bound in seconds (Docker rounds down), None when it
+/// isn't up or the text is not understood.
+fn uptime_seconds(status: &str) -> Option<f64> {
+    let rest = status.strip_prefix("Up ")?.trim_start_matches("About ");
+    let mut words = rest.split_whitespace();
+    let first = words.next()?;
+    let (count, unit) = match first.parse::<f64>() {
+        Ok(n) => (n, words.next()?),
+        Err(_) if first == "a" || first == "an" => (1.0, words.next()?),
+        Err(_) if first.starts_with("Less") => return Some(0.0),
+        Err(_) => return None,
+    };
+    let seconds = match unit.trim_end_matches('s') {
+        "second" => 1.0,
+        "minute" => 60.0,
+        "hour" => 3600.0,
+        "day" => 86400.0,
+        "week" => 7.0 * 86400.0,
+        "month" => 30.0 * 86400.0,
+        "year" => 365.0 * 86400.0,
+        _ => return None,
+    };
+    Some(count * seconds)
 }
 fn media(report: Option<&MediaReport>) -> Value {
     let Some(MediaReport { saved, age, status }) = report else {
@@ -1566,6 +1600,46 @@ mod os_tests {
             day
         ));
         assert!(first_overdue(Some(now - 2.0 * day), None, now, day));
+    }
+    #[test]
+    fn an_app_check_older_than_the_apps_last_start_says_nothing() {
+        let report = |age: f64, http: Value| MediaReport {
+            saved: json!({"services": {"jellyfin": {"container": "running", "http_status": http}}}),
+            age: Some(age),
+            status: "current",
+        };
+        // Checked 30 minutes ago and failed; the app has been up for 2 hours: that's it.
+        assert_eq!(
+            responding(Some(&report(1800.0, Value::Null)), "jellyfin", Some(7200.0)),
+            json!(false)
+        );
+        assert_eq!(
+            responding(Some(&report(1800.0, json!(200))), "jellyfin", Some(7200.0)),
+            json!(true)
+        );
+        // Restarted 2 minutes ago (from the dashboard, say): the old failure no longer applies.
+        assert_eq!(
+            responding(Some(&report(1800.0, Value::Null)), "jellyfin", Some(120.0)),
+            Value::Null
+        );
+        // Not running at the check, or no current check: unknown.
+        assert_eq!(
+            responding(Some(&report(60.0, Value::Null)), "immich", Some(7200.0)),
+            Value::Null
+        );
+        assert_eq!(responding(None, "jellyfin", Some(7200.0)), Value::Null);
+        for (status, seconds) in [
+            ("Up 5 minutes (healthy)", Some(300.0)),
+            ("Up About an hour", Some(3600.0)),
+            ("Up 3 days", Some(259200.0)),
+            ("Up Less than a second", Some(0.0)),
+            ("Up 2 weeks (unhealthy)", Some(1209600.0)),
+            ("Exited (1) 3 hours ago", None),
+            ("Created", None),
+            ("Up soon", None),
+        ] {
+            assert_eq!(uptime_seconds(status), seconds, "{status}");
+        }
     }
     #[test]
     fn docker_stats_become_per_app_usage() {
