@@ -1,5 +1,60 @@
 # Changelog
 
+## v0.28.7 — 2026-10-22
+
+### Added
+- **First checkup and backup at the end of setup.** Once every step has finished, the wizard runs the app health check and each backup you set up straight away, instead of waiting for the first night (or the first Sunday for the USB copy), then checks the whole server and saves the report for the dashboard. It names any backup that didn't finish (with the command to see its log) and any check that needs a look. Ctrl+C stops it; the backups then run at their usual times.
+- **Desktop shortcuts on every Linux** (new step *Desktop shortcuts*): the dashboard, the web browser, Steam (if installed) and each app that was set up, on the desktop and in the app menu. Shortcuts NekoServer made earlier are brought up to date; ones you made or changed are kept. Before, only the TV step (Arch only) made a few.
+- **The finishing screen says whether a dashboard PIN is set**, and the welcome screen asks you to have one ready.
+
+### Changed
+- **Steam Big Picture no longer opens by itself at login.** The `autostart_big_picture` setting is gone, and the autostart an older version added is removed (one you made yourself is kept). Big Picture is still a shortcut.
+- **A new dashboard PIN has 6 to 8 digits** (a 4- or 5-digit one chosen before still works). After five wrong PINs changes lock for 5 minutes, and **each further five lock them twice as long** (up to a day). Before, the 5-minute lock started over each time, so a 4-digit PIN could be guessed in a few days.
+- **Close app asks first**, like Force close. It sends Linux's ordinary "please quit" signal: many apps save or ask, but some quit straight away, so unsaved work can be lost. The menu no longer says it is "like closing its window".
+- Messages and guides say "terminal" instead of "Konsole": on Ubuntu and Debian it is called Terminal.
+
+### Fixed (every Linux)
+- **Drives get 90 seconds to appear at startup** instead of 15. A big hard drive, or one in a USB case, could take longer; the HDD then wasn't mounted, and Docker and every app stayed stopped until someone stepped in. Existing installs get their drive lines updated; your original `/etc/fstab` backup is kept.
+- **The dashboard keeps updating when the app SSD can't be written.** A full or read-only SSD made every reading fail, and the page kept showing the last, healthier one. Readings are published anyway, with an urgent "App SSD can't be written" alert.
+- **A full drive reads 100%, not 95%.** The space Linux keeps for itself on ext4 (5%) was counted as free, so a drive full for the apps showed 95% and a "filling up" warning, never the urgent alert.
+- **A phone whose clock is off no longer sees "old readings".** The page judged how old readings are by the phone's clock; a minute off dimmed live readings, a few minutes off showed every reading as old and stopped browser alerts. It now uses the server's time.
+- **A service that has stopped is no longer green.** Docker waiting for a missing drive (or any service that runs all the time) showed "Starts by itself" in green when it wasn't running. It now shows *Not running* and raises an urgent alert; "recovered" is sent only once it runs again.
+- **A backup cut off by a power cut no longer shows "Running" for days.** Its report still said running; now the collector sees its service has stopped and shows it as stopped part-way.
+- **A health check made after an app started counts.** Docker's "Up 5 minutes" is rounded down, so a failed check from 5½ minutes ago could be discarded as older than the app's start. The exact start time is used now.
+- **An app check report dated in the future** (the clock was wrong when it was written) is no longer counted as current.
+- **The dashboard's web server restarts itself after a crash** in one of its workers, instead of slowly running out of workers.
+- **Setup no longer gives up on the control service while it finishes an app restart.** Setup waited 60 seconds; the service may take up to 10 minutes to stop (its unit now allows 600 s), because it first lets an app restart finish: up to two parts, each up to 2 minutes to stop and 2 to start. If the service is ever stopped by force in the middle of one, what it had stopped is started again when it next starts.
+- **exFAT USB drives: names kept from earlier weeks count too.** A new `documents/report.pdf` could still merge with an old `Documents/report.pdf` that stays on the backup (it is add-only). The check now includes the names already on the drive and in its ledger.
+- **Repair asks when the HDD and USB ledgers disagree.** It trusted the HDD's checksum, replaced the USB copy and called both verified, though the USB copy then failed its own list. Now nothing changes until you choose which copy is right (or keep both); your choice is recorded in both lists.
+- **"Restore newest" never merges two separate files.** A file named like a dated version (`report.neko-20261022T120000Z.txt`) but saved in its own right was taken for a version of `report.txt`, and only one came back. The backup now records which file each dated copy belongs to; older backups count a dated name as a version only beside the note naming the current copy, and not when the record says otherwise.
+- **Nextcloud's USB backup no longer needs Immich.** With Nextcloud on and Immich off, setting up the weekly USB copy failed ("Archive folder missing"), and it waited for the photo steps. Nextcloud's files then had no copy off the server, since monthly snapshots leave them out. The USB copy now takes whichever of the two is set up, the photo schedule isn't installed without Immich, and the dashboard calls the job *USB copy (photos and files)*.
+- **Monthly snapshots made without a backup key keep the app password list.** The job said the password files stayed (unencrypted) in `data.tar`, but `secrets/accounts` (APP-CREDENTIALS.txt and credentials.json) wasn't in it, and no encrypted archive was written either, so the snapshot had no password list at all. It is in `data.tar` now (root-only, and the manifest says it isn't encrypted), a rollback puts it back, and the recovery wizard's *Restore the password list* also offers these snapshots. With a backup key, nothing changes: the list is kept only in the encrypted archive.
+- **Adding an app reaches the backups already installed.** After adding an app (setup run again with `--module media`), the nightly app backup and the monthly update kept working from the settings saved when they were installed, so the new app was left out until they were set up again. Both are now brought up to date after every setup run, like the dashboard's and the host backup's.
+- **A damaged backup key is no longer reported as a wrong password.** The key copy and certificate stored in each monthly snapshot had no checksum, so a damaged key passed every check and the restore said "Wrong password". Both now have checksums: the snapshot check and retention catch the damage, and a restore says the key copy is damaged and uses this server's own copy of the same key when it has one.
+- **Switching Immich off stops it.** With `"deploy_immich": false` after Immich was set up, it kept running while monitoring, backups and monthly updates left it out. Setup now removes its containers (under the lock backups and updates hold, and not during an unfinished monthly update); its photos, database and settings stay on the SSD.
+- **A restore can't go inside a backup.** A destination inside the photo archive, the snapshots or the USB drive (or one around them) was accepted, and the restored files became part of that backup and of every later restore from it. Such a folder is now refused.
+- **Jellyfin Quick Sync uses the chip that passed the check.** The device was written to Jellyfin's VA-API setting, which Quick Sync doesn't use. Quick Sync now gets *QSV Device*, VA-API *VA-API Device*.
+- **Settings an older NekoServer made get their device.** Immich and Jellyfin set up by an earlier release kept choosing a device by themselves, because setup then reported "kept your setting". A setting NekoServer made (its last report says so) gets the device filled in. One someone else made is kept, but on a server with several chips the step says which device to choose instead of counting as done.
+- **A second graphics chip of the same make is tried.** Only the first render device of each vendor was kept, so with two Intel chips the second was never tried when the first failed the video check.
+- **Debian / Ubuntu: finishing an interrupted package installation follows Debian's rules for choices.** A dependency like `A (>= 2.0) | B` counted as met by any installed A, even 1.0, so an unfinished B that was needed stayed unfinished. A held package (`hi`) didn't count as installed, so an alternative was set up for nothing. Versions are now compared as dpkg does, an unversioned *Provides* never meets a versioned dependency, and held packages count.
+- **Leaving Steam open no longer stops the whole nightly host backup.** With Steam (or its web helper, or Wine) running, the backup refused to run at all, so system and Samba settings weren't saved either, on a PC left on for Steam Remote Play. Now everything else is saved, Steam's own files are left out that night, and the run shows as partial with "Steam was open". Steam is never closed for you.
+- **Shared folders work on a server without Immich.** The default shares include *Photos* (the photo archive), which only exists with Immich, so Samba setup failed on a media-only server ("Share directory missing"). The default Photos share is now left out without Immich; a share you added or changed yourself must still exist, as before.
+- **Monthly update:**
+  - The space check no longer turns down a drive with enough room. It counted every Docker container on the server, also ones that aren't NekoServer's, and the same image again for each container using it (20 containers sharing a 1 GB image counted as 20 GB), then asked the SSD for room for images that are saved on the HDD. Now it counts the selected apps' images once each, and each drive for what goes on it.
+  - A finished update is no longer reported as failed when reopening Immich or Nextcloud needed a second try, or a power cut came after it was installed.
+  - A rollback no longer unpacks the app data twice (once to the HDD for nothing), and it is never cut off part-way by a time limit: before, a large one could be stopped after 6 hours, leaving the apps stopped.
+  - The unpacked copy used by the restore test is removed when the test fails, the rollback stages after a rollback, and the failed update's data that a rollback set aside is removed together with that month's snapshot. Before, each of these stayed for good and slowly filled the drives.
+  - Nextcloud's check uses a new test file each try and removes one a cut-off try left behind, so one interrupted check can't make every later one fail.
+- **Setup:**
+  - **Ctrl+C ends setup cleanly** with a short message, and the step it stopped is recorded as stopped (not left "running"), so the next run starts it again. During recovery it tells you to run recovery again.
+  - **A settings file missing a drive setting says which one** (and how to fix it), instead of a bare error.
+  - **The first setup log isn't kept twice**: it moves to the SSD once the SSD is mounted.
+  - **A typo in the outage-monitor or phone-alert address is asked again** (up to 3 times, with an example of the right form) instead of failing the step; a "/" copied at the end is dropped.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+- Run `sudo bash install.sh` once: it updates the drive lines in `/etc/fstab`, the control service's stop time, the monthly update's time limits and the desktop shortcuts.
+
 ## v0.28.6 — 2026-10-22
 
 ### Fixed (every Linux)
