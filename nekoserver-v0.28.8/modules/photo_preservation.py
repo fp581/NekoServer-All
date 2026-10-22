@@ -16,7 +16,8 @@ def require_mounts(*paths):
         if p.is_symlink() or subprocess.run(['findmnt','-n','--mountpoint',str(p)],stdout=subprocess.DEVNULL,check=False).returncode:raise RuntimeError(f'Missing mount: {p}')
 
 # The schedules this step installs (legacy and weekly); the USB copy has its own.
-UNITS=[name+suffix for name in ('nekoserver-photo-preservation','nekoserver-immich-db-backup') for suffix in ('.timer','.service')]
+TIMER='.timer'
+UNITS=[name+suffix for name in ('nekoserver-photo-preservation','nekoserver-immich-db-backup') for suffix in (TIMER,'.service')]
 
 def switch_off(ctx, units=None, run=subprocess.run):
     """No Immich, no photos to keep: no schedule. Ones an earlier setup installed are
@@ -58,7 +59,7 @@ def run(ctx):
     if schedule=='weekly':services={'nekoserver-immich-db-backup':(base+' --db-backup',f'OnCalendar={day} *-*-* {tm}:00 {host_timezone(cfg)}\nPersistent=true\n')}
     # The DB job also archives to keep an identical fail-closed precondition.
     for name,(cmd,calendar) in services.items():
-        service=SYSTEMD_UNITS/(name+'.service');timer=SYSTEMD_UNITS/(name+'.timer')
+        service=SYSTEMD_UNITS/(name+'.service');timer=SYSTEMD_UNITS/(name+TIMER)
         service_text=f'[Unit]\nDescription={name}\nRequiresMountsFor={data} {media}\n[Service]\nType=oneshot\nExecStart={cmd}\n'
         timer_text=f'[Unit]\nDescription={name} timer\n[Timer]\n{calendar}\n[Install]\nWantedBy=timers.target\n'
         for target,text in ((service,service_text),(timer,timer_text)):
@@ -70,5 +71,5 @@ def run(ctx):
             safe_path(target)
             atomic_write(target,content,0o644)
     subprocess.run(['systemctl','daemon-reload'],check=True)
-    for name in services:subprocess.run(['systemctl','enable','--now',name+'.timer'],check=True)
+    for name in services:subprocess.run(['systemctl','enable','--now',name+TIMER],check=True)
     ctx.log('Enabled '+('weekly combined photo originals/database backup' if schedule=='weekly' else 'periodic archive and nightly SQL')+'; no deletions')
