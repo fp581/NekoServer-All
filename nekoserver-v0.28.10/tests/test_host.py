@@ -1066,16 +1066,18 @@ class RepositoryKeyErrorTests(unittest.TestCase):
 
         def missing(url):
             raise urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+        family = self.family(missing)
         with self.assertRaisesRegex(RuntimeError, 'Tailscale does not offer packages for this release yet \\(ubuntu "resolute"'):
-            self.family(missing).fetch_key(host.TAILSCALE, 'ubuntu', 'resolute')
+            family.fetch_key(host.TAILSCALE, 'ubuntu', 'resolute')
 
     def test_no_internet(self):
         import urllib.error
 
         def offline(url):
             raise urllib.error.URLError('Temporary failure in name resolution')
+        family = self.family(offline)
         with self.assertRaisesRegex(RuntimeError, 'Downloading the Docker repository key failed \\(Temporary failure in name resolution\\). Check that this PC is connected'):
-            self.family(offline).fetch_key(host.DOCKER, 'ubuntu', 'resolute')
+            family.fetch_key(host.DOCKER, 'ubuntu', 'resolute')
 
 
 if __name__ == '__main__':

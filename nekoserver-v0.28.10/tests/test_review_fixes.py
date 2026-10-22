@@ -423,7 +423,7 @@ class OldReleaseCleanupTests(unittest.TestCase):
             # The heartbeat was never set up again: its service still runs 0.28.9's copy.
             (units / 'nekoserver-heartbeat.service').write_text(f'ExecStart={lib}/nekoserver-os/v0.28.9/nekoserver-runtime heartbeat\n')
             logged = []
-            removed = native_runtime.retire_old({'data_mount': str(data)}, logged.append, lib=lib, units=units)
+            removed = native_runtime.retire_old(data, logged.append, lib=lib, units=units)
             self.assertEqual(sorted(p.name for p in removed if 'nekoserver-dashboard' in str(p)), ['v0.28.8', 'v0.28.9'])
             self.assertEqual(sorted(p.name for p in removed if 'nekoserver-os' in str(p)), ['v0.28.8'])   # 0.28.9 in use
             self.assertTrue((lib / 'nekoserver-os/v0.28.9').is_dir())
@@ -433,7 +433,7 @@ class OldReleaseCleanupTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in (data / 'installer/releases').iterdir()), sorted(['notes', 'v0.28.9', 'v' + neko_common.VERSION]))
             self.assertIn('earlier releases', logged[0])
             # Nothing more to do the second time.
-            self.assertEqual(native_runtime.retire_old({'data_mount': str(data)}, logged.append, lib=lib, units=units), [])
+            self.assertEqual(native_runtime.retire_old(data, logged.append, lib=lib, units=units), [])
 
     def test_versions_sort_by_number_not_text(self):
         import native_runtime
