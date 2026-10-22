@@ -155,6 +155,7 @@ class FanAndLightControlTests(unittest.TestCase):
                       + str(dashboard.COLLECTOR_SETTINGS) + '\n', control)
         self.assertIn('ExecStopPost=' + str(self.code / 'nekoserver-runtime') + ' control --restore\n', control)
         self.assertIn('Restart=always', control)
+        self.assertIn('TimeoutStopSec=240', control)
         self.assertIn('Group=' + dashboard.CONTROL_GROUP, control)
         self.assertNotIn('ProtectKernelTunables', control)  # fan outputs live in /sys
         self.assertIn('IPAddressDeny=any', control)
@@ -281,8 +282,18 @@ class SwitchingOffAndBackupTests(unittest.TestCase):
                 self.addCleanup(patch.stop)
             dashboard.start_services(definitions, Path('/x'), True, print, fans=False)   # every fan is back
             journal.write_text('{"x": {"enable": "5", "pwm": "128"}}')
-            with self.assertRaisesRegex(RuntimeError, 'did not go back'):
+            with mock.patch.object(dashboard.time, 'sleep'), self.assertRaisesRegex(RuntimeError, 'did not go back'):
                 dashboard.start_services(definitions, Path('/x'), True, print, fans=False)
+            # The service is still handing fans back as setup looks: a moment is given.
+            ticks = iter(range(100))
+
+            def hand_back(_):
+                if next(ticks) == 3:
+                    journal.unlink()
+            journal.write_text('{"x": {"enable": "5", "pwm": "128"}}')
+            with mock.patch.object(dashboard.time, 'sleep', side_effect=hand_back):
+                dashboard.start_services(definitions, Path('/x'), True, print, fans=False)
+            self.assertFalse(journal.exists())
             dashboard.start_services(definitions, Path('/x'), True, print, fans=True)    # its own fans
 
     def test_control_keeps_its_records_when_it_stops(self):

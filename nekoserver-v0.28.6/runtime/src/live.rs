@@ -830,22 +830,24 @@ pub(crate) fn desktop_of(cgroup: &str) -> Option<Desktop> {
     if parts[3] != format!("user@{uid}.service") || uid < 1000 {
         return None;
     }
-    let unit = *parts.last()?;
+    // The app's unit comes after any further slices; a process in a group below the
+    // unit (some apps make their own) belongs to that unit all the same.
+    let at = 5 + parts[5..].iter().position(|s| !s.ends_with(".slice"))?;
+    let unit = parts[at];
     let name = unit.strip_prefix("app-").and_then(|u| {
         u.strip_suffix(".scope")
             .or_else(|| u.strip_suffix(".service"))
     })?;
-    if parts[5..parts.len() - 1]
-        .iter()
-        .any(|s| !s.ends_with(".slice"))
-        || name.is_empty()
+    if name.is_empty()
         || name.contains("dbus")
-        || parts.iter().any(|p| *p == "." || *p == "..")
+        || parts[1..]
+            .iter()
+            .any(|p| p.is_empty() || *p == "." || *p == "..")
     {
         return None;
     }
     Some(Desktop {
-        path: path.to_string(),
+        path: parts[..=at].join("/"),
         uid,
         label: desktop_label(name),
     })
@@ -1228,7 +1230,7 @@ mod tests {
             app("dbus-:1.2-org.kde.kwalletd6@0.service"),
             app("app-dbus\\x2d:1.2\\x2dorg.kde.kded6@0.service"),
             app("app-.scope"),
-            app("app-x.scope/inner"),
+            app("app-x.scope//inner"),
             "12:cpu:/user.slice/user-1000.slice/user@1000.service/app.slice/app-x-1.scope".to_string(),
         ] {
             assert_eq!(desktop_of(&cgroup), None, "{cgroup}");
@@ -1238,6 +1240,13 @@ mod tests {
                 .replace("app.slice/app.slice", "app.slice/app-gnome.slice")
         )
         .is_some());
+        // A process in a group below the app's unit belongs to that unit.
+        let below = desktop_of(&app("app-org.kde.konsole-99.scope/supervisor/child")).unwrap();
+        assert_eq!(
+            below.path,
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.kde.konsole-99.scope"
+        );
+        assert_eq!(below.label, "Konsole");
     }
 
     #[test]

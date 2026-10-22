@@ -1,7 +1,7 @@
 """Local visual health dashboard with a privileged collector and unprivileged web server."""
 import native_runtime
 from acceptance_summary import scope_digest
-import getpass,grp,importlib.util,json,os,platform,re,shutil,subprocess,sys
+import getpass,grp,importlib.util,json,os,platform,re,shutil,subprocess,sys,time
 from pathlib import Path
 import host
 from neko_common import APP_PORTS,DASHBOARD_DEFAULT_PORT,MANAGED_UNIT,SYSTEMD_UNITS,VERSION,atomic_json,atomic_write,check_units,mount_path,safe_path,write_units
@@ -74,6 +74,9 @@ def control_units(code,lighting,fans=True,data=None):
         f'ExecStart={binary} control'+('' if lighting else ' --no-lights')+('' if fans else ' --no-fans')+' --config '+str(COLLECTOR_SETTINGS)+'\n'
         # Whenever it stops (a crash too), every fan goes back to the motherboard.
         f'ExecStopPost={binary} control --restore\n'
+        # An app being restarted from the dashboard is stopped and started again
+        # before the service ends (up to 200 s), so it is never left half stopped.
+        'TimeoutStopSec=240\n'
         'Restart=always\nRestartSec=3\nGroup='+CONTROL_GROUP+'\nUMask=0077\n'
         'RuntimeDirectory=nekoserver-control\nRuntimeDirectoryMode=0750\nRuntimeDirectoryPreserve=yes\n'
         # Docker's command-line tool keeps its own settings here, not in root's home.
@@ -278,6 +281,14 @@ def stop_control(units):
     if CONTROL in units and any(p.exists() for p in CONTROL_JOURNALS):
         raise RuntimeError('Fan control stopped, but some fans did not go back to the motherboard. Check the fans, then run: sudo systemctl start nekoserver-control.service (it keeps trying), or restart the computer')
 
+def fans_handed_back(wait=15):
+    """True once no fan record is left (the service removes each record as the fan goes
+    back to the motherboard); checked for up to `wait` seconds."""
+    for _ in range(wait*2):
+        if not any(p.exists() for p in CONTROL_JOURNALS):return True
+        time.sleep(0.5)
+    return False
+
 def start_services(definitions,code,control,log,fans=True):
     systemctl('daemon-reload',timeout=30)
     systemctl('start','nekoserver-dashboard-collect.service',timeout=190)
@@ -290,8 +301,9 @@ def start_services(definitions,code,control,log,fans=True):
     for unit in ('nekoserver-dashboard-collect.timer',*started,SERVICE):systemctl('enable','--now',unit)
     for unit in (*started,SERVICE):systemctl('restart',unit)
     # Fan control switched off: the restart handed every fan back (or the service keeps
-    # trying, at full speed meanwhile). Setup says so instead of carrying on.
-    if CONTROL in started and not fans and any(p.exists() for p in CONTROL_JOURNALS):
+    # trying, at full speed meanwhile). Setup says so instead of carrying on. The service
+    # hands them back as it starts, so it gets a moment to do so.
+    if CONTROL in started and not fans and not fans_handed_back():
         raise RuntimeError('Fan control is switched off, but some fans did not go back to the motherboard. Check the fans, '
                            'then run: sudo systemctl restart nekoserver-control.service (it keeps trying), or restart the computer')
 

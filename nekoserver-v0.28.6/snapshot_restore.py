@@ -153,7 +153,8 @@ def restore(kind, snapshot, destination, preserve_owners=False):
         apply_owners(kind, destination, rows)
         report.update(original_owners_restored=True, ownership='restored')
         atomic_json(destination / 'restore-report.json', report)
-    apply_times(kind, destination, rows)
+    report['times_restored'] = apply_times(kind, destination, rows)
+    atomic_json(destination / 'restore-report.json', report)
     return destination
 
 
@@ -185,12 +186,19 @@ def apply_owners(kind, destination, rows):
 def apply_times(kind, destination, rows):
     """Each file and folder gets back the time it was last changed: synchronisation and
     tools that compare ages would otherwise see every restored file as new. Folders come
-    last (deepest first), because putting files into a folder changes its time."""
+    last (deepest first), because putting files into a folder changes its time. The files
+    themselves are already restored and verified, so a time that can't be set (a
+    filesystem that refuses it) is reported, not a failure. True when every time was set."""
     dated = [row for row in rows if 'mtime' in row]
+    done = True
     for row in sorted(dated, key=lambda r: (r['kind'] == 'directory', -len(relative(kind, r['path']).parts))):
         target = safe_path(destination / relative(kind, row['path']))
         changed = row['mtime'] * 10**9 + row['mtime_nsec']
-        os.utime(target, ns=(target.lstat().st_atime_ns, changed), follow_symlinks=False)
+        try:
+            os.utime(target, ns=(target.lstat().st_atime_ns, changed), follow_symlinks=False)
+        except OSError:
+            done = False
+    return done
 
 
 def main(kind, description, argv=None):

@@ -100,6 +100,13 @@ class SnapshotRestoreTests(unittest.TestCase):
             self.assertEqual((out / rel).stat().st_mtime_ns, seconds * 10**9 + nanoseconds, rel)
         # A file without a recorded time (an older snapshot) is simply left as restored.
         self.assertGreater((out / 'source0/docs/deep/new.txt').stat().st_mtime, 1_700_000_000)
+        self.assertTrue(json.loads((out / 'restore-report.json').read_text())['times_restored'])
+        # A filesystem that refuses the time: the files are still restored, and the report says so.
+        from unittest import mock
+        with mock.patch.object(sr.os, 'utime', side_effect=PermissionError(1, 'Operation not permitted')):
+            again = sr.restore(sr.HOST, snap, self.root / 'again')
+        self.assertEqual((again / 'source0/docs/old.txt').read_bytes(), b'2020')
+        self.assertFalse(json.loads((again / 'restore-report.json').read_text())['times_restored'])
         manifest['files'][0]['mtime'] = 'yesterday'
         (snap / 'manifest.json').write_text(json.dumps(manifest))
         with self.assertRaisesRegex(RuntimeError, 'metadata'):

@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.28.6 — 2026-10-22
+
+### Fixed (every Linux)
+- **Closing a desktop app reaches all of its processes.** Some apps put their own processes in a group below the app's own (a browser's helpers, a launcher's children). Those were neither asked to quit nor force-closed, and the app could count as closed while they kept running. Every group below the app's is included now.
+- **A program started from another app says so.** Firefox opened from a terminal belongs to the terminal's group, so closing it closes the terminal too. The menu now names the group ("Close Konsole", "Konsole and everything started from it") instead of looking like it closes one program.
+- **Two restart requests at once can't both start.** The second was refused with a message about a backup running. Only one app restarts at a time, and the message says so.
+- **Immich without machine learning, or Nextcloud without its cron container, can be restarted.** Restart app refused with "one of its parts is missing" when an optional part was left out on purpose. Only the app's main container is required now.
+- **A restart that can't start every part says so, and tries them all.** If Docker refused to start one part, the parts after it were left stopped and the message blamed stopping. Every part is started regardless, and the result names what to do.
+- **A restart is never cut in half by setup.** When setup restarted the control service during an app restart, the service waited 80 seconds, which two parts stopping (up to 60 s each) could exceed. It now waits until the parts are started again (up to 200 s; the service's stop limit is 240 s), and no longer waits while it is merely checking that the app answers.
+- **"Not responding" no longer outlives a restart.** The hourly app check from before a restart could label the app as not responding for up to an hour afterwards, even though Docker reported it running and the restart had seen it answer. A check older than the app's current start no longer counts.
+- **Setup no longer complains about fans a moment too early.** With fan control switched off, setup looked for fans still held right after restarting the control service, before the service had handed them back. It now gives the service up to 15 seconds.
+- **A restore that can't set a file's date still succeeds.** Restoring the saved modification times (new in 0.28.5) failed the whole restore if the filesystem refused a timestamp, after every file was already copied and verified. The restore now finishes and its report says `times_restored: false`.
+
+### Changed
+- Version 0.28.6; the release folder is now `nekoserver-v0.28.6`.
+
+### Upgrade notes
+- The bundled runtime must be rebuilt for this release.
+
 ## v0.28.5 — 2026-10-22
 
 ### Added
