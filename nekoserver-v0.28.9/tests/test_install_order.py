@@ -1,5 +1,6 @@
 """v0.23.1: install order, system update first, drive picking and weekly catch-up."""
 import json
+import os
 import tempfile
 import sys
 import unittest
@@ -803,6 +804,21 @@ class UnfinishedMaintenanceTests(unittest.TestCase):
                          ('ID=debian\nVERSION_ID=11', True), ('ID=debian\nVERSION_ID=13', False), ('ID=debian', False)):
             run = subprocess.run(['bash', '-c', osr + '\n' + check + 'echo fine'], capture_output=True, text=True, check=False)
             self.assertEqual(run.stdout.strip() != 'fine', old, osr)
+
+    def test_too_old_a_python_says_which_releases_have_it(self):
+        import subprocess
+        script = (Path(installer.__file__).parent / 'install.sh').read_text()
+        start = script.index("if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'")
+        check = script[start:script.index('\nfi\n', start) + 4]
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d) / 'python3'   # Linux Mint 21 (Ubuntu 22.04): Python 3.10
+            fake.write_text('#!/bin/sh\ncase "$*" in *version_info*) exit 1;; *python_version*) echo 3.10.12;; esac\n')
+            fake.chmod(0o755)
+            run = subprocess.run(['bash', '-c', check + 'echo fine'], capture_output=True, text=True, check=False,
+                                 env={**os.environ, 'PATH': d + ':' + os.environ['PATH']})
+        self.assertEqual(run.returncode, 1)
+        self.assertIn('this system has 3.10.12', run.stderr)
+        self.assertIn('upgrade to the next release first', run.stderr)
 
 
 class DumpCompleteTests(unittest.TestCase):

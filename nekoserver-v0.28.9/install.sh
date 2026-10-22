@@ -205,7 +205,9 @@ if ! command -v python3 >/dev/null; then
     exit 1
 fi
 if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
-    echo 'Python 3.11+ is required; bring the host up to date before retrying.' >&2
+    echo "NekoServer needs Python 3.11 or newer; this system has $(python3 -c 'import platform; print(platform.python_version())')." >&2
+    echo 'It comes with Arch, Debian 12 and Ubuntu 24.04 or newer. A system based on an older release' >&2
+    echo '(such as Linux Mint 21, based on Ubuntu 22.04) does not get it from updates: upgrade to the next release first.' >&2
     exit 1
 fi
 if "$apply" && "$full"; then

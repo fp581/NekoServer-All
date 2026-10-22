@@ -18,7 +18,7 @@ python3 installer.py --module notifications --check
 sudo bash install.sh --module notifications --apply
 ```
 
-Installation asks privately for the full topic URL, such as `https://ntfy.example.com/my_private_topic`, and an optional bearer access token. The token is kept in root-only `/etc/nekoserver-notifications/config.json`, outside the installer config, dashboard, service command arguments and copied installer release bundles. A rerun preserves the existing destination/token and refreshes timings. Configure or rotate secrets by reviewing this private file locally as root; do not paste it into logs or support reports. Its permissions must remain `0600`, owned by root.
+Installation asks privately for the full topic URL, such as `https://ntfy.example.com/my_private_topic`, and an optional bearer access token. The token is kept in root-only `/etc/nekoserver-notifications/config.json`, outside the installer config, dashboard, service command arguments and copied installer release bundles. A rerun preserves the existing destination/token and refreshes timings. You can also put the topic URL in `notifications.endpoint` in `my-config.json`: setup then asks only for its token. To send alerts to another topic later, change `notifications.endpoint` and run `sudo bash install.sh --module notifications --apply` in a terminal: it asks you to confirm the switch and asks for the new topic's token (without a terminal, alerts keep going to the earlier topic). To change only the token, edit this private file locally as root; do not paste it into logs or support reports. Its permissions must remain `0600`, owned by root.
 
 If installation is noninteractive and no destination exists, the module returns `needs_setup` without enabling a new timer. It does not silently claim successful delivery. The new `full` sample profile includes notifications; older configured profiles are preserved, so use the explicit module command when upgrading. Delivery credentials/state are currently OS-local and need separate protected recovery after an OS replacement.
 
@@ -27,7 +27,7 @@ Only HTTPS URLs with a hostname/IP, optional port and a single topic path are ac
 ## Test on your phone
 
 ```bash
-sudo /usr/local/lib/nekoserver-notifications/v0.28.8/nekoserver-runtime notify \
+sudo /usr/local/lib/nekoserver-notifications/v0.28.9/nekoserver-runtime notify \
   --config /etc/nekoserver-notifications/config.json \
   --state /var/lib/nekoserver-notifications \
   --runtime /run/nekoserver-notifications \
