@@ -36,6 +36,7 @@ def wanted_shares(config):
     return shares
 
 MANAGED_HEADER='# Managed by NekoServer'
+SHARE_FILE='/etc/samba/nekoserver.conf'   # NekoServer's own share file, included by smb.conf
 
 def check_rewrite(current,mode,settings):
     """NekoServer's own share file is rewritten when the settings change (a share added,
@@ -49,7 +50,7 @@ def check_rewrite(current,mode,settings):
         raise RuntimeError('Shared folders were reachable through Tailscale only and would now be open to your home network too. '
                            'If that is what you want, set "allow_tailnet_to_lan": true under "networking" and run setup again')
 
-def previous_account(path=Path('/etc/samba/nekoserver.conf')):
+def previous_account(path=Path(SHARE_FILE)):
     """The account the shares already belong to (from NekoServer's own share file), or
     None before the first setup."""
     try:
@@ -89,7 +90,7 @@ def includes_ours(text):
     file with that include line added (comments and spacing aside)."""
     for line in text.splitlines():
         key, _, value = line.partition('=')
-        if key.strip().lower() == 'include' and value.strip() == '/etc/samba/nekoserver.conf':
+        if key.strip().lower() == 'include' and value.strip() == SHARE_FILE:
             return True
     return False
 
@@ -123,7 +124,7 @@ def run(context):
         if not path.is_dir() or path.is_symlink():raise RuntimeError(f'Share directory missing or unsafe: {path}')
     if not shutil.which('smbd'):
         family.install(['samba'])
-    main=safe_path('/etc/samba/smb.conf'); managed=safe_path('/etc/samba/nekoserver.conf')
+    main=safe_path('/etc/samba/smb.conf'); managed=safe_path(SHARE_FILE)
     desired=share_config(settings,media,user)
     # Safest: don't modify a pre-existing unmanaged Samba installation.
     if main.exists() and not includes_ours(main.read_text()):

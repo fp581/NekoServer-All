@@ -65,13 +65,13 @@ def release_folders(home):
     found=[p for p in home.glob('v*') if p.is_dir() and not p.is_symlink() and release_number(p.name)]
     return sorted(found,key=lambda p:release_number(p.name))
 
-def retire_old(config,log=print,lib=Path('/usr/local/lib'),units=SYSTEMD_UNITS):
+def retire_old(data,log=print,lib=Path('/usr/local/lib'),units=SYSTEMD_UNITS):
     """After a setup run finished: remove the runtime copies of earlier releases that no
     installed service uses any more (each release deploys its own copies, which otherwise
     stay for good), and release bundles older than the KEEP_BUNDLES newest. The current
     release, and any folder a service still points at, are never touched."""
     import shutil
-    data=Path(config['data_mount']);current='v'+VERSION
+    data=Path(data);current='v'+VERSION
     old=[]
     # Docker's start guard (modules/docker.py) has its own per-release folder on the SSD.
     for home in [Path(lib)/name for name in SYSTEM_HOMES]+[data/'installer/runtime',data/'installer/guards']:

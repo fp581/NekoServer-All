@@ -304,11 +304,15 @@ def outcome(result, complete_status):
 def tidy_old_releases(config, states, log):
     """Once a run has finished with the drives mounted: the files of earlier releases that
     nothing uses any more go (native_runtime.retire_old)."""
-    if 'storage' not in states or not os.path.ismount(config['data_mount']):
+    if 'storage' not in states:
+        return
+    # The SSD folder as the settings were checked to name it (under /srv or /mnt), and mounted.
+    data = os.path.realpath(mount_path(config['data_mount']))
+    if not data.startswith(('/srv/', '/mnt/')) or not os.path.ismount(data):
         return
     from native_runtime import retire_old
     try:
-        retire_old(config, log)
+        retire_old(data, log)
     except (OSError, RuntimeError, KeyError) as exc:
         log(f'Earlier releases\' files not tidied: {exc}')
 
