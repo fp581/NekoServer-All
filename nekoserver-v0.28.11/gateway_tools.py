@@ -198,7 +198,8 @@ def port_preflight(config):
 def _apply_lan(config):
     recovery_tools.require_root();recovery_tools.mounts(config);verify_lan(config);readiness(config)
     data=Path(config['data_mount']);state=safe_path(data/'gateway/caddy-state');code=safe_path(Path('/usr/local/lib/nekoserver-gateway')/('v'+VERSION));web=Path('/usr/local/share/nekoserver-gateway/lan');ledger=data/'gateway/lan-managed.json'
-    payloads={LAN_CONFIG:json.dumps(lan_model(config,web),indent=2)+'\n',SYSTEMD_UNITS/'nekoserver-gateway-lan.service':unit(config,code,state),web/'index.html':portal(config,lan(config)[0])}
+    caddy_settings=json.dumps(lan_model(config,web),indent=2)+'\n'
+    payloads={LAN_CONFIG:caddy_settings,SYSTEMD_UNITS/'nekoserver-gateway-lan.service':unit(config,code,state),web/'index.html':portal(config,lan(config)[0])}
     payloads[code/native_runtime.NAME]=native_runtime.payload(ROOT,config)
     preflight(payloads,ledger);port_preflight(config)
     if not shutil.which('caddy'):
@@ -219,7 +220,8 @@ def _apply_lan(config):
         if not permission_checks.access(existing,user.pw_uid,{user.pw_gid},5 if existing==folder else 1):
             raise RuntimeError('Existing gateway directory blocks service traversal; review its permissions')
     with tempfile.TemporaryDirectory(prefix='neko-caddy-validate-') as folder:
-        test=Path(folder)/'lan.json';test.write_text(payloads[LAN_CONFIG]);command(['caddy','validate','--config',str(test)],env={**os.environ,'XDG_DATA_HOME':folder,'XDG_CONFIG_HOME':folder})
+        # A copy in a fresh temporary folder (its own name, nothing from the settings in the path).
+        test=Path(folder,'lan.json');test.write_text(caddy_settings);command(['caddy','validate','--config',str(test)],env={**os.environ,'XDG_DATA_HOME':folder,'XDG_CONFIG_HOME':folder})
     # Configuration validity is checked before replacing managed files or restarting our service.
     recovery_tools.mounts(config);verify_lan(config)
     for folder in public:ensure_directory(folder,0o755)
