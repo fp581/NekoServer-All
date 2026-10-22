@@ -59,6 +59,17 @@ def row(name, label, found, ok, required=False):
     return {'name': name, 'label': label, 'found': found, 'ok': bool(ok), 'required': required}
 
 
+def docker_rows(docker, compose, installed):
+    """Installed but not running is the normal state before the Docker step: the
+    packages are installed switched off, and that step starts it on the SSD."""
+    missing = 'not installed yet (setup installs it)'
+    return [
+        row('docker', 'Docker Engine',
+            docker or ('installed, not started yet (the Docker step starts it)' if installed else missing), True),
+        row('compose', 'Docker Compose', compose or ('checked once Docker runs' if installed else missing), True),
+    ]
+
+
 def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil.which):
     """One row per finding: name, label, what was found, whether it is fine, and whether
     setup must stop without it."""
@@ -82,12 +93,7 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
             'restart needed (sudo reboot)' if restart else 'none', not restart, True),
         row('cgroup', 'Control groups v2', 'yes' if _read(root, '/sys/fs/cgroup/cgroup.controllers') else 'no',
             _read(root, '/sys/fs/cgroup/cgroup.controllers')),
-        # Installed but not running is the normal state before the Docker step: the
-        # packages are installed switched off, and that step starts it on the SSD.
-        row('docker', 'Docker Engine', docker or ('installed, not started yet (the Docker step starts it)' if which('docker')
-                                                  else 'not installed yet (setup installs it)'), True),
-        row('compose', 'Docker Compose', compose or ('checked once Docker runs' if which('docker')
-                                                     else 'not installed yet (setup installs it)'), True),
+        *docker_rows(docker, compose, bool(which('docker'))),
         row('selinux', 'SELinux', {'1': 'enforcing', '0': 'permissive'}.get(selinux, 'off'), True),
         row('apparmor', 'AppArmor', 'on' if apparmor.upper().startswith('Y') else 'off', True),
         row('firewall', 'Firewall', ', '.join(firewalls) + ' is on: allow your home network to reach Samba '
