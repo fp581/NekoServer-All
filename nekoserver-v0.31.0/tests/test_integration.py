@@ -192,6 +192,7 @@ class InstallScriptTests(unittest.TestCase):
         (root / 'etc/os-release').write_text('ID=arch\n')
         (root / 'stat').write_text('cpu  1 2 3 4\nbtime 1000000000\nprocesses 5\n')
         for name, body in (('pacman', 'echo "PACMAN $*" >> "$LOG"\nexit 0'), ('ip', 'exit 0'), ('lspci', 'exit 0'),
+                           ('lslocks', 'exit 0'),   # no lock held, whatever this machine's apt is doing
                            ('systemctl', 'exit 0'), ('uname', 'if [ "$1" = -m ]; then echo x86_64; else /bin/uname "$@"; fi')):
             path = root / 'bin' / name
             path.write_text('#!/bin/sh\n' + body + '\n')
@@ -268,6 +269,23 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('PACMAN', log)
         self.assertLess(log.index('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update'), log.index('BOOTSTRAP'))
         self.assertLess(log.index('BOOTSTRAP'), log.index('START --wizard'))
+
+    def test_debian_waits_while_the_system_refreshes_its_lists(self):
+        # apt-daily holds the lists' lock; apt-get update would fail at once beside it.
+        self.use_debian()
+        busy = self.root / 'busy'
+        busy.write_text('2')
+        (self.root / 'bin/lslocks').write_text(
+            '#!/bin/sh\nn=$(cat "$BUSY")\nif [ "$n" -gt 0 ]; then echo $((n - 1)) > "$BUSY"; '
+            'echo /var/lib/apt/lists/lock; fi\necho /run/other.lock\n')
+        (self.root / 'bin/lslocks').chmod(0o755)
+        os.environ['BUSY'] = str(busy)
+        self.addCleanup(os.environ.pop, 'BUSY', None)
+        result, log = self.run_script(self.root, replace=[('sleep 5', 'sleep 0')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count('refreshing its package lists itself'), 1)
+        self.assertEqual(busy.read_text().strip(), '0')                # asked until it was free
+        self.assertIn('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update', log)
 
     def test_debian_repairs_repositories_before_apt_first_runs(self):
         self.use_debian()

@@ -25,6 +25,9 @@ Fedora support, tried with a full install, the feature checks and deliberate fai
 - **The home gateway names the containers it could not verify** instead of saying only that the selected containers must use the verified mounts, networks and ports.
 - Enabling the weekly photo timers no longer prints systemd's "Created symlink" notes on the screen.
 
+### Fixed (Debian / Ubuntu)
+- **Setup waits while the system refreshes its package lists.** Debian and Ubuntu refresh their lists themselves now and then (often just after the PC starts). Setup started then stopped at once with "Could not get lock /var/lib/apt/lists/lock", because apt waits for dpkg's lock but not for that one. It now waits for the refresh to finish, up to 10 minutes. Tried on Ubuntu with the lock held as setup started: it waited, then finished as usual.
+
 ### Fixed (Arch)
 - **Setup waits for another pacman, and finishes an update cut off by a restart.** With pacman's lock in place (an updater at work, or an update cut off by a power cut), setup stopped at once with pacman's own "unable to lock database". It now waits up to 10 minutes for another pacman to finish. A lock older than the last restart, which nothing can still hold, is removed, and the system update that follows finishes the one that was cut off. A lock that stays is explained, with the command to remove it.
 

@@ -2,6 +2,12 @@
 # One-time bootstrap for Arch/Nyarch, Debian/Ubuntu and Fedora. Scheduled work uses the bundled Rust runtime.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# apt's lock on its package lists is held (a POSIX lock, which lslocks lists by path).
+apt_lists_busy() {
+    local held
+    held=$'\n'"$(lslocks -n -o PATH 2>/dev/null || true)"$'\n'
+    [[ "$held" == *$'\n/var/lib/apt/lists/lock\n'* ]]
+}
 # Where the system update downloads packages; its disk is checked before updating.
 system_path=/var/cache/pacman
 [[ -d "$system_path" ]] || system_path=/
@@ -151,6 +157,14 @@ if "$apply"; then
         if [[ "$family" == debian ]]; then
             # Debian and Ubuntu: refresh the package lists only and install just what is
             # needed. Upgrading the rest of the system stays your own routine.
+            # They also refresh the lists themselves now and then (apt-daily), holding the
+            # lists' lock a minute or two: apt-get waits for dpkg's lock, not for that one.
+            waited=0
+            while apt_lists_busy && (( waited < 600 )); do
+                (( waited )) || echo 'The system is refreshing its package lists itself; waiting for it to finish (up to 10 minutes)...'
+                sleep 5
+                waited=$(( waited + 5 ))
+            done
             echo 'Refreshing the package lists (apt-get update).'
             apt-get "${apt_wait[@]}" update
         elif [[ "$family" == fedora ]]; then
