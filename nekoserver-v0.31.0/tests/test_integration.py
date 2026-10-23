@@ -193,6 +193,7 @@ class InstallScriptTests(unittest.TestCase):
         (root / 'stat').write_text('cpu  1 2 3 4\nbtime 1000000000\nprocesses 5\n')
         for name, body in (('pacman', 'echo "PACMAN $*" >> "$LOG"\nexit 0'), ('ip', 'exit 0'), ('lspci', 'exit 0'),
                            ('lslocks', 'exit 0'),   # no lock held, whatever this machine's apt is doing
+                           ('openssl', 'exit 0'),   # a prerequisite a minimal system lacks (AlmaLinux)
                            ('systemctl', 'exit 0'), ('uname', 'if [ "$1" = -m ]; then echo x86_64; else /bin/uname "$@"; fi')):
             path = root / 'bin' / name
             path.write_text('#!/bin/sh\n' + body + '\n')
