@@ -76,9 +76,12 @@ fn resume() -> Result<()> {
             if !identity(&state, service, id) {
                 return Err(Error::new("Container identity changed"));
             }
-            if state["State"]["Running"] != true {
-                docker(&["start", id])?;
-            }
+            // Cut off while the apps were being stopped: a stop Docker is still finishing
+            // would end after the start and leave the app stopped (Docker does not restart
+            // an app it was asked to stop). The stop finishes first (nothing to do for an
+            // app already stopped), then the app starts.
+            docker(&["stop", "--time", "60", id])?;
+            docker(&["start", id])?;
             if inspect(id)?["State"]["Running"] != true {
                 return Err(Error::new("Application did not restart"));
             }
