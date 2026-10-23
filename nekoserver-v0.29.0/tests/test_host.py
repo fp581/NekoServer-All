@@ -110,7 +110,7 @@ class InstallTest(unittest.TestCase):
 
 
 # Units each package brings, as Debian's packages enable them.
-UNITS = {'samba': ('smbd.service', 'nmbd.service'), 'caddy': ('caddy.service',),
+UNITS = {'samba': ('smbd.service', 'nmbd.service', 'winbind.service'), 'caddy': ('caddy.service',),
          'docker-ce': ('docker.service', 'docker.socket'), 'tailscale': ('tailscaled.service',)}
 
 
@@ -328,7 +328,7 @@ class DebianTest(unittest.TestCase):
         self.assertIn('exit 101', apt.policy_during_install)
         self.assertFalse((self.root / 'usr/sbin/policy-rc.d').exists())
         self.assertEqual(apt.enabled(), [])
-        self.assertEqual(sorted(apt.units), ['caddy.service', 'nmbd.service', 'smbd.service'])
+        self.assertEqual(sorted(apt.units), ['caddy.service', 'nmbd.service', 'smbd.service', 'winbind.service'])
 
     def test_lmde_uses_the_debian_release_name(self):
         family = self.family(release={'ID': 'linuxmint', 'ID_LIKE': 'debian', 'VERSION_CODENAME': 'faye',
@@ -426,7 +426,7 @@ class DebianTest(unittest.TestCase):
     def test_new_services_are_protected_until_switched_off(self):
         apt = FakeApt()
         self.family(apt).install(['samba'])
-        self.assertEqual(apt.masked_during_install, {'smbd.service', 'nmbd.service'})
+        self.assertEqual(apt.masked_during_install, {'smbd.service', 'nmbd.service', 'winbind.service'})
         self.assertIn('exit 101', apt.policy_during_install)
         self.assertEqual(apt.masked, set())
         self.assertEqual(apt.enabled(), [])
@@ -462,7 +462,7 @@ class DebianTest(unittest.TestCase):
             family.install(['samba'])
         # Nothing was tidied while dpkg may still be working: all protection is still in place.
         self.assertTrue(self.journal().exists())
-        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service'})
+        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service', 'winbind.service'})
         self.assertEqual((self.root / 'usr/sbin/policy-rc.d').read_text(), host.OUR_POLICY)
         stop(holder)
         self.family(apt).reconcile()
@@ -477,7 +477,7 @@ class DebianTest(unittest.TestCase):
         family = self.family(apt)
         with self.assertRaisesRegex(RuntimeError, 'did not finish'):
             family.install(['samba'])
-        self.assertEqual(apt.protected_while_configuring, ({'smbd.service', 'nmbd.service'}, True))
+        self.assertEqual(apt.protected_while_configuring, ({'smbd.service', 'nmbd.service', 'winbind.service'}, True))
         self.assertEqual(apt.unconfigured, [])
         self.assertEqual(apt.masked, set())
         self.assertEqual(apt.enabled(), [])
@@ -492,7 +492,7 @@ class DebianTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'did not finish'):
             family.install(['samba'])
         self.assertTrue(self.journal().exists())
-        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service'})
+        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service', 'winbind.service'})
         self.assertEqual((self.root / 'usr/sbin/policy-rc.d').read_text(), host.OUR_POLICY)
         retry = self.family(apt)
         with self.assertRaisesRegex(RuntimeError, 'dpkg could not finish setting up'):
@@ -510,7 +510,7 @@ class DebianTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'did not finish'):
             family.install(['samba'])
         self.assertTrue(self.journal().exists())
-        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service'})
+        self.assertEqual(apt.masked, {'smbd.service', 'nmbd.service', 'winbind.service'})
 
     def test_someone_elses_half_set_up_packages_are_left_to_them(self):
         apt = FakeApt()

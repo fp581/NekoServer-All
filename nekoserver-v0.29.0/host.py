@@ -411,8 +411,10 @@ class Debian(Family):
     # start on the system disk), so they are kept from starting and left switched off.
     autostarted = MappingProxyType({
         'docker': ('docker.service', 'docker.socket'), 'caddy': ('caddy.service',),
-        # (samba-ad-dc.service comes masked by the package itself and is left as it is.)
-        'samba': ('smbd.service', 'nmbd.service'), 'tailscale': ('tailscaled.service',)})
+        # (samba-ad-dc.service comes masked by the package itself and is left as it is.
+        # winbind comes with samba here and is never used by a standalone server; the
+        # settings backup refuses to run beside it.)
+        'samba': ('smbd.service', 'nmbd.service', 'winbind.service'), 'tailscale': ('tailscaled.service',)})
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
 
