@@ -144,7 +144,11 @@ def run(ctx):
     source=None
     if photos:
         source=safe_path(Path(ctx.config['media_mount'])/relative_path(opts.get('archive_dir','photos/archive')))
-        if source.is_symlink() or not source.is_dir(): raise RuntimeError(f'Archive folder missing: {source}')
+        if source.is_symlink(): raise RuntimeError(f'Archive folder is a link, not a folder: {source}')
+        if not source.is_dir():
+            # The photos step makes this folder; when it could not run (Docker failed,
+            # say), this step waits for it instead of failing on its account.
+            return {'status':'needs_setup','reason':f'Waiting for the photos (Immich) step, which makes the photo archive {source}: finish that step, then run setup again'}
     dest=mount_path(ctx.config['external_backup_mount'])
     if not dest.is_absolute() or str(dest) in ('/','/home','/mnt','/srv') or dest.is_symlink(): raise RuntimeError('Unsafe USB destination')
     when=opts.get('backup_time','03:00');day=opts.get('backup_weekday','Sun')
