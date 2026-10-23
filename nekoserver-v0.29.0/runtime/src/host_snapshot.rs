@@ -241,7 +241,21 @@ fn sources(cfg: &Value, media: &Path) -> Result<Vec<Source>> {
         {
             return Err(Error::new("Invalid source ID"));
         }
-        let source = common::safe(Path::new(row["path"].as_str().unwrap_or("")))?;
+        // The source itself may be a link (Debian's /etc/vconsole.conf and
+        // /etc/default/locale are): it is kept as a link, like a link inside a source.
+        // Its parents must not be links, and the path must not climb.
+        let source = Path::new(row["path"].as_str().unwrap_or("")).to_path_buf();
+        common::safe(
+            source
+                .parent()
+                .ok_or_else(|| Error::new("Invalid source"))?,
+        )?;
+        if source
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(Error::new("Parent traversal refused"));
+        }
         let backup = media.join("backups");
         if !source.is_absolute()
             || source == Path::new("/")
@@ -528,6 +542,43 @@ mod tests {
         let removed = common::prune_snapshots(&root, 2, Some("snapshot-500-1"), None).unwrap();
         assert_eq!(removed, ["snapshot-100-1", "snapshot-300-1"]);
         fs::remove_dir_all(root).unwrap();
+    }
+    /// Debian's /etc/vconsole.conf and /etc/default/locale are links: a linked source is
+    /// kept as a link (its parents must still be real folders, and no path may climb).
+    #[test]
+    fn a_linked_source_is_kept_as_a_link() {
+        let root = std::env::temp_dir().join(format!("neko-host-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("etc/default")).unwrap();
+        fs::write(
+            root.join("etc/default/keyboard"),
+            "KEYMAP=us
+",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("default/keyboard", root.join("etc/vconsole.conf")).unwrap();
+        let link = root
+            .join("etc/vconsole.conf")
+            .to_string_lossy()
+            .into_owned();
+        let cfg = json!({"host_backup":{"sources":[{"id":"source0","path":link,"optional":true}]}});
+        let selected = sources(&cfg, Path::new("/media")).unwrap();
+        let (files, missing, skipped) = inventory(&selected).unwrap();
+        assert!(missing.is_empty() && skipped.is_empty());
+        assert_eq!(files[0]["kind"], "symlink");
+        assert_eq!(files[0]["link_target"], "default/keyboard");
+        // A link higher up the path is still refused.
+        std::os::unix::fs::symlink("etc", root.join("conf")).unwrap();
+        let through = root
+            .join("conf/default/keyboard")
+            .to_string_lossy()
+            .into_owned();
+        let cfg =
+            json!({"host_backup":{"sources":[{"id":"source0","path":through,"optional":true}]}});
+        assert!(sources(&cfg, Path::new("/media")).is_err());
+        let cfg = json!({"host_backup":{"sources":[{"id":"source0","path":"/etc/../etc/hosts","optional":true}]}});
+        assert!(sources(&cfg, Path::new("/media")).is_err());
+        let _ = fs::remove_dir_all(&root);
     }
     #[test]
     fn root_refused() {
