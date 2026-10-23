@@ -72,6 +72,7 @@ class LanChoiceTests(unittest.TestCase):
             return True
         with mock.patch.object(samba.os, 'geteuid', return_value=0), \
                 mock.patch.object(samba.host, 'current'), \
+                mock.patch.object(samba, 'previous_account', return_value=None), \
                 mock.patch.object(samba.network_access, 'choose_lan', side_effect=choose), \
                 mock.patch.object(samba.network_access, 'verify_lan') as verified, \
                 mock.patch.dict(samba.os.environ, {'SUDO_USER': 'root'}), \
@@ -124,6 +125,18 @@ class SambaWaitsForItsFoldersTests(unittest.TestCase):
             self.run_with({'Media': 'library', 'Scans': 'scans'}, made=['library'])
 
 
+class SambaCommandMessageTests(unittest.TestCase):
+    """A failed systemctl call shows its reason, not its "Created symlink" notice."""
+    def test_the_reason_is_shown_without_the_link_notice(self):
+        stderr = ("Created symlink '/etc/systemd/system/multi-user.target.wants/smb.service' → '/usr/lib/systemd/system/smb.service'.\n"
+                  "Job for smb.service failed because the control process exited with error code.\n")
+        with mock.patch.object(samba.subprocess, 'run', return_value=mock.Mock(returncode=1, stderr=stderr, stdout='')):
+            with self.assertRaises(RuntimeError) as caught:
+                samba.call(['systemctl', 'enable', '--now', 'smb.service'])
+        self.assertIn('systemctl enable --now failed: Job for smb.service failed', str(caught.exception))
+        self.assertNotIn('Created symlink', str(caught.exception))
+
+
 class SambaUnusedProgramsTests(unittest.TestCase):
     """winbind (and nmbd) are switched off on a server already set up: the settings backup
     refuses to run beside them, and a standalone Samba never uses them."""
@@ -162,7 +175,9 @@ class SambaOwnConfigTests(unittest.TestCase):
 class SambaAccountTests(unittest.TestCase):
     """The shares keep their account across runs by different administrators."""
     def test_the_first_account_stays(self):
-        with mock.patch.dict(samba.os.environ, {'SUDO_USER': 'dana'}):
+        # No share file yet (the machine running the tests may have a real one).
+        with mock.patch.dict(samba.os.environ, {'SUDO_USER': 'dana'}), \
+                mock.patch.object(samba, 'previous_account', return_value=None):
             self.assertEqual(samba.samba_account({}, previous=None), 'dana')      # first setup
             self.assertEqual(samba.samba_account({}, previous='neko'), 'neko')    # dana runs setup later
             self.assertEqual(samba.samba_account({'samba_user': 'dana'}, previous='neko'), 'dana')  # on purpose

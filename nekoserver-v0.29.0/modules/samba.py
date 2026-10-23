@@ -3,7 +3,7 @@ import os,pwd,shutil,subprocess,sys
 import network_access
 from pathlib import Path
 import host
-from neko_common import safe_path, atomic_write, findmnt, SYSTEMD_UNITS
+from neko_common import safe_path, atomic_write, findmnt, last_words, SYSTEMD_UNITS
 DEPENDENCIES=['storage','system']
 DESCRIPTION='Set up explicit LAN or tailnet SMB shares with no guest access'
 
@@ -74,7 +74,11 @@ def samba_account(settings,previous=None):
 
 def call(args,timeout=180):
     p=subprocess.run(args,text=True,capture_output=True,timeout=timeout, check=False)
-    if p.returncode:raise RuntimeError(f'{args[0]} failed: {p.stderr[-500:]}')
+    if p.returncode:
+        # systemctl enable --now prints its "Created symlink" notices too; the reason is
+        # in the other lines ("Job for smb.service failed ...").
+        said='\n'.join(l for l in (p.stderr or p.stdout or '').splitlines() if not l.startswith(('Created symlink','Removed ')))
+        raise RuntimeError(f'{" ".join(args[:3])} failed: {last_words(said)}')
     return p.stdout.strip()
 
 def samba_password(user,run=subprocess.run,tries=3):
