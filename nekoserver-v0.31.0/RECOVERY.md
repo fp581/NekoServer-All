@@ -90,6 +90,7 @@ If you did not save the settings file, take the copy from the SSD. Mounting it r
 sudo mkdir -p /mnt/neko-ssd-read
 sudo mount -o ro /dev/sdX /mnt/neko-ssd-read
 sudo cp /mnt/neko-ssd-read/installer/releases/v0.31.0/config.json my-config.json
+sudo chown "$USER": my-config.json
 sudo umount /mnt/neko-ssd-read
 ```
 
