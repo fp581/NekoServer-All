@@ -56,10 +56,12 @@ def definitions(config, binary, guard):
         raise RuntimeError('app_backup.time must be HH:MM')
     keep_snapshots(config)
     resume = f'{binary} app-resume --config {guard}'
+    # A night missed while the PC was off is caught up at boot, when the resume service
+    # runs too and holds the same job lock: the backup waits for it instead of failing.
     return {
         'nekoserver-app-backup.service': (
             '[Unit]\nDescription=NekoServer media application snapshot\n'
-            f'RequiresMountsFor={data} {media}\nAfter=docker.service\n'
+            f'RequiresMountsFor={data} {media}\nAfter=docker.service nekoserver-app-resume.service\n'
             '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'
             f'ExecStart={binary} app-snapshot --config {guard}\n'
             f'ExecStopPost={resume}\nTimeoutStopSec=20min\n'

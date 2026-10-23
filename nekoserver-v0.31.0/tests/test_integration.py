@@ -105,6 +105,20 @@ def bundled_binary_current():
 
 
 class GeneratedCommandTests(unittest.TestCase):
+    def test_a_backup_caught_up_at_boot_waits_for_its_resume_service(self):
+        # Seen on Fedora: a night missed while the PC was off is caught up at boot, at the
+        # same second the resume service runs with the same job lock; the backup failed
+        # ("Job already running or unsafe lock") unless it is ordered after the resume.
+        texts = unit_texts()
+        for backup, resume in (('app_backup:nekoserver-app-backup.service', 'nekoserver-app-resume.service'),
+                               ('host_backup:nekoserver-host-backup.service', 'nekoserver-host-resume.service')):
+            with self.subTest(backup=backup):
+                after = ' '.join(line.split('=', 1)[1] for line in texts[backup].splitlines()
+                                 if line.startswith('After='))
+                self.assertIn(resume, after.split())
+                timer = texts[backup.replace('.service', '.timer')]
+                self.assertIn('Persistent=true', timer)       # why the catch-up happens at boot
+
     def test_every_generated_runtime_command_uses_known_options(self):
         table = option_table()
         commands = runtime_commands()
