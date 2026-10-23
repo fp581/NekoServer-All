@@ -9,6 +9,9 @@ import host
 from neko_common import SYSTEMD_UNITS, VERSION, atomic_json, atomic_write, check_units, safe_path, verify_storage, write_units
 
 HDD_UNIT = 'nekoserver-hdd-policy.service'
+# Brings the apps back when the SSD or HDD returns after a drop-out (see runtime drive_return.rs).
+DRIVE_UNIT = 'nekoserver-drive-return.service'
+DRIVE_SETTINGS = Path('/etc/nekoserver-os/drives.json')
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Disable OS sleep, bound system logs and configure verified media HDD standby'
@@ -54,6 +57,40 @@ def files(config):
     }
 
 
+def drive_devices(config, run=subprocess.run):
+    """systemd's names for the SSD's and HDD's devices, by their IDs."""
+    names = []
+    for key in ('data_ssd', 'media_hdd'):
+        uuid = config['storage'][key]['uuid']
+        shown = run(['systemd-escape', '--path', '--suffix=device', '/dev/disk/by-uuid/' + uuid],
+                    capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        names.append(shown)
+    return names
+
+
+def drive_unit(binary, devices):
+    """Run whenever either drive appears (at boot too, when there is nothing to do), after
+    the drives have been mounted at boot."""
+    return (
+        '[Unit]\nDescription=NekoServer bring the apps back when a drive returns\n'
+        'After=local-fs.target\n'
+        '[Service]\nType=oneshot\n'
+        f'ExecStart={binary} drive-return --config {DRIVE_SETTINGS}\n'
+        'TimeoutStartSec=900\n'
+        '[Install]\nWantedBy=' + ' '.join(devices) + '\n'
+    )
+
+
+def install_drive_return(config, project, run=subprocess.run):
+    binary = native_runtime.deploy(project, config, Path('/usr/local/lib/nekoserver-os') / ('v' + VERSION))
+    check_units([DRIVE_UNIT], 'Drive return')
+    atomic_json(safe_path(DRIVE_SETTINGS), native_runtime.storage_config(config))
+    write_units({DRIVE_UNIT: drive_unit(binary, drive_devices(config, run))})
+    run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
+    # Re-enabled each run: the drives' IDs (and so the devices it waits for) may change.
+    run(['systemctl', 'reenable', DRIVE_UNIT], check=True, capture_output=True, timeout=30)
+
+
 def unit(binary, guard, config):
     return (
         '[Unit]\nDescription=NekoServer verified media HDD standby policy\n'
@@ -93,6 +130,8 @@ def run(context):
     # Existing logind sessions are retained. Masks/sleep policy apply immediately;
     # IdleAction is also loaded on the next normal reboot.
     context.log('OS sleep/hibernation blocked; journal bounds installed. Display blanking may remain enabled.')
+    install_drive_return(context.config, Path(__file__).resolve().parents[1])
+    context.log('Drive return: when the SSD or HDD comes back after it disappeared, its mount is renewed and the apps start again by themselves')
     if policy == 'unchanged':
         previous=safe_path(SYSTEMD_UNITS/HDD_UNIT)
         if previous.exists():
