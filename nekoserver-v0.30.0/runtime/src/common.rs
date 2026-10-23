@@ -113,6 +113,14 @@ pub fn relative(s: &str) -> Result<PathBuf> {
 /// Keep the newest `keep` snapshots in `root` (0 keeps all). `newest` (the one just
 /// published) and `protected` (one that still holds files later runs left out) are
 /// never deleted; `protected` is kept on top of `keep`.
+/// The age order of a backup named after its time (microseconds, then the process id).
+/// One dated more than a day ahead was made while the clock was wrong, so before it was
+/// put right: older than anything made since. It sorts first and goes first, instead of
+/// looking newest and outliving every backup made with the right time.
+pub fn age_key(micros: u128, pid: u128) -> (bool, u128, u128) {
+    let ahead = (now() * 1e6) as u128 + 86_400_000_000;
+    (micros <= ahead, micros, pid)
+}
 pub fn prune_snapshots(
     root: &Path,
     keep: u64,
@@ -142,13 +150,21 @@ pub fn prune_snapshots(
         {
             continue;
         }
-        let order = (
+        let order = age_key(
             parts[1].parse::<u128>().unwrap_or(0),
             parts[2].parse::<u128>().unwrap_or(0),
         );
         found.push((order, name));
     }
     found.sort();
+    let ahead: Vec<&str> = found
+        .iter()
+        .filter(|(order, _)| !order.0)
+        .map(|(_, name)| name.as_str())
+        .collect();
+    if !ahead.is_empty() {
+        println!("Backup retention: {} dated in the future (the clock was wrong when made), counted as the oldest; check the server's clock (timedatectl)", ahead.join(", "));
+    }
     let kept_aside = usize::from(newest.is_some_and(|n| root.join(n).is_dir()));
     let excess = (found.len() + kept_aside).saturating_sub(keep as usize);
     let mut removed = vec![];

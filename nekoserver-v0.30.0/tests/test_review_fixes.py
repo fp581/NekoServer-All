@@ -1380,6 +1380,46 @@ class HddPolicyTests(unittest.TestCase):
         self.assertEqual(server_os.hdd_service_said('runtime failed', run=broken), '')
 
 
+class GatewayStateOwnerTests(unittest.TestCase):
+    """After Linux is reinstalled, its caddy account gets another number: the gateway's
+    certificates on the SSD are handed over when NekoServer itself gave them the old one."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.state, self.ledger = root / 'caddy-state', root / 'lan-managed.json'
+        (self.state / 'caddy/pki').mkdir(parents=True)
+        (self.state / 'caddy/pki/root.crt').write_text('ca')
+        self.me = os.stat(self.state)
+        self.caddy = mock.Mock(pw_uid=995, pw_gid=989)
+
+    def test_an_earlier_installs_files_are_taken_over(self):
+        import gateway_tools
+        self.ledger.write_text(json.dumps({'uid': self.me.st_uid, 'gid': self.me.st_gid}))
+        changed = []
+        with mock.patch.object(gateway_tools.pwd, 'getpwuid', side_effect=KeyError), \
+                mock.patch.object(gateway_tools.os, 'chown', side_effect=lambda p, u, g, follow_symlinks=True: changed.append((Path(p).name, u, g))):
+            said = gateway_tools.adopt_state(self.state, self.caddy, self.ledger)
+        self.assertIn('caddy account of an earlier install', said)
+        self.assertEqual({name for name, _, _ in changed}, {'caddy-state', 'caddy', 'pki', 'root.crt'})
+        self.assertEqual({(u, g) for _, u, g in changed}, {(995, 989)})
+
+    def test_files_of_an_account_here_or_an_owner_never_recorded_stay(self):
+        import gateway_tools
+        with mock.patch.object(gateway_tools.os, 'chown') as chown:
+            # The account owning them exists on this PC (here: whoever runs the test).
+            self.ledger.write_text(json.dumps({'uid': self.me.st_uid, 'gid': self.me.st_gid}))
+            with mock.patch.object(gateway_tools.pwd, 'getpwuid', return_value=mock.Mock(pw_name='alice')), \
+                    self.assertRaisesRegex(RuntimeError, 'the account "alice".*chown -R caddy:caddy'):
+                gateway_tools.adopt_state(self.state, self.caddy, self.ledger)
+            # No such account, but NekoServer never gave them that owner.
+            self.ledger.write_text(json.dumps({'uid': self.me.st_uid + 1, 'gid': self.me.st_gid}))
+            with mock.patch.object(gateway_tools.pwd, 'getpwuid', side_effect=KeyError), \
+                    self.assertRaisesRegex(RuntimeError, 'NekoServer did not leave them that way'):
+                gateway_tools.adopt_state(self.state, self.caddy, self.ledger)
+        chown.assert_not_called()
+
+
 class NextcloudUpgradeTests(unittest.TestCase):
     """A new release may change how Nextcloud's containers are run; with the same settings
     in my-config.json that is applied, not taken for a changed setting."""

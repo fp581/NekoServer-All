@@ -686,4 +686,24 @@ mod tests {
         assert!(root.join("snapshot-1000-7/manifest.json").is_file());
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn a_snapshot_dated_ahead_counts_as_the_oldest() {
+        // Keep 3: one made while the clock was far ahead must not outlive the real ones
+        // (it would look newest for years, leaving a single real backup).
+        let root = scratch("ahead");
+        for name in [
+            "snapshot-100-1",
+            "snapshot-200-1",
+            "snapshot-300-1",
+            "snapshot-99999999999999999-1",
+            "snapshot-400-1",
+        ] {
+            dir(&root.join(name));
+            fs::write(root.join(name).join("manifest.json"), b"{}").unwrap();
+        }
+        let removed = common::prune_snapshots(&root, 3, Some("snapshot-400-1"), None).unwrap();
+        assert_eq!(removed, ["snapshot-99999999999999999-1", "snapshot-100-1"]);
+        assert!(root.join("snapshot-200-1").is_dir() && root.join("snapshot-300-1").is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

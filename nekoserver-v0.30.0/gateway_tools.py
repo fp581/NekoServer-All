@@ -195,6 +195,33 @@ def port_preflight(config):
         if ip+':'+str(port) in owned or port_free(ip,port):continue
         raise RuntimeError(f'Port {port} on {ip} was taken by another program just now; run setup again (it then picks a free port)')
 
+def adopt_state(state,user,ledger):
+    """The gateway's TLS state on the SSD (its certificate authority, which phones trust)
+    owned by another account than this PC's caddy. Handed to caddy only when NekoServer
+    itself gave it that owner (its ledger says so) for an account that no longer exists
+    here: Linux was reinstalled, or Caddy's package was, and caddy got another number.
+    Anything else is left as it is, for a person to look at. Returns a line for the log."""
+    owner=state.stat()
+    try:recorded=json.loads(ledger.read_text()) if ledger.is_file() else {}
+    except (OSError,ValueError):recorded={}
+    def account(uid):
+        try:return pwd.getpwuid(uid).pw_name
+        except KeyError:return None
+    held=account(owner.st_uid)
+    found={(owner.st_uid,owner.st_gid)}
+    for root,folders,files in os.walk(state):
+        for name in folders+files:
+            item=os.lstat(os.path.join(root,name));found.add((item.st_uid,item.st_gid))
+    if held is not None or found!={(recorded.get('uid'),recorded.get('gid'))}:
+        who=f'the account "{held}"' if held else f'user number {owner.st_uid}'
+        raise RuntimeError(f'The gateway\'s certificate files ({state}) belong to {who}, not to caddy, and NekoServer did not '
+                           f'leave them that way; check them, then give them to caddy (sudo chown -R caddy:caddy {state}) and run setup again')
+    for root,folders,files in os.walk(state):
+        for name in folders+files:os.chown(os.path.join(root,name),user.pw_uid,user.pw_gid,follow_symlinks=False)
+    os.chown(state,user.pw_uid,user.pw_gid,follow_symlinks=False)
+    return (f'Gateway certificates kept: they belonged to the caddy account of an earlier install (number {owner.st_uid}), '
+            f'now to this one ({user.pw_uid}); phones that trusted them keep doing so')
+
 def _apply_lan(config):
     recovery_tools.require_root();recovery_tools.mounts(config);verify_lan(config);readiness(config)
     data=Path(config['data_mount']);state=safe_path(data/'gateway/caddy-state');code=safe_path(Path('/usr/local/lib/nekoserver-gateway')/('v'+VERSION));web=Path('/usr/local/share/nekoserver-gateway/lan');ledger=data/'gateway/lan-managed.json'
@@ -209,7 +236,8 @@ def _apply_lan(config):
         family.install(['caddy'])
     user=pwd.getpwnam('caddy')
     if user.pw_uid==0 or user.pw_gid==0:raise RuntimeError('Caddy needs an unprivileged package service account')
-    if state.exists() and (state.stat().st_uid!=user.pw_uid or state.stat().st_gid!=user.pw_gid):raise RuntimeError('Persistent TLS-state owner differs; preserve files and plan recovery manually')
+    adopted=None
+    if state.exists() and (state.stat().st_uid!=user.pw_uid or state.stat().st_gid!=user.pw_gid):adopted=adopt_state(state,user,ledger)
     # Package Caddy runs without root credentials. Fresh public ancestors must
     # survive a private installer umask; existing restrictive paths are preserved.
     public=(data/'gateway',code.parent,code,web.parent,web,Path('/etc/nekoserver-gateway'))
@@ -234,7 +262,9 @@ def _apply_lan(config):
     try:command(['systemctl','restart','nekoserver-gateway-lan.service'])
     except RuntimeError:
         command(['systemctl','stop','nekoserver-gateway-lan.service']);raise
-    report={'format':'neko-gateway-v1','mode':'lan','portal':HTTPS+lan(config)[0]+':'+str(lan_ports(config)['portal'])+'/','services':selected(config),'status':'configured','client_acceptance':'needs_setup','reason':'Trust the private LAN CA on each client, then verify login, uploads, streaming and forbidden-source access.'};atomic_json(data/'reports/gateway-lan.json',report);return report
+    report={'format':'neko-gateway-v1','mode':'lan','portal':HTTPS+lan(config)[0]+':'+str(lan_ports(config)['portal'])+'/','services':selected(config),'status':'configured','client_acceptance':'needs_setup','reason':'Trust the private LAN CA on each client, then verify login, uploads, streaming and forbidden-source access.'};atomic_json(data/'reports/gateway-lan.json',report)
+    if adopted:report['adopted']=adopted
+    return report
 
 def canonical(value):
     if not isinstance(value,dict):raise RuntimeError('Cannot inspect Tailscale Serve configuration')

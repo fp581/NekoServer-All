@@ -70,6 +70,11 @@ class WizardFlowTests(unittest.TestCase):
         geteuid = mock.patch('os.geteuid', return_value=0)
         geteuid.start()
         self.addCleanup(geteuid.stop)
+        # The template names the real /srv/nekoserver: on a PC running NekoServer its setup
+        # state there would be read (or refused to a normal user). This test's own folder.
+        folder = mock.patch.object(wizard, 'data_folder', return_value=self.root / 'ssd')
+        folder.start()
+        self.addCleanup(folder.stop)
 
     def test_saying_no_changes_nothing(self):
         execute = mock.Mock()
