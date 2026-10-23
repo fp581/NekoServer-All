@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import stat
 import subprocess
 import tempfile
@@ -586,24 +587,128 @@ PULL_SECONDS = 4 * 3600
 def compose_up(base, what, log=None, timeout=900):
     """Download the images (any amount of time a slow connection needs; a download cut off
     by Ctrl+C goes on where it stopped next time) and then start the app."""
-    named = services_to_pull(base, what)
+    services = compose_services(base, what)
+    taken = busy_ports(base, services, what)
+    if taken:
+        # Docker would say only "failed to bind host port ...: address already in use".
+        raise RuntimeError(f'{what} cannot start: ' + '; '.join(
+            f'port {port} ({ip}) is in use by {holder}' for port, ip, holder in taken)
+            + f'. {what} needs it: stop that program and keep it from starting with the PC (for a '
+            'service, sudo systemctl disable --now its name), then run setup again')
+    named = services_to_pull(base, what, services)
     if named:
         if log:
             log(f'{what}: downloading its images (this can take a while on a slow connection)')
         pull_images([*base, 'pull', '--quiet', *named], what, log)
-    return checked_run([*base, 'up', '-d'], timeout, f'{what} (docker compose up)')
+    result = checked_run([*base, 'up', '-d'], timeout, f'{what} (docker compose up)')
+    lost = without_network(base, what)
+    if lost:
+        if log:
+            log(f'{what}: {", ".join(lost)} was running without its network (left so by an earlier start that '
+                'failed); recreating it')
+        result = checked_run([*base, 'up', '-d', '--force-recreate', '--no-deps', *lost], timeout,
+                             f'{what} (docker compose up)')
+    return result
 
 
-def services_to_pull(base, what):
+def compose_services(base, what):
+    """The app's services as docker compose resolves them."""
+    shown = checked_run([*base, 'config', '--format', 'json'], 120, f'{what} (docker compose config)')
+    try:
+        return json.loads(shown.stdout or '{}').get('services') or {}
+    except ValueError:
+        raise RuntimeError(f'{what}: docker compose config gave no readable answer') from None
+
+
+def port_taken(ip, port, protocol='tcp'):
+    """Binding this address as Docker would fails: another program listens there."""
+    kind = socket.SOCK_DGRAM if protocol == 'udp' else socket.SOCK_STREAM
+    with socket.socket(socket.AF_INET6 if ':' in ip else socket.AF_INET, kind) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # a closing connection is no holder
+        try:
+            probe.bind((ip, port))
+        except OSError as exc:
+            return exc.errno == errno.EADDRINUSE
+    return False
+
+
+def port_holder(port, protocol='tcp', docker=('docker',)):
+    """Who listens on this port, for a person to find it: a program and its process, or
+    the Docker container publishing it."""
+    try:
+        shown = subprocess.run(['ss', '-Hlunp' if protocol == 'udp' else '-Hltnp', f'sport = :{port}'],
+                               capture_output=True, text=True, timeout=15, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        shown = ''
+    found = re.search(r'users:\(\("([^"]+)",pid=(\d+)', shown)
+    if not found:
+        return 'another program'
+    if found.group(1) == 'docker-proxy':
+        try:
+            names = subprocess.run([*docker, 'ps', '--filter', f'publish={port}', '--format', '{{.Names}}'],
+                                   capture_output=True, text=True, timeout=30, check=False).stdout.split()
+        except (OSError, subprocess.SubprocessError):
+            names = []
+        return 'the Docker container ' + ', '.join(names) if names else 'another Docker container'
+    return f'{found.group(1)} (process {found.group(2)})'
+
+
+def compose_rows(base, what):
+    """The app's containers as docker compose ps lists them (a dict each)."""
+    shown = checked_run([*base, 'ps', '--format', 'json'], 60, f'{what} (docker compose ps)').stdout or ''
+    try:
+        rows = json.loads(shown)                  # an older Compose: one JSON list
+        rows = rows if isinstance(rows, list) else [rows]
+    except ValueError:                            # a newer one: a JSON object per line
+        rows = [json.loads(line) for line in shown.splitlines() if line.strip().startswith('{')]
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def without_network(base, what):
+    """Services whose running container has no network at all. A start that failed while
+    Docker set up its networking (a port in use, say) left the container that way, and
+    Docker 29 went on starting it without one: the app runs, but nothing can reach it
+    (tried on AlmaLinux). No NekoServer app runs without a network."""
+    docker = list(base[:base.index('compose')]) if 'compose' in base else ['docker']
+    lost = []
+    for row in compose_rows(base, what):
+        if row.get('State') != 'running' or not (row.get('ID') or row.get('Name')):
+            continue
+        try:
+            shown = subprocess.run([*docker, 'inspect', '--format', '{{len .NetworkSettings.Networks}}',
+                                    row.get('ID') or row.get('Name')], capture_output=True, text=True,
+                                   timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if shown.returncode == 0 and shown.stdout.strip() == '0':
+            lost.append(row.get('Service'))
+    return sorted(name for name in lost if name)
+
+
+def busy_ports(base, services, what):
+    """[(port, address, holder)] for the ports these services publish that another program
+    holds now. The app's own running containers hold theirs: those are left out."""
+    wanted = [(name, p) for name, service in sorted(services.items())
+              for p in (service.get('ports') or []) if isinstance(p, dict) and p.get('published')]
+    if not wanted:
+        return []
+    running = {row.get('Service') for row in compose_rows(base, what) if row.get('State') == 'running'}
+    docker = tuple(base[:base.index('compose')]) if 'compose' in base else ('docker',)
+    taken = []
+    for name, p in wanted:
+        ip, port, protocol = p.get('host_ip') or '0.0.0.0', int(p['published']), p.get('protocol') or 'tcp'
+        if name not in running and port_taken(ip, port, protocol):
+            taken.append((port, ip, port_holder(port, protocol, docker)))
+    return taken
+
+
+def services_to_pull(base, what, services=None):
     """The services whose image is named (lscr.io/...:latest, say) and so can be
     downloaded. After a monthly update, maintenance pins each service to the exact image
     it tested (sha256:...): such an image cannot be downloaded by its ID ("pull access
     denied for sha256"), and must already be on this PC, which is checked instead."""
-    shown = checked_run([*base, 'config', '--format', 'json'], 120, f'{what} (docker compose config)')
-    try:
-        services = json.loads(shown.stdout or '{}').get('services') or {}
-    except ValueError:
-        raise RuntimeError(f'{what}: docker compose config gave no readable answer') from None
+    if services is None:
+        services = compose_services(base, what)
     docker = list(base[:base.index('compose')]) if 'compose' in base else ['docker']
     named = []
     for name, service in sorted(services.items()):

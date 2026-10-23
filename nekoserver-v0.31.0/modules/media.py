@@ -287,9 +287,13 @@ def _run(context):
             context.log(f'Deployed {name} (localhost only); project neko-{name}')
         except Exception as exc:
             context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')
-            failed.append(name)
+            failed.append(str(exc) if str(exc).startswith(name) else f'{name}: {exc}')
     if failed:
-        raise RuntimeError(f'Media projects failed: {failed}; retry with the same manifest/config once fixed')
+        # The reason belongs on the finishing screen too, not only in the log.
+        reasons = ' | '.join(failed)
+        if 'run setup again' not in reasons:
+            reasons += '. Fix that, then run setup again'
+        raise RuntimeError(f'Some apps did not start. {reasons} (the apps that started are kept)')
     context.log('Media stack deployed. Run the onboarding module to connect accounts, libraries and API keys; verify actual playback.')
 
 
