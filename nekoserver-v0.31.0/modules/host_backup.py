@@ -183,8 +183,10 @@ def definitions(config, binary, private):
     time = settings(config).get('time', '05:15')
     resume = f'{binary} host-resume --config {private}'
     mounts = f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\n'
+    # A night missed while the PC was off is caught up at boot, when the resume service
+    # runs too and holds the same job lock: the backup waits for it instead of failing.
     return {
-        BACKUP_UNIT: '[Unit]\nDescription=NekoServer host and user snapshot\n'+mounts+
+        BACKUP_UNIT: '[Unit]\nDescription=NekoServer host and user snapshot\n'+mounts+f'After={RESUME_UNIT}\n'+
             '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec=5min\n',
         BACKUP_TIMER: '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'+f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
         RESUME_UNIT: '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'+mounts+
