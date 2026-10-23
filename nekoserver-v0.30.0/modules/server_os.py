@@ -156,15 +156,20 @@ def run(context):
         return {'status': 'needs_setup', 'reason': 'No-sleep/log limits installed; HDD command failed or hardware is unsupported. Inspect the policy service; no blanket drive setting was used'}
     repeated=subprocess.run(['systemctl','restart',HDD_UNIT],capture_output=True,timeout=190,check=False)
     if repeated.returncode:
-        def hdd_service_said(run=subprocess.run):
-            """The runtime's own last words from the service's log (it says, for example,
-            that only an internal rotating SATA HDD is supported)."""
-            try:
-                shown=run(['journalctl','-u',HDD_UNIT,'-n','20','-o','cat','--no-pager'],capture_output=True,text=True,timeout=20,check=False).stdout
-            except (OSError,subprocess.SubprocessError):
-                shown=''
-            lines=[line.strip() for line in shown.splitlines() if 'runtime failed' in line]
-            return lines[-1].split('runtime failed:',1)[-1].strip().rstrip('.') if lines else 'no reason recorded'
-        return {'status':'needs_setup','reason':'The HDD power-saving service did not start: '+hdd_service_said()+
+        return {'status':'needs_setup','reason':'The HDD power-saving service did not start: '+(hdd_service_said('runtime failed') or 'no reason recorded')+
                 '. Setup goes on without it (the drive keeps its own power settings); the log is  sudo journalctl -u '+HDD_UNIT}
-    context.log('Verified SATA media HDD policy applied at boot: '+policy+'; firmware/bridge behavior still needs hardware verification.')
+    # What the service did: the timer it set, or why the drive keeps its own settings
+    # (in a USB case, an SSD, encrypted): nothing for anyone to do then.
+    said = hdd_service_said('Drive power settings:')
+    context.log('HDD power settings: '+said if said else 'Verified SATA media HDD policy applied at boot: '+policy)
+
+
+def hdd_service_said(marker, run=subprocess.run):
+    """The HDD policy service's own last line with ``marker`` in its log, after the marker
+    ('' if there is none): why it failed, or what it set."""
+    try:
+        shown=run(['journalctl','-u',HDD_UNIT,'-n','20','-o','cat','--no-pager'],capture_output=True,text=True,timeout=20,check=False).stdout
+    except (OSError,subprocess.SubprocessError):
+        shown=''
+    lines=[line.strip() for line in shown.splitlines() if marker in line]
+    return lines[-1].split(marker,1)[-1].lstrip(' :').rstrip('.') if lines else ''

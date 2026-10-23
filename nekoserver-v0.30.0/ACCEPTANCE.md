@@ -29,7 +29,7 @@ The recovery module preserves the current scripts/configuration under the config
 ## Collect a baseline, then check after reboot
 
 ```bash
-cd /srv/nekoserver/installer/releases/v0.29.0
+cd /srv/nekoserver/installer/releases/v0.30.0
 sudo python3 acceptance.py --profile full
 # Inspection only: no report write.
 sudo python3 acceptance.py --profile full --save

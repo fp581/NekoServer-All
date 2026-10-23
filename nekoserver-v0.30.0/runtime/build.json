@@ -1,11 +1,11 @@
 {
-  "version": "0.29.0",
+  "version": "0.30.0",
   "target": "x86_64-unknown-linux-musl",
   "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
-  "binary_sha256": "b3534d6836ffd6877d8c9865f922f41c958914a05c2efe702894e9d9ffefd7d2",
+  "binary_sha256": "b65d840c12c2211b4ae4694f7b3ab90454b499bb03751734d02fdc3d2207d84a",
   "source_sha256": {
-    "Cargo.toml": "8f62d914e08cecf9fd9d213c82fb3aef6763f5cc37e068c5294a1b794957a31b",
-    "Cargo.lock": "4eb67f1410eb24247a62bbb602a44344a277811ec5e928469a13dce268ad9eeb",
+    "Cargo.toml": "0de96d64a7475988d87388847f81a00e8e5c3af0707fcabb6d792993e09aeb8f",
+    "Cargo.lock": "a617e1c99f04b5960916985c7958bea539dd5226f3621cecd43be836a7bf1ead",
     "build.py": "e28baddf0e9a553c4fbce447185830602c896716afbe4af8719eedff5a74bd8f",
     "src/app_snapshot.rs": "0bb05c7381ceae8e749d85aaad74bf97574550e5e5bd3b8918aa23b2899f92a1",
     "src/apps.rs": "8cf6a1e06163ee36c8d448612f6ffa2dfedd58cd5b904dac33e257243547ab04",
@@ -25,7 +25,7 @@
     "src/music_backup.rs": "831fc6b742d0f7bc909508556c617694d5a42fc50d4474f5fe51057c090637c8",
     "src/notify.rs": "773fff4d1ee776c9530f0877a84954b021f7883c5bb2843a4e163ba63e1f18ba",
     "src/openrgb.rs": "31dc3bf0f3b60879313fb7d626334b51bed54c9b62cb8b61da797d9e868e1331",
-    "src/os_policy.rs": "3c26dbb4cd4b187f227e6e45a176a6fa37a06a8475175377f21ebcb51e3d0409",
+    "src/os_policy.rs": "aff24190d7355f2ed18585f020acd698e6c43d445962b4994ae83f67448eceb7",
     "src/serve.rs": "e51984c6cf987579d2bdb382b116c858e42d0d99cd1d968fee12b6913380863e",
     "src/startup.rs": "f91433efd22d3857218d793c579e1bfda42bf96056b699f9cbf844dd6eb970ae"
   }

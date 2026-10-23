@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.29.0'
+VERSION = '0.30.0'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')

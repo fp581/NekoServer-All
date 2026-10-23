@@ -69,7 +69,7 @@ def settings(config, image):
 
 
 def settings_of(owned):
-    """The settings an installed definition was made from: recorded since 0.29.0, read
+    """The settings an installed definition was made from: recorded since 0.30.0, read
     back from the definition itself for earlier installs."""
     if isinstance(owned.get('settings'), dict):
         return owned['settings']

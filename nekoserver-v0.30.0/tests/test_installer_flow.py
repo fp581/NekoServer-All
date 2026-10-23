@@ -95,7 +95,7 @@ class InstallerFlowTests(unittest.TestCase):
         self.assertFalse((default / 'install.log').exists())
 
     def test_backup_counts_left_at_the_old_defaults_move_to_the_new_ones(self):
-        # v0.29.0 keeps 7 nightly backups and 4 weekly database copies (3 monthly, as
+        # v0.30.0 keeps 7 nightly backups and 4 weekly database copies (3 monthly, as
         # before). A settings file from an earlier template holds 14 and 8 without anyone
         # having chosen them; a number someone did choose stays.
         template = json.loads((ROOT / 'config.json').read_text())
