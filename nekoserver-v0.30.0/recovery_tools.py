@@ -152,7 +152,7 @@ def verify_bundle(bundle,config):
 
 def docker_release(text):
     """(major, minor, patch) from 'Docker version 29.9.2, build x' or '29.9.2', else None."""
-    match=re.search(r'(\d+)\.(\d+)\.(\d+)',text or '')
+    match=re.search(r'(\d{1,9})\.(\d{1,9})\.(\d{1,9})',text or '')   # bounded: no backtracking blow-up
     return tuple(int(n) for n in match.groups()) if match else None
 
 def docker_new_enough(found,saved):
