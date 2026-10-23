@@ -1340,7 +1340,7 @@ fn alerts(s: &Value) -> Value {
             let id = text(&d["id"]);
             let name = text(&d["name"]);
             if d["status"] != "mounted" {
-                add(format!("mount:{id}"),"critical",format!("{name} unavailable"),"Mount missing or identity mismatch. Check the drive before restarting dependent services.");
+                add(format!("mount:{id}"),"critical",format!("{name} unavailable"),"The drive is not connected, or is not the one chosen at setup; the apps on it are stopped so nothing is written in its place. Reconnect it: once it is back, the apps start again by themselves within a minute. If they do not, restart the PC.");
             } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
                 add(
                     format!("space:{id}"),

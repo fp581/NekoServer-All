@@ -2297,6 +2297,10 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         std::time::Duration::from_secs(3 * 3600),
     )?;
     let installed = committed();
+    // Read before resume() finishes the run and removes the journal.
+    let cut_in = load(Path::new(JOURNAL))
+        .ok()
+        .and_then(|j| j["phase"].as_str().map(str::to_string));
     resume(&cfgpath, &cfg)?;
     if recover {
         let report = data.join("reports/jobs/maintenance.json");
@@ -2310,6 +2314,8 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
                 value["finished_at"] = json!(now);
                 if installed {
                     value["last_success"] = json!(now);
+                } else {
+                    value["reason"] = json!(cut_off_reason(cut_in.as_deref()));
                 }
                 common::atomic_json(&report, &value)?;
             }
@@ -2346,6 +2352,20 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         }
         Err(failure)
     })
+}
+/// What the dashboard says about a monthly run that was cut off (a power cut, a restart)
+/// before its update was installed, once the resume service has put things right.
+fn cut_off_reason(phase: Option<&str>) -> String {
+    let when = match phase {
+        Some("snapshot") => "while it was taking the snapshot (the apps were stopped)",
+        Some("backed_up") => "while it was testing the snapshot",
+        Some("updating") => "while it was installing the updates",
+        Some(_) => "part-way",
+        None => "before it took the snapshot",
+    };
+    format!(
+        "The monthly run was cut off {when} (a power cut or a restart). The apps were started again with their versions from before the run; the next monthly run tries again"
+    )
 }
 /// The update was installed (the journal says so): finishing it never rolls back.
 fn committed() -> bool {
@@ -3155,6 +3175,15 @@ mod tests {
             Path::new("/mnt/neko")
         )
         .is_err());
+    }
+    #[test]
+    fn a_cut_off_run_says_when_it_was_cut_off() {
+        assert!(cut_off_reason(Some("snapshot"))
+            .contains("taking the snapshot (the apps were stopped)"));
+        assert!(cut_off_reason(Some("backed_up")).contains("testing the snapshot"));
+        assert!(cut_off_reason(None).contains("before it took the snapshot"));
+        assert!(cut_off_reason(Some("odd")).contains("cut off part-way"));
+        assert!(cut_off_reason(Some("updating")).contains("the next monthly run tries again"));
     }
     /// Immich's redis has no volumes: the rehearsal copy must not gain "volumes": null
     /// (Compose refused the whole file with "services.redis.volumes must be a array").

@@ -1565,10 +1565,13 @@ pub fn mark_interrupted(report: &Path) -> Result<()> {
     if row["status"] == "running" {
         row["status"] = json!("fail");
         row["finished_at"] = json!(common::now());
+        // Said on the dashboard: without it a cut-off run read as a failure with no cause.
+        row["reason"] = json!(INTERRUPTED);
         common::atomic_json(report, &row)?;
     }
     Ok(())
 }
+pub const INTERRUPTED: &str = "This backup was cut off (a power cut or a restart). What it had stopped was started again and the earlier backups are kept; the next scheduled run makes a new one";
 /// A resume journal whose work is done: removed, and the removal made durable.
 pub fn finish_journal(path: &Path) -> Result<()> {
     fs::remove_file(path)?;
@@ -2097,6 +2100,26 @@ pub fn weekly(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_cut_off_backup_says_why() {
+        let dir = std::env::temp_dir().join(format!("neko-interrupted-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let report = dir.join("applications.json");
+        fs::write(
+            &report,
+            r#"{"job":"applications","status":"running","started_at":1}"#,
+        )
+        .unwrap();
+        mark_interrupted(&report).unwrap();
+        let row: Value = serde_json::from_str(&fs::read_to_string(&report).unwrap()).unwrap();
+        assert_eq!(row["status"], "fail");
+        assert_eq!(row["reason"], INTERRUPTED);
+        // A finished report is left as it is.
+        fs::write(&report, r#"{"job":"applications","status":"pass"}"#).unwrap();
+        mark_interrupted(&report).unwrap();
+        assert!(fs::read_to_string(&report).unwrap().contains("\"pass\""));
+        let _ = fs::remove_dir_all(dir);
+    }
     #[test]
     fn a_btrfs_subvolume_is_part_of_the_drive_identity() {
         assert_eq!(subvolume_of("/dev/sdb1[/@data]"), "/@data");

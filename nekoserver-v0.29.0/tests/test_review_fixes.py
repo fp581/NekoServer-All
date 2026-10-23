@@ -1278,6 +1278,38 @@ class ConnectorAnswerSizeTests(unittest.TestCase):
         self.assertIn('larger than', str(caught.exception))
 
 
+class DriveReturnTests(unittest.TestCase):
+    """When the SSD or HDD comes back after it disappeared, systemd runs the runtime's
+    drive-return, which renews the mount and starts the apps again."""
+    config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media',
+              'storage': {'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'}, 'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'}}}
+
+    def test_the_unit_runs_when_either_drive_appears_after_boot_mounts(self):
+        from modules import server_os
+        escaped = lambda argv, **_: mock.Mock(stdout='dev-disk-by\\x2duuid-' + argv[-1].rsplit('/', 1)[1].replace('-', '\\x2d') + '.device\n')
+        devices = server_os.drive_devices(self.config, run=escaped)
+        self.assertEqual(devices, ['dev-disk-by\\x2duuid-aaaa\\x2d1111.device', 'dev-disk-by\\x2duuid-bbbb\\x2d2222.device'])
+        text = server_os.drive_unit(Path('/usr/local/lib/nekoserver-os/v1/nekoserver-runtime'), devices)
+        self.assertTrue(text.startswith('[Unit]\nDescription=NekoServer '))   # recognised as NekoServer's own
+        self.assertIn('After=local-fs.target\n', text)
+        self.assertIn('ExecStart=/usr/local/lib/nekoserver-os/v1/nekoserver-runtime drive-return --config /etc/nekoserver-os/drives.json\n', text)
+        self.assertIn('WantedBy=' + ' '.join(devices) + '\n', text)
+
+    def test_install_writes_the_settings_and_enables_the_unit(self):
+        from modules import server_os
+        calls, written = [], {}
+        run = lambda argv, **_: calls.append(argv) or mock.Mock(stdout='dev-x.device\n', returncode=0)
+        with mock.patch.object(server_os.native_runtime, 'deploy', return_value=Path('/rt/nekoserver-runtime')), \
+                mock.patch.object(server_os, 'check_units'), \
+                mock.patch.object(server_os, 'safe_path', side_effect=lambda p: Path(p)), \
+                mock.patch.object(server_os, 'atomic_json', side_effect=lambda path, value: written.update({str(path): value})), \
+                mock.patch.object(server_os, 'write_units', side_effect=lambda units: written.update(units)):
+            server_os.install_drive_return(self.config, Path('/project'), run=run)
+        self.assertEqual(written[str(server_os.DRIVE_SETTINGS)]['storage'], self.config['storage'])
+        self.assertIn('drive-return', written[server_os.DRIVE_UNIT])
+        self.assertIn(['systemctl', 'reenable', server_os.DRIVE_UNIT], calls)
+
+
 class NextcloudUpgradeTests(unittest.TestCase):
     """A new release may change how Nextcloud's containers are run; with the same settings
     in my-config.json that is applied, not taken for a changed setting."""

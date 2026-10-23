@@ -72,6 +72,16 @@ The guarded native SATA standby timer remains **60 minutes** (`hdparm -S 242`), 
 
 Nightly app-state/host-state backups and monthly overnight recovery/update work are unchanged. Scheduled orchestration remains Rust; Python handles installation and ad hoc recovery. No OS upgrades or automatic formatting are added. Snapshot retention is described in MONTHLY-MAINTENANCE.md, APP-BACKUPS.md and HOST-BACKUPS.md; add-only photo and Nextcloud copies are never pruned.
 
+## If a drive disappears
+
+When the SSD or HDD disappears while the server runs (unplugged, a loose cable, a USB case that reset), Docker stops and every app with it: nothing may be written in the drive's place on the system disk. The backups refuse to run, and the dashboard shows the drive as unavailable.
+
+Reconnect the drive. The *nekoserver-drive-return* service runs as soon as the drive appears: it releases the mount the drive left behind, mounts it again, checks that both drives are the ones chosen at setup, and starts Docker, the shared folders and the home gateway again. The apps are back within a minute or two. If they are not, restart the PC; to see what it did:
+
+```bash
+sudo journalctl -u nekoserver-drive-return.service
+```
+
 ## Existing installations and recovery
 
 Applying this release updates schedules and retires the recognized old timers. Existing old HDD music/Immich working layouts still require the verified, stopped-writer migration described in the prior release; different manifests or environment paths are preserved/refused. Do not switch a mount to an empty SSD folder and assume files moved.

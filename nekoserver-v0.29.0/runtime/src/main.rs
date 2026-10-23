@@ -4,6 +4,7 @@ mod backup;
 mod collect;
 mod common;
 mod control;
+mod drive_return;
 mod fans;
 mod heartbeat;
 mod host_snapshot;
@@ -82,12 +83,12 @@ fn entry() -> Result<()> {
         return serve::hardware();
     }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, heartbeat, storage-guard, gateway-guard, maintenance, maintenance-resume\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, heartbeat, storage-guard, gateway-guard, drive-return, maintenance, maintenance-resume\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {
-        "storage-guard" | "gateway-guard" | "heartbeat" | "hdd-policy" | "host-snapshot"
-        | "host-resume" => vec!["config"],
+        "storage-guard" | "gateway-guard" | "drive-return" | "heartbeat" | "hdd-policy"
+        | "host-snapshot" | "host-resume" => vec!["config"],
         "music-backup" | "app-snapshot" | "app-resume" | "maintenance" | "maintenance-resume" => {
             vec!["config"]
         }
@@ -168,6 +169,7 @@ fn entry() -> Result<()> {
         "notify" => notify::run(&a),
         "storage-guard" => startup::run(&a, false),
         "gateway-guard" => startup::run(&a, true),
+        "drive-return" => drive_return::run(&a),
         "heartbeat" => heartbeat::run(&a),
         "host-snapshot" => host_snapshot::run(&a),
         "host-resume" => host_snapshot::resume_command(&a),
