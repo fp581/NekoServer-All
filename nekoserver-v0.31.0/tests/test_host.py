@@ -102,6 +102,20 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(slept, [5, 5, 5])
         self.assertIn(['pacman', '-S', '--needed', '--noconfirm', 'b'], pacman.calls)
 
+    def test_docker_installed_as_a_snap_stops_before_docker_installs(self):
+        for folder in ('snap/docker', 'var/lib/snapd/snap/docker'):   # Ubuntu's, other systems'
+            with self.subTest(folder=folder):
+                snap = Path(self.tmp.name) / folder
+                snap.mkdir(parents=True)
+                pacman = FakePacman(offered={'docker', 'docker-compose', 'caddy'})
+                family = host.Arch(pacman)
+                with self.assertRaisesRegex(RuntimeError, r'Docker is installed here as a snap.*sudo snap remove docker'):
+                    family.install(['docker', 'caddy'])
+                self.assertFalse(any(argv[1] == '-S' for argv in pacman.calls))
+                self.assertEqual(family.install(['caddy']), ['caddy'])     # anything else still installs
+                snap.rmdir()
+        self.assertFalse(host.snap_docker(self.tmp.name))
+
     def test_a_lock_that_stays_stops_with_the_steps(self):
         pacman = FakePacman(offered={'b'})
         family = host.Arch(pacman)

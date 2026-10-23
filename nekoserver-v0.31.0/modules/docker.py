@@ -171,6 +171,8 @@ def run(context):
         raise RuntimeError('--apply requires root')
     if not shutil.which('systemctl'):
         raise RuntimeError('systemctl required')
+    if host.snap_docker():
+        raise RuntimeError(host.SNAP_DOCKER)
     daemon_file = Path('/etc/docker/daemon.json')
     daemon = prepare_daemon_config(daemon_file, target)
     # Do not mutate a running daemon or silently relocate existing images/volumes.
