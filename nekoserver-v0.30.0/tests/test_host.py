@@ -48,10 +48,10 @@ class DetectionTest(unittest.TestCase):
 
     def test_other_systems_are_refused_by_name(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = release(tmp, 'ID=fedora\nPRETTY_NAME="Fedora Linux 41"\n')
+            path = release(tmp, 'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\nPRETTY_NAME="openSUSE Tumbleweed"\n')
             self.assertIsNone(host.detect(path))
             self.assertFalse(host.supported(path))
-            with self.assertRaisesRegex(host.Unsupported, 'Fedora Linux 41 is not supported yet'):
+            with self.assertRaisesRegex(host.Unsupported, 'openSUSE Tumbleweed is not supported yet'):
                 host.current(path=path)
             self.assertIs(host.family_or_default(path), host.Arch)
 
@@ -1022,7 +1022,7 @@ class CapabilitiesTest(unittest.TestCase):
 
     def test_fixed_requirements_stop_setup(self):
         with tempfile.TemporaryDirectory() as tmp:
-            rows = self.rows(tmp, text='ID=fedora\n', machine='aarch64', python=(3, 10), systemd='systemd 245')
+            rows = self.rows(tmp, text='ID=opensuse-tumbleweed\n', machine='aarch64', python=(3, 10), systemd='systemd 245')
             problems = ' '.join(capabilities.missing(rows))
             for words in ('x86-64', 'Python 3.11', 'systemd 247', 'Supported Linux family'):
                 self.assertIn(words, problems)
@@ -1078,6 +1078,147 @@ class RepositoryKeyErrorTests(unittest.TestCase):
         family = self.family(offline)
         with self.assertRaisesRegex(RuntimeError, 'Downloading the Docker repository key failed \\(Temporary failure in name resolution\\). Check that this PC is connected'):
             family.fetch_key(host.DOCKER, 'ubuntu', 'resolute')
+
+
+FEDORA_UNITS = {'samba': ('smb.service', 'nmb.service'), 'caddy': ('caddy.service',),
+                'docker-ce': ('docker.service', 'docker.socket'), 'tailscale': ('tailscaled.service',)}
+
+
+class FakeDnf(FakeApt):
+    """dnf and rpm over sets of offered and installed packages; systemctl as FakeApt.
+    `changed` holds settings files rpm -V reports as edited; `owners` maps a file to the
+    package that owns it; installing samba writes its example smb.conf."""
+    def __init__(self, offered=(), installed=(), fail_after=None, root=None):
+        super().__init__(offered, installed, fail_after, root)
+        self.changed, self.owners = set(), {'/etc/samba/smb.conf': 'samba-common'}
+
+    def __call__(self, argv, **kwargs):
+        if argv[0] == 'dnf' and argv[1] == 'install':
+            self.calls.append(argv)
+            self.envs.append(kwargs.get('env', {}))
+            return self.dnf_install(argv)
+        if argv[0] == 'dnf':
+            self.calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, argv[-1] + '\n' if argv[-1] in self.offered else '', '')
+        if argv[0] == 'rpm':
+            self.calls.append(argv)
+            return self.rpm(argv)
+        return super().__call__(argv, **kwargs)
+
+    def rpm(self, argv):
+        if argv[1] == '-q':
+            return subprocess.CompletedProcess(argv, 0 if argv[-1] in self.installed else 1, '', '')
+        if argv[1] == '-qf':
+            owner = self.owners.get(argv[-1])
+            return subprocess.CompletedProcess(argv, 0 if owner else 1, (owner or '') + '\n', '')
+        changed = ''.join('S.5....T.  c ' + path + '\n' for path in self.changed)
+        return subprocess.CompletedProcess(argv, 1 if changed else 0, changed, '')
+
+    def dnf_install(self, argv):
+        self.masked_during_install = set(self.masked)
+        names = argv[3:]
+        done = names if self.fail_after is None else names[:self.fail_after]
+        for name in done:
+            self.installed.add(name)
+            for unit in FEDORA_UNITS.get(name, ()):
+                self.units[unit] = {'LoadState': 'loaded', 'UnitFileState': 'enabled', 'ActiveState': 'inactive'}
+            if name == 'samba':
+                example = self.root / 'etc/samba/smb.conf'
+                if not example.exists():
+                    example.write_text('# example\n')
+        failed = len(done) < len(names)
+        return subprocess.CompletedProcess(argv, 1 if failed else 0, '', 'Error: Transaction failed' if failed else '')
+
+
+class FedoraTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for path in ('etc/yum.repos.d', 'etc/samba', 'run'):
+            (self.root / path).mkdir(parents=True)
+        patcher = mock.patch('host.shutil.which', return_value='/usr/bin/dnf')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.fetched = []
+
+    def family(self, dnf=None, fetch=None):
+        dnf = dnf or FakeDnf()
+        dnf.root = self.root
+        family = host.Fedora(dnf, {'ID': 'fedora', 'VERSION_ID': '44'},
+                             fetch=fetch or (lambda url: self.fetched.append(url) or b'<repomd/>'))
+        family.root = self.root
+        return family
+
+    def test_fedora_is_recognised_and_rhel_rebuilds_are_not_yet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for text in ('ID=fedora\n', 'ID=fedora\nVARIANT_ID=server\n'):
+                self.assertIs(host.detect(release(tmp, text)), host.Fedora, text)
+            for text in ('ID=rocky\nID_LIKE="rhel centos fedora"\n', 'ID=almalinux\nID_LIKE="rhel centos fedora"\n'):
+                self.assertIsNone(host.detect(release(tmp, text)), text)
+        self.assertEqual(host.Fedora.service('samba'), 'smb.service')
+
+    def test_installs_only_what_is_missing_and_leaves_new_services_off(self):
+        dnf = FakeDnf(offered={'samba', 'caddy', 'hdparm'}, installed={'hdparm'})
+        family = self.family(dnf)
+        self.assertTrue(family.available('samba'))
+        self.assertFalse(family.available('openrgb'))
+        self.assertEqual(family.install(['hdparm', 'samba', 'caddy']), ['samba', 'caddy'])
+        installs = [argv for argv in dnf.calls if argv[:2] == ['dnf', 'install']]
+        self.assertEqual(installs, [['dnf', 'install', '-y', 'samba', 'caddy']])
+        self.assertFalse(any('upgrade' in argv for argv in dnf.calls))
+        # Kept from starting while installing, then switched off and unmasked.
+        self.assertTrue({'smb.service', 'caddy.service'} <= dnf.masked_during_install)
+        self.assertEqual(dnf.enabled(), [])
+        self.assertEqual(dnf.masked, set())
+        self.assertFalse((self.root / host.Fedora.journal.lstrip('/')).exists())
+
+    def test_docker_comes_from_dockers_repository(self):
+        dnf = FakeDnf()
+        self.family(dnf).install(['docker', 'docker-compose'])
+        repo = (self.root / 'etc/yum.repos.d/nekoserver-docker-ce.repo').read_text()
+        self.assertTrue(repo.startswith('# Managed by NekoServer\n'))
+        self.assertIn('baseurl=https://download.docker.com/linux/fedora/$releasever/$basearch/stable', repo)
+        self.assertIn('gpgkey=https://download.docker.com/linux/fedora/gpg', repo)
+        self.assertEqual(self.fetched, ['https://download.docker.com/linux/fedora/44/x86_64/stable/repodata/repomd.xml'])
+        installs = [argv for argv in dnf.calls if argv[:2] == ['dnf', 'install']]
+        self.assertEqual(installs, [['dnf', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io',
+                                     'docker-buildx-plugin', 'docker-compose-plugin']])
+        self.assertEqual(dnf.enabled(), [])      # Docker never starts before its drive is ready
+
+    def test_someone_elses_repository_definition_is_used_as_it_is(self):
+        theirs = self.root / 'etc/yum.repos.d/docker-ce.repo'
+        theirs.write_text('[docker-ce-stable]\nbaseurl=https://download.docker.com/linux/fedora/$releasever/$basearch/stable\n')
+        self.family().install(['docker'])
+        self.assertFalse((self.root / 'etc/yum.repos.d/nekoserver-docker-ce.repo').exists())
+        self.assertEqual(self.fetched, [])
+
+    def test_a_fedora_release_docker_does_not_package_yet_is_named(self):
+        def missing(url):
+            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+        with self.assertRaisesRegex(RuntimeError, 'Docker does not offer packages for Fedora 44 yet'):
+            self.family(fetch=missing).install(['docker'])
+        self.assertFalse((self.root / 'etc/yum.repos.d/nekoserver-docker-ce.repo').exists())
+
+    def test_fedoras_own_docker_is_never_mixed_in(self):
+        dnf = FakeDnf(installed={'moby-engine'})
+        with self.assertRaisesRegex(RuntimeError, 'Fedora\'s own container packages.*moby-engine.*sudo dnf remove moby-engine'):
+            self.family(dnf).install(['docker'])
+        self.assertFalse(any(argv[:2] == ['dnf', 'install'] for argv in dnf.calls))
+
+    def test_samba_example_is_set_aside_only_when_unchanged_and_new(self):
+        dnf = FakeDnf(offered={'samba'})
+        self.family(dnf).install(['samba'])
+        self.assertFalse((self.root / 'etc/samba/smb.conf').exists())
+        self.assertEqual((self.root / 'etc/samba/smb.conf.packaged').read_text(), '# example\n')
+        # A file rpm reports as changed is someone's settings.
+        (self.root / 'etc/samba/smb.conf').write_text('[global]\n')
+        dnf.changed = {'/etc/samba/smb.conf'}
+        self.assertFalse(self.family(dnf).packaged_example('/etc/samba/smb.conf'))
+        dnf.changed = set()
+        self.assertTrue(self.family(dnf).packaged_example('/etc/samba/smb.conf'))
+        dnf.owners = {}
+        self.assertFalse(self.family(dnf).packaged_example('/etc/samba/smb.conf'))
 
 
 if __name__ == '__main__':
