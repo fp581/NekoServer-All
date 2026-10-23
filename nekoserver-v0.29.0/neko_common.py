@@ -593,8 +593,9 @@ def pull_images(argv, what, log=None, waits=PULL_RETRY_WAITS, sleep=time.sleep):
             if wait is None or not any(mark in said for mark in TRANSIENT_PULL):
                 raise
             if log:
+                reason = next((line.strip() for line in reversed(str(exc).splitlines()) if line.strip()), '')
                 log(f'{what}: the download was refused for now (the registry is busy or the '
-                    f'connection dropped); trying again in {wait} seconds ({attempt + 1} of {len(waits)})')
+                    f'connection dropped: {reason[-160:]}); trying again in {wait} seconds ({attempt + 1} of {len(waits)})')
             sleep(wait)
 
 

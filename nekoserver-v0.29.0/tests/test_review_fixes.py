@@ -547,6 +547,7 @@ class ImageDownloadTests(unittest.TestCase):
         self.assertEqual(slept, [30, 60])
         self.assertEqual(len(logged), 2)
         self.assertIn('trying again in 30 seconds (1 of 5)', logged[0])
+        self.assertIn('toomanyrequests', logged[0])   # the registry's own reason is shown
 
     def test_other_pull_failures_and_a_registry_that_stays_busy_still_fail(self):
         with mock.patch.object(neko_common, 'checked_run', side_effect=RuntimeError('x failed: no space left on device')):
