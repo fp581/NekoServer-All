@@ -215,7 +215,8 @@ if "$apply"; then
         if [[ "$family" == debian ]]; then
             apt-get "${apt_wait[@]}" install -y --no-install-recommends -- "${packages[@]}"
         elif [[ "$family" == fedora ]]; then
-            dnf install -y --setopt=install_weak_deps=False -- "${packages[@]}"
+            # (dnf5 takes no "--" before the names; these are fixed package names.)
+            dnf install -y --setopt=install_weak_deps=False "${packages[@]}"
         else
             pacman -Si -- "${packages[@]}" >/dev/null
             pacman -S --needed --noconfirm -- "${packages[@]}"

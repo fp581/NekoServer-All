@@ -44,7 +44,7 @@ Immich and Seerr normally use an email-shaped **local app login**. This does not
 
 ## Desktop and noninteractive behavior
 
-Launch from a terminal window (Konsole on KDE, Terminal on Ubuntu/GNOME) in the existing desktop session using sudo. The launcher drops to the original normal user and uses a minimal environment with that user's session bus/runtime. Root browsers, shell evaluation of URLs and forwarding of the root environment are avoided. Browser launch dependencies (xdg-utils/Firefox) are installed on a supported host (Arch/Nyarch or Debian/Ubuntu) when missing and an interactive desktop launch is needed.
+Launch from a terminal window (Konsole on KDE, Terminal on Ubuntu/GNOME) in the existing desktop session using sudo. The launcher drops to the original normal user and uses a minimal environment with that user's session bus/runtime. Root browsers, shell evaluation of URLs and forwarding of the root environment are avoided. Browser launch dependencies (xdg-utils/Firefox) are installed on a supported host (Arch/Nyarch, Debian/Ubuntu or Fedora) when missing and an interactive desktop launch is needed.
 
 If there is no usable local GUI, the launcher explains the manual page/app fallback and still waits for your actual yes/no answer in an interactive terminal. It does not assume that a process starting proves that a window appeared. A phone/other PC must still be operated on that device.
 

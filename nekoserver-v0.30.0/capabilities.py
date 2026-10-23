@@ -2,9 +2,11 @@
 
 Setup stops unless the computer has an x86-64 processor, systemd 247 or newer,
 Python 3.11 or newer, a supported Linux family and no restart left pending by an
-earlier update. Docker Engine is required too; setup installs it when missing.
-Everything else (SELinux, AppArmor, firewall, desktop) is reported so a beginner can
-see what was found.
+earlier update. Docker Engine is required too; setup installs it when missing. It also
+stops while SELinux is enforcing, which NekoServer is not tested with yet (Fedora has
+it on by default), and says how to try permissive mode and report what it logs.
+Everything else (AppArmor, firewall, desktop) is reported so a beginner can see what
+was found.
 """
 import platform
 import re
@@ -20,6 +22,27 @@ MIN_SYSTEMD = 247       # first release with every unit option NekoServer writes
 # Firewalls that are switched on block Samba and the home gateway until they allow them
 # (ports Docker publishes skip them, which is why the apps listen only on 127.0.0.1).
 FIREWALLS = ('firewalld', 'nftables')
+# Not tested with SELinux yet: Samba, the home gateway (Caddy on ports 8442-8447) and the
+# runtime the services start from the SSD may all be refused, in ways that are hard to see.
+SELINUX_ENFORCING = ('SELinux is enforcing, and NekoServer has not been tested with SELinux yet (the shared folders, '
+                     'the home gateway and the backup jobs may be refused in ways that are hard to see). To try it, '
+                     'switch SELinux to permissive: sudo setenforce 0, and SELINUX=permissive in /etc/selinux/config '
+                     'so it stays after a restart, then run setup again. Permissive mode only logs what SELinux would '
+                     'have refused: please send the output of  sudo ausearch -m AVC -ts recent  with your report, so '
+                     'the right rules can be added')
+
+
+def firewall_hint(firewalls):
+    """How to let the home network reach the shared folders and the home addresses."""
+    if 'firewalld' in firewalls:
+        example = ('sudo firewall-cmd --permanent --add-service=samba --add-port=8442-8447/tcp '
+                   '--add-port=8450-8499/tcp && sudo firewall-cmd --reload')
+    else:
+        example = ('sudo ufw allow from 192.168.1.0/24 to any port 445,8442:8447,8450:8499 proto tcp  '
+                   '(your network instead of 192.168.1.0/24)')
+    return (', '.join(firewalls) + ' is on: allow your home network to reach shared folders (port 445) and the home '
+            'addresses (ports 8442-8447, or 8450-8499 when one of those is taken), for example  ' + example
+            + '. Tailscale needs no rule')
 
 
 def _read(root, path):
@@ -55,8 +78,9 @@ def firewall(run=subprocess.run, root='/'):
     return on + [name for name in FIREWALLS if _output(run, ['systemctl', 'is-active', name + '.service']) == 'active']
 
 
-def row(name, label, found, ok, required=False):
-    return {'name': name, 'label': label, 'found': found, 'ok': bool(ok), 'required': required}
+def row(name, label, found, ok, required=False, problem=None):
+    """`problem`: what setup says when a required row is not met (default: "is required")."""
+    return {'name': name, 'label': label, 'found': found, 'ok': bool(ok), 'required': required, 'problem': problem}
 
 
 def docker_rows(docker, compose, installed):
@@ -94,11 +118,10 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
         row('cgroup', 'Control groups v2', 'yes' if _read(root, '/sys/fs/cgroup/cgroup.controllers') else 'no',
             _read(root, '/sys/fs/cgroup/cgroup.controllers')),
         *docker_rows(docker, compose, bool(which('docker'))),
-        row('selinux', 'SELinux', {'1': 'enforcing', '0': 'permissive'}.get(selinux, 'off'), True),
+        row('selinux', 'SELinux', {'1': 'enforcing', '0': 'permissive'}.get(selinux, 'off'), selinux != '1', True,
+            problem=SELINUX_ENFORCING),
         row('apparmor', 'AppArmor', 'on' if apparmor.upper().startswith('Y') else 'off', True),
-        row('firewall', 'Firewall', ', '.join(firewalls) + ' is on: allow your home network to reach shared folders '
-            '(port 445) and the home addresses (ports 8442-8447, or 8450-8499 when one of those is taken), for example  sudo ufw allow from 192.168.1.0/24 to any port 445,8442:8447,8450:8499 proto tcp  '
-            '(your network instead of 192.168.1.0/24). Tailscale needs no rule' if firewalls else 'off', not firewalls),
+        row('firewall', 'Firewall', firewall_hint(firewalls) if firewalls else 'off', not firewalls),
         row('desktop', 'Desktop', 'yes' if target == 'graphical.target' else 'no (server)', True),
     ]
 
@@ -109,7 +132,7 @@ def value(rows, name):
 
 def missing(rows):
     """The required things this computer lacks, as plain sentences."""
-    return [row['label'] + ' is required (found: ' + row['found'] + ')'
+    return [row.get('problem') or row['label'] + ' is required (found: ' + row['found'] + ')'
             for row in rows if row['required'] and not row['ok']]
 
 
