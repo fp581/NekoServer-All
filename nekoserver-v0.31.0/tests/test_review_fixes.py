@@ -357,6 +357,9 @@ class RecoveryCheckpointReasonTests(unittest.TestCase):
         self.assertEqual(result['status'], 'needs_setup')
         self.assertIn('Docker is not running', result['reason'])
         self.assertIn('Docker is not running', logged[0])
+        # The tool by its full path: its folder on the SSD is root's alone, so "cd" into it
+        # fails for a normal user (tried on AlmaLinux after a reinstall).
+        self.assertIn('sudo python3 /srv/nekoserver/installer/releases/v', logged[0])
 
 
 class ExistingDockerTests(unittest.TestCase):

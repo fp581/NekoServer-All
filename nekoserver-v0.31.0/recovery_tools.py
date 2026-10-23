@@ -341,7 +341,7 @@ def restart_owed(config,base=None):
     base=base or compose_args(config)
     if services:command(base+['start',*services],180)
     running=set(command(base+['ps','--status','running','--services']).split())
-    if not set(services)<=running:raise RuntimeError('Immich did not start again ('+', '.join(sorted(set(services)-running))+'); it is retried at the next boot, or run  sudo python3 recover.py resume')
+    if not set(services)<=running:raise RuntimeError('Immich did not start again ('+', '.join(sorted(set(services)-running))+'); it is retried at the next boot, or run  sudo python3 '+str(Path(config['data_mount'])/'installer/releases'/('v'+VERSION)/'recover.py')+' resume')
     if SNAPSHOT_HOOK.exists():
         command(['systemctl','disable','--quiet',SNAPSHOT_HOOK.name]);SNAPSHOT_HOOK.unlink();command(['systemctl','daemon-reload'])
     SNAPSHOT_RESUME.unlink()
