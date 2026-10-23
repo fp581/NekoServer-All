@@ -505,7 +505,8 @@ class DashboardPortTests(unittest.TestCase):
         from modules import dashboard
         saved = []
         ctx = mock.Mock(config={'dashboard': {'port': 8787}, 'media': {}}, log=lambda m: None, persist_config=lambda: saved.append(1))
-        with mock.patch.object(dashboard, 'port_free', side_effect=lambda port: port not in (8787, 8788)):
+        with mock.patch.object(dashboard, 'port_free', side_effect=lambda port: port not in (8787, 8788)), \
+                mock.patch.object(dashboard, 'installed_unit', return_value=None):
             self.assertEqual(dashboard.choose_port(ctx, 8787, running=None), 8789)
             self.assertEqual((ctx.config['dashboard']['port'], saved), (8789, [1]))
             # A rerun: the service itself holds 8789 now.

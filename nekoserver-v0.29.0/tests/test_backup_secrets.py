@@ -99,7 +99,7 @@ class BackupSecretsTests(unittest.TestCase):
         snap = self.seal_snapshot()
         self.assertNotIn(b'topsecret', (snap / backup_secrets.ARCHIVE_NAME).read_bytes())
         with self.assertRaisesRegex(RuntimeError, 'Wrong password'):
-            backup_secrets.restore(snap, self.root / 'out-wrong', 'nope')
+            backup_secrets.restore(snap, self.root / 'out-wrong', 'nope', key_dir=self.root / 'no-key-here')
         self.assertFalse((self.root / 'out-wrong').exists())
         out = backup_secrets.restore(snap, self.root / 'out', 'correct horse')
         self.assertEqual((out / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), SECRET)
