@@ -134,7 +134,7 @@ What is copied, where, and when (times are in your `timezone`):
 | **Movies, shows and music** | **Not backed up** | |
 
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
-- **Old snapshots are cleaned up automatically:** the newest 3 monthly, 14 nightly, and 8 weekly Immich database copies are kept. Change `keep_snapshots` and `database_keep` in `my-config.json` to keep more, or set them to `0` to keep everything.
+- **Old snapshots are cleaned up automatically:** the newest 7 nightly (apps and settings), 4 weekly Immich database copies and 3 monthly snapshots are kept. Change `keep_snapshots` and `database_keep` in `my-config.json` to keep more, or set them to `0` to keep everything.
 - **On the 1st of each month**, at night, the server takes a snapshot, tests that it can be restored, then updates the apps. If an update fails, it goes back to the snapshot automatically. New major versions are only shown on the dashboard until you approve them (see [Optional settings](#optional-settings)).
 - **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content, and every 4 weeks every copy is compared by checksum.
 - **An incomplete weekly copy is shown as one.** If some Nextcloud files could not be copied (open while copying, or names an exFAT USB drive cannot store, including two names that differ only in upper/lower case, such as `Documents` and `documents`, which exFAT treats as one), the dashboard and phone alerts say *Incomplete* and list them, instead of reporting success.
@@ -152,7 +152,7 @@ Everything works without editing anything. If you want to change something, edit
 | `"timezone"` | Timezone for the night-time backups and updates, e.g. `"Europe/London"` | `"auto"`: the PC's own timezone |
 | `"user"` under `"tv"` | Which account is the TV user (below) | `"auto"`: you |
 | `"torrent_port"` under `"media"` | Lets other peers connect to qBittorrent for faster downloads. Set a port such as `51413`, then forward it on your router. | off |
-| `"keep_snapshots"` and `"database_keep"` | How many backups to keep (`0` keeps all) | 3 monthly, 14 nightly, 8 database |
+| `"keep_snapshots"` and `"database_keep"` | How many backups to keep (`0` keeps all) | 7 nightly, 4 weekly database copies, 3 monthly |
 | `"immich_major_update"`, `"nextcloud_major_update"` under `"maintenance"` | Approve a new major app version shown on the dashboard; the next monthly update installs it. See [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md#major-version-updates). | empty (not installed) |
 | `"wanted"` under `"tv"`, `"notifications"` or `"heartbeat"` | Your answer to the optional extras (TV, phone alerts, outage alerts). Change `false` to `true` to set one up later. | asked once |
 | `"data_mount"`, `"media_mount"`, `"external_backup_mount"` | Where the SSD, HDD and USB drive are mounted. Anywhere under `/srv` or `/mnt`; not under `/home`, `/root` or `/run/user`, which NekoServer's services can't see. | `/srv/nekoserver`, `/mnt/nekoserver-media`, `/mnt/nekoserver-photos` |

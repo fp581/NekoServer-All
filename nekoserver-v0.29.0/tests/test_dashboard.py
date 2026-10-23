@@ -467,7 +467,7 @@ class SharedNamesTests(unittest.TestCase):
 class BackupWordingTests(unittest.TestCase):
     def test_setup_says_what_happens_to_older_app_snapshots(self):
         from modules import app_backup
-        self.assertIn('newest 14', app_backup.retention(app_backup.keep_snapshots({})))
+        self.assertIn('newest 7', app_backup.retention(app_backup.keep_snapshots({})))
         self.assertIn('deleted', app_backup.retention(14))
         self.assertIn('none are deleted', app_backup.retention(0))
         self.assertNotIn('No automatic backup deletion', (Path(app_backup.__file__)).read_text())

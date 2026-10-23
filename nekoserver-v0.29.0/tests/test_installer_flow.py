@@ -94,6 +94,34 @@ class InstallerFlowTests(unittest.TestCase):
         self.assertEqual(log.count('START storage'), 2, log)
         self.assertFalse((default / 'install.log').exists())
 
+    def test_backup_counts_left_at_the_old_defaults_move_to_the_new_ones(self):
+        # v0.29.0 keeps 7 nightly backups and 4 weekly database copies (3 monthly, as
+        # before). A settings file from an earlier template holds 14 and 8 without anyone
+        # having chosen them; a number someone did choose stays.
+        template = json.loads((ROOT / 'config.json').read_text())
+        self.assertEqual((template['app_backup']['keep_snapshots'], template['host_backup']['keep_snapshots'],
+                          template['photos']['database_keep'], template['maintenance']['keep_snapshots']), (7, 7, 4, 3))
+        self.assertEqual(installer.retire_old_defaults(template), [])
+        config = json.loads(self.config.read_text())
+        config['app_backup']['keep_snapshots'] = 14
+        config['host_backup']['keep_snapshots'] = 30
+        config['photos']['database_keep'] = 8
+        self.config.write_text(json.dumps(config))
+        (self.root / 'modules' / 'storage.py').write_text('DEPENDENCIES = []\ndef run(ctx):\n    pass\n')
+        logged = []
+        with mock.patch('config_checks.validate'), mock.patch.object(installer.os.path, 'ismount', return_value=False), \
+                mock.patch('builtins.print', side_effect=lambda *a, **k: logged.append(' '.join(map(str, a)))):
+            installer._execute(self.args(module='storage'), self.root)
+        saved = json.loads(self.config.read_text())
+        self.assertEqual((saved['app_backup']['keep_snapshots'], saved['host_backup']['keep_snapshots'],
+                          saved['photos']['database_keep']), (7, 30, 4))
+        moved = [line for line in logged if 'Backups: the newest' in line]
+        self.assertEqual(len(moved), 2, logged)
+        self.assertIn('the newest 7 nightly app backups are kept now, not 14', moved[0])
+        self.assertIn('"database_keep" under "photos"', moved[1])
+        # Nothing moves twice.
+        self.assertEqual(installer.retire_old_defaults(saved), [])
+
 
 SPECS = [('data_ssd', 'aaa', 'ext4', '/srv/nekoserver', None), ('media_hdd', 'bbb', 'ext4', '/srv/media', None)]
 OLD = 'UUID=aaa /srv/nekoserver ext4 defaults,nofail,x-systemd.device-timeout=15s 0 2\n'

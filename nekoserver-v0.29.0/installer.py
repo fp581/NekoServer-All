@@ -134,6 +134,28 @@ def require_settings(config):
                              'or delete my-config.json and run  sudo bash install.sh  to make a new one')
 
 
+# Backup counts whose template default changed in v0.29.0: a settings file made from an
+# earlier template holds the old default without anyone having chosen it, so it moves to
+# the new one; any other number is the owner's choice and stays.
+# (group, key, earlier default, current default, what is counted)
+RETIRED_DEFAULTS = (
+    ('app_backup', 'keep_snapshots', 14, 7, 'nightly app backups'),
+    ('host_backup', 'keep_snapshots', 14, 7, 'nightly settings backups'),
+    ('photos', 'database_keep', 8, 4, 'weekly Immich database copies'),
+)
+
+def retire_old_defaults(config):
+    """Move backup counts still at an earlier template default to the current one.
+    Returns a line for the log for each one moved."""
+    moved = []
+    for group, key, old, new, what in RETIRED_DEFAULTS:
+        options = config.get(group)
+        if isinstance(options, dict) and type(options.get(key)) is int and options[key] == old:
+            options[key] = new
+            moved.append(f'Backups: the newest {new} {what} are kept now, not {old} (the earlier default). '
+                         f'To keep more, set "{key}" under "{group}" in my-config.json')
+    return moved
+
 def validate_config(config):
     require_settings(config)
     for group in ('runtime','modules','profiles','storage','media','photos','docker'):
@@ -235,6 +257,11 @@ def _execute(args, root=ROOT):
             handle.write(text + '\n')
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan
+    moved = retire_old_defaults(config)
+    for line in moved:
+        log(line)
+    if moved and args.apply:
+        ctx.persist_config()
     for name in plan:
         bad_deps = [d for d in modules[name]['deps'] if states.get(d, {}).get('status') != complete_status]
         if bad_deps:
