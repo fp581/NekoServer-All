@@ -294,9 +294,48 @@ pub fn run(a: &Args) -> Result<()> {
     let _lock = common::lock(Path::new(LOCK))?;
     let _recovery_lock = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
-    backup::execute(Some(&job.data), "applications", &job.cfgpath, || {
+    let result = backup::execute(Some(&job.data), "applications", &job.cfgpath, || {
         snapshot(&job.cfgpath, &job.data, &job.media, &names)
-    })
+    });
+    if result.is_ok() {
+        record_docker_version(&job.data);
+    }
+    result
+}
+/// The host checkpoint, setup's record for taking the apps over after Linux is
+/// reinstalled, names the Docker version they must run with. The OS's own updates move
+/// Docker on, so each nightly backup that passed brings the record up to date (best
+/// effort: the backup's result never depends on it).
+fn record_docker_version(data: &Path) {
+    let path = data.join("installer/host-checkpoint.json");
+    let Ok(info) = docker(&["info", "--format", "{{.ServerVersion}} {{.DockerRootDir}}"]) else {
+        return;
+    };
+    let (version, root) = info.trim().split_once(' ').unwrap_or(("", ""));
+    if let Some(updated) = current_checkpoint(&common::json(&path, 100_000), version, root) {
+        match common::atomic_json(&path, &updated) {
+            Ok(()) => println!("Recovery checkpoint: Docker {version} recorded (the version a reinstalled Linux needs to take the apps over)"),
+            Err(e) => println!("Recovery checkpoint: could not record Docker {version} ({e})"),
+        }
+    }
+}
+/// The checkpoint with the running Docker version, when it describes this Docker store
+/// and names another version; None: nothing to change (or no checkpoint at all).
+fn current_checkpoint(saved: &Value, version: &str, root: &str) -> Option<Value> {
+    let plausible = !version.is_empty()
+        && version
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b".-+~".contains(&c));
+    if saved["format"] != "neko-host-checkpoint-v1"
+        || saved["docker_root"] != root
+        || !plausible
+        || saved["docker_version"] == version
+    {
+        return None;
+    }
+    let mut updated = saved.clone();
+    updated["docker_version"] = json!(version);
+    Some(updated)
 }
 fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Result<()> {
     let mut containers = vec![];
@@ -461,6 +500,23 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         dir(&root);
         root
+    }
+    #[test]
+    fn the_checkpoint_follows_the_docker_the_os_updated_to() {
+        let saved = json!({"format":"neko-host-checkpoint-v1","docker_version":"29.9.2","docker_root":"/srv/nekoserver/docker-engine","uid":1000});
+        let updated =
+            current_checkpoint(&saved, "30.1.0", "/srv/nekoserver/docker-engine").unwrap();
+        assert_eq!(updated["docker_version"], "30.1.0");
+        // Everything else is kept.
+        assert_eq!(updated["uid"], 1000);
+        // Same version, another store, no checkpoint or an odd answer: nothing written.
+        assert!(current_checkpoint(&saved, "29.9.2", "/srv/nekoserver/docker-engine").is_none());
+        assert!(current_checkpoint(&saved, "30.1.0", "/var/lib/docker").is_none());
+        assert!(
+            current_checkpoint(&json!({}), "30.1.0", "/srv/nekoserver/docker-engine").is_none()
+        );
+        assert!(current_checkpoint(&saved, "", "/srv/nekoserver/docker-engine").is_none());
+        assert!(current_checkpoint(&saved, "30 1", "/srv/nekoserver/docker-engine").is_none());
     }
     #[test]
     fn a_file_changed_after_listing_is_never_published() {
