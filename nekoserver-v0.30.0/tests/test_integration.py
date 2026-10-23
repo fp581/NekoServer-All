@@ -241,7 +241,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(log, '')
 
     def test_other_distributions_are_refused(self):
-        (self.root / 'etc/os-release').write_text('ID=fedora\n')
+        (self.root / 'etc/os-release').write_text('ID=opensuse-tumbleweed\n')
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 1)
         self.assertIn('Debian / Ubuntu', result.stderr)

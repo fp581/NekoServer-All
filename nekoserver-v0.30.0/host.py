@@ -204,6 +204,15 @@ class Family:
         """This settings file is known to be its package's untouched example (families
         without a record of what their packages wrote never know: None)."""
 
+    def set_aside_samba_example(self, packages, before):
+        """Samba's packaged example smb.conf, never anyone's own: it must not have existed
+        before, and the package system's record of what the package wrote (ucf on Debian,
+        rpm on Fedora) must say it is unchanged. With no such record it stays, and the Samba
+        step asks for it to be reviewed."""
+        config = self.path(SAMBA_CONFIG)
+        if 'samba' in packages and not before.get('samba_config_existed', True) and self.packaged_example(SAMBA_CONFIG):
+            config.replace(config.with_name('smb.conf.packaged'))
+
     def reconcile(self):
         """Finish an installation that stopped part-way, now or in an earlier run: the
         packages it did install are tidied up (settle) before anything else happens."""
@@ -262,6 +271,52 @@ class Family:
         self._reconcile()
         if result.returncode:
             raise RuntimeError('Installing ' + ', '.join(missing) + ' failed: ' + _reason(result))
+
+    def existing_units(self, units):
+        """The services that are already there before installing (a Docker someone runs,
+        say): those are never stopped or switched off, only ones the packages newly bring."""
+        states = self.unit_states(units) if units else {}
+        return [unit for unit in units if states.get(unit, {}).get('LoadState') not in (None, 'not-found')]
+
+    def unit_states(self, units):
+        result = self._call(['systemctl', 'show', *units, '--property=Id,LoadState,UnitFileState,ActiveState'], 60)
+        if result.returncode:
+            raise RuntimeError('systemd could not report on ' + ', '.join(units) + ': ' + _reason(result))
+        states = {}
+        for block in result.stdout.split('\n\n'):
+            fields = {key.strip(): value.strip() for key, value in (line.split('=', 1) for line in block.splitlines()
+                                                                    if '=' in line)}
+            if fields.get('Id'):
+                states[fields['Id']] = fields
+        return states
+
+    def switch_off(self, units):
+        """Disable and stop these services, then check that they really are. Units that
+        aren't installed (not found) or are masked can't start and are left alone."""
+        if not units:
+            return
+        states = self.unit_states(units)
+        present = [unit for unit in units if states.get(unit, {}).get('LoadState') == 'loaded']
+        if not present:
+            return
+        result = self._call(['systemctl', 'disable', '--now', '--quiet', *present], 120)
+        states = self.unit_states(present)
+        still = [unit for unit in present
+                 if states.get(unit, {}).get('UnitFileState') not in ('disabled', 'masked')
+                 or states.get(unit, {}).get('ActiveState') not in ('inactive', 'failed')]
+        if result.returncode or still:
+            raise RuntimeError('Could not switch off ' + ', '.join(still or present) + ' after installing'
+                               + (': ' + _reason(result) if result.returncode else '')
+                               + '. NekoServer starts these itself once their drive is ready; switch them '
+                               'off (sudo systemctl disable --now ' + ' '.join(still or present)
+                               + ') and run setup again.')
+
+    def unmask(self, units):
+        """Lift masks NekoServer set itself before installing."""
+        if units:
+            result = self._call(['systemctl', 'unmask', '--quiet', *units], 60)
+            if result.returncode:
+                raise RuntimeError('Could not unmask ' + ', '.join(units) + ': ' + _reason(result))
 
     def _after_interruption(self):
         """Tidy up once the package tools have stopped. If that isn't possible now, the
@@ -384,7 +439,45 @@ def _md5(path):
     return hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
 
 
-class Debian(Family):
+class PackageLock:
+    """One NekoServer package job at a time across processes (setup, a retry, a step
+    installing a missing tool), held at PACKAGE_LOCK; nested jobs share it."""
+    wait = 1800           # seconds to wait for another package job to finish
+    sleep = staticmethod(time.sleep)
+    holding = 0           # nested package jobs in this process
+
+    @contextlib.contextmanager
+    def locked(self):
+        if self.holding:
+            self.holding += 1
+            try:
+                yield
+            finally:
+                self.holding -= 1
+            return
+        path = self.path(PACKAGE_LOCK)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('a') as handle:
+            waited = 0
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if waited >= self.wait:
+                        raise RuntimeError('Another NekoServer setup is installing packages; let it finish, '
+                                           'then run setup again') from None
+                    self.sleep(5)
+                    waited += 5
+            self.holding = 1
+            try:
+                yield
+            finally:
+                self.holding = 0
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+class Debian(PackageLock, Family):
     name = 'debian'
     label = 'Debian / Ubuntu'
     manager = 'apt-get'
@@ -417,9 +510,6 @@ class Debian(Family):
         'samba': ('smbd.service', 'nmbd.service', 'winbind.service'), 'tailscale': ('tailscaled.service',)})
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
-
-    wait = 1800           # seconds to wait for another package job to finish
-    sleep = staticmethod(time.sleep)
 
     def __init__(self, run=subprocess.run, release=None, fetch=_fetch):
         super().__init__(run, release)
@@ -541,36 +631,6 @@ class Debian(Family):
         atomic_write(listing, desired.encode(), 0o644)
         self.refreshed = False
         return True
-
-    @contextlib.contextmanager
-    def locked(self):
-        if self.holding:
-            self.holding += 1
-            try:
-                yield
-            finally:
-                self.holding -= 1
-            return
-        path = self.path(PACKAGE_LOCK)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('a') as handle:
-            waited = 0
-            while True:
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if waited >= self.wait:
-                        raise RuntimeError('Another NekoServer setup is installing packages; let it finish, '
-                                           'then run setup again') from None
-                    self.sleep(5)
-                    waited += 5
-            self.holding = 1
-            try:
-                yield
-            finally:
-                self.holding = 0
-                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def wait_until_idle(self):
         """Wait until neither apt nor dpkg is working any more."""
@@ -698,12 +758,6 @@ class Debian(Family):
                                'replace them. Remove them yourself if nothing else uses them, then run '
                                'setup again.')
 
-    def existing_units(self, units):
-        """The services that are already there before installing (a Docker someone runs,
-        say): those are never stopped or switched off, only ones the packages newly bring."""
-        states = self.unit_states(units) if units else {}
-        return [unit for unit in units if states.get(unit, {}).get('LoadState') not in (None, 'not-found')]
-
     def check_policy(self, units):
         """A policy-rc.d that someone else put there must already refuse to start these
         services while packages install; NekoServer won't replace it."""
@@ -762,14 +816,6 @@ class Debian(Family):
             if result.returncode:
                 raise RuntimeError('Could not unmask ' + ', '.join(ours) + ': ' + _reason(result))
 
-    def set_aside_samba_example(self, packages, before):
-        """Samba's packaged example smb.conf, never anyone's own: it must not have existed
-        before, and ucf's record of what the package wrote must say it is unchanged. With
-        no such record it stays, and the Samba step asks for it to be reviewed."""
-        config = self.path(SAMBA_CONFIG)
-        if 'samba' in packages and not before.get('samba_config_existed', True) and self.packaged_example(SAMBA_CONFIG):
-            config.replace(config.with_name('smb.conf.packaged'))
-
     def packaged_example(self, absolute):
         """This settings file is still exactly what its package wrote (ucf's checksum of it).
         Without that record nothing is assumed: it may be someone's settings."""
@@ -781,41 +827,172 @@ class Debian(Family):
         recorded = [line.split()[0] for line in records if line.split()[1:] == [absolute]]
         return bool(recorded) and path.is_file() and recorded[-1] == _md5(path)
 
-    def unit_states(self, units):
-        result = self._call(['systemctl', 'show', *units, '--property=Id,LoadState,UnitFileState,ActiveState'], 60)
-        if result.returncode:
-            raise RuntimeError('systemd could not report on ' + ', '.join(units) + ': ' + _reason(result))
-        states = {}
-        for block in result.stdout.split('\n\n'):
-            fields = {key.strip(): value.strip() for key, value in (line.split('=', 1) for line in block.splitlines()
-                                                                    if '=' in line)}
-            if fields.get('Id'):
-                states[fields['Id']] = fields
-        return states
 
-    def switch_off(self, units):
-        """Disable and stop these services, then check that they really are. Units that
-        aren't installed (not found) or are masked can't start and are left alone."""
-        if not units:
-            return
-        states = self.unit_states(units)
-        present = [unit for unit in units if states.get(unit, {}).get('LoadState') == 'loaded']
-        if not present:
-            return
-        result = self._call(['systemctl', 'disable', '--now', '--quiet', *present], 120)
-        states = self.unit_states(present)
-        still = [unit for unit in present
-                 if states.get(unit, {}).get('UnitFileState') not in ('disabled', 'masked')
-                 or states.get(unit, {}).get('ActiveState') not in ('inactive', 'failed')]
-        if result.returncode or still:
-            raise RuntimeError('Could not switch off ' + ', '.join(still or present) + ' after installing'
-                               + (': ' + _reason(result) if result.returncode else '')
-                               + '. NekoServer starts these itself once their drive is ready; switch them '
-                               'off (sudo systemctl disable --now ' + ' '.join(still or present)
-                               + ') and run setup again.')
+class RpmRepository:
+    """A maker's dnf repository, written from known text rather than a downloaded .repo
+    file; dnf checks its packages with the maker's key from the https address it names."""
+    MARKER = '# Managed by NekoServer\n'
+
+    def __init__(self, name, maker, address, text, release_url=None):
+        self.name, self.maker, self.address, self.text = name, maker, address, text
+        self.release_url = release_url   # answers only for a Fedora release the maker packages
 
 
-FAMILIES = (Arch, Debian)
+DOCKER_RPM = RpmRepository(
+    'docker-ce', 'Docker', 'https://download.docker.com/linux/fedora/',
+    '[docker-ce-stable]\nname=Docker CE Stable - $basearch\n'
+    'baseurl=https://download.docker.com/linux/fedora/$releasever/$basearch/stable\n'
+    'enabled=1\ngpgcheck=1\ngpgkey=https://download.docker.com/linux/fedora/gpg\n',
+    release_url='https://download.docker.com/linux/fedora/{release}/x86_64/stable/repodata/repomd.xml')
+TAILSCALE_RPM = RpmRepository(
+    'tailscale', 'Tailscale', 'https://pkgs.tailscale.com/stable/fedora/',
+    '[tailscale-stable]\nname=Tailscale stable\nbaseurl=https://pkgs.tailscale.com/stable/fedora/$basearch\n'
+    'enabled=1\ntype=rpm\nrepo_gpgcheck=1\ngpgcheck=1\ngpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg\n')
+
+
+class Fedora(PackageLock, Family):
+    name = 'fedora'
+    label = 'Fedora'
+    manager = 'dnf'
+    ids = ('fedora',)
+    # RHEL and its rebuilds name fedora in ID_LIKE, but their repositories (and Docker's
+    # for them) differ: not covered yet.
+    like = ()
+    packages = MappingProxyType({
+        # Docker's official packages, never Fedora's own moby-engine.
+        'docker': ('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin'),
+        'docker-compose': 'docker-compose-plugin',
+        'libva-mesa-driver': 'mesa-va-drivers',
+    })
+    services = MappingProxyType({'samba': 'smb.service', 'tailscale': 'tailscaled.service'})
+    settings = ('/etc/dnf/dnf.conf', '/etc/yum.repos.d')
+    journal = '/var/lib/nekoserver-host/package-install.json'
+    repositories = MappingProxyType({'docker': DOCKER_RPM, 'docker-compose': DOCKER_RPM, 'tailscale': TAILSCALE_RPM})
+    # Services these packages may enable on their own (presets, scriptlets): kept from
+    # starting while they install, then left switched off until NekoServer's own steps
+    # start them on the right drive, as on Debian.
+    autostarted = MappingProxyType({
+        'docker': ('docker.service', 'docker.socket'), 'caddy': ('caddy.service',),
+        'samba': ('smb.service', 'nmb.service'), 'tailscale': ('tailscaled.service',)})
+    # Fedora's own container packages that would conflict with Docker's.
+    conflicts = ('moby-engine', 'podman-docker', 'containerd')
+
+    def __init__(self, run=subprocess.run, release=None, fetch=_fetch):
+        super().__init__(run, release)
+        self.fetch = fetch
+
+    def has(self, package):
+        return self._call(['rpm', '-q', '--quiet', package], 30).returncode == 0
+
+    def available(self, wanted):
+        if not self.ready():
+            return False
+        for name in self.names(wanted):
+            found = self._call(['dnf', '-q', 'repoquery', '--available', '--latest-limit', '1',
+                                '--qf', '%{name}\n', name], 600)
+            if found.returncode or name not in found.stdout.split():
+                return False
+        return True
+
+    def _install(self, names, timeout):
+        return self._call(['dnf', 'install', '-y', *names], timeout + 600)
+
+    def repo_files(self, address):
+        """Every dnf repository file that already uses this address."""
+        found = []
+        for path in sorted(self.path('/etc/yum.repos.d').glob('*.repo')):
+            try:
+                if address in path.read_text(errors='replace'):
+                    found.append(path)
+            except OSError:
+                continue
+        return found
+
+    def check_release(self, repository):
+        """The maker packages this Fedora release (a new one can take them a while)."""
+        release = self.release.get('VERSION_ID', '')
+        url = repository.release_url.format(release=release)
+        try:
+            self.fetch(url)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise RuntimeError(f'{repository.maker} does not offer packages for Fedora {release} yet ({url} '
+                                   f'was not found). Wait for {repository.maker} to add it, or use a Fedora release '
+                                   'it supports, then run setup again') from None
+            raise RuntimeError(f'Checking the {repository.maker} repository failed (HTTP {exc.code} from {url}); '
+                               'try again later') from None
+        except (OSError, http.client.HTTPException) as exc:
+            raise RuntimeError(f'Reaching the {repository.maker} repository failed ({getattr(exc, "reason", exc)}). '
+                               'Check that this PC is connected to the internet, then run setup again') from None
+
+    def add_repository(self, repository):
+        """Make a maker's repository usable. Someone else's definition of it is used as it
+        is (two would make dnf warn about duplicates); NekoServer's own is kept current."""
+        listing = self.path('/etc/yum.repos.d/nekoserver-' + repository.name + '.repo')
+        found = self.repo_files(repository.address)
+        ours = listing in found and listing.read_text(errors='replace').startswith(RpmRepository.MARKER)
+        if ours and len(found) > 1:
+            listing.unlink()      # someone else defines it too: theirs is used
+            return False
+        if found and not ours:
+            return False
+        desired = RpmRepository.MARKER + repository.text
+        if ours and listing.read_text(errors='replace') == desired:
+            return False
+        if repository.release_url:
+            self.check_release(repository)
+        atomic_write(listing, desired.encode(), 0o644)
+        return True
+
+    def prepare(self, missing):
+        if {'docker', 'docker-compose'} & set(missing):
+            found = [name for name in self.conflicts if self.has(name)]
+            if found:
+                raise RuntimeError('This system has Fedora\'s own container packages installed (' + ', '.join(found)
+                                   + '). NekoServer uses Docker\'s official packages and does not mix or replace '
+                                   'them. Remove them yourself if nothing else uses them (sudo dnf remove '
+                                   + ' '.join(found) + '), then run setup again.')
+        for repository in dict.fromkeys(self.repositories[name] for name in missing if name in self.repositories):
+            self.add_repository(repository)
+        units = [unit for name in missing for unit in self.autostarted.get(name, ())]
+        existing = self.existing_units(units)
+        return {'samba_config_existed': self.path(SAMBA_CONFIG).exists(), 'units_before': existing,
+                'new_units': [unit for unit in units if unit not in existing]}
+
+    def protect(self, before):
+        """The new services are masked while their packages install (a preset or
+        scriptlet can't enable or start them) and until settle() has switched them off."""
+        new = before.get('new_units', [])
+        if new:
+            result = self._call(['systemctl', 'mask', '--quiet', *new], 60)
+            if result.returncode:
+                raise RuntimeError('Could not keep ' + ', '.join(new) + ' from starting: ' + _reason(result))
+
+    def settle(self, packages, before):
+        self.set_aside_samba_example(packages, before)
+        existing = before.get('units_before', [])
+        new = [unit for name in packages for unit in self.autostarted.get(name, ()) if unit not in existing]
+        self.unmask([unit for unit in new if unit in before.get('new_units', [])])
+        try:
+            self.switch_off(new)
+        except RuntimeError:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                self._call(['systemctl', 'mask', '--quiet', *new], 60)   # stay protected until next time
+            raise
+
+    def packaged_example(self, absolute):
+        """This settings file is still exactly what its package wrote: rpm's record of the
+        file (size, checksum, owner, time) shows no change. Without a record: not assumed."""
+        if not self.path(absolute).is_file():
+            return False
+        owner = self._call(['rpm', '-qf', '--qf', '%{NAME}\n', absolute], 30)
+        if owner.returncode or not owner.stdout.split():
+            return False
+        check = self._call(['rpm', '-V', owner.stdout.split()[0]], 120)
+        return not any(line.split()[-1:] == [absolute] for line in check.stdout.splitlines())
+
+
+FAMILIES = (Arch, Debian, Fedora)
 
 
 def detect(path=OS_RELEASE):

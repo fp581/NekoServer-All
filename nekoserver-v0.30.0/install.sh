@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time bootstrap for Arch/Nyarch and Debian/Ubuntu. Scheduled work uses the bundled Rust runtime.
+# One-time bootstrap for Arch/Nyarch, Debian/Ubuntu and Fedora. Scheduled work uses the bundled Rust runtime.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # Where the system update downloads packages; its disk is checked before updating.
@@ -73,8 +73,22 @@ if "$apply"; then
             echo 'Upgrade the system first (or install a newer release), then run  sudo bash install.sh  again.' >&2
             exit 1
         fi
+    elif [[ "${ID:-}" == fedora ]] && command -v dnf >/dev/null; then
+        # Fedora itself (Workstation, Server, spins). RHEL and its rebuilds name fedora in
+        # ID_LIKE but have other repositories: not covered yet.
+        family=fedora
+        clean_hint='sudo dnf clean all'
+        system_path=/var/cache/libdnf5
+        [[ -d "$system_path" ]] || system_path=/
+        # Docker and Tailscale package the Fedora releases still supported (two at a time).
+        release="${VERSION_ID:-}"
+        if [[ "$release" =~ ^[0-9]+$ ]] && (( release < 42 )); then
+            echo "NekoServer needs Fedora 42 or newer; this is ${PRETTY_NAME:-Fedora $release}." >&2
+            echo 'Upgrade the system first (sudo dnf system-upgrade), then run  sudo bash install.sh  again.' >&2
+            exit 1
+        fi
     else
-        echo 'Automatic setup supports Arch Linux / Nyarch (with pacman) and Debian / Ubuntu (with apt).' >&2
+        echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt) and Fedora (with dnf).' >&2
         exit 1
     fi
     if [[ "$(uname -m)" != x86_64 ]] || ! command -v systemctl >/dev/null; then
@@ -130,6 +144,11 @@ if "$apply"; then
             # needed. Upgrading the rest of the system stays your own routine.
             echo 'Refreshing the package lists (apt-get update).'
             apt-get "${apt_wait[@]}" update
+        elif [[ "$family" == fedora ]]; then
+            # Fedora: refresh the package lists only, as on Debian; upgrading the rest of the
+            # system stays your own routine.
+            echo 'Refreshing the package lists (dnf makecache).'
+            dnf -q makecache
         else
             # Arch supports only full upgrades: refresh and upgrade everything first, so the
             # apps and their dependencies install at their current versions and match each
@@ -160,6 +179,15 @@ if "$apply"; then
             'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
             'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
         certificates=(ca-certificates)
+        certificate_bundle=/etc/ssl/certs/ca-certificates.crt
+    elif [[ "$family" == fedora ]]; then
+        prerequisites=( \
+            'python3:python3' \
+            'util-linux:lsblk findmnt blkid mount umount flock runuser' \
+            'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
+            'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute:ip' 'pciutils:lspci' )
+        certificates=(ca-certificates)
+        certificate_bundle=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
     else
         prerequisites=( \
             'python:python3' \
@@ -167,6 +195,7 @@ if "$apply"; then
             'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
             'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
         certificates=(ca-certificates ca-certificates-utils)
+        certificate_bundle=/etc/ssl/certs/ca-certificates.crt
     fi
     for entry in "${prerequisites[@]}"; do
         package="${entry%%:*}"
@@ -177,7 +206,7 @@ if "$apply"; then
             fi
         done
     done
-    if [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then
+    if [[ ! -s "$certificate_bundle" ]]; then
         packages+=("${certificates[@]}")
     fi
     if ((${#packages[@]})); then
@@ -185,6 +214,8 @@ if "$apply"; then
         # Check the complete set before changing anything.
         if [[ "$family" == debian ]]; then
             apt-get "${apt_wait[@]}" install -y --no-install-recommends -- "${packages[@]}"
+        elif [[ "$family" == fedora ]]; then
+            dnf install -y --setopt=install_weak_deps=False -- "${packages[@]}"
         else
             pacman -Si -- "${packages[@]}" >/dev/null
             pacman -S --needed --noconfirm -- "${packages[@]}"
@@ -206,7 +237,7 @@ if ! command -v python3 >/dev/null; then
 fi
 if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
     echo "NekoServer needs Python 3.11 or newer; this system has $(python3 -c 'import platform; print(platform.python_version())')." >&2
-    echo 'It comes with Arch, Debian 12 and Ubuntu 24.04 or newer. A system based on an older release' >&2
+    echo 'It comes with Arch, Debian 12, Ubuntu 24.04 and Fedora 42 or newer. A system based on an older release' >&2
     echo '(such as Linux Mint 21, based on Ubuntu 22.04) does not get it from updates: upgrade to the next release first.' >&2
     exit 1
 fi
