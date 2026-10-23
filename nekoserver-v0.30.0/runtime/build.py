@@ -10,6 +10,10 @@ def main():
     cargo=shutil.which('cargo');rustc=shutil.which('rustc')
     if not cargo or not rustc:raise RuntimeError('Install an ordinary-user Rust toolchain and add the musl target first')
     details=subprocess.check_output([rustc,'-vV'],text=True);host=next(line.split(': ',1)[1] for line in details.splitlines() if line.startswith('host: '));sysroot=Path(subprocess.check_output([rustc,'--print','sysroot'],text=True).strip());linker=sysroot/'lib/rustlib'/host/'bin/rust-lld'
+    # The runtime itself is always compiled again: cargo trusts file times, and after the
+    # clock went back an older build looked newer than the sources, so the binary came out
+    # unchanged while the manifest named the new sources. Dependencies stay cached.
+    subprocess.run([cargo,'clean','--release','--target',TARGET,'-p','nekoserver-runtime'],cwd=ROOT,check=True)
     subprocess.run([cargo,'build','--release','--locked','--target',TARGET,'--config',f'target.{TARGET}.linker='+json.dumps(str(linker))],cwd=ROOT,check=True)
     blob=(ROOT/'target'/TARGET/'release/nekoserver-runtime').read_bytes();target=ROOT/'bin/nekoserver-runtime';target.parent.mkdir(exist_ok=True);target.write_bytes(blob);target.chmod(0o750)
     sources=[ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'build.py',*sorted((ROOT/'src').glob('*.rs'))]
