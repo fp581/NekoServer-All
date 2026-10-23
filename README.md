@@ -15,7 +15,7 @@ The installer creates every app account, connects the apps to each other, and wa
 
 ## Get started
 
-NekoServer runs on **Arch Linux, Nyarch, Debian 12+, Ubuntu 24.04+ and Fedora 42+** (and systems built on Arch, Debian or Ubuntu, such as Linux Mint), with more to come. Fedora support is new and was tried only in a test setup without SELinux: Fedora testers are very welcome. It hasn't been proven on a real install yet, so try it on a spare PC or a virtual machine first.
+NekoServer runs on **Arch Linux, Nyarch, Debian 12+, Ubuntu 24.04+, Fedora 42+ and RHEL 10+** (with Rocky Linux, AlmaLinux and CentOS Stream 10+; and systems built on Arch, Debian or Ubuntu, such as Linux Mint), with more to come. Fedora and RHEL support are new and were tried only in a test setup without SELinux: Fedora and RHEL testers are very welcome. It hasn't been proven on a real install yet, so try it on a spare PC or a virtual machine first.
 
 You need a 64-bit PC with one of those installed, plus an SSD, an HDD and a USB drive, already formatted.
 

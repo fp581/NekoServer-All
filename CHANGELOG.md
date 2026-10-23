@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **RHEL 10 and its rebuilds: Rocky Linux, AlmaLinux, CentOS Stream.** `install.sh` and setup recognise them (anything naming rhel in its `/etc/os-release`) and install with dnf, as on Fedora:
+  - Docker's packages come from Docker's repository for RHEL (RHEL itself) or for CentOS (the rebuilds); Tailscale's from Tailscale's repository for RHEL.
+  - Caddy (the home gateway) and qrencode come from **EPEL**, Fedora's extra packages for these systems. Setup adds EPEL when it isn't there yet: from the system's own repositories (Rocky, AlmaLinux, CentOS Stream), or from EPEL's site on RHEL itself.
+  - `runc` and `podman-docker`, which clash with Docker's packages, must be removed first: setup says so. Podman itself can stay.
+  - SELinux and firewalld are handled as on Fedora.
+  - Version 9 is refused before anything changes: its Python (3.9) is older than NekoServer needs. Oracle Linux is not covered.
+  - Tried on AlmaLinux 10.2 under WSL: recognised by itself, it installed what it lacked (openssl, pciutils, EPEL), reached 26 of 28 steps (the other two need the owner's Tailscale account and phone) and passed every feature check (45). RHEL itself and Rocky Linux have not been tried yet.
+
 ## v0.31.0 — 2026-10-23
 
 Fedora support, tried with a full install, the feature checks and deliberate failures on Fedora 44 (under WSL, with its own three virtual drives). WSL has no SELinux, so SELinux is the part still to be tried on a real Fedora: see below.

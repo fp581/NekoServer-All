@@ -78,5 +78,6 @@ Shared code must never call a package manager itself. `tests/test_host.py` fails
 | --- | --- |
 | Arch Linux / Nyarch (and systems built on them) | Supported; not yet proven on a real install |
 | Debian 12+ / Ubuntu 24.04+ (and systems built on them) | Supported; not yet proven on a real install. TV setup is Arch/Nyarch-only for now |
-| Fedora 42+ | Supported since 0.31.0; tried on Fedora 44 under WSL (no SELinux there). Setup stops while SELinux is enforcing until it is tested; RHEL and its rebuilds are not covered yet |
+| Fedora 42+ | Supported since 0.31.0; tried on Fedora 44 under WSL (no SELinux there). Setup stops while SELinux is enforcing until it is tested |
+| RHEL 10+ / Rocky Linux / AlmaLinux / CentOS Stream | New (`Rhel`, built on the Fedora adapter): Docker's rhel/ or centos/ packages, Tailscale's rhel/<major>, Caddy and qrencode from EPEL. Tried on AlmaLinux 10 under WSL. Version 9 is refused (Python 3.9); Oracle Linux is not covered |
 | openSUSE | Later |
