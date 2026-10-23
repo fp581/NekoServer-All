@@ -1018,7 +1018,12 @@ class CapabilitiesTest(unittest.TestCase):
             (Path(tmp) / 'etc/ufw/ufw.conf').write_text('ENABLED=yes\n')
             rows = self.rows(tmp)
             self.assertIn('ufw is on', capabilities.value(rows, 'firewall'))
+            self.assertIn('sudo ufw allow', capabilities.value(rows, 'firewall'))
             self.assertEqual(capabilities.missing(rows), [])
+        # Fedora's firewalld gets its own command.
+        hint = capabilities.firewall_hint(['firewalld'])
+        self.assertIn('sudo firewall-cmd --permanent --add-service=samba --add-port=8442-8447/tcp', hint)
+        self.assertNotIn('ufw', hint)
 
     def test_fixed_requirements_stop_setup(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1036,6 +1041,15 @@ class CapabilitiesTest(unittest.TestCase):
                 (Path(tmp) / path).write_text(text)
             rows = self.rows(tmp, target='graphical.target', docker='')
             self.assertEqual(capabilities.value(rows, 'selinux'), 'enforcing')
+            # Not tested with SELinux yet: setup stops and says how to try permissive mode.
+            problems = ' '.join(capabilities.missing(rows))
+            self.assertIn('SELinux is enforcing', problems)
+            self.assertIn('sudo setenforce 0', problems)
+            self.assertIn('ausearch -m AVC', problems)
+            (Path(tmp) / 'sys/fs/selinux/enforce').write_text('0')
+            rows = self.rows(tmp, target='graphical.target', docker='')
+            self.assertEqual(capabilities.value(rows, 'selinux'), 'permissive')
+            self.assertFalse(any('SELinux' in p for p in capabilities.missing(rows)))
             self.assertEqual(capabilities.value(rows, 'apparmor'), 'on')
             self.assertEqual(capabilities.value(rows, 'desktop'), 'yes')
             # docker is on the PATH but not running: the normal state before its step.

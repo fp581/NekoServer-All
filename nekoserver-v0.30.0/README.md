@@ -1,6 +1,6 @@
 # NekoServer v0.30.0
 
-NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian** or **Ubuntu** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
+NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu** or **Fedora** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
 It does **not** install Linux and it **never formats a drive**. You prepare those first (see [What you need](#what-you-need)).
 
@@ -32,6 +32,7 @@ Also included: shared folders on your home network (Samba) and, if you want them
 - **Linux, 64-bit (x86_64)**, already installed, up to date, and connected to the internet. One of:
   - **Arch Linux** or **Nyarch**
   - **Debian 12** or newer, or **Ubuntu 24.04** or newer (also Linux Mint and other Ubuntu-based systems built on those)
+  - **Fedora 42** or newer (new: tried only in a test setup so far; see *Fedora* below)
 - **Your phone**, to set up the apps on it during installation.
 - **Four drives**, each already formatted (ext4 is the safe choice):
 
@@ -61,6 +62,7 @@ sudo bash install.sh
 That's it: one command does everything. First it gets the system ready, which works a little differently on each Linux:
 
 - **Arch / Nyarch:** it **updates the system** (`pacman -Syu`, because Arch only supports full updates). If the update installed a new Linux kernel, it asks you to restart the PC and run the command again.
+- **Fedora:** like Debian, it only **refreshes the package lists** (`dnf makecache`) and installs just what NekoServer needs; Docker comes from Docker's own repository and Tailscale from Tailscale's. If Fedora's own Docker (`moby-engine`, `podman-docker`) is installed, it stops and asks you to remove it first. **SELinux:** NekoServer is not tested with SELinux yet, so setup stops while it is enforcing (Fedora's default) and explains how to try permissive mode and send what SELinux logged. Fedora's firewall (firewalld) needs the shared-folder and home-address ports opened; setup shows the command.
 - **Debian / Ubuntu:** it only **refreshes the package lists** (`apt-get update`) and installs just what NekoServer needs. Updating the rest of your system stays your own routine. If an earlier update is waiting for a restart, it asks you to restart first. Docker comes from Docker's own repository and Tailscale from Tailscale's. If Debian's or Ubuntu's own Docker (`docker.io`) is installed, it stops and asks you to remove it first, because the two must not be mixed.
 
 Then it **installs the packages the apps need** (Docker, Tailscale, Caddy, Samba and a few tools). They are installed switched off; each setup step switches its own service on once its drive and settings are ready. Setup needs 5 GB free on the system disk for this, and it stops before changing anything if there is less.

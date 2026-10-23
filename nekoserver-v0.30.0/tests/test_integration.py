@@ -159,6 +159,11 @@ class InstallScriptTests(unittest.TestCase):
         text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
         text = re.sub(r'(?m)^        python3 "\$ROOT/host.py" repair$', '        echo REPAIR >> "$LOG"', text)
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
+        # The certificate bundle as present, whatever this test machine has.
+        bundle = self.root / 'ca-bundle.pem'
+        bundle.write_text('-----BEGIN CERTIFICATE-----\n')
+        for path in ('/etc/ssl/certs/ca-certificates.crt', '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'):
+            text = text.replace(path, str(bundle))
         script = self.root / 'install.sh'
         script.write_text(text)
         path = os.pathsep.join(p for p in (extra_path, str(self.root / 'bin'), os.environ['PATH']) if p)

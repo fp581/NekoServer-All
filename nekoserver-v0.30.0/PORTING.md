@@ -68,7 +68,7 @@ Shared code must never call a package manager itself. `tests/test_host.py` fails
 1. Add the class to `host.py` and append it to `FAMILIES`.
 2. Teach `install.sh` the family's bootstrap: how it is recognised, its update policy, the reboot-needed check and the basic tools' package names.
 3. Map service names that differ. The Rust runtime lists every family's Samba unit (`runtime/src/collect.rs`, `host_snapshot.rs`) and uses the one that is installed.
-4. Handle the family's security module. SELinux (Fedora) will need `:z` labels on bind mounts. AppArmor (on by default on Ubuntu) works with the profile Docker applies itself, so it needs nothing extra.
+4. Handle the family's security module. SELinux (Fedora) is not supported yet: setup stops while it is enforcing (`capabilities.SELINUX_ENFORCING`). Docker CE runs containers without SELinux labels by default, so the open questions are the host services: Samba reading the HDD, Caddy binding ports 8442-8447, and systemd starting the runtime from the SSD. AppArmor (on by default on Ubuntu) works with the profile Docker applies itself, so it needs nothing extra.
 5. Check the firewall. Ports published by Docker bypass ufw and firewalld, so on such a family a firewall rule alone does not keep an app private. Setup must check which addresses each app port is published on.
 6. Add tests with a fake package manager, as `tests/test_host.py` does for pacman.
 
@@ -78,4 +78,5 @@ Shared code must never call a package manager itself. `tests/test_host.py` fails
 | --- | --- |
 | Arch Linux / Nyarch (and systems built on them) | Supported; not yet proven on a real install |
 | Debian 12+ / Ubuntu 24.04+ (and systems built on them) | Supported; not yet proven on a real install. TV setup is Arch/Nyarch-only for now |
-| Fedora, openSUSE | Later |
+| Fedora 42+ | Supported since 0.31.0; tried on Fedora 44 under WSL (no SELinux there). Setup stops while SELinux is enforcing until it is tested; RHEL and its rebuilds are not covered yet |
+| openSUSE | Later |
