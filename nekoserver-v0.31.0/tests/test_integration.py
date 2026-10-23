@@ -176,14 +176,21 @@ class InstallScriptTests(unittest.TestCase):
         (root / 'etc').mkdir()
         (root / 'modules' / os.uname().release).mkdir(parents=True)
         (root / 'etc/os-release').write_text('ID=arch\n')
+        (root / 'stat').write_text('cpu  1 2 3 4\nbtime 1000000000\nprocesses 5\n')
         for name, body in (('pacman', 'echo "PACMAN $*" >> "$LOG"\nexit 0'), ('ip', 'exit 0'), ('lspci', 'exit 0'),
                            ('systemctl', 'exit 0'), ('uname', 'if [ "$1" = -m ]; then echo x86_64; else /bin/uname "$@"; fi')):
             path = root / 'bin' / name
             path.write_text('#!/bin/sh\n' + body + '\n')
             path.chmod(0o755)
 
-    def run_script(self, system_path, extra_path=None, args=()):
+    def run_script(self, system_path, extra_path=None, args=(), replace=()):
         text = (ROOT / 'install.sh').read_text()
+        for old, new in replace:
+            self.assertIn(old, text)
+            text = text.replace(old, new)
+        # pacman's lock and the boot time as this test's own.
+        text = text.replace('/var/lib/pacman/db.lck', str(self.root / 'db.lck'))
+        text = text.replace('/proc/stat', str(self.root / 'stat'))
         text = text.replace('(( EUID != 0 ))', '(( 0 != 0 ))')
         text = text.replace('/etc/os-release', str(self.root / 'etc/os-release'))
         text = text.replace('/usr/lib/modules/', str(self.root / 'modules') + '/')
@@ -312,6 +319,28 @@ class InstallScriptTests(unittest.TestCase):
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 1)
         self.assertIn('needs Fedora 42 or newer; this is Fedora Linux 41 (Server Edition)', result.stderr)
+        self.assertEqual(log, '')
+
+    def test_a_pacman_lock_from_before_the_last_restart_is_removed_and_the_update_runs(self):
+        lock = self.root / 'db.lck'
+        lock.write_text('')
+        os.utime(lock, (999_999_000, 999_999_000))          # before btime 1000000000
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(lock.exists())
+        self.assertIn("pacman's lock was left by an update cut off before the last restart: removed", result.stdout)
+        self.assertIn('PACMAN -Syu --noconfirm', log)
+
+    def test_a_pacman_lock_held_since_this_boot_is_waited_for_then_explained(self):
+        lock = self.root / 'db.lck'
+        lock.write_text('')
+        os.utime(lock, (1_000_000_500, 1_000_000_500))      # after this boot: someone holds it
+        # Without the ten-minute wait.
+        result, log = self.run_script(self.root, replace=[('(( waited < 600 ))', '(( waited < 0 ))')])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('pacman is still locked', result.stderr)
+        self.assertIn('sudo rm ' + str(lock), result.stderr)
+        self.assertTrue(lock.exists())
         self.assertEqual(log, '')
 
     def test_image_based_systems_are_refused_before_any_package_manager_runs(self):

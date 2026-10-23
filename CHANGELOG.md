@@ -20,6 +20,9 @@ Fedora support, tried with a full install, the feature checks and deliberate fai
 - **A new drive with nothing on it is named, not called missing.** When no drive could be used for the SSD or HDD, setup explained drives formatted for Windows and drives in use, but about a brand-new, unformatted one it said "No other drive was found: check that it is connected". It now names that drive and says to format it as ext4 first.
 - Enabling the weekly photo timers no longer prints systemd's "Created symlink" notes on the screen.
 
+### Fixed (Arch)
+- **Setup waits for another pacman, and finishes an update cut off by a restart.** With pacman's lock in place (an updater at work, or an update cut off by a power cut), setup stopped at once with pacman's own "unable to lock database". It now waits up to 10 minutes for another pacman to finish. A lock older than the last restart, which nothing can still hold, is removed, and the system update that follows finishes the one that was cut off. A lock that stays is explained, with the command to remove it.
+
 ### Upgrade notes
 - After `git pull`, run `sudo bash install.sh` in `nekoserver-v0.31.0`: it offers the settings left in `nekoserver-v0.30.0`; answer `yes`.
 - The bundled runtime was rebuilt for this release.

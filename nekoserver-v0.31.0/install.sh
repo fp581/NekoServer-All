@@ -162,6 +162,30 @@ if "$apply"; then
             # Arch supports only full upgrades: refresh and upgrade everything first, so the
             # apps and their dependencies install at their current versions and match each
             # other.
+            # pacman's lock is there while another pacman (an updater, say) works: wait for
+            # it. One older than this boot was left by an update cut off before the last
+            # restart, which nothing can still be running: removed, and -Syu finishes it.
+            pacman_lock=/var/lib/pacman/db.lck
+            boot_time=''
+            while read -r key value _; do
+                if [[ "$key" == btime ]]; then boot_time=$value; fi
+            done < /proc/stat
+            if [[ -e "$pacman_lock" && -n "$boot_time" ]] && (( $(stat -c %Y "$pacman_lock") < boot_time )); then
+                rm -f -- "$pacman_lock"
+                echo "pacman's lock was left by an update cut off before the last restart: removed. The update below finishes that one."
+            fi
+            waited=0
+            while [[ -e "$pacman_lock" ]] && (( waited < 600 )); do
+                (( waited )) || echo 'Another package installation is running; waiting for it to finish (up to 10 minutes)...'
+                sleep 5
+                waited=$(( waited + 5 ))
+            done
+            if [[ -e "$pacman_lock" ]]; then
+                echo "pacman is still locked ($pacman_lock) after 10 minutes: another installation is running." >&2
+                echo 'Let it finish, then run  sudo bash install.sh  again. If nothing is installing, the lock is left' >&2
+                echo "from one that was cut off: remove it (sudo rm $pacman_lock), run  sudo pacman -Syu, then setup again." >&2
+                exit 1
+            fi
             echo 'Updating the system first (pacman -Syu). This can take a while.'
             if pacman -Q archlinux-keyring >/dev/null 2>&1; then
                 # Arch's recommended order: a current keyring before the upgrade it signs.
