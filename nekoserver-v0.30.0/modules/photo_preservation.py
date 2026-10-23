@@ -71,5 +71,7 @@ def run(ctx):
             safe_path(target)
             atomic_write(target,content,0o644)
     subprocess.run(['systemctl','daemon-reload'],check=True)
-    for name in services:subprocess.run(['systemctl','enable','--now',name+TIMER],check=True)
+    # Output captured: systemd's "Created symlink" notes stay off the screen; a failure's own
+    # words still reach the log (installer.failure_reason).
+    for name in services:subprocess.run(['systemctl','enable','--now',name+TIMER],check=True,capture_output=True,text=True)
     ctx.log('Enabled '+('weekly combined photo originals/database backup' if schedule=='weekly' else 'periodic archive and nightly SQL')+'; no deletions')

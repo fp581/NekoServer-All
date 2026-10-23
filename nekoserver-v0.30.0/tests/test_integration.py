@@ -574,6 +574,7 @@ class InterruptedSetupTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(nextcloud, 'compose_image_override', return_value=[]))
             stack.enter_context(mock.patch.object(nextcloud, 'command', side_effect=calls.append))
             stack.enter_context(mock.patch.object(nextcloud, 'compose_up', side_effect=lambda base, *r, **k: calls.append(base + ['up', '-d'])))
+            stack.enter_context(mock.patch.object(nextcloud, 'finish_install'))
             stack.enter_context(mock.patch.object(nextcloud, 'atomic_write', side_effect=track(real_write)))
             stack.enter_context(mock.patch.object(nextcloud, 'atomic_json', side_effect=track(real_json)))
             nextcloud.run(self.Ctx(cfg))
