@@ -148,6 +148,8 @@ def readiness(config):
             with opener.open(LOOPBACK+str(APPS[app][1])+endpoint,timeout=5) as r:value=json.loads(r.read(64000))
             if not isinstance(value,dict) or value.get(key) is not True:raise RuntimeError('Initial application account setup is incomplete')
         except (OSError,ValueError):raise RuntimeError('Application onboarding could not be verified; finish setup locally') from None
+    # A snap's Docker takes over Docker's socket: every container would look missing.
+    if host.snap_docker():raise RuntimeError(host.SNAP_DOCKER)
     from acceptance import containers
     scoped=dict(config);scoped['media']={**config.get('media',{}),'services':[a for a in apps if a not in ('immich','nextcloud')]}
     checked=containers(scoped) if scoped['media']['services'] else []
@@ -155,7 +157,9 @@ def readiness(config):
     if 'nextcloud' in apps:
         from cloud_checks import check
         checked+=check(config)
-    if any(r['status']!='pass' for r in checked):raise RuntimeError('Selected containers must use the verified persistent mounts, networks and localhost ports')
+    failed=[r.get('name') or r.get('id','?') for r in checked if r['status']!='pass']
+    if failed:raise RuntimeError('Selected containers must use the verified persistent mounts, networks and localhost ports; '
+                                 'not verified: '+', '.join(failed)+' (sudo docker ps -a shows their state)')
     states=health.applications(config)
     if any(not any(r['id']==app and r['state']=='running' and r['health'] not in ('unhealthy','starting') for r in states) for app in apps):raise RuntimeError('Selected application containers must be running and healthy before exposure')
 
