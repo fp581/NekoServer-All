@@ -353,6 +353,27 @@ class DebianTest(unittest.TestCase):
         self.assertFalse(any('upgrade' in argv or 'dist-upgrade' in argv for argv in apt.calls))
         self.assertFalse(self.journal().exists())
 
+    def test_lists_the_system_is_refreshing_are_waited_for(self):
+        # Tried on Ubuntu: while apt-daily holds the lists' lock, apt-get update fails at
+        # once ("Could not get lock /var/lib/apt/lists/lock"), whatever DPkg::Lock::Timeout says.
+        lock = self.root / 'var/lib/apt/lists/lock'
+        lock.parent.mkdir(parents=True)
+        holder = subprocess.Popen([sys.executable, '-c', HOLD_DPKG_LOCK, str(lock)], stdout=subprocess.PIPE)
+        self.addCleanup(stop, holder)
+        self.assertEqual(holder.stdout.readline().strip(), b'held')
+        apt = FakeApt(offered={'samba'})
+        family = self.family(apt)
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == 2:
+                stop(holder)                 # the system's own refresh finished
+        family.sleep = sleep
+        family.refresh()
+        self.assertEqual(slept, [5, 5])
+        self.assertEqual(apt.calls.count(['apt-get', 'update']), 1)
+
     def test_output_that_is_read_is_in_english(self):
         apt = FakeApt(offered={'caddy'})
         self.family(apt).available('caddy')

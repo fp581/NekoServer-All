@@ -410,6 +410,8 @@ def snap_docker(root='/'):
 # Held while they work: apt's (released if apt-get is stopped) and dpkg's own (held
 # until dpkg itself has finished, also when the apt-get that started it was stopped).
 DPKG_LOCKS = ('/var/lib/dpkg/lock-frontend', '/var/lib/dpkg/lock')
+# Held while the package lists are refreshed (by apt-get update, or the system's apt-daily).
+APT_LISTS_LOCK = '/var/lib/apt/lists/lock'
 # deb-systemd-helper's record of units a package masked itself.
 PACKAGE_MASKS = '/var/lib/systemd/deb-systemd-helper-masked'
 OUR_POLICY = '#!/bin/sh\n# NekoServer: no service starts while packages install.\nexit 101\n'
@@ -571,9 +573,15 @@ class Debian(PackageLock, Family):
         return (Path(root) / 'run/reboot-required').exists()
 
     def refresh(self):
-        """Refresh the package lists (never an upgrade), once."""
+        """Refresh the package lists (never an upgrade), once. The system refreshes them
+        itself now and then (apt-daily): apt-get waits for dpkg's lock, not for the lists'
+        lock, so that wait is here (apt-get names the holder if it outlasts it)."""
         if self.refreshed:
             return
+        waited = 0
+        while waited < self.wait and not _free(self.path(APT_LISTS_LOCK)):
+            self.sleep(5)
+            waited += 5
         result = self._call(['apt-get', *APT_WAIT, 'update'], 1200)
         if result.returncode:
             raise RuntimeError('Refreshing the package lists failed: ' + _reason(result))
