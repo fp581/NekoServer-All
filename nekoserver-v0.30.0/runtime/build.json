@@ -1,0 +1,32 @@
+{
+  "version": "0.30.0",
+  "target": "x86_64-unknown-linux-musl",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "binary_sha256": "7add776b4c580f108e7a1d21fd97606da9bcc2c0eca0478e32a3f8cb563855f0",
+  "source_sha256": {
+    "Cargo.toml": "0de96d64a7475988d87388847f81a00e8e5c3af0707fcabb6d792993e09aeb8f",
+    "Cargo.lock": "a617e1c99f04b5960916985c7958bea539dd5226f3621cecd43be836a7bf1ead",
+    "build.py": "2f2cafb59ef78cba6501d67ed434d4f524912b863c326edf67eee5a05076c59d",
+    "src/app_snapshot.rs": "a207a0a8254dde89d91821fb1becabe3202e39473b36e1897623780463ce8d6c",
+    "src/apps.rs": "8cf6a1e06163ee36c8d448612f6ffa2dfedd58cd5b904dac33e257243547ab04",
+    "src/backup.rs": "4e2739f23c5c146d5e5e464f172268659af2a741360a9894f8c75cbcee0c86fa",
+    "src/collect.rs": "ff1f93a47921bd6cdb78c00e5537f8f090cf625dd44fee7b243b261eea7a981c",
+    "src/common.rs": "314b9b4b705b619cdb1d4f4653fac3aadda1e300c812cdb4c213ab86da295d5f",
+    "src/control.rs": "4621578c7cbdbcfb605f64a7bd625343132ea5f6023901b8e657d6603923dddf",
+    "src/drive_return.rs": "8f39b506f740833780eadce4a9a7e0789c9a60b432cb71e3acafc259ddf2453e",
+    "src/fans.rs": "6fed9f6f0d7290976ccf75112411384cb14e7861aa017e56c5baa3d4902182dc",
+    "src/heartbeat.rs": "1f99dcd81eddf2157eaad3109837361aed37ab1af4b3b0123cdd067ae9096bac",
+    "src/host_snapshot.rs": "d9849c407cf958823057effaf4f3271ca56a10c6d0adcb6af8f789144b8b452a",
+    "src/ledger.rs": "bddec88a375829eba5ed64d886941b90e9bc690ff5ff4165570f7635cdcb689b",
+    "src/live.rs": "a5c6a2859f33082f3d02937743be546e88097891e43d4f4bbb708c3aeb372837",
+    "src/main.rs": "25e7a6e1c379313743e71ee096ddd87eeb794b6704122178d1cc2f042672f15e",
+    "src/maintenance.rs": "049e7a77b6e26d963d6a8dd75b8d6d3b9056fe6b0f5cc2516207499a3e7926ab",
+    "src/media.rs": "9fae9b580640a9016ab2e113d6a1ae7bbea9c5a127b955ddd79251a73fd0ee9f",
+    "src/music_backup.rs": "831fc6b742d0f7bc909508556c617694d5a42fc50d4474f5fe51057c090637c8",
+    "src/notify.rs": "773fff4d1ee776c9530f0877a84954b021f7883c5bb2843a4e163ba63e1f18ba",
+    "src/openrgb.rs": "31dc3bf0f3b60879313fb7d626334b51bed54c9b62cb8b61da797d9e868e1331",
+    "src/os_policy.rs": "aff24190d7355f2ed18585f020acd698e6c43d445962b4994ae83f67448eceb7",
+    "src/serve.rs": "e51984c6cf987579d2bdb382b116c858e42d0d99cd1d968fee12b6913380863e",
+    "src/startup.rs": "f91433efd22d3857218d793c579e1bfda42bf96056b699f9cbf844dd6eb970ae"
+  }
+}
