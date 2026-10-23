@@ -1,6 +1,7 @@
 """The app password list in backups opens only with the backup password."""
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,9 @@ import backup_secrets  # noqa: E402
 SECRET = b'jellyfin admin hunter2-topsecret\n'
 
 
+# These encrypt for real with the openssl command, which setup installs; a minimal
+# system (AlmaLinux) may not have it yet.
+@unittest.skipUnless(shutil.which('openssl'), 'the openssl command is not installed')
 class BackupSecretsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
