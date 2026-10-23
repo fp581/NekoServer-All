@@ -54,9 +54,11 @@ def release_number(name):
     return tuple(int(p) for p in parts) if parts and all(p.isdigit() for p in parts) else None
 
 def in_use(folder,units=SYSTEMD_UNITS):
-    """Some installed service definition still names this folder."""
+    """Some installed service definition, or a drop-in for one, still names this folder:
+    Docker's start guard is named only in docker.service.d, and Docker does not start
+    without it."""
     text=str(folder)
-    for unit in Path(units).glob('*'):
+    for unit in [*Path(units).glob('*'),*Path(units).glob('*.d/*')]:
         try:
             if unit.is_file() and text in unit.read_text(errors='replace'):return True
         except OSError:

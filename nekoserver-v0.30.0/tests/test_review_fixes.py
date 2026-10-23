@@ -381,6 +381,21 @@ class ExistingDockerTests(unittest.TestCase):
                     docker.check_existing_docker(ssd / 'docker-engine')
         self.assertIn('## Replace the OS and reattach the existing store', (ROOT / 'RECOVERY.md').read_text())
 
+    def test_a_reinstalled_linux_may_bring_a_newer_docker_never_an_older_one(self):
+        import recovery_tools
+        ok = recovery_tools.docker_new_enough
+        self.assertTrue(ok('Docker version 29.9.2, build a82e528', '29.9.2'))
+        self.assertTrue(ok('Docker version 30.1.0, build 1234567', '29.9.2'))
+        self.assertTrue(ok('Docker version 29.10.0, build 1234567', '29.9.2'))   # 10 > 9, not text order
+        self.assertTrue(ok('30.1.0', '29.9.2'))                                   # the running daemon's own answer
+        self.assertFalse(ok('Docker version 29.8.5, build 1234567', '29.9.2'))
+        self.assertFalse(ok('Docker version 28.0.0, build 1234567', '29.9.2'))
+        self.assertTrue(ok('Docker version 26.1.5+dfsg1, build a72d7cd', '26.1.5+dfsg1'))   # Debian's own package
+        # A version that can't be read must match exactly.
+        self.assertTrue(ok('Docker version dev, build x', 'dev'))
+        self.assertFalse(ok('Docker version dev, build x', '29.9.2'))
+        self.assertFalse(ok('', '29.9.2'))
+
 
 class BrowserLaunchTests(unittest.TestCase):
     """Opening a setup page never installs a browser (Firefox on Ubuntu is a snap)."""
@@ -450,6 +465,22 @@ class OldReleaseCleanupTests(unittest.TestCase):
             self.assertIn('earlier releases', logged[0])
             # Nothing more to do the second time.
             self.assertEqual(native_runtime.retire_old(data, logged.append, lib=lib, units=units), [])
+
+    def test_the_docker_start_guard_named_in_a_drop_in_stays(self):
+        # A setup run without the Docker step (only the shared folders, say) after a new
+        # release was downloaded: docker.service.d still names the previous release's guard,
+        # and Docker does not start without it.
+        import native_runtime
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            lib, units, data = root / 'lib', root / 'units', root / 'ssd'
+            for version in ('v0.28.9', 'v' + neko_common.VERSION):
+                (data / 'installer/guards' / version).mkdir(parents=True)
+            (units / 'docker.service.d').mkdir(parents=True)
+            (units / 'docker.service.d/10-nekoserver-storage.conf').write_text(
+                f'[Service]\nExecStartPre={data}/installer/guards/v0.28.9/nekoserver-runtime storage-guard\n')
+            self.assertEqual(native_runtime.retire_old(data, lambda m: None, lib=lib, units=units), [])
+            self.assertTrue((data / 'installer/guards/v0.28.9').is_dir())
 
     def test_versions_sort_by_number_not_text(self):
         import native_runtime
