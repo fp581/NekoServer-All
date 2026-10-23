@@ -302,6 +302,25 @@ fn inventory(selected: &[Source]) -> Result<Inventory> {
     }
     Ok((files, missing, skipped))
 }
+/// The settings backup's message when the HDD is too full: the drive, what is free and
+/// what is needed, in the GB of the `host_backup.minimum_free_gb` setting.
+fn short_of_space(media: &Path, have: u128, needed: u128, reserve: u64) -> String {
+    let gb = |b: u128| {
+        let g = b as f64 / (1u64 << 30) as f64;
+        if g < 10.0 {
+            format!("{g:.1}")
+        } else {
+            format!("{g:.0}")
+        }
+    };
+    format!(
+        "Not enough space on the HDD ({}) for the nightly settings backup: {} GB free, about {} GB needed (the settings files plus the {} GB reserve from host_backup.minimum_free_gb). Free up space there",
+        media.display(),
+        gb(have),
+        gb(needed),
+        reserve >> 30
+    )
+}
 pub fn run(a: &Args) -> Result<()> {
     let job = backup::open_job(a, 128000)?;
     let selected = sources(&job.cfg, &job.media)?;
@@ -391,8 +410,14 @@ fn snapshot(
             return Err(std::io::Error::last_os_error().into());
         }
         let stat = unsafe { stat.assume_init() };
-        if (stat.f_bavail as u128) * (stat.f_frsize as u128) < total as u128 + reserve as u128 {
-            return Err(Error::new("Insufficient snapshot space"));
+        let have = (stat.f_bavail as u128) * (stat.f_frsize as u128);
+        if have < total as u128 + reserve as u128 {
+            return Err(Error::new(&short_of_space(
+                media,
+                have,
+                total as u128 + reserve as u128,
+                reserve,
+            )));
         }
         let stage = backup::stage_snapshot(&root)?;
         let payload = &stage.payload;
@@ -464,6 +489,21 @@ fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_full_hdd_names_the_drive_and_the_space() {
+        let said = short_of_space(
+            Path::new("/mnt/nekoserver-media"),
+            64 << 20,
+            (2 << 30) + (10 << 20),
+            2 << 30,
+        );
+        assert!(said.contains("HDD (/mnt/nekoserver-media)"), "{said}");
+        assert!(said.contains("0.1 GB free, about 2.0 GB needed"), "{said}");
+        assert!(
+            said.contains("2 GB reserve from host_backup.minimum_free_gb"),
+            "{said}"
+        );
+    }
     #[test]
     fn recursion_refused() {
         let cfg =
