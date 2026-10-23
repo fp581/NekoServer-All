@@ -124,6 +124,32 @@ class SambaWaitsForItsFoldersTests(unittest.TestCase):
             self.run_with({'Media': 'library', 'Scans': 'scans'}, made=['library'])
 
 
+class SambaUnusedProgramsTests(unittest.TestCase):
+    """winbind (and nmbd) are switched off on a server already set up: the settings backup
+    refuses to run beside them, and a standalone Samba never uses them."""
+    def fake(self, states):
+        calls = []
+
+        def run(argv, **_):
+            calls.append(argv)
+            if argv[1] == 'show':
+                return mock.Mock(stdout=states.get(argv[2], 'LoadState=not-found\n'), returncode=0)
+            return mock.Mock(stdout='', stderr='', returncode=0)
+        return run, calls
+
+    def test_running_winbind_is_switched_off_and_absent_units_are_left(self):
+        run, calls = self.fake({'winbind.service': 'LoadState=loaded\nUnitFileState=enabled\nActiveState=active\n',
+                                'nmbd.service': 'LoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\n'})
+        self.assertEqual(samba.switch_off_unused(run), ['winbind.service'])
+        self.assertIn(['systemctl', 'disable', '--now', 'winbind.service'], calls)
+        self.assertNotIn(['systemctl', 'disable', '--now', 'nmbd.service'], calls)
+
+    def test_a_masked_or_missing_unit_is_not_touched(self):
+        run, calls = self.fake({'winbind.service': 'LoadState=masked\nUnitFileState=masked\nActiveState=inactive\n'})
+        self.assertEqual(samba.switch_off_unused(run), [])
+        self.assertFalse(any(c[1] == 'disable' for c in calls))
+
+
 class SambaOwnConfigTests(unittest.TestCase):
     """Your own smb.conf stays yours: setup joins it through an include line you add."""
     def test_an_include_line_in_your_own_file_counts(self):

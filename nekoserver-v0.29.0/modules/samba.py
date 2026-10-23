@@ -96,6 +96,26 @@ def includes_ours(text):
             return True
     return False
 
+# Samba programs a standalone server (NekoServer's own smb.conf) never uses. Debian's and
+# Ubuntu's samba package starts winbind (and may start nmbd); the settings backup refuses
+# to run beside them. Arch names nmbd "nmb".
+UNUSED_UNITS=('winbind.service','nmbd.service','nmb.service')
+
+def switch_off_unused(run=subprocess.run):
+    """Stop and disable the unused Samba programs that are installed and switched on, and
+    return their names. Only reached once smb.conf is NekoServer's own."""
+    stopped=[]
+    for unit in UNUSED_UNITS:
+        shown=run(['systemctl','show',unit,'-p','LoadState','-p','UnitFileState','-p','ActiveState'],
+                  capture_output=True,text=True,timeout=15,check=False).stdout
+        state=dict(line.split('=',1) for line in shown.splitlines() if '=' in line)
+        if state.get('LoadState')!='loaded':continue
+        if state.get('UnitFileState') in ('enabled','enabled-runtime') or state.get('ActiveState') in ('active','activating'):
+            done=run(['systemctl','disable','--now',unit],capture_output=True,text=True,timeout=40,check=False)
+            if done.returncode:raise RuntimeError(f'Could not switch off {unit}: '+(done.stderr or '').strip()[-200:])
+            stopped.append(unit)
+    return stopped
+
 def run(context):
     if not context.apply:
         context.log('Samba setup deferred; run --module samba --apply')
@@ -166,6 +186,9 @@ def run(context):
         raise RuntimeError('Unmanaged Samba storage guard')
     atomic_write(override,content,0o644)
     call(['systemctl','daemon-reload'])
+    for unused in switch_off_unused(subprocess.run):
+        context.log(f'Shared folders: switched off {unused}, which a standalone Samba server never uses '
+                    '(it would also stop the nightly settings backup)')
     call(['systemctl','enable','--now',service],timeout=40)
     call(['systemctl','restart',service],timeout=40)
     account=subprocess.run(['pdbedit','-L','-u',user],capture_output=True,text=True,timeout=15,check=False)

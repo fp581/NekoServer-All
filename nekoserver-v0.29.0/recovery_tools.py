@@ -460,6 +460,29 @@ def http_ready(port,seconds=600,clock=time.monotonic,sleep=time.sleep):
         if clock()>=deadline:return False
         sleep(2)
 
+def port_in_use(config,port,run=subprocess.run):
+    """Why the restore-test port is taken. A restore test is left running for a person to
+    check, so the usual holder is an earlier one: name it and say how to stop it."""
+    try:
+        shown=run([*DOCKER,'ps','--filter',f'publish={port}','--format','{{.Label "com.docker.compose.project"}}'],
+                  capture_output=True,text=True,timeout=30,check=False).stdout.split()
+    except (OSError,subprocess.SubprocessError):
+        shown=[]
+    project=next((p for p in shown if re.fullmatch(r'neko-restore-[0-9a-f]{12}',p)),None)
+    if not project:
+        return f'Restore-test port {port} is already in use by another program; choose another with --port'
+    for root in (config.get('data_mount'),config.get('media_mount')):
+        for report in sorted(Path(root or '/nonexistent').glob('recovery-tests/*/restore-report.json')):
+            try:
+                if json.loads(report.read_text()).get('project')==project:
+                    return (f'An earlier restore test ({project}) is still running on port {port}, left for you to check. '
+                            f'Stop it with  sudo docker --host unix:///var/run/docker.sock compose -p {project} -f {report.parent}/compose.json stop  '
+                            'and run this again, or choose another port with --port')
+            except (OSError,ValueError):
+                continue
+    return (f'An earlier restore test ({project}) is still running on port {port}. Stop it with  '
+            f'sudo docker stop $(sudo docker ps -q --filter label=com.docker.compose.project={project})  and run this again, or choose another port with --port')
+
 def restore_test(config,snapshot_path,workspace,port=2284,apply=False,confirm=''):
     mounts(config);snapshot_path=safe_path(snapshot_path);meta,model=verify_snapshot(snapshot_path)
     workspace=new_folder(config,workspace,'recovery-tests')
@@ -467,7 +490,7 @@ def restore_test(config,snapshot_path,workspace,port=2284,apply=False,confirm=''
     if type(port) is not int or not 1024<=port<=65535 or port==2283:raise RuntimeError('Use a distinct unprivileged restore-test port')
     with socket.socket() as sock:
         try:sock.bind(('127.0.0.1',port))
-        except OSError:raise RuntimeError('Restore-test port is already in use') from None
+        except OSError:raise RuntimeError(port_in_use(config,port)) from None
     enough_space(workspace,sum(p.stat().st_size for p in regular_files(snapshot_path))+2*meta['database_bytes'])
     isolated=isolated_model(model,meta,workspace,port)
     if not apply:return {'status':'needs_setup','reason':'Verified snapshot preview; isolated DB/files restore only','immich_version':meta['immich_version'],'url':f'http://127.0.0.1:{port}/'}
