@@ -1300,6 +1300,15 @@ fn updates(cfg: &Value, media_ok: bool) -> Value {
     }
     json!(out)
 }
+/// What a nearly full drive stops, and how to free it.
+fn space_advice(id: &str, full: bool) -> &'static str {
+    match (id, full) {
+        ("media_hdd", true) => "Downloads, the nightly backups and the monthly snapshot stop when it is full. Delete what you no longer watch, or old downloads, or add a bigger drive.",
+        ("data_ssd", true) => "The apps keep their data, the music and their images here and can stop working when it is full. Free up space there, or move to a bigger SSD.",
+        (_, true) => "Backups and uploads stop when it is full. Free up space there.",
+        _ => "Review free space before uploads or backups.",
+    }
+}
 fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
@@ -1345,15 +1354,16 @@ fn alerts(s: &Value) -> Value {
             if d["status"] != "mounted" {
                 add(format!("mount:{id}"),"critical",format!("{name} unavailable"),"The drive is not connected, or is not the one chosen at setup; the apps on it are stopped so nothing is written in its place. Reconnect it: once it is back, the apps start again by themselves within a minute. If they do not, restart the PC.");
             } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
+                let full = d["used_percent"].as_f64().unwrap_or(0.0) >= 97.0;
                 add(
                     format!("space:{id}"),
-                    if d["used_percent"].as_f64().unwrap_or(0.0) >= 97.0 {
-                        "critical"
+                    if full { "critical" } else { "warning" },
+                    if full {
+                        format!("{name} is almost full")
                     } else {
-                        "warning"
+                        format!("{name} is filling up")
                     },
-                    format!("{name} is filling up"),
-                    "Review free space before uploads or backups.",
+                    space_advice(id, full),
                 );
             }
             let state = text(&d["smart"]["status"]);
@@ -1911,6 +1921,23 @@ mod os_tests {
         );
         assert_eq!(shown[0]["level"], "warning");
         assert!(text(&shown[0]["detail"]).contains("bob/a:b.txt"));
+    }
+    #[test]
+    fn a_full_hdd_says_what_stops_and_how_to_free_it() {
+        let drive = |percent: f64| json!({"storage":[{"id":"media_hdd","name":"Media HDD","status":"mounted","used_percent":percent}]});
+        let full = alerts(&drive(100.0));
+        let row = &full.as_array().unwrap()[0];
+        assert_eq!(row["id"], "space:media_hdd");
+        assert_eq!(row["level"], "critical");
+        assert_eq!(row["title"], "Media HDD is almost full");
+        assert!(text(&row["detail"]).contains("Downloads, the nightly backups"));
+        let filling = alerts(&drive(92.0));
+        let row = &filling.as_array().unwrap()[0];
+        assert_eq!(
+            (text(&row["level"]), text(&row["title"])),
+            ("warning", "Media HDD is filling up")
+        );
+        assert!(alerts(&drive(50.0)).as_array().unwrap().is_empty());
     }
     #[test]
     fn low_available_memory_is_alerted() {
