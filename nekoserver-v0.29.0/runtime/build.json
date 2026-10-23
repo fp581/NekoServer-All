@@ -2,7 +2,7 @@
   "version": "0.29.0",
   "target": "x86_64-unknown-linux-musl",
   "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
-  "binary_sha256": "99de98fc6366ae7755ff57368ffe68eab9c9dafd4aa0ba02b32397f149550a22",
+  "binary_sha256": "680f35d8b3128a7d4ac9a23142eb5e143da3712d4faedc4341b220a4238fb6be",
   "source_sha256": {
     "Cargo.toml": "8f62d914e08cecf9fd9d213c82fb3aef6763f5cc37e068c5294a1b794957a31b",
     "Cargo.lock": "4eb67f1410eb24247a62bbb602a44344a277811ec5e928469a13dce268ad9eeb",
@@ -20,7 +20,7 @@
     "src/ledger.rs": "bddec88a375829eba5ed64d886941b90e9bc690ff5ff4165570f7635cdcb689b",
     "src/live.rs": "a5c6a2859f33082f3d02937743be546e88097891e43d4f4bbb708c3aeb372837",
     "src/main.rs": "25e7a6e1c379313743e71ee096ddd87eeb794b6704122178d1cc2f042672f15e",
-    "src/maintenance.rs": "70ad26d5a3bf436a316f4c73aff31c7362dc05acc096cbd9f4a8812904aa0322",
+    "src/maintenance.rs": "7e9d0c10bffe431ed90e31011c576449a1ca1ecfd4f2a9fbc7c2feead86f17f5",
     "src/media.rs": "9fae9b580640a9016ab2e113d6a1ae7bbea9c5a127b955ddd79251a73fd0ee9f",
     "src/music_backup.rs": "831fc6b742d0f7bc909508556c617694d5a42fc50d4474f5fe51057c090637c8",
     "src/notify.rs": "773fff4d1ee776c9530f0877a84954b021f7883c5bb2843a4e163ba63e1f18ba",
