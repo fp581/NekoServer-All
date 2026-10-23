@@ -283,6 +283,39 @@ fn sources(cfg: &Value, media: &Path) -> Result<Vec<Source>> {
     Ok(out)
 }
 type Inventory = (Vec<Value>, Vec<String>, Vec<Value>);
+/// The files that differ between two inventories (added, gone or changed), as the paths
+/// they are copied from, so a run that something wrote into says what it was.
+fn changed_paths(before: &[Value], after: &[Value], selected: &[Source]) -> Vec<String> {
+    let index = |rows: &[Value]| -> std::collections::BTreeMap<String, Value> {
+        rows.iter()
+            .map(|r| (r["path"].as_str().unwrap_or("").to_string(), r.clone()))
+            .collect()
+    };
+    let (old, new) = (index(before), index(after));
+    let mut changed: Vec<String> = old
+        .keys()
+        .chain(new.keys())
+        .filter(|path| old.get(*path) != new.get(*path))
+        .map(|path| {
+            let rel = Path::new(path);
+            selected
+                .iter()
+                .find(|s| rel.starts_with(&s.0))
+                .map(|(id, source, _, _)| {
+                    let suffix = rel.strip_prefix(id).unwrap_or(rel);
+                    if suffix.as_os_str().is_empty() {
+                        source.display().to_string()
+                    } else {
+                        source.join(suffix).display().to_string()
+                    }
+                })
+                .unwrap_or_else(|| path.clone())
+        })
+        .collect();
+    changed.sort();
+    changed.dedup();
+    changed
+}
 fn inventory(selected: &[Source]) -> Result<Inventory> {
     let mut files = vec![];
     let mut missing = vec![];
@@ -455,7 +488,25 @@ fn snapshot(
             }
         }
         if before != after || missing != after_missing {
-            return Err(Error::new("Host inventory changed during snapshot"));
+            let mut changed = changed_paths(&before, &after, selected);
+            changed.extend(
+                missing
+                    .iter()
+                    .chain(&after_missing)
+                    .filter(|m| !(missing.contains(m) && after_missing.contains(m)))
+                    .cloned(),
+            );
+            let shown = changed
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = changed.len().saturating_sub(3);
+            return Err(Error::new(&format!(
+                "Host inventory changed during snapshot: {shown}{} changed while it was copied, so this run is not kept; the next one tries again",
+                if more > 0 { format!(" and {more} more") } else { String::new() }
+            )));
         }
         steam_still_closed(cfg, steam_included)?;
         if samba {
@@ -503,6 +554,33 @@ mod tests {
             said.contains("2 GB reserve from host_backup.minimum_free_gb"),
             "{said}"
         );
+    }
+    #[test]
+    fn a_file_written_during_the_copy_is_named() {
+        let selected: Vec<Source> = vec![(
+            "source1".into(),
+            PathBuf::from("/srv/nekoserver/gateway"),
+            false,
+            false,
+        )];
+        let row = |path: &str, size: u64| json!({"path": path, "kind": "file", "size": size});
+        let before = vec![
+            row("source1/caddy/autosave.json", 10),
+            row("source1/caddy/a.crt", 5),
+        ];
+        let after = vec![
+            row("source1/caddy/autosave.json", 12),
+            row("source1/caddy/a.crt", 5),
+            row("source1/caddy/locks/x.lock", 0),
+        ];
+        assert_eq!(
+            changed_paths(&before, &after, &selected),
+            [
+                "/srv/nekoserver/gateway/caddy/autosave.json",
+                "/srv/nekoserver/gateway/caddy/locks/x.lock"
+            ]
+        );
+        assert!(changed_paths(&before, &before, &selected).is_empty());
     }
     #[test]
     fn recursion_refused() {

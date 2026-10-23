@@ -335,8 +335,11 @@ class SwitchingOffAndBackupTests(unittest.TestCase):
 
     def test_host_snapshots_include_fan_light_and_dashboard_settings(self):
         from modules import host_backup
-        for path in ('/etc/nekoserver-control', '/etc/nekoserver-dashboard', '/var/lib/nekoserver-openrgb'):
+        for path in ('/etc/nekoserver-control', '/etc/nekoserver-dashboard'):
             self.assertIn(path, host_backup.HOST_DIRS)
+        # OpenRGB's settings files, never its log folder (written all the time).
+        self.assertIn('/var/lib/nekoserver-openrgb/OpenRGB/OpenRGB.json', host_backup.HOST_FILES)
+        self.assertFalse(any(p.startswith('/var/lib/nekoserver-openrgb') for p in host_backup.HOST_DIRS))
         self.assertIn(str(dashboard.I2C_MODULES), host_backup.HOST_FILES)
         self.assertIn(str(dashboard.CONTROL_CONFIG), host_backup.HOST_DIRS)
 

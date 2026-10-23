@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.31.0 — 2026-10-23
+
+Fedora support, tried with a full install, the feature checks and deliberate failures on Fedora 44 (under WSL, with its own three virtual drives). WSL has no SELinux, so SELinux is the part still to be tried on a real Fedora: see below.
+
+### Added
+- **Fedora 42 and newer.** `install.sh` and setup recognise Fedora and install with dnf. Docker CE and Tailscale come from their makers' repositories (NekoServer writes the repository definitions itself; dnf checks the packages with the makers' keys), Caddy, Samba and the tools from Fedora's own. Fedora's own container packages (`moby-engine`, `podman-docker`, `containerd`) are never mixed in: setup stops and says how to remove them. New services are kept from starting while they install and stay switched off until their own steps start them on the right drive, as on Debian. Samba's untouched example `smb.conf` is recognised by rpm's record of it and set aside. Only the package lists are refreshed (`dnf makecache`); upgrading Fedora stays your own routine. RHEL and its rebuilds (Rocky, Alma) are not covered yet.
+- **SELinux.** NekoServer is not tested with SELinux yet, and Fedora has it enforcing by default: setup stops at its system check while SELinux is enforcing, says what may be refused (the shared folders, the home gateway, the backup jobs), how to switch to permissive mode to try it, and which command's output to send (`sudo ausearch -m AVC -ts recent`) so the right rules can be added.
+
+### Changed
+- The firewall note gives a `firewall-cmd` example where firewalld is on (Fedora), and the `ufw` one elsewhere.
+
+### Fixed (every Linux)
+- **Nextcloud's first install is finished when the image gave up.** Nextcloud's image installs it on its first start only, retrying for about two minutes; with its database out of reach that long, every later start skipped the install, Nextcloud said "not installed" for good and the accounts step reported a login that could not match. After starting Nextcloud, setup now checks it and, once the image's own attempt is over, finishes the install with the same settings (taken from the container, so no password is on a command line).
+- **The nightly settings backup no longer fails while OpenRGB writes its log.** It kept OpenRGB's whole folder, logs included, and OpenRGB writes a log while it runs: a backup that copied it as it changed (right after setup restarted OpenRGB, say) was refused as a whole with "Host inventory changed during snapshot", and nothing said which file. It now keeps OpenRGB's settings only (`OpenRGB.json` and `sizes.ors`), and the message names up to three of the files that changed.
+- Enabling the weekly photo timers no longer prints systemd's "Created symlink" notes on the screen.
+
+### Upgrade notes
+- The bundled runtime was rebuilt for this release.
+- Nothing else to do on Arch, Debian and Ubuntu.
+
 ## v0.30.0 — 2026-10-23
 
 Deliberate failures on the installed Debian and Arch servers: the monthly update and the backups cut off as by a power cut (also while the new app versions start), a drive unplugged and plugged back, the HDD filled up, and Linux reinstalled with the drives put back. What they found, and fewer backups kept:
