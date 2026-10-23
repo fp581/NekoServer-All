@@ -142,7 +142,7 @@
     "archive_min_age_seconds": 600,
     "database_backup_time": "02:15",
     "backup_schedule": "weekly",
-    "database_keep": 8
+    "database_keep": 4
   },
   "profiles": {
     "foundation": [
@@ -389,7 +389,7 @@
   },
   "app_backup": {
     "time": "04:15",
-    "keep_snapshots": 14
+    "keep_snapshots": 7
   },
   "notifications": {
     "endpoint": "",
@@ -411,7 +411,7 @@
     "samba": true,
     "extra_paths": [],
     "minimum_free_gb": 2,
-    "keep_snapshots": 14
+    "keep_snapshots": 7
   },
   "heartbeat": {
     "interval_seconds": 300

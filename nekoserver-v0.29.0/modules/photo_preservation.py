@@ -43,7 +43,7 @@ def run(ctx):
     if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]',tm):raise RuntimeError('Invalid database backup time')
     archive=relative_path(opts.get('archive_dir','photos/archive'))
     binary=native_runtime.deploy(Path(__file__).resolve().parents[1],cfg,runtime)
-    keep=opts.get('database_keep',8)
+    keep=opts.get('database_keep',4)
     if type(keep) is not int or not 0<=keep<=520:raise RuntimeError('photos.database_keep must be a whole number from 0 to 520')
     base=command_line(binary,native_runtime.backup_guard(cfg),data,media,age,archive,keep)
     schedule=opts.get('backup_schedule','legacy')

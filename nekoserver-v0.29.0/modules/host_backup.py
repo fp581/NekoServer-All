@@ -41,7 +41,7 @@ def settings(config):
     free = opts.get('minimum_free_gb', 2)
     if type(free) is not int or not 1 <= free <= 1024:
         raise RuntimeError('Invalid backup free-space reserve')
-    keep = opts.get('keep_snapshots', 14)
+    keep = opts.get('keep_snapshots', 7)
     if type(keep) is not int or not 0 <= keep <= 3650:
         raise RuntimeError('host_backup.keep_snapshots must be a whole number from 0 to 3650')
     paths = opts.get('extra_paths', [])
@@ -152,7 +152,7 @@ def guard(config, previous=None):
     value['host_backup'] = {'sources': sources, 'samba': samba, 'steam_uid': user.pw_uid if user and opts.get('steam', True) else None,
                             'user': user.pw_name if user else None,
                             'minimum_free_bytes': opts.get('minimum_free_gb', 2)*1024**3,
-                            'keep_snapshots': opts.get('keep_snapshots', 14)}
+                            'keep_snapshots': opts.get('keep_snapshots', 7)}
     return value
 
 

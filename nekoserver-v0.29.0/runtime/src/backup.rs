@@ -1871,7 +1871,7 @@ pub fn preservation(a: &Args) -> Result<()> {
                 verified_copy(&created, &target, true, 0o600)?;
                 verified_copy(&dump_note(&created), &dump_note(&target), true, 0o600)?;
                 // Weekly dumps used to pile up forever on both drives.
-                let keep = a.number("db-keep", 8)?;
+                let keep = a.number("db-keep", 4)?;
                 for folder in [
                     data.join("backups/immich-database"),
                     media.join("backups/immich-database"),

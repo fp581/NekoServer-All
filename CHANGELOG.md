@@ -8,6 +8,7 @@ First run of the installer end to end on Debian 13 and Arch (under WSL, with thr
 - **The server comes back by itself when a drive returns.** When the SSD or HDD disappeared while the server ran (unplugged, a loose cable, a USB case that reset), Docker and every app stopped, as they must, so nothing is written in the drive's place. But when the drive came back, a dead mount stayed behind and everything stayed down until someone restarted the PC. A new service (*nekoserver-drive-return*, installed by the server-OS step) now runs whenever either drive appears: it releases the dead mount, mounts the drive again, checks that both drives are the right ones, and starts Docker, the shared folders and the home gateway again. The dashboard's "drive unavailable" alert says so.
 
 ### Changed
+- **Fewer backups are kept: 7 nightly, 4 weekly, 3 monthly.** The nightly app and settings backups keep the newest 7 (was 14) and the weekly Immich database copies the newest 4 on the SSD and the HDD (was 8; the USB drive already kept 4); the monthly snapshots stay at 3. A settings file made from an earlier template still holds 14 and 8 without anyone having chosen them: setup moves those to 7 and 4 (and says so in its log), so older backups beyond the new counts are deleted after the next successful runs. A number you set yourself is kept. To keep more, set `keep_snapshots` under `app_backup` or `host_backup`, or `database_keep` under `photos`, in `my-config.json`.
 - **Unfinished monthly snapshots are deleted too, once newer ones replace them.** A monthly run cut off by a power cut or a restart (or one whose restore test failed) leaves a snapshot of nearly full size on the HDD, and retention never deleted those, so each such night took its share of the HDD for good. Now one is deleted once `keep_snapshots` (3) complete snapshots newer than it exist, just as a complete snapshot of its age would be. Newer unfinished ones, the run in progress and folders the worker did not create are kept, as before.
 
 ### Fixed (every Linux)
@@ -56,7 +57,7 @@ First run of the installer end to end on Debian 13 and Arch (under WSL, with thr
 
 ### Upgrade notes
 - The bundled runtime must be rebuilt for this release (its Jellyfin check sends the key the way Jellyfin 12 wants it).
-- Run `sudo bash install.sh` once after upgrading: the server-OS step installs the new drive-return service, and the shared-folders step switches winbind off on Debian and Ubuntu.
+- Run `sudo bash install.sh` once after upgrading: the server-OS step installs the new drive-return service, the shared-folders step switches winbind off on Debian and Ubuntu, and the backup counts still at the earlier defaults (14 nightly, 8 weekly database copies) move to 7 and 4.
 
 ## v0.28.11 — 2026-10-22
 

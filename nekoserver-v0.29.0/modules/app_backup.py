@@ -20,7 +20,7 @@ def retention(keep):
 
 def keep_snapshots(config):
     """Nightly snapshots to keep on the HDD; 0 keeps every one (pre-v0.21.1 behaviour)."""
-    keep = config.get('app_backup', {}).get('keep_snapshots', 14)
+    keep = config.get('app_backup', {}).get('keep_snapshots', 7)
     if type(keep) is not int or not 0 <= keep <= 3650:
         raise RuntimeError('app_backup.keep_snapshots must be a whole number from 0 to 3650')
     return keep

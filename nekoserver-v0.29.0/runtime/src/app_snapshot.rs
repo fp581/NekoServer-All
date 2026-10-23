@@ -470,7 +470,7 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
         let manifest = json!({"format":"neko-media-snapshot-v1","version":VERSION,"created_at":common::now(),"containers":containers,"files":files,"skipped":skipped,"storage":common::json(cfgpath,64000)["storage"]});
         let keep = common::json(cfgpath, 64000)["app_backup"]["keep_snapshots"]
             .as_u64()
-            .unwrap_or(14);
+            .unwrap_or(7);
         backup::publish_snapshot(
             &root,
             &stage,
