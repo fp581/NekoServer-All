@@ -150,6 +150,19 @@ def verify_bundle(bundle,config):
         if saved.get(key)!=config.get(key):raise RuntimeError('Preserved installer storage configuration differs')
     return manifest['version']
 
+def docker_release(text):
+    """(major, minor, patch) from 'Docker version 29.9.2, build x' or '29.9.2', else None."""
+    match=re.search(r'(\d+)\.(\d+)\.(\d+)',text or '')
+    return tuple(int(n) for n in match.groups()) if match else None
+
+def docker_new_enough(found,saved):
+    """This Docker can take the store over: the version that last ran it (recorded in the
+    host checkpoint), or a newer one, as the OS's own updates move Docker on over the same
+    store; never an older one, which may not read it."""
+    have,want=docker_release(found),docker_release(saved)
+    if have is None or want is None:return found==saved or found.startswith('Docker version '+saved+',')
+    return have>=want
+
 def reattach(config,bundle,apply=False,confirm=''):
     mounts(config);verify_bundle(bundle,config)
     saved=json.loads(safe_path(Path(config['data_mount'])/'installer/host-checkpoint.json').read_text())
@@ -162,7 +175,9 @@ def reattach(config,bundle,apply=False,confirm=''):
     if not host_supported():raise RuntimeError('Automatic reattachment supports x86_64 Arch/Nyarch and Debian/Ubuntu; Bazzite migration remains unvalidated')
     for argv in (DOCKER+['--version'],['dockerd','--version']):
         installed=command(argv).strip()
-        if not installed.startswith('Docker version '+saved['docker_version']+','):raise RuntimeError('Install the checkpoint Docker version for both client and daemon before reattachment; upgrades require separate validation')
+        if not docker_new_enough(installed,saved['docker_version']):
+            raise RuntimeError(f'Install Docker {saved["docker_version"]} or newer (client and daemon) before reattachment: the apps last '
+                               f'ran with Docker {saved["docker_version"]}, and an older one may not read their store. This PC has: {installed}')
     for unit in ('docker.service','docker.socket'):
         result=subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False)
         if result.returncode==0:raise RuntimeError('Stop Docker service and socket before reattachment')
@@ -183,7 +198,9 @@ def reattach(config,bundle,apply=False,confirm=''):
         try:
             command(['systemctl','enable','--now','docker'],90)
             actual=checkpoint(config)
-            if actual['docker_version']!=saved['docker_version']:raise RuntimeError('Running Docker version differs from checkpoint')
+            if not docker_new_enough(actual['docker_version'],saved['docker_version']):raise RuntimeError('Running Docker is older than the checkpoint')
+            # The store runs with this Docker now: the record names it from here on.
+            checkpoint(config,apply=True)
         except BaseException:
             # A failed adoption must not keep a mismatched daemon running.
             stopped=subprocess.run(['systemctl','stop','docker.service','docker.socket'],capture_output=True,timeout=30,check=False)

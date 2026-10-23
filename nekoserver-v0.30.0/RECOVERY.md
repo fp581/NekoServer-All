@@ -25,7 +25,7 @@ sudo python3 recover.py check
 sudo python3 recover.py checkpoint --apply
 ```
 
-Save the current config.json, host-checkpoint.json, installer bundle and independent backups somewhere accessible outside the OS disk before replacing the OS. Keep the configured media UID/GID and record the matching Docker version. Configuration contains drive identities; application secrets belong in the protected Compose/appdata files and snapshot bundles. Do not put those secrets into ordinary logs.
+Save the current config.json, host-checkpoint.json, installer bundle and independent backups somewhere accessible outside the OS disk before replacing the OS. Keep the configured media UID/GID and note the Docker version (the reinstalled Linux needs that version or newer). Configuration contains drive identities; application secrets belong in the protected Compose/appdata files and snapshot bundles. Do not put those secrets into ordinary logs.
 
 ## Create a matched photo snapshot
 
@@ -75,7 +75,7 @@ Do not substitute the production project name. Automatic destructive cleanup and
 
 ## Replace the OS and reattach the existing store
 
-This path supports x86_64 Arch/Nyarch and Debian/Ubuntu with the same Docker client/daemon version and classic overlay2 store. App data moves between them; host settings (the host backup) belong to the Linux they came from, so restore those only onto the same family. Bazzite/Podman conversion is blocked. A Docker upgrade, UID/GID change, drive replacement or storage-backend migration needs a separate validated plan.
+This path supports x86_64 Arch/Nyarch and Debian/Ubuntu with the classic overlay2 Docker store, and a Docker client/daemon of the version that last ran the apps or newer (an older one is refused: it may not read the store). App data moves between them; host settings (the host backup) belong to the Linux they came from, so restore those only onto the same family. Bazzite/Podman conversion is blocked. A UID/GID change, drive replacement or storage-backend migration needs a separate validated plan.
 
 1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.30.0/config.json`, next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
 2. Install the new OS onto the 256GB OS SSD only. Keep data SSD/HDD contents intact. Recreate the desktop user with the expected UID/GID.
@@ -87,7 +87,7 @@ sudo bash install.sh --config /path/to/my-config.json --module storage --apply
 
 Until step 5 is done, a normal setup run stops at the Docker step and points here: it never takes over the existing app store by itself.
 
-4. Install the matching native Docker client/daemon and Compose plugin through trusted packages. Keep Docker service AND socket stopped. Do not start a fresh default store. If /var/lib/docker already contains data, recovery refuses it for review.
+4. Install the native Docker client/daemon and Compose plugin through trusted packages: the version the host checkpoint names (`docker_version`) or newer, which is what a freshly installed Linux usually has. Keep Docker service AND socket stopped. Do not start a fresh default store. If /var/lib/docker already contains data, recovery refuses it for review.
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
@@ -97,7 +97,7 @@ sudo python3 recover.py reattach
 sudo python3 recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
 ```
 
-The UUID must exactly match storage.data_ssd.uuid. The tool installs the mount/UUID guard before daemon configuration/startup. The existing Docker store's restart policies may start its existing containers. Failed post-start verification stops Docker and its socket. The tool preserves foreign configuration and refuses an automatic ownership/backend/version change.
+The UUID must exactly match storage.data_ssd.uuid. The tool installs the mount/UUID guard before daemon configuration/startup. The existing Docker store's restart policies may start its existing containers. Failed post-start verification stops Docker and its socket. The tool preserves foreign configuration and refuses an automatic ownership or backend change, or an older Docker; after a successful takeover the host checkpoint names the Docker version now running.
 
 6. Rerun the needed deployment profiles from the same release to recreate OS-side timers/networking/TV setup. Complete Tailscale authentication, Samba credentials and Steam login as required. Run media health checks and test application data, uploads/playback, backup jobs and reboot/missing-disk behavior.
 

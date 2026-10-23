@@ -310,7 +310,10 @@ def _execute(args, root=ROOT):
                 modules[name]['object'].refresh(config, log)
             except (OSError, RuntimeError, ValueError) as exc:
                 log(f'{name}: settings not refreshed: {exc}')
-    if args.apply and not failures:
+    if args.apply:
+        # Also after a run with a step still pending (Tailscale not signed in, say), or
+        # earlier releases' files would pile up with every upgrade: only folders no service
+        # or drop-in names any more go.
         tidy_old_releases(config, states, log)
     log(f'Finished: {len(plan) - len(failures) - len(unavailable)} passed; '
         + (f'{len(unavailable)} not available on this system; ' if unavailable else '')
