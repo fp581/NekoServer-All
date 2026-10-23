@@ -92,6 +92,38 @@ class LanChoiceTests(unittest.TestCase):
 
 
 
+class SambaWaitsForItsFoldersTests(unittest.TestCase):
+    """The library and photo archive are made by the media and photos steps: until those
+    have run (Docker failed, say), the shares wait instead of failing. A share folder you
+    named yourself must exist."""
+    def run_with(self, shares, made=()):
+        with tempfile.TemporaryDirectory() as media:
+            for rel in made:
+                (Path(media) / rel).mkdir(parents=True)
+            ctx = SimpleNamespace(config={'media_mount': media, 'gateway': {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'},
+                                          'networking': {'share_mode': 'lan', 'shares': shares},
+                                          'photos': {'deploy_immich': True}}, log=print, apply=True)
+            with mock.patch.object(samba.os, 'geteuid', return_value=0), \
+                    mock.patch.object(samba.host, 'current'), \
+                    mock.patch.object(samba.network_access, 'choose_lan', return_value=True), \
+                    mock.patch.object(samba.network_access, 'verify_lan'), \
+                    mock.patch.object(samba, 'samba_account', return_value='neko'), \
+                    mock.patch.object(samba.pwd, 'getpwnam'), \
+                    mock.patch.object(samba, 'findmnt', return_value=media), \
+                    mock.patch.object(samba.shutil, 'which', return_value=None):
+                return samba.run(ctx)
+
+    def test_default_shares_wait_for_the_steps_that_make_them(self):
+        result = self.run_with({'Media': 'library', 'Photos': 'photos/archive'})
+        self.assertEqual(result['status'], 'needs_setup')
+        self.assertIn('made by the media apps step', result['reason'])
+        self.assertIn('made by the photos (Immich) step', result['reason'])
+
+    def test_a_folder_you_named_must_exist(self):
+        with self.assertRaisesRegex(RuntimeError, 'Share directory missing: .*Scans'):
+            self.run_with({'Media': 'library', 'Scans': 'scans'}, made=['library'])
+
+
 class SambaOwnConfigTests(unittest.TestCase):
     """Your own smb.conf stays yours: setup joins it through an include line you add."""
     def test_an_include_line_in_your_own_file_counts(self):

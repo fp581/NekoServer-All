@@ -978,8 +978,12 @@ class UsbCopyWithoutImmichTests(unittest.TestCase):
 
     def test_with_immich_the_archive_is_still_required_and_copied(self):
         self.config['photos']['deploy_immich'] = True
-        with self.assertRaisesRegex(RuntimeError, 'Archive folder missing'):
-            self.install()
+        # Before the photos step has made the archive, this step waits for it (it is not
+        # installed half-way, and does not fail on the photos step's account).
+        result, written = self.install()
+        self.assertEqual(result['status'], 'needs_setup')
+        self.assertIn('Waiting for the photos (Immich) step', result['reason'])
+        self.assertNotIn('nekoserver-photo-backup.service', written)
         archive = Path(self.config['media_mount']) / 'photos/archive'
         archive.mkdir(parents=True)
         _, written = self.install()

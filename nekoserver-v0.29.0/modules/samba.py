@@ -36,7 +36,9 @@ def wanted_shares(config):
     return shares
 
 MANAGED_HEADER='# Managed by NekoServer'
-SHARE_FILE='/etc/samba/nekoserver.conf'   # NekoServer's own share file, included by smb.conf
+SHARE_FILE='/etc/samba/nekoserver.conf'
+# Default share folders that other setup steps create (relative to the media HDD).
+MADE_BY_SETUP={'library':'media apps','photos/archive':'photos (Immich)'}   # NekoServer's own share file, included by smb.conf
 
 def check_rewrite(current,mode,settings):
     """NekoServer's own share file is rewritten when the settings change (a share added,
@@ -119,9 +121,20 @@ def run(context):
     if findmnt('TARGET',media)!=str(media):raise RuntimeError('Media HDD is not a dedicated mount')
     if mode=='tailnet':
         if not shutil.which('tailscale') or not Path('/sys/class/net/tailscale0').exists():raise RuntimeError('Authenticate Tailscale before tailnet Samba setup')
+    waiting=[]
     for name,rel in settings.get('shares',{}).items():
         path=safe_path(media/validate_share(name,rel))
-        if not path.is_dir() or path.is_symlink():raise RuntimeError(f'Share directory missing or unsafe: {path}')
+        if path.is_symlink():raise RuntimeError(f'Share directory is a link, not a folder: {path}')
+        if not path.is_dir():
+            # The library and photo archive are made by the media and photos steps; when
+            # those could not run yet, the shares wait for them. A folder you named
+            # yourself must exist.
+            if rel in MADE_BY_SETUP:
+                waiting.append(f'{name} ({path}, made by the {MADE_BY_SETUP[rel]} step)')
+                continue
+            raise RuntimeError(f'Share directory missing: {path}. Create it, or take the "{name}" share out of "shares" under "networking" in my-config.json')
+    if waiting:
+        return {'status':'needs_setup','reason':'Shared folders wait for '+', '.join(waiting)+': finish those steps, then run setup again'}
     if not shutil.which('smbd'):
         family.install(['samba'])
     main=safe_path('/etc/samba/smb.conf'); managed=safe_path(SHARE_FILE)
