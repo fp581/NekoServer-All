@@ -1645,6 +1645,19 @@ fn subvolume_of(source: &str) -> &str {
         .filter(|s| *s != "/")
         .unwrap_or("")
 }
+/// What the drive check expected at `path` and what findmnt found there ("UUID FSTYPE
+/// SOURCE", empty when nothing is mounted), so a wrong or missing drive is named.
+fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &str) -> String {
+    let drive = if key == "data_ssd" { "SSD" } else { "HDD" };
+    let found = match found.trim() {
+        "" => "nothing is mounted there".to_string(),
+        seen => format!("found {seen}"),
+    };
+    format!(
+        "Backup storage identity mismatch: {} should be the {drive} (UUID {uuid}, {fstype}); {found}",
+        path.display()
+    )
+}
 pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
     if c["data_mount"].as_str() != data.to_str() || c["media_mount"].as_str() != media.to_str() {
@@ -1661,7 +1674,7 @@ pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
             common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10)?.unwrap_or_default();
         let fields = s.split_whitespace().collect::<Vec<_>>();
         if fields.len() < 3 || fields[..2] != [uuid, fstype] {
-            return Err(Error::new("Backup storage identity mismatch"));
+            return Err(Error::new(&identity_mismatch(key, path, uuid, fstype, &s)));
         }
         // A Btrfs drive used with a subvolume must be mounted with that one: the same
         // filesystem mounted with another holds a different tree.
@@ -2100,6 +2113,25 @@ pub fn weekly(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_drive_mismatch_names_what_was_expected_and_found() {
+        let data = Path::new("/srv/nekoserver");
+        let wrong = identity_mismatch(
+            "data_ssd",
+            data,
+            "aaaa-1111",
+            "ext4",
+            "bbbb-2222 ext4 /dev/sdc1\n",
+        );
+        assert_eq!(
+            wrong,
+            "Backup storage identity mismatch: /srv/nekoserver should be the SSD (UUID aaaa-1111, ext4); \
+             found bbbb-2222 ext4 /dev/sdc1"
+        );
+        let media = Path::new("/mnt/nekoserver-media");
+        assert!(identity_mismatch("media_hdd", media, "cccc", "xfs", "")
+            .ends_with("should be the HDD (UUID cccc, xfs); nothing is mounted there"));
+    }
     #[test]
     fn a_cut_off_backup_says_why() {
         let dir = std::env::temp_dir().join(format!("neko-interrupted-{}", std::process::id()));

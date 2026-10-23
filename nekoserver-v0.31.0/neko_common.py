@@ -139,7 +139,21 @@ def write_units(units):
 MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
 
 
-def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was changed.'):
+MAINTENANCE_UNITS = ('nekoserver-maintenance.service', 'nekoserver-maintenance-resume.service')
+
+
+def maintenance_running(run=subprocess.run):
+    """The monthly update, or the service that finishes a cut-off one, is working right
+    now (both are oneshot services: "activating" while they run)."""
+    try:
+        result = run(['systemctl', 'is-active', *MAINTENANCE_UNITS], capture_output=True, text=True,
+                     timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool({'activating', 'deactivating'} & set(result.stdout.split()))
+
+
+def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was changed.', running=maintenance_running):
     """Why setup must not run yet, or None. An unfinished monthly update must be finished
     (or rolled back) before anything else touches the apps: another version would
     replace the program that can finish it, and even the same version would start the
@@ -152,6 +166,10 @@ def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was change
     except (OSError, ValueError, AttributeError):
         started = None
     which = f'NekoServer v{started}' if isinstance(started, str) and started else 'an earlier NekoServer'
+    if running():
+        return (f'A monthly update started by {which} is running right now (it can take an hour or more). '
+                'Let it finish: sudo systemctl status nekoserver-maintenance.service shows "inactive" once it '
+                f'has. Then run  sudo bash install.sh  again. {outcome}')
     return (f'A monthly update started by {which} did not finish, so some apps may still be stopped. '
             'Let it finish (or roll back) before running setup:\n'
             '  sudo systemctl start nekoserver-maintenance-resume.service\n'
