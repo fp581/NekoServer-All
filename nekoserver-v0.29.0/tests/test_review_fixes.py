@@ -1322,6 +1322,27 @@ class IsolatedRestoreNetworkTests(unittest.TestCase):
                          [{'target': 2283, 'published': '2284', 'host_ip': '127.0.0.1', 'protocol': 'tcp'}])
 
 
+class RestoreTestPortTests(unittest.TestCase):
+    """A restore test is left running for a person to check; a second one on the same port
+    names the first and the exact command that stops it."""
+    def test_an_earlier_restore_test_is_named_with_its_stop_command(self):
+        import recovery_tools
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d) / 'recovery-tests' / 'first'
+            work.mkdir(parents=True)
+            (work / 'restore-report.json').write_text(json.dumps({'project': 'neko-restore-0123456789ab'}))
+            shown = mock.Mock(stdout='neko-restore-0123456789ab\n')
+            message = recovery_tools.port_in_use({'data_mount': d, 'media_mount': '/nonexistent'}, 2284, run=lambda *a, **k: shown)
+        self.assertIn('earlier restore test (neko-restore-0123456789ab)', message)
+        self.assertIn(f'-f {work}/compose.json stop', message)
+        self.assertIn('--port', message)
+
+    def test_another_program_on_the_port_is_said_plainly(self):
+        import recovery_tools
+        message = recovery_tools.port_in_use({'data_mount': '/x', 'media_mount': '/y'}, 2284, run=lambda *a, **k: mock.Mock(stdout=''))
+        self.assertIn('already in use by another program', message)
+
+
 class RestoreTestWaitTests(unittest.TestCase):
     """The isolated restore's HTTP wait is bounded by time (10 minutes), not by a count of
     tries, and ends as soon as the app answers."""
