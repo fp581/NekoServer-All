@@ -81,9 +81,19 @@ pub fn resume_command(a: &Args) -> Result<()> {
     backup::mark_interrupted(&job.data.join("reports/jobs/host.json"))
 }
 fn probe_absent(args: &[&str]) -> Result<()> {
-    let (code, _) = common::command(args, 15)?;
+    let (code, found) = common::command(args, 15)?;
     if code != 1 {
-        return Err(Error::new("Writer active or process probe failed"));
+        // The name of what is running, so the reason can be seen (Debian's samba package
+        // starts winbind, say); pgrep -a would give the command line, pgrep alone the pid.
+        let names = found
+            .split_whitespace()
+            .filter(|w| w.parse::<u32>().is_err())
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Err(Error::new(&format!(
+            "A Samba program this setup does not manage is running ({}): the settings backup only works beside NekoServer's own standalone Samba. Stop and disable it (sudo systemctl disable --now winbind nmbd), then run setup again",
+            if names.is_empty() { args.last().copied().unwrap_or("?") } else { &names }
+        )));
     }
     Ok(())
 }

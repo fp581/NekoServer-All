@@ -2,7 +2,7 @@
   "version": "0.29.0",
   "target": "x86_64-unknown-linux-musl",
   "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
-  "binary_sha256": "e87abacb62965570b8d815961f238f337b733854b08d0f941762c1f4a1904737",
+  "binary_sha256": "135f33630640f3ad59b0d5e65a838b4ff90c45c8e4a00c127917a7c227b69a3b",
   "source_sha256": {
     "Cargo.toml": "8f62d914e08cecf9fd9d213c82fb3aef6763f5cc37e068c5294a1b794957a31b",
     "Cargo.lock": "4eb67f1410eb24247a62bbb602a44344a277811ec5e928469a13dce268ad9eeb",
@@ -15,7 +15,7 @@
     "src/control.rs": "4621578c7cbdbcfb605f64a7bd625343132ea5f6023901b8e657d6603923dddf",
     "src/fans.rs": "6fed9f6f0d7290976ccf75112411384cb14e7861aa017e56c5baa3d4902182dc",
     "src/heartbeat.rs": "1f99dcd81eddf2157eaad3109837361aed37ab1af4b3b0123cdd067ae9096bac",
-    "src/host_snapshot.rs": "1311848d98862ef3de8b29ff1c0707d2a0752585ae87a1dc8eaeba66e79cef38",
+    "src/host_snapshot.rs": "001b0ee4a823dacc3abdd287149baf18c4cbfe28187fad493966844cc96a3b02",
     "src/ledger.rs": "bddec88a375829eba5ed64d886941b90e9bc690ff5ff4165570f7635cdcb689b",
     "src/live.rs": "a5c6a2859f33082f3d02937743be546e88097891e43d4f4bbb708c3aeb372837",
     "src/main.rs": "0c8503a862a25c3e48d21d2df065df57ae37a185f1b73fd8dd63d3a610d1aff7",
