@@ -780,28 +780,48 @@ class UnfinishedMaintenanceTests(unittest.TestCase):
     def test_an_upgrade_waits_for_an_unfinished_monthly_update(self):
         import tempfile
         import neko_common
+        idle = lambda: False     # noqa: E731 (no monthly update running on this machine)
         with tempfile.TemporaryDirectory() as d:
             journal = Path(d) / 'maintenance-resume.json'
-            self.assertIsNone(neko_common.pending_maintenance(journal))  # nothing pending
+            self.assertIsNone(neko_common.pending_maintenance(journal, running=idle))  # nothing pending
             # Even the same version: setup would start the apps before a pending rollback.
             journal.write_text(json.dumps({'format': 'neko-maintenance-resume-v1', 'version': neko_common.VERSION}))
-            self.assertIn('nekoserver-maintenance-resume.service', neko_common.pending_maintenance(journal))
+            self.assertIn('nekoserver-maintenance-resume.service', neko_common.pending_maintenance(journal, running=idle))
             journal.write_text(json.dumps({'format': 'neko-maintenance-resume-v1', 'version': '0.24.4'}))
-            message = neko_common.pending_maintenance(journal)
+            message = neko_common.pending_maintenance(journal, running=idle)
             self.assertIn('NekoServer v0.24.4', message)
             self.assertIn('sudo systemctl start nekoserver-maintenance-resume.service', message)
             journal.write_text('not json')
-            self.assertIn('an earlier NekoServer', neko_common.pending_maintenance(journal))
+            self.assertIn('an earlier NekoServer', neko_common.pending_maintenance(journal, running=idle))
             # The installer stops before taking its lock or running any module.
             journal.write_text(json.dumps({'version': '0.24.4'}))
             args = mock.Mock(apply=True)
             with mock.patch.object(installer.os, 'geteuid', return_value=0), \
                     mock.patch.object(neko_common, 'MAINTENANCE_JOURNAL', journal), \
-                    mock.patch.object(installer, 'pending_maintenance', lambda: neko_common.pending_maintenance(journal)), \
+                    mock.patch.object(installer, 'pending_maintenance', lambda: neko_common.pending_maintenance(journal, running=idle)), \
                     mock.patch.object(installer, '_execute') as run_modules:
                 with self.assertRaisesRegex(installer.InstallerError, 'did not finish'):
                     installer.execute(args)
             run_modules.assert_not_called()
+
+    def test_a_monthly_update_running_right_now_is_called_running_not_cut_off(self):
+        import neko_common
+        with tempfile.TemporaryDirectory() as d:
+            journal = Path(d) / 'maintenance-resume.json'
+            journal.write_text(json.dumps({'version': neko_common.VERSION}))
+            message = neko_common.pending_maintenance(journal, running=lambda: True)
+            self.assertIn('is running right now', message)
+            self.assertNotIn('did not finish', message)
+            self.assertNotIn('maintenance-resume.service', message)   # nothing to start: it is working
+
+    def test_running_means_activating_for_either_monthly_service(self):
+        import neko_common
+        for states, expected in (('activating\ninactive\n', True), ('inactive\nactivating\n', True),
+                                 ('inactive\ninactive\n', False), ('failed\ninactive\n', False)):
+            run = mock.Mock(return_value=mock.Mock(stdout=states))
+            self.assertEqual(neko_common.maintenance_running(run), expected, states)
+        self.assertEqual(run.call_args[0][0], ['systemctl', 'is-active', *neko_common.MAINTENANCE_UNITS])
+        self.assertFalse(neko_common.maintenance_running(mock.Mock(side_effect=OSError)))
 
     def test_setup_rechecks_once_it_holds_the_shared_lock(self):
         """A monthly update that starts (and fails, keeping its journal) while setup waits
