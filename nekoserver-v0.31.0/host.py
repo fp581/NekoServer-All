@@ -249,6 +249,8 @@ class Family:
             return missing
 
     def _install_missing(self, missing, timeout):
+        if {'docker', 'docker-compose'} & set(missing) and snap_docker(self.root):
+            raise RuntimeError(SNAP_DOCKER)
         before = self.prepare(missing) or {}
         if self.journal is not None:
             atomic_write(self.path(self.journal), json.dumps(
@@ -391,6 +393,17 @@ POLICY = '/usr/sbin/policy-rc.d'
 PACKAGE_LOCK = '/run/nekoserver-packages.lock'
 # There while a pacman works (created and deleted by pacman itself, never held open).
 PACMAN_LOCK = '/var/lib/pacman/db.lck'
+# Where snapd mounts installed snaps: Ubuntu's folder, and other systems'.
+SNAP_FOLDERS = ('/snap', '/var/lib/snapd/snap')
+SNAP_DOCKER = ('Docker is installed here as a snap. Its own Docker would run beside the one NekoServer uses '
+               'and could take the apps to its own data folder. NekoServer uses Docker\'s official packages and '
+               'does not mix them: if nothing else uses the snap\'s containers, remove it (sudo snap remove '
+               'docker), then run setup again.')
+
+
+def snap_docker(root='/'):
+    """Docker is installed as a snap (its daemon runs as snap.docker.dockerd)."""
+    return any((Path(root) / folder.lstrip('/') / 'docker').is_dir() for folder in SNAP_FOLDERS)
 # Held while they work: apt's (released if apt-get is stopped) and dpkg's own (held
 # until dpkg itself has finished, also when the apt-get that started it was stopped).
 DPKG_LOCKS = ('/var/lib/dpkg/lock-frontend', '/var/lib/dpkg/lock')
