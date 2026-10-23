@@ -100,7 +100,9 @@ fn resume() -> Result<()> {
 }
 pub fn resume_command(a: &Args) -> Result<()> {
     let job = backup::open_job(a, 64000)?;
-    let _lock = common::lock(Path::new(LOCK))?;
+    // Another resume may be at work (the one run as the cut-off job stopped): wait for
+    // it, within the 20 minutes the resume service is given, rather than fail.
+    let _lock = common::lock_wait(Path::new(LOCK), std::time::Duration::from_secs(15 * 60))?;
     let _recovery_lock = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
     backup::mark_interrupted(&job.data.join("reports/jobs/applications.json"))
