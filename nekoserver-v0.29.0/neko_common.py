@@ -568,10 +568,37 @@ PULL_SECONDS = 4 * 3600
 def compose_up(base, what, log=None, timeout=900):
     """Download the images (any amount of time a slow connection needs; a download cut off
     by Ctrl+C goes on where it stopped next time) and then start the app."""
-    if log:
-        log(f'{what}: downloading its images (this can take a while on a slow connection)')
-    pull_images([*base, 'pull', '--quiet'], what, log)
+    named = services_to_pull(base, what)
+    if named:
+        if log:
+            log(f'{what}: downloading its images (this can take a while on a slow connection)')
+        pull_images([*base, 'pull', '--quiet', *named], what, log)
     return checked_run([*base, 'up', '-d'], timeout, f'{what} (docker compose up)')
+
+
+def services_to_pull(base, what):
+    """The services whose image is named (lscr.io/...:latest, say) and so can be
+    downloaded. After a monthly update, maintenance pins each service to the exact image
+    it tested (sha256:...): such an image cannot be downloaded by its ID ("pull access
+    denied for sha256"), and must already be on this PC, which is checked instead."""
+    shown = checked_run([*base, 'config', '--format', 'json'], 120, f'{what} (docker compose config)')
+    try:
+        services = json.loads(shown.stdout or '{}').get('services') or {}
+    except ValueError:
+        raise RuntimeError(f'{what}: docker compose config gave no readable answer') from None
+    docker = list(base[:base.index('compose')]) if 'compose' in base else ['docker']
+    named = []
+    for name, service in sorted(services.items()):
+        image = str(service.get('image') or '')
+        if image.startswith('sha256:'):
+            present = subprocess.run([*docker, 'image', 'inspect', image], capture_output=True, text=True, timeout=60, check=False)
+            if present.returncode:
+                raise RuntimeError(f'{what}: the image the monthly update pinned for {name} ({image[:19]}...) is not on this PC '
+                                   'any more. Run the monthly update again (sudo systemctl start nekoserver-maintenance.service), '
+                                   'or take the pin out of maintenance-images.json next to its compose.yaml')
+        else:
+            named.append(name)
+    return named
 
 
 # A registry that is limiting requests ("toomanyrequests"), or a connection that drops

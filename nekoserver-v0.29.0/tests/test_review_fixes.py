@@ -523,12 +523,31 @@ class AccountSetupReasonTests(unittest.TestCase):
 
 class ImageDownloadTests(unittest.TestCase):
     """Images are downloaded before an app is started, with hours for a slow connection."""
-    def test_pull_comes_first_with_a_long_limit(self):
+    def compose(self, config, image_present=True):
+        """compose_up against a fake docker: records the pull and up calls."""
         calls = []
-        with mock.patch.object(neko_common, 'checked_run', side_effect=lambda argv, timeout, what: calls.append((argv[-2:], timeout, what))):
+
+        def run(argv, timeout, what):
+            if argv[-3:] == ['config', '--format', 'json']:
+                return mock.Mock(stdout=json.dumps(config))
+            calls.append((argv[argv.index('compose') + 5:] if 'compose' in argv else argv, timeout, what))
+            return mock.Mock(stdout='')
+        with mock.patch.object(neko_common, 'checked_run', side_effect=run),                 mock.patch.object(neko_common.subprocess, 'run', return_value=mock.Mock(returncode=0 if image_present else 1)):
             neko_common.compose_up(['docker', 'compose', '-p', 'neko-immich', '-f', 'c.yaml'], 'Immich', timeout=1200)
-        self.assertEqual(calls, [(['pull', '--quiet'], 4 * 3600, 'Immich (docker compose pull)'),
+        return calls
+
+    def test_pull_comes_first_with_a_long_limit(self):
+        calls = self.compose({'services': {'server': {'image': 'ghcr.io/immich-app/immich-server:v3'}, 'redis': {'image': 'valkey:8'}}})
+        self.assertEqual(calls, [(['pull', '--quiet', 'redis', 'server'], 4 * 3600, 'Immich (docker compose pull)'),
                                  (['up', '-d'], 1200, 'Immich (docker compose up)')])
+
+    def test_images_pinned_by_the_monthly_update_are_not_pulled(self):
+        pinned = {'services': {'server': {'image': 'sha256:' + 'a' * 64}, 'redis': {'image': 'sha256:' + 'b' * 64}}}
+        self.assertEqual(self.compose(pinned), [(['up', '-d'], 1200, 'Immich (docker compose up)')])
+        mixed = {'services': {'server': {'image': 'sha256:' + 'a' * 64}, 'redis': {'image': 'valkey:8'}}}
+        self.assertEqual(self.compose(mixed)[0][0], ['pull', '--quiet', 'redis'])
+        with self.assertRaisesRegex(RuntimeError, 'pinned for redis .* is not on this PC'):
+            self.compose(pinned, image_present=False)
 
     def test_a_busy_registry_is_tried_again_after_a_wait(self):
         answers = iter([RuntimeError('x (docker compose pull) failed: Error response from daemon: toomanyrequests: '
