@@ -124,7 +124,7 @@ def install_units(config,cmd,photos,day,when):
             raise RuntimeError(f'Unmanaged systemd unit preserved: {path}')
     atomic_write(unit,service,0o644);atomic_write(timer,schedule,0o644)
     subprocess.run(['systemctl','daemon-reload'],check=True)
-    subprocess.run(['systemctl','enable','--now',timer.name],check=True)
+    subprocess.run(['systemctl','enable','--now',timer.name],check=True,capture_output=True,text=True)   # (see photo_preservation)
 
 def run(ctx):
     opts=ctx.config.setdefault('photos',{})

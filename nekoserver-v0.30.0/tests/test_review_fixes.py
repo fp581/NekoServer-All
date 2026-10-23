@@ -1420,6 +1420,54 @@ class GatewayStateOwnerTests(unittest.TestCase):
         chown.assert_not_called()
 
 
+class NextcloudFirstInstallTests(unittest.TestCase):
+    """Nextcloud's image installs it on its first start only; when its database was out of
+    reach then, setup finishes the install instead of leaving it "not installed" for good."""
+    BASE = ['docker', 'compose', '-p', 'neko-nextcloud']
+
+    def fake(self, installed, logs):
+        calls = []
+        state = {'installed': installed}
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            if argv[-3:] == ['occ', 'status', '--output=json']:
+                return mock.Mock(returncode=0, stdout='{"installed":' + ('true' if state['installed'] else 'false') + '}')
+            if 'logs' in argv:
+                return mock.Mock(returncode=0, stdout=logs)
+            return mock.Mock(returncode=0, stdout='')
+        return run, calls, state
+
+    def test_an_installed_nextcloud_is_left_alone(self):
+        from modules import nextcloud
+        run, calls, _ = self.fake(True, '')
+        with mock.patch.object(nextcloud, 'checked_run') as checked:
+            self.assertFalse(nextcloud.finish_install(self.BASE, lambda m: None, run=run))
+        checked.assert_not_called()
+
+    def test_a_given_up_first_install_is_finished_with_the_images_own_settings(self):
+        from modules import nextcloud
+        run, calls, state = self.fake(False, 'Retrying install...\nInstalling of nextcloud failed!\n')
+        logged = []
+        with mock.patch.object(nextcloud, 'checked_run', side_effect=lambda argv, *a: state.update(installed=True)) as checked:
+            self.assertTrue(nextcloud.finish_install(self.BASE, logged.append, run=run, sleep=lambda s: None))
+        argv = checked.call_args[0][0]
+        self.assertEqual(argv[:9], self.BASE + ['exec', '-T', '-u', 'www-data', 'nextcloud'])
+        self.assertIn('maintenance:install', argv[-1])
+        self.assertIn('"$NEXTCLOUD_ADMIN_PASSWORD"', argv[-1])   # from the container, never on our command line
+        self.assertIn('trusted_domains', argv[-1])
+        self.assertIn('finishing it now', logged[0])
+
+    def test_an_install_still_running_is_waited_for_then_named(self):
+        from modules import nextcloud
+        clock = iter(range(0, 10000, 100))
+        run, _, _ = self.fake(False, 'Initializing nextcloud 33.0.10.1 ...\n')   # the image is still installing
+        with mock.patch.object(nextcloud, 'checked_run') as checked, \
+                self.assertRaisesRegex(RuntimeError, 'did not finish installing within 15 minutes.*docker logs'):
+            nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None, now=lambda: next(clock))
+        checked.assert_not_called()
+
+
 class NextcloudUpgradeTests(unittest.TestCase):
     """A new release may change how Nextcloud's containers are run; with the same settings
     in my-config.json that is applied, not taken for a changed setting."""

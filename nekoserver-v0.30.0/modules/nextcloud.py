@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import re
 import secrets
+import subprocess
+import time
 
 from neko_common import atomic_json, atomic_write, checked_run, compose_up, ensure_directory, fetch, safe_path, verify_storage, compose_image_override
 from recovery_tools import lock
@@ -125,6 +127,56 @@ def command(args):
     checked_run(args, 1800, 'Nextcloud (docker compose)')
 
 
+# What the image itself runs on its first start (entrypoint.sh), with the settings it is
+# given in its environment, so no password is on a command line.
+INSTALL = ('php occ maintenance:install -n --admin-user "$NEXTCLOUD_ADMIN_USER" --admin-pass "$NEXTCLOUD_ADMIN_PASSWORD" '
+           '--database pgsql --database-name "$POSTGRES_DB" --database-user "$POSTGRES_USER" '
+           '--database-pass "$POSTGRES_PASSWORD" --database-host "$POSTGRES_HOST" && i=0 && '
+           'for domain in $NEXTCLOUD_TRUSTED_DOMAINS; do '
+           'php occ config:system:set trusted_domains "$i" --value="$domain" || exit 1; i=$((i+1)); done')
+
+
+def status(base, run=subprocess.run):
+    """Nextcloud's own `occ status`, or None while it can't answer (still starting)."""
+    result = run(base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'status', '--output=json'],
+                 capture_output=True, text=True, timeout=120, check=False)
+    text = result.stdout or ''
+    try:
+        return json.loads(text[text.index('{'):]) if result.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def finish_install(base, log, run=subprocess.run, wait=900, sleep=time.sleep, now=time.monotonic):
+    """The image installs Nextcloud on its first start only, retrying for about two
+    minutes; when the database was out of reach that long, every later start skips the
+    install and Nextcloud stays "not installed" for good (the accounts step then sees a
+    login that can't match). Once the image's own attempt is over, it is finished here."""
+    deadline = now() + wait
+    while True:
+        found = status(base, run)
+        if found and found.get('installed'):
+            return False
+        logs = run(base + ['logs', '--no-color', '--tail', '300', 'nextcloud'],
+                   capture_output=True, text=True, timeout=60, check=False).stdout or ''
+        # Apache serving without an install means the image's attempt is over (given up,
+        # then restarted); "failed!" is its own last word when it gives up.
+        if found is not None and ('resuming normal operations' in logs or 'Installing of nextcloud failed' in logs):
+            break
+        if now() > deadline:
+            raise RuntimeError('Nextcloud did not finish installing within ' + str(wait // 60) + ' minutes; its log is  '
+                               'sudo docker logs neko-nextcloud-nextcloud-1')
+        sleep(10)
+    log('Nextcloud: its first-start install did not finish (its database was out of reach then); finishing it now')
+    checked_run(base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'sh', '-c', INSTALL], 1800,
+                'Nextcloud (finishing its install)')
+    found = status(base, run)
+    if not (found and found.get('installed')):
+        raise RuntimeError('Nextcloud still reports "not installed" after finishing its install; its log is  '
+                           'sudo docker logs neko-nextcloud-nextcloud-1')
+    return True
+
+
 # Written by monthly maintenance while an update is in progress; a resumed update or
 # rollback starts the apps it covers again.
 MAINTENANCE_JOURNAL = neko_common.MAINTENANCE_JOURNAL
@@ -230,6 +282,7 @@ def run(ctx):
         base += compose_image_override(manifest)
         command(base+['config', '-q'])
         compose_up(base, 'Nextcloud', ctx.log, 1800)
+        finish_install(base, ctx.log)
         if opts.get('image', 'auto') == 'auto':
             config['nextcloud']['image'] = image
             ctx.persist_config()
