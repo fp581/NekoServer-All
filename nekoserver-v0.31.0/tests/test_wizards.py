@@ -65,7 +65,9 @@ class WizardFlowTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        # A release folder of its own: the folders beside it are this test's too.
+        self.root = Path(self.tmp.name) / 'nekoserver-v0.31.0'
+        self.root.mkdir()
         shutil.copy(ROOT / 'config.json', self.root / 'config.json')
         geteuid = mock.patch('os.geteuid', return_value=0)
         geteuid.start()
@@ -111,6 +113,76 @@ class WizardFlowTests(unittest.TestCase):
         with mock.patch('os.geteuid', return_value=1000):
             self.assertEqual(wizard.run(mock.Mock(), self.root, prompt=answers(), output=lambda s: None,
                                         root=self.root), 2)
+
+    def saved(self, path, uuid):
+        settings = json.loads((ROOT / 'config.json').read_text())
+        settings['storage']['data_ssd']['uuid'] = uuid
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings))
+
+    def setup_until_ready(self, *replies):
+        """The wizard run up to "Ready to start?", answered no; the questions it asked."""
+        asked, it = [], iter(replies + ('no',))
+        out = []
+
+        def prompt(question=''):
+            asked.append(question)
+            return next(it)
+        execute = mock.Mock()
+        self.assertEqual(wizard.run(execute, self.root / 'state', prompt=prompt, output=out.append,
+                                    root=self.root), 0)
+        execute.assert_not_called()
+        return asked, out
+
+    def settings_uuid(self):
+        return json.loads((self.root / 'my-config.json').read_text())['storage']['data_ssd']['uuid']
+
+    def test_an_update_takes_the_settings_left_in_the_earlier_release_folder(self):
+        # git pull moved the release into a new folder; my-config.json stayed in the old one.
+        self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')
+        self.saved(self.root.parent / 'nekoserver-v0.29.0/my-config.json', 'older')
+        self.saved(self.root / 'ssd/installer/releases/v0.30.0/config.json', 'ssd')
+        asked, out = self.setup_until_ready('yes')
+        self.assertIn('Use them for this release', asked[0])
+        self.assertTrue(any(str(self.root.parent / 'nekoserver-v0.30.0/my-config.json') in line for line in out))
+        self.assertEqual(self.settings_uuid(), 'kept')
+        self.assertEqual((self.root / 'my-config.json').stat().st_mode & 0o777, 0o600)
+
+    def test_the_copy_on_the_ssd_is_offered_when_no_folder_has_one(self):
+        self.saved(self.root / 'ssd/installer/releases/v0.30.0/config.json', 'ssd')
+        self.saved(self.root / 'ssd/installer/releases/v0.29.0/config.json', 'older')
+        self.saved(self.root / 'ssd/installer/releases/v0.31.0.old/config.json', 'set aside')
+        (self.root.parent / 'nekoserver-v0.30.0').mkdir()     # left without settings
+        self.setup_until_ready('yes')
+        self.assertEqual(self.settings_uuid(), 'ssd')
+
+    def test_saying_no_starts_from_the_template(self):
+        self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')
+        asked, out = self.setup_until_ready('no')
+        self.assertTrue(any('asks for the drives and passwords again' in line for line in out))
+        self.assertEqual(self.settings_uuid(), '')
+
+    def test_settings_already_here_are_used_without_asking(self):
+        self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'old folder')
+        self.saved(self.root / 'my-config.json', 'here')
+        asked, _ = self.setup_until_ready()
+        self.assertEqual(len(asked), 1)                      # only "Ready to start?"
+        self.assertEqual(self.settings_uuid(), 'here')
+
+    def test_a_first_install_asks_nothing_more(self):
+        (self.root.parent / 'notes').mkdir()
+        asked, _ = self.setup_until_ready()
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(self.settings_uuid(), '')
+
+    def test_recovery_reads_the_earlier_settings_too(self):
+        import recovery_wizard
+        self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')
+        out = []
+        with mock.patch.object(recovery_wizard, 'ROOT', self.root):
+            config = recovery_wizard.settings(output=out.append)
+        self.assertEqual(config['storage']['data_ssd']['uuid'], 'kept')
+        self.assertIn('nekoserver-v0.30.0', out[0])
 
 
 class FirstCheckupTests(unittest.TestCase):

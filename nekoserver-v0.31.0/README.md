@@ -90,6 +90,16 @@ Whenever it needs you, it shows numbered instructions, opens the right page, and
 
 Your settings are saved in `my-config.json` next to the installer. The wizard creates it the first time, with your timezone and user filled in, so you don't need to edit it. See [Optional settings](#optional-settings).
 
+**Updating to a newer release.** In the `NekoServer-All` folder:
+
+```bash
+git pull
+cd nekoserver-v<the new version>
+sudo bash install.sh
+```
+
+Each release has a folder named for its version, and your `my-config.json` stays in the earlier one (git does not keep it). Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in, updates what changed and keeps everything else. Read the new version's *Upgrade notes* in [CHANGELOG.md](../CHANGELOG.md) first.
+
 ---
 
 ## Using your server

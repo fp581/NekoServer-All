@@ -841,9 +841,18 @@ def review_old_usb(config, prompt, output):
         output(f'Removed {len(runs)} old snapshots from the USB drive.')
 
 
-def settings(config_path=None):
-    """The chosen settings file (--config), else my-config.json, else config.json here."""
-    candidates = [settings_path(config_path)] if config_path else [ROOT / 'my-config.json', ROOT / 'config.json']
+def settings(config_path=None, output=None):
+    """The chosen settings file (--config), else my-config.json, else the settings of the
+    server set up here (a release folder fresh from git pull has none), else config.json."""
+    candidates = [settings_path(config_path)] if config_path else [ROOT / 'my-config.json']
+    if not config_path and not candidates[0].is_file():
+        import wizard
+        earlier = wizard.earlier_settings(ROOT)
+        if earlier is not None:
+            if output:
+                output('Using the settings of the server set up here: ' + str(earlier))
+            candidates.append(earlier)
+        candidates.append(ROOT / 'config.json')
     for path in candidates:
         if path.is_file():
             return json.loads(path.read_text())
@@ -854,7 +863,7 @@ def run(prompt=input, output=print, config_path=None):
     if os.geteuid() != 0:
         output('Run it with sudo:  sudo bash install.sh --recover')
         return 2
-    config = settings(config_path)
+    config = settings(config_path, output)
     say(output, '\nNekoServer recovery',
         'Everything is restored into a NEW folder. Nothing you have now is changed.')
     handlers = {

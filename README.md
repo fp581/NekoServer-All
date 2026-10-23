@@ -26,6 +26,8 @@ cd NekoServer-All/nekoserver-v0.31.0
 
 Then follow the step-by-step guide: **[nekoserver-v0.31.0/README.md](nekoserver-v0.31.0/README.md)**.
 
+Already running NekoServer? Run `git pull`, then `sudo bash install.sh` in the new version's folder: setup offers the settings left in the earlier one ([Updating to a newer release](nekoserver-v0.31.0/README.md#install)).
+
 ## More
 
 - What changed in each version: [CHANGELOG.md](CHANGELOG.md)

@@ -35,8 +35,9 @@ SELINUX_ENFORCING = ('SELinux is enforcing, and NekoServer has not been tested w
 def firewall_hint(firewalls):
     """How to let the home network reach the shared folders and the home addresses."""
     if 'firewalld' in firewalls:
-        example = ('sudo firewall-cmd --permanent --add-service=samba --add-port=8442-8447/tcp '
-                   '--add-port=8450-8499/tcp && sudo firewall-cmd --reload')
+        # One call cannot add a service and ports both: firewall-cmd refuses the pair.
+        example = ('sudo firewall-cmd --permanent --add-service=samba && sudo firewall-cmd --permanent '
+                   '--add-port=8442-8447/tcp --add-port=8450-8499/tcp && sudo firewall-cmd --reload')
     else:
         example = ('sudo ufw allow from 192.168.1.0/24 to any port 445,8442:8447,8450:8499 proto tcp  '
                    '(your network instead of 192.168.1.0/24)')

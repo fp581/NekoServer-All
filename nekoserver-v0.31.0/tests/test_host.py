@@ -1022,8 +1022,12 @@ class CapabilitiesTest(unittest.TestCase):
             self.assertEqual(capabilities.missing(rows), [])
         # Fedora's firewalld gets its own command.
         hint = capabilities.firewall_hint(['firewalld'])
-        self.assertIn('sudo firewall-cmd --permanent --add-service=samba --add-port=8442-8447/tcp', hint)
+        self.assertIn('sudo firewall-cmd --permanent --add-service=samba && sudo firewall-cmd --permanent '
+                      '--add-port=8442-8447/tcp --add-port=8450-8499/tcp && sudo firewall-cmd --reload', hint)
         self.assertNotIn('ufw', hint)
+        # firewall-cmd refuses --add-service and --add-port in one call (tried on Fedora 44).
+        for call in hint.split('&&'):
+            self.assertFalse('--add-service' in call and '--add-port' in call, call)
 
     def test_fixed_requirements_stop_setup(self):
         with tempfile.TemporaryDirectory() as tmp:
