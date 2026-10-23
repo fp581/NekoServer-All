@@ -165,10 +165,11 @@ RELEASES = (
     ('fedora', 'NAME="Fedora Linux"\nVERSION="44 (Workstation Edition)"\nID=fedora\nVERSION_ID=44\nVARIANT_ID=workstation\n'),
     ('fedora', 'NAME="Fedora Linux"\nVERSION="43 (Server Edition)"\nID=fedora\nVERSION_ID=43\nVARIANT_ID=server\n'),
     ('fedora', 'NAME="Fedora Linux"\nVERSION="42 (KDE Plasma Desktop Edition)"\nID=fedora\nVERSION_ID=42\nVARIANT_ID=kde\n'),
-    (None, 'NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\nVERSION_ID="10.0"\n'),
-    (None, 'NAME="AlmaLinux"\nID="almalinux"\nID_LIKE="rhel centos fedora"\nVERSION_ID="10.0"\n'),
-    (None, 'NAME="Red Hat Enterprise Linux"\nID="rhel"\nID_LIKE="fedora"\nVERSION_ID="10.0"\n'),
-    (None, 'NAME="CentOS Stream"\nID="centos"\nID_LIKE="rhel fedora"\nVERSION_ID="10"\n'),
+    ('rhel', 'NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\nVERSION_ID="10.0"\n'),
+    ('rhel', 'NAME="AlmaLinux"\nID="almalinux"\nID_LIKE="rhel centos fedora"\nVERSION_ID="10.2"\n'),
+    ('rhel', 'NAME="Red Hat Enterprise Linux"\nID="rhel"\nID_LIKE="fedora"\nVERSION_ID="10.0"\n'),
+    ('rhel', 'NAME="CentOS Stream"\nID="centos"\nID_LIKE="rhel fedora"\nVERSION_ID="10"\n'),
+    (None, 'NAME="Oracle Linux Server"\nID="ol"\nID_LIKE="fedora"\nVERSION_ID="10.0"\n'),
     (None, 'NAME="openSUSE Tumbleweed"\nID="opensuse-tumbleweed"\nID_LIKE="opensuse suse"\n'),
     (None, 'NAME="Alpine Linux"\nID=alpine\nVERSION_ID=3.22.1\n'),
     (None, 'NAME=NixOS\nID=nixos\nVERSION_ID="25.05"\n'),
@@ -218,6 +219,7 @@ class InstallScriptTests(unittest.TestCase):
         text = re.sub(r'(?m)^        python3 "\$ROOT/host.py" repair$', '        echo REPAIR >> "$LOG"', text)
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
         text = text.replace('system_path=/var/cache/libdnf5', 'system_path=' + str(system_path))
+        text = text.replace('system_path=/var/cache/dnf\n', 'system_path=' + str(system_path) + '\n')
         # No unfinished monthly update, whatever this test machine is running right now.
         text = text.replace('/etc/nekoserver-backups/maintenance-resume.json', str(self.root / 'maintenance-resume.json'))
         # The certificate bundle as present, whatever this test machine has.
@@ -346,6 +348,15 @@ class InstallScriptTests(unittest.TestCase):
         self.assertLess(log.index('DNF -q makecache'), log.index('BOOTSTRAP'))
         self.assertLess(log.index('BOOTSTRAP'), log.index('START --wizard'))
 
+    def test_version_9_of_the_rhel_family_stops_before_dnf_runs(self):
+        # Its Python is 3.9: NekoServer needs 3.11, which version 10 brings.
+        self.use_fedora('NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\nVERSION_ID="9.6"\n'
+                        'PRETTY_NAME="Rocky Linux 9.6 (Blue Onyx)"\n')
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('needs version 10 or newer of Rocky Linux; this is Rocky Linux 9.6 (Blue Onyx)', result.stderr)
+        self.assertEqual(log, '')
+
     def test_too_old_a_fedora_stops_before_dnf_runs(self):
         self.use_fedora('ID=fedora\nVERSION_ID=41\nPRETTY_NAME="Fedora Linux 41 (Server Edition)"\n')
         result, log = self.run_script(self.root)
@@ -411,7 +422,7 @@ class InstallScriptTests(unittest.TestCase):
             path = self.root / 'bin' / name
             path.write_text('#!/bin/sh\necho "' + name.upper() + ' $*" >> "$LOG"\nexit 0\n')
             path.chmod(0o755)
-        managers = {'arch': 'PACMAN', 'debian': 'APT-GET', 'fedora': 'DNF'}
+        managers = {'arch': 'PACMAN', 'debian': 'APT-GET', 'fedora': 'DNF', 'rhel': 'DNF'}
         release = self.root / 'etc/os-release'
         for expected, text in RELEASES:
             with self.subTest(release=text.splitlines()[0]):

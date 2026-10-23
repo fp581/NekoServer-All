@@ -951,16 +951,21 @@ class Fedora(PackageLock, Family):
                 continue
         return found
 
+    def release_number(self):
+        """The release as the makers' repositories name it (Fedora: its version)."""
+        return self.release.get('VERSION_ID', '')
+
     def check_release(self, repository):
-        """The maker packages this Fedora release (a new one can take them a while)."""
-        release = self.release.get('VERSION_ID', '')
+        """The maker packages this release (a new one can take them a while)."""
+        release = self.release_number()
+        system = self.release.get('NAME') or self.label
         url = repository.release_url.format(release=release)
         try:
             self.fetch(url)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                raise RuntimeError(f'{repository.maker} does not offer packages for Fedora {release} yet ({url} '
-                                   f'was not found). Wait for {repository.maker} to add it, or use a Fedora release '
+                raise RuntimeError(f'{repository.maker} does not offer packages for {system} {release} yet ({url} '
+                                   f'was not found). Wait for {repository.maker} to add it, or use a release '
                                    'it supports, then run setup again') from None
             raise RuntimeError(f'Checking the {repository.maker} repository failed (HTTP {exc.code} from {url}); '
                                'try again later') from None
@@ -991,7 +996,7 @@ class Fedora(PackageLock, Family):
         if {'docker', 'docker-compose'} & set(missing):
             found = [name for name in self.conflicts if self.has(name)]
             if found:
-                raise RuntimeError('This system has Fedora\'s own container packages installed (' + ', '.join(found)
+                raise RuntimeError('This system has its own container packages installed (' + ', '.join(found)
                                    + '). NekoServer uses Docker\'s official packages and does not mix or replace '
                                    'them. Remove them yourself if nothing else uses them (sudo dnf remove '
                                    + ' '.join(found) + '), then run setup again.')
@@ -1035,7 +1040,72 @@ class Fedora(PackageLock, Family):
         return not any(line.split()[-1:] == [absolute] for line in check.stdout.splitlines())
 
 
-FAMILIES = (Arch, Debian, Fedora)
+class Rhel(Fedora):
+    """RHEL and its rebuilds (Rocky Linux, AlmaLinux, CentOS Stream), version 10 and newer:
+    Fedora's way of working with dnf, other makers' repositories for Docker and
+    Tailscale, and EPEL (Fedora's extra packages for them) for Caddy and qrencode."""
+    name = 'rhel'
+    label = 'RHEL / Rocky Linux / AlmaLinux'
+    ids = ('rhel', 'rocky', 'almalinux', 'centos')
+    like = ('rhel',)
+    # Docker's own instructions for RHEL remove runc (RHEL's or EPEL's) and podman-docker:
+    # they clash with Docker's containerd.io and its docker command.
+    conflicts = ('moby-engine', 'podman-docker', 'containerd', 'runc')
+    epel = frozenset({'caddy', 'qrencode'})
+    EPEL_ADDRESS = 'repo=epel-'      # in every EPEL repository definition (its metalink)
+
+    def __init__(self, run=subprocess.run, release=None, fetch=_fetch):
+        super().__init__(run, release, fetch)
+        # Docker packages RHEL itself under rhel/ and its rebuilds under centos/; Tailscale
+        # packages them all under rhel/<major version>.
+        docker = 'rhel' if self.release.get('ID') == 'rhel' else 'centos'
+        major = self.release_number()
+        docker_rpm = RpmRepository(
+            'docker-ce', 'Docker', f'https://download.docker.com/linux/{docker}/',
+            '[docker-ce-stable]\nname=Docker CE Stable - $basearch\n'
+            f'baseurl=https://download.docker.com/linux/{docker}/$releasever/$basearch/stable\n'
+            f'enabled=1\ngpgcheck=1\ngpgkey=https://download.docker.com/linux/{docker}/gpg\n',
+            release_url=f'https://download.docker.com/linux/{docker}/{{release}}/x86_64/stable/repodata/repomd.xml')
+        tailscale_rpm = RpmRepository(
+            'tailscale', 'Tailscale', f'https://pkgs.tailscale.com/stable/rhel/{major}/',
+            f'[tailscale-stable]\nname=Tailscale stable\nbaseurl=https://pkgs.tailscale.com/stable/rhel/{major}/$basearch\n'
+            f'enabled=1\ntype=rpm\nrepo_gpgcheck=1\ngpgcheck=1\ngpgkey=https://pkgs.tailscale.com/stable/rhel/{major}/repo.gpg\n',
+            release_url='https://pkgs.tailscale.com/stable/rhel/{release}/x86_64/repodata/repomd.xml')
+        self.repositories = MappingProxyType({'docker': docker_rpm, 'docker-compose': docker_rpm,
+                                              'tailscale': tailscale_rpm})
+
+    def release_number(self):
+        # "10.2" is release 10 to Docker and Tailscale (dnf's $releasever is "10" too).
+        return self.release.get('VERSION_ID', '').split('.')[0]
+
+    def epel_ready(self):
+        return self.has('epel-release') or bool(self.repo_files(self.EPEL_ADDRESS))
+
+    def add_epel(self):
+        """EPEL's release package: from the system's own repositories on Rocky, AlmaLinux
+        and CentOS Stream, from EPEL's site on RHEL itself. dnf then checks EPEL's packages
+        with EPEL's key, which that package brings."""
+        if self.epel_ready():
+            return False
+        source = ('https://dl.fedoraproject.org/pub/epel/epel-release-latest-' + self.release_number()
+                  + '.noarch.rpm') if self.release.get('ID') == 'rhel' else 'epel-release'
+        result = self._call(['dnf', 'install', '-y', source], 900)
+        if result.returncode:
+            raise RuntimeError('Adding EPEL, where Caddy and qrencode come from, failed: ' + _reason(result))
+        return True
+
+    def available(self, wanted):
+        if self.ready() and set(self.names(wanted)) & self.epel:
+            self.add_epel()
+        return super().available(wanted)
+
+    def prepare(self, missing):
+        if self.epel & {real for name in missing for real in self.names(name)}:
+            self.add_epel()
+        return super().prepare(missing)
+
+
+FAMILIES = (Arch, Debian, Fedora, Rhel)
 
 
 def detect(path=OS_RELEASE):

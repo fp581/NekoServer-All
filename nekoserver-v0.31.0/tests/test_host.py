@@ -1236,12 +1236,16 @@ class FedoraTest(unittest.TestCase):
         family.root = self.root
         return family
 
-    def test_fedora_is_recognised_and_rhel_rebuilds_are_not_yet(self):
+    def test_fedora_and_the_rhel_family_are_told_apart(self):
         with tempfile.TemporaryDirectory() as tmp:
             for text in ('ID=fedora\n', 'ID=fedora\nVARIANT_ID=server\n'):
                 self.assertIs(host.detect(release(tmp, text)), host.Fedora, text)
-            for text in ('ID=rocky\nID_LIKE="rhel centos fedora"\n', 'ID=almalinux\nID_LIKE="rhel centos fedora"\n'):
-                self.assertIsNone(host.detect(release(tmp, text)), text)
+            # RHEL's rebuilds name fedora too, but have other repositories.
+            for text in ('ID=rocky\nID_LIKE="rhel centos fedora"\n', 'ID=almalinux\nID_LIKE="rhel centos fedora"\n',
+                         'ID="rhel"\nID_LIKE="fedora"\n', 'ID="centos"\nID_LIKE="rhel fedora"\n'):
+                self.assertIs(host.detect(release(tmp, text)), host.Rhel, text)
+            # Oracle Linux names only fedora, and has its own repositories: not covered.
+            self.assertIsNone(host.detect(release(tmp, 'ID="ol"\nID_LIKE="fedora"\n')))
         self.assertEqual(host.Fedora.service('samba'), 'smb.service')
 
     def test_installs_only_what_is_missing_and_leaves_new_services_off(self):
@@ -1288,7 +1292,7 @@ class FedoraTest(unittest.TestCase):
 
     def test_fedoras_own_docker_is_never_mixed_in(self):
         dnf = FakeDnf(installed={'moby-engine'})
-        with self.assertRaisesRegex(RuntimeError, 'Fedora\'s own container packages.*moby-engine.*sudo dnf remove moby-engine'):
+        with self.assertRaisesRegex(RuntimeError, 'its own container packages.*moby-engine.*sudo dnf remove moby-engine'):
             self.family(dnf).install(['docker'])
         self.assertFalse(any(argv[:2] == ['dnf', 'install'] for argv in dnf.calls))
 
@@ -1305,6 +1309,95 @@ class FedoraTest(unittest.TestCase):
         self.assertTrue(self.family(dnf).packaged_example('/etc/samba/smb.conf'))
         dnf.owners = {}
         self.assertFalse(self.family(dnf).packaged_example('/etc/samba/smb.conf'))
+
+
+class RhelTest(unittest.TestCase):
+    """RHEL and its rebuilds: Fedora's adapter with other makers' repositories and EPEL.
+    The release values are AlmaLinux 10.2's and RHEL 10's own."""
+    ALMA = {'ID': 'almalinux', 'ID_LIKE': 'rhel centos fedora', 'VERSION_ID': '10.2', 'NAME': 'AlmaLinux'}
+    RHEL = {'ID': 'rhel', 'ID_LIKE': 'fedora', 'VERSION_ID': '10.0', 'NAME': 'Red Hat Enterprise Linux'}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for path in ('etc/yum.repos.d', 'etc/samba', 'run'):
+            (self.root / path).mkdir(parents=True)
+        patcher = mock.patch('host.shutil.which', return_value='/usr/bin/dnf')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.fetched = []
+
+    def family(self, dnf=None, release=None, fetch=None):
+        dnf = dnf or FakeDnf()
+        dnf.root = self.root
+        family = host.Rhel(dnf, release or self.ALMA,
+                           fetch=fetch or (lambda url: self.fetched.append(url) or b'<repomd/>'))
+        family.root = self.root
+        return family
+
+    def repo(self, name):
+        return (self.root / f'etc/yum.repos.d/nekoserver-{name}.repo').read_text()
+
+    def installs(self, dnf):
+        return [argv[3:] for argv in dnf.calls if argv[:2] == ['dnf', 'install']]
+
+    def test_a_rebuild_gets_dockers_centos_packages_and_tailscales_for_its_major_release(self):
+        dnf = FakeDnf()
+        self.family(dnf).install(['docker', 'docker-compose', 'tailscale'])
+        self.assertIn('baseurl=https://download.docker.com/linux/centos/$releasever/$basearch/stable', self.repo('docker-ce'))
+        self.assertIn('baseurl=https://pkgs.tailscale.com/stable/rhel/10/$basearch', self.repo('tailscale'))
+        # "10.2" is release 10 to both makers.
+        self.assertEqual(self.fetched, ['https://download.docker.com/linux/centos/10/x86_64/stable/repodata/repomd.xml',
+                                        'https://pkgs.tailscale.com/stable/rhel/10/x86_64/repodata/repomd.xml'])
+        self.assertEqual(dnf.enabled(), [])      # nothing starts before its drive is ready
+
+    def test_rhel_itself_gets_dockers_rhel_packages(self):
+        self.family(release=self.RHEL).install(['docker'])
+        self.assertIn('baseurl=https://download.docker.com/linux/rhel/$releasever/$basearch/stable', self.repo('docker-ce'))
+        self.assertIn('gpgkey=https://download.docker.com/linux/rhel/gpg', self.repo('docker-ce'))
+
+    def test_caddy_and_qrencode_come_from_epel_added_first(self):
+        dnf = FakeDnf(offered={'caddy', 'qrencode', 'samba'})
+        self.family(dnf).install(['samba', 'caddy', 'qrencode'])
+        # A rebuild's own repositories carry EPEL's release package.
+        self.assertEqual(self.installs(dnf), [['epel-release'], ['samba', 'caddy', 'qrencode']])
+
+    def test_rhel_itself_gets_epel_from_epels_site(self):
+        dnf = FakeDnf(offered={'caddy'})
+        self.family(dnf, release=self.RHEL).install(['caddy'])
+        self.assertEqual(self.installs(dnf)[0],
+                         ['https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm'])
+
+    def test_epel_already_there_is_used_as_it_is(self):
+        for installed, repo in (({'epel-release'}, None),
+                                (set(), 'metalink=https://mirrors.fedoraproject.org/metalink?repo=epel-10&arch=$basearch\n')):
+            with self.subTest(installed=installed):
+                if repo:
+                    (self.root / 'etc/yum.repos.d/epel.repo').write_text('[epel]\n' + repo)
+                dnf = FakeDnf(offered={'caddy'}, installed=installed)
+                self.family(dnf).install(['caddy'])
+                self.assertEqual(self.installs(dnf), [['caddy']])
+
+    def test_nothing_from_epel_needed_adds_no_epel(self):
+        dnf = FakeDnf(offered={'samba'})
+        self.family(dnf).install(['samba'])
+        self.assertEqual(self.installs(dnf), [['samba']])
+
+    def test_runc_and_podman_docker_are_never_mixed_with_dockers_packages(self):
+        for clash in ('runc', 'podman-docker'):
+            with self.subTest(clash=clash):
+                dnf = FakeDnf(installed={clash})
+                with self.assertRaisesRegex(RuntimeError, f'its own container packages.*{clash}.*sudo dnf remove {clash}'):
+                    self.family(dnf).install(['docker'])
+                self.assertEqual(self.installs(dnf), [])
+
+    def test_a_release_docker_does_not_package_yet_is_named(self):
+        def missing(url):
+            raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+        future = dict(self.ALMA, VERSION_ID='11.0')
+        with self.assertRaisesRegex(RuntimeError, 'Docker does not offer packages for AlmaLinux 11 yet'):
+            self.family(release=future, fetch=missing).install(['docker'])
 
 
 if __name__ == '__main__':
