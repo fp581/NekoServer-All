@@ -1325,6 +1325,30 @@ class DriveReturnTests(unittest.TestCase):
         self.assertIn(['systemctl', 'reenable', server_os.DRIVE_UNIT], calls)
 
 
+class HddPolicyTests(unittest.TestCase):
+    """A media drive that is not an internal spinning SATA disk (a USB case, an SSD)
+    keeps its own power settings: setup says so and goes on, instead of "needs you" for
+    good with a red alert on the dashboard."""
+    def said(self, journal, marker):
+        from modules import server_os
+        return server_os.hdd_service_said(marker, run=lambda argv, **_: mock.Mock(stdout=journal))
+
+    def test_what_the_service_did_is_shown(self):
+        journal = ('Starting NekoServer verified media HDD standby policy...\n'
+                   'Drive power settings: left to the drive itself, as it is connected by USB\n')
+        self.assertEqual(self.said(journal, 'Drive power settings:'), 'left to the drive itself, as it is connected by USB')
+        self.assertEqual(self.said(journal, 'runtime failed'), '')
+        # Failures keep their reason, with or without a stage named.
+        self.assertEqual(self.said('NekoServer runtime failed: HDD standby command refused. No success recorded.\n', 'runtime failed'),
+                         'HDD standby command refused. No success recorded')
+        self.assertEqual(self.said('NekoServer runtime failed while checking: Media device changed.\n', 'runtime failed'),
+                         'while checking: Media device changed')
+        from modules import server_os
+        def broken(argv, **_):
+            raise OSError('no journalctl')
+        self.assertEqual(server_os.hdd_service_said('runtime failed', run=broken), '')
+
+
 class NextcloudUpgradeTests(unittest.TestCase):
     """A new release may change how Nextcloud's containers are run; with the same settings
     in my-config.json that is applied, not taken for a changed setting."""

@@ -41,6 +41,25 @@ fn standby(cfg: &serde_json::Value) -> Result<u64> {
         _ => Err(Error::new("Unsupported HDD policy")),
     }
 }
+/// Why the standby timer is not for this drive, from lsblk's TYPE, ROTA and TRAN of the
+/// whole disk; None for an internal spinning SATA disk, the one hdparm's timer is for.
+/// The others keep their own power settings: a USB case may ignore the timer or pass it
+/// on wrongly, and an SSD does not spin.
+fn not_for_timer(shape: &str) -> Option<String> {
+    match shape.split_whitespace().collect::<Vec<_>>().as_slice() {
+        ["disk", "1", "sata"] => None,
+        [_, _, "usb"] => Some("it is connected by USB".into()),
+        [_, "0", ..] => Some("it is not a spinning disk".into()),
+        [_, _, other] => Some(format!(
+            "it is not an internal SATA disk (connected by {other})"
+        )),
+        _ => Some("its connection is not reported as SATA".into()),
+    }
+}
+/// The line setup shows: what was set, or why the drive keeps its own settings.
+fn left_to_drive(why: &str) -> String {
+    format!("Drive power settings: left to the drive itself, as {why}")
+}
 pub fn run(a: &Args) -> Result<()> {
     let backup::Job {
         cfgpath: config,
@@ -68,9 +87,12 @@ pub fn run(a: &Args) -> Result<()> {
             &source_text,
         ])?)?,
         _ => {
-            return Err(Error::new(
-                "Mapped/RAID device policy requires manual setup",
-            ))
+            // Encrypted, LVM or RAID: the disks under it are not set one by one.
+            println!(
+                "{}",
+                left_to_drive("it is an encrypted, LVM or RAID device")
+            );
+            return Ok(());
         }
     };
     let shape = output(&[
@@ -81,10 +103,9 @@ pub fn run(a: &Args) -> Result<()> {
         "--",
         &disk.to_string_lossy(),
     ])?;
-    if shape.split_whitespace().collect::<Vec<_>>() != vec!["disk", "1", "sata"] {
-        return Err(Error::new(
-            "Only an internal rotating SATA HDD is supported",
-        ));
+    if let Some(why) = not_for_timer(&shape) {
+        println!("{}", left_to_drive(&why));
+        return Ok(());
     }
     // Resolve again immediately before mutation; never use a guessed /dev/sdX.
     backup::guard(&config, &data, &media)?;
@@ -99,10 +120,27 @@ pub fn run(a: &Args) -> Result<()> {
     if block_device(&again) != source_text {
         return Err(Error::new("Media device changed"));
     }
-    let timer = standby(&cfg)?.to_string();
-    if common::command(&["hdparm", "-S", &timer, &disk.to_string_lossy()], 20)?.0 != 0 {
+    let timer = standby(&cfg)?;
+    if common::command(
+        &["hdparm", "-S", &timer.to_string(), &disk.to_string_lossy()],
+        20,
+    )?
+    .0 != 0
+    {
         return Err(Error::new("HDD standby command refused"));
     }
+    println!(
+        "Drive power settings: {} {}",
+        disk.display(),
+        if timer == 0 {
+            "keeps spinning (its standby timer is off)".to_string()
+        } else {
+            format!(
+                "spins down after {} minutes without use",
+                (timer - 240) * 30
+            )
+        }
+    );
     Ok(())
 }
 #[cfg(test)]
@@ -120,6 +158,30 @@ mod tests {
             .is_err());
         }
         assert!(standby(&serde_json::json!({"server_os":{"hdd_policy":"unchanged"}})).is_err());
+    }
+    #[test]
+    fn only_an_internal_spinning_sata_disk_gets_the_timer() {
+        assert_eq!(not_for_timer("disk 1 sata"), None);
+        assert_eq!(not_for_timer(" disk   1 sata\n"), None);
+        assert_eq!(
+            not_for_timer("disk 1 usb").unwrap(),
+            "it is connected by USB"
+        );
+        assert_eq!(
+            not_for_timer("disk 0 nvme").unwrap(),
+            "it is not a spinning disk"
+        );
+        assert_eq!(
+            not_for_timer("disk 0 sata").unwrap(),
+            "it is not a spinning disk"
+        );
+        assert!(not_for_timer("disk 1 sas").unwrap().contains("sas"));
+        // A virtual disk reports no connection at all.
+        assert!(not_for_timer("disk 1").unwrap().contains("not reported"));
+        assert_eq!(
+            left_to_drive("it is connected by USB"),
+            "Drive power settings: left to the drive itself, as it is connected by USB"
+        );
     }
     #[test]
     fn device_paths_are_narrow() {

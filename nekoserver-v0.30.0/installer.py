@@ -134,7 +134,7 @@ def require_settings(config):
                              'or delete my-config.json and run  sudo bash install.sh  to make a new one')
 
 
-# Backup counts whose template default changed in v0.29.0: a settings file made from an
+# Backup counts whose template default changed in v0.30.0: a settings file made from an
 # earlier template holds the old default without anyone having chosen it, so it moves to
 # the new one; any other number is the owner's choice and stays.
 # (group, key, earlier default, current default, what is counted)

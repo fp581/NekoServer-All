@@ -20,7 +20,7 @@ Apply this release's foundation profile once to preserve the recovery tools and 
 
 ```bash
 sudo bash install.sh --profile foundation --apply
-cd /srv/nekoserver/installer/releases/v0.29.0
+cd /srv/nekoserver/installer/releases/v0.30.0
 sudo python3 recover.py check
 sudo python3 recover.py checkpoint --apply
 ```
@@ -77,7 +77,7 @@ Do not substitute the production project name. Automatic destructive cleanup and
 
 This path supports x86_64 Arch/Nyarch and Debian/Ubuntu with the same Docker client/daemon version and classic overlay2 store. App data moves between them; host settings (the host backup) belong to the Linux they came from, so restore those only onto the same family. Bazzite/Podman conversion is blocked. A Docker upgrade, UID/GID change, drive replacement or storage-backend migration needs a separate validated plan.
 
-1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.29.0/config.json`, next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
+1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.30.0/config.json`, next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
 2. Install the new OS onto the 256GB OS SSD only. Keep data SSD/HDD contents intact. Recreate the desktop user with the expected UID/GID.
 3. From the downloaded installer (the same release) and the saved settings file, mount the existing identified filesystems with the storage module. This never formats:
 
@@ -91,7 +91,7 @@ Until step 5 is done, a normal setup run stops at the Docker step and points her
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
-cd /srv/nekoserver/installer/releases/v0.29.0
+cd /srv/nekoserver/installer/releases/v0.30.0
 sudo python3 recover.py check
 sudo python3 recover.py reattach
 sudo python3 recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
