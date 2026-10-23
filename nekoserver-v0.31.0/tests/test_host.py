@@ -1058,6 +1058,21 @@ class CapabilitiesTest(unittest.TestCase):
         return capabilities.detect(self.fake(**kwargs), root=tmp, machine=machine, python=python,
                                    which=lambda name: '/usr/bin/' + name if name in ('systemctl', 'docker', 'nft') else None)
 
+    def test_little_memory_is_a_note_never_a_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            meminfo = Path(tmp) / 'proc/meminfo'
+            meminfo.parent.mkdir()
+            for total, ok in (('3906250', False), ('7864320', True), ('16117248', True)):   # 4, 8 and 16 GB PCs
+                with self.subTest(total=total):
+                    meminfo.write_text(f'MemTotal:       {total} kB\nMemFree:  1000 kB\n')
+                    rows = self.rows(tmp)
+                    found = capabilities.value(rows, 'memory')
+                    self.assertEqual(next(r for r in rows if r['name'] == 'memory')['ok'], ok, found)
+                    self.assertEqual('8 GB those can be stopped' in found, not ok)
+                    self.assertNotIn('memory', ' '.join(capabilities.missing(rows)).lower())
+            meminfo.unlink()
+            self.assertEqual(capabilities.value(self.rows(tmp), 'memory'), 'unknown')
+
     def test_arch_server_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(Path(tmp) / 'sys/fs/cgroup')

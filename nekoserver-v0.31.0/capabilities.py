@@ -46,6 +46,33 @@ def firewall_hint(firewalls):
             + '. Tailscale needs no rule')
 
 
+def memory_gib(root='/'):
+    """Total memory in GiB (0 when it can't be read)."""
+    for line in _read(root, '/proc/meminfo').splitlines():
+        if line.startswith('MemTotal:'):
+            try:
+                return int(line.split()[1]) / 2 ** 20      # kB
+            except (IndexError, ValueError):
+                return 0
+    return 0
+
+
+# An "8 GB" PC reports a little less (the kernel and the graphics keep some).
+ENOUGH_MEMORY_GIB = 7
+
+
+def memory_note(gib):
+    """Measured on AlmaLinux: the apps take about 2 GB idle, more while Immich analyses new
+    photos (its models load) or Jellyfin converts a video."""
+    if not gib:
+        return 'unknown'
+    found = f'{gib:.1f} GB'
+    if gib < ENOUGH_MEMORY_GIB:
+        found += (': the apps use about 2 GB when idle and more while Immich looks at new photos or Jellyfin '
+                  'converts a video; with less than 8 GB those can be stopped for lack of memory. Add memory if you can')
+    return found
+
+
 def _read(root, path):
     try:
         return (Path(root) / path.lstrip('/')).read_text(errors='replace').strip()
@@ -108,6 +135,7 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
     restart = family is not None and family.reboot_pending(root)
     docker, compose = docker_versions(run, which)
     target = _output(run, ['systemctl', 'get-default']) if systemd else ''
+    memory = memory_gib(root)
     return [
         row('architecture', 'x86-64 processor', machine, machine == 'x86_64', True),
         row('python', 'Python 3.11 or newer', '.'.join(map(str, python)), tuple(python) >= MIN_PYTHON, True),
@@ -124,6 +152,8 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
         row('apparmor', 'AppArmor', 'on' if apparmor.upper().startswith('Y') else 'off', True),
         row('firewall', 'Firewall', firewall_hint(firewalls) if firewalls else 'off', not firewalls),
         row('desktop', 'Desktop', 'yes' if target == 'graphical.target' else 'no (server)', True),
+        row('memory', 'Memory (8 GB or more recommended)', memory_note(memory),
+            not memory or memory >= ENOUGH_MEMORY_GIB),
     ]
 
 

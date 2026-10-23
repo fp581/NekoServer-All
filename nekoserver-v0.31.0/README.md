@@ -34,6 +34,7 @@ Also included: shared folders on your home network (Samba) and, if you want them
   - **Debian 12** or newer, or **Ubuntu 24.04** or newer (also Linux Mint and other Ubuntu-based systems built on those)
   - **Fedora 42** or newer (new: tried only in a test setup so far; see *Fedora* below)
   - **RHEL 10**, **Rocky Linux 10**, **AlmaLinux 10** or **CentOS Stream 10**, or newer (new: tried only on AlmaLinux in a test setup so far; see *RHEL* below). Version 9 is not enough: its Python is too old.
+- **8 GB of memory or more.** The apps use about 2 GB when idle, and more while Immich looks at new photos or Jellyfin converts a video; with less, those can be stopped for lack of memory. Setup shows what it found.
 - **Your phone**, to set up the apps on it during installation.
 - **Four drives**, each already formatted (ext4 is the safe choice):
 
