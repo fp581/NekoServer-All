@@ -30,6 +30,9 @@ Deliberate failures on the installed Debian and Arch servers: the monthly update
 - **The nightly settings backup works on Debian and Ubuntu.** Two of the system files it keeps, `/etc/vconsole.conf` and `/etc/default/locale`, are links there, and a linked file was refused ("Symlink path refused"), which failed the whole backup every night. A linked file is now kept as a link, as links inside a folder already were; and the refusal, where it still applies, names the path.
 - **The dashboard lists Samba once on Debian and Ubuntu.** There `smb.service` is another name for `smbd.service`, and the dashboard listed (and alerted about) the shared folders twice.
 
+### Fixed (from code review)
+- The Docker version check reads version numbers with a bounded pattern, so a long run of digits can no longer make it backtrack for a long time; the Samba service-state parsing uses a dict comprehension.
+
 ### Upgrade notes
 - The bundled runtime was rebuilt for this release.
 - Run `sudo bash install.sh` once after upgrading: the server-OS step installs the new drive-return service, the shared-folders step switches winbind off on Debian and Ubuntu, and the backup counts still at the earlier defaults (14 nightly, 8 weekly database copies) move to 7 and 4.

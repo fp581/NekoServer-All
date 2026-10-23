@@ -112,7 +112,7 @@ def switch_off_unused(run=subprocess.run):
     for unit in UNUSED_UNITS:
         shown=run(['systemctl','show',unit,'-p','LoadState','-p','UnitFileState','-p','ActiveState'],
                   capture_output=True,text=True,timeout=15,check=False).stdout
-        state=dict(line.split('=',1) for line in shown.splitlines() if '=' in line)
+        state={key:value for key,_,value in (line.partition('=') for line in shown.splitlines() if '=' in line)}
         if state.get('LoadState')!='loaded':continue
         if state.get('UnitFileState') in ('enabled','enabled-runtime') or state.get('ActiveState') in ('active','activating'):
             done=run(['systemctl','disable','--now',unit],capture_output=True,text=True,timeout=40,check=False)
