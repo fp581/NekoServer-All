@@ -71,7 +71,7 @@ def settings(config, image):
 
 
 def settings_of(owned):
-    """The settings an installed definition was made from: recorded since 0.30.0, read
+    """The settings an installed definition was made from: recorded since 0.29.0, read
     back from the definition itself for earlier installs."""
     if isinstance(owned.get('settings'), dict):
         return owned['settings']
@@ -182,7 +182,7 @@ def finish_install(base, log, run=subprocess.run, wait=900, sleep=time.sleep, no
 MAINTENANCE_JOURNAL = neko_common.MAINTENANCE_JOURNAL
 
 
-def stop_installed(ctx, run_command=None, hold=None, journal=MAINTENANCE_JOURNAL):
+def stop_installed(ctx, run_command=None, hold=None, journal=None):
     """Nextcloud turned off: never installed means nothing to do; installed means stop
     its containers (app, database, Redis, cron) and keep every file and the database.
     Stopped containers stay stopped after a reboot; turning it on again starts them.
@@ -196,6 +196,7 @@ def stop_installed(ctx, run_command=None, hold=None, journal=MAINTENANCE_JOURNAL
     if not ctx.apply:
         ctx.log('Nextcloud: turned off; --apply stops its containers and keeps its data')
         return
+    journal = Path(journal or MAINTENANCE_JOURNAL)   # looked up now (tests point it elsewhere)
     with (hold or lock)(ctx.config):
         if journal.exists():
             raise RuntimeError('A monthly update did not finish; it is completed (or rolled back) the next '

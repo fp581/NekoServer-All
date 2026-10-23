@@ -515,7 +515,9 @@ class HardwareVideoLockTests(unittest.TestCase):
             def apps_on(*_, **__):
                 calls.append('apps')
                 return {}
-            with mock.patch.object(recovery_tools, 'mounts'), \
+            # The test's own record of an unfinished monthly update (none), never this PC's.
+            with mock.patch.object(recovery_tools.neko_common, 'MAINTENANCE_JOURNAL', Path(data) / 'no-journal.json'), \
+                    mock.patch.object(recovery_tools, 'mounts'), \
                     mock.patch.object(hv, 'give_immich_the_chip', side_effect=give_chip), \
                     mock.patch.object(hv, 'apps_on', side_effect=apps_on), \
                     mock.patch.object(recovery_tools.sys.stdin, 'isatty', return_value=False):

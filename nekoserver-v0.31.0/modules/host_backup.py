@@ -16,13 +16,15 @@ HOST_FILES = ('/etc/fstab', '/etc/hostname', '/etc/hosts', '/etc/locale.conf',
               '/etc/vconsole.conf',
               '/etc/passwd', '/etc/group', '/etc/docker/daemon.json',
               # The i2c driver OpenRGB needs for memory and motherboard lighting.
-              '/etc/modules-load.d/nekoserver-i2c.conf')
+              '/etc/modules-load.d/nekoserver-i2c.conf',
+              # OpenRGB's own settings, not its whole folder: the server writes a log there
+              # all the time (logs/), which made the settings backup fail now and then.
+              '/var/lib/nekoserver-openrgb/OpenRGB/OpenRGB.json', '/var/lib/nekoserver-openrgb/OpenRGB/sizes.ors')
 HOST_DIRS = ('/etc/nekoserver-backups', '/etc/nekoserver-os', '/etc/nekoserver-notifications',
              '/etc/nekoserver-gateway', '/etc/nekoserver-heartbeat', '/etc/systemd/sleep.conf.d',
              '/etc/systemd/logind.conf.d', '/etc/systemd/journald.conf.d',
-             # Fan curves, lighting choices and the PIN hash; the dashboard's settings;
-             # OpenRGB's own settings.
-             '/etc/nekoserver-control', '/etc/nekoserver-dashboard', '/var/lib/nekoserver-openrgb')
+             # Fan curves, lighting choices and the PIN hash; the dashboard's settings.
+             '/etc/nekoserver-control', '/etc/nekoserver-dashboard')
 PRIVATE = Path('/etc/nekoserver-backups/host.json')
 BACKUP_UNIT, BACKUP_TIMER = 'nekoserver-host-backup.service', 'nekoserver-host-backup.timer'
 RESUME_UNIT = 'nekoserver-host-resume.service'

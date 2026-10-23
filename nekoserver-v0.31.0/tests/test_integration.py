@@ -159,6 +159,8 @@ class InstallScriptTests(unittest.TestCase):
         text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
         text = re.sub(r'(?m)^        python3 "\$ROOT/host.py" repair$', '        echo REPAIR >> "$LOG"', text)
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
+        # No unfinished monthly update, whatever this test machine is running right now.
+        text = text.replace('/etc/nekoserver-backups/maintenance-resume.json', str(self.root / 'maintenance-resume.json'))
         # The certificate bundle as present, whatever this test machine has.
         bundle = self.root / 'ca-bundle.pem'
         bundle.write_text('-----BEGIN CERTIFICATE-----\n')
@@ -390,6 +392,7 @@ class NextcloudOffTests(unittest.TestCase):
             (folder / '.env').write_text('DB_PASSWORD=x\n')
             with mock.patch.object(nextcloud, 'compose_image_override', return_value=[]), \
                     mock.patch.object(nextcloud, 'MAINTENANCE_JOURNAL', Path(data) / 'no-journal.json'), \
+                    mock.patch.object(nextcloud.neko_common, 'MAINTENANCE_JOURNAL', Path(data) / 'no-journal.json'), \
                     mock.patch.object(nextcloud, 'command', calls.append):
                 self.assertIsNone(nextcloud.run(ctx))
             self.assertEqual(len(calls), 1)
