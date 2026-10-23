@@ -159,7 +159,7 @@ def reattach(config,bundle,apply=False,confirm=''):
     if saved.get('uid')!=config.get('media',{}).get('uid',1000) or saved.get('gid')!=config.get('media',{}).get('gid',1000):raise RuntimeError('Recovery media UID/GID differs; no automatic ownership changes')
     target=Path(config['data_mount'])/'docker-engine'
     if saved.get('docker_root')!=str(target) or not target.is_dir() or not any(target.iterdir()):raise RuntimeError('Expected persistent Docker store is missing or empty')
-    if not host_supported():raise RuntimeError('Automatic reattachment supports x86_64 Nyarch/Arch only; Bazzite migration remains unvalidated')
+    if not host_supported():raise RuntimeError('Automatic reattachment supports x86_64 Arch/Nyarch and Debian/Ubuntu; Bazzite migration remains unvalidated')
     for argv in (DOCKER+['--version'],['dockerd','--version']):
         installed=command(argv).strip()
         if not installed.startswith('Docker version '+saved['docker_version']+','):raise RuntimeError('Install the checkpoint Docker version for both client and daemon before reattachment; upgrades require separate validation')

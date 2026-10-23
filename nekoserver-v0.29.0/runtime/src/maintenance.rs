@@ -1822,8 +1822,9 @@ fn remove_run(path: &Path) -> Result<()> {
     Ok(())
 }
 /// Keep the newest `keep` complete monthly snapshots on the HDD (0 keeps everything).
-/// A run is complete once its restore test passed; incomplete or unrecognised runs
-/// are never deleted, only reported. Copies that v0.21.0 wrote to the SSD are removed
+/// A run is complete once its restore test passed; an incomplete one is removed once
+/// `keep` complete runs newer than it are kept, and reported until then. Folders that
+/// are not the worker's own are never deleted. Copies that v0.21.0 wrote to the SSD are removed
 /// once the same run (identical manifest) is on the HDD. The USB drive is not touched
 /// here: the weekly USB job retires the old monthly copies there.
 fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) -> Result<Value> {
@@ -1880,6 +1881,28 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
             }
         }
         kept.extend(complete[cut..].iter().cloned());
+        // An unfinished run (cut off, or its restore test failed) is worth less than a
+        // complete one: it goes once `keep` complete runs newer than it are kept, as a
+        // complete run of its age would. Each one is nearly a full snapshot in size.
+        if complete.len() >= keep as usize {
+            let all = monthly_runs(media)?;
+            let oldest_kept = all.iter().position(|r| r == &complete[cut]).unwrap_or(0);
+            for run in &all[..oldest_kept] {
+                if complete.contains(run) || protected(run) {
+                    continue;
+                }
+                // A folder that is not the worker's own (not private) stays, reported.
+                if let Err(e) = remove_run(&hdd.join(run)) {
+                    println!("Monthly retention: unfinished snapshot {run} kept ({e})");
+                    continue;
+                }
+                removed.push(json!({"run":run,"drive":"hdd","unfinished":true}));
+                for copy in failed_copies(data, run)? {
+                    fs::remove_dir_all(common::safe(&copy)?)?;
+                    removed.push(json!({"run":run,"drive":"ssd","failed_update":copy}));
+                }
+            }
+        }
     } else {
         kept.extend(complete.iter().cloned());
     }
@@ -1906,14 +1929,15 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
         json!({"keep":keep,"kept":kept,"removed":removed,"incomplete_not_removed":unmanaged,"held_back":held_back}),
     )
 }
-/// For a full HDD: the unfinished snapshots retention keeps there, which are often
-/// the room a person can free, so the space message names them.
+/// For a full HDD: the unfinished snapshots retention still keeps there. They go only
+/// once newer complete runs replace them, which a full HDD prevents, so the space
+/// message names them as the room a person can free.
 fn unfinished_note(folder: &Path, runs: &[String], bytes: u64) -> String {
     if runs.is_empty() {
         return String::new();
     }
     format!(
-        ". Unfinished monthly snapshots (cut off, or their restore test failed) are never deleted automatically and take about {} GB there: {} in {}; delete the ones you don't need",
+        ". Unfinished monthly snapshots (cut off, or their restore test failed) take about {} GB there: {} in {}. They are removed by themselves only once newer complete snapshots replace them, so delete the ones you don't need",
         (bytes as f64 / 1e9).ceil() as u64,
         runs.join(", "),
         folder.display()
@@ -3003,14 +3027,42 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn monthly_retention_never_removes_incomplete_or_current_runs() {
+    fn monthly_retention_removes_unfinished_runs_like_complete_ones_of_their_age() {
         let root = scratch("safe");
         snapshot(&root, "hdd", "100-1", true);
-        snapshot(&root, "hdd", "150-1", false); // failed/partial run: reported, kept
+        snapshot(&root, "hdd", "150-1", false); // cut off, older than the kept run: goes
         snapshot(&root, "hdd", "200-1", true);
         snapshot(&root, "hdd", "300-1", true);
+        snapshot(&root, "hdd", "350-1", false); // newer than every kept run: stays
         let report = prune_monthly(&root.join("ssd"), &root.join("hdd"), 1, Some("200-1")).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["200-1", "300-1", "350-1"]);
+        assert_eq!(report["incomplete_not_removed"], json!(["350-1"]));
+        assert!(report["removed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"run":"150-1","drive":"hdd","unfinished":true})));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn unfinished_runs_stay_while_fewer_complete_runs_than_kept_or_when_not_ours() {
+        let root = scratch("unfinished");
+        snapshot(&root, "hdd", "150-1", false);
+        snapshot(&root, "hdd", "200-1", true);
+        snapshot(&root, "hdd", "300-1", true);
+        // Only two complete runs of the three kept: the unfinished one may still matter.
+        prune_monthly(&root.join("ssd"), &root.join("hdd"), 3, None).unwrap();
         assert_eq!(runs(&root, "hdd"), ["150-1", "200-1", "300-1"]);
+        // The current run, and a folder that is not the worker's own, are never removed.
+        prune_monthly(&root.join("ssd"), &root.join("hdd"), 1, Some("150-1")).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["150-1", "300-1"]);
+        let foreign = root.join("hdd/backups/monthly/150-1");
+        fs::set_permissions(
+            &foreign,
+            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+        )
+        .unwrap();
+        let report = prune_monthly(&root.join("ssd"), &root.join("hdd"), 1, None).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["150-1", "300-1"]);
         assert_eq!(report["incomplete_not_removed"], json!(["150-1"]));
         fs::remove_dir_all(root).unwrap();
     }
@@ -3028,7 +3080,7 @@ mod tests {
             note.contains("150-1, 250-1 in /mnt/media/backups/monthly"),
             "{note}"
         );
-        assert!(note.contains("never deleted automatically"), "{note}");
+        assert!(note.contains("delete the ones you don't need"), "{note}");
     }
     #[test]
     fn monthly_retention_zero_keeps_everything_and_reclaims_old_ssd_copies() {
