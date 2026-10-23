@@ -5,7 +5,9 @@ import account_store
 from neko_common import verify_storage
 from recovery_tools import lock
 
-DEPENDENCIES = ['storage', 'recovery']
+# The apps run in Docker: with Docker down every account check fails at once, and the
+# manual "finish this app" steps could not succeed either (no app is running).
+DEPENDENCIES = ['storage', 'recovery', 'docker']
 DESCRIPTION = 'Provision and authenticate app accounts from private saved choices'
 
 

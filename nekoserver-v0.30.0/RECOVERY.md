@@ -85,7 +85,16 @@ This path supports x86_64 Arch/Nyarch and Debian/Ubuntu with the classic overlay
 sudo bash install.sh --config /path/to/my-config.json --module storage --apply
 ```
 
-Until step 5 is done, a normal setup run stops at the Docker step and points here: it never takes over the existing app store by itself.
+If you did not save the settings file, take the copy from the SSD. Mounting it read-only writes nothing to it. Find the SSD with `lsblk -f` (by its size or label), then, in the downloaded installer's folder:
+
+```bash
+sudo mkdir -p /mnt/neko-ssd-read
+sudo mount -o ro /dev/sdX /mnt/neko-ssd-read
+sudo cp /mnt/neko-ssd-read/installer/releases/v0.30.0/config.json my-config.json
+sudo umount /mnt/neko-ssd-read
+```
+
+With `my-config.json` next to `install.sh`, a normal `sudo bash install.sh` mounts the drives itself (the storage step never formats). Until step 5 is done, that run stops at the Docker step and points here: it never takes over the existing app store by itself. Settings that lived on the old system disk are asked for again: the dashboard PIN, the Samba password, the Tailscale sign-in and the backup password (a new backup key; monthly snapshots made before still open with the password they were made with, see "App password files" below). The gateway's certificate authority is kept on the SSD, so phones that trusted it keep doing so; setup hands its files to the new Linux's caddy account.
 
 4. Install the native Docker client/daemon and Compose plugin through trusted packages: the version the host checkpoint names (`docker_version`) or newer, which is what a freshly installed Linux usually has. Keep Docker service AND socket stopped. Do not start a fresh default store. If /var/lib/docker already contains data, recovery refuses it for review.
 5. From the verified persistent release, preview and then explicitly confirm reattachment:

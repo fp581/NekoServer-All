@@ -1772,10 +1772,11 @@ pub(crate) fn monthly_runs(root: &Path) -> Result<Vec<String>> {
             runs.push(name);
         }
     }
-    // Run names start with a microsecond timestamp, so numeric order is age order.
+    // Run names start with a microsecond timestamp, so numeric order is age order (a run
+    // dated far ahead, made while the clock was wrong, counts as the oldest).
     runs.sort_by_key(|n| {
         let (a, b) = n.split_once('-').unwrap();
-        (
+        common::age_key(
             a.parse::<u128>().unwrap_or(0),
             b.parse::<u128>().unwrap_or(0),
         )
@@ -3064,6 +3065,21 @@ mod tests {
         let report = prune_monthly(&root.join("ssd"), &root.join("hdd"), 1, None).unwrap();
         assert_eq!(runs(&root, "hdd"), ["150-1", "300-1"]);
         assert_eq!(report["incomplete_not_removed"], json!(["150-1"]));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_monthly_run_dated_ahead_counts_as_the_oldest() {
+        let root = scratch("ahead");
+        for run in ["100-1", "99999999999999999-1", "200-1"] {
+            snapshot(&root, "hdd", run, true);
+        }
+        assert_eq!(
+            runs(&root, "hdd"),
+            ["99999999999999999-1", "100-1", "200-1"]
+        );
+        // Keep 2: the run made while the clock was far ahead goes first.
+        prune_monthly(&root.join("ssd"), &root.join("hdd"), 2, None).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["100-1", "200-1"]);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
