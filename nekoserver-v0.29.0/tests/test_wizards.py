@@ -400,10 +400,11 @@ class CapacityTests(unittest.TestCase):
 
     def test_stop_raises_and_warning_asks(self):
         ctx = Ctx({})
-        with mock.patch.object(capacity, 'assess', return_value=(['too small'], [])):
+        new_install = mock.patch.object(capacity, 'installed', return_value=False)
+        with new_install, mock.patch.object(capacity, 'assess', return_value=(['too small'], [])):
             with self.assertRaisesRegex(RuntimeError, 'too small'):
                 capacity.run(ctx)
-        with mock.patch.object(capacity, 'assess', return_value=([], ['low'])), \
+        with new_install, mock.patch.object(capacity, 'assess', return_value=([], ['low'])), \
                 mock.patch('guided_setup.interactive', return_value=True):
             self.assertIsNone(capacity.run(Ctx({}), prompt=answers('yes'), output=lambda s: None))
             result = capacity.run(Ctx({}), prompt=answers('no'), output=lambda s: None)
