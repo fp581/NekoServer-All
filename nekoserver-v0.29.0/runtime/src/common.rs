@@ -62,7 +62,13 @@ pub fn require_root() -> Result<()> {
 pub fn safe(path: &Path) -> Result<PathBuf> {
     for p in path.ancestors() {
         match fs::symlink_metadata(p) {
-            Ok(m) if m.file_type().is_symlink() => return Err(Error::new("Symlink path refused")),
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(Error::new(&format!(
+                    "Symlink path refused: {} is a link ({})",
+                    p.display(),
+                    path.display()
+                )))
+            }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
