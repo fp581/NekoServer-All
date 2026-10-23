@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time bootstrap for Arch/Nyarch, Debian/Ubuntu and Fedora. Scheduled work uses the bundled Rust runtime.
+# One-time bootstrap for Arch/Nyarch, Debian/Ubuntu, Fedora and RHEL / Rocky / AlmaLinux. Scheduled work uses the bundled Rust runtime.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # apt's lock on its package lists is held (a POSIX lock, which lslocks lists by path).
@@ -81,7 +81,7 @@ if "$apply"; then
         fi
     elif [[ "${ID:-}" == fedora ]] && command -v dnf >/dev/null; then
         # Fedora itself (Workstation, Server, spins). RHEL and its rebuilds name fedora in
-        # ID_LIKE but have other repositories: not covered yet.
+        # ID_LIKE but have other repositories: the next branch.
         family=fedora
         clean_hint='sudo dnf clean all'
         system_path=/var/cache/libdnf5
@@ -93,8 +93,22 @@ if "$apply"; then
             echo 'Upgrade the system first (sudo dnf system-upgrade), then run  sudo bash install.sh  again.' >&2
             exit 1
         fi
+    elif [[ "$distro" == *' rhel '* ]] && command -v dnf >/dev/null; then
+        # RHEL and its rebuilds (Rocky Linux, AlmaLinux, CentOS Stream), which all name rhel
+        # in ID or ID_LIKE: Docker's and Tailscale's packages for them, Caddy from EPEL.
+        family=rhel
+        clean_hint='sudo dnf clean all'
+        system_path=/var/cache/dnf
+        [[ -d "$system_path" ]] || system_path=/
+        # Version 10 brings Python 3.12; version 9's Python 3.9 is older than NekoServer needs.
+        release="${VERSION_ID%%.*}"
+        if [[ "$release" =~ ^[0-9]+$ ]] && (( release < 10 )); then
+            echo "NekoServer needs version 10 or newer of ${NAME:-this system}; this is ${PRETTY_NAME:-$ID ${VERSION_ID:-}}." >&2
+            echo 'Version 9 comes with Python 3.9, older than NekoServer needs: install version 10, then run  sudo bash install.sh  again.' >&2
+            exit 1
+        fi
     else
-        echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt) and Fedora (with dnf).' >&2
+        echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt), and Fedora and RHEL / Rocky / AlmaLinux (with dnf).' >&2
         exit 1
     fi
     if [[ "$(uname -m)" != x86_64 ]] || ! command -v systemctl >/dev/null; then
@@ -167,9 +181,9 @@ if "$apply"; then
             done
             echo 'Refreshing the package lists (apt-get update).'
             apt-get "${apt_wait[@]}" update
-        elif [[ "$family" == fedora ]]; then
-            # Fedora: refresh the package lists only, as on Debian; upgrading the rest of the
-            # system stays your own routine.
+        elif [[ "$family" == fedora || "$family" == rhel ]]; then
+            # Fedora and RHEL: refresh the package lists only, as on Debian; upgrading the
+            # rest of the system stays your own routine.
             echo 'Refreshing the package lists (dnf makecache).'
             dnf -q makecache
         else
@@ -227,7 +241,7 @@ if "$apply"; then
             'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
         certificates=(ca-certificates)
         certificate_bundle=/etc/ssl/certs/ca-certificates.crt
-    elif [[ "$family" == fedora ]]; then
+    elif [[ "$family" == fedora || "$family" == rhel ]]; then
         prerequisites=( \
             'python3:python3' \
             'util-linux:lsblk findmnt blkid mount umount flock runuser' \
@@ -261,7 +275,7 @@ if "$apply"; then
         # Check the complete set before changing anything.
         if [[ "$family" == debian ]]; then
             apt-get "${apt_wait[@]}" install -y --no-install-recommends -- "${packages[@]}"
-        elif [[ "$family" == fedora ]]; then
+        elif [[ "$family" == fedora || "$family" == rhel ]]; then
             # (dnf5 takes no "--" before the names; these are fixed package names.)
             dnf install -y --setopt=install_weak_deps=False "${packages[@]}"
         else
@@ -285,7 +299,7 @@ if ! command -v python3 >/dev/null; then
 fi
 if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
     echo "NekoServer needs Python 3.11 or newer; this system has $(python3 -c 'import platform; print(platform.python_version())')." >&2
-    echo 'It comes with Arch, Debian 12, Ubuntu 24.04 and Fedora 42 or newer. A system based on an older release' >&2
+    echo 'It comes with Arch, Debian 12, Ubuntu 24.04, Fedora 42 and RHEL 10 or newer. A system based on an older release' >&2
     echo '(such as Linux Mint 21, based on Ubuntu 22.04) does not get it from updates: upgrade to the next release first.' >&2
     exit 1
 fi
