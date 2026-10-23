@@ -115,6 +115,29 @@ class DrivePickingTests(unittest.TestCase):
         self.assertNotIn('nvme0n1p1', message)   # the system disk's boot partition
         self.assertNotIn('/dev/sdb1', message)   # already chosen for the SSD
 
+    def test_a_new_unformatted_drive_is_named_not_called_missing(self):
+        inventory = {'blockdevices': [
+            {'name': 'nvme0n1', 'type': 'disk', 'size': '500G', 'children': [
+                {'name': 'nvme0n1p1', 'type': 'part', 'uuid': 'root-0001', 'fstype': 'ext4', 'mountpoint': '/'}]},
+            {'name': 'sdb', 'type': 'disk', 'size': '2T', 'model': 'WDC WD20EZAZ', 'fstype': None, 'mountpoint': None},
+            # Not drives to format: swap in RAM, an eMMC boot area, an empty slot, and a
+            # partition without a filesystem (Windows keeps such reserved partitions).
+            {'name': 'zram0', 'type': 'disk', 'size': '4G', 'mountpoint': '[SWAP]'},
+            {'name': 'mmcblk0boot0', 'type': 'disk', 'size': '4M'},
+            {'name': 'nbd0', 'type': 'disk', 'size': '0B'},
+            {'name': 'sdc', 'type': 'disk', 'size': '1T', 'children': [
+                {'name': 'sdc1', 'type': 'part', 'size': '16M', 'fstype': None}]},
+        ]}
+        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
+        with self.assertRaises(RuntimeError) as caught:
+            storage.resolve_storage_identity(config, inventory, apply=True, interactive=True,
+                                             input_fn=lambda q='': '', out_fn=lambda s: None)
+        message = str(caught.exception)
+        self.assertIn('/dev/sdb (2T) has no filesystem yet. To use it, format it as ext4', message)
+        self.assertNotIn('No other drive was found', message)
+        for name in ('zram0', 'mmcblk0boot0', 'nbd0', 'sdc'):
+            self.assertNotIn('/dev/' + name, message)
+
 
 if __name__ == '__main__':
     unittest.main()

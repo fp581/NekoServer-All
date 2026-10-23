@@ -191,6 +191,7 @@ class InstallScriptTests(unittest.TestCase):
         text = re.sub(r'(?m)^exec python3 .*$', 'echo "START $*" >> "$LOG"', text)
         text = re.sub(r'(?m)^    python3 "\$ROOT/host.py" bootstrap$', '    echo BOOTSTRAP >> "$LOG"', text)
         text = text.replace('/run/reboot-required', str(self.root / 'reboot-required'))
+        text = text.replace('/run/ostree-booted', str(self.root / 'ostree-booted'))
         text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
         text = re.sub(r'(?m)^        python3 "\$ROOT/host.py" repair$', '        echo REPAIR >> "$LOG"', text)
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
@@ -312,6 +313,34 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('needs Fedora 42 or newer; this is Fedora Linux 41 (Server Edition)', result.stderr)
         self.assertEqual(log, '')
+
+    def test_image_based_systems_are_refused_before_any_package_manager_runs(self):
+        # Fedora Silverblue / Kinoite (ostree): Fedora by name, dnf present, /usr read-only.
+        self.use_fedora('ID=fedora\nVERSION_ID=44\nVARIANT_ID=silverblue\nPRETTY_NAME="Fedora Linux 44 (Silverblue)"\n')
+        (self.root / 'ostree-booted').write_text('')
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Fedora Linux 44 (Silverblue) keeps its system files read-only', result.stderr)
+        self.assertEqual(log, '')
+        # SteamOS: Arch by name, pacman present, the system mounted read-only.
+        (self.root / 'ostree-booted').unlink()
+        (self.root / 'etc/os-release').write_text('ID=steamos\nID_LIKE=arch\nPRETTY_NAME="SteamOS"\n')
+        fake = self.root / 'readonly'
+        fake.mkdir()
+        (fake / 'findmnt').write_text('#!/bin/sh\necho "ro,relatime"\n')
+        (fake / 'findmnt').chmod(0o755)
+        (fake / 'pacman').write_text('#!/bin/sh\necho "PACMAN $*" >> "$LOG"\n')
+        (fake / 'pacman').chmod(0o755)
+        result, log = self.run_script(self.root, str(fake))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('SteamOS keeps its system files read-only', result.stderr)
+        self.assertEqual(log, '')
+        # A writable system whose options merely mention it (ext4's errors=remount-ro) goes on.
+        (fake / 'findmnt').write_text('#!/bin/sh\necho "rw,relatime,errors=remount-ro,data=ordered"\n')
+        (self.root / 'etc/os-release').write_text('ID=arch\n')
+        result, log = self.run_script(self.root, str(fake))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PACMAN -Syu --noconfirm', log)
 
     def test_setup_and_the_installer_agree_on_every_distribution(self):
         # install.sh picks the package manager and the installer (host.detect) everything

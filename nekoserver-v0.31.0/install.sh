@@ -95,6 +95,15 @@ if "$apply"; then
         echo 'An x86_64 systemd host is required.' >&2
         exit 1
     fi
+    # Image-based systems (Fedora Silverblue and Kinoite, SteamOS) name their family but
+    # keep the system files read-only: the package manager would fail halfway through.
+    usr_options=$(findmnt -n -o OPTIONS --target /usr 2>/dev/null || true)
+    if [[ -e /run/ostree-booted || ",$usr_options," == *,ro,* ]]; then
+        echo "${PRETTY_NAME:-This system} keeps its system files read-only (an image-based system), so" >&2
+        echo 'NekoServer cannot install the packages it needs. Install it on Arch Linux, Debian, Ubuntu or' >&2
+        echo 'Fedora Workstation or Server instead.' >&2
+        exit 1
+    fi
     if [[ "$family" == debian && -e /run/reboot-required ]]; then
         # An earlier update is only finished after a restart; change no service before it.
         echo 'An earlier system update needs a restart first.' >&2

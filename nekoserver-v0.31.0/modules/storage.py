@@ -45,6 +45,15 @@ def discover_filesystems(inventory):
 NOT_LINUX = {'ntfs': 'NTFS (Windows)', 'exfat': 'exFAT', 'vfat': 'FAT'}
 
 
+def empty_disk(dev):
+    """A whole disk with nothing on it yet (a new drive straight from the box): no
+    filesystem, no partitions, not in use. Not RAM disks, eMMC boot areas or empty slots;
+    a partition without a filesystem may be one Windows keeps for itself, so never those."""
+    return (dev.get('type') == 'disk' and not dev.get('fstype') and not dev.get('children')
+            and not dev.get('mountpoint') and dev.get('size') not in (None, '0B')
+            and not re.match(r'(zram|ram|nbd)\d|mmcblk\d+(boot|rpmb)', dev.get('name', '')))
+
+
 def nothing_eligible(inventory, items, selected, label):
     """Why no drive can be picked for `label`, drive by drive, and what to do."""
     lines = []
@@ -56,6 +65,9 @@ def nothing_eligible(inventory, items, selected, label):
             lines.append(f"/dev/{dev.get('name')} is formatted {NOT_LINUX[fs]}, which Linux apps can't keep their files "
                          'on. To use it, copy its files elsewhere first, then format it as ext4 (this erases it) with '
                          'the Disks app (GNOME) or KDE Partition Manager.')
+        elif empty_disk(dev):
+            lines.append(f"/dev/{dev.get('name')} ({dev['size']}) has no filesystem yet. To use it, format it as "
+                         'ext4 (this erases it) with the Disks app (GNOME) or KDE Partition Manager.')
         for child in dev.get('children', []):
             walk(child)
     for device in inventory.get('blockdevices', []):
