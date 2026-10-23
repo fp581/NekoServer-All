@@ -147,7 +147,10 @@ def readiness(config):
         try:
             with opener.open(LOOPBACK+str(APPS[app][1])+endpoint,timeout=5) as r:value=json.loads(r.read(64000))
             if not isinstance(value,dict) or value.get(key) is not True:raise RuntimeError('Initial application account setup is incomplete')
-        except (OSError,ValueError):raise RuntimeError('Application onboarding could not be verified; finish setup locally') from None
+        except (OSError,ValueError) as exc:
+            # Usually the app is not running (its own step names why): say which one.
+            raise RuntimeError(f'{APPS[app][0]} did not answer on this PC ({LOOPBACK}{APPS[app][1]}: {getattr(exc,"reason",exc)}); '
+                               'the home addresses are set up once it runs: see the apps step above, then run setup again') from None
     # A snap's Docker takes over Docker's socket: every container would look missing.
     if host.snap_docker():raise RuntimeError(host.SNAP_DOCKER)
     from acceptance import containers

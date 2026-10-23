@@ -137,6 +137,14 @@ class ReadinessTests(unittest.TestCase):
                 gateway_tools.readiness(dict(self.CONFIG))
         containers.assert_not_called()
 
+    def test_an_app_that_does_not_answer_is_named(self):
+        config = {'gateway': {'services': ['jellyfin'], 'confirmed_services': ['jellyfin']}, 'media': {}}
+        refused = mock.Mock()
+        refused.open.side_effect = OSError('Connection refused')
+        with mock.patch.object(gateway_tools, 'local_opener', return_value=refused):
+            with self.assertRaisesRegex(RuntimeError, r'Jellyfin did not answer on this PC \(http://127.0.0.1:8096'):
+                gateway_tools.readiness(config)
+
     def test_the_containers_not_verified_are_named(self):
         rows = [{'id': 'container:navidrome', 'name': 'Music / navidrome', 'status': 'fail'}]
         with mock.patch.object(gateway_tools.host, 'snap_docker', return_value=False), \

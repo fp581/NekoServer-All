@@ -576,6 +576,89 @@ class AccountSetupReasonTests(unittest.TestCase):
         self.assertNotIn('hunter2', ' '.join(logged))
 
 
+class PortClashTests(unittest.TestCase):
+    """Another program on an app's port (tried on AlmaLinux: a Jellyfin installed beside
+    NekoServer's): setup names it before Docker fails with a networking error."""
+    def setUp(self):
+        import socket
+        self.holder = socket.socket()
+        self.addCleanup(self.holder.close)
+        self.holder.bind(('127.0.0.1', 0))
+        self.holder.listen()
+        self.port = self.holder.getsockname()[1]
+        self.config = {'services': {'jellyfin': {'image': 'jellyfin/jellyfin:10', 'ports': [
+            {'mode': 'ingress', 'host_ip': '127.0.0.1', 'target': 8096, 'published': str(self.port), 'protocol': 'tcp'}]}}}
+
+    def compose(self, ps=''):
+        calls = []
+
+        def run(argv, timeout, what):
+            if argv[-3:] == ['config', '--format', 'json']:
+                return mock.Mock(stdout=json.dumps(self.config))
+            if argv[-3:] == ['ps', '--format', 'json']:
+                return mock.Mock(stdout=ps)
+            calls.append(argv[argv.index('compose') + 5:])
+            return mock.Mock(stdout='')
+        with mock.patch.object(neko_common, 'checked_run', side_effect=run):
+            neko_common.compose_up(['docker', 'compose', '-p', 'neko-jellyfin', '-f', 'c.yaml'], 'jellyfin')
+        return calls
+
+    def test_a_program_on_the_port_is_named_and_nothing_starts(self):
+        with self.assertRaises(RuntimeError) as caught:
+            self.compose()
+        message = str(caught.exception)
+        self.assertIn(f'jellyfin cannot start: port {self.port} (127.0.0.1) is in use by ', message)
+        self.assertIn('stop that program', message)
+
+    def test_the_apps_own_running_container_holds_its_port(self):
+        for ps in ('[{"Service": "jellyfin", "State": "running"}]',      # an older Compose
+                   '{"Service": "jellyfin", "State": "running"}\n'):    # a newer one
+            with self.subTest(ps=ps):
+                self.assertEqual(self.compose(ps), [['pull', '--quiet', 'jellyfin'], ['up', '-d']])
+
+    def test_another_docker_container_on_the_port_is_named(self):
+        def run(argv, **kwargs):
+            if argv[0] == 'ss':
+                return mock.Mock(stdout=f'LISTEN 0 4096 127.0.0.1:{self.port} 0.0.0.0:* users:(("docker-proxy",pid=4242,fd=7))\n')
+            return mock.Mock(stdout='my-old-jellyfin\n')
+        with mock.patch.object(neko_common.subprocess, 'run', side_effect=run):
+            self.assertEqual(neko_common.port_holder(self.port), 'the Docker container my-old-jellyfin')
+
+    def test_a_free_port_is_free(self):
+        self.holder.close()
+        self.assertFalse(neko_common.port_taken('127.0.0.1', self.port))
+
+    def test_a_container_left_without_its_network_is_recreated(self):
+        # Tried on AlmaLinux: after a start that failed on a port in use, Docker started
+        # Jellyfin with no network at all; it ran, but nothing could reach it.
+        self.holder.close()
+        ps = '{"Service": "jellyfin", "State": "running", "ID": "9d7d354bcebf"}\n'
+        logged = []
+
+        def run(argv, timeout, what):
+            if argv[-3:] == ['config', '--format', 'json']:
+                return mock.Mock(stdout=json.dumps(self.config))
+            if argv[-3:] == ['ps', '--format', 'json']:
+                return mock.Mock(stdout=ps)
+            calls.append(argv[argv.index('compose') + 5:])
+            return mock.Mock(stdout='')
+        calls = []
+        networks = mock.Mock(returncode=0, stdout='0\n')
+        with mock.patch.object(neko_common, 'checked_run', side_effect=run), \
+                mock.patch.object(neko_common.subprocess, 'run', return_value=networks) as inspect:
+            neko_common.compose_up(['docker', 'compose', '-p', 'neko-jellyfin', '-f', 'c.yaml'], 'jellyfin', logged.append)
+        self.assertEqual(calls[-1], ['up', '-d', '--force-recreate', '--no-deps', 'jellyfin'])
+        self.assertIn('jellyfin was running without its network', logged[-1])
+        self.assertEqual(inspect.call_args[0][0][-3:], ['--format', '{{len .NetworkSettings.Networks}}', '9d7d354bcebf'])
+        # With its network, nothing is recreated.
+        calls.clear()
+        networks.stdout = '1\n'
+        with mock.patch.object(neko_common, 'checked_run', side_effect=run), \
+                mock.patch.object(neko_common.subprocess, 'run', return_value=networks):
+            neko_common.compose_up(['docker', 'compose', '-p', 'neko-jellyfin', '-f', 'c.yaml'], 'jellyfin')
+        self.assertEqual(calls, [['pull', '--quiet', 'jellyfin'], ['up', '-d']])
+
+
 class ImageDownloadTests(unittest.TestCase):
     """Images are downloaded before an app is started, with hours for a slow connection."""
     def compose(self, config, image_present=True):
@@ -585,6 +668,8 @@ class ImageDownloadTests(unittest.TestCase):
         def run(argv, timeout, what):
             if argv[-3:] == ['config', '--format', 'json']:
                 return mock.Mock(stdout=json.dumps(config))
+            if argv[-3:] == ['ps', '--format', 'json']:
+                return mock.Mock(stdout='')          # nothing running yet
             calls.append((argv[argv.index('compose') + 5:] if 'compose' in argv else argv, timeout, what))
             return mock.Mock(stdout='')
         with mock.patch.object(neko_common, 'checked_run', side_effect=run),                 mock.patch.object(neko_common.subprocess, 'run', return_value=mock.Mock(returncode=0 if image_present else 1)):
