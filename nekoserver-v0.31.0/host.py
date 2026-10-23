@@ -334,6 +334,8 @@ class Arch(Family):
     like = ('arch',)
     services = MappingProxyType({'samba': 'smb.service', 'tailscale': 'tailscaled.service'})
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
+    wait = 600            # seconds to wait for another pacman to finish
+    sleep = staticmethod(time.sleep)
 
     def available(self, wanted):
         return self.ready() and all(self._call(['pacman', '-Si', name], 60).returncode == 0
@@ -342,7 +344,22 @@ class Arch(Family):
     def has(self, package):
         return self._call(['pacman', '-Q', package], 30).returncode == 0
 
+    def wait_until_idle(self):
+        """pacman's lock file is there while another pacman (an updater, say) works: wait
+        for it. (install.sh removes one left from before the last restart.)"""
+        lock = self.path(PACMAN_LOCK)
+        waited = 0
+        while lock.exists():
+            if waited >= self.wait:
+                raise RuntimeError(f'pacman is still locked ({PACMAN_LOCK}) after {self.wait // 60} minutes: '
+                                   'another installation is running. Let it finish, then run setup again. If '
+                                   'nothing is installing, the lock is left from one that was cut off: remove it '
+                                   f'(sudo rm {PACMAN_LOCK}), run  sudo pacman -Syu, then setup again.')
+            self.sleep(5)
+            waited += 5
+
     def _install(self, names, timeout):
+        self.wait_until_idle()
         return self._call(['pacman', '-S', '--needed', '--noconfirm', *names], timeout)
 
 
@@ -372,6 +389,8 @@ SAMBA_CONFIG = '/etc/samba/smb.conf'
 POLICY = '/usr/sbin/policy-rc.d'
 # Held by NekoServer for each package job (install, tidy-up, repository repair).
 PACKAGE_LOCK = '/run/nekoserver-packages.lock'
+# There while a pacman works (created and deleted by pacman itself, never held open).
+PACMAN_LOCK = '/var/lib/pacman/db.lck'
 # Held while they work: apt's (released if apt-get is stopped) and dpkg's own (held
 # until dpkg itself has finished, also when the apt-get that started it was stopped).
 DPKG_LOCKS = ('/var/lib/dpkg/lock-frontend', '/var/lib/dpkg/lock')

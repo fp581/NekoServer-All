@@ -78,6 +78,39 @@ class InstallTest(unittest.TestCase):
         patcher = mock.patch('host.shutil.which', return_value='/usr/bin/pacman')
         patcher.start()
         self.addCleanup(patcher.stop)
+        # pacman's lock as this test's own, whatever this machine's pacman is doing.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.lock = Path(self.tmp.name) / 'var/lib/pacman/db.lck'
+        self.lock.parent.mkdir(parents=True)
+        lock = mock.patch.object(host.Arch, 'root', Path(self.tmp.name))
+        lock.start()
+        self.addCleanup(lock.stop)
+
+    def test_waits_while_another_pacman_works(self):
+        pacman = FakePacman(offered={'b'})
+        family = host.Arch(pacman)
+        self.lock.write_text('')
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == 3:
+                self.lock.unlink()           # the other pacman (an updater) finished
+        family.sleep = sleep
+        self.assertEqual(family.install(['b']), ['b'])
+        self.assertEqual(slept, [5, 5, 5])
+        self.assertIn(['pacman', '-S', '--needed', '--noconfirm', 'b'], pacman.calls)
+
+    def test_a_lock_that_stays_stops_with_the_steps(self):
+        pacman = FakePacman(offered={'b'})
+        family = host.Arch(pacman)
+        family.sleep, family.wait = (lambda seconds: None), 600
+        self.lock.write_text('')
+        with self.assertRaisesRegex(RuntimeError, r'pacman is still locked \(/var/lib/pacman/db.lck\) after 10 '
+                                                  r'minutes.*sudo rm /var/lib/pacman/db.lck'):
+            family.install(['b'])
+        self.assertFalse(any(argv[1] == '-S' for argv in pacman.calls))
 
     def test_installs_only_what_is_missing_without_upgrading(self):
         pacman = FakePacman(offered={'a', 'b'}, installed={'a'})
