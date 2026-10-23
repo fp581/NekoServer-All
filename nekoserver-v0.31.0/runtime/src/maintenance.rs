@@ -1298,6 +1298,15 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             write_override(cfg, name, model)?;
         }
     }
+    if phase == "snapshot" {
+        // Cut off while the apps were being stopped: a stop Docker is still finishing
+        // would end after the start below and leave that app stopped (Docker does not
+        // restart an app it was asked to stop). Each stop finishes first.
+        for (name, _) in journal["models"].as_object().unwrap() {
+            let file = snapshot.join(format!("{name}-old.json"));
+            compose(&file, &format!("neko-{name}"), &["stop", "--timeout", "60"])?;
+        }
+    }
     for (name, _) in journal["models"].as_object().unwrap() {
         let file = snapshot.join(format!("{name}-old.json"));
         compose(
