@@ -50,6 +50,7 @@ First run of the installer end to end on Debian 13 and Arch (under WSL, with thr
 
 ### Upgrade notes
 - The bundled runtime must be rebuilt for this release (its Jellyfin check sends the key the way Jellyfin 12 wants it).
+- Run `sudo bash install.sh` once after upgrading: the server-OS step installs the new drive-return service, and the shared-folders step switches winbind off on Debian and Ubuntu.
 
 ## v0.28.11 — 2026-10-22
 
