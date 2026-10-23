@@ -1906,6 +1906,19 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
         json!({"keep":keep,"kept":kept,"removed":removed,"incomplete_not_removed":unmanaged,"held_back":held_back}),
     )
 }
+/// For a full HDD: the unfinished snapshots retention keeps there, which are often
+/// the room a person can free, so the space message names them.
+fn unfinished_note(folder: &Path, runs: &[String], bytes: u64) -> String {
+    if runs.is_empty() {
+        return String::new();
+    }
+    format!(
+        ". Unfinished monthly snapshots (cut off, or their restore test failed) are never deleted automatically and take about {} GB there: {} in {}; delete the ones you don't need",
+        (bytes as f64 / 1e9).ceil() as u64,
+        runs.join(", "),
+        folder.display()
+    )
+}
 fn live(file: &Path, name: &str) -> Result<()> {
     compose(
         file,
@@ -2060,8 +2073,20 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
         let wanted = needed.saturating_add(reserve);
         if have < wanted {
             let gb = |b: u64| (b as f64 / 1e9).ceil() as u64;
+            let unfinished = if what == "HDD" {
+                let runs: Vec<String> = retention["incomplete_not_removed"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| r.as_str().map(str::to_string))
+                    .collect();
+                let folder = media.join("backups/monthly");
+                unfinished_note(&folder, &runs, size(&folder, &runs).unwrap_or(0))
+            } else {
+                String::new()
+            };
             return Err(Error::new(&format!(
-                "Not enough space on the {what} ({}) for the monthly snapshot and update: {} GB free, about {} GB needed (a copy of the app data and the new app images, plus the {} GB reserve from maintenance.minimum_free_gb). Free up space there, or lower the reserve",
+                "Not enough space on the {what} ({}) for the monthly snapshot and update: {} GB free, about {} GB needed (a copy of the app data and the new app images, plus the {} GB reserve from maintenance.minimum_free_gb). Free up space there, or lower the reserve{unfinished}",
                 root.display(),
                 gb(have),
                 gb(wanted),
@@ -2988,6 +3013,22 @@ mod tests {
         assert_eq!(runs(&root, "hdd"), ["150-1", "200-1", "300-1"]);
         assert_eq!(report["incomplete_not_removed"], json!(["150-1"]));
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_full_hdd_names_the_unfinished_snapshots_kept_there() {
+        let folder = Path::new("/mnt/media/backups/monthly");
+        assert_eq!(unfinished_note(folder, &[], 0), "");
+        let note = unfinished_note(
+            folder,
+            &["150-1".to_string(), "250-1".to_string()],
+            9_300_000_000,
+        );
+        assert!(note.contains("about 10 GB"), "{note}");
+        assert!(
+            note.contains("150-1, 250-1 in /mnt/media/backups/monthly"),
+            "{note}"
+        );
+        assert!(note.contains("never deleted automatically"), "{note}");
     }
     #[test]
     fn monthly_retention_zero_keeps_everything_and_reclaims_old_ssd_copies() {
