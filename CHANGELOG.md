@@ -9,7 +9,7 @@
   - `runc` and `podman-docker`, which clash with Docker's packages, must be removed first: setup says so. Podman itself can stay.
   - SELinux and firewalld are handled as on Fedora.
   - Version 9 is refused before anything changes: its Python (3.9) is older than NekoServer needs. Oracle Linux is not covered.
-  - Tried on AlmaLinux 10.2 under WSL: recognised by itself, it installed what it lacked (openssl, pciutils, EPEL), reached 26 of 28 steps (the other two need the owner's Tailscale account and phone) and passed every feature check (45). RHEL itself and Rocky Linux have not been tried yet.
+  - Tried on AlmaLinux 10.2 under WSL: recognised by itself, it installed what it lacked (openssl, pciutils, EPEL), reached 26 of 28 steps (the other two need the owner's Tailscale account and phone), passed every feature check (45) and the whole fault suite (30: the monthly update and the nightly backup cut off at each stage, a crash, Docker restarting, the USB drive and the HDD unplugged, the HDD full). RHEL itself and Rocky Linux have not been tried yet.
 
 ## v0.31.0 — 2026-10-23
 
