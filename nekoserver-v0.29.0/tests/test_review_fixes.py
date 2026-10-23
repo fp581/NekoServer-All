@@ -366,6 +366,21 @@ class ExistingDockerTests(unittest.TestCase):
             self.assertEqual(json.loads(daemon.read_text()), {'data-root': '/home/docker-data'})   # untouched
         self.assertIn('## If Docker is already used on this PC', (ROOT / 'STORAGE.md').read_text())
 
+    def test_an_earlier_installs_store_after_a_reinstall_points_to_reattach(self):
+        from modules import docker
+        with tempfile.TemporaryDirectory() as d:
+            ssd = Path(d)
+            (ssd / 'docker-engine/overlay2').mkdir(parents=True)
+            default = ssd / 'var-lib-docker'   # this PC's own Docker store: empty, as after a reinstall
+            with mock.patch.object(docker, 'Path', side_effect=lambda p: default if p == '/var/lib/docker' else Path(p)):
+                with self.assertRaisesRegex(RuntimeError, 'not empty; refusing'):
+                    docker.check_existing_docker(ssd / 'docker-engine')
+                (ssd / 'installer').mkdir()
+                (ssd / 'installer/host-checkpoint.json').write_text('{}')
+                with self.assertRaisesRegex(RuntimeError, r'earlier NekoServer install.*RECOVERY\.md.*recover\.py reattach'):
+                    docker.check_existing_docker(ssd / 'docker-engine')
+        self.assertIn('## Replace the OS and reattach the existing store', (ROOT / 'RECOVERY.md').read_text())
+
 
 class BrowserLaunchTests(unittest.TestCase):
     """Opening a setup page never installs a browser (Firefox on Ubuntu is a snap)."""

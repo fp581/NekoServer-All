@@ -94,6 +94,13 @@ def check_existing_docker(target):
         raise already_used(default, target)
     if target.exists() and any(target.iterdir()):
         # Safe to reuse a target only when Docker already points to it.
+        if (target.parent / 'installer/host-checkpoint.json').is_file():
+            # The usual reason: Linux was reinstalled and the SSD put back. Name the way out.
+            raise RuntimeError(f'The SSD already holds the apps of an earlier NekoServer install ({target}); after '
+                               f'reinstalling Linux they are taken over with a check of the Docker version first, not by '
+                               f'setup itself. Follow "Replace the OS and reattach the existing store" in RECOVERY.md '
+                               f'(sudo python3 recover.py reattach, in {target.parent}/installer/releases/v{VERSION}), '
+                               f'then run setup again')
         raise RuntimeError(f'{target} is not empty; refusing to adopt existing Docker data without migration verification')
 
 
