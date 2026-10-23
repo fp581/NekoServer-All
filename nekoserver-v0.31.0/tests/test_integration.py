@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import gateway_tools  # noqa: E402
+import host  # noqa: E402
 from modules import (app_backup, dashboard, docker, heartbeat, host_backup, maintenance,  # noqa: E402
                      media_monitor, music_backup, notifications, photo_backup,
                      photo_preservation, server_os)
@@ -128,6 +129,40 @@ class GeneratedCommandTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
 
+# The deciding lines of real /etc/os-release files, and the family setup uses there
+# (None: refused before any package manager runs).
+RELEASES = (
+    ('debian', 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nVERSION_ID="13"\nVERSION_CODENAME=trixie\nID=debian\n'),
+    ('debian', 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\nID=debian\n'),
+    ('debian', 'PRETTY_NAME="Ubuntu 24.04.3 LTS"\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\n'),
+    ('debian', 'PRETTY_NAME="Ubuntu 26.04 LTS"\nVERSION_ID="26.04"\nID=ubuntu\nID_LIKE=debian\n'),
+    ('debian', 'NAME="Linux Mint"\nID=linuxmint\nID_LIKE="ubuntu debian"\nVERSION_ID="22"\nUBUNTU_CODENAME=noble\n'),
+    ('debian', 'NAME="LMDE"\nID=linuxmint\nID_LIKE=debian\nVERSION_ID="6"\n'),
+    ('debian', 'NAME="Pop!_OS"\nID=pop\nID_LIKE="ubuntu debian"\nVERSION_ID="24.04"\n'),
+    ('debian', 'NAME="elementary OS"\nID=elementary\nID_LIKE=ubuntu\nVERSION_ID="8"\n'),
+    ('debian', 'NAME="Zorin OS"\nID=zorin\nID_LIKE="ubuntu debian"\nVERSION_ID="18"\n'),
+    ('debian', 'NAME="Kali GNU/Linux"\nID=kali\nID_LIKE=debian\nVERSION_ID="2025.3"\n'),
+    ('arch', 'NAME="Arch Linux"\nPRETTY_NAME="Arch Linux"\nID=arch\nBUILD_ID=rolling\n'),
+    ('arch', 'NAME="Nyarch Linux"\nID=nyarch\nID_LIKE=arch\n'),
+    ('arch', 'NAME="Manjaro Linux"\nID=manjaro\nID_LIKE=arch\nBUILD_ID=rolling\n'),
+    ('arch', 'NAME="EndeavourOS"\nID=endeavouros\nID_LIKE=arch\nBUILD_ID=rolling\n'),
+    ('arch', 'NAME="CachyOS Linux"\nID=cachyos\nID_LIKE=arch\nBUILD_ID=rolling\n'),
+    ('arch', 'NAME="Garuda Linux"\nID=garuda\nID_LIKE=arch\n'),
+    ('fedora', 'NAME="Fedora Linux"\nVERSION="44 (Workstation Edition)"\nID=fedora\nVERSION_ID=44\nVARIANT_ID=workstation\n'),
+    ('fedora', 'NAME="Fedora Linux"\nVERSION="43 (Server Edition)"\nID=fedora\nVERSION_ID=43\nVARIANT_ID=server\n'),
+    ('fedora', 'NAME="Fedora Linux"\nVERSION="42 (KDE Plasma Desktop Edition)"\nID=fedora\nVERSION_ID=42\nVARIANT_ID=kde\n'),
+    (None, 'NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\nVERSION_ID="10.0"\n'),
+    (None, 'NAME="AlmaLinux"\nID="almalinux"\nID_LIKE="rhel centos fedora"\nVERSION_ID="10.0"\n'),
+    (None, 'NAME="Red Hat Enterprise Linux"\nID="rhel"\nID_LIKE="fedora"\nVERSION_ID="10.0"\n'),
+    (None, 'NAME="CentOS Stream"\nID="centos"\nID_LIKE="rhel fedora"\nVERSION_ID="10"\n'),
+    (None, 'NAME="openSUSE Tumbleweed"\nID="opensuse-tumbleweed"\nID_LIKE="opensuse suse"\n'),
+    (None, 'NAME="Alpine Linux"\nID=alpine\nVERSION_ID=3.22.1\n'),
+    (None, 'NAME=NixOS\nID=nixos\nVERSION_ID="25.05"\n'),
+    (None, 'NAME=Gentoo\nID=gentoo\n'),
+    (None, 'NAME="Void"\nID="void"\n'),
+)
+
+
 class InstallScriptTests(unittest.TestCase):
     """install.sh up to the point it starts the installer, with the real df and coreutils;
     only pacman, the network tools and the system identity are stood in for."""
@@ -159,6 +194,7 @@ class InstallScriptTests(unittest.TestCase):
         text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
         text = re.sub(r'(?m)^        python3 "\$ROOT/host.py" repair$', '        echo REPAIR >> "$LOG"', text)
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
+        text = text.replace('system_path=/var/cache/libdnf5', 'system_path=' + str(system_path))
         # No unfinished monthly update, whatever this test machine is running right now.
         text = text.replace('/etc/nekoserver-backups/maintenance-resume.json', str(self.root / 'maintenance-resume.json'))
         # The certificate bundle as present, whatever this test machine has.
@@ -253,6 +289,56 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('Debian / Ubuntu', result.stderr)
         self.assertEqual(log, '')
+
+    def use_fedora(self, release='ID=fedora\nVERSION_ID=44\n'):
+        (self.root / 'etc/os-release').write_text(release)
+        (self.root / 'bin/pacman').unlink()
+        path = self.root / 'bin/dnf'
+        path.write_text('#!/bin/sh\necho "DNF $*" >> "$LOG"\nexit 0\n')
+        path.chmod(0o755)
+
+    def test_fedora_refreshes_lists_without_upgrading(self):
+        self.use_fedora()
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('DNF -q makecache', log)
+        self.assertNotIn('upgrade', log)
+        self.assertLess(log.index('DNF -q makecache'), log.index('BOOTSTRAP'))
+        self.assertLess(log.index('BOOTSTRAP'), log.index('START --wizard'))
+
+    def test_too_old_a_fedora_stops_before_dnf_runs(self):
+        self.use_fedora('ID=fedora\nVERSION_ID=41\nPRETTY_NAME="Fedora Linux 41 (Server Edition)"\n')
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('needs Fedora 42 or newer; this is Fedora Linux 41 (Server Edition)', result.stderr)
+        self.assertEqual(log, '')
+
+    def test_setup_and_the_installer_agree_on_every_distribution(self):
+        # install.sh picks the package manager and the installer (host.detect) everything
+        # after it: a system one accepts and the other refuses would stop setup halfway.
+        # Every package manager is present, so only os-release decides.
+        for name in ('apt-get', 'dpkg-query', 'dnf'):
+            path = self.root / 'bin' / name
+            path.write_text('#!/bin/sh\necho "' + name.upper() + ' $*" >> "$LOG"\nexit 0\n')
+            path.chmod(0o755)
+        managers = {'arch': 'PACMAN', 'debian': 'APT-GET', 'fedora': 'DNF'}
+        release = self.root / 'etc/os-release'
+        for expected, text in RELEASES:
+            with self.subTest(release=text.splitlines()[0]):
+                release.write_text(text)
+                result, log = self.run_script(self.root)
+                family = host.detect(str(release))
+                if expected is None:
+                    self.assertIsNone(family)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('Automatic setup supports', result.stderr)
+                    self.assertEqual(log, '')
+                else:
+                    self.assertEqual(family.name if family else None, expected)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    used = {word for word in managers.values() if word + ' ' in log}
+                    self.assertEqual(used, {managers[expected]})
+                    self.assertIn('START --wizard', log)
 
     def test_unmeasurable_space_is_reported_not_silent(self):
         broken = self.root / 'brokendf'

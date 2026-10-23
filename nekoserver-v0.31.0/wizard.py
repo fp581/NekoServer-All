@@ -9,12 +9,14 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 
 import guided_setup
 from neko_common import VERSION, atomic_json, dashboard_port, mount_path, safe_path, settings_path
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
+RELEASE = re.compile(r'v(\d{1,9})\.(\d{1,9})\.(\d{1,9})')
 CREDENTIALS = 'secrets/accounts/APP-CREDENTIALS.txt'
 
 STEPS = {
@@ -78,6 +80,50 @@ def prepare_settings(root=ROOT, account=None):
         os.chown(path, account.pw_uid, account.pw_gid)
     os.chmod(path, 0o600)
     return path, True
+
+
+def release_version(name, prefix=''):
+    """(major, minor, patch) of a folder named prefix + 'v1.2.3', else None."""
+    match = RELEASE.fullmatch(name[len(prefix):]) if name.startswith(prefix) else None
+    return tuple(int(n) for n in match.groups()) if match else None
+
+
+def earlier_settings(root=ROOT):
+    """For a release folder without settings yet: those of the server already set up on
+    this PC, newest release first, or None. `git pull` moves the release into a folder
+    named for its new version and leaves my-config.json (git does not track it) in the
+    earlier one; setup also keeps a copy on the SSD with the release it ran."""
+    root = Path(root)
+    found = []
+    for folder in root.parent.iterdir() if root.parent.is_dir() else ():
+        version = release_version(folder.name, 'nekoserver-')
+        if version and folder != root and (folder / SETTINGS).is_file():
+            found.append((version, folder / SETTINGS))
+    if not found:
+        releases = data_folder(read_json(root / 'config.json')) / 'installer/releases'
+        for folder in releases.iterdir() if releases.is_dir() else ():
+            version = release_version(folder.name)
+            if version and (folder / 'config.json').is_file():
+                found.append((version, folder / 'config.json'))
+    return next((path for _, path in sorted(found, reverse=True) if read_json(path)), None)
+
+
+def take_earlier_settings(root=ROOT, account=None, prompt=input, output=print):
+    """Offer the settings earlier_settings finds; True when they were copied in as
+    my-config.json. Without them an update would set the server up from the start."""
+    source = earlier_settings(root)
+    if source is None:
+        return False
+    output('This PC already has a NekoServer server set up. Its settings are in ' + str(source) + '.')
+    if not ask('Use them for this release (yes when updating)?', prompt, output):
+        output('A new settings file is made instead: setup asks for the drives and passwords again.')
+        return False
+    path = Path(root) / SETTINGS
+    atomic_json(path, read_json(source))
+    if account is not None:
+        os.chown(path, account.pw_uid, account.pw_gid)
+    output('Copied them to ' + str(path) + '.')
+    return True
 
 
 def ask(question, prompt=input, output=print):
@@ -227,6 +273,8 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
             output('Settings file not found: ' + str(path))
             return 2
     else:
+        if not (Path(root) / SETTINGS).exists():
+            take_earlier_settings(root, sudo_account(), prompt, output)
         path, created = prepare_settings(root, sudo_account())
     for line in WELCOME:
         output(line)
