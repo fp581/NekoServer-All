@@ -395,10 +395,13 @@ PACKAGE_LOCK = '/run/nekoserver-packages.lock'
 PACMAN_LOCK = '/var/lib/pacman/db.lck'
 # Where snapd mounts installed snaps: Ubuntu's folder, and other systems'.
 SNAP_FOLDERS = ('/snap', '/var/lib/snapd/snap')
-SNAP_DOCKER = ('Docker is installed here as a snap. Its own Docker would run beside the one NekoServer uses '
-               'and could take the apps to its own data folder. NekoServer uses Docker\'s official packages and '
-               'does not mix them: if nothing else uses the snap\'s containers, remove it (sudo snap remove '
-               'docker), then run setup again.')
+# Tried on Ubuntu: the snap's Docker takes over /run/docker.sock at once, and after it is
+# removed there is no socket until Docker is restarted.
+SNAP_DOCKER = ('Docker is installed here as a snap. Its Docker takes over the socket every docker command uses '
+               '(/run/docker.sock), so NekoServer\'s backups, updates and setup would reach it instead of the '
+               'Docker that runs your apps. NekoServer uses Docker\'s official packages and does not mix them: if '
+               'nothing else uses the snap\'s containers, remove it (sudo snap remove docker), restart Docker if it '
+               'is installed (sudo systemctl restart docker.socket docker), then run setup again.')
 
 
 def snap_docker(root='/'):

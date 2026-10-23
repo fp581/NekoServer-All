@@ -119,5 +119,31 @@ class GatewayListTests(unittest.TestCase):
             gateway_tools.selected(config)
 
 
+class ReadinessTests(unittest.TestCase):
+    CONFIG = {'gateway': {'services': ['navidrome'], 'confirmed_services': ['navidrome']}, 'media': {},
+              'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
+
+    def setUp(self):
+        installed = mock.patch.object(gateway_tools, 'installed', return_value=True)   # the app is set up
+        installed.start()
+        self.addCleanup(installed.stop)
+
+    def test_a_snap_docker_is_named_before_any_container_is_checked(self):
+        # Tried on Ubuntu: the snap's Docker took over Docker's socket, so every app's
+        # container looked missing and the gateway said only that containers were wrong.
+        with mock.patch.object(gateway_tools.host, 'snap_docker', return_value=True), \
+                mock.patch('acceptance.containers') as containers:
+            with self.assertRaisesRegex(RuntimeError, 'Docker is installed here as a snap'):
+                gateway_tools.readiness(dict(self.CONFIG))
+        containers.assert_not_called()
+
+    def test_the_containers_not_verified_are_named(self):
+        rows = [{'id': 'container:navidrome', 'name': 'Music / navidrome', 'status': 'fail'}]
+        with mock.patch.object(gateway_tools.host, 'snap_docker', return_value=False), \
+                mock.patch('acceptance.containers', return_value=rows):
+            with self.assertRaisesRegex(RuntimeError, r'not verified: Music / navidrome \(sudo docker ps -a'):
+                gateway_tools.readiness(dict(self.CONFIG))
+
+
 if __name__ == '__main__':
     unittest.main()
