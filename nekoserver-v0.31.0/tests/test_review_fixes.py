@@ -14,6 +14,12 @@ sys.path.insert(0, str(ROOT))
 import neko_common  # noqa: E402
 from modules import media  # noqa: E402
 
+try:
+    import yaml   # only these tests read YAML; CI installs it (.github/ci-requirements.txt)
+except ImportError:
+    yaml = None
+NO_YAML = 'PyYAML is not installed (CI installs it from .github/ci-requirements.txt)'
+
 
 def render(name, uid=1234, gid=2345, tz='Europe/London'):
     template = (ROOT / 'compose' / name).read_text()
@@ -95,8 +101,8 @@ class JellyfinGpuTests(unittest.TestCase):
         self.assertEqual(media.adapt_to_host('jellyfin', text, gpu_present=True), text)
         self.assertIn(media.GPU_DEVICE_BLOCK, text)
 
+    @unittest.skipIf(yaml is None, NO_YAML)
     def test_gpu_block_removed_without_device_and_compose_stays_valid(self):
-        import yaml
         adapted = media.adapt_to_host('jellyfin', render('jellyfin.yaml'), gpu_present=False)
         service = yaml.safe_load(adapted)['services']['jellyfin']
         self.assertNotIn('devices', service)
@@ -118,8 +124,8 @@ class TorrentPortTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(RuntimeError):
                 media.torrent_port({'torrent_port': bad})
 
+    @unittest.skipIf(yaml is None, NO_YAML)
     def test_opened_port_is_published_and_set_in_qbittorrent(self):
-        import yaml
         text = media.adapt_to_host('qbittorrent', render('qbittorrent.yaml'), peer_port=51413)
         service = yaml.safe_load(text)['services']['qbittorrent']
         self.assertEqual(service['environment']['TORRENTING_PORT'], '51413')
