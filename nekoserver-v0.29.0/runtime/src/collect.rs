@@ -731,6 +731,9 @@ fn startup() -> Value {
     json!(parse_startup(&out))
 }
 fn parse_startup(out: &str) -> Vec<Value> {
+    // A name that is an alias of another listed unit (Debian's smb.service is a link to
+    // smbd.service) is answered with that unit's Id: each unit is listed once.
+    let mut seen = std::collections::HashSet::new();
     out.split("\n\n")
         .filter_map(|block| {
             let fields = block
@@ -739,7 +742,7 @@ fn parse_startup(out: &str) -> Vec<Value> {
                 .collect::<std::collections::HashMap<_, _>>();
             let id = *fields.get("Id")?;
             let label = STARTUP.iter().find(|u| u.0 == id)?.1;
-            if fields.get("LoadState") != Some(&"loaded") {
+            if fields.get("LoadState") != Some(&"loaded") || !seen.insert(id) {
                 return None;
             }
             let file = fields.get("UnitFileState").copied().unwrap_or("");
@@ -1760,6 +1763,15 @@ mod os_tests {
         .into_iter()
         .collect();
         assert_eq!(app_of(&other), None);
+    }
+    #[test]
+    fn an_aliased_unit_is_listed_once() {
+        // Debian: smb.service is a link to smbd.service, so both names answer as smbd.
+        let block =
+            "Id=smbd.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive";
+        let units = parse_startup(&format!("{block}\n\n{block}"));
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0]["unit"], "smbd.service");
     }
     #[test]
     fn nvidia_rows_and_startup_units_are_read() {

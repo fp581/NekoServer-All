@@ -2357,14 +2357,14 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
 /// before its update was installed, once the resume service has put things right.
 fn cut_off_reason(phase: Option<&str>) -> String {
     let when = match phase {
-        Some("snapshot") => "while it was taking the snapshot (the apps were stopped)",
+        Some("snapshot") => "while it was taking the snapshot, with the apps stopped",
         Some("backed_up") => "while it was testing the snapshot",
         Some("updating") => "while it was installing the updates",
         Some(_) => "part-way",
         None => "before it took the snapshot",
     };
     format!(
-        "The monthly run was cut off {when} (a power cut or a restart). The apps were started again with their versions from before the run; the next monthly run tries again"
+        "The monthly run was cut off (a power cut or a restart) {when}. The apps were started again with their versions from before the run; the next monthly run tries again"
     )
 }
 /// The update was installed (the journal says so): finishing it never rolls back.
@@ -3178,11 +3178,12 @@ mod tests {
     }
     #[test]
     fn a_cut_off_run_says_when_it_was_cut_off() {
-        assert!(cut_off_reason(Some("snapshot"))
-            .contains("taking the snapshot (the apps were stopped)"));
+        assert!(
+            cut_off_reason(Some("snapshot")).contains("taking the snapshot, with the apps stopped")
+        );
         assert!(cut_off_reason(Some("backed_up")).contains("testing the snapshot"));
         assert!(cut_off_reason(None).contains("before it took the snapshot"));
-        assert!(cut_off_reason(Some("odd")).contains("cut off part-way"));
+        assert!(cut_off_reason(Some("odd")).contains("restart) part-way"));
         assert!(cut_off_reason(Some("updating")).contains("the next monthly run tries again"));
     }
     /// Immich's redis has no volumes: the rehearsal copy must not gain "volumes": null
