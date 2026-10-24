@@ -1186,3 +1186,72 @@ class ReleaseIdentityTests(unittest.TestCase):
             for found in re.findall(r'(?:releases|nekoserver-[a-z]+)/v(\d+\.\d+\.\d+)', doc.read_text()):
                 self.assertEqual(found, VERSION, doc.name)
 
+
+
+class KeptCopyTests(unittest.TestCase):
+    """The copy of the release kept on the SSD (modules/recovery.preserve): another build of
+    the same version replaces NekoServer's own untouched copy, setting it aside; a copy
+    someone changed is never overwritten; set-aside copies go with their version."""
+    def setUp(self):
+        from modules import recovery
+        self.recovery = recovery
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = Path(self.tmp.name) / 'ssd'
+        self.project = Path(self.tmp.name) / 'nekoserver'
+        for folder in ('modules', 'compose', 'dashboard', 'setup-gui', 'runtime/src', 'runtime/licenses', 'runtime/bin'):
+            (self.project / folder).mkdir(parents=True)
+        for name in ('install.sh', 'installer.py', 'README.md', 'runtime/build.py', 'runtime/Cargo.toml', 'runtime/Cargo.lock',
+                     'runtime/build.json', 'runtime/bin/nekoserver-runtime', 'runtime/THIRD-PARTY-NOTICES.md', 'runtime/src/main.rs'):
+            (self.project / name).write_text(name + ' v1\n')
+        self.data.mkdir()
+        patcher = mock.patch.object(self.recovery.os.path, 'ismount', return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.logged = []
+
+    def preserve(self):
+        return self.recovery.preserve(self.data, self.project, {'data_mount': str(self.data)}, self.logged.append)
+
+    def set_aside(self, dest):
+        return [p for p in dest.parent.iterdir() if p.name.startswith(dest.name + self.recovery.SET_ASIDE)]
+
+    def test_another_build_of_the_version_replaces_the_untouched_kept_copy(self):
+        dest = self.preserve()
+        self.assertEqual((dest / 'runtime/bin/nekoserver-runtime').read_text(), 'runtime/bin/nekoserver-runtime v1\n')
+        (self.project / 'runtime/bin/nekoserver-runtime').write_text('v2 build\n')
+        (self.project / 'runtime/build.json').write_text('v2 record\n')
+        self.assertEqual(self.preserve(), dest)
+        self.assertEqual((dest / 'runtime/bin/nekoserver-runtime').read_text(), 'v2 build\n')
+        aside = self.set_aside(dest)
+        self.assertEqual(len(aside), 1)
+        self.assertEqual((aside[0] / 'runtime/bin/nekoserver-runtime').read_text(), 'runtime/bin/nekoserver-runtime v1\n')
+        self.assertTrue(any('set aside at ' + str(aside[0]) in line for line in self.logged), self.logged)
+        self.assertTrue(self.recovery.own_untouched(dest))
+
+    def test_a_kept_copy_someone_changed_is_never_overwritten(self):
+        dest = self.preserve()
+        (dest / 'install.sh').write_text('edited by hand\n')
+        (self.project / 'install.sh').write_text('install.sh v2\n')
+        with self.assertRaisesRegex(RuntimeError, 'not as NekoServer wrote it'):
+            self.preserve()
+        self.assertEqual((dest / 'install.sh').read_text(), 'edited by hand\n')
+        self.assertEqual([p.name for p in dest.parent.iterdir()], [dest.name])
+
+    def test_one_set_aside_copy_per_version_and_it_goes_with_its_version(self):
+        import native_runtime
+        dest = self.preserve()
+        for build in ('v2', 'v3'):
+            (self.project / 'runtime/bin/nekoserver-runtime').write_text(build + '\n')
+            self.preserve()
+        self.assertEqual(len(self.set_aside(dest)), 1)
+        # Retention: the set-aside copy of the current version stays; one of another version goes.
+        other = dest.parent / 'v0.1.0.replaced-20260101-000000'
+        other.mkdir()
+        lib, units = Path(self.tmp.name) / 'lib', Path(self.tmp.name) / 'units'
+        lib.mkdir()
+        units.mkdir()
+        removed = native_runtime.retire_old(self.data, self.logged.append, lib=lib, units=units)
+        self.assertIn(other, removed)
+        self.assertFalse(other.exists())
+        self.assertEqual(len(self.set_aside(dest)), 1)

@@ -132,7 +132,10 @@ def retire_old(data,log=print,lib=Path('/usr/local/lib'),units=SYSTEMD_UNITS):
     # Docker's start guard (modules/docker.py) has its own per-release folder on the SSD.
     for home in [Path(lib)/name for name in SYSTEM_HOMES]+[data/'installer/runtime',data/'installer/guards']:
         old+=[p for p in release_folders(home) if p.name!=current and not in_use(p,units)]
-    old+=[p for p in release_folders(data/'installer/releases')[:-KEEP_BUNDLES] if p.name!=current]
+    releases=data/'installer/releases'
+    old+=[p for p in release_folders(releases)[:-KEEP_BUNDLES] if p.name!=current]
+    # A kept copy set aside by another build of its version (modules/recovery.set_aside) goes with that version.
+    old+=[p for p in (releases.glob('v*.replaced-*') if releases.is_dir() else []) if p.is_dir() and p.name.split('.replaced-')[0]!=current]
     for folder in old:shutil.rmtree(folder,ignore_errors=True)
     if old:log('Removed the files of earlier releases no longer in use: '+', '.join(str(p) for p in old))
     return old
