@@ -21,15 +21,15 @@ You need a 64-bit PC with one of those installed, plus an SSD, an HDD and a USB 
 
 ```bash
 git clone https://github.com/fp581/NekoServer-All.git
-cd NekoServer-All/nekoserver-v0.37.0
+cd NekoServer-All/nekoserver-v0.37.1
 ```
 
-Then follow the step-by-step guide: **[nekoserver-v0.37.0/README.md](nekoserver-v0.37.0/README.md)**.
+Then follow the step-by-step guide: **[nekoserver-v0.37.1/README.md](nekoserver-v0.37.1/README.md)**.
 
-Already running NekoServer? Run `git pull`, then `sudo bash install.sh` in the new version's folder: setup offers the settings left in the earlier one ([Updating to a newer release](nekoserver-v0.37.0/README.md#install)).
+Already running NekoServer? Run `git pull`, then `sudo bash install.sh` in the new version's folder: setup offers the settings left in the earlier one ([Updating to a newer release](nekoserver-v0.37.1/README.md#install)).
 
 ## More
 
 - What changed in each version: [CHANGELOG.md](CHANGELOG.md)
-- How support for another Linux family is added: [PORTING.md](nekoserver-v0.37.0/PORTING.md)
+- How support for another Linux family is added: [PORTING.md](nekoserver-v0.37.1/PORTING.md)
 - Every change is tested automatically in GitHub Actions. The tests simulate the hardware, so try a full round on your own PC (play a video, upload a photo, restore a file) before trusting it with your only copy of anything.

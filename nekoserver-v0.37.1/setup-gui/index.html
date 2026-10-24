@@ -20,10 +20,10 @@
   <span class="badge" id="phase-badge">Connecting…</span>
 </header>
 
-<div id="question" class="notice" role="status" hidden>
+<output id="question" class="notice" hidden>
   <span class="pulse" aria-hidden="true"></span>
-  <div><strong>Setup needs an answer.</strong> <span class="muted">Answer here or in the terminal, whichever you like.</span></div>
-</div>
+  <span><strong>Setup needs an answer.</strong> <span class="muted">Answer here or in the terminal, whichever you like.</span></span>
+</output>
 
 <main id="main">
   <!-- Before setup starts -->
@@ -52,7 +52,7 @@
     <form class="now ask" id="ask" hidden>
       <div class="eyebrow" id="ask-label">A QUESTION</div>
       <pre class="context" id="ask-context"></pre>
-      <label class="prompt" for="ask-input" id="ask-prompt"></label>
+      <label class="prompt" for="ask-input" id="ask-prompt">Your answer</label>
       <div class="answer" id="ask-answer">
         <input id="ask-input" autocomplete="off" spellcheck="false">
         <button class="primary" type="submit" id="ask-send">Send</button>

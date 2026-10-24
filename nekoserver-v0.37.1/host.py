@@ -573,6 +573,8 @@ class Debian(PackageLock, Family):
         'vulkan-intel': 'mesa-vulkan-drivers', 'lib32-vulkan-intel': 'mesa-vulkan-drivers:i386',
         'vulkan-radeon': 'mesa-vulkan-drivers', 'lib32-vulkan-radeon': 'mesa-vulkan-drivers:i386',
         'bluez-utils': 'bluez',
+        # Building the runtime: Rust comes as two packages here.
+        'rust': ('rustc', 'cargo'),
     })
     services = MappingProxyType({'samba': 'smbd.service', 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/apt/sources.list', '/etc/apt/sources.list.d', '/etc/apt/preferences.d',
@@ -960,6 +962,8 @@ class Fedora(PackageLock, Family):
         'vulkan-intel': 'mesa-vulkan-drivers', 'lib32-vulkan-intel': 'mesa-vulkan-drivers.i686',
         'vulkan-radeon': 'mesa-vulkan-drivers', 'lib32-vulkan-radeon': 'mesa-vulkan-drivers.i686',
         'bluez-utils': 'bluez',
+        # Building the runtime: Rust comes as two packages here.
+        'rust': ('rust', 'cargo'),
     })
     services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/dnf/dnf.conf', '/etc/yum.repos.d')
@@ -1179,6 +1183,8 @@ class Suse(Fedora):
         'vulkan-radeon': 'libvulkan_radeon', 'lib32-vulkan-radeon': 'libvulkan_radeon-32bit',
         'firefox': 'MozillaFirefox',
         'bluez-utils': 'bluez',
+        # Building the runtime: Rust comes as two packages here.
+        'rust': ('rust', 'cargo'),
     })
     settings = ('/etc/zypp/zypp.conf', '/etc/zypp/repos.d')
     repositories = MappingProxyType({})
@@ -1246,10 +1252,55 @@ def bootstrap(family=None, log=print):
     family.install(APP_PACKAGES)
 
 
+# What building the runtime on this PC needs (runtime/build.py): Rust with cargo, and
+# the C compiler cargo links with. Cargo.toml's rust-version is the oldest Rust that
+# builds it; a family whose Rust is older offers a newer one under a versioned name
+# (Ubuntu 24.04: rustc-1.85 and cargo-1.85).
+TOOLCHAIN_PACKAGES = ('rust', 'gcc')
+RUST_VERSION = re.compile(r'^rust-version\s*=\s*"(\d+)\.(\d+)', re.MULTILINE)
+
+
+def oldest_rust(cargo_toml=None):
+    """(major, minor) of the oldest Rust that builds the runtime, from Cargo.toml."""
+    text = Path(cargo_toml or Path(__file__).resolve().parent / 'runtime/Cargo.toml').read_text()
+    match = RUST_VERSION.search(text)
+    return (int(match[1]), int(match[2])) if match else (0, 0)
+
+
+def rustc_version(run=subprocess.run):
+    """(major, minor) of the rustc on PATH, or None when there is none."""
+    try:
+        result = run(['rustc', '--version'], capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r'rustc (\d+)\.(\d+)', result.stdout or '')
+    return (int(match[1]), int(match[2])) if match else None
+
+
+def toolchain(family=None, log=print, oldest=None, version=rustc_version):
+    """Install what building the runtime needs: Rust (cargo, rustc) and gcc, and on a
+    family whose plain Rust is older than Cargo.toml allows, the versioned newer one
+    (which build.py then finds by its versioned name)."""
+    family = family or current()
+    oldest = oldest or oldest_rust()
+    log('Installing what building the runtime needs: Rust and a C compiler')
+    family.install(TOOLCHAIN_PACKAGES)
+    found = version()
+    if found is not None and found >= oldest:
+        return
+    label = '%d.%d' % oldest
+    if family.name != 'debian':
+        raise RuntimeError('Rust ' + label + ' or newer is needed to build the runtime; this system has '
+                           + ('%d.%d' % found if found else 'none') + '. Update it, or install a newer Rust and run setup again.')
+    # Ubuntu keeps the plain rustc at the release's version and newer ones beside it.
+    log('This system\'s Rust is older than ' + label + ': installing rustc-' + label + ' and cargo-' + label)
+    family.install(['rustc-' + label, 'cargo-' + label])
+
+
 def main(argv):
-    commands = {'bootstrap': bootstrap, 'repair': lambda: current().repair()}
+    commands = {'bootstrap': bootstrap, 'repair': lambda: current().repair(), 'toolchain': toolchain}
     if len(argv) != 1 or argv[0] not in commands:
-        print('usage: python3 host.py bootstrap|repair', file=sys.stderr)
+        print('usage: python3 host.py bootstrap|repair|toolchain', file=sys.stderr)
         return 2
     try:
         commands[argv[0]]()

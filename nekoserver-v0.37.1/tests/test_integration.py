@@ -220,6 +220,11 @@ class InstallScriptTests(unittest.TestCase):
         text = text.replace('/run/ostree-booted', str(self.root / 'ostree-booted'))
         text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
         text = re.sub(r'(?m)^        python3 "\$ROOT/host.py" repair$', '        echo REPAIR >> "$LOG"', text)
+        # The runtime build: asked for with NEEDS_BUILD=1, and logged instead of run.
+        text = text.replace('python3 "$ROOT/native_runtime.py" needs-build', '[ -n "${NEEDS_BUILD:-}" ]')
+        text = text.replace('    python3 "$ROOT/host.py" toolchain', '    echo TOOLCHAIN >> "$LOG"')
+        text = re.sub(r'(?m)^(\s*)(runuser -u "\$builder" -- env HOME="[^"]*" |NEKOSERVER_BUILD_AS_ROOT=1 )python3 "\$ROOT/runtime/build.py"$',
+                      r'\1echo "BUILD \2" >> "$LOG"', text)
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
         text = text.replace('system_path=/var/cache/libdnf5', 'system_path=' + str(system_path))
         text = text.replace('system_path=/var/cache/dnf\n', 'system_path=' + str(system_path) + '\n')
@@ -311,6 +316,25 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 100)
         self.assertNotIn('trying again', result.stdout)
         self.assertEqual(log.count('update'), 1)
+
+    def test_the_runtime_is_built_on_this_pc_when_the_release_has_none(self):
+        self.use_debian()
+        os.environ['NEEDS_BUILD'] = '1'
+        self.addCleanup(os.environ.pop, 'NEEDS_BUILD', None)
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Building NekoServer's background program for this PC", result.stdout)
+        self.assertLess(log.index('BOOTSTRAP'), log.index('TOOLCHAIN'))      # Rust after the apps' packages
+        self.assertLess(log.index('TOOLCHAIN'), log.index('BUILD'))
+        self.assertLess(log.index('BUILD'), log.index('START --wizard'))
+        self.assertIn('BUILD NEKOSERVER_BUILD_AS_ROOT=1', log)               # no sudo user in this test
+        # With a runtime already built from these sources: nothing to build.
+        os.environ.pop('NEEDS_BUILD')
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('TOOLCHAIN', log)
+        self.assertNotIn('BUILD', log)
+        self.assertNotIn('Building', result.stdout)
 
     def test_debian_waits_while_the_system_refreshes_its_lists(self):
         # apt-daily holds the lists' lock; apt-get update would fail at once beside it.

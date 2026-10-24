@@ -1,9 +1,27 @@
-"""Verify the bundled native runtime and deploy without compiling as root."""
-import hashlib,json,platform
+"""Verify the native runtime built for this release (by install.sh on this PC, or the
+static release build) and deploy it without compiling as root."""
+import hashlib,json,platform,sys
 from pathlib import Path
 from neko_common import SYSTEMD_UNITS,VERSION,safe_path,atomic_write,atomic_json
-TARGET='x86_64-unknown-linux-musl'
+TARGET='x86_64-unknown-linux-musl'          # the static release build
+TARGETS=(TARGET,'x86_64-unknown-linux-gnu')  # ... or this PC's own, as install.sh builds it
 NAME='nekoserver-runtime'
+SOURCES=('Cargo.toml','Cargo.lock','build.py')
+
+def expected_sources(root):
+    return {*SOURCES,*[str(p.relative_to(root)) for p in (root/'src').glob('*.rs')]}
+
+def build_needed(project):
+    """True when the release folder has no runtime yet, or one built from other sources
+    than these (install.sh then builds it)."""
+    root=Path(project)/'runtime'
+    try:
+        manifest=json.loads((root/'build.json').read_text())
+        hashes=manifest.get('source_sha256',{})
+        if not (root/'bin'/NAME).is_file() or set(hashes)!=expected_sources(root):return True
+        return any(hashlib.sha256((root/rel).read_bytes()).hexdigest()!=hashes[rel] for rel in hashes)
+    except (OSError,ValueError,AttributeError):
+        return True
 def backend(config):
     """Scheduled jobs always use the bundled Rust runtime since v0.21.1.
 
@@ -22,14 +40,14 @@ def payload(project,config):
     backend(config)
     if platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('The bundled Rust runtime requires x86_64 Linux')
     root=safe_path(Path(project)/'runtime');manifest=json.loads(safe_path(root/'build.json').read_text())
-    if manifest.get('version')!=VERSION or manifest.get('target')!=TARGET:raise RuntimeError('Native build identity does not match this release')
+    if manifest.get('version')!=VERSION or manifest.get('target') not in TARGETS:raise RuntimeError('Native build identity does not match this release')
     binary=safe_path(root/'bin'/NAME).read_bytes()
     if hashlib.sha256(binary).hexdigest()!=manifest.get('binary_sha256') or binary[:6]!=b'\x7fELF\x02\x01':raise RuntimeError('Native executable checksum or format mismatch')
-    expected={'Cargo.toml','Cargo.lock','build.py',*[str(p.relative_to(root)) for p in (root/'src').glob('*.rs')]}
+    expected=expected_sources(root)
     hashes=manifest.get('source_sha256',{})
     if set(hashes)!=expected:raise RuntimeError('Native build source manifest is incomplete')
     for rel in expected:
-        if hashlib.sha256(safe_path(root/rel).read_bytes()).hexdigest()!=hashes[rel]:raise RuntimeError('Native source differs from the bundled build; rebuild explicitly')
+        if hashlib.sha256(safe_path(root/rel).read_bytes()).hexdigest()!=hashes[rel]:raise RuntimeError('The runtime was built from other sources than these; run  sudo bash install.sh  again (it builds the runtime), or python3 runtime/build.py')
     return binary
 
 def deploy(project,config,destination):
@@ -150,3 +168,9 @@ def acceptance_checks(config,modules):
         except (OSError,RuntimeError):pass
         rows.append({'id':'runtime:'+unit,'name':'Native '+unit.removesuffix('.service'),'status':'pass' if good else 'needs_setup','detail':'Selected native executable checksum, loaded command and applicable storage guard must match this release.'})
     return rows
+
+if __name__=='__main__':
+    # install.sh asks: exit 0 when the runtime must be built (none yet, or other sources).
+    if sys.argv[1:]!=['needs-build']:
+        print('usage: python3 native_runtime.py needs-build',file=sys.stderr);sys.exit(2)
+    sys.exit(0 if build_needed(Path(__file__).resolve().parent) else 1)

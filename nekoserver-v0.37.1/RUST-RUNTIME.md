@@ -27,7 +27,7 @@ Every scheduled job and background service runs the bundled Rust program. The Py
 sudo bash install.sh --profile full --apply --config "$PWD/my-config.json"
 ```
 
-The release includes a stripped static x86_64 Linux executable. No Rust compiler, Cargo or dynamically loaded Rust runtime is installed on the server. Its binary and source checksums, version and target are checked before deployment, with no silent fallback if it is damaged. `install.sh` only runs on x86_64, which this executable supports. The native services still need Linux/systemd and external tools such as findmnt, Docker and optional smartctl.
+The repository holds the runtime's sources; the executable is **built on the PC that installs NekoServer**. `sudo bash install.sh` builds it when the release folder has none yet (the first run, and after each update): it installs Rust and a C compiler from the Linux's own packages (Cargo.toml's `rust-version` is the oldest Rust that builds it), then runs `runtime/build.py`, which writes `runtime/bin/nekoserver-runtime` and its record `runtime/build.json` (version, target, rustc, the checksums of the binary and of every source file). Neither is tracked by git. The build is for the PC itself, with its own C library; when the toolchain also has the `x86_64-unknown-linux-musl` standard library and rust-lld, `build.py` makes the static build instead, as the CI does. The record's checksums are checked before every deployment, with no silent fallback: a runtime built from other sources than the release folder's is refused until it is built again. `install.sh` only runs on x86_64. The native services still need Linux/systemd and external tools such as findmnt, Docker and optional smartctl.
 
 ## Safeguards and operation
 
@@ -47,14 +47,14 @@ The workspace only maps UID/GID zero and cannot start an actual unprivileged ser
 
 ## Rebuild and development
 
-Build from an ordinary-user extraction with an installed Rust toolchain and the x86_64-unknown-linux-musl target:
+`sudo bash install.sh` builds the runtime by itself. To build it by hand, as an ordinary user with Rust installed (the static release build needs the musl target too):
 
 ```bash
-rustup target add x86_64-unknown-linux-musl
+rustup target add x86_64-unknown-linux-musl   # optional: the static build
 python3 runtime/build.py
 ```
 
-The build uses Cargo.lock and refreshes the binary/source manifest. It refuses to compile as root. Source/build artifacts under runtime/target are not installation payloads. Preserve the production build and do not install a development test-fixtures executable.
+The build uses Cargo.lock and writes the binary/source record. It refuses to compile as root unless `install.sh` runs it (`NEKOSERVER_BUILD_AS_ROOT=1`). Source/build artifacts under runtime/target are not installation payloads. Do not install a development test-fixtures executable.
 
 
 ## Scheduled media audit

@@ -149,20 +149,24 @@ def answer_from_window(seq, text):
         return True
 
 
-def _wait_for_answer(stream, secret):
-    """A line from the terminal, or the window's answer, whichever comes first (None:
-    nothing can be read from the terminal; the caller asks the plain way)."""
-    with _lock:
-        pending = _pending
+class _Unwatchable(Exception):
+    """The terminal cannot be watched (not a real stream): ask the plain way."""
+
+
+def _terminal(stream):
+    """The file descriptor of a terminal, or None for a pipe, a file or a fake stream."""
     try:
         fd = stream.fileno()
-        if not os.isatty(fd):      # a pipe or a file: read the plain way, nothing to watch
-            return None
+        return fd if os.isatty(fd) else None
     except (AttributeError, OSError, ValueError):
         return None
-    quiet = secret
+
+
+@contextlib.contextmanager
+def _no_echo(fd, quiet):
+    """No echo while a password is typed in the terminal."""
     saved = None
-    if quiet:   # no echo while a password is typed in the terminal
+    if quiet:
         try:
             saved = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
@@ -171,26 +175,56 @@ def _wait_for_answer(stream, secret):
         except termios.error:
             saved = None
     try:
-        while True:
-            if pending is not None and pending['event'].is_set():
-                sys.stdout.write(('••••' if secret else pending['answer']) + '  (from the setup window)\n')
-                sys.stdout.flush()
-                return pending['answer']
-            try:
-                readable, _, _ = select.select([stream], [], [], POLL)
-            except (OSError, ValueError):
-                return None
-            if readable:
-                line = stream.readline()
-                if quiet:
-                    sys.stdout.write('\n')
-                    sys.stdout.flush()
-                if line == '':
-                    raise EOFError
-                return line.rstrip('\n')
+        yield
     finally:
         if saved is not None:
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def _from_window(pending, secret):
+    """The window's answer, once it has one (None until then)."""
+    if pending is None or not pending['event'].is_set():
+        return None
+    sys.stdout.write(('••••' if secret else pending['answer']) + '  (from the setup window)\n')
+    sys.stdout.flush()
+    return pending['answer']
+
+
+def _from_terminal(stream, quiet):
+    """A line typed within POLL seconds (None when none came). EOFError at Ctrl+D."""
+    try:
+        readable, _, _ = select.select([stream], [], [], POLL)
+    except (OSError, ValueError):
+        raise _Unwatchable from None
+    if not readable:
+        return None
+    line = stream.readline()
+    if quiet:
+        sys.stdout.write('\n')
+        sys.stdout.flush()
+    if line == '':
+        raise EOFError
+    return line.rstrip('\n')
+
+
+def _wait_for_answer(stream, secret):
+    """A line from the terminal, or the window's answer, whichever comes first (None:
+    nothing can be read from the terminal; the caller asks the plain way)."""
+    with _lock:
+        pending = _pending
+    fd = _terminal(stream)
+    if fd is None:
+        return None
+    try:
+        with _no_echo(fd, secret):
+            while True:
+                answer = _from_window(pending, secret)
+                if answer is None:
+                    answer = _from_terminal(stream, secret)
+                if answer is not None:
+                    return answer
+    except _Unwatchable:
+        return None
 
 
 class _Tee:

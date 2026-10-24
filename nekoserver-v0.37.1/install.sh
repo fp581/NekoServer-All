@@ -378,4 +378,21 @@ if "$apply" && "$full"; then
     # starts. Installing does not start Docker; its setup step does that on the SSD.
     python3 "$ROOT/host.py" bootstrap
 fi
+if "$apply" && python3 "$ROOT/native_runtime.py" needs-build; then
+    # NekoServer's own background program (the Rust runtime) is built here, on this PC,
+    # the first time and after each update: git keeps its sources, not the binary.
+    echo "Building NekoServer's background program for this PC (Rust is installed from your Linux's packages,"
+    echo 'then the program is compiled). This takes a few minutes and needs the internet.'
+    python3 "$ROOT/host.py" toolchain
+    builder=''
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]] && [[ "$(stat -c %U "$ROOT")" == "$SUDO_USER" ]]; then
+        # The release folder is the person's own: built as them, with their cargo cache.
+        builder=$SUDO_USER
+    fi
+    if [[ -n "$builder" ]]; then
+        runuser -u "$builder" -- env HOME="$(getent passwd "$builder" | cut -d: -f6)" python3 "$ROOT/runtime/build.py"
+    else
+        NEKOSERVER_BUILD_AS_ROOT=1 python3 "$ROOT/runtime/build.py"
+    fi
+fi
 exec python3 "$ROOT/installer.py" "$@"

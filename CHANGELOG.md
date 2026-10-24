@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.37.1 — 2026-10-24
+
+The runtime is now built on the PC that installs NekoServer instead of being kept in git, plus code-quality findings from SonarCloud's review of 0.37.0 and a fuller `.gitignore`. The setup window is unchanged.
+
+### Changed
+- **The Rust runtime is built on your PC, not kept in git.** The repository now holds the runtime's sources alone; the 4 MB executable and its build record (`runtime/bin/`, `runtime/build.json`) are no longer tracked. `sudo bash install.sh` builds the runtime when the release folder has none yet (the first run, and after each update): it installs Rust and a C compiler from your Linux's own packages, then runs `runtime/build.py`, which takes a few minutes. The build is for your PC itself (its own C library); `build.py` still makes the static release build when the toolchain has the musl target and rust-lld, as the CI does. The CI builds the runtime both ways on every change (with the oldest Rust the sources allow, 1.85, and with the pinned release toolchain) but commits nothing.
+- The setup window's longer functions are split into smaller ones (the wizard's "Ready to start?" and its finish, the window's state and request handling, the answer wait); its page marks hidden parts without `!important`, uses `<output>` for the notice and a labelled answer box, and never leaves a promise unhandled.
+- `.gitignore` covers Python and Rust build output, private settings and keys, what setup and the test rig leave behind (logs, state, moved-aside copies) and editor files.
+
+### Upgrade notes
+- After `git pull`, run `sudo bash install.sh` in `nekoserver-v0.37.1`: it offers the settings left in the earlier folder; answer `yes`.
+- The bundled runtime was rebuilt for this release (version number only).
+
 ## v0.37.0 — 2026-10-24
 
 A setup window: `sudo bash install.sh` now opens a small page in the PC's browser, in the dashboard's look, that explains what is being set up and why, lets you leave out the optional parts, and asks every question setup asks so you can answer there or in the terminal. Tried end to end on Ubuntu 24.04 under WSL (the page followed a real run, showed its questions with their context, and an answer given in the page reached setup).

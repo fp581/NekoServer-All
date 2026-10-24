@@ -47,7 +47,7 @@ A family can also override:
 - `repair()`: brings NekoServer's own package-manager settings up to date on every setup run, whether or not anything needs installing. `install.sh` runs it (`python3 host.py repair`) before the package manager first runs.
 - `reboot_pending(root)`: Debian and Ubuntu leave `/run/reboot-required` after an update that needs a restart.
 
-- `packages` maps NekoServer's package names (the Arch names) to the family's own name or names, for example `'docker-compose': 'docker-compose-plugin'`.
+- `packages` maps NekoServer's package names (the Arch names) to the family's own name or names, for example `'docker-compose': 'docker-compose-plugin'`. Two of them are for building the runtime on the PC (`python3 host.py toolchain`, run by `install.sh`): `rust` (cargo and rustc; `('rustc', 'cargo')` on Debian, `('rust', 'cargo')` on Fedora and openSUSE) and `gcc`, the C compiler cargo links with. Cargo.toml's `rust-version` is the oldest Rust that builds it; a family whose plain Rust is older must offer a newer one (Ubuntu 24.04: `rustc-1.85` and `cargo-1.85`, which `toolchain` installs when `rustc` is too old).
 - `services` maps a service to its systemd unit when the name differs. Samba is `smb.service` on Arch and Fedora, but `smbd.service` on Debian and Ubuntu.
 - `settings` lists the family's package-manager settings, which host backups keep.
 - `install()` is shared. It installs only the packages that are missing, never reinstalls or upgrades one that is there, and never upgrades the rest of the system.

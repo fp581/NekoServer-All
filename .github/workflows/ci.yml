@@ -5,19 +5,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      commit_runtime:
-        description: Rebuild the static Rust runtime and commit it (with build.json) to this branch
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
 env:
-  RELEASE_DIR: nekoserver-v0.37.0
-  # Pinned so lint results and the shipped binary only change when this line does.
-  # Matches the rustc recorded in runtime/build.json.
+  RELEASE_DIR: nekoserver-v0.37.1
+  # Pinned so lint results only change when this line does. The runtime itself is built
+  # on the PC that installs NekoServer (install.sh), with the distribution's own Rust;
+  # Cargo.toml's rust-version is the oldest that must still build it.
   RUST_TOOLCHAIN: "1.99.1"
 
 jobs:
@@ -88,57 +84,40 @@ jobs:
             exit 1
           fi
 
-  runtime-manifest:
-    name: Bundled runtime matches its sources
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-      - name: Check build.json against source and binary
-        working-directory: ${{ env.RELEASE_DIR }}/runtime
-        run: |
-          python3 - <<'EOF'
-          import hashlib, json, pathlib, sys
-          root = pathlib.Path('.')
-          manifest = json.loads((root / 'build.json').read_text())
-          sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
-          stale = [rel for rel, digest in manifest['source_sha256'].items() if sha(root / rel) != digest]
-          stale += [str(p) for p in sorted((root / 'src').glob('*.rs')) if str(p) not in manifest['source_sha256']]
-          if sha(root / 'bin/nekoserver-runtime') != manifest['binary_sha256']:
-              stale.append('bin/nekoserver-runtime')
-          if stale:
-              print('::error::Runtime binary is stale; the installer will refuse it. '
-                    'Run this workflow manually with "commit_runtime" ticked. Changed: ' + ', '.join(stale))
-              sys.exit(1)
-          print('Bundled runtime matches build.json')
-          EOF
-
   build-runtime:
-    name: Build static runtime
+    # The runtime builds the way install.sh builds it on a server: with the oldest Rust
+    # Cargo.toml allows (a distribution's own), for the PC itself; and the static release
+    # way with the pinned toolchain and the musl target. Neither is committed: the binary
+    # is made on the PC that installs NekoServer.
+    name: Build runtime (${{ matrix.name }})
     needs: rust
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: oldest Rust, this PC
+            toolchain: "1.85"
+            targets: ""
+          - name: static release
+            toolchain: "1.99.1"
+            targets: x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: x86_64-unknown-linux-musl
-      - name: Build (refreshes bin/ and build.json)
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.targets }}
+      - name: Build (writes bin/ and build.json)
         working-directory: ${{ env.RELEASE_DIR }}/runtime
-        run: python3 build.py
+        run: |
+          python3 build.py
+          python3 -c "import json; m = json.load(open('build.json')); print('target', m['target'], 'static', m['static'], 'version', m['version'])"
+          ./bin/nekoserver-runtime --version
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6
+        if: matrix.targets != ''
         with:
-          name: nekoserver-runtime
+          name: nekoserver-runtime-static
           path: |
             ${{ env.RELEASE_DIR }}/runtime/bin/nekoserver-runtime
             ${{ env.RELEASE_DIR }}/runtime/build.json
-      - name: Commit rebuilt runtime
-        if: github.event_name == 'workflow_dispatch' && inputs.commit_runtime
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git add "$RELEASE_DIR/runtime/bin/nekoserver-runtime" "$RELEASE_DIR/runtime/build.json"
-          git diff --cached --quiet && { echo "Runtime already current"; exit 0; }
-          git commit -m "Rebuild static Rust runtime"
-          git push

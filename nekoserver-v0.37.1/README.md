@@ -1,4 +1,4 @@
-# NekoServer v0.37.0
+# NekoServer v0.37.1
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -58,7 +58,7 @@ Open a **terminal**, logged in as your normal user, and run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer-All.git
-cd NekoServer-All/nekoserver-v0.37.0
+cd NekoServer-All/nekoserver-v0.37.1
 sudo bash install.sh
 ```
 
@@ -71,6 +71,8 @@ That's it: one command does everything. First it gets the system ready, which wo
 - **Debian / Ubuntu:** it only **refreshes the package lists** (`apt-get update`) and installs just what NekoServer needs. Updating the rest of your system stays your own routine. If an earlier update is waiting for a restart, it asks you to restart first. Docker comes from Docker's own repository and Tailscale from Tailscale's. If Debian's or Ubuntu's own Docker (`docker.io`) is installed, it stops and asks you to remove it first, because the two must not be mixed.
 
 Then it **installs the packages the apps need** (Docker, Tailscale, Caddy, Samba and a few tools). They are installed switched off; each setup step switches its own service on once its drive and settings are ready. Setup needs 5 GB free on the system disk for this, and it stops before changing anything if there is less.
+
+Then it **builds NekoServer's own background program** (the Rust runtime that runs the backups, the dashboard and the checks) on your PC, the first time and after each update: it installs Rust from your Linux's own packages and compiles the program, which takes a few minutes and needs the internet. Nothing of it is downloaded ready-made.
 
 Before changing anything, setup also lists what it found on this computer (processor, systemd, Linux family, Docker, firewall and so on) and stops if something it needs is missing. If a firewall such as ufw is switched on, allow your home network to reach the shared folders (port 445) and the home addresses (ports 8442-8447, or 8450-8499 when another program has one of those), for example `sudo ufw allow from 192.168.1.0/24 to any port 445,8442:8447,8450:8499 proto tcp` with your own network instead of `192.168.1.0/24`; the Tailscale addresses need no rule.
 

@@ -154,6 +154,23 @@ def setup_window(path, output):
     return window
 
 
+def _typed(stdin, output):
+    """One line typed at "Ready to start?": True, False, or None when it was neither yes
+    nor no (the question is put again)."""
+    line = stdin.readline()
+    if not line:            # Ctrl+D
+        output('')
+        return False
+    answer = line.strip().lower()
+    if answer in ('yes', 'y'):
+        return True
+    if answer in ('no', 'n'):
+        return False
+    sys.stdout.write('Please type yes or no.\nReady to start? [yes/no]: ')
+    sys.stdout.flush()
+    return None
+
+
 def wait_to_start(prompt, output, window, stdin=None):
     """"Ready to start?": yes in the terminal, or Start pressed in the setup window."""
     if window is None or prompt is not builtins.input:
@@ -161,10 +178,7 @@ def wait_to_start(prompt, output, window, stdin=None):
     stdin = sys.stdin if stdin is None else stdin
     sys.stdout.write('\nReady to start? [yes/no] (or press Start in the setup window): ')
     sys.stdout.flush()
-    while True:
-        if window.started.is_set():
-            output('yes (Start pressed in the setup window)')
-            return True
+    while not window.started.is_set():
         try:
             readable, _, _ = select.select([stdin], [], [], 0.5)
         except KeyboardInterrupt:
@@ -172,19 +186,12 @@ def wait_to_start(prompt, output, window, stdin=None):
             return False
         except (OSError, ValueError):
             return ask('\nReady to start?', prompt, output)
-        if not readable:
-            continue
-        line = stdin.readline()
-        if not line:
-            output('')
-            return False
-        answer = line.strip().lower()
-        if answer in ('yes', 'y'):
-            return True
-        if answer in ('no', 'n'):
-            return False
-        sys.stdout.write('Please type yes or no.\nReady to start? [yes/no]: ')
-        sys.stdout.flush()
+        if readable:
+            answer = _typed(stdin, output)
+            if answer is not None:
+                return answer
+    output('yes (Start pressed in the setup window)')
+    return True
 
 
 def checked_path(value):
@@ -317,21 +324,58 @@ def finishing_screen(config, states, page=None, output=print, checkup=None):
     return complete
 
 
+def settings_for_run(config, root, prompt, output):
+    """(path, created) of the settings this run uses, or None when a file named with
+    --config is missing."""
+    if config:
+        path = settings_path(config)
+        if not path.is_file():
+            output('Settings file not found: ' + str(path))
+            return None
+        return path, False
+    if not (Path(root) / SETTINGS).exists():
+        take_earlier_settings(root, sudo_account(), prompt, output)
+    return prepare_settings(root, sudo_account())
+
+
+def after_setup(code, path, default_state, output, window):
+    """The first checkup when everything finished, then the finishing screen (in the
+    window too). The exit code: 0 only when every step is done."""
+    config = read_json(path)
+    states = read_json(state_file(config, default_state))
+    checkup = None
+    if code == 0 and config:
+        # Every step finished: back up and check now rather than waiting for the night.
+        import first_checkup
+        checkup = first_checkup.run(config, output)
+    try:
+        import phone_guide
+        page = phone_guide.PAGE
+    except ImportError:
+        page = None
+    lines = []
+
+    def shown(line=''):
+        lines.append(str(line))
+        output(line)
+    complete = finishing_screen(config, states, page, shown, checkup)
+    if window is not None:
+        # The window shows the same summary; give it a moment to fetch it.
+        setup_progress.event('finished', lines=lines, complete=complete)
+        window.delivered.wait(3)
+    return 0 if complete and code == 0 else 1
+
+
 def run(execute, default_state, prompt=input, output=print, root=ROOT, config=None):
     """`execute` is installer.execute; injected so this module stays testable.
     `config`: a settings file chosen with --config; otherwise my-config.json here."""
     if os.geteuid() != 0:
         output('Run it with sudo:  sudo bash install.sh')
         return 2
-    if config:
-        path, created = settings_path(config), False
-        if not path.is_file():
-            output('Settings file not found: ' + str(path))
-            return 2
-    else:
-        if not (Path(root) / SETTINGS).exists():
-            take_earlier_settings(root, sudo_account(), prompt, output)
-        path, created = prepare_settings(root, sudo_account())
+    settings = settings_for_run(config, root, prompt, output)
+    if settings is None:
+        return 2
+    path, created = settings
     for line in WELCOME:
         output(line)
     output('\nYour settings are in ' + str(path) +
@@ -349,29 +393,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
                                   state_dir=str(default_state))
         with setup_progress.watching_prompts():
             code = execute(args)
-        config = read_json(path)
-        states = read_json(state_file(config, default_state))
-        checkup = None
-        if code == 0 and config:
-            # Every step finished: back up and check now rather than waiting for the night.
-            import first_checkup
-            checkup = first_checkup.run(config, output)
-        try:
-            import phone_guide
-            page = phone_guide.PAGE
-        except ImportError:
-            page = None
-        lines = []
-
-        def shown(line=''):
-            lines.append(str(line))
-            output(line)
-        complete = finishing_screen(config, states, page, shown, checkup)
-        if window is not None:
-            # The window shows the same summary; give it a moment to fetch it.
-            setup_progress.event('finished', lines=lines, complete=complete)
-            window.delivered.wait(3)
-        return 0 if complete and code == 0 else 1
+        return after_setup(code, path, default_state, output, window)
     finally:
         if window is not None:
             window.stop()

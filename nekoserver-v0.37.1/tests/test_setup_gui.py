@@ -185,7 +185,7 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(self.window.started.is_set())
         self.post('api/start', {'choices': {'notifications': False}})
         self.assertTrue(self.window.started.is_set())
-        self.assertEqual(json.loads(self.settings.read_text())['notifications']['wanted'], False)
+        self.assertFalse(json.loads(self.settings.read_text())['notifications']['wanted'])
         self.assertEqual(self.state()['phase'], 'running')
 
     def test_the_run_as_the_window_sees_it(self):

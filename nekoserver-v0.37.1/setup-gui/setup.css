@@ -22,7 +22,6 @@ p { margin: 0 0 8px; color: var(--muted); }
 code, .mono { font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; font-size: 12px; }
 .muted { color: var(--muted); }
 .eyebrow { font-size: 11px; color: var(--muted); letter-spacing: 1.8px; font-weight: 600; text-transform: uppercase; }
-[hidden] { display: none !important; }
 button { font: inherit; color: inherit; cursor: pointer; }
 :focus-visible { outline: 3px solid var(--purple); outline-offset: 2px; border-radius: 8px; }
 
@@ -82,7 +81,7 @@ main > section { height: 100%; }
 .package { padding: 6px 10px; border-radius: 10px; background: var(--raised); font-size: 12.5px; max-width: 100%; }
 .package b { font-weight: 650; color: var(--purple); }
 .notes { margin: 10px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 12.5px; }
-.notes li { padding: 2px 0; border-top: 1px dashed var(--line); white-space: pre-wrap; word-break: break-word; }
+.notes li { padding: 2px 0; border-top: 1px dashed var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
 .notes li:first-child { border-top: 0; }
 .steps { margin: 0; padding: 0; list-style: none; overflow: auto; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--line); }
 .steps li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--line); font-size: 13px; align-items: start; }
@@ -98,7 +97,7 @@ main > section { height: 100%; }
 /* a question, answered here or in the terminal */
 .ask { display: flex; flex-direction: column; gap: 8px; border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
 .ask .eyebrow { color: var(--amber); }
-.context { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--raised); font-size: 12.5px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; max-height: 46%; overflow: auto; }
+.context { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--raised); font-size: 12.5px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 46%; overflow: auto; }
 .prompt { font-weight: 620; font-size: 15px; }
 .answer { display: flex; gap: 8px; align-items: center; }
 .answer input { flex: 1; min-width: 0; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--raised); color: var(--text); font-size: 15px; }
@@ -107,3 +106,7 @@ main > section { height: 100%; }
 .small { font-size: 12.5px; margin: 0; }
 .finish { margin: 6px 0 10px; padding: 12px; border-radius: 10px; background: var(--raised); white-space: pre-wrap; font-size: 12.5px; line-height: 1.45; max-height: 100%; overflow: auto; }
 @media (max-width: 820px) { .running { grid-template-columns: 1fr; } .steps { max-height: 40%; } }
+
+/* Hidden means hidden, whatever display a class gave the element: last, so it wins at
+   equal specificity. */
+[hidden], #choose[hidden], .notice[hidden], .running[hidden], .ask[hidden], .progress[hidden], .answer[hidden], .context[hidden], .extras[hidden] { display: none; }
