@@ -219,12 +219,23 @@ def _wait_for_answer(stream, secret):
         with _no_echo(fd, secret):
             while True:
                 answer = _from_window(pending, secret)
-                if answer is None:
-                    answer = _from_terminal(stream, secret)
+                if answer is not None:
+                    _drop_typed(fd)
+                    return answer
+                answer = _from_terminal(stream, secret)
                 if answer is not None:
                     return answer
     except _Unwatchable:
         return None
+
+
+def _drop_typed(fd):
+    """When the window answered first, a line typed in the terminal meanwhile would be
+    read as the answer to the next question: it is dropped."""
+    try:
+        termios.tcflush(fd, termios.TCIFLUSH)
+    except termios.error:
+        pass
 
 
 class _Tee:

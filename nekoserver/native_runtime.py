@@ -62,21 +62,32 @@ def payload(project,config):
 
 RECORD_SUFFIX='.build.json'   # next to each copy NekoServer deploys: the build it came from
 
+def recorded_copy(target):
+    """True when the copy at target is exactly the build its record beside it describes:
+    NekoServer put it there and nothing changed it since. No record, one that cannot be
+    read, or one naming another build (someone's own copy, a changed one, or one from a
+    release before 0.38.0) means the copy is left alone."""
+    target=Path(target)
+    try:value=json.loads(Path(str(target)+RECORD_SUFFIX).read_text())
+    except (OSError,ValueError):return False
+    return isinstance(value,dict) and target.is_file() and value.get('binary_sha256')==hashlib.sha256(target.read_bytes()).hexdigest()
+
 def deploy(project,config,destination):
     """Put this release's runtime at destination. A copy NekoServer put there itself (its
-    build record lies beside it) is replaced when the runtime was built again from other
-    sources, as after `git pull` into the same folder; a copy with no record (someone's
-    own, or one from a release before 0.38.0) is never overwritten."""
+    build record beside it names exactly that build) is replaced when the runtime was built
+    again from other sources, as after `git pull` into the same folder; a copy with no
+    record, or one its record does not describe (someone's own, a changed one, or one from
+    a release before 0.38.0), is never overwritten."""
     blob=payload(project,config)
     target=safe_path(Path(destination)/NAME)
     record=Path(str(target)+RECORD_SUFFIX)
     manifest=(Path(project)/'runtime/build.json').read_text()
     if target.exists() and target.read_bytes()!=blob:
-        if not record.is_file():
+        if not recorded_copy(target):
             raise RuntimeError(f'The runtime copy at {target} differs from the one in this release (same version {VERSION}) '
-                               'and NekoServer did not put it there: if this release is the newer download (its runtime was '
-                               f'rebuilt), move the old copy away (sudo mv {target} {target}.old) and run setup again; a file you '
-                               'put there yourself is kept')
+                               'and NekoServer did not put it there (or it was changed since): if this release is the newer '
+                               f'download (its runtime was rebuilt), move the old copy away (sudo mv {target} {target}.old) and '
+                               'run setup again; a file you put there yourself is kept')
         atomic_write(target,blob,0o750)
     elif not target.exists():atomic_write(target,blob,0o750)
     elif target.stat().st_mode&0o111==0:raise RuntimeError('Existing native executable has no execute permission; review locally')

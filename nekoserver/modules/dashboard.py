@@ -274,11 +274,27 @@ def refresh(cfg,log,target=None):
     atomic_json(target,wanted);log('Dashboard: settings refreshed with the final setup choices')
     return True
 
+def replaceable(path,payloads):
+    """The runtime copy NekoServer put here itself (its build record beside it names exactly
+    that build), and that record: a runtime built again from other sources replaces them,
+    as native_runtime.deploy does for every other copy. A record beside a copy that is
+    this release's runtime already is refreshed too. Any other file that differs is
+    someone's own change and stays."""
+    runtime=path.parent/native_runtime.NAME
+    if path.name==native_runtime.NAME:return native_runtime.recorded_copy(path)
+    if path.name!=native_runtime.NAME+native_runtime.RECORD_SUFFIX:return False
+    return not runtime.exists() or runtime.read_bytes()==payloads.get(runtime) or native_runtime.recorded_copy(runtime)
+
+def record_payload(project):
+    """The runtime's build record, installed beside the dashboard's copy as beside every
+    copy native_runtime.deploy makes."""
+    return (Path(project)/'runtime/build.json').read_bytes()
+
 def check_payloads(payloads):
     for path,payload in payloads.items():
         safe_path(path)
         if not path.exists():continue
-        if path.read_bytes()!=payload:
+        if path.read_bytes()!=payload and not replaceable(path,payloads):
             raise RuntimeError(f'The installed dashboard file {path} differs from the one in this release (same version). '
                                'If this release is the newer download, move that release folder away '
                                f'(sudo mv {path.parent} {path.parent}.old) and run setup again; files you changed yourself are kept')
@@ -314,7 +330,8 @@ def write_files(folders,payloads,definitions):
         if not folder.exists():
             folder.mkdir(parents=True,mode=0o755);folder.chmod(0o755)
     for path,payload in payloads.items():
-        if not path.exists():atomic_write(path,payload,0o755 if path.name==native_runtime.NAME else 0o644)
+        if not path.exists() or (path.read_bytes()!=payload and replaceable(path,payloads)):
+            atomic_write(path,payload,0o755 if path.name==native_runtime.NAME else 0o644)
     write_units(definitions)
 
 def systemctl(*args,timeout=60):
@@ -381,6 +398,7 @@ def run(ctx):
     code=safe_path(Path('/usr/local/lib/nekoserver-dashboard')/('v'+VERSION));config=safe_path(COLLECTOR_SETTINGS)
     payloads=asset_payloads(project,code)
     payloads[code/native_runtime.NAME]=native_runtime.payload(project,cfg)
+    payloads[code/(native_runtime.NAME+native_runtime.RECORD_SUFFIX)]=record_payload(project)
     public=tailnet_name(cfg,public_host_of(installed_unit()))
     control,lighting=control_options(cfg)
     # The control service always runs: app controls need it even with fan control off.
