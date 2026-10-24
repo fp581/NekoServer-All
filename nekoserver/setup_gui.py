@@ -9,6 +9,7 @@ It is served by setup itself on 127.0.0.1, on a port picked at random, behind a 
 nobody can guess (a token), and only for as long as setup runs."""
 import json
 import os
+import re
 import secrets
 import subprocess
 import threading
@@ -209,13 +210,42 @@ class Window:
         return Handler
 
 
+SCREEN = re.compile(r'current (\d+) x (\d+)')   # xrandr's line for the whole screen
+
+
+def screen_size(config, run=subprocess.run):
+    """(width, height) of the desktop user's screen from xrandr, or None (Wayland without
+    xrandr, no desktop, a tool missing): the window is then left where the desktop puts it."""
+    xrandr = find_program('xrandr')
+    if not xrandr:
+        return None
+    try:
+        result = run(guided_setup.desktop_command(config, [xrandr, '--current']), capture_output=True, text=True,
+                     timeout=10, check=False)
+    except (OSError, RuntimeError, KeyError, ValueError, subprocess.SubprocessError):
+        return None
+    match = SCREEN.search(result.stdout or '')
+    return (int(match[1]), int(match[2])) if match and result.returncode == 0 else None
+
+
+def window_position(screen, size=WINDOW, margin=60):
+    """Where the small window goes: low on the screen, a little in from the left, and
+    always wholly on the screen (a laptop's 768 rows are not a monitor's 1080)."""
+    width, height = screen
+    x = margin if width > int(size[0]) + margin else 0
+    y = max(0, height - int(size[1]) - margin)
+    return str(x) + ',' + str(y)
+
+
 def open_window(config, url):
     """Open the page as a small window of the desktop user's browser. False when there is
     no desktop or no browser to open it with (setup goes on in the terminal alone)."""
     browser = next((found for found in (find_program(name) for name in APP_BROWSERS) if found), None)
     if browser:
-        argv = [browser, '--app=' + url, '--window-size=' + ','.join(WINDOW), '--window-position=60,560',
-                '--no-first-run', '--no-default-browser-check']
+        argv = [browser, '--app=' + url, '--window-size=' + ','.join(WINDOW), '--no-first-run', '--no-default-browser-check']
+        screen = screen_size(config)
+        if screen:
+            argv.append('--window-position=' + window_position(screen))
     elif find_program('firefox'):
         argv = [find_program('firefox'), '--new-window', url, '--width', WINDOW[0], '--height', WINDOW[1]]
     elif find_program('xdg-open'):

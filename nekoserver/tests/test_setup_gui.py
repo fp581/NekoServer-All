@@ -231,6 +231,31 @@ class WindowTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, code)
 
 
+class WindowPlacementTests(unittest.TestCase):
+    """The small window sits low on the screen and never off it; without a known screen
+    size the desktop places it."""
+    def test_low_on_the_screen_and_always_on_it(self):
+        self.assertEqual(setup_gui.window_position((1920, 1080)), '60,540')
+        self.assertEqual(setup_gui.window_position((1366, 768)), '60,228')
+        self.assertEqual(setup_gui.window_position((1024, 600)), '0,60')      # narrow and short: as far up as needed
+        self.assertEqual(setup_gui.window_position((800, 480)), '0,0')
+
+    def test_the_screen_size_comes_from_xrandr_or_is_unknown(self):
+        xrandr_says = 'Screen 0: minimum 320 x 200, current 2560 x 1440, maximum 16384 x 16384\n'
+        with mock.patch.object(setup_gui, 'find_program', return_value='/usr/bin/xrandr'), \
+                mock.patch.object(setup_gui.guided_setup, 'desktop_command', side_effect=lambda config, argv: argv):
+            ok = lambda argv, **kwargs: mock.Mock(returncode=0, stdout=xrandr_says)   # noqa: E731
+            self.assertEqual(setup_gui.screen_size({}, run=ok), (2560, 1440))
+            failed = lambda argv, **kwargs: mock.Mock(returncode=1, stdout='')      # noqa: E731
+            self.assertIsNone(setup_gui.screen_size({}, run=failed))
+            self.assertIsNone(setup_gui.screen_size({}, run=mock.Mock(side_effect=OSError)))
+        with mock.patch.object(setup_gui, 'find_program', return_value=None):
+            self.assertIsNone(setup_gui.screen_size({}))
+        with mock.patch.object(setup_gui, 'find_program', return_value='/usr/bin/xrandr'), \
+                mock.patch.object(setup_gui.guided_setup, 'desktop_command', side_effect=RuntimeError('no desktop')):
+            self.assertIsNone(setup_gui.screen_size({}))
+
+
 class ReadyToStartTests(unittest.TestCase):
     """The terminal's "Ready to start?" and the window's Start answer the same question."""
     def pipe(self, text=''):
