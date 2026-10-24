@@ -94,30 +94,41 @@ def release_version(name, prefix=''):
     return tuple(int(n) for n in match.groups()) if match else None
 
 
-def earlier_settings(root=ROOT):
-    """For a release folder without settings yet: those of the server already set up on
-    this PC, newest release first, or None. Before 0.38.0 each release had a folder named
-    for its version, so `git pull` left my-config.json (git does not track it) in the
-    earlier one; setup also keeps a copy on the SSD with the release it ran."""
+def earlier_candidates(root=ROOT):
+    """The settings files of the server already set up on this PC, for a release folder
+    without settings yet: the person's own files first, newest release first, then
+    setup's copies on the SSD, newest first. Before 0.38.0 each release had a folder
+    named for its version, so `git pull` left my-config.json (git does not track it) in
+    the earlier one; setup also keeps a copy on the SSD with the release it ran."""
     root = Path(root)
-    found = []
+    own, kept = [], []
     for folder in root.parent.iterdir() if root.parent.is_dir() else ():
         version = release_version(folder.name, 'nekoserver-')
         if version and folder != root and (folder / SETTINGS).is_file():
-            found.append((version, folder / SETTINGS))
-    if not found:
-        releases = data_folder(read_json(root / TEMPLATE)) / 'installer/releases'
-        for folder in releases.iterdir() if releases.is_dir() else ():
-            version = release_version(folder.name)
-            if version and (folder / TEMPLATE).is_file():
-                found.append((version, folder / TEMPLATE))
-    return next((path for _, path in sorted(found, reverse=True) if read_json(path)), None)
+            own.append((version, folder / SETTINGS))
+    releases = data_folder(read_json(root / TEMPLATE)) / 'installer/releases'
+    for folder in releases.iterdir() if releases.is_dir() else ():
+        version = release_version(folder.name)
+        if version and (folder / TEMPLATE).is_file():
+            kept.append((version, folder / TEMPLATE))
+    return [path for _, path in sorted(own, reverse=True)] + [path for _, path in sorted(kept, reverse=True)]
+
+
+def earlier_settings(root=ROOT, output=None):
+    """The newest of earlier_candidates that can be read, or None. A newer one that cannot
+    be read is named through output rather than passed over silently."""
+    for path in earlier_candidates(root):
+        if read_json(path):
+            return path
+        if output is not None:
+            output('The settings at ' + str(path) + ' cannot be read (not a settings file, or damaged), so they are not used.')
+    return None
 
 
 def take_earlier_settings(root=ROOT, account=None, prompt=input, output=print):
     """Offer the settings earlier_settings finds; True when they were copied in as
     my-config.json. Without them an update would set the server up from the start."""
-    source = earlier_settings(root)
+    source = earlier_settings(root, output)
     if source is None:
         return False
     output('This PC already has a NekoServer server set up. Its settings are in ' + str(source) + '.')

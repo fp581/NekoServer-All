@@ -113,14 +113,16 @@ class ProgressTests(unittest.TestCase):
         terminal = os.fdopen(slave, 'r')
         self.addCleanup(terminal.close)
         with mock.patch('sys.stdout'):
-            # The window answers: the terminal is told, nothing was typed.
+            # The window answers: the terminal is told. A line typed in the terminal at the
+            # same time, which lost the race, is dropped rather than answering the next question.
             record = setup_progress.question('Select the SSD. Choose number: ')
+            os.write(master, b'7\n')
             self.assertFalse(setup_progress.answer_from_window(record['seq'] + 1, '9'))   # not the question waiting
             self.assertTrue(setup_progress.answer_from_window(record['seq'], '2'))
             self.assertFalse(setup_progress.answer_from_window(record['seq'], '3'))        # answered already
             self.assertEqual(setup_progress._wait_for_answer(terminal, False), '2')
             setup_progress.answered()
-            # The terminal answers.
+            # The terminal answers (the typed 7 is gone).
             setup_progress.question('Same PIN again: ', secret=True)
             os.write(master, b'1234\n')
             self.assertEqual(setup_progress._wait_for_answer(terminal, True), '1234')

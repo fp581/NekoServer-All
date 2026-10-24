@@ -1513,6 +1513,19 @@ class SuseTest(unittest.TestCase):
         self.assertEqual(zypper.enabled(), [])
         self.assertEqual(zypper.masked, set())
 
+    def test_lighting_is_installed_under_opensuses_spelling(self):
+        # Tumbleweed offers OpenRGB; zypper's search would find it for "openrgb" too (it
+        # ignores case), and the install would then fail with "Did you mean OpenRGB?".
+        zypper = FakeZypper(offered={'OpenRGB'})
+        family = self.family(zypper)
+        self.assertTrue(family.available('openrgb'))
+        self.assertEqual(family.install(['openrgb']), ['openrgb'])
+        searches = [argv for argv in zypper.calls if 'search' in argv]
+        self.assertEqual(searches[0][-1], 'OpenRGB')
+        self.assertIn('--case-sensitive', searches[0])
+        self.assertEqual([argv for argv in zypper.calls if 'install' in argv],
+                         [['zypper', '--non-interactive', 'install', '--no-recommends', 'OpenRGB']])
+
     def test_zypper_is_told_to_wait_for_another_zypper(self):
         zypper = FakeZypper(offered={'samba'})
         family = self.family(zypper)

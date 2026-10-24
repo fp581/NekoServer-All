@@ -1,4 +1,7 @@
 """The dashboard: its files, the server that serves them, and how it is installed."""
+import hashlib
+import inspect
+import json
 import os
 import re
 import sys
@@ -503,6 +506,66 @@ class PreservedBundleTest(unittest.TestCase):
         self.assertEqual(sorted(map(str, release - kept - skipped)), [])
 
 
+class RuntimeCopyTests(unittest.TestCase):
+    """The dashboard's own runtime copy follows the rule of every other deployed copy
+    (native_runtime.deploy): one NekoServer put there, its build record beside it naming
+    exactly that build, is replaced when the runtime was built again from other sources;
+    one without such a record, and any other changed file, stays and stops the step."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.code = Path(self.tmp.name) / 'v0.38.1'
+        (self.code / 'dashboard').mkdir(parents=True)
+        self.runtime = self.code / dashboard.native_runtime.NAME
+        self.record = Path(str(self.runtime) + dashboard.native_runtime.RECORD_SUFFIX)
+        self.page = self.code / 'dashboard/index.html'
+        self.payloads = {self.runtime: b'new build', self.record: self.record_for(b'new build'), self.page: b'<html>'}
+
+    @staticmethod
+    def record_for(blob):
+        return json.dumps({'version': '0.38.1', 'binary_sha256': hashlib.sha256(blob).hexdigest()}).encode()
+
+    def existing(self, runtime, record=None, page=b'<html>'):
+        self.runtime.write_bytes(runtime); self.runtime.chmod(0o755); self.page.write_bytes(page)
+        if record is not None:
+            self.record.write_bytes(record)
+
+    def test_a_rebuilt_runtime_replaces_the_copy_nekoserver_made(self):
+        self.existing(b'old build', self.record_for(b'old build'))
+        dashboard.check_payloads(self.payloads)
+        dashboard.write_files((self.code,), self.payloads, {})
+        self.assertEqual(self.runtime.read_bytes(), b'new build')
+        self.assertEqual(self.record.read_bytes(), self.record_for(b'new build'))
+        self.assertEqual(self.runtime.stat().st_mode & 0o777, 0o755)
+
+    def test_a_copy_without_a_record_is_never_overwritten(self):
+        self.existing(b'someone else wrote this')
+        with self.assertRaisesRegex(RuntimeError, 'differs from the one in this release'):
+            dashboard.check_payloads(self.payloads)
+        dashboard.write_files((self.code,), {self.runtime: b'new build'}, {})
+        self.assertEqual(self.runtime.read_bytes(), b'someone else wrote this')
+
+    def test_a_copy_its_record_does_not_describe_is_never_overwritten(self):
+        self.existing(b'their own build', self.record_for(b'old build'))
+        with self.assertRaisesRegex(RuntimeError, 'differs from the one in this release'):
+            dashboard.check_payloads(self.payloads)
+
+    def test_a_stale_record_beside_this_releases_runtime_is_refreshed(self):
+        self.existing(b'new build', b'not even json')
+        dashboard.check_payloads(self.payloads)
+        dashboard.write_files((self.code,), self.payloads, {})
+        self.assertEqual(self.record.read_bytes(), self.record_for(b'new build'))
+
+    def test_a_changed_page_file_still_stops_the_step(self):
+        self.existing(b'new build', self.record_for(b'new build'), page=b'<html>edited')
+        with self.assertRaisesRegex(RuntimeError, 'index.html differs from the one in this release'):
+            dashboard.check_payloads(self.payloads)
+
+    def test_the_record_is_part_of_what_the_step_installs(self):
+        source = inspect.getsource(dashboard.run)
+        self.assertIn('native_runtime.RECORD_SUFFIX', source)
+
+
 class DashboardPortTests(unittest.TestCase):
     """The dashboard's port: a taken one is replaced by a free spare and kept; the page
     must answer before the step counts as done."""
@@ -532,6 +595,7 @@ class DashboardPortTests(unittest.TestCase):
                 mock.patch.object(dashboard, 'atomic_json'), \
                 mock.patch.object(dashboard, 'collector_settings', return_value={}), \
                 mock.patch.object(dashboard.native_runtime, 'payload', return_value=b'x'), \
+                mock.patch.object(dashboard, 'record_payload', return_value=b'{}'), \
                 mock.patch.object(dashboard, 'asset_payloads', return_value={}), \
                 mock.patch.object(dashboard, 'mount_path', return_value=Path('/srv/nekoserver')), \
                 mock.patch.object(dashboard.importlib.util, 'spec_from_file_location') as spec, \
