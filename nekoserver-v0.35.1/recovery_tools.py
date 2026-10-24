@@ -131,8 +131,11 @@ def checkpoint(config,apply=False):
     info=json_command(DOCKER+['info','--format','{{json .}}'])
     target=str(Path(config['data_mount'])/'docker-engine')
     version=info.get('ServerVersion','')
-    if info.get('DockerRootDir')!=target or info.get('Driver')!='overlay2' or 'io.containerd.snapshotter' in json.dumps(info.get('DriverStatus')) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',version):
-        raise RuntimeError('Checkpoint supports verified classic overlay2 Docker at the application SSD only')
+    # The version may carry a package suffix (openSUSE's Docker says "29.7.2_ce"): read as
+    # the reattach reads it, by its leading numbers.
+    if info.get('DockerRootDir')!=target or info.get('Driver')!='overlay2' or 'io.containerd.snapshotter' in json.dumps(info.get('DriverStatus')) or docker_release(version) is None:
+        raise RuntimeError('Checkpoint supports verified classic overlay2 Docker at the application SSD only'
+                           f' (found: driver {info.get("Driver")}, root {info.get("DockerRootDir")}, version {version or "unknown"})')
     result={'format':'neko-host-checkpoint-v1','created_at':dt.datetime.now(dt.timezone.utc).isoformat(),'version':VERSION,'architecture':platform.machine(),'docker_version':version,'driver':'overlay2','docker_root':target,'storage':copy.deepcopy(config['storage']),'data_mount':config['data_mount'],'media_mount':config['media_mount'],'uid':config.get('media',{}).get('uid',1000),'gid':config.get('media',{}).get('gid',1000)}
     if apply:
         require_root();atomic_json(Path(config['data_mount'])/'installer/host-checkpoint.json',result)
