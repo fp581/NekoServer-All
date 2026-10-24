@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time bootstrap for Arch/Nyarch, Debian/Ubuntu, Fedora and RHEL / Rocky / AlmaLinux. Scheduled work uses the bundled Rust runtime.
+# One-time bootstrap for Arch/Nyarch, Debian/Ubuntu, Fedora, RHEL / Rocky / AlmaLinux and openSUSE. Scheduled work uses the bundled Rust runtime.
 set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # apt's lock on its package lists is held (a POSIX lock, which lslocks lists by path).
@@ -107,8 +107,22 @@ if "$apply"; then
             echo 'Version 9 comes with Python 3.9, older than NekoServer needs: install version 10, then run  sudo bash install.sh  again.' >&2
             exit 1
         fi
+    elif [[ "$distro" == *' opensuse'*' '* ]] && command -v zypper >/dev/null; then
+        # openSUSE Leap, Tumbleweed and Slowroll (and systems naming opensuse in ID_LIKE).
+        # SLES names only suse, and has other repositories and a subscription: not covered.
+        family=suse
+        clean_hint='sudo zypper clean'
+        system_path=/var/cache/zypp
+        [[ -d "$system_path" ]] || system_path=/
+        # Leap 15 comes with Python 3.6; Leap 16 brings 3.13. (Tumbleweed's VERSION_ID is a date.)
+        release="${VERSION_ID%%.*}"
+        if [[ "${ID:-}" == opensuse-leap && "$release" =~ ^[0-9]+$ ]] && (( release < 16 )); then
+            echo "NekoServer needs openSUSE Leap 16 or newer; this is ${PRETTY_NAME:-Leap ${VERSION_ID:-}}." >&2
+            echo 'Leap 15 comes with Python 3.6, older than NekoServer needs: upgrade to Leap 16, then run  sudo bash install.sh  again.' >&2
+            exit 1
+        fi
     else
-        echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt), and Fedora and RHEL / Rocky / AlmaLinux (with dnf).' >&2
+        echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt), Fedora and RHEL / Rocky / AlmaLinux (with dnf), and openSUSE (with zypper).' >&2
         exit 1
     fi
     if [[ "$(uname -m)" != x86_64 ]] || ! command -v systemctl >/dev/null; then
@@ -120,8 +134,8 @@ if "$apply"; then
     usr_options=$(findmnt -n -o OPTIONS --target /usr 2>/dev/null || true)
     if [[ -e /run/ostree-booted || ",$usr_options," == *,ro,* ]]; then
         echo "${PRETTY_NAME:-This system} keeps its system files read-only (an image-based system), so" >&2
-        echo 'NekoServer cannot install the packages it needs. Install it on Arch Linux, Debian, Ubuntu or' >&2
-        echo 'Fedora Workstation or Server instead.' >&2
+        echo 'NekoServer cannot install the packages it needs. Install it on Arch Linux, Debian, Ubuntu,' >&2
+        echo 'Fedora Workstation or Server, or openSUSE Leap or Tumbleweed instead.' >&2
         exit 1
     fi
     if [[ "$family" == debian && -e /run/reboot-required ]]; then
@@ -186,6 +200,11 @@ if "$apply"; then
             # rest of the system stays your own routine.
             echo 'Refreshing the package lists (dnf makecache).'
             dnf -q makecache
+        elif [[ "$family" == suse ]]; then
+            # openSUSE: the same. ZYPP_LOCK_TIMEOUT makes zypper wait for another zypper
+            # or YaST (up to 10 minutes) instead of failing at once.
+            echo 'Refreshing the package lists (zypper refresh).'
+            ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive --quiet refresh
         else
             # Arch supports only full upgrades: refresh and upgrade everything first, so the
             # apps and their dependencies install at their current versions and match each
@@ -249,6 +268,15 @@ if "$apply"; then
             'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute:ip' 'pciutils:lspci' )
         certificates=(ca-certificates)
         certificate_bundle=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+    elif [[ "$family" == suse ]]; then
+        # openSUSE keeps lsblk and findmnt in a package of their own.
+        prerequisites=( \
+            'python3:python3' \
+            'util-linux-systemd:lsblk findmnt' 'util-linux:blkid mount umount flock runuser' \
+            'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
+            'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
+        certificates=(ca-certificates ca-certificates-mozilla)
+        certificate_bundle=/etc/ssl/ca-bundle.pem
     else
         prerequisites=( \
             'python:python3' \
@@ -278,6 +306,8 @@ if "$apply"; then
         elif [[ "$family" == fedora || "$family" == rhel ]]; then
             # (dnf5 takes no "--" before the names; these are fixed package names.)
             dnf install -y --setopt=install_weak_deps=False "${packages[@]}"
+        elif [[ "$family" == suse ]]; then
+            ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive install --no-recommends "${packages[@]}"
         else
             pacman -Si -- "${packages[@]}" >/dev/null
             pacman -S --needed --noconfirm -- "${packages[@]}"
@@ -299,7 +329,7 @@ if ! command -v python3 >/dev/null; then
 fi
 if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
     echo "NekoServer needs Python 3.11 or newer; this system has $(python3 -c 'import platform; print(platform.python_version())')." >&2
-    echo 'It comes with Arch, Debian 12, Ubuntu 24.04, Fedora 42 and RHEL 10 or newer. A system based on an older release' >&2
+    echo 'It comes with Arch, Debian 12, Ubuntu 24.04, Fedora 42, RHEL 10 and openSUSE Leap 16 or newer (and Tumbleweed). A system based on an older release' >&2
     echo '(such as Linux Mint 21, based on Ubuntu 22.04) does not get it from updates: upgrade to the next release first.' >&2
     exit 1
 fi

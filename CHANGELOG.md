@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **The dashboard says when the monthly backups are unencrypted.** When no backup password was chosen at setup, each monthly snapshot holds the app password files in plain text; until now only the monthly job's log said so. The dashboard now shows a standing warning, with the command that fixes it (`sudo python3 backup_secrets.py --setup`), as long as the monthly schedule exists without a backup key.
+
 ## v0.35.1 — 2026-10-24
 
 Code-quality findings from SonarCloud's review of 0.35.0. Nothing changes in how NekoServer works or what it says.
