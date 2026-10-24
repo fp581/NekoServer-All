@@ -20,8 +20,8 @@ env/
 # install.sh builds on the PC that installs NekoServer (git keeps the sources)
 target/
 **/*.rs.bk
-runtime/bin/
-runtime/build.json
+**/runtime/bin/
+**/runtime/build.json
 
 # --- Private settings and secrets: made on the server, never shared
 my-config.json
