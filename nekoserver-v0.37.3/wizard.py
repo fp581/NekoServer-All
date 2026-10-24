@@ -383,19 +383,21 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     setup_progress.enable()
     window = setup_window(path, output) if prompt is builtins.input else None
     try:
-        if not wait_to_start(prompt, output, window):
+        if wait_to_start(prompt, output, window):
+            default_state = checked_path(default_state)
+            args = argparse.Namespace(all=False, profile='full', module=None, retry_failed=False,
+                                      apply=True, check=False, dry_run=False, config=str(path),
+                                      state_dir=str(default_state))
+            with setup_progress.watching_prompts():
+                code = execute(args)
+            exit_code = after_setup(code, path, default_state, output, window)
+        else:
             output('No apps were set up. (The system update and the packages NekoServer needs are '
                    'already installed; that is all.) Run  sudo bash install.sh  when you are ready.')
-            return 0
-        default_state = checked_path(default_state)
-        args = argparse.Namespace(all=False, profile='full', module=None, retry_failed=False,
-                                  apply=True, check=False, dry_run=False, config=str(path),
-                                  state_dir=str(default_state))
-        with setup_progress.watching_prompts():
-            code = execute(args)
-        return after_setup(code, path, default_state, output, window)
+            exit_code = 0
     finally:
         if window is not None:
             window.stop()
         setup_progress.disable()
+    return exit_code
 

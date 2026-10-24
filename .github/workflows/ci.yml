@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_DIR: nekoserver-v0.37.1
+  RELEASE_DIR: nekoserver-v0.37.3
   # Pinned so lint results only change when this line does. The runtime itself is built
   # on the PC that installs NekoServer (install.sh), with the distribution's own Rust;
   # Cargo.toml's rust-version is the oldest that must still build it.
@@ -35,6 +35,13 @@ jobs:
       - name: Test dependencies
         run: "python -m pip install --only-binary :all: --require-hashes -r .github/ci-requirements.txt"
         working-directory: .
+      # The tests that exercise the runtime need one built from these sources, as a
+      # server has after install.sh: built here the same way (and skipped where none is).
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: "1.85"
+      - name: Build the runtime for this PC
+        run: python3 runtime/build.py
       - name: Compile every module
         run: python -m py_compile *.py modules/*.py
       - name: Lint (syntax errors and undefined names)
