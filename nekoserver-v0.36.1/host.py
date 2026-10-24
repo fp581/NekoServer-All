@@ -33,6 +33,7 @@ APP_PACKAGES = ('docker', 'docker-compose', 'tailscale', 'caddy', 'samba', 'hdpa
                 'smartmontools', 'qrencode', 'xdg-utils')
 # Tailscale's service has the same name on every family.
 TAILSCALE_UNIT = 'tailscaled.service'
+SAMBA_UNIT = 'smb.service'
 
 
 class Unsupported(RuntimeError):
@@ -93,6 +94,24 @@ def _reason(result):
     return ((result.stderr or result.stdout or '').strip().splitlines()[-1:] or ['no details'])[0]
 
 
+# A package source that did not answer: a mirror hiccup, a download cut off, the network
+# still coming up. The same command is tried again a little later, a few times; any other
+# failure (a missing package, a conflict, a broken file) is reported at once.
+TRANSIENT = re.compile(
+    r'failed to fetch|failed retrieving file|failed to download|cannot download|download(ing)? (\(curl\) )?(error|failed)'
+    r'|curl error|could not resolve|temporary failure|name resolution|connection (failed|timed out|refused|reset)'
+    r'|timeout (was reached|exceeded)|timed out|network is unreachable|all mirrors were tried|hash sum mismatch'
+    r'|operation too slow|not found on medium|http (response|error)[: ]+(404|5\d\d)|service unavailable|bad gateway',
+    re.IGNORECASE)
+RETRIES = 3            # attempts in all
+RETRY_PAUSE = 20       # seconds between them
+
+
+def transient(result):
+    """The package manager failed because a source did not answer."""
+    return bool(result.returncode) and bool(TRANSIENT.search((result.stdout or '') + '\n' + (result.stderr or '')))
+
+
 def environment():
     """For package managers and systemctl: English messages (their output is read, and
     "Candidate:" is "Candidat :" in French), no questions on the terminal, and Ubuntu's
@@ -129,10 +148,24 @@ class Family:
     journal = None        # where an unfinished installation is recorded, for families
                           # whose packages need tidying afterwards (settle)
     root = Path('/')      # where system files are (a folder in tests)
+    sleep = staticmethod(time.sleep)
+    say = staticmethod(print)   # a word to the person running setup
 
     def __init__(self, run=subprocess.run, release=None):
         self.run = run
         self.release = os_release() if release is None else release
+
+    def retrying(self, call):
+        """call() runs the package manager; when a source did not answer, it is called
+        again a little later, RETRIES times in all. The last result is returned."""
+        for attempt in range(1, RETRIES + 1):
+            result = call()
+            if not transient(result) or attempt == RETRIES:
+                return result
+            self.say('The package source did not answer (' + _reason(result) + '); trying again in '
+                     + str(RETRY_PAUSE) + ' seconds (' + str(attempt + 1) + ' of ' + str(RETRIES) + ')...')
+            self.sleep(RETRY_PAUSE)
+        return result
 
     @classmethod
     def matches(cls, release):
@@ -259,10 +292,11 @@ class Family:
                 {'format': 'neko-package-install-v1', 'packages': missing, 'before': before}) + '\n')
         # Only the parts that are missing: a package already there is never reinstalled
         # or upgraded (that would restart a Docker someone already runs, for example).
-        names = [real for name in missing for real in self.names(name) if not self.has(real)]
+        # (Two of NekoServer's names can be one package here: listed once.)
+        names = list(dict.fromkeys(real for name in missing for real in self.names(name) if not self.has(real)))
         try:
             self.protect(before)
-            result = self._install(names, timeout)
+            result = self.retrying(lambda: self._install(names, timeout))
         except subprocess.TimeoutExpired as exc:
             self._after_interruption()
             # The time actually waited (a family may allow more than asked).
@@ -336,7 +370,7 @@ class Arch(Family):
     manager = 'pacman'
     ids = ('arch', 'nyarch')
     like = ('arch',)
-    services = MappingProxyType({'samba': 'smb.service', 'tailscale': TAILSCALE_UNIT})
+    services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
     wait = 600            # seconds to wait for another pacman to finish
     sleep = staticmethod(time.sleep)
@@ -531,6 +565,12 @@ class Debian(PackageLock, Family):
         'libva-mesa-driver': 'mesa-va-drivers',
         'libva-utils': 'vainfo',
         'firefox': 'firefox-esr',
+        # The TV: Steam (contrib/multiverse, with 32-bit packages allowed), Mesa's Vulkan
+        # drivers for every chip in one package, and bluetoothctl inside bluez.
+        'steam': 'steam-installer',
+        'vulkan-intel': 'mesa-vulkan-drivers', 'lib32-vulkan-intel': 'mesa-vulkan-drivers:i386',
+        'vulkan-radeon': 'mesa-vulkan-drivers', 'lib32-vulkan-radeon': 'mesa-vulkan-drivers:i386',
+        'bluez-utils': 'bluez',
     })
     services = MappingProxyType({'samba': 'smbd.service', 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/apt/sources.list', '/etc/apt/sources.list.d', '/etc/apt/preferences.d',
@@ -561,6 +601,11 @@ class Debian(PackageLock, Family):
     def ubuntu(self):
         return 'ubuntu' in _words(self.release, 'ID') + _words(self.release, 'ID_LIKE')
 
+    def foreign_architectures(self):
+        """The extra package architectures dpkg allows (i386 is what Steam's 32-bit side
+        needs; without it apt still lists steam-installer, then fails to install it)."""
+        return set(self._call(['dpkg', '--print-foreign-architectures'], 30).stdout.split())
+
     def vendor_release(self):
         """(distribution, codename) as Docker's and Tailscale's repositories name them."""
         codename = self.release.get('VERSION_CODENAME', '')
@@ -584,7 +629,7 @@ class Debian(PackageLock, Family):
         while waited < self.wait and not _free(self.path(APT_LISTS_LOCK)):
             self.sleep(5)
             waited += 5
-        result = self._call(['apt-get', *APT_WAIT, 'update'], 1200)
+        result = self.retrying(lambda: self._call(['apt-get', *APT_WAIT, 'update'], 1200))
         if result.returncode:
             raise RuntimeError('Refreshing the package lists failed: ' + _reason(result))
         self.refreshed = True
@@ -908,8 +953,13 @@ class Fedora(PackageLock, Family):
         'docker': ('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin'),
         'docker-compose': 'docker-compose-plugin',
         'libva-mesa-driver': 'mesa-va-drivers',
+        # The TV: Steam from RPM Fusion's repository for it (Fedora's third-party source),
+        # Mesa's Vulkan drivers for every chip in one package, bluetoothctl inside bluez.
+        'vulkan-intel': 'mesa-vulkan-drivers', 'lib32-vulkan-intel': 'mesa-vulkan-drivers.i686',
+        'vulkan-radeon': 'mesa-vulkan-drivers', 'lib32-vulkan-radeon': 'mesa-vulkan-drivers.i686',
+        'bluez-utils': 'bluez',
     })
-    services = MappingProxyType({'samba': 'smb.service', 'tailscale': TAILSCALE_UNIT})
+    services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/dnf/dnf.conf', '/etc/yum.repos.d')
     journal = '/var/lib/nekoserver-host/package-install.json'
     repositories = MappingProxyType({'docker': DOCKER_RPM, 'docker-compose': DOCKER_RPM, 'tailscale': TAILSCALE_RPM})
@@ -918,7 +968,7 @@ class Fedora(PackageLock, Family):
     # start them on the right drive, as on Debian.
     autostarted = MappingProxyType({
         'docker': ('docker.service', 'docker.socket'), 'caddy': ('caddy.service',),
-        'samba': ('smb.service', 'nmb.service'), 'tailscale': (TAILSCALE_UNIT,)})
+        'samba': (SAMBA_UNIT, 'nmb.service'), 'tailscale': (TAILSCALE_UNIT,)})
     # Fedora's own container packages that would conflict with Docker's.
     conflicts = ('moby-engine', 'podman-docker', 'containerd')
 
@@ -933,8 +983,8 @@ class Fedora(PackageLock, Family):
         if not self.ready():
             return False
         for name in self.names(wanted):
-            found = self._call(['dnf', '-q', 'repoquery', '--available', '--latest-limit', '1',
-                                '--qf', '%{name}\n', name], 600)
+            found = self.retrying(lambda: self._call(['dnf', '-q', 'repoquery', '--available', '--latest-limit', '1',
+                                                      '--qf', '%{name}\n', name], 600))
             if found.returncode or name not in found.stdout.split():
                 return False
         return True
@@ -1121,6 +1171,12 @@ class Suse(Fedora):
         'docker': ('docker', 'docker-buildx'),
         'docker-compose': 'docker-compose',
         'libva-mesa-driver': 'Mesa-libva',
+        # The TV (Tumbleweed and Slowroll, from the non-OSS repository; Leap 16 has no
+        # Steam package).
+        'vulkan-intel': 'libvulkan_intel', 'lib32-vulkan-intel': 'libvulkan_intel-32bit',
+        'vulkan-radeon': 'libvulkan_radeon', 'lib32-vulkan-radeon': 'libvulkan_radeon-32bit',
+        'firefox': 'MozillaFirefox',
+        'bluez-utils': 'bluez',
     })
     settings = ('/etc/zypp/zypp.conf', '/etc/zypp/repos.d')
     repositories = MappingProxyType({})
@@ -1138,8 +1194,8 @@ class Suse(Fedora):
         if not self.ready():
             return False
         # zypper answers 104 when no package matches.
-        return all(self._call(['zypper', '--non-interactive', '--quiet', 'search', '--match-exact',
-                               '--type', 'package', name], 300).returncode == 0
+        return all(self.retrying(lambda: self._call(['zypper', '--non-interactive', '--quiet', 'search', '--match-exact',
+                                                     '--type', 'package', name], 300)).returncode == 0
                    for name in self.names(wanted))
 
     def _install(self, names, timeout):

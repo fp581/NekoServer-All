@@ -276,6 +276,42 @@ class InstallScriptTests(unittest.TestCase):
         self.assertLess(log.index('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update'), log.index('BOOTSTRAP'))
         self.assertLess(log.index('BOOTSTRAP'), log.index('START --wizard'))
 
+    def flaky_apt(self, message, failures='1'):
+        """apt-get whose first `failures` runs of update fail with `message`."""
+        counter = self.root / 'apt-failures'
+        counter.write_text(failures)
+        (self.root / 'bin/apt-get').write_text(
+            '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\nn=$(cat "$APT_FAILURES")\n'
+            'case "$*" in *update) if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$APT_FAILURES"; echo "' + message + '" >&2; exit 100; fi;; esac\nexit 0\n')
+        os.environ['APT_FAILURES'] = str(counter)
+        self.addCleanup(os.environ.pop, 'APT_FAILURES', None)
+        return counter
+
+    def test_a_package_source_that_did_not_answer_is_tried_again(self):
+        self.use_debian()
+        counter = self.flaky_apt('E: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Temporary failure resolving archive.ubuntu.com')
+        result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count('did not answer; trying again in 20 seconds (2 of 3)'), 1)
+        self.assertEqual(log.count('update'), 2)
+        self.assertEqual(counter.read_text().strip(), '0')
+        self.assertIn('START --wizard', log)
+        # One that never answers: three attempts, then the failure as it was.
+        self.flaky_apt('E: Failed to fetch http://archive.ubuntu.com/x  Connection timed out', failures='9')
+        result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 100)
+        self.assertEqual(result.stdout.count('trying again'), 2)
+        self.assertEqual(log.count('update'), 3)
+        self.assertNotIn('START', log)
+
+    def test_any_other_apt_failure_stops_at_once(self):
+        self.use_debian()
+        self.flaky_apt('E: The repository http://example.invalid/debian trixie Release does not have a Release file.', failures='9')
+        result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 100)
+        self.assertNotIn('trying again', result.stdout)
+        self.assertEqual(log.count('update'), 1)
+
     def test_debian_waits_while_the_system_refreshes_its_lists(self):
         # apt-daily holds the lists' lock; apt-get update would fail at once beside it.
         self.use_debian()

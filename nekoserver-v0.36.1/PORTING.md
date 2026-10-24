@@ -61,7 +61,8 @@ Shared code must never call a package manager itself. `tests/test_host.py` fails
 - **Docker.** An existing Docker installation and its data are never adopted or moved silently. Docker must not start before its data folder is on the SSD.
 - **Apps listen on 127.0.0.1.** Ports Docker publishes skip host firewalls (ufw, firewalld), so the apps are reached only through the gateway, Tailscale and Samba, which are host services a firewall does govern.
 - **Backups.** App data is portable between families. Host settings are not. A restore keeps numeric ownership but maps accounts on the destination, and it never blindly replaces the user database or a service's configuration.
-- **Desktop features** (TV, OpenRGB lighting) are optional.
+- **Desktop features** (TV, OpenRGB lighting) are optional. The TV step (`modules/tv.py`) uses the family's `packages` map for Steam, the Vulkan drivers, the browser and BlueZ, and `tv.STEAM_SOURCES` says, per family, what the owner switches on before the repositories offer Steam; a family without a Steam package returns a reason from `tv.unavailable_reason`.
+- **A package source that does not answer is asked again.** `Family.retrying()` runs a package-manager call again after `RETRY_PAUSE` seconds when its output matches `TRANSIENT` (a download that failed, a host that did not resolve, a mirror's 5xx), `RETRIES` times in all; `install.sh` has the same `retrying` function for the bootstrap. Any other failure is reported at once.
 
 ## Adding a family, step by step
 
@@ -77,7 +78,7 @@ Shared code must never call a package manager itself. `tests/test_host.py` fails
 | Family | Status |
 | --- | --- |
 | Arch Linux / Nyarch (and systems built on them) | Supported; not yet proven on a real install |
-| Debian 12+ / Ubuntu 24.04+ (and systems built on them) | Supported; not yet proven on a real install. TV setup is Arch/Nyarch-only for now |
+| Debian 12+ / Ubuntu 24.04+ (and systems built on them) | Supported; not yet proven on a real install |
 | Fedora 42+ | Supported since 0.35.0; tried on Fedora 44 under WSL (no SELinux there). Setup stops while SELinux is enforcing until it is tested |
 | RHEL 10+ / Rocky Linux / AlmaLinux / CentOS Stream | Supported since 0.35.0 (`Rhel`, built on the Fedora adapter): Docker's rhel/ or centos/ packages, Tailscale's rhel/<major>, Caddy and qrencode from EPEL. Tried on AlmaLinux 10 under WSL. Version 9 is refused (Python 3.9); Oracle Linux is not covered |
 | openSUSE Leap 16+ / Tumbleweed / Slowroll | Supported since 0.36.0 (`Suse`, built on the Fedora adapter's rpm handling with zypper): everything from openSUSE's own repositories, no maker's repository. Tried on Leap 16 under WSL (no SELinux there). Leap 15 is refused (Python 3.6); SLES is not covered |

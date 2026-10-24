@@ -1445,12 +1445,7 @@ mod tests {
             answer(&s, &json!({"op": "detect", "local": true}))["ok"],
             true
         );
-        thread::sleep(Duration::from_millis(300));
-        assert_eq!(
-            board.get("pwm1_enable"),
-            "1",
-            "detection is driving the fans"
-        );
+        wait_until_driving(&board);
         let started = Instant::now();
         s.stop_detection();
         assert!(started.elapsed() < Duration::from_secs(2));
@@ -1576,6 +1571,18 @@ mod tests {
         panic!("detection did not stop");
     }
 
+    /// Detection has taken the first fan (its worker thread is under way). A slow
+    /// machine takes longer than a fixed pause would allow.
+    fn wait_until_driving(board: &fans::tests::Board) {
+        for _ in 0..100 {
+            if board.get("pwm1_enable") == "1" {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        panic!("detection did not take the first fan");
+    }
+
     #[test]
     fn detection_needs_a_temperature_it_can_read() {
         let board = fans::tests::Board::new("detect-blind");
@@ -1596,8 +1603,7 @@ mod tests {
             answer(&s, &json!({"op": "detect", "local": true}))["ok"],
             true
         );
-        thread::sleep(Duration::from_millis(300));
-        assert_eq!(board.get("pwm1_enable"), "1");
+        wait_until_driving(&board);
         board.set("temp1_input", "not a number"); // the sensor driver failed
         let d = wait_for_detection(&s);
         assert!(
@@ -1617,7 +1623,7 @@ mod tests {
             answer(&s, &json!({"op": "detect", "local": true}))["ok"],
             true
         );
-        thread::sleep(Duration::from_millis(300));
+        wait_until_driving(&board);
         board.set("temp1_input", "86000");
         assert!(wait_for_detection(&s)["error"]
             .as_str()
@@ -1755,7 +1761,7 @@ mod tests {
             answer(&s, &json!({"op": "detect", "local": true}))["ok"],
             true
         );
-        thread::sleep(Duration::from_millis(300));
+        wait_until_driving(&board);
         block(&board.hwmon().join("hwmon1/pwm1_enable"));
         block(&run.join(JOURNALS[0]));
         s.stop_detection();
