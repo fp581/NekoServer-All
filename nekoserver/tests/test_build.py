@@ -70,26 +70,91 @@ class BuildNeededTests(unittest.TestCase):
 
     def test_none_yet_other_sources_or_a_matching_build(self):
         import native_runtime
+        from neko_common import VERSION
+        runs = lambda *args, **kwargs: mock.Mock(returncode=0, stdout='nekoserver-runtime ' + VERSION + '\n')   # noqa: E731
         with tempfile.TemporaryDirectory() as tmp:
             root = self.project(tmp)
-            self.assertTrue(native_runtime.build_needed(tmp))          # no runtime at all
+            self.assertTrue(native_runtime.build_needed(tmp, runs))          # no runtime at all
             self.record(root)
-            self.assertFalse(native_runtime.build_needed(tmp))         # built from these sources
+            self.assertFalse(native_runtime.build_needed(tmp, runs))         # built from these sources, runs here
             (root / 'src/main.rs').write_text('fn main() { println!(); }\n')
-            self.assertTrue(native_runtime.build_needed(tmp))          # a source changed since
+            self.assertTrue(native_runtime.build_needed(tmp, runs))          # a source changed since
             self.record(root)
             (root / 'src/extra.rs').write_text('')
-            self.assertTrue(native_runtime.build_needed(tmp))          # a source the record never saw
+            self.assertTrue(native_runtime.build_needed(tmp, runs))          # a source the record never saw
             (root / 'src/extra.rs').unlink()
             (root / 'bin/nekoserver-runtime').unlink()
-            self.assertTrue(native_runtime.build_needed(tmp))          # the record without its binary
+            self.assertTrue(native_runtime.build_needed(tmp, runs))          # the record without its binary
             (root / 'build.json').write_text('{')
-            self.assertTrue(native_runtime.build_needed(tmp))          # an unreadable record
+            self.assertTrue(native_runtime.build_needed(tmp, runs))          # an unreadable record
+
+    def test_a_runtime_that_does_not_run_here_is_built_again(self):
+        # A copy built on another Linux (kept on the SSD through a reinstall), or of
+        # another version, counts as missing.
+        import native_runtime
+        from neko_common import VERSION
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.project(tmp)
+            self.record(root)
+            cannot_start = lambda *args, **kwargs: (_ for _ in ()).throw(OSError('Exec format error'))   # noqa: E731
+            self.assertTrue(native_runtime.build_needed(tmp, cannot_start))
+            other = lambda *args, **kwargs: mock.Mock(returncode=0, stdout='nekoserver-runtime 0.1.0\n')   # noqa: E731
+            self.assertTrue(native_runtime.build_needed(tmp, other))
+            crashes = lambda *args, **kwargs: mock.Mock(returncode=127, stdout='')   # noqa: E731
+            self.assertTrue(native_runtime.build_needed(tmp, crashes))
+            self.assertTrue(native_runtime.runs_here(root / 'bin/nekoserver-runtime',
+                                                     lambda *a, **k: mock.Mock(returncode=0, stdout='nekoserver-runtime ' + VERSION)))
 
     def test_this_pcs_own_build_is_accepted_as_the_static_one_is(self):
         import native_runtime
         self.assertIn('x86_64-unknown-linux-gnu', native_runtime.TARGETS)
         self.assertIn(native_runtime.TARGET, native_runtime.TARGETS)
+
+
+class DeployTests(unittest.TestCase):
+    """A deployed copy carries its build record; one NekoServer put there is replaced when
+    the runtime was built again, one without a record never is."""
+    def setUp(self):
+        import native_runtime
+        self.native_runtime = native_runtime
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = Path(self.tmp.name) / 'nekoserver'
+        (self.project / 'runtime').mkdir(parents=True)
+        self.manifest = self.project / 'runtime/build.json'
+        self.manifest.write_text('{"version": "x", "binary_sha256": "1"}\n')
+        self.destination = Path(self.tmp.name) / 'lib/v1'
+        self.destination.mkdir(parents=True)
+        self.target = self.destination / native_runtime.NAME
+        self.record = Path(str(self.target) + native_runtime.RECORD_SUFFIX)
+
+    def deploy(self, blob):
+        with mock.patch.object(self.native_runtime, 'payload', return_value=blob):
+            return self.native_runtime.deploy(self.project, {}, self.destination)
+
+    def test_first_deployment_writes_the_copy_and_its_record(self):
+        self.assertEqual(self.deploy(b'one'), self.target)
+        self.assertEqual(self.target.read_bytes(), b'one')
+        self.assertEqual(self.record.read_text(), self.manifest.read_text())
+        self.assertEqual(oct(self.target.stat().st_mode & 0o777), '0o750')
+
+    def test_a_rebuilt_runtime_replaces_the_copy_nekoserver_made(self):
+        self.deploy(b'one')
+        self.manifest.write_text('{"version": "x", "binary_sha256": "2"}\n')
+        self.deploy(b'two')
+        self.assertEqual(self.target.read_bytes(), b'two')
+        self.assertEqual(self.record.read_text(), self.manifest.read_text())
+
+    def test_a_copy_without_a_record_is_never_overwritten(self):
+        self.target.write_bytes(b'theirs')
+        self.target.chmod(0o750)
+        with self.assertRaisesRegex(RuntimeError, 'NekoServer did not put it there'):
+            self.deploy(b'ours')
+        self.assertEqual(self.target.read_bytes(), b'theirs')
+        self.assertFalse(self.record.exists())
+        # The same bytes, though, are simply recognised (and get their record).
+        self.deploy(b'theirs')
+        self.assertTrue(self.record.is_file())
 
 
 class ToolchainTests(unittest.TestCase):

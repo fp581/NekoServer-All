@@ -1,6 +1,6 @@
 """Verify the native runtime built for this release (by install.sh on this PC, or the
 static release build) and deploy it without compiling as root."""
-import hashlib,json,platform,sys
+import hashlib,json,platform,subprocess,sys
 from pathlib import Path
 from neko_common import SYSTEMD_UNITS,VERSION,safe_path,atomic_write,atomic_json
 TARGET='x86_64-unknown-linux-musl'          # the static release build
@@ -11,15 +11,25 @@ SOURCES=('Cargo.toml','Cargo.lock','build.py')
 def expected_sources(root):
     return {*SOURCES,*[str(p.relative_to(root)) for p in (root/'src').glob('*.rs')]}
 
-def build_needed(project):
-    """True when the release folder has no runtime yet, or one built from other sources
-    than these (install.sh then builds it)."""
+def runs_here(binary,run=subprocess.run):
+    """The runtime starts on this system and names this release. A copy built on another
+    Linux (kept on the SSD through a reinstall) may not: it is built again then."""
+    try:
+        result=run([str(binary),'--version'],capture_output=True,text=True,timeout=30,check=False)
+    except (OSError,subprocess.SubprocessError):
+        return False
+    return result.returncode==0 and result.stdout.strip().endswith(' '+VERSION)
+
+def build_needed(project,run=subprocess.run):
+    """True when the release folder has no runtime yet, one built from other sources than
+    these, or one that does not run here (install.sh then builds it)."""
     root=Path(project)/'runtime'
     try:
         manifest=json.loads((root/'build.json').read_text())
         hashes=manifest.get('source_sha256',{})
         if not (root/'bin'/NAME).is_file() or set(hashes)!=expected_sources(root):return True
-        return any(hashlib.sha256((root/rel).read_bytes()).hexdigest()!=hashes[rel] for rel in hashes)
+        if any(hashlib.sha256((root/rel).read_bytes()).hexdigest()!=hashes[rel] for rel in hashes):return True
+        return not runs_here(root/'bin'/NAME,run)
     except (OSError,ValueError,AttributeError):
         return True
 def backend(config):
@@ -50,16 +60,27 @@ def payload(project,config):
         if hashlib.sha256(safe_path(root/rel).read_bytes()).hexdigest()!=hashes[rel]:raise RuntimeError('The runtime was built from other sources than these; run  sudo bash install.sh  again (it builds the runtime), or python3 runtime/build.py')
     return binary
 
+RECORD_SUFFIX='.build.json'   # next to each copy NekoServer deploys: the build it came from
+
 def deploy(project,config,destination):
+    """Put this release's runtime at destination. A copy NekoServer put there itself (its
+    build record lies beside it) is replaced when the runtime was built again from other
+    sources, as after `git pull` into the same folder; a copy with no record (someone's
+    own, or one from a release before 0.38.0) is never overwritten."""
     blob=payload(project,config)
     target=safe_path(Path(destination)/NAME)
+    record=Path(str(target)+RECORD_SUFFIX)
+    manifest=(Path(project)/'runtime/build.json').read_text()
     if target.exists() and target.read_bytes()!=blob:
-        raise RuntimeError(f'The runtime copy at {target} differs from the one in this release (same version {VERSION}). '
-                           'Two builds of one release are never mixed: if this release is the newer download (its runtime was '
-                           f'rebuilt), move the old copy away (sudo mv {target} {target}.old) and run setup again; a file you '
-                           'put there yourself is kept')
-    if not target.exists():atomic_write(target,blob,0o750)
+        if not record.is_file():
+            raise RuntimeError(f'The runtime copy at {target} differs from the one in this release (same version {VERSION}) '
+                               'and NekoServer did not put it there: if this release is the newer download (its runtime was '
+                               f'rebuilt), move the old copy away (sudo mv {target} {target}.old) and run setup again; a file you '
+                               'put there yourself is kept')
+        atomic_write(target,blob,0o750)
+    elif not target.exists():atomic_write(target,blob,0o750)
     elif target.stat().st_mode&0o111==0:raise RuntimeError('Existing native executable has no execute permission; review locally')
+    if not record.is_file() or record.read_text()!=manifest:atomic_write(record,manifest,0o640)
     return target
 
 # Where each release keeps its own copy of the runtime (modules/*.py, gateway_tools.py).
