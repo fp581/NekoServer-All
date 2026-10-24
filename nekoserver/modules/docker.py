@@ -87,10 +87,27 @@ def unbounded_logs(inspected):
     return sorted(names)
 
 
+def store_in_use(default):
+    """Whether Docker's own store holds anything of anyone's: a container, an image or a
+    volume. Docker makes the folder tree on its first start, so the folder alone (as after
+    the package was installed, or after NekoServer was uninstalled) proves nothing."""
+    default = Path(default)
+    places = [default / 'containers', default / 'volumes', *default.glob('image/*/imagedb/content/sha256')]
+    return any(place.is_dir() and any(p.name not in ('metadata.db', 'backingFsBlockDev') for p in place.iterdir()) for place in places)
+
+
+def active_store_in_use(call=None):
+    """The same for a running Docker: anything in it, by its own count."""
+    call = call or globals()['call']
+    counts = call(['docker', 'info', '--format', '{{.Containers}} {{.Images}}']).split()
+    return counts != ['0', '0'] or bool(call(['docker', 'volume', 'ls', '-q']).strip())
+
+
 def check_existing_docker(target):
-    """Never convert an existing Docker installation automatically."""
+    """Never convert an existing Docker installation that holds something; one with
+    nothing in it is taken over (it starts again from the SSD)."""
     default = Path('/var/lib/docker')
-    if default.exists() and any(default.iterdir()):
+    if default.exists() and store_in_use(default):
         raise already_used(default, target)
     if target.exists() and any(target.iterdir()):
         # Safe to reuse a target only when Docker already points to it.
@@ -177,10 +194,15 @@ def run(context):
     daemon = prepare_daemon_config(daemon_file, target)
     # Do not mutate a running daemon or silently relocate existing images/volumes.
     active = subprocess.run(['systemctl', 'is-active', '--quiet', 'docker'], check=False).returncode == 0
-    if active:
+    if active and call(['docker', 'info', '--format', '{{.DockerRootDir}}']) != str(target):
         actual = call(['docker', 'info', '--format', '{{.DockerRootDir}}'])
-        if actual != str(target):
+        if active_store_in_use():
             raise already_used(actual, target)
+        # Nothing in it (just installed, or NekoServer uninstalled): it runs from the SSD from now on.
+        context.log(f'Docker runs from {actual} with nothing in it (no container, image or volume): stopped, to run from the SSD')
+        subprocess.run(['systemctl', 'stop', 'docker.socket', 'docker.service'], check=True, timeout=300)
+        active = False
+    if active:
         if not daemon_file.exists() or json.loads(daemon_file.read_text()).get('data-root') != str(target):
             raise RuntimeError('Active Docker root is correct but daemon.json differs; inspect before changing')
         override = DOCKER_STORAGE_DROPIN

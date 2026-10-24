@@ -92,6 +92,8 @@ Monthly recovery covers selected app state and databases (including Immich's and
 
 NekoServer runs Docker from the SSD. When Docker was already set up on this PC before (its data in `/var/lib/docker`, or in another folder named as `"data-root"` in `/etc/docker/daemon.json`), setup stops at the Docker step and says so: it never moves or deletes existing Docker data by itself.
 
+A Docker with nothing in it (no container, image or volume: the package just installed, or NekoServer uninstalled) is not "already used": setup stops it and runs it from the SSD from then on. The message above comes only when something is in it.
+
 If nothing in that Docker needs keeping (you only tried it out, say), put its data aside and run setup again:
 
 ```bash
