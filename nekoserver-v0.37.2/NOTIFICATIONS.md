@@ -27,7 +27,7 @@ Only HTTPS URLs with a hostname/IP, optional port and a single topic path are ac
 ## Test on your phone
 
 ```bash
-sudo /usr/local/lib/nekoserver-notifications/v0.37.1/nekoserver-runtime notify \
+sudo /usr/local/lib/nekoserver-notifications/v0.37.2/nekoserver-runtime notify \
   --config /etc/nekoserver-notifications/config.json \
   --state /var/lib/nekoserver-notifications \
   --runtime /run/nekoserver-notifications \

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.37.2 — 2026-10-24
+
+Code-quality findings from SonarCloud's review of 0.37.1. Nothing changes in how NekoServer works.
+
+### Changed
+- The wizard's `run` has one return point; a build test keeps one call inside its failure check; an unused name in `runtime/build.py` is gone.
+
+### Upgrade notes
+- After `git pull`, run `sudo bash install.sh` in `nekoserver-v0.37.2`: it offers the settings left in the earlier folder, answers `yes`, and builds the runtime for this release (a few minutes).
+
 ## v0.37.1 — 2026-10-24
 
 The runtime is now built on the PC that installs NekoServer instead of being kept in git, plus code-quality findings from SonarCloud's review of 0.37.0 and a fuller `.gitignore`. The setup window is unchanged.
