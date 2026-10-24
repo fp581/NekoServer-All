@@ -150,6 +150,25 @@ class WizardFlowTests(unittest.TestCase):
         self.saved(root / 'my-config.json', 'mine')
         self.assertTrue((root / 'my-config.json').is_file())
 
+    def test_a_newer_settings_file_that_cannot_be_read_is_named_and_the_next_one_used(self):
+        # Never a silent choice: a damaged my-config.json in the newest earlier folder is
+        # reported, and the next readable one (here the copy setup kept on the SSD) is offered.
+        root = self.root.parent / 'nekoserver'
+        root.mkdir()
+        shutil.copy(ROOT / 'config.json', root / 'config.json')
+        damaged = self.root.parent / 'nekoserver-v0.37.3/my-config.json'
+        damaged.parent.mkdir()
+        damaged.write_text('{"storage": ')
+        self.saved(self.root.parent / 'nekoserver-v0.37.2/my-config.json', 'older')
+        shown = []
+        self.assertEqual(wizard.earlier_settings(root, shown.append), self.root.parent / 'nekoserver-v0.37.2/my-config.json')
+        self.assertEqual(len(shown), 1)
+        self.assertIn(str(damaged) + ' cannot be read', shown[0])
+        # The person's own files come before setup's copies on the SSD, whatever the versions.
+        (root / 'config.json').write_text(json.dumps({**json.loads((ROOT / 'config.json').read_text()), 'data_mount': str(self.root / 'ssd')}))
+        self.saved(self.root / 'ssd/installer/releases/v0.38.0/config.json', 'ssd')
+        self.assertEqual([p.parent.name for p in wizard.earlier_candidates(root)], ['nekoserver-v0.37.3', 'nekoserver-v0.37.2', 'v0.38.0'])
+
     def test_an_update_takes_the_settings_left_in_the_earlier_release_folder(self):
         # git pull moved the release into a new folder; my-config.json stayed in the old one.
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')

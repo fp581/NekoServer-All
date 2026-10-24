@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.38.1 — 2026-10-24
+
+openSUSE Tumbleweed tried for real, with the one fix it needed; the update flow in the fixed folder tried for real, and the dashboard's runtime copy brought under 0.38.0's replacement rule.
+
+### Fixed
+- **openSUSE: lighting is installed under its openSUSE name.** On Tumbleweed the dashboard step failed with `Installing openrgb failed: Did you mean OpenRGB?`. openSUSE spells the lighting package `OpenRGB`; zypper's search found it for `openrgb` anyway (it ignores case) and the install then did not. The openSUSE package map names it, and the availability check asks zypper for the exact spelling (`--case-sensitive`). Leap 16, which has no OpenRGB package, keeps skipping lighting as before.
+- **The dashboard's runtime copy follows the same rule as every other copy.** 0.38.0 made a runtime copy NekoServer deployed itself replaceable when the runtime was built again from other sources, with a build record beside each copy; the dashboard step kept its own copy under the older rule and would have stopped with `The installed dashboard file ... differs from the one in this release`. It now installs the record beside its copy and replaces the copy under the same condition. Other dashboard files that differ (the page's files) still stop the step, as a change of yours would.
+- **A copy is replaced only when its record names exactly that build.** The rule from 0.38.0 took any record beside a copy as proof that NekoServer put it there. Now the copy's checksum must match the record's: a copy someone put in place of NekoServer's (even with the record left beside it), a record that cannot be read, or a stale one all protect the copy, and setup stops with the same clear message as for a copy without a record. A stale record beside this release's own runtime is simply refreshed.
+- **The build checks for room first.** `runtime/build.py` refuses to start when less than 1 GB is free where NekoServer's folder is, naming the folder and what is free, instead of Cargo failing halfway through with a full disk. (A build takes about 150 MB; the margin is for Cargo's cache and other things on the disk.)
+- **An answer typed in the terminal that lost the race to the setup window is dropped.** When both were answering the same question and the window's answer arrived first, the line typed in the terminal stayed in its buffer and would have answered the next question. The terminal's input is cleared when the window wins.
+- **An earlier settings file that cannot be read is named, never passed over silently.** Updating from a `nekoserver-v0.37.x` folder, setup offers the newest earlier `my-config.json` it finds (then the copies it kept on the SSD). A damaged one is now reported by path and the next readable one offered, instead of setup quietly taking an older file, or starting from scratch, without a word.
+- A test of the "monthly update still running" guard asked the real system about its maintenance service (a default argument bound the real check at import time), so it failed on a PC where that job was running at that moment. The check is looked up when it runs.
+
+### Upgrade notes
+- `git pull` in `nekoserver`, then `sudo bash install.sh` there: it offers your settings (answer `yes`) and builds the runtime for this release (a minute or so).
+
 ## v0.38.0 — 2026-10-24
 
 The release folder is simply `nekoserver` from now on, so `git pull` updates it in place and a release's changes show as changes; the runtime is built again when it would not run here; and the on-PC build was tried on the other families.
@@ -9,7 +25,6 @@ The release folder is simply `nekoserver` from now on, so `git pull` updates it 
 - **The runtime is built again when it would not run here.** `install.sh` also checks that the runtime starts and names this release, not only that it was built from these sources: a copy built on another Linux (kept on the SSD through a reinstall and taken back by the recovery path) is rebuilt instead of failing later.
 - **A runtime NekoServer deployed itself is replaced when it was built again from other sources** (a `git pull` into the same folder within one version). Each deployed copy now has its build record beside it (`nekoserver-runtime.build.json`); a copy without one (someone's own, or from a release before this one) is still never overwritten.
 - The on-PC build was tried on Arch, openSUSE Leap and AlmaLinux as well (see below), after Ubuntu, Fedora and Debian in 0.37.1.
-- **openSUSE Tumbleweed, tried for real:** the dashboard step failed there with `Installing openrgb failed: Did you mean OpenRGB?`. openSUSE spells the lighting package `OpenRGB`; zypper's search found it for `openrgb` anyway (it ignores case) and the install then did not. The openSUSE package map names it, and the availability check asks zypper for the exact spelling. Leap 16, which has no OpenRGB package, keeps skipping lighting as before.
 - Small things around the build and the bootstrap: when the runtime is built as the person who ran sudo, anything an earlier build left as root (`runtime/target`, `runtime/bin`) is handed to them first, instead of failing on permissions; pacman runs without its progress bars in `install.sh` (its output goes through the retry's log, where the bars came out garbled); the setup window opened by a Chromium-family browser is placed from the screen's real size (`xrandr`), low on the screen and always wholly on it, and left to the desktop where the size is unknown (Wayland). The tests no longer print the home-network and qBittorrent lines into the test log.
 
 ### Upgrade notes
