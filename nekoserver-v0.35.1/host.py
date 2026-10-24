@@ -31,6 +31,8 @@ OS_RELEASE = '/etc/os-release'
 # Every system package the apps need outside their containers, by NekoServer's names.
 APP_PACKAGES = ('docker', 'docker-compose', 'tailscale', 'caddy', 'samba', 'hdparm',
                 'smartmontools', 'qrencode', 'xdg-utils')
+# Tailscale's service has the same name on every family.
+TAILSCALE_UNIT = 'tailscaled.service'
 
 
 class Unsupported(RuntimeError):
@@ -334,7 +336,7 @@ class Arch(Family):
     manager = 'pacman'
     ids = ('arch', 'nyarch')
     like = ('arch',)
-    services = MappingProxyType({'samba': 'smb.service', 'tailscale': 'tailscaled.service'})
+    services = MappingProxyType({'samba': 'smb.service', 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
     wait = 600            # seconds to wait for another pacman to finish
     sleep = staticmethod(time.sleep)
@@ -530,7 +532,7 @@ class Debian(PackageLock, Family):
         'libva-utils': 'vainfo',
         'firefox': 'firefox-esr',
     })
-    services = MappingProxyType({'samba': 'smbd.service', 'tailscale': 'tailscaled.service'})
+    services = MappingProxyType({'samba': 'smbd.service', 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/apt/sources.list', '/etc/apt/sources.list.d', '/etc/apt/preferences.d',
                 '/etc/apt/keyrings', '/etc/default/locale', '/etc/default/keyboard')
     journal = '/var/lib/nekoserver-host/package-install.json'
@@ -544,7 +546,7 @@ class Debian(PackageLock, Family):
         # (samba-ad-dc.service comes masked by the package itself and is left as it is.
         # winbind comes with samba here and is never used by a standalone server; the
         # settings backup refuses to run beside it.)
-        'samba': ('smbd.service', 'nmbd.service', 'winbind.service'), 'tailscale': ('tailscaled.service',)})
+        'samba': ('smbd.service', 'nmbd.service', 'winbind.service'), 'tailscale': (TAILSCALE_UNIT,)})
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
 
@@ -907,7 +909,7 @@ class Fedora(PackageLock, Family):
         'docker-compose': 'docker-compose-plugin',
         'libva-mesa-driver': 'mesa-va-drivers',
     })
-    services = MappingProxyType({'samba': 'smb.service', 'tailscale': 'tailscaled.service'})
+    services = MappingProxyType({'samba': 'smb.service', 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/dnf/dnf.conf', '/etc/yum.repos.d')
     journal = '/var/lib/nekoserver-host/package-install.json'
     repositories = MappingProxyType({'docker': DOCKER_RPM, 'docker-compose': DOCKER_RPM, 'tailscale': TAILSCALE_RPM})
@@ -916,7 +918,7 @@ class Fedora(PackageLock, Family):
     # start them on the right drive, as on Debian.
     autostarted = MappingProxyType({
         'docker': ('docker.service', 'docker.socket'), 'caddy': ('caddy.service',),
-        'samba': ('smb.service', 'nmb.service'), 'tailscale': ('tailscaled.service',)})
+        'samba': ('smb.service', 'nmb.service'), 'tailscale': (TAILSCALE_UNIT,)})
     # Fedora's own container packages that would conflict with Docker's.
     conflicts = ('moby-engine', 'podman-docker', 'containerd')
 

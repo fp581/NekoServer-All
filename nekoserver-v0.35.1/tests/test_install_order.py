@@ -798,7 +798,7 @@ class UnfinishedMaintenanceTests(unittest.TestCase):
             args = mock.Mock(apply=True)
             with mock.patch.object(installer.os, 'geteuid', return_value=0), \
                     mock.patch.object(neko_common, 'MAINTENANCE_JOURNAL', journal), \
-                    mock.patch.object(installer, 'pending_maintenance', lambda: neko_common.pending_maintenance(journal, running=idle)), \
+                    mock.patch.object(installer, 'pending_maintenance', return_value=neko_common.pending_maintenance(journal, running=idle)), \
                     mock.patch.object(installer, '_execute') as run_modules:
                 with self.assertRaisesRegex(installer.InstallerError, 'did not finish'):
                     installer.execute(args)
