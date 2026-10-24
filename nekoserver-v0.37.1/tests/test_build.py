@@ -44,8 +44,8 @@ class PlanTests(unittest.TestCase):
         self.assertGreaterEqual(build.oldest_rust(), (1, 85))
 
     def test_without_rust_the_build_says_what_to_install(self):
-        with self.assertRaisesRegex(RuntimeError, r'Rust 1\.\d+ or newer .* sudo bash install.sh installs it'):
-            with mock.patch.object(build, 'pairs', return_value=[]):
+        with mock.patch.object(build, 'pairs', return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, r'Rust 1\.\d+ or newer .* sudo bash install.sh installs it'):
                 build.toolchain()
 
 
