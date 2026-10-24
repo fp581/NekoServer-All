@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **A setup window beside the terminal.** `sudo bash install.sh` now opens a small window in the PC's own browser (the dashboard's look; Chromium-family browsers open it as a window of its own sized for the bottom of the screen, Firefox as a normal window). Before setup starts it explains the optional parts (a TV, phone alerts, outage alerts, Nextcloud) in plain words, with what each installs, and lets you leave any of them out; **Start setup** there answers the terminal's "Ready to start?". While setup runs it shows the step under way with a one-line explanation, the packages it installs with what each one is for, the step's own messages and the state of every step. Every question setup asks is asked in the window too, with the terminal's last lines as context (the numbered drives, the instructions for a phone step): a text box, Yes/No buttons or a password box, and the answer can be given there or typed in the terminal, whichever comes first. At the end it shows the finishing screen. The page is served by setup itself on this PC only, behind an address nobody can guess, only while setup runs, and loads nothing from the internet. Without a desktop or a browser, setup prints the window's address and goes on in the terminal alone, as before.
+
 ## v0.36.1 — 2026-10-24
 
 The TV extras on every family that packages Steam, a retry when a package source does not answer, the fix for the test that failed on GitHub's runner in 0.36.0's CI, and SonarCloud's findings on 0.36.0. The TV step was tried for real on Fedora 44, Ubuntu 24.04 and Debian 13 under WSL (Steam installed from each system's own repositories after doing what the hint says), and the two systems without a Steam package were seen to say so.

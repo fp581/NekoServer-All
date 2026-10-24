@@ -12,7 +12,11 @@ import sys
 from pathlib import Path
 import capabilities
 import host
+import setup_progress
 from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path, pending_maintenance
+
+# The installer's own log lines (a step's status), as against a step's own words.
+MARKERS = ('START ', 'PASS ', 'FAILED ', 'NEEDS SETUP ', 'UNAVAILABLE ', 'BLOCKED ', 'Finished:')
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_STATE = Path.home() / '.local' / 'state' / 'nekoserver'
@@ -255,6 +259,8 @@ def _execute(args, root=ROOT):
         with safe_path(log_path).open('a', encoding='utf-8') as handle:
             os.fchmod(handle.fileno(),0o600)
             handle.write(text + '\n')
+        if not message.startswith(MARKERS):
+            setup_progress.note(message)   # a step's own words, for the setup window
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan
     moved = retire_old_defaults(config)
@@ -267,12 +273,14 @@ def _execute(args, root=ROOT):
         if bad_deps:
             states[name] = {'status': 'blocked', 'reason': f'Dependencies not successful: {bad_deps}'}
             log(f'BLOCKED {name}: {bad_deps}')
+            setup_progress.step(name, 'blocked', states[name]['reason'])
             failures.append(name)
             atomic_json_write(state_path, states)
             continue
         states[name]={'status':'running','version':VERSION,'started_at':dt.datetime.now(dt.timezone.utc).isoformat()}
         atomic_json_write(state_path,states)
         log(f'START {name}')
+        setup_progress.step(name, 'running')
         try:
             result=modules[name]['object'].run(ctx)
         except KeyboardInterrupt:
@@ -292,6 +300,7 @@ def _execute(args, root=ROOT):
                 unavailable.append(name);log(f'UNAVAILABLE {name}: {states[name]["reason"]}')
             else:
                 log(f'PASS {name}')
+        setup_progress.step(name, states[name]['status'], states[name].get('reason', ''))
         if name=='storage' and states[name]['status']=='success' and args.apply and Path(args.state_dir).expanduser()==DEFAULT_STATE:
             persistent=Path(config['data_mount'])/'installer'/'state'
             ensure_directory(persistent,0o700)

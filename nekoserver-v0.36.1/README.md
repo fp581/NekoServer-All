@@ -91,6 +91,8 @@ Then the setup wizard explains what will happen and asks `Ready to start? [yes/n
 
 Whenever it needs you, it shows numbered instructions, opens the right page, and asks `Have you completed this step successfully? [yes/no]`. Answer `no` to see the step again.
 
+**The setup window.** Beside the terminal, setup opens a small window in your browser (put it at the bottom of the screen). Before it starts, the window explains the optional extras and lets you switch any of them off, and its **Start setup** button answers "Ready to start?". While setup runs it shows the step under way, the packages that step installs and what each one is for, and every question setup asks, which you can answer there or in the terminal; at the end it shows the finishing screen. It is served by setup itself, on this PC only. Without a desktop, setup prints the window's address instead and goes on in the terminal. See [GUIDED-SETUP.md](GUIDED-SETUP.md#the-setup-window).
+
 **Stopped, or something not finished?** Run `sudo bash install.sh` again. It keeps everything already done and continues with the rest. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again.
 
 Your settings are saved in `my-config.json` next to the installer. The wizard creates it the first time, with your timezone and user filled in, so you don't need to edit it. See [Optional settings](#optional-settings).

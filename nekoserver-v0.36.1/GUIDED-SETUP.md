@@ -1,5 +1,15 @@
 # Guided setup in the terminal
 
+## The setup window
+
+Beside the terminal, `sudo bash install.sh` opens a **setup window** in the PC's own browser (a small window; put it where you like, the bottom of the screen works well). It is served by setup itself, on this PC only (`127.0.0.1`, a port chosen at random, behind an address nobody can guess) and only while setup runs. Every question setup asks is asked in both places, and either can answer it.
+
+- **Before setup starts** it lists the optional parts (a TV, phone alerts, outage alerts, Nextcloud) with a plain explanation of each and what it installs, and switches to leave any of them out. Each switch is saved to `my-config.json` at once (`"wanted"`, or Nextcloud's `"enabled"`); the step then counts as done without asking. **Start setup** in the window answers the terminal's "Ready to start?"; typing `yes` in the terminal works the same.
+- **While it runs** it shows the step under way with a one-line explanation, the packages that step installs with what each one is for, the step's own messages, and the list of all steps with their state. **When setup asks something**, the window asks it too: the terminal's last lines (the numbered drives, the instructions for a phone step) as context, then the question with a text box, Yes/No buttons for a yes/no question, or a password box for a hidden entry (a password or PIN, which the window never shows and the terminal does not echo). The answer can be given in the window or typed in the terminal, whichever comes first; the other side is told. An answer from the window travels only over this PC's loopback, to setup's own process.
+- **At the end** it shows the finishing screen (what is done, what still needs you, your app addresses) and can be closed.
+
+With Chromium, Chrome, Brave or Edge the page opens as a window of its own, sized for the bottom of the screen; Firefox opens it as a normal window. On a PC without a desktop, or when no browser could be opened, setup prints the window's address instead and goes on in the terminal alone. The page needs no internet connection and loads nothing from outside the PC. The words it shows live in `explanations.py`; the events behind it in `setup_progress.py`; the server in `setup_gui.py`.
+
 During interactive `--apply`, a step that needs a browser, desktop app or phone now:
 
 1. Prints the step name, where to do it, what to enter and the result to check.
