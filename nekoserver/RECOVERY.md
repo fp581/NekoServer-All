@@ -20,8 +20,8 @@ Apply this release's foundation profile once to preserve the recovery tools and 
 
 ```bash
 sudo bash install.sh --profile foundation --apply
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py check
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py checkpoint --apply
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py check
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py checkpoint --apply
 ```
 
 Save the current config.json, host-checkpoint.json, installer bundle and independent backups somewhere accessible outside the OS disk before replacing the OS. Keep the configured media UID/GID and note the Docker version (the reinstalled Linux needs that version or newer). Configuration contains drive identities; application secrets belong in the protected Compose/appdata files and snapshot bundles. Do not put those secrets into ordinary logs.
@@ -30,11 +30,11 @@ Save the current config.json, host-checkpoint.json, installer bundle and indepen
 
 The snapshot reads the existing pinned Immich deployment and the containers it actually uses. It checks the standard upload/database mounts and matches database credentials/routing. External libraries and custom services/hardware/user settings require a manual recovery plan; the tool refuses to silently omit them.
 
-Choose a new name directly beneath recovery-snapshots on the application SSD or media HDD. Free space must cover the full upload copy, a database size allowance and reserve. Snapshot creation can take a long time for large libraries; it keeps Immich's running non-database services paused during copy/dump. Do not perform other Immich maintenance at the same time. Before stopping them it records which ones it stopped and installs a one-time boot hook (`nekoserver-immich-snapshot-resume.service`). So if the PC loses power or the command is killed part-way, Immich is started again at the next boot. You can also run `sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py resume` to start it yourself. The record and the hook are removed only after the services are confirmed running.
+Choose a new name directly beneath recovery-snapshots on the application SSD or media HDD. Free space must cover the full upload copy, a database size allowance and reserve. Snapshot creation can take a long time for large libraries; it keeps Immich's running non-database services paused during copy/dump. Do not perform other Immich maintenance at the same time. Before stopping them it records which ones it stopped and installs a one-time boot hook (`nekoserver-immich-snapshot-resume.service`). So if the PC loses power or the command is killed part-way, Immich is started again at the next boot. You can also run `sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py resume` to start it yourself. The record and the hook are removed only after the services are confirmed running.
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py snapshot --destination /mnt/nekoserver-media/recovery-snapshots/first-test
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py snapshot --destination /mnt/nekoserver-media/recovery-snapshots/first-test --apply
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py snapshot --destination /mnt/nekoserver-media/recovery-snapshots/first-test
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py snapshot --destination /mnt/nekoserver-media/recovery-snapshots/first-test --apply
 ```
 
 The completed directory contains upload/, database.sql, compose-resolved.json and snapshot.json. All files are hashed; images are pinned by digest. An .incomplete marker means a failed snapshot and blocks restoration. Use a new name when retrying; published files are never overwritten. An interrupted snapshot records the original services to resume in its private .incomplete marker; if the process was forcibly killed, inspect and resume those services manually. If service resumption fails, the command reports failure even if the snapshot was already completed; inspect and resume the original services locally.
@@ -48,8 +48,8 @@ Old standalone SQL dumps and the add-only archive cannot be passed as this match
 Use a fresh workspace directly under recovery-tests on either SSD/HDD, with enough capacity for both the copied upload tree and a fresh database. The database requires POSIX ownership/permissions. The default test port is 2284, while live Immich uses 2283. No existing workspace is reused, including one left by a failed test.
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py restore-test --snapshot /mnt/nekoserver-media/recovery-snapshots/first-test --workspace /srv/nekoserver/recovery-tests/first-test
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py restore-test --snapshot /mnt/nekoserver-media/recovery-snapshots/first-test --workspace /srv/nekoserver/recovery-tests/first-test --apply --confirm RESTORE-ISOLATED
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py restore-test --snapshot /mnt/nekoserver-media/recovery-snapshots/first-test --workspace /srv/nekoserver/recovery-tests/first-test
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py restore-test --snapshot /mnt/nekoserver-media/recovery-snapshots/first-test --workspace /srv/nekoserver/recovery-tests/first-test --apply --confirm RESTORE-ISOLATED
 ```
 
 The tool verifies the snapshot, creates separate upload/Postgres/cache directories, generates protected Compose JSON and chooses a unique neko-restore-* project. Container/volume/network names and storage paths are independent of production. The test network has no way out (no IP masquerading), so outbound integrations are limited: its fresh ML cache may lack downloadable models, and OAuth/external services may not work during this isolated rehearsal. The published test address on this PC works. Local password login and media recovery are the acceptance focus.
@@ -76,7 +76,7 @@ Do not substitute the production project name. Automatic destructive cleanup and
 
 This path supports x86_64 Arch/Nyarch, Debian/Ubuntu, Fedora, RHEL / Rocky / AlmaLinux and openSUSE (tried on AlmaLinux 10; not yet on Fedora or openSUSE) with the classic overlay2 Docker store, and a Docker client/daemon of the version that last ran the apps or newer (an older one is refused: it may not read the store). App data moves between them; host settings (the host backup) belong to the Linux they came from, so restore those only onto the same family. Bazzite/Podman conversion is blocked. A UID/GID change, drive replacement or storage-backend migration needs a separate validated plan.
 
-1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.38.1/config.json`, next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
+1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.39.1/config.json`, next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
 2. Install the new OS onto the 256GB OS SSD only. Keep data SSD/HDD contents intact. Recreate the desktop user with the expected UID/GID.
 3. From the downloaded installer (the same release) and the saved settings file, mount the existing identified filesystems with the storage module. This never formats:
 
@@ -89,7 +89,7 @@ If you did not save the settings file, take the copy from the SSD. Mounting it r
 ```bash
 sudo mkdir -p /mnt/neko-ssd-read
 sudo mount -o ro /dev/sdX /mnt/neko-ssd-read
-sudo cp /mnt/neko-ssd-read/installer/releases/v0.38.1/config.json my-config.json
+sudo cp /mnt/neko-ssd-read/installer/releases/v0.39.1/config.json my-config.json
 sudo chown "$USER": my-config.json
 sudo umount /mnt/neko-ssd-read
 ```
@@ -100,9 +100,9 @@ With `my-config.json` next to `install.sh`, a normal `sudo bash install.sh` moun
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py check
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py reattach
-sudo python3 /srv/nekoserver/installer/releases/v0.38.1/recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py check
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py reattach
+sudo python3 /srv/nekoserver/installer/releases/v0.39.1/recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
 ```
 
 The UUID must exactly match storage.data_ssd.uuid. The tool installs the mount/UUID guard before daemon configuration/startup. The existing Docker store's restart policies may start its existing containers. Failed post-start verification stops Docker and its socket. The tool preserves foreign configuration and refuses an automatic ownership or backend change, or an older Docker; after a successful takeover the host checkpoint names the Docker version now running.

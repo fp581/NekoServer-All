@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.39.1 — 2026-10-25
+
+SonarCloud's review of the uninstaller, and what a dry run without sudo turned up.
+
+### Fixed
+- **A settings file can only name NekoServer's drives.** The uninstaller read the drives' mount folders from `my-config.json` and used them as they were. Now a value is used only when it is a plain absolute folder of its own (`/srv/nekoserver`, `/mnt/...`): the root, a system folder or a path with `..` is refused, named in the plan (`!!`) and the default used instead, and the mount check answers only for those folders. Nothing in a settings file can point the removal anywhere else.
+- **A dry run without sudo** died on `/root`. A folder the account may not read is noted and the dry run says what it leaves out (`sudo bash uninstall.sh --dry-run` shows the whole plan); the "no app containers found" note also names the missing permission.
+- `runtime/build.py` reads the executable from where cargo put it when `CARGO_TARGET_DIR` is set in the environment (a shared build folder), instead of looking in `runtime/target` and failing.
+- Code shape: the plan builder is one function per choice, the removal one per step, the menu's toggle its own function; the unused parameter and name are gone; a repeated path is a constant; the tests use `return_value` and `side_effect` instead of lambdas.
+
+## v0.39.0 — 2026-10-25
+
+An uninstaller, and a README that shows the thing.
+
+### Added
+- **`sudo bash uninstall.sh`: NekoServer off this PC, what you choose, after two confirmations.** NekoServer itself (its 21 services and timers, programs, settings, the Samba shares and account it made, the Docker and Samba storage guards, the tailnet pages, its group, the desktop shortcuts) always goes. Everything else is a checklist: the apps' containers and networks; the apps' data on the SSD (with Docker's data-root setting put back); your photos; your movies and music; your Nextcloud files; the backups on the HDD and USB drive; the drive mounts (the fstab lines and the empty folders). First the whole plan, with every path and its size, then `yes`, then a phrase that names what goes (`remove NekoServer and delete my photos, backups`). Nothing is ever formatted, and packages NekoServer installed stay for you to keep or remove. `bash uninstall.sh --dry-run` only shows the plan. Tried for real on openSUSE Tumbleweed: every choice, 27 seconds, nothing left behind.
+- **The README shows the thing:** the overview picture, and recordings of the real installation, the setup window, the dashboard and the uninstaller from the test rig.
+
+### Fixed
+- **The setup window showed the wrong text above a question.** Seen while recording: the drive question ("Choose number") came with the Tailscale step's instructions above it and no drive list, because the window dropped every line the installer had time-stamped (the drive list among them) and kept everything since the step's last heading (the earlier question's text among it). A question now shows what the terminal said since the last answer, or since its step started, with the time stamps taken off and the installer's step markers left out.
+
 ## v0.38.1 — 2026-10-24
 
 openSUSE Tumbleweed tried for real, with the one fix it needed; the update flow in the fixed folder tried for real, and the dashboard's runtime copy brought under 0.38.0's replacement rule.

@@ -80,6 +80,8 @@ def step(name, status, reason=''):
     global _step
     with _lock:
         _step = name if status == 'running' else None
+    if status == 'running':
+        _cut()   # a question in this step shows what this step said, not the one before
     event('step', name=name, status=status, reason=str(reason or '')[:400])
 
 
@@ -101,20 +103,47 @@ def question_kind(text, secret):
     return 'yesno' if '[yes/no]' in text else 'text'
 
 
+CUT = '\x00'   # in _recent: where the last answered question, or the step before, ended
+STAMP = re.compile(r'\[\d{4}-\d\d-\d\dT[^\]]*\] ')
+MARKERS = ('START ', 'PASS ', 'FAILED ', 'NEEDS SETUP ', 'UNAVAILABLE ', 'BLOCKED ')   # the installer's step lines
+
+
+def _cut():
+    """The prompt just answered (written without a newline, so still pending in the
+    terminal's tee) goes before the cut, not after it."""
+    tee = sys.stdout
+    with _lock:
+        if isinstance(tee, _Tee) and tee._partial.strip():
+            _recent.append(tee._partial[:300])
+            tee._partial = ''
+        _recent.append(CUT)
+
+
+def question_context():
+    """What the terminal said since the last question was answered (or since the step
+    started): the drives it listed, the step's own explanation. The installer's time
+    stamps are taken off its lines, its step markers left out, and a heading
+    ("=== ... ===") within that span starts the context."""
+    with _lock:
+        raw = list(_recent)
+    if CUT in raw:
+        raw = raw[len(raw) - raw[::-1].index(CUT):]
+    lines = []
+    for line in raw:
+        line = STAMP.sub('', line).rstrip()
+        if line.strip() and not line.startswith(MARKERS):
+            lines.append(line)
+    heading = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith('===')), None)
+    if heading is not None:
+        lines = lines[heading:]
+    return lines[-CONTEXT_LINES:]
+
+
 def question(text, secret=False):
     """A question setup is asking; the window may answer it (answer_from_window)."""
     global _pending
     shown = 'a hidden entry' if secret else str(text).strip()[:300]
-    with _lock:
-        # What the terminal said before the question, without the installer's own
-        # time-stamped log lines; from the step's own heading ("=== ... ===") when it
-        # printed one.
-        lines = [line for line in _recent if line.strip() and not re.match(r'\[\d{4}-\d\d-\d\dT', line)]
-    heading = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith('===')), None)
-    if heading is not None:
-        lines = lines[heading:]
-    context = lines[-CONTEXT_LINES:]
-    record = event('question', text=shown, secret=bool(secret), form=question_kind(shown, secret), context=context)
+    record = event('question', text=shown, secret=bool(secret), form=question_kind(shown, secret), context=question_context())
     with _lock:
         _pending = {'seq': record['seq'], 'event': threading.Event(), 'answer': None}
     return record
@@ -124,6 +153,7 @@ def answered():
     global _pending
     with _lock:
         _pending = None
+    _cut()
     event('answered')
 
 

@@ -1201,7 +1201,7 @@ class KeptCopyTests(unittest.TestCase):
         self.project = Path(self.tmp.name) / 'nekoserver'
         for folder in ('modules', 'compose', 'dashboard', 'setup-gui', 'runtime/src', 'runtime/licenses', 'runtime/bin'):
             (self.project / folder).mkdir(parents=True)
-        for name in ('install.sh', 'installer.py', 'README.md', 'runtime/build.py', 'runtime/Cargo.toml', 'runtime/Cargo.lock',
+        for name in ('install.sh', 'uninstall.sh', 'installer.py', 'README.md', 'runtime/build.py', 'runtime/Cargo.toml', 'runtime/Cargo.lock',
                      'runtime/build.json', 'runtime/bin/nekoserver-runtime', 'runtime/THIRD-PARTY-NOTICES.md', 'runtime/src/main.rs'):
             (self.project / name).write_text(name + ' v1\n')
         self.data.mkdir()
