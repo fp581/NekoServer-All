@@ -1,6 +1,7 @@
 """The uninstaller (uninstall.sh, uninstaller.py): what it finds, what it asks, what it
 removes, and what it never touches."""
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -149,6 +150,17 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(self.plan.phrase({'server', 'photos', 'backups', 'media'}),
                          'remove NekoServer and delete my photos, movies and music, backups')
 
+    @unittest.skipIf(os.name != 'posix' or os.geteuid() == 0, 'needs a folder this account may not read')
+    def test_a_folder_it_may_not_read_is_noted_not_fatal(self):
+        # A dry run without sudo cannot look into /root: the plan says so and goes on.
+        locked = self.system.root / 'root/.local'
+        locked.mkdir(parents=True)
+        locked.chmod(0o000)
+        self.addCleanup(locked.chmod, 0o700)
+        plan = self.system.plan()
+        self.assertTrue(any('Could not look in' in w and 'run with sudo' in w for w in plan.warnings), plan.warnings)
+        self.assertIn('!! Could not look in', plan.describe({'server'}))
+
     def test_a_pc_without_nekoserver_has_an_honest_plan(self):
         with tempfile.TemporaryDirectory() as empty:
             plan = FakeSystem(empty).plan(group_exists=lambda name: False)
@@ -158,12 +170,34 @@ class PlanTests(unittest.TestCase):
             self.assertIn('nothing of this is on this PC', plan.describe({'server'}))
 
 
+class SettingsGateTests(unittest.TestCase):
+    """A settings file names the drives' mount folders; it can never point the removal
+    anywhere else."""
+    def test_only_a_plain_folder_of_its_own_is_a_drive(self):
+        for value in ('/', '/etc', '/usr/local', '/home/neko', '/var/lib/docker', '/srv/../etc', 'srv/nekoserver', 42, None, '/srv/nekoserver/'):
+            self.assertEqual(uninstaller.mount_folder(value, '/srv/nekoserver'), '/srv/nekoserver', value)
+        for value in ('/srv/nekoserver', '/mnt/nekoserver-media', '/mnt/usb', '/data/neko'):
+            self.assertEqual(uninstaller.mount_folder(value, '/x'), value)
+
+    def test_a_refused_folder_is_named_in_the_plan_and_never_touched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            system = FakeSystem(tmp).populate()
+            system.write('/etc/passwd', 'root:x:0:0')
+            settings = {**SETTINGS, 'data_mount': '/etc', 'media_mount': '/srv/../etc'}
+            with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+                plan = RealPlan(settings, system.root, run=system.run, group_exists=lambda name: False)
+            self.assertEqual((plan.data, plan.media), ('/srv/nekoserver', '/mnt/nekoserver-media'))
+            text = plan.describe({'server', 'data'})
+            self.assertIn("!! The settings name '/etc' as data_mount, which cannot be a drive of NekoServer's; /srv/nekoserver is used instead", text)
+            self.assertFalse(any('etc/passwd' in str(p) for group in plan.groups.values() for p in group['paths']))
+            self.assertFalse(plan.mounted('/etc'))
+
+
 class ChoiceTests(unittest.TestCase):
     def test_numbers_toggle_all_takes_everything_and_the_server_is_always_on(self):
         shown = []
         answers = iter(['1 3', '3,4', 'all', '7', ''])
-        plan = mock.Mock()
-        chosen = uninstaller.choose(plan, ask=lambda prompt: next(answers), out=shown.append)
+        chosen = uninstaller.choose(ask=lambda prompt: next(answers), out=shown.append)
         self.assertEqual(chosen, {'server', 'apps', 'data', 'photos', 'media', 'cloud', 'mounts'})
         self.assertIn(' NekoServer itself is always removed.', shown)
         self.assertTrue(any(line.startswith(' [x] 1. NekoServer itself') for line in shown))
@@ -248,7 +282,7 @@ class EntryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             system = FakeSystem(tmp).populate()
             shown = []
-            with mock.patch.object(uninstaller, 'Plan', lambda settings: system.plan()), \
+            with mock.patch.object(uninstaller, 'Plan', return_value=system.plan()), \
                     mock.patch('builtins.print', shown.append):
                 self.assertEqual(uninstaller.main(['--dry-run']), 0)
             text = '\n'.join(shown)
@@ -268,10 +302,9 @@ class EntryTests(unittest.TestCase):
     def test_a_declined_confirmation_changes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             system = FakeSystem(tmp).populate()
-            answers = iter(['', 'no'])
-            with mock.patch.object(uninstaller, 'Plan', lambda settings: system.plan()), \
+            with mock.patch.object(uninstaller, 'Plan', return_value=system.plan()), \
                     mock.patch.object(uninstaller.os, 'geteuid', return_value=0), \
-                    mock.patch('builtins.input', lambda prompt='': next(answers)), \
+                    mock.patch('builtins.input', side_effect=['', 'no']), \
                     mock.patch('builtins.print'):
                 self.assertEqual(uninstaller.main([]), 2)
             self.assertTrue((system.root / 'etc/systemd/system/nekoserver-dashboard.service').exists())
