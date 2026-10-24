@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_DIR: nekoserver-v0.37.2
+  RELEASE_DIR: nekoserver-v0.37.3
   # Pinned so lint results only change when this line does. The runtime itself is built
   # on the PC that installs NekoServer (install.sh), with the distribution's own Rust;
   # Cargo.toml's rust-version is the oldest that must still build it.
