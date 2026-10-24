@@ -483,6 +483,8 @@ class PreservedBundleTest(unittest.TestCase):
         from unittest import mock
 
         from modules import recovery
+        if not (ROOT / 'runtime/build.json').is_file():
+            self.skipTest('the runtime is not built here (install.sh or runtime/build.py builds it)')
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(recovery.os.path, 'ismount', return_value=True):
             dest = recovery.preserve(Path(tmp), ROOT, {'data_mount': tmp})
             payloads = dashboard.asset_payloads(dest, Path('/code'))

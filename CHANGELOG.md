@@ -6,6 +6,7 @@ Code-quality findings from SonarCloud's review of 0.37.1. Nothing changes in how
 
 ### Changed
 - The wizard's `run` has one return point; a build test keeps one call inside its failure check; an unused name in `runtime/build.py` is gone.
+- Two tests that need a built runtime (the preserved installer bundle, the generated runtime commands) skip themselves where none is built instead of failing on a fresh checkout; the CI's Python job builds the runtime first, as a server has after `install.sh`. The recovery step says plainly when the runtime is not built yet.
 
 ### Upgrade notes
 - After `git pull`, run `sudo bash install.sh` in `nekoserver-v0.37.2`: it offers the settings left in the earlier folder, answers `yes`, and builds the runtime for this release (a few minutes).
