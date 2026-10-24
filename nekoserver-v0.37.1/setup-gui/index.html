@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>NekoServer setup</title>
+<link rel="icon" href="static/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="static/setup.css">
+<script src="static/setup.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <img src="static/logo.svg" width="34" height="34" alt="">
+  <div class="brand">Neko<strong>Server</strong> <span class="eyebrow" id="version">setup</span></div>
+  <div class="progress" id="progress" hidden>
+    <div class="track"><div class="fill" id="fill"></div></div>
+    <span id="count"></span>
+  </div>
+  <span class="badge" id="phase-badge">Connecting…</span>
+</header>
+
+<output id="question" class="notice" hidden>
+  <span class="pulse" aria-hidden="true"></span>
+  <span><strong>Setup needs an answer.</strong> <span class="muted">Answer here or in the terminal, whichever you like.</span></span>
+</output>
+
+<main id="main">
+  <!-- Before setup starts -->
+  <section id="choose" hidden>
+    <div class="intro">
+      <h1>Choose what to set up</h1>
+      <p>Everything below is optional; the apps, backups, the dashboard and private access from anywhere are always set up.
+        You can change your mind later in <code>my-config.json</code>.</p>
+    </div>
+    <div class="extras" id="extras"></div>
+    <div class="actions">
+      <button class="primary" id="start" type="button">Start setup</button>
+      <span class="muted">…or type <b>yes</b> in the terminal. Setup takes about an hour and pauses when it needs you.</span>
+    </div>
+  </section>
+
+  <!-- While it runs -->
+  <section id="running" class="running" hidden>
+    <div class="now" id="now">
+      <div class="eyebrow" id="now-label">NOW</div>
+      <h1 id="now-title">Starting…</h1>
+      <p id="now-text"></p>
+      <div class="packages" id="now-packages"></div>
+      <ul class="notes" id="now-notes"></ul>
+    </div>
+    <form class="now ask" id="ask" hidden>
+      <div class="eyebrow" id="ask-label">A QUESTION</div>
+      <pre class="context" id="ask-context"></pre>
+      <label class="prompt" for="ask-input" id="ask-prompt">Your answer</label>
+      <div class="answer" id="ask-answer">
+        <input id="ask-input" autocomplete="off" spellcheck="false">
+        <button class="primary" type="submit" id="ask-send">Send</button>
+      </div>
+      <div class="answer" id="ask-yesno" hidden>
+        <button class="primary" type="button" data-answer="yes">Yes</button>
+        <button class="secondary" type="button" data-answer="no">No</button>
+      </div>
+      <p class="muted small" id="ask-note"></p>
+    </form>
+    <ol class="steps" id="steps" aria-label="Setup steps"></ol>
+  </section>
+
+  <!-- At the end -->
+  <section id="finished" class="running" hidden>
+    <div class="now">
+      <div class="eyebrow">FINISHED</div>
+      <h1 id="finish-title">NekoServer is ready</h1>
+      <pre class="finish" id="finish-lines"></pre>
+      <p class="muted">You can close this window.</p>
+    </div>
+    <ol class="steps" id="steps-final" aria-label="Setup steps"></ol>
+  </section>
+
+  <section id="gone" hidden>
+    <h1>Setup has ended</h1>
+    <p class="muted">The terminal has the summary. You can close this window.</p>
+  </section>
+</main>
+</body>
+</html>

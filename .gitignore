@@ -1,9 +1,58 @@
-# Python
+# NekoServer: what never belongs in the repository.
+
+# --- Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.venv/
+venv/
+env/
 
-# Rust build output (the released binary lives in runtime/bin/)
+# --- Rust: build output, and the runtime binary with its build record, which
+# install.sh builds on the PC that installs NekoServer (git keeps the sources)
 target/
+**/*.rs.bk
+runtime/bin/
+runtime/build.json
 
-# Private working config (see README)
+# --- Private settings and secrets: made on the server, never shared
 my-config.json
+*.key
+*.pem
+.env
+.env.*
+
+# --- What setup and the rig leave behind next to the sources
+install.log
+inspection.log
+*.log
+state.json
+inspection-state.json
+progress.jsonl
+*.rig-*
+*.old
+*.orig
+*.rej
+*.bak
+*.tmp
+*~
+
+# --- Local CI helper for the WSL rig (the real CI is .github/workflows/ci.yml)
+/wsl-ci.sh
+
+# --- Editors and desktops
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
