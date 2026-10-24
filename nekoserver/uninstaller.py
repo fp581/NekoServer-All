@@ -429,7 +429,9 @@ def _reset_docker_root(path, run, out):
     run(['systemctl', 'stop', 'docker.service', 'docker.socket'], 300)
     content = json.loads(path.read_text())
     content.pop('data-root', None)
-    path.write_text(json.dumps(content, indent=2) + '\n')
+    with path.open('w') as handle:
+        json.dump(content, handle, indent=2)
+        handle.write('\n')
 
 
 def _remove_samba_accounts(plan, accounts, run, out):
