@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Remove NekoServer from this PC: what you choose, after two confirmations.
+
+    sudo bash uninstall.sh             choose what goes, see the plan, confirm twice
+    sudo bash uninstall.sh --dry-run   see what each choice would remove; nothing changes
+
+NekoServer itself (its services, programs and settings) always goes. Everything else is
+a choice: the apps' containers, the apps' data on the SSD, your photos, your movies and
+music, your Nextcloud files, the backups, the drive mounts. Nothing is ever formatted:
+a drive you keep is left exactly as it is, and the packages NekoServer installed
+(Docker, Samba, Caddy, Tailscale, Rust, OpenRGB, ...) are left for you to keep or remove.
+"""
+import grp
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+SETTINGS = 'my-config.json'
+TEMPLATE = 'config.json'
+UNITS = '/etc/systemd/system'
+SAMBA_SHARES = '/etc/samba/nekoserver.conf'
+SAMBA_CONFIG = '/etc/samba/smb.conf'
+OWN_SMB_CONF = '[global]\n   include = /etc/samba/nekoserver.conf\n'   # the smb.conf setup writes when there was none
+MANAGED = '# Managed by NekoServer'
+DAEMON_JSON = '/etc/docker/daemon.json'
+FSTAB = '/etc/fstab'
+CONTROL_GROUP = 'nekoserver-control'
+COMPOSE_PREFIX = 'neko-'
+# NekoServer's own places outside the drives (removed with the server itself).
+SYSTEM_PATHS = ('/etc/nekoserver-dashboard', '/etc/nekoserver-control', '/etc/nekoserver-backups', '/etc/nekoserver-gateway',
+                '/etc/nekoserver-os', '/etc/nekoserver-heartbeat', '/etc/nekoserver-notifications',
+                '/etc/modules-load.d/nekoserver-i2c.conf', '/usr/local/bin/nekoserver-dashboard',
+                '/usr/share/applications/nekoserver-dashboard.desktop', '/usr/local/share/nekoserver-gateway',
+                '/usr/local/share/nekoserver-pages', '/var/lib/nekoserver-host', '/var/lib/nekoserver-openrgb',
+                '/var/lib/nekoserver-notifications', '/var/lib/nekoserver-dashboard', '/var/lib/nekoserver-control')
+SYSTEM_GLOBS = ('usr/local/lib/nekoserver-*', 'run/nekoserver-*', 'etc/systemd/system/*.d/10-nekoserver-storage.conf')
+PACKAGES_LEFT = ('Docker, Samba, Caddy, Tailscale, Rust and gcc, smartmontools, qrencode, OpenRGB, and Steam if the TV step '
+                 'added it, are packages of your Linux: they stay installed. Remove any you do not want with your package manager.')
+
+# The choices. 'server' is always on; the rest is yours. (key, default on, title, personal data)
+CHOICES = (('server', True, 'NekoServer itself: its services, programs and settings', False),
+           ('apps', True, "The apps' containers and networks in Docker (the apps stop; their data is the next choice)", False),
+           ('data', False, "The apps' data on the SSD: databases, settings, passwords, downloads, NekoServer's own files", False),
+           ('photos', False, 'Your photos and videos (Immich: the library on the SSD and the archive on the HDD)', True),
+           ('media', False, 'Your movies, shows and music (the library on the HDD)', True),
+           ('cloud', False, 'Your Nextcloud files (on the HDD)', True),
+           ('backups', False, 'The backups: on the HDD and on the USB drive', True),
+           ('mounts', False, 'The drive mounts: the lines NekoServer wrote in /etc/fstab and the mount folders (the drives themselves stay as they are)', False))
+PERSONAL = {'photos': 'photos', 'media': 'movies and music', 'cloud': 'Nextcloud files', 'backups': 'backups'}
+
+
+def read_settings(root=ROOT):
+    """my-config.json, or the template's defaults when the folder has none."""
+    for name in (SETTINGS, TEMPLATE):
+        try:
+            value = json.loads((Path(root) / name).read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def run(argv, timeout=300):
+    """A command's output (stdout), '' when it fails or is missing."""
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+
+class Plan:
+    """Everything a run would remove, by choice, found on this PC (a test's root stands
+    in for /). Only what exists is listed, so the plan shown is the truth."""
+
+    def __init__(self, settings, root='/', run=run, group_exists=None):
+        self.root = Path(root)
+        self.run = run
+        self.group_exists = group_exists or self._group_exists
+        self.data = settings.get('data_mount', '/srv/nekoserver')
+        self.media = settings.get('media_mount', '/mnt/nekoserver-media')
+        self.external = settings.get('external_backup_mount', '/mnt/nekoserver-photos')
+        storage = settings.get('storage', {}) if isinstance(settings.get('storage'), dict) else {}
+        self.uuids = {str(v.get('uuid')) for v in storage.values() if isinstance(v, dict) and v.get('uuid')}
+        self.groups = {key: self._group(key) for key, *_ in CHOICES}
+
+    def at(self, path):
+        return self.root / str(path).lstrip('/')
+
+    @staticmethod
+    def _group_exists(name):
+        try:
+            grp.getgrnam(name)
+            return True
+        except KeyError:
+            return False
+
+    # ---- what each choice covers
+    def units(self):
+        folder = self.at(UNITS)
+        return sorted(p.name for p in folder.glob('nekoserver-*.*') if p.suffix in ('.service', '.timer') and p.is_file())
+
+    def system_paths(self):
+        found = [self.at(p) for p in SYSTEM_PATHS if self.at(p).exists()]
+        for pattern in SYSTEM_GLOBS:
+            found.extend(p for p in self.root.glob(pattern) if p.exists())
+        found.extend(self.at(UNITS) / unit for unit in self.units())
+        return sorted(set(found))
+
+    def shortcuts(self):
+        """Desktop entries NekoServer wrote for each person's account."""
+        found = []
+        homes = [self.at('/root')] + sorted(self.at('/home').glob('*')) if self.at('/home').is_dir() else [self.at('/root')]
+        for home in homes:
+            for folder in (home / '.local/share/applications', home / 'Desktop', self.xdg_desktop(home)):
+                if folder is not None and folder.is_dir():
+                    found.extend(p for p in folder.glob('nekoserver-*.desktop') if self.ours(p))
+        return sorted(set(found))
+
+    @staticmethod
+    def xdg_desktop(home):
+        """The desktop folder named in ~/.config/user-dirs.dirs, when it names one."""
+        try:
+            for line in (home / '.config/user-dirs.dirs').read_text().splitlines():
+                if line.startswith('XDG_DESKTOP_DIR='):
+                    value = line.split('=', 1)[1].strip().strip('"')
+                    return Path(value.replace('$HOME', str(home)))
+        except OSError:
+            pass
+        return None
+
+    @staticmethod
+    def ours(path):
+        try:
+            return 'NekoServer' in path.read_text(errors='replace')
+        except OSError:
+            return False
+
+    def samba(self):
+        """(share file, smb.conf to remove or None, accounts) NekoServer made."""
+        shares = self.at(SAMBA_SHARES)
+        text = shares.read_text(errors='replace') if shares.is_file() else ''
+        if not text.startswith(MANAGED):
+            return None, None, []
+        accounts = sorted({line.split('=', 1)[1].strip() for line in text.splitlines() if line.strip().startswith('valid users =')})
+        main = self.at(SAMBA_CONFIG)
+        own = main if main.is_file() and main.read_text(errors='replace') == OWN_SMB_CONF else None
+        return shares, own, [a for a in accounts if a and a != 'root']
+
+    def docker_root(self):
+        """Docker's data-root when NekoServer pointed it at the SSD."""
+        try:
+            value = json.loads(self.at(DAEMON_JSON).read_text()).get('data-root')
+        except (OSError, ValueError, AttributeError):
+            return None
+        return value if isinstance(value, str) and value.startswith(self.data.rstrip('/') + '/') else None
+
+    def compose_projects(self):
+        """The apps' Docker projects (neko-jellyfin, neko-immich, ...) with containers."""
+        if not shutil.which('docker'):
+            return []
+        out = self.run(['docker', 'ps', '-a', '--format', '{{.Label "com.docker.compose.project"}}'], 60)
+        return sorted({line.strip() for line in out.splitlines() if line.strip().startswith(COMPOSE_PREFIX)})
+
+    def docker_networks(self):
+        if not shutil.which('docker'):
+            return []
+        out = self.run(['docker', 'network', 'ls', '--format', '{{.Name}}'], 60)
+        return sorted({line.strip() for line in out.splitlines() if line.strip().startswith(COMPOSE_PREFIX)})
+
+    def drive_paths(self, key):
+        data, media, external = self.at(self.data), self.at(self.media), self.at(self.external)
+        if key == 'data':
+            keep = {'photos', 'library'}   # other choices
+            return sorted(p for p in data.iterdir() if p.name not in keep and p.name != 'lost+found') if data.is_dir() else []
+        if key == 'photos':
+            return [p for p in (data / 'photos', media / 'photos') if p.exists()]
+        if key == 'media':
+            return [p for p in (media / 'library', data / 'library') if p.exists()]
+        if key == 'cloud':
+            return [p for p in (media / 'cloud',) if p.exists()]
+        if key == 'backups':
+            found = [p for p in (media / 'backups', media / 'recovery-snapshots') if p.exists()]
+            if external.is_dir() and self.mounted(self.external):
+                found.extend(sorted(p for p in external.iterdir() if p.name != 'lost+found'))
+            return found
+        return []
+
+    def mounted(self, mountpoint):
+        return os.path.ismount(str(self.at(mountpoint))) if self.root == Path('/') else self.at(mountpoint).is_dir()
+
+    def fstab_lines(self):
+        """The fstab lines that mount NekoServer's drives (by UUID from the settings, or by
+        its mount folders)."""
+        try:
+            lines = self.at(FSTAB).read_text().splitlines()
+        except OSError:
+            return []
+        folders = {self.data, self.media, self.external}
+        return [line for line in lines if line.strip() and not line.lstrip().startswith('#') and len(line.split()) >= 2
+                and (line.split()[1] in folders or any(line.split()[0] == 'UUID=' + u for u in self.uuids))]
+
+    def _group(self, key):
+        """{'paths': [...], 'notes': [...]} for one choice: what it removes, in words a person can check."""
+        paths, notes = [], []
+        if key == 'server':
+            units = self.units()
+            if units:
+                notes.append('Stop and remove ' + str(len(units)) + ' services and timers: ' + ', '.join(units))
+            paths = self.system_paths() + self.shortcuts()
+            shares, own, accounts = self.samba()
+            if shares:
+                paths.append(shares)
+                notes.append('Samba: the shares NekoServer defined go' + (', with the account ' + ', '.join(accounts) if accounts else '')
+                             + ('; smb.conf (only the include NekoServer wrote) goes too' if own else
+                                '; your own smb.conf stays (take out its "include = ' + SAMBA_SHARES + '" line yourself)'))
+                if own:
+                    paths.append(own)
+            if self.at('/etc/nekoserver-gateway').exists() and shutil.which('tailscale'):
+                notes.append('Tailscale: the pages NekoServer served on your tailnet are switched off (tailscale serve reset); '
+                             'this PC stays logged in to Tailscale')
+            if self.group_exists(CONTROL_GROUP):
+                notes.append('The ' + CONTROL_GROUP + ' group goes')
+            if self.docker_root():
+                notes.append('Docker keeps its data-root on the SSD (' + self.docker_root() + ') unless the SSD data or the mounts go')
+        elif key == 'apps':
+            projects, networks = self.compose_projects(), self.docker_networks()
+            if projects:
+                notes.append('Remove the containers of ' + ', '.join(projects))
+            if networks:
+                notes.append('Remove the Docker networks ' + ', '.join(networks))
+            if not projects and not networks:
+                notes.append('No app containers found (Docker not running, or nothing deployed)')
+        elif key == 'mounts':
+            lines = self.fstab_lines()
+            if lines:
+                notes.append('Take out of /etc/fstab: ' + ' | '.join(lines))
+            for folder in (self.data, self.media, self.external):
+                if self.mounted(folder):
+                    notes.append('Unmount ' + folder + ' and remove the empty folder')
+            if self.docker_root():
+                notes.append("Docker's data-root setting (" + self.docker_root() + ') is taken out of ' + DAEMON_JSON + ': Docker goes back to its default place')
+        else:
+            paths = self.drive_paths(key)
+            if key == 'backups' and not self.mounted(self.external):
+                notes.append('The USB drive is not mounted at ' + self.external + ' right now (NekoServer mounts it for each weekly copy): '
+                             'plug it in and mount it there first, or delete its folders yourself')
+            if key == 'data' and self.docker_root():
+                notes.append("Docker's data-root setting (" + self.docker_root() + ') is taken out of ' + DAEMON_JSON + ' and Docker is stopped first')
+        return {'paths': paths, 'notes': notes}
+
+    def size(self, path):
+        out = self.run(['du', '-sh', str(path)], 600)
+        return out.split()[0] if out.split() else '?'
+
+    def describe(self, chosen):
+        """The plan, in full, for the person to read before confirming."""
+        lines = []
+        for key, _, title, _ in CHOICES:
+            if key not in chosen:
+                continue
+            group = self.groups[key]
+            lines.append('== ' + title)
+            lines.extend('   - ' + note for note in group['notes'])
+            lines.extend('   - remove ' + str(p) + ('  (' + self.size(p) + ')' if p.is_dir() and key not in ('server',) else '') for p in group['paths'])
+            if not group['notes'] and not group['paths']:
+                lines.append('   - nothing of this is on this PC')
+        return '\n'.join(lines)
+
+    def phrase(self, chosen):
+        personal = [PERSONAL[k] for k, *_ in CHOICES if k in chosen and k in PERSONAL]
+        return 'remove NekoServer' + (' and delete my ' + ', '.join(personal) if personal else '')
+
+
+def choose(plan, ask=input, out=print):
+    """The checklist: numbers toggle, "all" takes everything, Enter goes on."""
+    chosen = {key for key, on, _, _ in CHOICES if on}
+    while True:
+        out('')
+        out('What should go? NekoServer itself always does. Type numbers to switch the others on or off.')
+        for number, (key, _, title, _) in enumerate(CHOICES, 1):
+            mark = 'x' if key in chosen else ' '
+            out(f' [{mark}] {number}. {title}')
+        answer = ask('Numbers to switch, "all" for everything, or Enter to go on: ').strip().lower()
+        if answer == '':
+            return chosen
+        if answer == 'all':
+            chosen = {key for key, *_ in CHOICES}
+            continue
+        for token in answer.replace(',', ' ').split():
+            if token.isdigit() and 1 <= int(token) <= len(CHOICES):
+                key = CHOICES[int(token) - 1][0]
+                if key == 'server':
+                    out(' NekoServer itself is always removed.')
+                elif key in chosen:
+                    chosen.discard(key)
+                else:
+                    chosen.add(key)
+            else:
+                out(' Not a choice: ' + token)
+
+
+def confirm(plan, chosen, ask=input, out=print):
+    """Two confirmations: yes to the plan as shown, then the phrase naming what goes."""
+    out('')
+    out(plan.describe(chosen))
+    out('')
+    if ask('Remove everything listed above? Type yes to go on, anything else to stop: ').strip().lower() != 'yes':
+        return False
+    phrase = plan.phrase(chosen)
+    out('')
+    out('Last check: nothing listed can be brought back afterwards.')
+    if ask('Type exactly  ' + phrase + '  to go on: ').strip() != phrase:
+        return False
+    return True
+
+
+def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree):
+    """Do it, in a safe order: stop everything, then the files, then the mounts."""
+    def rm(path):
+        out('  removing ' + str(path))
+        if path.is_dir() and not path.is_symlink():
+            rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+
+    units = plan.units()
+    if units:
+        out('Stopping NekoServer\'s services and timers')
+        timers = [u for u in units if u.endswith('.timer')]
+        for unit in timers + [u for u in units if u not in timers]:
+            run(['systemctl', 'disable', '--now', unit], 120)
+    if 'apps' in chosen:
+        for project in plan.compose_projects():
+            out('Removing the containers of ' + project)
+            ids = run(['docker', 'ps', '-aq', '--filter', 'label=com.docker.compose.project=' + project], 60).split()
+            if ids:
+                run(['docker', 'rm', '-f', *ids], 300)
+        for network in plan.docker_networks():
+            run(['docker', 'network', 'rm', network], 60)
+    docker_root = plan.docker_root()
+    if docker_root and ('data' in chosen or 'mounts' in chosen):
+        out("Stopping Docker and taking its data-root setting out of " + DAEMON_JSON)
+        run(['systemctl', 'stop', 'docker.service', 'docker.socket'], 300)
+        path = plan.at(DAEMON_JSON)
+        content = json.loads(path.read_text())
+        content.pop('data-root', None)
+        path.write_text(json.dumps(content, indent=2) + '\n')
+    if plan.at('/etc/nekoserver-gateway').exists() and shutil.which('tailscale'):
+        out('Switching off what NekoServer served on your tailnet')
+        run(['tailscale', 'serve', 'reset'], 60)
+    shares, own, accounts = plan.samba()
+    for account in accounts:
+        if plan.root == Path('/') and run(['pdbedit', '-L', '-u', account], 30).strip():
+            out('Removing the Samba account ' + account)
+            run(['smbpasswd', '-x', account], 30)
+    for key, *_ in CHOICES:
+        if key in chosen:
+            for path in plan.groups[key]['paths']:
+                rm(path)
+    if units:
+        run(['systemctl', 'daemon-reload'], 120)
+        run(['systemctl', 'reset-failed'], 60)
+    if shares and plan.root == Path('/') and shutil.which('smbcontrol'):
+        run(['smbcontrol', 'all', 'reload-config'], 30)
+    if plan.group_exists(CONTROL_GROUP):
+        run(['groupdel', CONTROL_GROUP], 30)
+    if 'mounts' in chosen:
+        lines = plan.fstab_lines()
+        if lines:
+            path = plan.at(FSTAB)
+            kept = [line for line in path.read_text().splitlines() if line not in lines]
+            path.write_text('\n'.join(kept) + '\n')
+            out('Took ' + str(len(lines)) + ' line(s) out of ' + FSTAB)
+        for folder in (plan.external, plan.media, plan.data):
+            if plan.mounted(folder):
+                out('Unmounting ' + folder)
+                run(['umount', folder], 120)
+                try:
+                    plan.at(folder).rmdir()
+                except OSError:
+                    out('  (' + folder + ' is not empty, so the folder stays)')
+    if units:
+        run(['systemctl', 'daemon-reload'], 120)
+
+
+def main(argv):
+    dry = '--dry-run' in argv
+    if not dry and os.geteuid() != 0:
+        print('Run with sudo:  sudo bash uninstall.sh   (or  --dry-run  to only look)', file=sys.stderr)
+        return 1
+    plan = Plan(read_settings())
+    if dry:
+        print('Dry run: what each choice would remove. Nothing is changed.')
+        print(plan.describe({key for key, *_ in CHOICES}))
+        print('')
+        print(PACKAGES_LEFT)
+        return 0
+    print('This removes NekoServer from this PC. Nothing is formatted; what you keep stays as it is.')
+    try:
+        chosen = choose(plan, input, print)
+        if not confirm(plan, chosen, input, print):
+            print('Stopped. Nothing was changed.')
+            return 2
+        remove(plan, chosen, out=print)
+    except (KeyboardInterrupt, EOFError):
+        print('\nStopped.')
+        return 130
+    print('')
+    print('Done. ' + PACKAGES_LEFT)
+    if 'mounts' not in chosen:
+        print('The drives stay mounted as before; take their lines out of /etc/fstab when you no longer want that.')
+    print('This folder (' + str(ROOT) + ') is yours to delete.')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

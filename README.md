@@ -1,17 +1,40 @@
 # NekoServer
 
-**Turn a Linux PC into a home media server**, with your own video library, phone photo backup, music streaming and private cloud drive, set up by one guided installer.
+<p align="center">
+  <img src="docs/media/nekoserver-overview.webp" alt="NekoServer: turn your Linux PC into a home media server. Movies and TV, requests and downloads, music, phone photo backup, private files, a live hardware dashboard, backups and recovery, private remote access, guided setup." width="820">
+</p>
+
+**Turn a Linux PC into a home media server**, with your own video library, phone photo backup, music streaming and private cloud drive, set up by one guided installer that creates every account, connects the apps to each other and walks you through anything that needs you, one yes/no step at a time. It never formats a drive.
 
 | | |
 | --- | --- |
 | 🎬 **Movies & TV** | Jellyfin, with Seerr for requests and Sonarr / Radarr / Prowlarr / qBittorrent to find and download |
 | 📷 **Photos** | Immich: automatic backup from your phone |
 | 🎵 **Music** | Navidrome (with Lidarr) |
-| ☁️ **Files** | Nextcloud: your own cloud drive |
-| 🛡️ **Backups** | Weekly photo and file copies to an HDD and a USB drive, nightly app backups, tested monthly updates |
-| 🏠 **Access** | Secure from home, and optionally from anywhere with Tailscale |
+| ☁️ **Files** | Nextcloud: your own cloud drive, and Samba folders on the home network |
+| 🛡️ **Backups** | Nightly app backups, weekly photo and file copies to an HDD and a USB drive, monthly restore tests, rollback after a failed update |
+| 🏠 **Access** | Secure at home, and optionally from anywhere with Tailscale |
+| 🖥️ **Dashboard** | Apps, drives, temperatures, fan curves and RGB lighting, from any phone or browser at home |
 
-The installer creates every app account, connects the apps to each other, and walks you through anything that needs you, one yes/no step at a time. It never formats a drive.
+## See it
+
+Every recording below is a real run on the test rig (openSUSE Tumbleweed under WSL), as it happened. Nothing is staged.
+
+**The installation.** One command. Setup checks the PC, asks for the drives, creates the accounts, deploys the apps and tells you what it did and what still needs you.
+
+<p align="center"><img src="docs/media/install.gif" alt="sudo bash install.sh: the guided installation in the terminal" width="820"></p>
+
+**The setup window.** The same questions, answered in a small window instead of the terminal if you prefer, with what each step installs and why, in plain words.
+
+<p align="center"><img src="docs/media/setup-window.gif" alt="The setup window: choose what to install, follow each step, answer the questions" width="820"></p>
+
+**The dashboard.** Your apps, drives, backups, hardware and what needs your attention, on the PC and on your phone.
+
+<p align="center"><img src="docs/media/dashboard.gif" alt="The NekoServer dashboard: home, apps, hardware, backups, server health, fans and lights, needs attention" width="820"></p>
+
+**The uninstaller.** NekoServer off the PC, what you choose, after two confirmations. Nothing is formatted.
+
+<p align="center"><img src="docs/media/uninstall.gif" alt="sudo bash uninstall.sh: the checklist, the plan, two confirmations, the removal" width="820"></p>
 
 ## Get started
 
@@ -22,11 +45,14 @@ You need a 64-bit PC with one of those installed, plus an SSD, an HDD and a USB 
 ```bash
 git clone https://github.com/fp581/NekoServer-All.git
 cd NekoServer-All/nekoserver
+sudo bash install.sh
 ```
 
 Then follow the step-by-step guide: **[nekoserver/README.md](nekoserver/README.md)**.
 
 Already running NekoServer? Run `git pull`, then `sudo bash install.sh` in the same folder: your settings stay where they are ([Updating to a newer release](nekoserver/README.md#install)).
+
+Want it gone? `sudo bash uninstall.sh` in the same folder: it lists what it would remove, you choose, and it asks twice ([Uninstalling](nekoserver/README.md#uninstalling)).
 
 ## More
 

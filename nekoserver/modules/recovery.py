@@ -13,7 +13,7 @@ DESCRIPTION='Preserve installer, templates and current configuration on the appl
 
 def bundle_files(project):
     """Every file a reinstall from the preserved bundle needs (the tests are left out)."""
-    files=list(project.glob('*.py'))+list(project.glob('*.md'))+[project/'install.sh']
+    files=list(project.glob('*.py'))+list(project.glob('*.md'))+[project/'install.sh',project/'uninstall.sh']
     for directory,pattern in [('modules','*.py'),('compose','*.yaml')]:files.extend((project/directory).glob(pattern))
     # The whole dashboard folder: its page, icons and app manifest are all installed.
     files.extend(p for p in (project/'dashboard').iterdir() if p.is_file())
