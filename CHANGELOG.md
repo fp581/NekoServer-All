@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.35.1 — 2026-10-24
+
+Code-quality findings from SonarCloud's review of 0.35.0. Nothing changes in how NekoServer works or what it says.
+
+### Changed
+- Names used in several places (Tailscale's service, the recovery tool, the settings template) are each written once.
+- The home gateway's readiness check is split into smaller parts: checking that Jellyfin and Seerr finished their first-run setup, and checking the apps' containers.
+- Tests: each test that expects a failure now runs only the call that should fail inside its check, and a set comparison and a mock use unittest's own forms.
+
+### Upgrade notes
+- After `git pull`, run `sudo bash install.sh` in `nekoserver-v0.35.1`: it offers the settings left in the earlier folder; answer `yes`.
+- The bundled runtime was rebuilt for this release (version number only).
+
 ## v0.35.0 — 2026-10-24
 
 Fedora and RHEL support, and every supported Linux installed and broken on purpose for real: a fresh install on Arch, Ubuntu 24.04, Fedora 44 and AlmaLinux 10, Debian 13 updated from 0.30.0 the way `git pull` leaves it, and the fault suite on them (all under WSL, each with its own three virtual drives). WSL has no SELinux, so SELinux is the part still to be tried on a real Fedora or RHEL: see below. Versions 0.31.0 to 0.34.0 were not released.

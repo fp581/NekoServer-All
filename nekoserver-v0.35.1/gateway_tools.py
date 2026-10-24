@@ -138,21 +138,23 @@ def configure(ctx,kind):
     if changed:save_settings(ctx)
     return True
 
-def readiness(config):
-    apps=selected(config)
-    if config.get('gateway',{}).get('confirmed_services')!=apps:raise RuntimeError('Explicit secured-account confirmation required for selected applications')
-    opener=local_opener()
-    for app,endpoint,key in [('jellyfin','/System/Info/Public','StartupWizardCompleted'),('seerr','/api/v1/settings/public','initialized')]:
-        if app not in apps:continue
-        try:
-            with opener.open(LOOPBACK+str(APPS[app][1])+endpoint,timeout=5) as r:value=json.loads(r.read(64000))
-            if not isinstance(value,dict) or value.get(key) is not True:raise RuntimeError('Initial application account setup is incomplete')
-        except (OSError,ValueError) as exc:
-            # Usually the app is not running (its own step names why): say which one.
-            raise RuntimeError(f'{APPS[app][0]} did not answer on this PC ({LOOPBACK}{APPS[app][1]}: {getattr(exc,"reason",exc)}); '
-                               'the home addresses are set up once it runs: see the apps step above, then run setup again') from None
-    # A snap's Docker takes over Docker's socket: every container would look missing.
-    if host.snap_docker():raise RuntimeError(host.SNAP_DOCKER)
+# The apps whose first-run setup must be finished before they get a home address:
+# (app, the address that says so, the field that is true once it is).
+ONBOARDING=(('jellyfin','/System/Info/Public','StartupWizardCompleted'),('seerr','/api/v1/settings/public','initialized'))
+
+def onboarded(opener,app,endpoint,key):
+    """The app answers on this PC and says its first-run setup is finished."""
+    try:
+        with opener.open(LOOPBACK+str(APPS[app][1])+endpoint,timeout=5) as r:value=json.loads(r.read(64000))
+    except (OSError,ValueError) as exc:
+        # Usually the app is not running (its own step names why): say which one.
+        raise RuntimeError(f'{APPS[app][0]} did not answer on this PC ({LOOPBACK}{APPS[app][1]}: {getattr(exc,"reason",exc)}); '
+                           'the home addresses are set up once it runs: see the apps step above, then run setup again') from None
+    if not isinstance(value,dict) or value.get(key) is not True:raise RuntimeError('Initial application account setup is incomplete')
+
+def unverified_containers(config,apps):
+    """The names of the selected apps' containers whose mounts, networks or ports are not
+    the ones setup made."""
     from acceptance import containers
     scoped=dict(config);scoped['media']={**config.get('media',{}),'services':[a for a in apps if a not in ('immich','nextcloud')]}
     checked=containers(scoped) if scoped['media']['services'] else []
@@ -160,7 +162,17 @@ def readiness(config):
     if 'nextcloud' in apps:
         from cloud_checks import check
         checked+=check(config)
-    failed=[r.get('name') or r.get('id','?') for r in checked if r['status']!='pass']
+    return [r.get('name') or r.get('id','?') for r in checked if r['status']!='pass']
+
+def readiness(config):
+    apps=selected(config)
+    if config.get('gateway',{}).get('confirmed_services')!=apps:raise RuntimeError('Explicit secured-account confirmation required for selected applications')
+    opener=local_opener()
+    for app,endpoint,key in ONBOARDING:
+        if app in apps:onboarded(opener,app,endpoint,key)
+    # A snap's Docker takes over Docker's socket: every container would look missing.
+    if host.snap_docker():raise RuntimeError(host.SNAP_DOCKER)
+    failed=unverified_containers(config,apps)
     if failed:raise RuntimeError('Selected containers must use the verified persistent mounts, networks and localhost ports; '
                                  'not verified: '+', '.join(failed)+' (sudo docker ps -a shows their state)')
     states=health.applications(config)

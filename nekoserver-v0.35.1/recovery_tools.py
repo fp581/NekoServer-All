@@ -25,6 +25,7 @@ from modules import docker as docker_module
 
 # The settings file, next to the installer and in its preserved copy on the SSD.
 CONFIG_NAME='config.json'
+RECOVER_TOOL='recover.py'
 DOCKER=['docker','--host','unix:///var/run/docker.sock']
 SERVICES={'database','redis','immich-server','immich-machine-learning'}
 FORMAT='neko-immich-snapshot-v1'
@@ -307,9 +308,9 @@ def hook_command(config,config_path):
     (with its configuration copy) is preferred: it stays where it is, while the folder
     setup was run from may be moved, renamed or deleted before the next boot."""
     bundle=Path(config['data_mount'])/'installer/releases'/('v'+VERSION)
-    script,settings=bundle/'recover.py',bundle/CONFIG_NAME
+    script,settings=bundle/RECOVER_TOOL,bundle/CONFIG_NAME
     if not (script.is_file() and settings.is_file()):
-        script,settings=Path(__file__).resolve().with_name('recover.py'),Path(config_path).resolve()
+        script,settings=Path(__file__).resolve().with_name(RECOVER_TOOL),Path(config_path).resolve()
     return ' '.join(systemd_arg(a) for a in ('/usr/bin/python3',script,'--config',settings,'resume'))
 
 def snapshot_hook(config,config_path):
@@ -341,7 +342,7 @@ def restart_owed(config,base=None):
     base=base or compose_args(config)
     if services:command(base+['start',*services],180)
     running=set(command(base+['ps','--status','running','--services']).split())
-    if not set(services)<=running:raise RuntimeError('Immich did not start again ('+', '.join(sorted(set(services)-running))+'); it is retried at the next boot, or run  sudo python3 '+str(Path(config['data_mount'])/'installer/releases'/('v'+VERSION)/'recover.py')+' resume')
+    if not set(services)<=running:raise RuntimeError('Immich did not start again ('+', '.join(sorted(set(services)-running))+'); it is retried at the next boot, or run  sudo python3 '+str(Path(config['data_mount'])/'installer/releases'/('v'+VERSION)/RECOVER_TOOL)+' resume')
     if SNAPSHOT_HOOK.exists():
         command(['systemctl','disable','--quiet',SNAPSHOT_HOOK.name]);SNAPSHOT_HOOK.unlink();command(['systemctl','daemon-reload'])
     SNAPSHOT_RESUME.unlink()

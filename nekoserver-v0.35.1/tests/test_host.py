@@ -1273,7 +1273,7 @@ class FedoraTest(unittest.TestCase):
         self.assertEqual(installs, [['dnf', 'install', '-y', 'samba', 'caddy']])
         self.assertFalse(any('upgrade' in argv for argv in dnf.calls))
         # Kept from starting while installing, then switched off and unmasked.
-        self.assertTrue({'smb.service', 'caddy.service'} <= dnf.masked_during_install)
+        self.assertLessEqual({'smb.service', 'caddy.service'}, dnf.masked_during_install)
         self.assertEqual(dnf.enabled(), [])
         self.assertEqual(dnf.masked, set())
         self.assertFalse((self.root / host.Fedora.journal.lstrip('/')).exists())
@@ -1301,14 +1301,16 @@ class FedoraTest(unittest.TestCase):
     def test_a_fedora_release_docker_does_not_package_yet_is_named(self):
         def missing(url):
             raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+        family = self.family(fetch=missing)
         with self.assertRaisesRegex(RuntimeError, 'Docker does not offer packages for Fedora 44 yet'):
-            self.family(fetch=missing).install(['docker'])
+            family.install(['docker'])
         self.assertFalse((self.root / 'etc/yum.repos.d/nekoserver-docker-ce.repo').exists())
 
     def test_fedoras_own_docker_is_never_mixed_in(self):
         dnf = FakeDnf(installed={'moby-engine'})
+        family = self.family(dnf)
         with self.assertRaisesRegex(RuntimeError, 'its own container packages.*moby-engine.*sudo dnf remove moby-engine'):
-            self.family(dnf).install(['docker'])
+            family.install(['docker'])
         self.assertFalse(any(argv[:2] == ['dnf', 'install'] for argv in dnf.calls))
 
     def test_samba_example_is_set_aside_only_when_unchanged_and_new(self):
@@ -1403,16 +1405,18 @@ class RhelTest(unittest.TestCase):
         for clash in ('runc', 'podman-docker'):
             with self.subTest(clash=clash):
                 dnf = FakeDnf(installed={clash})
+                family = self.family(dnf)
                 with self.assertRaisesRegex(RuntimeError, f'its own container packages.*{clash}.*sudo dnf remove {clash}'):
-                    self.family(dnf).install(['docker'])
+                    family.install(['docker'])
                 self.assertEqual(self.installs(dnf), [])
 
     def test_a_release_docker_does_not_package_yet_is_named(self):
         def missing(url):
             raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
         future = dict(self.ALMA, VERSION_ID='11.0')
+        family = self.family(release=future, fetch=missing)
         with self.assertRaisesRegex(RuntimeError, 'Docker does not offer packages for AlmaLinux 11 yet'):
-            self.family(release=future, fetch=missing).install(['docker'])
+            family.install(['docker'])
 
 
 if __name__ == '__main__':
