@@ -45,9 +45,15 @@ def plan(host,sysroot):
     if (sysroot/'lib/rustlib'/STATIC/'lib').is_dir() and linker.is_file():
         return STATIC,['--target',STATIC,'--config',f'target.{STATIC}.linker='+json.dumps(str(linker))]
     return host,[]
+NEEDED_MB=1024   # free space the build wants here: the build folder takes ~150 MB, Cargo's cache ~30 MB, with room for the rest
+def free_megabytes(path=ROOT,statvfs=os.statvfs):
+    """Free space (MB) on the filesystem holding path, for the account building."""
+    s=statvfs(path);return s.f_bavail*s.f_frsize//(1024*1024)
 def main():
     if os.geteuid()==0 and os.environ.get('NEKOSERVER_BUILD_AS_ROOT')!='1':raise RuntimeError('Build as an ordinary user (or let sudo bash install.sh build it)')
     if platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('This release build targets x86_64 Linux')
+    free=free_megabytes()
+    if free<NEEDED_MB:raise RuntimeError(f'Building the runtime needs about {NEEDED_MB} MB free where NekoServer\'s folder is ({ROOT.parent}); {free} MB is free. Make room there and run  sudo bash install.sh  again.')
     cargo,_,host,sysroot,rustc_line=toolchain()
     target,arguments=plan(host,sysroot)
     # The runtime itself is always compiled again: cargo trusts file times, and after the

@@ -1,4 +1,5 @@
 """The runtime build (runtime/build.py): static when the toolchain can, else for this PC."""
+import hashlib
 import importlib.util
 import json
 import sys
@@ -12,6 +13,28 @@ sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location('runtime_build', ROOT / 'runtime/build.py')
 build = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(build)
+
+
+class SpaceTests(unittest.TestCase):
+    """The build stops with a clear message before Cargo fills a nearly full disk."""
+    class Stat:
+        def __init__(self, free_mb):
+            self.f_bavail, self.f_frsize = free_mb * 256, 4096
+
+    def test_free_space_is_read_where_the_runtime_folder_is(self):
+        seen = []
+        self.assertEqual(build.free_megabytes(Path('/x'), statvfs=lambda p: seen.append(p) or self.Stat(2048)), 2048)
+        self.assertEqual(seen, [Path('/x')])
+
+    def test_the_build_refuses_a_nearly_full_disk_before_compiling(self):
+        with mock.patch.object(build, 'free_megabytes', return_value=300), \
+                mock.patch.object(build.os, 'geteuid', return_value=1000), \
+                mock.patch.object(build.platform, 'system', return_value='Linux'), \
+                mock.patch.object(build.platform, 'machine', return_value='x86_64'), \
+                mock.patch.object(build.subprocess, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, r'needs about 1024 MB free .*; 300 MB is free'):
+                build.main()
+            run.assert_not_called()
 
 
 class PlanTests(unittest.TestCase):
@@ -129,8 +152,34 @@ class DeployTests(unittest.TestCase):
         self.record = Path(str(self.target) + native_runtime.RECORD_SUFFIX)
 
     def deploy(self, blob):
+        # The release's record names the build being deployed, as build.py writes it.
+        self.manifest.write_text(json.dumps({'version': 'x', 'binary_sha256': hashlib.sha256(blob).hexdigest()}) + '\n')
         with mock.patch.object(self.native_runtime, 'payload', return_value=blob):
             return self.native_runtime.deploy(self.project, {}, self.destination)
+
+    def test_a_copy_someone_replaced_keeps_its_place_even_with_the_record_beside_it(self):
+        self.deploy(b'one')
+        self.target.write_bytes(b'their own build')
+        with self.assertRaisesRegex(RuntimeError, 'NekoServer did not put it there'):
+            self.deploy(b'two')
+        self.assertEqual(self.target.read_bytes(), b'their own build')
+
+    def test_a_record_that_cannot_be_read_protects_the_copy(self):
+        self.deploy(b'one')
+        self.record.write_text('not json')
+        with self.assertRaisesRegex(RuntimeError, 'NekoServer did not put it there'):
+            self.deploy(b'two')
+        self.assertEqual(self.target.read_bytes(), b'one')
+
+    def test_a_stale_record_protects_the_copy(self):
+        self.deploy(b'one')
+        self.record.write_text('{"version": "x", "binary_sha256": "another build"}')
+        with self.assertRaisesRegex(RuntimeError, 'NekoServer did not put it there'):
+            self.deploy(b'two')
+        self.assertEqual(self.target.read_bytes(), b'one')
+        # Deploying the same bytes again only refreshes the record.
+        self.deploy(b'one')
+        self.assertEqual(self.record.read_text(), self.manifest.read_text())
 
     def test_first_deployment_writes_the_copy_and_its_record(self):
         self.assertEqual(self.deploy(b'one'), self.target)

@@ -1,4 +1,4 @@
-# NekoServer v0.38.0
+# NekoServer v0.38.1
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -34,7 +34,7 @@ Also included: shared folders on your home network (Samba) and, if you want them
   - **Debian 12** or newer, or **Ubuntu 24.04** or newer (also Linux Mint and other Ubuntu-based systems built on those)
   - **Fedora 42** or newer (new: tried only in a test setup so far; see *Fedora* below)
   - **RHEL 10**, **Rocky Linux 10**, **AlmaLinux 10** or **CentOS Stream 10**, or newer (new: tried only on AlmaLinux in a test setup so far; see *RHEL* below). Version 9 is not enough: its Python is too old.
-  - **openSUSE Leap 16** or newer, **Tumbleweed** or **Slowroll** (new: tried only on Leap 16 in a test setup so far; see *openSUSE* below). Leap 15 is not enough: its Python is too old.
+  - **openSUSE Leap 16** or newer, **Tumbleweed** or **Slowroll** (tried on Leap 16 and Tumbleweed in a test setup; see *openSUSE* below). Leap 15 is not enough: its Python is too old.
 - **8 GB of memory or more.** The apps use about 2 GB when idle, and more while Immich looks at new photos or Jellyfin converts a video; with less, those can be stopped for lack of memory. Setup shows what it found.
 - **Your phone**, to set up the apps on it during installation.
 - **Four drives**, each already formatted (ext4 is the safe choice):
@@ -108,7 +108,7 @@ sudo bash install.sh
 
 Your `my-config.json` stays where it is (git does not touch it); setup updates what changed, builds the runtime for the new version and keeps everything else. Read the new version's *Upgrade notes* in [CHANGELOG.md](../CHANGELOG.md) first.
 
-Coming from a release before 0.38.0, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in. The old folder can then be deleted.
+Coming from a release before 0.38.1, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in. The old folder can then be deleted.
 
 ---
 

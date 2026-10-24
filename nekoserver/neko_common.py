@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.38.0'
+VERSION = '0.38.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -155,11 +155,12 @@ def maintenance_running(run=subprocess.run):
     return bool({'activating', 'deactivating'} & set(result.stdout.split()))
 
 
-def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was changed.', running=maintenance_running):
+def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was changed.', running=None):
     """Why setup must not run yet, or None. An unfinished monthly update must be finished
     (or rolled back) before anything else touches the apps: another version would
     replace the program that can finish it, and even the same version would start the
     apps, letting them write data that a pending rollback then replaces."""
+    running = running or maintenance_running   # looked up now, so a test's stand-in is used
     journal = Path(journal)
     if not journal.exists():
         return None
