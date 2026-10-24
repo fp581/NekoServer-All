@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.36.0 — 2026-10-24
+
+openSUSE support, installed for real on Leap 16 under WSL with its own three virtual drives: setup reached 26 of 28 steps (the other two need the owner's Tailscale account and phone), every feature check passed (47) and the fault suite ran on it. Also a standing dashboard warning when the monthly backups are unencrypted, and a fix for a Docker version openSUSE's package reports.
 
 ### Added
 - **openSUSE Leap 16 and newer, Tumbleweed and Slowroll.** `install.sh` and setup recognise them (anything naming opensuse in its `/etc/os-release`; SLES is not covered) and install with zypper. Everything comes from openSUSE's own repositories, Docker, Compose, Caddy and Tailscale included, so no maker's repository is written. zypper is told to wait for another zypper or YaST instead of failing at once. Leap 15 is refused before anything changes: its Python (3.6) is older than NekoServer needs. When the freshly installed Python cannot load parts of itself because the system's libraries are older than it (openSUSE's packages name a library, not its version; seen on a Leap 16 not updated for a while, where `xml.etree` failed on an old libexpat), setup brings the installed packages up to date (`zypper update`; `zypper dist-upgrade` on the rolling Tumbleweed and Slowroll) and goes on. Tried on Leap 16.0 under WSL.
@@ -10,6 +12,11 @@
 
 ### Fixed
 - **The recovery checkpoint takes a Docker version with a package suffix.** openSUSE's Docker calls itself `29.7.2_ce`; the checkpoint setup records for a later reattach refused that as not a version, so setup listed the checkpoint under "Still needs you" for good. It now reads the version by its leading numbers, as the reattach itself does, and when it refuses a Docker it says what it found (driver, store, version).
+
+### Upgrade notes
+- After `git pull`, run `sudo bash install.sh` in `nekoserver-v0.36.0`: it offers the settings left in the earlier folder; answer `yes`.
+- The bundled runtime was rebuilt for this release (the checkpoint's version check and the version number).
+- If your monthly backups were set up without a backup password, the dashboard now shows a warning until you choose one (`sudo python3 backup_secrets.py --setup` in the release folder). Nothing else changes.
 
 ## v0.35.1 — 2026-10-24
 
