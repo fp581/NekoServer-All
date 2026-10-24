@@ -31,6 +31,8 @@ OS_RELEASE = '/etc/os-release'
 # Every system package the apps need outside their containers, by NekoServer's names.
 APP_PACKAGES = ('docker', 'docker-compose', 'tailscale', 'caddy', 'samba', 'hdparm',
                 'smartmontools', 'qrencode', 'xdg-utils')
+# Tailscale's service has the same name on every family.
+TAILSCALE_UNIT = 'tailscaled.service'
 
 
 class Unsupported(RuntimeError):
@@ -334,7 +336,7 @@ class Arch(Family):
     manager = 'pacman'
     ids = ('arch', 'nyarch')
     like = ('arch',)
-    services = MappingProxyType({'samba': 'smb.service', 'tailscale': 'tailscaled.service'})
+    services = MappingProxyType({'samba': 'smb.service', 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
     wait = 600            # seconds to wait for another pacman to finish
     sleep = staticmethod(time.sleep)
@@ -530,7 +532,7 @@ class Debian(PackageLock, Family):
         'libva-utils': 'vainfo',
         'firefox': 'firefox-esr',
     })
-    services = MappingProxyType({'samba': 'smbd.service', 'tailscale': 'tailscaled.service'})
+    services = MappingProxyType({'samba': 'smbd.service', 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/apt/sources.list', '/etc/apt/sources.list.d', '/etc/apt/preferences.d',
                 '/etc/apt/keyrings', '/etc/default/locale', '/etc/default/keyboard')
     journal = '/var/lib/nekoserver-host/package-install.json'
@@ -544,7 +546,7 @@ class Debian(PackageLock, Family):
         # (samba-ad-dc.service comes masked by the package itself and is left as it is.
         # winbind comes with samba here and is never used by a standalone server; the
         # settings backup refuses to run beside it.)
-        'samba': ('smbd.service', 'nmbd.service', 'winbind.service'), 'tailscale': ('tailscaled.service',)})
+        'samba': ('smbd.service', 'nmbd.service', 'winbind.service'), 'tailscale': (TAILSCALE_UNIT,)})
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
 
@@ -907,7 +909,7 @@ class Fedora(PackageLock, Family):
         'docker-compose': 'docker-compose-plugin',
         'libva-mesa-driver': 'mesa-va-drivers',
     })
-    services = MappingProxyType({'samba': 'smb.service', 'tailscale': 'tailscaled.service'})
+    services = MappingProxyType({'samba': 'smb.service', 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/dnf/dnf.conf', '/etc/yum.repos.d')
     journal = '/var/lib/nekoserver-host/package-install.json'
     repositories = MappingProxyType({'docker': DOCKER_RPM, 'docker-compose': DOCKER_RPM, 'tailscale': TAILSCALE_RPM})
@@ -916,7 +918,7 @@ class Fedora(PackageLock, Family):
     # start them on the right drive, as on Debian.
     autostarted = MappingProxyType({
         'docker': ('docker.service', 'docker.socket'), 'caddy': ('caddy.service',),
-        'samba': ('smb.service', 'nmb.service'), 'tailscale': ('tailscaled.service',)})
+        'samba': ('smb.service', 'nmb.service'), 'tailscale': (TAILSCALE_UNIT,)})
     # Fedora's own container packages that would conflict with Docker's.
     conflicts = ('moby-engine', 'podman-docker', 'containerd')
 
@@ -1105,7 +1107,46 @@ class Rhel(Fedora):
         return super().prepare(missing)
 
 
-FAMILIES = (Arch, Debian, Fedora, Rhel)
+class Suse(Fedora):
+    """openSUSE Leap 16 and newer, Tumbleweed and Slowroll: rpm as on Fedora, zypper for
+    the packages, and everything from openSUSE's own repositories (Docker, Compose, Caddy
+    and Tailscale included), as on Arch. SLES names only suse, has other repositories and
+    a subscription: not covered."""
+    name = 'suse'
+    label = 'openSUSE'
+    manager = 'zypper'
+    ids = ('opensuse-leap', 'opensuse-tumbleweed', 'opensuse-slowroll', 'opensuse')
+    like = ('opensuse',)
+    packages = MappingProxyType({
+        'docker': ('docker', 'docker-buildx'),
+        'docker-compose': 'docker-compose',
+        'libva-mesa-driver': 'Mesa-libva',
+    })
+    settings = ('/etc/zypp/zypp.conf', '/etc/zypp/repos.d')
+    repositories = MappingProxyType({})
+    conflicts = ()
+    # zypper waits this long (seconds) for another zypper or YaST to finish, instead of
+    # failing at once ("System management is locked").
+    LOCK_WAIT = '600'
+
+    def _call(self, argv, timeout, **extra):
+        if argv[0] == 'zypper':
+            extra.setdefault('env', {**environment(), 'ZYPP_LOCK_TIMEOUT': self.LOCK_WAIT})
+        return super()._call(argv, timeout, **extra)
+
+    def available(self, wanted):
+        if not self.ready():
+            return False
+        # zypper answers 104 when no package matches.
+        return all(self._call(['zypper', '--non-interactive', '--quiet', 'search', '--match-exact',
+                               '--type', 'package', name], 300).returncode == 0
+                   for name in self.names(wanted))
+
+    def _install(self, names, timeout):
+        return self._call(['zypper', '--non-interactive', 'install', '--no-recommends', *names], timeout + 600)
+
+
+FAMILIES = (Arch, Debian, Fedora, Rhel, Suse)
 
 
 def detect(path=OS_RELEASE):

@@ -400,10 +400,27 @@ class ExistingDockerTests(unittest.TestCase):
         self.assertFalse(ok('Docker version 29.8.5, build 1234567', '29.9.2'))
         self.assertFalse(ok('Docker version 28.0.0, build 1234567', '29.9.2'))
         self.assertTrue(ok('Docker version 26.1.5+dfsg1, build a72d7cd', '26.1.5+dfsg1'))   # Debian's own package
-        # A version that can't be read must match exactly.
         self.assertTrue(ok('Docker version dev, build x', 'dev'))
         self.assertFalse(ok('Docker version dev, build x', '29.9.2'))
+        # A version that can't be read must match exactly.
         self.assertFalse(ok('', '29.9.2'))
+
+    def test_the_checkpoint_takes_a_docker_version_with_a_package_suffix(self):
+        # openSUSE's Docker says "29.7.2_ce": the checkpoint refused it as not a version,
+        # and setup listed the recovery checkpoint under "Still needs you" for good.
+        import recovery_tools
+        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media',
+                  'storage': {'data_ssd': {'uuid': 'a'}, 'media_hdd': {'uuid': 'b'}}, 'media': {'uid': 1000, 'gid': 1000}}
+        def info(version):
+            return {'ServerVersion': version, 'DockerRootDir': '/srv/nekoserver/docker-engine', 'Driver': 'overlay2',
+                    'DriverStatus': [['Backing Filesystem', 'extfs']]}
+        with mock.patch.object(recovery_tools, 'mounts'), \
+                mock.patch.object(recovery_tools, 'json_command', return_value=info('29.7.2_ce')):
+            self.assertEqual(recovery_tools.checkpoint(config)['docker_version'], '29.7.2_ce')
+        with mock.patch.object(recovery_tools, 'mounts'), \
+                mock.patch.object(recovery_tools, 'json_command', return_value=info('unknown')):
+            with self.assertRaisesRegex(RuntimeError, r'overlay2 Docker at the application SSD only \(found: driver overlay2.*version unknown\)'):
+                recovery_tools.checkpoint(config)
 
 
 class BrowserLaunchTests(unittest.TestCase):

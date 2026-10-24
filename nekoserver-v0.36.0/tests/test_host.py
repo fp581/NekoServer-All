@@ -48,10 +48,11 @@ class DetectionTest(unittest.TestCase):
 
     def test_other_systems_are_refused_by_name(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = release(tmp, 'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\nPRETTY_NAME="openSUSE Tumbleweed"\n')
+            # SUSE's enterprise system names only suse, and has other repositories.
+            path = release(tmp, 'ID=sles\nID_LIKE="suse"\nPRETTY_NAME="SUSE Linux Enterprise Server 16.0"\n')
             self.assertIsNone(host.detect(path))
             self.assertFalse(host.supported(path))
-            with self.assertRaisesRegex(host.Unsupported, 'openSUSE Tumbleweed is not supported yet'):
+            with self.assertRaisesRegex(host.Unsupported, 'SUSE Linux Enterprise Server 16.0 is not supported yet'):
                 host.current(path=path)
             self.assertIs(host.family_or_default(path), host.Arch)
 
@@ -64,6 +65,13 @@ class DetectionTest(unittest.TestCase):
             for text in ('ID=debian\n', 'ID=ubuntu\nID_LIKE=debian\n', 'ID=linuxmint\nID_LIKE="ubuntu debian"\n',
                          'ID=Ubuntu\n', 'ID=elementary\nID_LIKE=ubuntu\n'):
                 self.assertIs(host.detect(release(tmp, text)), host.Debian, text)
+
+    def test_opensuse_is_suse_and_sles_is_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for text in ('ID=opensuse-leap\nID_LIKE="suse opensuse"\n', 'ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\n',
+                         'ID=opensuse-slowroll\nID_LIKE="opensuse suse"\n', 'ID=geckolinux\nID_LIKE="opensuse suse"\n'):
+                self.assertIs(host.detect(release(tmp, text)), host.Suse, text)
+            self.assertIsNone(host.detect(release(tmp, 'ID=sles\nID_LIKE="suse"\n')))
 
     def test_service_names(self):
         self.assertEqual(host.Arch.service('samba'), 'smb.service')
@@ -1114,7 +1122,7 @@ class CapabilitiesTest(unittest.TestCase):
 
     def test_fixed_requirements_stop_setup(self):
         with tempfile.TemporaryDirectory() as tmp:
-            rows = self.rows(tmp, text='ID=opensuse-tumbleweed\n', machine='aarch64', python=(3, 10), systemd='systemd 245')
+            rows = self.rows(tmp, text='ID=gentoo\n', machine='aarch64', python=(3, 10), systemd='systemd 245')
             problems = ' '.join(capabilities.missing(rows))
             for words in ('x86-64', 'Python 3.11', 'systemd 247', 'Supported Linux family'):
                 self.assertIn(words, problems)
@@ -1273,7 +1281,7 @@ class FedoraTest(unittest.TestCase):
         self.assertEqual(installs, [['dnf', 'install', '-y', 'samba', 'caddy']])
         self.assertFalse(any('upgrade' in argv for argv in dnf.calls))
         # Kept from starting while installing, then switched off and unmasked.
-        self.assertTrue({'smb.service', 'caddy.service'} <= dnf.masked_during_install)
+        self.assertLessEqual({'smb.service', 'caddy.service'}, dnf.masked_during_install)
         self.assertEqual(dnf.enabled(), [])
         self.assertEqual(dnf.masked, set())
         self.assertFalse((self.root / host.Fedora.journal.lstrip('/')).exists())
@@ -1301,14 +1309,16 @@ class FedoraTest(unittest.TestCase):
     def test_a_fedora_release_docker_does_not_package_yet_is_named(self):
         def missing(url):
             raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+        family = self.family(fetch=missing)
         with self.assertRaisesRegex(RuntimeError, 'Docker does not offer packages for Fedora 44 yet'):
-            self.family(fetch=missing).install(['docker'])
+            family.install(['docker'])
         self.assertFalse((self.root / 'etc/yum.repos.d/nekoserver-docker-ce.repo').exists())
 
     def test_fedoras_own_docker_is_never_mixed_in(self):
         dnf = FakeDnf(installed={'moby-engine'})
+        family = self.family(dnf)
         with self.assertRaisesRegex(RuntimeError, 'its own container packages.*moby-engine.*sudo dnf remove moby-engine'):
-            self.family(dnf).install(['docker'])
+            family.install(['docker'])
         self.assertFalse(any(argv[:2] == ['dnf', 'install'] for argv in dnf.calls))
 
     def test_samba_example_is_set_aside_only_when_unchanged_and_new(self):
@@ -1403,16 +1413,103 @@ class RhelTest(unittest.TestCase):
         for clash in ('runc', 'podman-docker'):
             with self.subTest(clash=clash):
                 dnf = FakeDnf(installed={clash})
+                family = self.family(dnf)
                 with self.assertRaisesRegex(RuntimeError, f'its own container packages.*{clash}.*sudo dnf remove {clash}'):
-                    self.family(dnf).install(['docker'])
+                    family.install(['docker'])
                 self.assertEqual(self.installs(dnf), [])
 
     def test_a_release_docker_does_not_package_yet_is_named(self):
         def missing(url):
             raise host.urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
         future = dict(self.ALMA, VERSION_ID='11.0')
+        family = self.family(release=future, fetch=missing)
         with self.assertRaisesRegex(RuntimeError, 'Docker does not offer packages for AlmaLinux 11 yet'):
-            self.family(release=future, fetch=missing).install(['docker'])
+            family.install(['docker'])
+
+
+class FakeZypper(FakeDnf):
+    """zypper over sets of offered and installed packages; rpm and systemctl as FakeDnf."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.zypper_envs = []     # the environment of each zypper call, in order
+
+    def __call__(self, argv, **kwargs):
+        if argv[0] == 'zypper':
+            self.calls.append(argv)
+            self.zypper_envs.append(kwargs.get('env') or {})
+            if 'install' in argv:
+                return self.zypper_install(argv)
+            # search --match-exact: 104 when nothing matches.
+            return subprocess.CompletedProcess(argv, 0 if argv[-1] in self.offered else 104, '', '')
+        return super().__call__(argv, **kwargs)
+
+    def zypper_install(self, argv):
+        self.masked_during_install = set(self.masked)
+        names = argv[argv.index('--no-recommends') + 1:]
+        done = names if self.fail_after is None else names[:self.fail_after]
+        for name in done:
+            self.installed.add(name)
+            for unit in FEDORA_UNITS.get(name, ()):
+                self.units[unit] = {'LoadState': 'loaded', 'UnitFileState': 'enabled', 'ActiveState': 'inactive'}
+            if name == 'samba':
+                example = self.root / 'etc/samba/smb.conf'
+                if not example.exists():
+                    example.write_text('# example\n')
+        failed = len(done) < len(names)
+        return subprocess.CompletedProcess(argv, 4 if failed else 0, '', 'Problem: nothing provides' if failed else '')
+
+
+class SuseTest(unittest.TestCase):
+    """openSUSE: Fedora's rpm handling with zypper, and only openSUSE's own repositories."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for path in ('etc/zypp/repos.d', 'etc/samba', 'run'):
+            (self.root / path).mkdir(parents=True)
+        patcher = mock.patch('host.shutil.which', return_value='/usr/bin/zypper')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def family(self, zypper=None):
+        zypper = zypper or FakeZypper()
+        zypper.root = self.root
+        family = host.Suse(zypper, {'ID': 'opensuse-leap', 'ID_LIKE': 'suse opensuse', 'VERSION_ID': '16.0'},
+                           fetch=lambda url: self.fail('nothing is downloaded on openSUSE: ' + url))
+        family.root = self.root
+        return family
+
+    def test_everything_comes_from_opensuses_own_repositories(self):
+        zypper = FakeZypper(offered={'docker', 'docker-buildx', 'docker-compose', 'tailscale', 'caddy', 'samba'})
+        family = self.family(zypper)
+        self.assertTrue(family.available('docker'))
+        self.assertTrue(family.available('tailscale'))
+        self.assertFalse(family.available('openrgb'))
+        self.assertEqual(family.install(['docker', 'docker-compose', 'tailscale', 'caddy', 'samba']),
+                         ['docker', 'docker-compose', 'tailscale', 'caddy', 'samba'])
+        installs = [argv for argv in zypper.calls if 'install' in argv]
+        self.assertEqual(installs, [['zypper', '--non-interactive', 'install', '--no-recommends',
+                                     'docker', 'docker-buildx', 'docker-compose', 'tailscale', 'caddy', 'samba']])
+        self.assertEqual(list((self.root / 'etc/zypp/repos.d').iterdir()), [])   # no maker's repository written
+        # New services stay off, as on Fedora.
+        self.assertTrue({'smb.service', 'caddy.service', 'docker.service'} <= zypper.masked_during_install)
+        self.assertEqual(zypper.enabled(), [])
+        self.assertEqual(zypper.masked, set())
+
+    def test_zypper_is_told_to_wait_for_another_zypper(self):
+        zypper = FakeZypper(offered={'samba'})
+        family = self.family(zypper)
+        self.assertTrue(family.available('samba'))
+        family.install(['samba'])
+        self.assertEqual(len(zypper.zypper_envs), 2)      # the search and the install
+        for env in zypper.zypper_envs:
+            self.assertEqual(env.get('ZYPP_LOCK_TIMEOUT'), '600')
+            self.assertEqual(env.get('LC_ALL'), 'C')
+
+    def test_a_failed_install_names_the_packages(self):
+        zypper = FakeZypper(offered={'samba', 'caddy'}, fail_after=1)
+        with self.assertRaisesRegex(RuntimeError, 'Installing samba, caddy failed: Problem: nothing provides'):
+            self.family(zypper).install(['samba', 'caddy'])
 
 
 if __name__ == '__main__':

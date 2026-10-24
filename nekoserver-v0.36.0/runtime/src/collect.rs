@@ -1309,6 +1309,16 @@ fn space_advice(id: &str, full: bool) -> &'static str {
         _ => "Review free space before uploads or backups.",
     }
 }
+/// backup_secrets.py's key: without it every monthly snapshot holds the app password
+/// files in plain text (the monthly job says so in its log each run; the dashboard
+/// says so all the time, so it can't go unnoticed).
+const BACKUP_KEY_FILES: [&str; 2] = [
+    "/etc/nekoserver-backups/secrets-key.p8",
+    "/etc/nekoserver-backups/secrets-recipient.pem",
+];
+fn backup_key_ready() -> bool {
+    BACKUP_KEY_FILES.iter().all(|p| Path::new(p).is_file())
+}
 fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
@@ -1443,6 +1453,20 @@ fn alerts(s: &Value) -> Value {
                 );
             }
         }
+    }
+    // The monthly schedule exists, but no backup password was chosen: each snapshot
+    // holds the app password files unencrypted until one is.
+    let monthly_installed = s["backups"].as_array().is_some_and(|jobs| {
+        jobs.iter()
+            .any(|j| j["id"] == "maintenance" && j["timer"]["installed"] == true)
+    });
+    if monthly_installed && s["backup_key"] == false {
+        add(
+            "backup-key".into(),
+            "warning",
+            "Monthly backups keep the app passwords unencrypted".into(),
+            "No backup password was chosen at setup, so each monthly snapshot on the HDD holds the app password files in plain text (readable by root only, but by anyone who takes the drive). In a terminal on the server, in the NekoServer folder, run  sudo python3 backup_secrets.py --setup  to choose one: snapshots made from then on keep them encrypted.",
+        );
     }
     if let Some(rows) = s["integrity"].as_array() {
         for c in rows {
@@ -1597,6 +1621,7 @@ pub fn run(a: &Args) -> Result<()> {
         .unwrap_or(60));
     result["updates"] = updates(&cfg, media_ok);
     result["integrity"] = integrity(data, ok);
+    result["backup_key"] = json!(backup_key_ready());
     result["alerts"] = alerts(&result);
     // The readings are published even when the SSD can't keep the collector's own state
     // (unplugged since the readings began, or remounted read-only after errors): a
@@ -1822,6 +1847,39 @@ mod os_tests {
             shown[0]["title"],
             "Shared folders (Samba) has stopped with an error"
         );
+    }
+    #[test]
+    fn a_missing_backup_key_is_an_alert_once_the_monthly_schedule_exists() {
+        let monthly = |installed: bool| json!([{"id":"maintenance","name":"Monthly maintenance","status":"pass","timer":{"installed":installed}}]);
+        let shown = alerts(&json!({"backups": monthly(true), "backup_key": false}));
+        let ids: Vec<&str> = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["backup-key"]);
+        assert!(shown[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("backup_secrets.py --setup"));
+        assert!(
+            alerts(&json!({"backups": monthly(true), "backup_key": true}))
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        // No monthly schedule yet, or the key's state not reported: nothing.
+        assert!(
+            alerts(&json!({"backups": monthly(false), "backup_key": false}))
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(alerts(&json!({"backups": monthly(true)}))
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
     #[test]
     fn damaged_backup_copies_reach_the_dashboard_and_raise_an_alert() {

@@ -16,6 +16,7 @@ from neko_common import VERSION, atomic_json, dashboard_port, mount_path, safe_p
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
+TEMPLATE = 'config.json'   # the settings template; also the name of the copy on the SSD
 RELEASE = re.compile(r'v(\d{1,9})\.(\d{1,9})\.(\d{1,9})')
 CREDENTIALS = 'secrets/accounts/APP-CREDENTIALS.txt'
 
@@ -71,7 +72,7 @@ def prepare_settings(root=ROOT, account=None):
     path = Path(root) / SETTINGS
     if path.exists():
         return path, False
-    settings = json.loads((Path(root) / 'config.json').read_text())
+    settings = json.loads((Path(root) / TEMPLATE).read_text())
     if account is not None:
         settings.setdefault('media', {}).update(uid=account.pw_uid, gid=account.pw_gid)
     atomic_json(path, settings)
@@ -100,11 +101,11 @@ def earlier_settings(root=ROOT):
         if version and folder != root and (folder / SETTINGS).is_file():
             found.append((version, folder / SETTINGS))
     if not found:
-        releases = data_folder(read_json(root / 'config.json')) / 'installer/releases'
+        releases = data_folder(read_json(root / TEMPLATE)) / 'installer/releases'
         for folder in releases.iterdir() if releases.is_dir() else ():
             version = release_version(folder.name)
-            if version and (folder / 'config.json').is_file():
-                found.append((version, folder / 'config.json'))
+            if version and (folder / TEMPLATE).is_file():
+                found.append((version, folder / TEMPLATE))
     return next((path for _, path in sorted(found, reverse=True) if read_json(path)), None)
 
 

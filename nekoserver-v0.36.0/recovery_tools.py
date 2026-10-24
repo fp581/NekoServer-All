@@ -25,6 +25,7 @@ from modules import docker as docker_module
 
 # The settings file, next to the installer and in its preserved copy on the SSD.
 CONFIG_NAME='config.json'
+RECOVER_TOOL='recover.py'
 DOCKER=['docker','--host','unix:///var/run/docker.sock']
 SERVICES={'database','redis','immich-server','immich-machine-learning'}
 FORMAT='neko-immich-snapshot-v1'
@@ -130,8 +131,11 @@ def checkpoint(config,apply=False):
     info=json_command(DOCKER+['info','--format','{{json .}}'])
     target=str(Path(config['data_mount'])/'docker-engine')
     version=info.get('ServerVersion','')
-    if info.get('DockerRootDir')!=target or info.get('Driver')!='overlay2' or 'io.containerd.snapshotter' in json.dumps(info.get('DriverStatus')) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',version):
-        raise RuntimeError('Checkpoint supports verified classic overlay2 Docker at the application SSD only')
+    # The version may carry a package suffix (openSUSE's Docker says "29.7.2_ce"): read as
+    # the reattach reads it, by its leading numbers.
+    if info.get('DockerRootDir')!=target or info.get('Driver')!='overlay2' or 'io.containerd.snapshotter' in json.dumps(info.get('DriverStatus')) or docker_release(version) is None:
+        raise RuntimeError('Checkpoint supports verified classic overlay2 Docker at the application SSD only'
+                           f' (found: driver {info.get("Driver")}, root {info.get("DockerRootDir")}, version {version or "unknown"})')
     result={'format':'neko-host-checkpoint-v1','created_at':dt.datetime.now(dt.timezone.utc).isoformat(),'version':VERSION,'architecture':platform.machine(),'docker_version':version,'driver':'overlay2','docker_root':target,'storage':copy.deepcopy(config['storage']),'data_mount':config['data_mount'],'media_mount':config['media_mount'],'uid':config.get('media',{}).get('uid',1000),'gid':config.get('media',{}).get('gid',1000)}
     if apply:
         require_root();atomic_json(Path(config['data_mount'])/'installer/host-checkpoint.json',result)
@@ -307,9 +311,9 @@ def hook_command(config,config_path):
     (with its configuration copy) is preferred: it stays where it is, while the folder
     setup was run from may be moved, renamed or deleted before the next boot."""
     bundle=Path(config['data_mount'])/'installer/releases'/('v'+VERSION)
-    script,settings=bundle/'recover.py',bundle/CONFIG_NAME
+    script,settings=bundle/RECOVER_TOOL,bundle/CONFIG_NAME
     if not (script.is_file() and settings.is_file()):
-        script,settings=Path(__file__).resolve().with_name('recover.py'),Path(config_path).resolve()
+        script,settings=Path(__file__).resolve().with_name(RECOVER_TOOL),Path(config_path).resolve()
     return ' '.join(systemd_arg(a) for a in ('/usr/bin/python3',script,'--config',settings,'resume'))
 
 def snapshot_hook(config,config_path):
@@ -341,7 +345,7 @@ def restart_owed(config,base=None):
     base=base or compose_args(config)
     if services:command(base+['start',*services],180)
     running=set(command(base+['ps','--status','running','--services']).split())
-    if not set(services)<=running:raise RuntimeError('Immich did not start again ('+', '.join(sorted(set(services)-running))+'); it is retried at the next boot, or run  sudo python3 '+str(Path(config['data_mount'])/'installer/releases'/('v'+VERSION)/'recover.py')+' resume')
+    if not set(services)<=running:raise RuntimeError('Immich did not start again ('+', '.join(sorted(set(services)-running))+'); it is retried at the next boot, or run  sudo python3 '+str(Path(config['data_mount'])/'installer/releases'/('v'+VERSION)/RECOVER_TOOL)+' resume')
     if SNAPSHOT_HOOK.exists():
         command(['systemctl','disable','--quiet',SNAPSHOT_HOOK.name]);SNAPSHOT_HOOK.unlink();command(['systemctl','daemon-reload'])
     SNAPSHOT_RESUME.unlink()

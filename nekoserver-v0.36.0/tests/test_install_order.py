@@ -798,7 +798,7 @@ class UnfinishedMaintenanceTests(unittest.TestCase):
             args = mock.Mock(apply=True)
             with mock.patch.object(installer.os, 'geteuid', return_value=0), \
                     mock.patch.object(neko_common, 'MAINTENANCE_JOURNAL', journal), \
-                    mock.patch.object(installer, 'pending_maintenance', lambda: neko_common.pending_maintenance(journal, running=idle)), \
+                    mock.patch.object(installer, 'pending_maintenance', return_value=neko_common.pending_maintenance(journal, running=idle)), \
                     mock.patch.object(installer, '_execute') as run_modules:
                 with self.assertRaisesRegex(installer.InstallerError, 'did not finish'):
                     installer.execute(args)
@@ -846,6 +846,7 @@ class UnfinishedMaintenanceTests(unittest.TestCase):
                 except RuntimeError as exc:
                     errors.append(str(exc))
             with mock.patch.object(neko_common, 'MAINTENANCE_JOURNAL', journal), \
+                    mock.patch.object(neko_common, 'maintenance_running', return_value=False), \
                     mock.patch.object(recovery_tools, 'wait_for',
                                       lambda stream, patient: real_wait(stream, True, sleep=lambda s: time.sleep(0.02))):
                 with lock_file.open('a') as held:  # the monthly update holds the lock

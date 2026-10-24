@@ -15,21 +15,21 @@ The installer creates every app account, connects the apps to each other, and wa
 
 ## Get started
 
-NekoServer runs on **Arch Linux, Nyarch, Debian 12+, Ubuntu 24.04+, Fedora 42+ and RHEL 10+** (with Rocky Linux, AlmaLinux and CentOS Stream 10+; and systems built on Arch, Debian or Ubuntu, such as Linux Mint), with more to come. Fedora and RHEL support are new and were tried only in a test setup without SELinux: Fedora and RHEL testers are very welcome. It hasn't been proven on a real install yet, so try it on a spare PC or a virtual machine first.
+NekoServer runs on **Arch Linux, Nyarch, Debian 12+, Ubuntu 24.04+, Fedora 42+, RHEL 10+ and openSUSE Leap 16+ / Tumbleweed** (with Rocky Linux, AlmaLinux and CentOS Stream 10+; and systems built on Arch, Debian or Ubuntu, such as Linux Mint), with more to come. Fedora, RHEL and openSUSE support are new and were tried only in a test setup without SELinux: testers on those are very welcome. It hasn't been proven on a real install yet, so try it on a spare PC or a virtual machine first.
 
 You need a 64-bit PC with one of those installed, plus an SSD, an HDD and a USB drive, already formatted.
 
 ```bash
 git clone https://github.com/fp581/NekoServer-All.git
-cd NekoServer-All/nekoserver-v0.35.0
+cd NekoServer-All/nekoserver-v0.36.0
 ```
 
-Then follow the step-by-step guide: **[nekoserver-v0.35.0/README.md](nekoserver-v0.35.0/README.md)**.
+Then follow the step-by-step guide: **[nekoserver-v0.36.0/README.md](nekoserver-v0.36.0/README.md)**.
 
-Already running NekoServer? Run `git pull`, then `sudo bash install.sh` in the new version's folder: setup offers the settings left in the earlier one ([Updating to a newer release](nekoserver-v0.35.0/README.md#install)).
+Already running NekoServer? Run `git pull`, then `sudo bash install.sh` in the new version's folder: setup offers the settings left in the earlier one ([Updating to a newer release](nekoserver-v0.36.0/README.md#install)).
 
 ## More
 
 - What changed in each version: [CHANGELOG.md](CHANGELOG.md)
-- How support for another Linux family is added: [PORTING.md](nekoserver-v0.35.0/PORTING.md)
+- How support for another Linux family is added: [PORTING.md](nekoserver-v0.36.0/PORTING.md)
 - Every change is tested automatically in GitHub Actions. The tests simulate the hardware, so try a full round on your own PC (play a video, upload a photo, restore a file) before trusting it with your only copy of anything.

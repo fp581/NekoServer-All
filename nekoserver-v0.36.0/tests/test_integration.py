@@ -170,7 +170,9 @@ RELEASES = (
     ('rhel', 'NAME="Red Hat Enterprise Linux"\nID="rhel"\nID_LIKE="fedora"\nVERSION_ID="10.0"\n'),
     ('rhel', 'NAME="CentOS Stream"\nID="centos"\nID_LIKE="rhel fedora"\nVERSION_ID="10"\n'),
     (None, 'NAME="Oracle Linux Server"\nID="ol"\nID_LIKE="fedora"\nVERSION_ID="10.0"\n'),
-    (None, 'NAME="openSUSE Tumbleweed"\nID="opensuse-tumbleweed"\nID_LIKE="opensuse suse"\n'),
+    ('suse', 'NAME="openSUSE Leap"\nID="opensuse-leap"\nID_LIKE="suse opensuse"\nVERSION_ID="16.0"\n'),
+    ('suse', 'NAME="openSUSE Tumbleweed"\nID="opensuse-tumbleweed"\nID_LIKE="opensuse suse"\nVERSION_ID="20261020"\n'),
+    (None, 'NAME="SLES"\nID="sles"\nID_LIKE="suse"\nVERSION_ID="16.0"\n'),
     (None, 'NAME="Alpine Linux"\nID=alpine\nVERSION_ID=3.22.1\n'),
     (None, 'NAME=NixOS\nID=nixos\nVERSION_ID="25.05"\n'),
     (None, 'NAME=Gentoo\nID=gentoo\n'),
@@ -221,6 +223,7 @@ class InstallScriptTests(unittest.TestCase):
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
         text = text.replace('system_path=/var/cache/libdnf5', 'system_path=' + str(system_path))
         text = text.replace('system_path=/var/cache/dnf\n', 'system_path=' + str(system_path) + '\n')
+        text = text.replace('system_path=/var/cache/zypp\n', 'system_path=' + str(system_path) + '\n')
         # No unfinished monthly update, whatever this test machine is running right now.
         text = text.replace('/etc/nekoserver-backups/maintenance-resume.json', str(self.root / 'maintenance-resume.json'))
         # The certificate bundle as present, whatever this test machine has.
@@ -327,7 +330,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(log, '')
 
     def test_other_distributions_are_refused(self):
-        (self.root / 'etc/os-release').write_text('ID=opensuse-tumbleweed\n')
+        (self.root / 'etc/os-release').write_text('ID=sles\nID_LIKE=suse\n')   # SUSE's enterprise system
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 1)
         self.assertIn('Debian / Ubuntu', result.stderr)
@@ -348,6 +351,46 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('upgrade', log)
         self.assertLess(log.index('DNF -q makecache'), log.index('BOOTSTRAP'))
         self.assertLess(log.index('BOOTSTRAP'), log.index('START --wizard'))
+
+    def use_suse(self, release='ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="16.0"\n'):
+        (self.root / 'etc/os-release').write_text(release)
+        (self.root / 'bin/pacman').unlink(missing_ok=True)     # called once per release in a loop
+        path = self.root / 'bin/zypper'
+        path.write_text('#!/bin/sh\necho "ZYPPER $*" >> "$LOG"\nexit 0\n')
+        path.chmod(0o755)
+
+    def test_suse_refreshes_lists_without_upgrading_and_waits_for_another_zypper(self):
+        self.use_suse()
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('ZYPPER --non-interactive --quiet refresh', log)
+        self.assertNotIn('update', log)
+        self.assertNotIn('PACMAN', log)
+        self.assertLess(log.index('ZYPPER --non-interactive --quiet refresh'), log.index('BOOTSTRAP'))
+        # zypper fails at once when another zypper runs, unless told how long to wait.
+        self.assertIn('ZYPP_LOCK_TIMEOUT=600 zypper', (ROOT / 'install.sh').read_text())
+
+    def test_suse_updates_the_system_when_pythons_own_modules_do_not_load(self):
+        # Seen on Leap 16: a fresh Python met a libexpat too old for it (openSUSE's
+        # packages name the library, not its version), so xml.etree did not load.
+        imports = "import ssl, sqlite3, pyexpat, xml.etree.ElementTree, zlib, lzma, bz2, ctypes, hashlib'"
+        for release, command in (('ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="16.0"\n', 'update'),
+                                 ('ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\nVERSION_ID="20261020"\n', 'dist-upgrade')):
+            with self.subTest(command=command):
+                self.use_suse(release)
+                result, log = self.run_script(self.root, replace=[(imports, "import no_such_module_for_this_test'")])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('Python is installed, but parts of it do not load', result.stdout)
+                self.assertIn(f'ZYPPER --non-interactive {command} --no-recommends', log)
+                self.assertIn('still do not load after the update', result.stderr)
+                self.assertNotIn('BOOTSTRAP', log)
+
+    def test_leap_15_stops_before_zypper_runs(self):
+        self.use_suse('ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="15.6"\nPRETTY_NAME="openSUSE Leap 15.6"\n')
+        result, log = self.run_script(self.root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('needs openSUSE Leap 16 or newer; this is openSUSE Leap 15.6', result.stderr)
+        self.assertEqual(log, '')
 
     def test_version_9_of_the_rhel_family_stops_before_dnf_runs(self):
         # Its Python is 3.9: NekoServer needs 3.11, which version 10 brings.
@@ -419,11 +462,11 @@ class InstallScriptTests(unittest.TestCase):
         # install.sh picks the package manager and the installer (host.detect) everything
         # after it: a system one accepts and the other refuses would stop setup halfway.
         # Every package manager is present, so only os-release decides.
-        for name in ('apt-get', 'dpkg-query', 'dnf'):
+        for name in ('apt-get', 'dpkg-query', 'dnf', 'zypper'):
             path = self.root / 'bin' / name
             path.write_text('#!/bin/sh\necho "' + name.upper() + ' $*" >> "$LOG"\nexit 0\n')
             path.chmod(0o755)
-        managers = {'arch': 'PACMAN', 'debian': 'APT-GET', 'fedora': 'DNF', 'rhel': 'DNF'}
+        managers = {'arch': 'PACMAN', 'debian': 'APT-GET', 'fedora': 'DNF', 'rhel': 'DNF', 'suse': 'ZYPPER'}
         release = self.root / 'etc/os-release'
         for expected, text in RELEASES:
             with self.subTest(release=text.splitlines()[0]):

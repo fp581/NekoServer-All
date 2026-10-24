@@ -327,10 +327,11 @@ fn record_docker_version(data: &Path) {
 /// The checkpoint with the running Docker version, when it describes this Docker store
 /// and names another version; None: nothing to change (or no checkpoint at all).
 fn current_checkpoint(saved: &Value, version: &str, root: &str) -> Option<Value> {
+    // A package suffix is part of the version (openSUSE's Docker says "29.7.2_ce").
     let plausible = !version.is_empty()
         && version
             .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b".-+~".contains(&c));
+            .all(|c| c.is_ascii_alphanumeric() || b".-+~_".contains(&c));
     if saved["format"] != "neko-host-checkpoint-v1"
         || saved["docker_root"] != root
         || !plausible
@@ -522,6 +523,12 @@ mod tests {
         );
         assert!(current_checkpoint(&saved, "", "/srv/nekoserver/docker-engine").is_none());
         assert!(current_checkpoint(&saved, "30 1", "/srv/nekoserver/docker-engine").is_none());
+        // openSUSE's package suffix is kept as it is.
+        assert_eq!(
+            current_checkpoint(&saved, "29.7.2_ce", "/srv/nekoserver/docker-engine").unwrap()
+                ["docker_version"],
+            "29.7.2_ce"
+        );
     }
     #[test]
     fn a_file_changed_after_listing_is_never_published() {
