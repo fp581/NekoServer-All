@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -34,8 +35,10 @@ COMPOSE_PREFIX = 'neko-'
 DEFAULT_MOUNTS = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media', 'external_backup_mount': '/mnt/nekoserver-photos'}
 # A drive's mount folder from the settings is used only when it is a plain absolute
 # folder of its own; the root and the system's folders are never a drive of NekoServer's.
-PROTECTED = ('/', '/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64', '/opt', '/proc', '/root', '/run', '/sbin',
-             '/sys', '/tmp', '/usr', '/var')
+ROOT_HOME = '/root'
+HOMES = '/home'
+PROTECTED = ('/', '/bin', '/boot', '/dev', '/etc', HOMES, '/lib', '/lib64', '/opt', '/proc', ROOT_HOME, '/run', '/sbin',
+             '/sys', '/usr', '/var', tempfile.gettempdir())
 # NekoServer's own places outside the drives (removed with the server itself).
 SYSTEM_PATHS = ('/etc/nekoserver-dashboard', '/etc/nekoserver-control', '/etc/nekoserver-backups', GATEWAY_SETTINGS,
                 '/etc/nekoserver-os', '/etc/nekoserver-heartbeat', '/etc/nekoserver-notifications',
@@ -112,7 +115,13 @@ class Plan:
         self.groups = {key: self._group(key) for key, *_ in CHOICES}
 
     def at(self, path):
-        return self.root / str(path).lstrip('/')
+        """The place of an absolute path under this plan's root (/ on a real PC, a temporary
+        folder in a test), checked to stay inside that root."""
+        base = os.path.normpath(str(self.root))
+        full = os.path.normpath(os.path.join(base, str(path).lstrip('/')))
+        if full != base and not full.startswith(base.rstrip('/') + '/'):
+            raise RuntimeError('Not a path under ' + base + ': ' + str(path))
+        return Path(full)
 
     @staticmethod
     def _group_exists(name):
@@ -137,7 +146,7 @@ class Plan:
     def shortcuts(self):
         """Desktop entries NekoServer wrote for each person's account."""
         found = []
-        homes = [self.at('/root')] + sorted(self.at('/home').glob('*')) if self.at('/home').is_dir() else [self.at('/root')]
+        homes = [self.at(ROOT_HOME)] + sorted(self.at(HOMES).glob('*')) if self.at(HOMES).is_dir() else [self.at(ROOT_HOME)]
         for home in homes:
             for folder in (home / '.local/share/applications', home / 'Desktop', self.xdg_desktop(home)):
                 try:

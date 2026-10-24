@@ -161,6 +161,12 @@ class PlanTests(unittest.TestCase):
         self.assertTrue(any('Could not look in' in w and 'run with sudo' in w for w in plan.warnings), plan.warnings)
         self.assertIn('!! Could not look in', plan.describe({'server'}))
 
+    def test_every_path_stays_under_the_plans_root(self):
+        self.assertEqual(self.plan.at('/etc/fstab'), self.system.root / 'etc/fstab')
+        self.assertEqual(self.plan.at('/'), Path(os.path.normpath(str(self.system.root))))
+        with self.assertRaises(RuntimeError):
+            self.plan.at('/../outside')
+
     def test_a_pc_without_nekoserver_has_an_honest_plan(self):
         with tempfile.TemporaryDirectory() as empty:
             plan = FakeSystem(empty).plan(group_exists=lambda name: False)
