@@ -333,7 +333,7 @@ const severity = urgent => urgent ? 'critical' : 'warning';
 const ALERT_GUIDES = [
   [id => id.startsWith('integrity:'), 'integrity'],
   [id => /^(mount|space|smart):/.test(id), 'storage'],
-  [id => id.startsWith('job:'), 'backup'],
+  [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
   [id => id.includes('heartbeat'), 'heartbeat'],
   [id => id.includes('notif'), 'notifications'],

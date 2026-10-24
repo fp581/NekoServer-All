@@ -1107,7 +1107,46 @@ class Rhel(Fedora):
         return super().prepare(missing)
 
 
-FAMILIES = (Arch, Debian, Fedora, Rhel)
+class Suse(Fedora):
+    """openSUSE Leap 16 and newer, Tumbleweed and Slowroll: rpm as on Fedora, zypper for
+    the packages, and everything from openSUSE's own repositories (Docker, Compose, Caddy
+    and Tailscale included), as on Arch. SLES names only suse, has other repositories and
+    a subscription: not covered."""
+    name = 'suse'
+    label = 'openSUSE'
+    manager = 'zypper'
+    ids = ('opensuse-leap', 'opensuse-tumbleweed', 'opensuse-slowroll', 'opensuse')
+    like = ('opensuse',)
+    packages = MappingProxyType({
+        'docker': ('docker', 'docker-buildx'),
+        'docker-compose': 'docker-compose',
+        'libva-mesa-driver': 'Mesa-libva',
+    })
+    settings = ('/etc/zypp/zypp.conf', '/etc/zypp/repos.d')
+    repositories = MappingProxyType({})
+    conflicts = ()
+    # zypper waits this long (seconds) for another zypper or YaST to finish, instead of
+    # failing at once ("System management is locked").
+    LOCK_WAIT = '600'
+
+    def _call(self, argv, timeout, **extra):
+        if argv[0] == 'zypper':
+            extra.setdefault('env', {**environment(), 'ZYPP_LOCK_TIMEOUT': self.LOCK_WAIT})
+        return super()._call(argv, timeout, **extra)
+
+    def available(self, wanted):
+        if not self.ready():
+            return False
+        # zypper answers 104 when no package matches.
+        return all(self._call(['zypper', '--non-interactive', '--quiet', 'search', '--match-exact',
+                               '--type', 'package', name], 300).returncode == 0
+                   for name in self.names(wanted))
+
+    def _install(self, names, timeout):
+        return self._call(['zypper', '--non-interactive', 'install', '--no-recommends', *names], timeout + 600)
+
+
+FAMILIES = (Arch, Debian, Fedora, Rhel, Suse)
 
 
 def detect(path=OS_RELEASE):
