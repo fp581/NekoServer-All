@@ -1183,6 +1183,8 @@ class Suse(Fedora):
         'vulkan-radeon': 'libvulkan_radeon', 'lib32-vulkan-radeon': 'libvulkan_radeon-32bit',
         'firefox': 'MozillaFirefox',
         'bluez-utils': 'bluez',
+        # Lighting: openSUSE spells the package with capitals (Tumbleweed has it).
+        'openrgb': 'OpenRGB',
         # Building the runtime: Rust comes as two packages here.
         'rust': ('rust', 'cargo'),
     })
@@ -1201,9 +1203,10 @@ class Suse(Fedora):
     def available(self, wanted):
         if not self.ready():
             return False
-        # zypper answers 104 when no package matches.
+        # zypper answers 104 when no package matches. Its search ignores case unless told
+        # otherwise, and the install does not: "openrgb" would be found and "OpenRGB" installed.
         return all(self.retrying(lambda name=name: self._call(['zypper', '--non-interactive', '--quiet', 'search', '--match-exact',
-                                                               '--type', 'package', name], 300)).returncode == 0
+                                                               '--case-sensitive', '--type', 'package', name], 300)).returncode == 0
                    for name in self.names(wanted))
 
     def _install(self, names, timeout):
