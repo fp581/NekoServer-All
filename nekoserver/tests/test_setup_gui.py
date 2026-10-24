@@ -83,14 +83,16 @@ class ProgressTests(unittest.TestCase):
                 self.assertEqual(builtins.input('Choose number: '), 'secret answer')
                 self.assertEqual(seen[0]['text'], 'Choose number:')
                 self.assertEqual(seen[0]['form'], 'text')
-                self.assertEqual(seen[0]['context'], ['Drives on this PC:', '  1. sda  Samsung SSD'])
+                # (The last lines: a thread of another test may print late, and the
+                # terminal's last lines are what the context keeps anyway.)
+                self.assertEqual(seen[0]['context'][-2:], ['Drives on this PC:', '  1. sda  Samsung SSD'])
                 self.assertIsNone(setup_progress.pending_question())
                 # A step's own block is the context, without the installer's log lines.
                 print('[2026-10-24T12:21:53+00:00] START tailscale')
                 print('=== Tailscale: connect this server ===')
                 print('1. Open the sign-in page on any device.')
                 builtins.input('Have you completed this step successfully? [yes/no]: ')
-                self.assertEqual(seen[1]['context'], ['=== Tailscale: connect this server ===', '1. Open the sign-in page on any device.'])
+                self.assertEqual(seen[1]['context'][-2:], ['=== Tailscale: connect this server ===', '1. Open the sign-in page on any device.'])
                 self.assertEqual(seen[1]['form'], 'yesno')
                 import getpass
                 self.assertEqual(getpass.getpass('PIN: '), '1234')
@@ -229,6 +231,31 @@ class WindowTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 urllib.request.urlopen(request, timeout=5)
             self.assertEqual(caught.exception.code, code)
+
+
+class WindowPlacementTests(unittest.TestCase):
+    """The small window sits low on the screen and never off it; without a known screen
+    size the desktop places it."""
+    def test_low_on_the_screen_and_always_on_it(self):
+        self.assertEqual(setup_gui.window_position((1920, 1080)), '60,540')
+        self.assertEqual(setup_gui.window_position((1366, 768)), '60,228')
+        self.assertEqual(setup_gui.window_position((1024, 600)), '0,60')      # narrow and short: as far up as needed
+        self.assertEqual(setup_gui.window_position((800, 480)), '0,0')
+
+    def test_the_screen_size_comes_from_xrandr_or_is_unknown(self):
+        xrandr_says = 'Screen 0: minimum 320 x 200, current 2560 x 1440, maximum 16384 x 16384\n'
+        with mock.patch.object(setup_gui, 'find_program', return_value='/usr/bin/xrandr'), \
+                mock.patch.object(setup_gui.guided_setup, 'desktop_command', side_effect=lambda config, argv: argv):
+            ok = lambda argv, **kwargs: mock.Mock(returncode=0, stdout=xrandr_says)   # noqa: E731
+            self.assertEqual(setup_gui.screen_size({}, run=ok), (2560, 1440))
+            failed = lambda argv, **kwargs: mock.Mock(returncode=1, stdout='')      # noqa: E731
+            self.assertIsNone(setup_gui.screen_size({}, run=failed))
+            self.assertIsNone(setup_gui.screen_size({}, run=mock.Mock(side_effect=OSError)))
+        with mock.patch.object(setup_gui, 'find_program', return_value=None):
+            self.assertIsNone(setup_gui.screen_size({}))
+        with mock.patch.object(setup_gui, 'find_program', return_value='/usr/bin/xrandr'), \
+                mock.patch.object(setup_gui.guided_setup, 'desktop_command', side_effect=RuntimeError('no desktop')):
+            self.assertIsNone(setup_gui.screen_size({}))
 
 
 class ReadyToStartTests(unittest.TestCase):

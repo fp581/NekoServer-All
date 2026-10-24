@@ -27,38 +27,39 @@ class LanChoiceTests(unittest.TestCase):
     def test_the_choice_is_asked_once_and_saved(self):
         ctx, saved = self.ctx(lan_ip='auto', lan_cidr='auto')
         with mock.patch.object(network_access, 'candidates', return_value=ROWS):
-            self.assertTrue(network_access.choose_lan(ctx, ask=lambda _: '1', interactive=True))
+            self.assertTrue(network_access.choose_lan(ctx, output=lambda *_: None, ask=lambda _: '1', interactive=True))
             self.assertEqual(ctx.config['gateway'], {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'})
             self.assertEqual(saved, [ctx.config['gateway']])
             # The next step (the gateway after Samba, say) uses the answer without asking.
             never = mock.Mock(side_effect=AssertionError('asked twice'))
-            self.assertTrue(network_access.choose_lan(ctx, ask=never, interactive=True))
+            self.assertTrue(network_access.choose_lan(ctx, output=lambda *_: None, ask=never, interactive=True))
 
     def test_an_address_the_router_changed_is_asked_again(self):
         ctx, _ = self.ctx(lan_ip='192.168.1.77', lan_cidr='192.168.1.0/24')
-        with mock.patch.object(network_access, 'candidates', return_value=ROWS), mock.patch('builtins.print') as shown:
-            self.assertTrue(network_access.choose_lan(ctx, ask=lambda _: '1', interactive=True))
+        shown = []
+        with mock.patch.object(network_access, 'candidates', return_value=ROWS):
+            self.assertTrue(network_access.choose_lan(ctx, output=shown.append, ask=lambda _: '1', interactive=True))
         self.assertEqual(ctx.config['gateway']['lan_ip'], '192.168.1.20')
-        self.assertIn('no longer 192.168.1.77', str(shown.call_args_list))
+        self.assertIn('no longer 192.168.1.77', ' '.join(shown))
         # Nobody to choose: a clear message instead of "not on an active physical LAN interface".
         ctx, _ = self.ctx(lan_ip='192.168.1.77', lan_cidr='192.168.1.0/24')
         with mock.patch.object(network_access, 'candidates', return_value=ROWS), \
                 self.assertRaisesRegex(RuntimeError, 'router gave it another one.*in a terminal'):
-            network_access.choose_lan(ctx, interactive=False)
+            network_access.choose_lan(ctx, output=lambda *_: None, interactive=False)
 
     def test_without_anyone_to_choose_nothing_is_guessed(self):
         ctx, saved = self.ctx(lan_ip='auto', lan_cidr='auto')
-        self.assertFalse(network_access.choose_lan(ctx, interactive=False))
+        self.assertFalse(network_access.choose_lan(ctx, output=lambda *_: None, interactive=False))
         self.assertEqual((ctx.config['gateway']['lan_ip'], saved), ('auto', []))
         # A wrong number is asked again (not a failed step); three wrong ones, or
         # Ctrl+D, leave the choice for next time.
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
         answers = iter(['7', 'x', '1'])
         with mock.patch.object(network_access, 'candidates', return_value=ROWS), mock.patch('builtins.print'):
-            self.assertTrue(network_access.choose_lan(ctx, ask=lambda _: next(answers), interactive=True))
+            self.assertTrue(network_access.choose_lan(ctx, output=lambda *_: None, ask=lambda _: next(answers), interactive=True))
         ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
         with mock.patch.object(network_access, 'candidates', return_value=ROWS), mock.patch('builtins.print'):
-            self.assertFalse(network_access.choose_lan(ctx, ask=lambda _: '7', interactive=True))
+            self.assertFalse(network_access.choose_lan(ctx, output=lambda *_: None, ask=lambda _: '7', interactive=True))
         self.assertEqual(ctx.config['gateway']['lan_ip'], 'auto')
 
     def test_samba_chooses_the_lan_itself_instead_of_waiting_for_the_gateway(self):
