@@ -7,6 +7,7 @@ SonarCloud's review of the uninstaller, and what a dry run without sudo turned u
 ### Fixed
 - **A settings file can only name NekoServer's drives.** The uninstaller read the drives' mount folders from `my-config.json` and used them as they were. Now a value is used only when it is a plain absolute folder of its own (`/srv/nekoserver`, `/mnt/...`): the root, a system folder or a path with `..` is refused, named in the plan (`!!`) and the default used instead, and the mount check answers only for those folders. Nothing in a settings file can point the removal anywhere else.
 - **A dry run without sudo** died on `/root`. A folder the account may not read is noted and the dry run says what it leaves out (`sudo bash uninstall.sh --dry-run` shows the whole plan); the "no app containers found" note also names the missing permission.
+- `runtime/build.py` reads the executable from where cargo put it when `CARGO_TARGET_DIR` is set in the environment (a shared build folder), instead of looking in `runtime/target` and failing.
 - Code shape: the plan builder is one function per choice, the removal one per step, the menu's toggle its own function; the unused parameter and name are gone; a repeated path is a constant; the tests use `return_value` and `side_effect` instead of lambdas.
 
 ## v0.39.0 — 2026-10-25
