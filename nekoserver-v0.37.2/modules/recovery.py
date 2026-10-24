@@ -26,6 +26,8 @@ def preserve(data,project,config):
     data=safe_path(data);project=safe_path(project)
     if not os.path.ismount(data):raise RuntimeError('Mounted data SSD required for installer preservation')
     dest=safe_path(data/'installer'/'releases'/('v'+VERSION))
+    if not (project/'runtime/bin/nekoserver-runtime').is_file() or not (project/'runtime/build.json').is_file():
+        raise RuntimeError('The runtime is not built yet (runtime/bin, runtime/build.json): run  sudo bash install.sh, which builds it, then setup again')
     files=bundle_files(project)
     payloads={str(file.relative_to(project)):safe_path(file).read_bytes() for file in files}
     # Inspect all installed files before changing any of them.
