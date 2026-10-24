@@ -7,7 +7,19 @@ Interactive setup now opens Steam, selected Bluetooth settings, display settings
 
 ## Before applying
 
-This module supports native x86_64 Nyarch/Arch installation; on Debian and Ubuntu it is skipped for now. Bazzite requires a future backend. Sign into the existing desktop user, connect the TV, and make sure the desktop works. Configure normal Arch repositories, including multilib for Steam/32-bit packages, and update the system normally. The installer does not edit repositories or refresh package databases separately.
+This module installs Steam from your Linux's own repositories on x86_64 **Arch/Nyarch, Debian, Ubuntu, Fedora and openSUSE Tumbleweed/Slowroll**. Two systems have no Steam package, so the step reports itself unavailable there: **RHEL and its rebuilds** (Rocky, AlmaLinux, CentOS Stream) and **openSUSE Leap 16** (it dropped the 32-bit libraries Steam needs); Flatpak Steam is the way on those, which NekoServer does not set up yet. Bazzite requires a future backend. Sign into the existing desktop user, connect the TV, and make sure the desktop works.
+
+Steam and its 32-bit libraries live in a part of the repositories that is off by default. NekoServer never switches repositories on itself: when the packages are not offered, the step stops with `needs_setup` and the log says what to run, then you run setup again. Per family:
+
+| Family | Switch on first |
+| --- | --- |
+| Arch / Nyarch | `multilib` in `/etc/pacman.conf` (remove the `#` before `[multilib]` and its `Include` line), then `sudo pacman -Syu` |
+| Debian | `sudo dpkg --add-architecture i386`, add `contrib non-free` to every `Components:` line in `/etc/apt/sources.list.d/*.sources` (`debian.sources` on an installed Debian; or to each `deb` line of `/etc/apt/sources.list`), then `sudo apt update` |
+| Ubuntu | `sudo dpkg --add-architecture i386 && sudo add-apt-repository multiverse && sudo apt update` (a desktop install usually has both already) |
+| Fedora | `sudo dnf install fedora-workstation-repositories && sudo dnf config-manager setopt rpmfusion-nonfree-steam.enabled=1` (RPM Fusion's Steam repository, Fedora's own third-party source for it) |
+| openSUSE Tumbleweed / Slowroll | `sudo zypper addrepo -f https://download.opensuse.org/tumbleweed/repo/non-oss/ repo-non-oss` (Slowroll: `.../slowroll/repo/non-oss/`), then `sudo zypper refresh` |
+
+The installer does not refresh package databases separately for this step.
 
 Review `tv` in config.json:
 
@@ -32,9 +44,9 @@ This profile includes storage checks and the persistent recovery bundle. Drive a
 
 ## What is installed
 
-Packages are Steam, steam-devices, Intel Vulkan drivers for both 64-bit and 32-bit clients, Firefox, and optionally BlueZ/tools. Bluetooth is enabled when selected. Steam device rules prepare permissions; pairing or model-specific controller drivers are separate steps.
+Packages are Steam, its device rules (`steam-devices`), the Vulkan driver for your Intel or AMD graphics for both 64-bit and 32-bit clients, a web browser only if the PC has none (Firefox, or Firefox ESR on Debian), and optionally BlueZ. Each family's own names are used (`steam-installer` and `mesa-vulkan-drivers:i386` on Debian and Ubuntu, `mesa-vulkan-drivers.i686` on Fedora, `libvulkan_intel-32bit` and `MozillaFirefox` on openSUSE). Bluetooth is enabled when selected. Steam device rules prepare permissions; pairing or model-specific controller drivers are separate steps. NVIDIA graphics need the maker's driver, installed your Linux's own way; Steam is installed without a Vulkan package then.
 
-The TV step adds two shortcuts of its own, to the app menu (`.local/share/applications`) and, with `desktop_shortcuts`, to the desktop: **Steam Big Picture** (Steam with `-gamepadui`) and **YouTube** in Firefox. The shortcuts for the dashboard, the web browser, Steam in a normal window and each app come from the desktop step, on every Linux (see README.md, "Desktop shortcuts"). GNOME shows desktop icons only with a desktop-icons extension; the app menu always has them.
+The TV step adds two shortcuts of its own, to the app menu (`.local/share/applications`) and, with `desktop_shortcuts`, to the desktop: **Steam Big Picture** (Steam with `-gamepadui`, from `/usr/games` on Debian and Ubuntu) and **YouTube** in the browser the PC has. The shortcuts for the dashboard, the web browser, Steam in a normal window and each app come from the desktop step, on every Linux (see README.md, "Desktop shortcuts"). GNOME shows desktop icons only with a desktop-icons extension; the app menu always has them.
 
 Custom or incompatible files are preserved and block setup with a review message. Matching generated launchers are reused. Nothing starts by itself when you log in: since 0.28.7 the desktop step removes the Steam Big Picture autostart an older version could add (`.config/autostart/nekoserver-steam.desktop`; one you made yourself is kept). Automatic user login is not configured.
 
@@ -56,7 +68,7 @@ The private report is `/srv/nekoserver/reports/tv-setup.json` with default mount
 After completing first-run application web wizards, run the current onboarding command from README.md. To inspect live configuration without changing it:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.36.0/media-health.py --config /srv/nekoserver/installer/releases/v0.36.0/config.json --json-out /srv/nekoserver/reports/media/manual.json
+sudo python3 /srv/nekoserver/installer/releases/v0.36.1/media-health.py --config /srv/nekoserver/installer/releases/v0.36.1/config.json --json-out /srv/nekoserver/reports/media/manual.json
 ```
 
 For hourly monitoring, reapply the `media_monitor` profile from this release. Current checks use existing local application keys for GET requests; missing keys/server linkage stay incomplete. They check configured libraries and existing request-provider connectivity, while authenticated qBittorrent transfers, music playback and a complete request/download/import/playback exercise still need real-server validation. Keep original photos until a full independent Immich restore succeeds.

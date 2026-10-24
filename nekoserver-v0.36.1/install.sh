@@ -8,6 +8,25 @@ apt_lists_busy() {
     held=$'\n'"$(lslocks -n -o PATH 2>/dev/null || true)"$'\n'
     [[ "$held" == *$'\n/var/lib/apt/lists/lock\n'* ]]
 }
+# A package source that did not answer (a mirror hiccup, a download cut off, the network
+# still coming up): the same command is run again a little later, three times in all.
+# Any other failure is reported at once. (host.py does the same for the apps' packages.)
+transient_pattern='failed to fetch|failed retrieving file|failed to download|cannot download|download(ing)? (\(curl\) )?(error|failed)|curl error|could not resolve|temporary failure|name resolution|connection (failed|timed out|refused|reset)|timeout (was reached|exceeded)|timed out|network is unreachable|all mirrors were tried|hash sum mismatch|operation too slow|not found on medium|http (response|error)[: ]+(404|5[0-9][0-9])|service unavailable|bad gateway'
+retrying() {
+    local attempt code output
+    output=$(mktemp)
+    for attempt in 1 2 3; do
+        # (In a || list, so a failure here is judged below instead of ending the script.)
+        { "$@" 2>&1 | tee "$output"; code=${PIPESTATUS[0]}; } || true
+        if (( code == 0 || attempt == 3 )) || ! grep -qiE "$transient_pattern" "$output"; then
+            break
+        fi
+        echo "The package source did not answer; trying again in 20 seconds ($(( attempt + 1 )) of 3)..."
+        sleep 20
+    done
+    rm -f -- "$output"
+    return "$code"
+}
 # Where the system update downloads packages; its disk is checked before updating.
 system_path=/var/cache/pacman
 [[ -d "$system_path" ]] || system_path=/
@@ -194,17 +213,17 @@ if "$apply"; then
                 waited=$(( waited + 5 ))
             done
             echo 'Refreshing the package lists (apt-get update).'
-            apt-get "${apt_wait[@]}" update
+            retrying apt-get "${apt_wait[@]}" update
         elif [[ "$family" == fedora || "$family" == rhel ]]; then
             # Fedora and RHEL: refresh the package lists only, as on Debian; upgrading the
             # rest of the system stays your own routine.
             echo 'Refreshing the package lists (dnf makecache).'
-            dnf -q makecache
+            retrying dnf -q makecache
         elif [[ "$family" == suse ]]; then
             # openSUSE: the same. ZYPP_LOCK_TIMEOUT makes zypper wait for another zypper
             # or YaST (up to 10 minutes) instead of failing at once.
             echo 'Refreshing the package lists (zypper refresh).'
-            ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive --quiet refresh
+            retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive --quiet refresh
         else
             # Arch supports only full upgrades: refresh and upgrade everything first, so the
             # apps and their dependencies install at their current versions and match each
@@ -236,9 +255,9 @@ if "$apply"; then
             echo 'Updating the system first (pacman -Syu). This can take a while.'
             if pacman -Q archlinux-keyring >/dev/null 2>&1; then
                 # Arch's recommended order: a current keyring before the upgrade it signs.
-                pacman -Sy --needed --noconfirm archlinux-keyring
+                retrying pacman -Sy --needed --noconfirm archlinux-keyring
             fi
-            pacman -Syu --noconfirm
+            retrying pacman -Syu --noconfirm
             if [[ ! -d "/usr/lib/modules/$(uname -r)" ]]; then
                 echo
                 echo 'A new Linux kernel was installed by the update.'
@@ -251,21 +270,23 @@ if "$apply"; then
     packages=()
     # Check commands as well as packages: an installed but incomplete package
     # must not be mistaken for a usable prerequisite.
-    # package:commands it provides, in each family's package names.
+    # package:commands it provides, in each family's package names. These are named the
+    # same everywhere; the others differ by family.
+    common_tools=( \
+        'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
+        'tar:tar' 'curl:curl' 'openssl:openssl' 'pciutils:lspci' )
     if [[ "$family" == debian ]]; then
         prerequisites=( \
             'python3:python3' \
             'util-linux:lsblk findmnt blkid flock runuser' 'mount:mount umount' \
-            'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
-            'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
+            "${common_tools[@]}" 'iproute2:ip' )
         certificates=(ca-certificates)
         certificate_bundle=/etc/ssl/certs/ca-certificates.crt
     elif [[ "$family" == fedora || "$family" == rhel ]]; then
         prerequisites=( \
             'python3:python3' \
             'util-linux:lsblk findmnt blkid mount umount flock runuser' \
-            'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
-            'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute:ip' 'pciutils:lspci' )
+            "${common_tools[@]}" 'iproute:ip' )
         certificates=(ca-certificates)
         certificate_bundle=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
     elif [[ "$family" == suse ]]; then
@@ -273,16 +294,14 @@ if "$apply"; then
         prerequisites=( \
             'python3:python3' \
             'util-linux-systemd:lsblk findmnt' 'util-linux:blkid mount umount flock runuser' \
-            'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
-            'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
+            "${common_tools[@]}" 'iproute2:ip' )
         certificates=(ca-certificates ca-certificates-mozilla)
         certificate_bundle=/etc/ssl/ca-bundle.pem
     else
         prerequisites=( \
             'python:python3' \
             'util-linux:lsblk findmnt blkid mount umount flock runuser' \
-            'coreutils:sha256sum du id install stat cp chmod chown df timeout' \
-            'tar:tar' 'curl:curl' 'openssl:openssl' 'iproute2:ip' 'pciutils:lspci' )
+            "${common_tools[@]}" 'iproute2:ip' )
         certificates=(ca-certificates ca-certificates-utils)
         certificate_bundle=/etc/ssl/certs/ca-certificates.crt
     fi
@@ -302,15 +321,15 @@ if "$apply"; then
         printf 'Checking repository availability for missing prerequisites: %s\n' "${packages[*]}"
         # Check the complete set before changing anything.
         if [[ "$family" == debian ]]; then
-            apt-get "${apt_wait[@]}" install -y --no-install-recommends -- "${packages[@]}"
+            retrying apt-get "${apt_wait[@]}" install -y --no-install-recommends -- "${packages[@]}"
         elif [[ "$family" == fedora || "$family" == rhel ]]; then
             # (dnf5 takes no "--" before the names; these are fixed package names.)
-            dnf install -y --setopt=install_weak_deps=False "${packages[@]}"
+            retrying dnf install -y --setopt=install_weak_deps=False "${packages[@]}"
         elif [[ "$family" == suse ]]; then
-            ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive install --no-recommends "${packages[@]}"
+            retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive install --no-recommends "${packages[@]}"
         else
             pacman -Si -- "${packages[@]}" >/dev/null
-            pacman -S --needed --noconfirm -- "${packages[@]}"
+            retrying pacman -S --needed --noconfirm -- "${packages[@]}"
         fi
     fi
     for entry in "${prerequisites[@]}"; do
@@ -337,10 +356,10 @@ if "$apply" && [[ "$family" == suse ]] && ! python3 -c 'import ssl, sqlite3, pye
     echo 'Python is installed, but parts of it do not load with the libraries this system has (it needs updating).'
     if [[ "${ID:-}" == opensuse-leap ]]; then
         echo 'Bringing the installed packages up to date (zypper update). This can take a while.'
-        ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive update --no-recommends
+        retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive update --no-recommends
     else
         echo 'Bringing the system up to date (zypper dist-upgrade). This can take a while.'
-        ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive dist-upgrade --no-recommends
+        retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive dist-upgrade --no-recommends
     fi
     if ! python3 -c 'import ssl, sqlite3, pyexpat, xml.etree.ElementTree, zlib, lzma, bz2, ctypes, hashlib'; then
         echo 'Parts of Python still do not load after the update; the lines above say which. Fix that, then run  sudo bash install.sh  again.' >&2

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -14,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.36.0'
+VERSION = '0.36.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -221,6 +222,21 @@ def safe_path(path):
         if item.is_symlink():
             raise RuntimeError(f'Refusing symlink path: {item}')
     return path
+
+
+# Where Debian and Ubuntu put games (Steam among them), which root's PATH leaves out.
+GAMES_DIRS = ('/usr/games', '/usr/local/games')
+
+
+def find_program(name, which=shutil.which):
+    """The full path of a program on PATH or in the games folders, or None. Its folder is
+    the real one (/usr/bin, not root's /usr/sbin where that is a link to it), so a
+    shortcut names the program as the system does."""
+    found = which(name) or next((found for found in (which(name, path=folder) for folder in GAMES_DIRS) if found), None)
+    if not found:
+        return None
+    found = Path(found)
+    return str(found.parent.resolve() / found.name)
 
 
 def regular_files(root):

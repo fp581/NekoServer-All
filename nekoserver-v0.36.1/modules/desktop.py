@@ -11,7 +11,7 @@ from pathlib import Path
 
 from modules import tv
 from modules.dashboard import LAUNCHER
-from neko_common import APPS, MEDIA_APPS, atomic_write, dashboard_port, safe_path
+from neko_common import APPS, MEDIA_APPS, atomic_write, dashboard_port, find_program, safe_path
 
 DEPENDENCIES = ['dashboard']
 DESCRIPTION = 'Desktop shortcuts for the dashboard, the web browser, Steam and your apps'
@@ -44,8 +44,9 @@ def installed_apps(config):
     return found
 
 
-def shortcuts(config, which=shutil.which, launcher=LAUNCHER):
-    """{file name: contents} of every shortcut this server should have."""
+def shortcuts(config, which=find_program, launcher=LAUNCHER):
+    """{file name: contents} of every shortcut this server should have. (`which` also
+    looks in the games folders, where Debian and Ubuntu keep Steam.)"""
     files = {}
     port = dashboard_port(config)
     if port:

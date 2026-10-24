@@ -13,9 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import guided_setup  # noqa: E402
+import host  # noqa: E402
 import phone_guide  # noqa: E402
 import recovery_wizard  # noqa: E402
 from modules import capacity, gateway_tailnet, tv  # noqa: E402
+from neko_common import find_program  # noqa: E402
 
 
 def answers(*values):
@@ -75,6 +77,74 @@ class TvTests(unittest.TestCase):
                 {'check': 'tv:display_audio_playback', 'status': 'needs_setup'}]}))
             self.assertEqual(tv.previous_checks(folder), {'tv:controller'})
             self.assertEqual(tv.previous_checks(Path(folder) / 'missing'), set())
+
+
+class TvOnEveryFamilyTests(unittest.TestCase):
+    """The TV step on Debian/Ubuntu, Fedora and openSUSE Tumbleweed, not Arch alone:
+    each family's own package names, what to switch on for Steam, and the two systems
+    without a Steam package."""
+    @staticmethod
+    def family(kind, **release):
+        return kind(run=lambda *args, **kwargs: None, release=release)
+
+    def test_where_steam_comes_from_on_each_family(self):
+        self.assertIn('multilib', tv.steam_source(self.family(host.Arch, ID='arch')))
+        self.assertIn('contrib non-free', tv.steam_source(self.family(host.Debian, ID='debian')))
+        ubuntu = tv.steam_source(self.family(host.Debian, ID='ubuntu', ID_LIKE='debian'))
+        self.assertIn('multiverse', ubuntu)
+        self.assertIn('dpkg --add-architecture i386', ubuntu)
+        self.assertIn('rpmfusion-nonfree-steam', tv.steam_source(self.family(host.Fedora, ID='fedora')))
+        self.assertIn('non-oss', tv.steam_source(self.family(host.Suse, ID='opensuse-tumbleweed')))
+
+    def test_systems_without_a_steam_package_are_unavailable_with_the_reason(self):
+        for kind, release in ((host.Arch, {'ID': 'arch'}), (host.Debian, {'ID': 'debian'}), (host.Fedora, {'ID': 'fedora'}),
+                              (host.Suse, {'ID': 'opensuse-tumbleweed'}), (host.Suse, {'ID': 'opensuse-slowroll'})):
+            self.assertIsNone(tv.unavailable_reason(self.family(kind, **release)), release)
+        rhel = tv.unavailable_reason(self.family(host.Rhel, ID='almalinux', ID_LIKE='rhel', VERSION_ID='10.2'))
+        self.assertIn('AlmaLinux', rhel)
+        self.assertIn('Flatpak', rhel)
+        self.assertIn('openSUSE Leap has no Steam package', tv.unavailable_reason(self.family(host.Suse, ID='opensuse-leap', VERSION_ID='16.0')))
+
+    def test_each_family_names_the_tv_packages_its_own_way(self):
+        debian = self.family(host.Debian, ID='debian')
+        self.assertEqual(debian.names('steam'), ['steam-installer'])
+        self.assertEqual(debian.names('lib32-vulkan-intel'), ['mesa-vulkan-drivers:i386'])
+        self.assertEqual(debian.names('firefox'), ['firefox-esr'])
+        self.assertEqual(self.family(host.Debian, ID='ubuntu', ID_LIKE='debian').names('firefox'), ['firefox'])
+        self.assertEqual(self.family(host.Fedora, ID='fedora').names('lib32-vulkan-radeon'), ['mesa-vulkan-drivers.i686'])
+        suse = self.family(host.Suse, ID='opensuse-tumbleweed')
+        self.assertEqual(suse.names('firefox'), ['MozillaFirefox'])
+        self.assertEqual(suse.names('lib32-vulkan-intel'), ['libvulkan_intel-32bit'])
+        for kind, release in ((host.Debian, {'ID': 'debian'}), (host.Fedora, {'ID': 'fedora'}), (host.Suse, {'ID': 'opensuse-tumbleweed'})):
+            self.assertEqual(self.family(kind, **release).names('bluez-utils'), ['bluez'], release)   # bluetoothctl is inside bluez
+        self.assertEqual(self.family(host.Arch, ID='arch').names('bluez-utils'), ['bluez-utils'])
+
+    def test_debian_needs_the_i386_architecture_before_steam_counts_as_offered(self):
+        # apt lists steam-installer without i386, then fails on its 32-bit libraries.
+        def dpkg(architectures):
+            return lambda argv, **kwargs: mock.Mock(returncode=0, stdout=architectures if argv[:2] == ['dpkg', '--print-foreign-architectures'] else '')
+        self.assertFalse(tv.steam_ready(host.Debian(dpkg(''), {'ID': 'ubuntu'}, fetch=lambda url: b'')))
+        self.assertTrue(tv.steam_ready(host.Debian(dpkg('i386\n'), {'ID': 'ubuntu'}, fetch=lambda url: b'')))
+        self.assertTrue(tv.steam_ready(self.family(host.Fedora, ID='fedora')))     # one package for both sides there
+
+    def test_launchers_name_the_programs_where_this_linux_keeps_them(self):
+        files = tv.launchers('/usr/games/steam', '/usr/bin/firefox-esr')   # Debian
+        self.assertIn('Exec=/usr/games/steam -gamepadui\n', files['nekoserver-steam.desktop'])
+        self.assertIn('Exec=/usr/bin/firefox-esr --new-window https://www.youtube.com/\n', files['nekoserver-youtube.desktop'])
+        self.assertIn('Exec=/usr/bin/steam -gamepadui\n', tv.launchers()['nekoserver-steam.desktop'])   # Arch, as before
+
+    def test_steam_is_found_in_the_games_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            games = Path(folder) / 'usr/games'
+            games.mkdir(parents=True)
+            (Path(folder) / 'usr/sbin').symlink_to('bin')      # Fedora: root's PATH says sbin, the real folder is bin
+            (Path(folder) / 'usr/bin').mkdir()
+
+            def which(name, path=None):
+                return {('steam', '/usr/games'): str(games / 'steam'), ('firefox', None): str(Path(folder) / 'usr/sbin/firefox')}.get((name, path))
+            self.assertEqual(find_program('steam', which), str(games / 'steam'))
+            self.assertEqual(find_program('firefox', which), str(Path(folder) / 'usr/bin/firefox'))   # named by its real folder
+            self.assertIsNone(find_program('chromium', which))
 
 
 class TailnetRerunTests(unittest.TestCase):

@@ -231,9 +231,13 @@ class FakeApt:
 
     held = ()
 
+    architectures = ''        # dpkg --print-foreign-architectures
+
     def dpkg_tool(self, argv):
         if argv[1] == '--compare-versions':
             return compare_versions(argv)
+        if argv[1] == '--print-foreign-architectures':
+            return subprocess.CompletedProcess(argv, 0, self.architectures, '')
         if argv[1] == '--audit':
             if self.audit_fails:
                 return subprocess.CompletedProcess(argv, 2, '', 'dpkg: error: dpkg frontend lock is locked')
@@ -990,17 +994,30 @@ class BootstrapTest(unittest.TestCase):
 
 
 class UnavailableTvTest(unittest.TestCase):
-    """On Debian/Ubuntu the TV step is neither done nor waiting: it is unavailable."""
+    """On a Linux without a Steam package (RHEL and its rebuilds, openSUSE Leap) the TV
+    step is neither done nor waiting: it is unavailable, and says why."""
 
     def test_tv_step_reports_unavailable(self):
         from modules import tv
         ctx = mock.Mock(apply=True)
+        rhel = host.Rhel(run=lambda *args, **kwargs: None, release={'ID': 'rocky', 'ID_LIKE': 'rhel', 'VERSION_ID': '10.1'})
         with mock.patch.object(tv.os, 'geteuid', return_value=0), \
                 mock.patch.object(tv.platform, 'machine', return_value='x86_64'), \
-                mock.patch.object(host, 'detect', return_value=host.Debian):
+                mock.patch.object(host, 'supported', return_value=True), \
+                mock.patch.object(host, 'current', return_value=rhel):
             result = tv.run(ctx)
         self.assertEqual(result['status'], 'unavailable')
-        self.assertIn('Arch Linux or Nyarch', result['reason'])
+        self.assertIn('Rocky Linux', result['reason'])
+        self.assertIn('Flatpak', result['reason'])
+        # Debian has a Steam package: the step goes on there (here to the desktop check).
+        debian = host.Debian(run=lambda *args, **kwargs: None, release={'ID': 'debian'}, fetch=lambda url: b'')
+        with mock.patch.object(tv.os, 'geteuid', return_value=0), \
+                mock.patch.object(tv.platform, 'machine', return_value='x86_64'), \
+                mock.patch.object(host, 'supported', return_value=True), \
+                mock.patch.object(host, 'current', return_value=debian), \
+                mock.patch.object(tv.shutil, 'which', side_effect=lambda name: '/usr/sbin/runuser' if name == 'runuser' else None):
+            result = tv.run(ctx)
+        self.assertEqual(result, {'status': 'unavailable', 'reason': tv.NO_DESKTOP})
 
     def test_installer_counts_it_apart(self):
         import argparse
@@ -1492,7 +1509,7 @@ class SuseTest(unittest.TestCase):
                                      'docker', 'docker-buildx', 'docker-compose', 'tailscale', 'caddy', 'samba']])
         self.assertEqual(list((self.root / 'etc/zypp/repos.d').iterdir()), [])   # no maker's repository written
         # New services stay off, as on Fedora.
-        self.assertTrue({'smb.service', 'caddy.service', 'docker.service'} <= zypper.masked_during_install)
+        self.assertLessEqual({'smb.service', 'caddy.service', 'docker.service'}, zypper.masked_during_install)
         self.assertEqual(zypper.enabled(), [])
         self.assertEqual(zypper.masked, set())
 
@@ -1507,9 +1524,114 @@ class SuseTest(unittest.TestCase):
             self.assertEqual(env.get('LC_ALL'), 'C')
 
     def test_a_failed_install_names_the_packages(self):
-        zypper = FakeZypper(offered={'samba', 'caddy'}, fail_after=1)
+        family = self.family(FakeZypper(offered={'samba', 'caddy'}, fail_after=1))
         with self.assertRaisesRegex(RuntimeError, 'Installing samba, caddy failed: Problem: nothing provides'):
-            self.family(zypper).install(['samba', 'caddy'])
+            family.install(['samba', 'caddy'])
+
+
+class Flaky:
+    """A package manager whose first answers fail with a given message (a mirror that
+    did not answer, say), then behaves like the real fake."""
+    def __init__(self, inner, failures, message, when=lambda argv: True):
+        self.inner, self.failures, self.message, self.when = inner, failures, message, when
+        self.failed = 0
+
+    def __call__(self, argv, **kwargs):
+        if self.failed < self.failures and self.when(argv):
+            self.failed += 1
+            return subprocess.CompletedProcess(argv, 1, '', self.message)
+        return self.inner(argv, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+class RetryTest(unittest.TestCase):
+    """A package source that did not answer is asked again a little later; any other
+    failure is reported at once."""
+    def setUp(self):
+        patcher = mock.patch('host.shutil.which', return_value='/usr/bin/pacman')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for path in ('var/lib/pacman', 'usr/sbin', 'etc/apt/sources.list.d', 'etc/samba', 'var/lib/ucf'):
+            (Path(self.tmp.name) / path).mkdir(parents=True)
+        root = mock.patch.object(host.Arch, 'root', Path(self.tmp.name))
+        root.start()
+        self.addCleanup(root.stop)
+        self.slept, self.said = [], []
+
+    def debian(self, apt):
+        family = host.Debian(apt, {'ID': 'debian', 'VERSION_CODENAME': 'trixie'}, fetch=lambda url: b'')
+        family.root = Path(self.tmp.name)
+        family.sleep = self.slept.append
+        family.say = self.said.append
+        return family
+
+    def family(self, run):
+        family = host.Arch(run)
+        family.sleep = self.slept.append
+        family.say = self.said.append
+        return family
+
+    def test_a_mirror_that_did_not_answer_is_tried_again(self):
+        pacman = Flaky(FakePacman(offered={'caddy'}), 1,
+                       "error: failed retrieving file 'extra.db' from mirror.example : Connection timed out\nerror: failed to synchronize all databases",
+                       when=lambda argv: argv[1] == '-S')
+        family = self.family(pacman)
+        self.assertEqual(family.install(['caddy']), ['caddy'])
+        self.assertEqual(self.slept, [host.RETRY_PAUSE])
+        self.assertEqual(len(self.said), 1)
+        self.assertIn('did not answer', self.said[0])
+        self.assertIn('2 of 3', self.said[0])
+        self.assertEqual(len([argv for argv in pacman.calls if argv[1] == '-S']), 1)   # the second attempt reached pacman
+
+    def test_any_other_failure_is_reported_at_once(self):
+        pacman = Flaky(FakePacman(offered={'caddy'}), 5, 'error: target not found: caddy', when=lambda argv: argv[1] == '-S')
+        with self.assertRaisesRegex(RuntimeError, 'Installing caddy failed: error: target not found: caddy'):
+            self.family(pacman).install(['caddy'])
+        self.assertEqual(self.slept, [])
+        self.assertEqual(self.said, [])
+
+    def test_a_source_that_never_answers_gives_up_after_three_attempts(self):
+        pacman = Flaky(FakePacman(offered={'caddy'}), 5, 'error: failed to download: Could not resolve host: mirror.example',
+                       when=lambda argv: argv[1] == '-S')
+        with self.assertRaisesRegex(RuntimeError, 'Installing caddy failed: .*Could not resolve host'):
+            self.family(pacman).install(['caddy'])
+        self.assertEqual(self.slept, [host.RETRY_PAUSE, host.RETRY_PAUSE])
+        self.assertEqual(pacman.failed, host.RETRIES)
+
+    def test_what_counts_as_a_source_not_answering(self):
+        for text in ('E: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  Temporary failure resolving',
+                     'Errors during downloading metadata for repository \'updates\':\n  - Curl error (28): Timeout was reached',
+                     "Download (curl) error for 'http://download.opensuse.org/x.rpm':\nError code: HTTP response: 404",
+                     'error: failed retrieving file \'core.db\' from mirror : Operation too slow',
+                     'E: Failed to fetch http://x  Hash Sum mismatch'):
+            self.assertTrue(host.transient(subprocess.CompletedProcess([], 1, '', text)), text)
+        for text in ('error: target not found: caddy', 'E: Unable to locate package caddy',
+                     'Problem: nothing provides libfoo needed by caddy', 'E: Sub-process /usr/bin/dpkg returned an error code (1)'):
+            self.assertFalse(host.transient(subprocess.CompletedProcess([], 1, '', text)), text)
+        self.assertFalse(host.transient(subprocess.CompletedProcess([], 0, 'Connection timed out but retried fine', '')))
+
+    def test_the_apt_refresh_is_tried_again_too(self):
+        apt = Flaky(FakeApt(offered={'samba'}, root=Path(self.tmp.name)), 1,
+                    'E: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  Could not resolve',
+                    when=lambda argv: argv[-1] == 'update')
+        family = self.debian(apt)
+        with mock.patch('host.shutil.which', return_value='/usr/bin/apt-get'):
+            self.assertTrue(family.available('samba'))
+        self.assertEqual(self.slept, [host.RETRY_PAUSE])
+        self.assertEqual(apt.calls.count(['apt-get', 'update']), 1)
+
+    def test_two_names_for_one_package_are_installed_once(self):
+        apt = FakeApt(offered={'mesa-vulkan-drivers', 'bluez'}, root=Path(self.tmp.name))
+        family = self.debian(apt)
+        with mock.patch('host.shutil.which', return_value='/usr/bin/apt-get'):
+            # Intel and AMD graphics both: Mesa's one Vulkan package; bluez twice over.
+            family.install(['vulkan-intel', 'vulkan-radeon', 'bluez', 'bluez-utils'])
+        installs = [argv for argv in apt.calls if argv[:2] == ['apt-get', 'install']]
+        self.assertEqual(installs[0][5:], ['mesa-vulkan-drivers', 'bluez'])
 
 
 if __name__ == '__main__':
