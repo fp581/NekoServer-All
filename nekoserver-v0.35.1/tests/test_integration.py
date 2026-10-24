@@ -354,7 +354,7 @@ class InstallScriptTests(unittest.TestCase):
 
     def use_suse(self, release='ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="16.0"\n'):
         (self.root / 'etc/os-release').write_text(release)
-        (self.root / 'bin/pacman').unlink()
+        (self.root / 'bin/pacman').unlink(missing_ok=True)     # called once per release in a loop
         path = self.root / 'bin/zypper'
         path.write_text('#!/bin/sh\necho "ZYPPER $*" >> "$LOG"\nexit 0\n')
         path.chmod(0o755)
@@ -369,6 +369,21 @@ class InstallScriptTests(unittest.TestCase):
         self.assertLess(log.index('ZYPPER --non-interactive --quiet refresh'), log.index('BOOTSTRAP'))
         # zypper fails at once when another zypper runs, unless told how long to wait.
         self.assertIn('ZYPP_LOCK_TIMEOUT=600 zypper', (ROOT / 'install.sh').read_text())
+
+    def test_suse_updates_the_system_when_pythons_own_modules_do_not_load(self):
+        # Seen on Leap 16: a fresh Python met a libexpat too old for it (openSUSE's
+        # packages name the library, not its version), so xml.etree did not load.
+        imports = "import ssl, sqlite3, pyexpat, xml.etree.ElementTree, zlib, lzma, bz2, ctypes, hashlib'"
+        for release, command in (('ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="16.0"\n', 'update'),
+                                 ('ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\nVERSION_ID="20261020"\n', 'dist-upgrade')):
+            with self.subTest(command=command):
+                self.use_suse(release)
+                result, log = self.run_script(self.root, replace=[(imports, "import no_such_module_for_this_test'")])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('Python is installed, but parts of it do not load', result.stdout)
+                self.assertIn(f'ZYPPER --non-interactive {command} --no-recommends', log)
+                self.assertIn('still do not load after the update', result.stderr)
+                self.assertNotIn('BOOTSTRAP', log)
 
     def test_leap_15_stops_before_zypper_runs(self):
         self.use_suse('ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="15.6"\nPRETTY_NAME="openSUSE Leap 15.6"\n')

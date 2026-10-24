@@ -327,6 +327,26 @@ if ! command -v python3 >/dev/null; then
     echo 'Read-only check/dry-run modes never install packages.' >&2
     exit 1
 fi
+if "$apply" && [[ "$family" == suse ]] && ! python3 -c 'import ssl, sqlite3, pyexpat, xml.etree.ElementTree, zlib, lzma, bz2, ctypes, hashlib' >/dev/null 2>&1; then
+    # openSUSE's Python packages name only the libraries' names, not their versions: on
+    # a system not updated for a while, a freshly installed Python can meet libraries
+    # too old for it (pyexpat, which the XML parser loads only when it first parses: "undefined symbol" in an old libexpat) and parts of it do not
+    # load. Bringing the installed packages up to date within the release fixes that
+    # (Tumbleweed and Slowroll are rolling and are brought up to date as a whole, as
+    # Arch is).
+    echo 'Python is installed, but parts of it do not load with the libraries this system has (it needs updating).'
+    if [[ "${ID:-}" == opensuse-leap ]]; then
+        echo 'Bringing the installed packages up to date (zypper update). This can take a while.'
+        ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive update --no-recommends
+    else
+        echo 'Bringing the system up to date (zypper dist-upgrade). This can take a while.'
+        ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive dist-upgrade --no-recommends
+    fi
+    if ! python3 -c 'import ssl, sqlite3, pyexpat, xml.etree.ElementTree, zlib, lzma, bz2, ctypes, hashlib'; then
+        echo 'Parts of Python still do not load after the update; the lines above say which. Fix that, then run  sudo bash install.sh  again.' >&2
+        exit 1
+    fi
+fi
 if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
     echo "NekoServer needs Python 3.11 or newer; this system has $(python3 -c 'import platform; print(platform.python_version())')." >&2
     echo 'It comes with Arch, Debian 12, Ubuntu 24.04, Fedora 42, RHEL 10 and openSUSE Leap 16 or newer (and Tumbleweed). A system based on an older release' >&2
