@@ -1165,12 +1165,14 @@ class ReleaseIdentityTests(unittest.TestCase):
     def test_every_part_of_the_release_names_the_same_version(self):
         """Releases are installed into immutable per-version folders (installer/releases/vX,
         /usr/local/lib/nekoserver-*/vX). Two different releases with the same version
-        collide there and the upgrade is refused, so every place that names it must agree."""
+        collide there and the upgrade is refused, so every place that names it must agree.
+        (The source folder itself is simply `nekoserver` since 0.38.0: git pull updates it
+        in place, and the version lives in neko_common.VERSION.)"""
         import re
         from neko_common import VERSION
         project = Path(installer.__file__).parent
         repo = project.parent
-        self.assertEqual(project.name, 'nekoserver-v' + VERSION)
+        self.assertEqual(project.name, 'nekoserver')
         cargo = (project / 'runtime/Cargo.toml').read_text()
         self.assertEqual(re.search(r'^version = "([^"]+)"', cargo, re.M)[1], VERSION)
         lock = (project / 'runtime/Cargo.lock').read_text()
@@ -1179,7 +1181,7 @@ class ReleaseIdentityTests(unittest.TestCase):
         self.assertTrue((project / 'README.md').read_text().startswith(f'# NekoServer v{VERSION}\n'))
         ci = repo / '.github/workflows/ci.yml'
         if ci.is_file():  # not shipped inside a release folder copied on its own
-            self.assertIn(f'RELEASE_DIR: nekoserver-v{VERSION}', ci.read_text())
+            self.assertIn('RELEASE_DIR: nekoserver\n', ci.read_text())
         for doc in project.glob('*.md'):
             for found in re.findall(r'(?:releases|nekoserver-[a-z]+)/v(\d+\.\d+\.\d+)', doc.read_text()):
                 self.assertEqual(found, VERSION, doc.name)

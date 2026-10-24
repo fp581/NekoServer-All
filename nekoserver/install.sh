@@ -255,9 +255,9 @@ if "$apply"; then
             echo 'Updating the system first (pacman -Syu). This can take a while.'
             if pacman -Q archlinux-keyring >/dev/null 2>&1; then
                 # Arch's recommended order: a current keyring before the upgrade it signs.
-                retrying pacman -Sy --needed --noconfirm archlinux-keyring
+                retrying pacman -Sy --needed --noconfirm --noprogressbar archlinux-keyring
             fi
-            retrying pacman -Syu --noconfirm
+            retrying pacman -Syu --noconfirm --noprogressbar
             if [[ ! -d "/usr/lib/modules/$(uname -r)" ]]; then
                 echo
                 echo 'A new Linux kernel was installed by the update.'
@@ -329,7 +329,7 @@ if "$apply"; then
             retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive install --no-recommends "${packages[@]}"
         else
             pacman -Si -- "${packages[@]}" >/dev/null
-            retrying pacman -S --needed --noconfirm -- "${packages[@]}"
+            retrying pacman -S --needed --noconfirm --noprogressbar -- "${packages[@]}"
         fi
     fi
     for entry in "${prerequisites[@]}"; do
@@ -390,6 +390,11 @@ if "$apply" && python3 "$ROOT/native_runtime.py" needs-build; then
         builder=$SUDO_USER
     fi
     if [[ -n "$builder" ]]; then
+        # What an earlier build left as root (a build.py run with sudo, say) would stop
+        # the person's own build: handed to them first.
+        for left in "$ROOT/runtime/target" "$ROOT/runtime/bin" "$ROOT/runtime/build.json"; do
+            [[ -e "$left" && "$(stat -c %U "$left")" != "$builder" ]] && chown -R "$builder" "$left"
+        done
         runuser -u "$builder" -- env HOME="$(getent passwd "$builder" | cut -d: -f6)" python3 "$ROOT/runtime/build.py"
     else
         NEKOSERVER_BUILD_AS_ROOT=1 python3 "$ROOT/runtime/build.py"

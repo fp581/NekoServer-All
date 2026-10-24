@@ -47,7 +47,7 @@ def category_ok(category, path, desired='/data/downloads'):
         return path in ('', desired + '/music')
     return path in ('', desired, desired + '/' + category)
 
-def configure(username,password,apply=False,categories=('tv','movies','music'),client=None):
+def configure(username,password,apply=False,categories=('tv','movies','music'),client=None,output=print):
     client=client or Client()
     try:
         client.login(username,password)
@@ -81,7 +81,7 @@ def configure(username,password,apply=False,categories=('tv','movies','music'),c
                 fix[category]=desired+'/'+category;continue
             raise RuntimeError(f'qBittorrent category {category} saves to {path or "the default folder"}, not {desired}/{category}; '
                                'change it in qBittorrent (right-click the category, Edit) and run setup again')
-        print('qBittorrent: login verified; download paths/categories', 'APPLY' if apply else 'PREVIEW')
+        output('qBittorrent: login verified; download paths/categories '+('APPLY' if apply else 'PREVIEW'))
         if apply:
             if changes:client.call('/app/setPreferences',{'json':json.dumps(changes)})
             for category in categories:
