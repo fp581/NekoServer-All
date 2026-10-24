@@ -54,6 +54,7 @@ class FakeSystem:
         w('/etc/modules-load.d/nekoserver-i2c.conf', '# Managed by NekoServer\ni2c-dev\n')
         w('/etc/samba/nekoserver.conf', '# Managed by NekoServer\n[Media]\n   path = /mnt/nekoserver-media/library\n   valid users = neko\n')
         w('/etc/samba/smb.conf', uninstaller.OWN_SMB_CONF)
+        w('/etc/samba/smb.conf.packaged', '# Sample configuration file for the Samba suite for Debian GNU/Linux.\n[global]\n')
         w('/etc/docker/daemon.json', json.dumps({'data-root': '/srv/nekoserver/docker-engine', 'log-driver': 'json-file'}))
         w('/etc/fstab', '# static\nUUID=cccc-3333 / ext4 defaults 0 1\nUUID=aaaa-1111 /srv/nekoserver ext4 defaults,nofail 0 2\n'
                         'UUID=bbbb-2222 /mnt/nekoserver-media ext4 defaults,nofail 0 2\nUUID=dddd-4444 /mnt/nekoserver-photos ext4 defaults,nofail 0 2\n')
@@ -114,6 +115,7 @@ class PlanTests(unittest.TestCase):
         self.assertIn('4 services and timers', notes)
         self.assertIn('with the account neko', notes)
         self.assertIn('smb.conf (only the include NekoServer wrote) goes too', notes)
+        self.assertIn("the package's example smb.conf, set aside by setup, comes back", notes)
         self.assertIn('tailscale serve reset', notes)
         self.assertIn('nekoserver-control group goes', notes)
 
@@ -242,8 +244,10 @@ class RemoveTests(unittest.TestCase):
         self.remove({'server'})
         for gone in ('/etc/systemd/system/nekoserver-dashboard.service', '/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf',
                      '/usr/local/lib/nekoserver-dashboard', '/etc/nekoserver-gateway', '/home/neko/Desktop/nekoserver-steam.desktop',
-                     '/etc/samba/nekoserver.conf', '/etc/samba/smb.conf', '/var/lib/nekoserver-openrgb', '/run/nekoserver-control'):
+                     '/etc/samba/nekoserver.conf', '/etc/samba/smb.conf.packaged', '/var/lib/nekoserver-openrgb', '/run/nekoserver-control'):
             self.assertFalse(self.exists(gone), gone)
+        # The package's example smb.conf, which setup had set aside, is smb.conf again.
+        self.assertTrue((self.system.root / 'etc/samba/smb.conf').read_text().startswith('# Sample configuration file'))
         for kept in ('/etc/systemd/system/other.service', '/home/neko/Desktop/nekoserver-mine.desktop', '/srv/nekoserver/appdata/jellyfin/config.xml',
                      '/srv/nekoserver/photos/immich-library/upload/a.jpg', '/mnt/nekoserver-media/library/movies/film.mkv',
                      '/mnt/nekoserver-photos/photos/2026/a.jpg', '/etc/fstab', '/etc/docker/daemon.json'):
