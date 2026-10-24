@@ -14,6 +14,7 @@ def bundle_files(project):
     for directory,pattern in [('modules','*.py'),('compose','*.yaml')]:files.extend((project/directory).glob(pattern))
     # The whole dashboard folder: its page, icons and app manifest are all installed.
     files.extend(p for p in (project/'dashboard').iterdir() if p.is_file())
+    files.extend(p for p in (project/'setup-gui').iterdir() if p.is_file())   # the setup window's page
     files.extend([project/'runtime/build.py',project/'runtime/Cargo.toml',project/'runtime/Cargo.lock',project/'runtime/build.json',project/'runtime/bin/nekoserver-runtime'])
     files.extend((project/'runtime/src').glob('*.rs'))
     files.append(project/'runtime/THIRD-PARTY-NOTICES.md')

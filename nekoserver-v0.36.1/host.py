@@ -25,6 +25,7 @@ import urllib.request
 from pathlib import Path
 from types import MappingProxyType
 
+import setup_progress
 from neko_common import atomic_write
 
 OS_RELEASE = '/etc/os-release'
@@ -294,6 +295,7 @@ class Family:
         # or upgraded (that would restart a Docker someone already runs, for example).
         # (Two of NekoServer's names can be one package here: listed once.)
         names = list(dict.fromkeys(real for name in missing for real in self.names(name) if not self.has(real)))
+        setup_progress.packages(missing, names)   # the setup window says what each is for
         try:
             self.protect(before)
             result = self.retrying(lambda: self._install(names, timeout))

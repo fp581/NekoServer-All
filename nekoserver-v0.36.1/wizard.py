@@ -5,13 +5,18 @@ installation (with every guided pause, including Tailscale and the phone), then
 shows a finishing screen. Running it again continues where it stopped.
 """
 import argparse
+import builtins
 import json
 import os
 from pathlib import Path
 import pwd
 import re
+import select
+import sys
 
 import guided_setup
+import setup_gui
+import setup_progress
 from neko_common import VERSION, atomic_json, dashboard_port, mount_path, safe_path, settings_path
 
 ROOT = Path(__file__).resolve().parent
@@ -130,6 +135,56 @@ def take_earlier_settings(root=ROOT, account=None, prompt=input, output=print):
 def ask(question, prompt=input, output=print):
     """yes -> True; no, Ctrl+D or Ctrl+C -> False."""
     return bool(guided_setup.yes_no(question, prompt, output))
+
+
+def setup_window(path, output):
+    """The setup window beside the terminal (see setup_gui), or None when it cannot be
+    served; when it cannot be opened on a desktop, its address is printed instead."""
+    config = read_json(path)
+    if not config:
+        return None
+    try:
+        window = setup_gui.Window(path, config, STEPS, config.get('profiles', {}).get('full', []))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if setup_gui.open_window(config, window.url):
+        output('\nA setup window opened in your browser: it explains each step as it happens. Put it where you like.')
+    else:
+        output('\nTo follow along in a window, open  ' + window.url + '  in a browser on this PC.')
+    return window
+
+
+def wait_to_start(prompt, output, window, stdin=None):
+    """"Ready to start?": yes in the terminal, or Start pressed in the setup window."""
+    if window is None or prompt is not builtins.input:
+        return ask('\nReady to start?', prompt, output)
+    stdin = sys.stdin if stdin is None else stdin
+    sys.stdout.write('\nReady to start? [yes/no] (or press Start in the setup window): ')
+    sys.stdout.flush()
+    while True:
+        if window.started.is_set():
+            output('yes (Start pressed in the setup window)')
+            return True
+        try:
+            readable, _, _ = select.select([stdin], [], [], 0.5)
+        except KeyboardInterrupt:
+            output('')
+            return False
+        except (OSError, ValueError):
+            return ask('\nReady to start?', prompt, output)
+        if not readable:
+            continue
+        line = stdin.readline()
+        if not line:
+            output('')
+            return False
+        answer = line.strip().lower()
+        if answer in ('yes', 'y'):
+            return True
+        if answer in ('no', 'n'):
+            return False
+        sys.stdout.write('Please type yes or no.\nReady to start? [yes/no]: ')
+        sys.stdout.flush()
 
 
 def checked_path(value):
@@ -281,27 +336,44 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
         output(line)
     output('\nYour settings are in ' + str(path) +
            (' (just created for you; you do not need to edit it).' if created else '.'))
-    if not ask('\nReady to start?', prompt, output):
-        output('No apps were set up. (The system update and the packages NekoServer needs are '
-               'already installed; that is all.) Run  sudo bash install.sh  when you are ready.')
-        return 0
-    default_state = checked_path(default_state)
-    args = argparse.Namespace(all=False, profile='full', module=None, retry_failed=False,
-                              apply=True, check=False, dry_run=False, config=str(path),
-                              state_dir=str(default_state))
-    code = execute(args)
-    config = read_json(path)
-    states = read_json(state_file(config, default_state))
-    checkup = None
-    if code == 0 and config:
-        # Every step finished: back up and check now rather than waiting for the night.
-        import first_checkup
-        checkup = first_checkup.run(config, output)
+    setup_progress.enable()
+    window = setup_window(path, output) if prompt is builtins.input else None
     try:
-        import phone_guide
-        page = phone_guide.PAGE
-    except ImportError:
-        page = None
-    complete = finishing_screen(config, states, page, output, checkup)
-    return 0 if complete and code == 0 else 1
+        if not wait_to_start(prompt, output, window):
+            output('No apps were set up. (The system update and the packages NekoServer needs are '
+                   'already installed; that is all.) Run  sudo bash install.sh  when you are ready.')
+            return 0
+        default_state = checked_path(default_state)
+        args = argparse.Namespace(all=False, profile='full', module=None, retry_failed=False,
+                                  apply=True, check=False, dry_run=False, config=str(path),
+                                  state_dir=str(default_state))
+        with setup_progress.watching_prompts():
+            code = execute(args)
+        config = read_json(path)
+        states = read_json(state_file(config, default_state))
+        checkup = None
+        if code == 0 and config:
+            # Every step finished: back up and check now rather than waiting for the night.
+            import first_checkup
+            checkup = first_checkup.run(config, output)
+        try:
+            import phone_guide
+            page = phone_guide.PAGE
+        except ImportError:
+            page = None
+        lines = []
+
+        def shown(line=''):
+            lines.append(str(line))
+            output(line)
+        complete = finishing_screen(config, states, page, shown, checkup)
+        if window is not None:
+            # The window shows the same summary; give it a moment to fetch it.
+            setup_progress.event('finished', lines=lines, complete=complete)
+            window.delivered.wait(3)
+        return 0 if complete and code == 0 else 1
+    finally:
+        if window is not None:
+            window.stop()
+        setup_progress.disable()
 
