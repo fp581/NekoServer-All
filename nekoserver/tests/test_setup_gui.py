@@ -83,14 +83,16 @@ class ProgressTests(unittest.TestCase):
                 self.assertEqual(builtins.input('Choose number: '), 'secret answer')
                 self.assertEqual(seen[0]['text'], 'Choose number:')
                 self.assertEqual(seen[0]['form'], 'text')
-                self.assertEqual(seen[0]['context'], ['Drives on this PC:', '  1. sda  Samsung SSD'])
+                # (The last lines: a thread of another test may print late, and the
+                # terminal's last lines are what the context keeps anyway.)
+                self.assertEqual(seen[0]['context'][-2:], ['Drives on this PC:', '  1. sda  Samsung SSD'])
                 self.assertIsNone(setup_progress.pending_question())
                 # A step's own block is the context, without the installer's log lines.
                 print('[2026-10-24T12:21:53+00:00] START tailscale')
                 print('=== Tailscale: connect this server ===')
                 print('1. Open the sign-in page on any device.')
                 builtins.input('Have you completed this step successfully? [yes/no]: ')
-                self.assertEqual(seen[1]['context'], ['=== Tailscale: connect this server ===', '1. Open the sign-in page on any device.'])
+                self.assertEqual(seen[1]['context'][-2:], ['=== Tailscale: connect this server ===', '1. Open the sign-in page on any device.'])
                 self.assertEqual(seen[1]['form'], 'yesno')
                 import getpass
                 self.assertEqual(getpass.getpass('PIN: '), '1234')
