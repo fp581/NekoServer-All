@@ -1,4 +1,5 @@
-"""Nyarch/Arch TV desktop setup, installed for a real non-root desktop user."""
+"""TV desktop setup (Steam Big Picture, a browser, Bluetooth), installed for a real
+non-root desktop user, with the packages each Linux family has for it."""
 import guided_setup
 import hashlib
 import os
@@ -8,11 +9,11 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from neko_common import safe_path, atomic_write, atomic_json
+from neko_common import safe_path, atomic_write, atomic_json, find_program
 import host
 
 DEPENDENCIES=['system','recovery']
-DESCRIPTION='Install native Steam, graphics/controller support and TV launch shortcuts on Nyarch/Arch'
+DESCRIPTION='Install Steam, graphics/controller support and TV launch shortcuts'
 SCHEMA='org.gnome.settings-daemon.plugins.power'
 POWER_KEY='sleep-inactive-ac-type'
 REPORT='reports/tv-setup.json'
@@ -67,11 +68,18 @@ def desktop_entry(name,exec_line,icon):
     return f'[Desktop Entry]\nType=Application\nName=NekoServer {name}\nExec={exec_line}\nIcon={icon}\nTerminal=false\nCategories=AudioVideo;Game;\nX-NekoServer-Managed=true\n'
 
 
-def launchers():
-    """The TV's own shortcuts. The dashboard, browser, Steam and app shortcuts come from
-    the desktop step (modules/desktop.py), on every Linux."""
-    return {'nekoserver-steam.desktop':desktop_entry('Steam Big Picture','/usr/bin/steam -gamepadui','steam'),
-            'nekoserver-youtube.desktop':desktop_entry('YouTube','/usr/bin/firefox --new-window https://www.youtube.com/','web-browser')}
+def launchers(steam='/usr/bin/steam',browser='/usr/bin/firefox'):
+    """The TV's own shortcuts, with the programs where this Linux keeps them. The
+    dashboard, browser, Steam and app shortcuts come from the desktop step
+    (modules/desktop.py), on every Linux."""
+    return {'nekoserver-steam.desktop':desktop_entry('Steam Big Picture',steam+' -gamepadui','steam'),
+            'nekoserver-youtube.desktop':desktop_entry('YouTube',browser+' --new-window https://www.youtube.com/','web-browser')}
+
+
+def browser():
+    """The web browser already on this PC (the desktop step's list), or None."""
+    from modules.desktop import BROWSERS
+    return next((found for found in (find_program(name) for name in BROWSERS) if found),None)
 
 
 def user_command(user,home,argv):
@@ -132,24 +140,54 @@ def keep_awake(user,home,log):
     return result
 
 
-UNAVAILABLE_REASON='TV setup needs Arch Linux or Nyarch for now (Steam is packaged differently on other systems)'
+NO_STEAM_PACKAGE='no Steam package; Flatpak Steam is the way there, which NekoServer does not set up yet'
 NO_DESKTOP='No desktop on this PC (a server install); the apps work on your other devices'
 # A display server or a desktop session: without one of these nobody sees a desktop here.
 DESKTOP_PROGRAMS=('Xorg','Xwayland','gnome-shell','startplasma-wayland','startplasma-x11','xfce4-session','cinnamon-session','mate-session','lxqt-session')
+# What each Linux family needs switched on before its repositories offer Steam (and the
+# 32-bit libraries Steam needs). NekoServer never changes these itself: they are the
+# owner's choice, and setup says exactly what to run.
+STEAM_SOURCES={
+    'arch':'enable the multilib repository: in /etc/pacman.conf remove the # before [multilib] and its Include line, then run  sudo pacman -Syu',
+    'debian':"allow 32-bit packages and Debian's contrib and non-free sections:  sudo dpkg --add-architecture i386, add  contrib non-free  to every Components: line in /etc/apt/sources.list.d/*.sources (or to each deb line of /etc/apt/sources.list), then  sudo apt update",
+    'ubuntu':"allow 32-bit packages (and Ubuntu's multiverse section):  sudo dpkg --add-architecture i386 && sudo add-apt-repository multiverse && sudo apt update",
+    'fedora':"enable RPM Fusion's Steam repository, Fedora's third-party source for it:  sudo dnf install fedora-workstation-repositories && sudo dnf config-manager setopt rpmfusion-nonfree-steam.enabled=1",
+    'suse':"add openSUSE's non-OSS repository:  sudo zypper addrepo -f https://download.opensuse.org/tumbleweed/repo/non-oss/ repo-non-oss  (Slowroll: https://download.opensuse.org/slowroll/repo/non-oss/), then  sudo zypper refresh",
+}
 
 def has_desktop(which=shutil.which):
     return any(which(name) for name in DESKTOP_PROGRAMS)
 
+def unavailable_reason(family):
+    """Why this Linux can't have Steam from its repositories (None when it can): RHEL
+    and its rebuilds don't package it, and openSUSE Leap 16 dropped it with the 32-bit
+    libraries it needs (Tumbleweed and Slowroll have it, in non-OSS)."""
+    if family.name=='rhel':return 'RHEL, Rocky Linux, AlmaLinux and CentOS Stream have '+NO_STEAM_PACKAGE
+    if family.name=='suse' and family.release.get('ID')=='opensuse-leap':return 'openSUSE Leap has '+NO_STEAM_PACKAGE
+    return None
+
+def steam_source(family):
+    """What to switch on before this family's repositories offer Steam."""
+    if family.name=='debian' and family.ubuntu():return STEAM_SOURCES['ubuntu']
+    return STEAM_SOURCES.get(family.name,'enable the repository your Linux keeps Steam in')
+
+def steam_ready(family):
+    """The repositories can supply Steam's 32-bit side. On Debian and Ubuntu the i386
+    architecture must be allowed first: without it apt still lists steam-installer, and
+    installing it fails on its i386 libraries ("held broken packages")."""
+    return family.name!='debian' or 'i386' in family.foreign_architectures()
+
 def available():
     """TV setup can run on this Linux."""
-    return host.detect() is host.Arch
+    return host.detect() is not None and unavailable_reason(host.current()) is None
 
 def not_possible(ctx):
     """Why TV setup can't run on this PC (an unavailable result), or None when it can."""
     if os.geteuid()!=0:raise RuntimeError('TV package installation requires sudo')
     if platform.machine()!='x86_64' or not host.supported():raise RuntimeError('TV installation is not supported on this system yet')
-    if not available():
-        return {'status':'unavailable','reason':UNAVAILABLE_REASON}
+    reason=unavailable_reason(host.current())
+    if reason:
+        return {'status':'unavailable','reason':reason}
     if not shutil.which('runuser'):raise RuntimeError('runuser is required to configure the desktop user safely')
     if not has_desktop():
         # No desktop on this PC (a server install): there is nothing to show on a TV.
@@ -173,7 +211,10 @@ def run(ctx):
     root=safe_path(cfg['data_mount'])
     if not os.path.ismount(root):raise RuntimeError('Mounted application SSD required for the TV report')
     desktop=desktop_folder(user,home) if opts.get('desktop_shortcuts',True) else None
-    files=launchers();destinations={home/'.local/share/applications'/name:text for name,text in files.items()}
+    # The browser already here opens YouTube; Firefox is installed only where there is none.
+    steam_program=find_program('steam') or ('/usr/games/steam' if family.name=='debian' else '/usr/bin/steam')
+    browser_program=browser() or ('/usr/bin/firefox-esr' if family.name=='debian' and not family.ubuntu() else '/usr/bin/firefox')
+    files=launchers(steam_program,browser_program);destinations={home/'.local/share/applications'/name:text for name,text in files.items()}
     if desktop:destinations.update({desktop/name:text for name,text in files.items()})
     # Inspect every launcher/ancestor before any packages, power settings or files change.
     for given,text in destinations.items():
@@ -188,21 +229,26 @@ def run(ctx):
         if power_dir.exists() and (not power_dir.is_dir() or power_dir.stat().st_uid!=user.pw_uid):raise RuntimeError('Desktop power configuration directory must be owned by the selected user')
     vendors=graphics()
     if not vulkan_packages(vendors):
-        ctx.log('TV: no Intel or AMD graphics found'+(' (NVIDIA needs its own driver; see the Arch wiki "NVIDIA" page)' if 'nvidia' in vendors else '')+'; installing Steam without a Vulkan driver package')
-    packages=['steam','steam-devices',*vulkan_packages(vendors),'firefox']
+        ctx.log('TV: no Intel or AMD graphics found'+(" (NVIDIA needs its maker's driver, installed your Linux's own way)" if 'nvidia' in vendors else '')+'; installing Steam without a Vulkan driver package')
+    packages=['steam','steam-devices',*vulkan_packages(vendors)]
+    if not browser():packages.append('firefox')
     if opts.get('bluetooth',True):packages+=['bluez','bluez-utils']
     missing=[p for p in packages if not family.installed(p)]
-    unavailable=[p for p in missing if not family.available(p)]
+    unavailable=[p for p in missing if not family.available(p) or (p=='steam' and not steam_ready(family))]
     if unavailable:
-        ctx.log('TV packages unavailable: '+', '.join(unavailable)+'; enable Arch multilib if Steam/lib32 packages are missing, update the system normally, then retry')
-        return {'status':'needs_setup','reason':'Required TV packages unavailable in configured repositories; no repository files changed'}
+        ctx.log('TV packages not offered by the repositories switched on here: '+', '.join(family.names(p)[0] for p in unavailable)
+                +'. To get them, '+steam_source(family)+', then run setup again. NekoServer changes no repository itself.')
+        return {'status':'needs_setup','reason':'Steam and its packages are not in the repositories switched on; see the setup log for what to enable (nothing was changed)'}
     if missing:
         ctx.log('Installing TV packages: '+', '.join(missing))
         try:family.install(missing,timeout=1800)
         except RuntimeError as exc:raise RuntimeError('TV package installation failed; update the system normally and retry ('+str(exc)+')') from None
     if not all(family.installed(p) for p in packages):raise RuntimeError('TV package installation was not retained')
-    for binary in ('/usr/bin/steam','/usr/bin/firefox'):
-        if not Path(binary).is_file():raise RuntimeError('Required TV launcher executable missing')
+    steam_program=find_program('steam') or steam_program;browser_program=browser() or browser_program
+    for binary in (steam_program,browser_program):
+        if not Path(binary).is_file():raise RuntimeError('Required TV launcher executable missing: '+binary)
+    files=launchers(steam_program,browser_program)
+    destinations={path:files[path.name] for path in destinations}
     results=[{'check':'tv:packages','status':'pass'}]
     if opts.get('bluetooth',True):
         enabled=command(['systemctl','enable','--now','bluetooth.service'])

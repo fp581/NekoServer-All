@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.36.1 — 2026-10-24
+
+The TV extras on every family that packages Steam, a retry when a package source does not answer, the fix for the test that failed on GitHub's runner in 0.36.0's CI, and SonarCloud's findings on 0.36.0. The TV step was tried for real on Fedora 44, Ubuntu 24.04 and Debian 13 under WSL (Steam installed from each system's own repositories after doing what the hint says), and the two systems without a Steam package were seen to say so.
+
+### Added
+- **The TV extras on every family with a Steam package.** The TV step (Steam Big Picture, a browser shortcut for YouTube, Bluetooth) was Arch/Nyarch-only; it now installs from the system's own repositories on Debian, Ubuntu, Fedora and openSUSE Tumbleweed/Slowroll too, with each family's names (`steam-installer` and Mesa's one Vulkan package with its 32-bit twin on Debian and Ubuntu, `mesa-vulkan-drivers.i686` on Fedora, `libvulkan_*-32bit` and `MozillaFirefox` on openSUSE; `bluetoothctl` comes inside `bluez` there). Steam lives in a part of the repositories that is off by default; NekoServer never switches it on itself: when the packages are not offered, the step stops and the log gives the exact command for this system (Arch's multilib; `dpkg --add-architecture i386` with contrib/non-free or multiverse; Fedora's `rpmfusion-nonfree-steam` repository from `fedora-workstation-repositories`; openSUSE's non-OSS repository), then setup is run again. RHEL and its rebuilds and openSUSE Leap 16 have no Steam package: the step reports itself unavailable there and names Flatpak as the way. Steam's shortcut and the guided handoff open it from `/usr/games` on Debian and Ubuntu; the YouTube shortcut uses the browser the PC already has, and Firefox is installed only where there is none.
+- **A package source that does not answer is asked again.** A mirror hiccup, a download cut off or the network still coming up used to fail setup at once, on the first `apt-get update`, `dnf makecache`, `zypper refresh` or `pacman -Syu` as much as on an install later. Both `install.sh` and the installer now run the same command again after 20 seconds, three times in all, and say so; any other failure (a missing package, a conflict, a broken repository file) is still reported at once.
+
+### Fixed
+- **The runtime's fan-detection tests no longer depend on a fast machine.** Four of them slept 300 ms and then expected detection to have taken the first fan; on a slow runner (GitHub's) one failed. They wait for it now.
+
+### Changed
+- Code-quality findings from SonarCloud on 0.36.0: Samba's unit name is written once, `install.sh` lists the tools every family installs once, and two tests use unittest's own forms.
+
+### Upgrade notes
+- After `git pull`, run `sudo bash install.sh` in `nekoserver-v0.36.1`: it offers the settings left in the earlier folder; answer `yes`.
+- The bundled runtime was rebuilt for this release (its tests and the version number; nothing changes in what it does).
+- A TV set up on Arch before keeps its shortcuts as they are. To add the TV extras on Debian, Ubuntu, Fedora or openSUSE Tumbleweed, set `"wanted": true` under `"tv"` in `my-config.json` (or answer yes when setup asks) and follow the hint about Steam's repository if setup gives one.
+
 ## v0.36.0 — 2026-10-24
 
 openSUSE support, installed for real on Leap 16 under WSL with its own three virtual drives: setup reached 26 of 28 steps (the other two need the owner's Tailscale account and phone), every feature check passed (47) and the fault suite ran on it. Also a standing dashboard warning when the monthly backups are unencrypted, and a fix for a Docker version openSUSE's package reports.

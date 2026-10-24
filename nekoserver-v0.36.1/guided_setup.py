@@ -10,7 +10,7 @@ import sys
 from urllib.parse import urlsplit
 
 import host
-from neko_common import safe_path
+from neko_common import find_program, safe_path
 
 
 def yes_no(question, prompt=None, output=None):
@@ -136,7 +136,8 @@ def launch(ctx, target, kind='url'):
         else:
             return False
     else:
-        commands = {'steam': ['/usr/bin/steam', '-gamepadui'],
+        # Steam lives in /usr/games on Debian and Ubuntu, in /usr/bin elsewhere.
+        commands = {'steam': [find_program('steam') or '/usr/bin/steam', '-gamepadui'],
                     'bluetooth': ['/usr/bin/blueman-manager'],
                     'settings': ['/usr/bin/gnome-control-center', 'display']}
         if kind not in commands:
