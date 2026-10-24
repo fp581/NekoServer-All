@@ -372,14 +372,20 @@ def confirm(plan, chosen, ask=input, out=print):
     return ask('Type exactly  ' + phrase + '  to go on: ').strip() == phrase
 
 
-def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree):
+def system_file(root, path):
+    """One of the system's own files (/etc/fstab, Docker's daemon.json) under root: / on a
+    real PC, a test's folder otherwise. The path is a constant of this module."""
+    return Path(root) / path.lstrip('/')
+
+
+def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/'):
     """Do it, in a safe order: stop everything, then the files, then the mounts."""
     units = plan.units()
     _stop_units(units, run, out)
     if 'apps' in chosen:
         _remove_containers(plan, run, out)
     if plan.docker_root() and ('data' in chosen or 'mounts' in chosen):
-        _reset_docker_root(plan, run, out)
+        _reset_docker_root(system_file(root, DAEMON_JSON), run, out)
     if plan.tailnet_served():
         out('Switching off what NekoServer served on your tailnet')
         run(['tailscale', 'serve', 'reset'], 60)
@@ -394,7 +400,7 @@ def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree):
     if plan.group_exists(CONTROL_GROUP):
         run(['groupdel', CONTROL_GROUP], 30)
     if 'mounts' in chosen:
-        _remove_mounts(plan, run, out)
+        _remove_mounts(plan, system_file(root, FSTAB), run, out)
     if units:
         run(['systemctl', 'daemon-reload'], 120)
 
@@ -418,10 +424,9 @@ def _remove_containers(plan, run, out):
         run(['docker', 'network', 'rm', network], 60)
 
 
-def _reset_docker_root(plan, run, out):
+def _reset_docker_root(path, run, out):
     out('Stopping Docker and taking its data-root setting out of ' + DAEMON_JSON)
     run(['systemctl', 'stop', 'docker.service', 'docker.socket'], 300)
-    path = plan.at(DAEMON_JSON)
     content = json.loads(path.read_text())
     content.pop('data-root', None)
     path.write_text(json.dumps(content, indent=2) + '\n')
@@ -450,10 +455,9 @@ def _remove_files(plan, chosen, out, rmtree):
                 path.unlink(missing_ok=True)
 
 
-def _remove_mounts(plan, run, out):
+def _remove_mounts(plan, path, run, out):
     lines = plan.fstab_lines()
     if lines:
-        path = plan.at(FSTAB)
         kept = [line for line in path.read_text().splitlines() if line not in lines]
         path.write_text('\n'.join(kept) + '\n')
         out('Took ' + str(len(lines)) + ' line(s) out of ' + FSTAB)

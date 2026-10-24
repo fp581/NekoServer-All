@@ -236,7 +236,7 @@ class RemoveTests(unittest.TestCase):
 
     def remove(self, chosen):
         with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
-            uninstaller.remove(self.plan, chosen, run=self.system.run, out=self.shown.append)
+            uninstaller.remove(self.plan, chosen, run=self.system.run, out=self.shown.append, root=self.system.root)
 
     def test_the_server_alone_leaves_every_drive_and_the_apps_data(self):
         self.remove({'server'})

@@ -37,6 +37,19 @@ class SpaceTests(unittest.TestCase):
             run.assert_not_called()
 
 
+class BuiltPathTests(unittest.TestCase):
+    """The executable is read from where cargo put it: a CARGO_TARGET_DIR in the
+    environment moves it (the rig's shared build folder, a developer's own)."""
+    def test_the_runtime_folder_by_default_and_the_shared_folder_when_set(self):
+        self.assertEqual(build.built_path('x86_64-unknown-linux-gnu', [], environ={}),
+                         build.ROOT / 'target/release/nekoserver-runtime')
+        self.assertEqual(build.built_path(build.STATIC, ['--target', build.STATIC], environ={}),
+                         build.ROOT / 'target' / build.STATIC / 'release/nekoserver-runtime')
+        self.assertEqual(build.built_path(build.STATIC, ['--target', build.STATIC], environ={'CARGO_TARGET_DIR': '/home/me/shared'}),
+                         Path('/home/me/shared') / build.STATIC / 'release/nekoserver-runtime')
+        self.assertEqual(build.built_path('host', [], environ={'CARGO_TARGET_DIR': ''}), build.ROOT / 'target/release/nekoserver-runtime')
+
+
 class PlanTests(unittest.TestCase):
     def test_static_only_with_the_musl_library_and_rust_lld(self):
         with tempfile.TemporaryDirectory() as tmp:
