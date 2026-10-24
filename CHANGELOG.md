@@ -1,11 +1,20 @@
 # Changelog
 
+## v0.39.1 — 2026-10-25
+
+SonarCloud's review of the uninstaller, and what a dry run without sudo turned up.
+
+### Fixed
+- **A settings file can only name NekoServer's drives.** The uninstaller read the drives' mount folders from `my-config.json` and used them as they were. Now a value is used only when it is a plain absolute folder of its own (`/srv/nekoserver`, `/mnt/...`): the root, a system folder or a path with `..` is refused, named in the plan (`!!`) and the default used instead, and the mount check answers only for those folders. Nothing in a settings file can point the removal anywhere else.
+- **A dry run without sudo** died on `/root`. A folder the account may not read is noted and the dry run says what it leaves out (`sudo bash uninstall.sh --dry-run` shows the whole plan); the "no app containers found" note also names the missing permission.
+- Code shape: the plan builder is one function per choice, the removal one per step, the menu's toggle its own function; the unused parameter and name are gone; a repeated path is a constant; the tests use `return_value` and `side_effect` instead of lambdas.
+
 ## v0.39.0 — 2026-10-25
 
 An uninstaller, and a README that shows the thing.
 
 ### Added
-- **`sudo bash uninstall.sh`: NekoServer off this PC, what you choose, after two confirmations.** NekoServer itself (its 21 services and timers, programs, settings, the Samba shares and account it made, the Docker and Samba storage guards, the tailnet pages, its group, the desktop shortcuts) always goes. Everything else is a checklist: the apps' containers and networks; the apps' data on the SSD (with Docker's data-root setting put back); your photos; your movies and music; your Nextcloud files; the backups on the HDD and USB drive; the drive mounts (the fstab lines and the empty folders). First the whole plan, with every path and its size, then `yes`, then a phrase that names what goes (`remove NekoServer and delete my photos, backups`). Nothing is ever formatted, and packages NekoServer installed stay for you to keep or remove. `bash uninstall.sh --dry-run` only shows the plan. The drives' mount folders come from the settings file and are used only when they are plain folders of their own (`/srv/nekoserver`, `/mnt/...`): the root, a system folder or a path with `..` is refused, named in the plan, and the default used instead, so a settings file can never point the removal anywhere but at NekoServer's drives. Tried for real on openSUSE Tumbleweed: every choice, 27 seconds, nothing left behind.
+- **`sudo bash uninstall.sh`: NekoServer off this PC, what you choose, after two confirmations.** NekoServer itself (its 21 services and timers, programs, settings, the Samba shares and account it made, the Docker and Samba storage guards, the tailnet pages, its group, the desktop shortcuts) always goes. Everything else is a checklist: the apps' containers and networks; the apps' data on the SSD (with Docker's data-root setting put back); your photos; your movies and music; your Nextcloud files; the backups on the HDD and USB drive; the drive mounts (the fstab lines and the empty folders). First the whole plan, with every path and its size, then `yes`, then a phrase that names what goes (`remove NekoServer and delete my photos, backups`). Nothing is ever formatted, and packages NekoServer installed stay for you to keep or remove. `bash uninstall.sh --dry-run` only shows the plan. Tried for real on openSUSE Tumbleweed: every choice, 27 seconds, nothing left behind.
 - **The README shows the thing:** the overview picture, and recordings of the real installation, the setup window, the dashboard and the uninstaller from the test rig.
 
 ### Fixed
