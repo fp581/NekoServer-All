@@ -49,6 +49,11 @@ NEEDED_MB=1024   # free space the build wants here: the build folder takes ~150 
 def free_megabytes(path=ROOT,statvfs=os.statvfs):
     """Free space (MB) on the filesystem holding path, for the account building."""
     s=statvfs(path);return s.f_bavail*s.f_frsize//(1024*1024)
+def built_path(target,arguments,environ=os.environ):
+    """Where cargo put the executable: under CARGO_TARGET_DIR when that is set (a shared
+    build folder), else runtime/target; in the target's own folder for a cross build."""
+    base=Path(environ.get('CARGO_TARGET_DIR') or ROOT/'target')
+    return base/(target if arguments else '')/'release/nekoserver-runtime'
 def main():
     if os.geteuid()==0 and os.environ.get('NEKOSERVER_BUILD_AS_ROOT')!='1':raise RuntimeError('Build as an ordinary user (or let sudo bash install.sh build it)')
     if platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('This release build targets x86_64 Linux')
@@ -61,7 +66,7 @@ def main():
     # unchanged while the manifest named the new sources. Dependencies stay cached.
     subprocess.run([cargo,'clean','--release',*(['--target',target] if arguments else []),'-p','nekoserver-runtime'],cwd=ROOT,check=True)
     subprocess.run([cargo,'build','--release','--locked',*arguments],cwd=ROOT,check=True)
-    built=ROOT/'target'/(target if arguments else '')/'release/nekoserver-runtime'
+    built=built_path(target,arguments)
     blob=built.read_bytes();out=ROOT/'bin/nekoserver-runtime';out.parent.mkdir(exist_ok=True);out.write_bytes(blob);out.chmod(0o750)
     sources=[ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'build.py',*sorted((ROOT/'src').glob('*.rs'))]
     version=subprocess.check_output([out,'--version'],text=True).strip().split()[-1]

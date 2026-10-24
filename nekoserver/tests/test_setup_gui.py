@@ -93,14 +93,26 @@ class ProgressTests(unittest.TestCase):
                 print('1. Open the sign-in page on any device.')
                 builtins.input('Have you completed this step successfully? [yes/no]: ')
                 self.assertEqual(seen[1]['context'][-2:], ['=== Tailscale: connect this server ===', '1. Open the sign-in page on any device.'])
+                self.assertNotIn('Drives on this PC:', seen[1]['context'])   # the earlier question's lines are gone
                 self.assertEqual(seen[1]['form'], 'yesno')
+                # The installer's time-stamped lines are what a drive question is about:
+                # they stay, without their stamps; its step markers do not.
+                setup_progress.step('storage', 'running')
+                print('[2026-10-24T21:32:16+00:00] Device sde: 86G / Virtual Disk')
+                print('[2026-10-24T21:32:16+00:00] Select the SSD (apps, photos and music):')
+                print('[2026-10-24T21:32:16+00:00]   1) /dev/sde 86G ext4 UUID=70a9 mounted=-')
+                builtins.input('Choose number (or ENTER to abort): ')
+                self.assertEqual(seen[2]['context'], ['Device sde: 86G / Virtual Disk', 'Select the SSD (apps, photos and music):',
+                                                      '  1) /dev/sde 86G ext4 UUID=70a9 mounted=-'])
+                builtins.input('Type sde to confirm it is the SSD: ')
+                self.assertEqual(seen[3]['context'], [])   # nothing new was said since the last answer
                 import getpass
                 self.assertEqual(getpass.getpass('PIN: '), '1234')
                 self.assertEqual(setup_progress.question_kind('Ready? [yes/no]: ', False), 'yesno')
         texts = json.dumps(setup_progress.events())
         self.assertNotIn('secret answer', texts)
         self.assertNotIn('1234', texts)
-        self.assertEqual([e['kind'] for e in setup_progress.events()], ['question', 'answered'] * 3)
+        self.assertEqual([e['kind'] for e in setup_progress.events()], ['question', 'answered'] * 2 + ['step'] + ['question', 'answered'] * 3)
         hidden = next(e for e in setup_progress.events() if e['kind'] == 'question' and e['secret'])
         self.assertEqual((hidden['text'], hidden['form']), ('a hidden entry', 'secret'))
         self.assertIs(builtins.input, builtins.__dict__['input'])   # restored afterwards
