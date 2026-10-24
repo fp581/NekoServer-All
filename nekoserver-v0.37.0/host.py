@@ -985,8 +985,8 @@ class Fedora(PackageLock, Family):
         if not self.ready():
             return False
         for name in self.names(wanted):
-            found = self.retrying(lambda: self._call(['dnf', '-q', 'repoquery', '--available', '--latest-limit', '1',
-                                                      '--qf', '%{name}\n', name], 600))
+            found = self.retrying(lambda name=name: self._call(['dnf', '-q', 'repoquery', '--available', '--latest-limit', '1',
+                                                                '--qf', '%{name}\n', name], 600))
             if found.returncode or name not in found.stdout.split():
                 return False
         return True
@@ -1196,8 +1196,8 @@ class Suse(Fedora):
         if not self.ready():
             return False
         # zypper answers 104 when no package matches.
-        return all(self.retrying(lambda: self._call(['zypper', '--non-interactive', '--quiet', 'search', '--match-exact',
-                                                     '--type', 'package', name], 300)).returncode == 0
+        return all(self.retrying(lambda name=name: self._call(['zypper', '--non-interactive', '--quiet', 'search', '--match-exact',
+                                                               '--type', 'package', name], 300)).returncode == 0
                    for name in self.names(wanted))
 
     def _install(self, names, timeout):

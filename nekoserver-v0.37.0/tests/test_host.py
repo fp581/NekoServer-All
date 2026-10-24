@@ -1589,16 +1589,18 @@ class RetryTest(unittest.TestCase):
 
     def test_any_other_failure_is_reported_at_once(self):
         pacman = Flaky(FakePacman(offered={'caddy'}), 5, 'error: target not found: caddy', when=lambda argv: argv[1] == '-S')
+        family = self.family(pacman)
         with self.assertRaisesRegex(RuntimeError, 'Installing caddy failed: error: target not found: caddy'):
-            self.family(pacman).install(['caddy'])
+            family.install(['caddy'])
         self.assertEqual(self.slept, [])
         self.assertEqual(self.said, [])
 
     def test_a_source_that_never_answers_gives_up_after_three_attempts(self):
         pacman = Flaky(FakePacman(offered={'caddy'}), 5, 'error: failed to download: Could not resolve host: mirror.example',
                        when=lambda argv: argv[1] == '-S')
+        family = self.family(pacman)
         with self.assertRaisesRegex(RuntimeError, 'Installing caddy failed: .*Could not resolve host'):
-            self.family(pacman).install(['caddy'])
+            family.install(['caddy'])
         self.assertEqual(self.slept, [host.RETRY_PAUSE, host.RETRY_PAUSE])
         self.assertEqual(pacman.failed, host.RETRIES)
 
