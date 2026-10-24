@@ -165,17 +165,7 @@ def run(context):
     desired=share_config(settings,media,user)
     # Safest: don't modify a pre-existing unmanaged Samba installation.
     if main.exists() and not includes_ours(main.read_text()):
-        if family.packaged_example(str(main)):
-            # Installed before NekoServer (with smbclient, say) and never edited.
-            raise RuntimeError('/etc/samba/smb.conf is the Samba package\'s unchanged example, not your settings. '
-                               'If you don\'t use Samba for anything else, move it aside '
-                               '(sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.packaged) and run setup again.')
-        raise RuntimeError('/etc/samba/smb.conf exists and was not written by NekoServer, so it is left alone. '
-                           'NekoServer keeps its shares in /etc/samba/nekoserver.conf. If you don\'t use Samba for '
-                           'anything else, move your file aside (sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.mine) '
-                           'and run setup again. To keep your own shares as well, add the line\n'
-                           '   include = /etc/samba/nekoserver.conf\nto the [global] section of your smb.conf and '
-                           'run setup again; your file then stays as it is.')
+        unmanaged_config(main,family,context.log)
     if managed.exists() and managed.read_text()!=desired:
         check_rewrite(managed.read_text(),mode,settings)
     managed.parent.mkdir(parents=True,exist_ok=True)
@@ -211,3 +201,20 @@ def run(context):
             raise RuntimeError('Samba user was not retained; inspect local authentication setup')
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')
 
+
+def unmanaged_config(main,family,log):
+    """smb.conf exists and is not NekoServer's. The package's untouched example (Samba
+    installed before NekoServer, with smbclient say, or the example put back by the
+    uninstaller) is nobody's settings: set aside, as the bootstrap does for a package it
+    installs itself. Anything else is someone's and stops setup."""
+    if family.packaged_example(str(main)):
+        aside=main.with_name('smb.conf.packaged')
+        main.replace(aside)
+        log(f"Samba: {main} was the package's unchanged example, not anyone's settings; set aside as {aside}")
+        return
+    raise RuntimeError('/etc/samba/smb.conf exists and was not written by NekoServer, so it is left alone. '
+                           'NekoServer keeps its shares in /etc/samba/nekoserver.conf. If you don\'t use Samba for '
+                           'anything else, move your file aside (sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.mine) '
+                           'and run setup again. To keep your own shares as well, add the line\n'
+                           '   include = /etc/samba/nekoserver.conf\nto the [global] section of your smb.conf and '
+                           'run setup again; your file then stays as it is.')
