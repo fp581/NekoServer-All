@@ -1,4 +1,4 @@
-# NekoServer v0.36.0
+# NekoServer v0.36.1
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -48,7 +48,7 @@ Also included: shared folders on your home network (Samba) and, if you want them
 
 > ⚠️ **Formatting erases everything on a drive.** NekoServer will never do it for you. Format the SSD, HDD and USB drive yourself (for example with GNOME Disks), and double-check which drive you are formatting.
 
-The TV extras (Steam Big Picture on a TV) are available on Arch and Nyarch only for now. On Arch, also turn on the **multilib** repository in `/etc/pacman.conf` (Steam needs it).
+The TV extras (Steam Big Picture on a TV) come from your Linux's own repositories on Arch/Nyarch, Debian, Ubuntu, Fedora and openSUSE Tumbleweed; RHEL (and Rocky/AlmaLinux) and openSUSE Leap have no Steam package, so the step skips itself there. Steam lives in a part of the repositories that is off by default (Arch's **multilib**, Debian's contrib/non-free with 32-bit packages, Fedora's RPM Fusion Steam repository, openSUSE's non-OSS): setup never switches those on itself; it tells you the exact command and you run setup again. See [TV-SETUP.md](TV-SETUP.md).
 
 ---
 
@@ -58,7 +58,7 @@ Open a **terminal**, logged in as your normal user, and run:
 
 ```bash
 git clone https://github.com/fp581/NekoServer-All.git
-cd NekoServer-All/nekoserver-v0.36.0
+cd NekoServer-All/nekoserver-v0.36.1
 sudo bash install.sh
 ```
 
