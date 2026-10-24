@@ -48,7 +48,7 @@ def plan(host,sysroot):
 def main():
     if os.geteuid()==0 and os.environ.get('NEKOSERVER_BUILD_AS_ROOT')!='1':raise RuntimeError('Build as an ordinary user (or let sudo bash install.sh build it)')
     if platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('This release build targets x86_64 Linux')
-    cargo,rustc,host,sysroot,rustc_line=toolchain()
+    cargo,_,host,sysroot,rustc_line=toolchain()
     target,arguments=plan(host,sysroot)
     # The runtime itself is always compiled again: cargo trusts file times, and after the
     # clock went back an older build looked newer than the sources, so the binary came out
