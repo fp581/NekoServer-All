@@ -645,7 +645,7 @@ class QbitMusicCategoryTests(unittest.TestCase):
     def test_wrong_music_path_is_corrected_when_empty(self):
         import qbit_setup
         fake = self.Fake('/data/downloads', [])
-        qbit_setup.configure('u', 'p', apply=True, client=fake)
+        qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
         self.assertEqual(fake.edits, [{'category': 'music', 'savePath': '/data/downloads/music'}])
         self.assertEqual(fake.categories['music']['savePath'], '/data/downloads/music')
 
@@ -653,7 +653,7 @@ class QbitMusicCategoryTests(unittest.TestCase):
         import qbit_setup
         fake = self.Fake('/data/downloads', [{'name': 'album'}])
         with self.assertRaisesRegex(RuntimeError, 'not /data/downloads/music'):
-            qbit_setup.configure('u', 'p', apply=True, client=fake)
+            qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
         self.assertEqual(fake.edits, [])
 
     def test_shared_folder_is_fine_for_tv_and_movies(self):

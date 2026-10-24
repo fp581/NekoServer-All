@@ -41,7 +41,7 @@ def save_settings(ctx):
         from neko_common import atomic_json
         atomic_json(ctx.config_path,ctx.config)
 
-def choose_lan(ctx,ask=input,interactive=None):
+def choose_lan(ctx,ask=input,interactive=None,output=print):
     """The home-network address and subnet (gateway.lan_ip / lan_cidr), chosen once and
     shared by every step that needs it: LAN folder sharing (Samba) and the LAN HTTPS
     gateway. Whichever runs first asks; the other uses the answer. Settings that name
@@ -49,19 +49,19 @@ def choose_lan(ctx,ask=input,interactive=None):
     it another one): then it is asked again. False when nobody is there to choose."""
     opts=ctx.config.setdefault('gateway',{})
     interactive=sys.stdin.isatty() if interactive is None else interactive
-    if keep_saved(ctx.config,opts,interactive):return True
+    if keep_saved(ctx.config,opts,interactive,output):return True
     if not interactive:return False
     rows=candidates()
     if not rows:raise RuntimeError('No usable LAN address found; configure gateway.lan_ip and lan_cidr')
-    print('Which network connects this server to your home network (your router)?')
-    for i,row in enumerate(rows,1):print(str(i)+'. '+row['interface']+' · '+row['ip']+' · '+row['cidr'])
-    row=pick(rows,ask)
+    output('Which network connects this server to your home network (your router)?')
+    for i,row in enumerate(rows,1):output(str(i)+'. '+row['interface']+' · '+row['ip']+' · '+row['cidr'])
+    row=pick(rows,ask,output=output)
     if row is None:return False
     opts.update(lan_ip=row['ip'],lan_cidr=row['cidr'])
     save_settings(ctx)
     return True
 
-def keep_saved(config,opts,interactive):
+def keep_saved(config,opts,interactive,output=print):
     """True: the saved choice is still this server's address. False: there is none yet, or
     it moved and someone can choose again. Raises when it moved and nobody can."""
     if opts.get('lan_ip') in (None,'auto') or opts.get('lan_cidr') in (None,'auto'):return False
@@ -69,10 +69,10 @@ def keep_saved(config,opts,interactive):
     moved=('This server\'s home-network address is no longer '+str(opts['lan_ip'])+' (gateway.lan_ip): the router gave '
            'it another one. ')
     if not interactive:raise RuntimeError(moved+'Run  sudo bash install.sh  in a terminal to choose the home network again')
-    print(moved+'Choose the home network again; afterwards, reserve the new address for this server in your router.')
+    output(moved+'Choose the home network again; afterwards, reserve the new address for this server in your router.')
     return False
 
-def pick(rows,ask,attempts=3):
+def pick(rows,ask,attempts=3,output=print):
     """The row whose number is typed; None after three wrong numbers or Ctrl+D."""
     for _ in range(attempts):
         try:
@@ -80,7 +80,7 @@ def pick(rows,ask,attempts=3):
         except EOFError:
             return None
         if choice.isdigit() and 1<=int(choice)<=len(rows):return rows[int(choice)-1]
-        print('Please type one of the numbers shown.')
+        output('Please type one of the numbers shown.')
     return None
 
 def still_here(config):
