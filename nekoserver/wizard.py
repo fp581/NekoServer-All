@@ -96,8 +96,8 @@ def release_version(name, prefix=''):
 
 def earlier_settings(root=ROOT):
     """For a release folder without settings yet: those of the server already set up on
-    this PC, newest release first, or None. `git pull` moves the release into a folder
-    named for its new version and leaves my-config.json (git does not track it) in the
+    this PC, newest release first, or None. Before 0.38.0 each release had a folder named
+    for its version, so `git pull` left my-config.json (git does not track it) in the
     earlier one; setup also keeps a copy on the SSD with the release it ran."""
     root = Path(root)
     found = []

@@ -137,6 +137,19 @@ class WizardFlowTests(unittest.TestCase):
     def settings_uuid(self):
         return json.loads((self.root / 'my-config.json').read_text())['storage']['data_ssd']['uuid']
 
+    def test_the_fixed_folder_finds_the_settings_left_in_a_versioned_one(self):
+        # Since 0.38.0 the folder is simply `nekoserver`; a first update from a release
+        # before that leaves my-config.json in the old versioned folder beside it.
+        root = self.root.parent / 'nekoserver'
+        root.mkdir()
+        shutil.copy(ROOT / 'config.json', root / 'config.json')
+        self.saved(self.root.parent / 'nekoserver-v0.37.3/my-config.json', 'kept')
+        self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'older')
+        self.assertEqual(wizard.earlier_settings(root), self.root.parent / 'nekoserver-v0.37.3/my-config.json')
+        # Later updates stay in the same folder: its own settings are simply used.
+        self.saved(root / 'my-config.json', 'mine')
+        self.assertTrue((root / 'my-config.json').is_file())
+
     def test_an_update_takes_the_settings_left_in_the_earlier_release_folder(self):
         # git pull moved the release into a new folder; my-config.json stayed in the old one.
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')

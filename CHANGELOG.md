@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.38.0 — 2026-10-24
+
+The release folder is simply `nekoserver` from now on, so `git pull` updates it in place and a release's changes show as changes; the runtime is built again when it would not run here; and the on-PC build was tried on the other families.
+
+### Changed
+- **One folder, `nekoserver`, for every release.** Until now each release lived in a folder named for its version (`nekoserver-v0.37.3`), which made every update move every file and left your `my-config.json` behind in the old folder. The version now lives in `neko_common.VERSION` (and `runtime/Cargo.toml`); the copies setup keeps on the SSD and under `/usr/local/lib` are still named by version, so nothing changes on an installed server. Updating is `git pull` then `sudo bash install.sh` in the same folder; coming from a versioned folder, setup still finds the settings left there and offers them.
+- **The runtime is built again when it would not run here.** `install.sh` also checks that the runtime starts and names this release, not only that it was built from these sources: a copy built on another Linux (kept on the SSD through a reinstall and taken back by the recovery path) is rebuilt instead of failing later.
+- **A runtime NekoServer deployed itself is replaced when it was built again from other sources** (a `git pull` into the same folder within one version). Each deployed copy now has its build record beside it (`nekoserver-runtime.build.json`); a copy without one (someone's own, or from a release before this one) is still never overwritten.
+- The on-PC build was tried on Arch, openSUSE Leap and AlmaLinux as well (see below), after Ubuntu, Fedora and Debian in 0.37.1.
+
+### Upgrade notes
+- `git pull` renames the folder to `nekoserver`; run `sudo bash install.sh` there. Your `my-config.json` is still in the old `nekoserver-v0.37.x` folder: setup finds it and asks `Use them for this release (yes when updating)?`; answer `yes`. The old folder can be deleted afterwards. From now on updates stay in the same folder.
+- The runtime is built for this release (a few minutes).
+
 ## v0.37.3 — 2026-10-24
 
 Code-quality findings from SonarCloud's review of 0.37.1, and the CI fixed for a checkout without the built runtime. Nothing changes in how NekoServer works. (0.37.2 was the same work before the CI fix; it was never merged.)
