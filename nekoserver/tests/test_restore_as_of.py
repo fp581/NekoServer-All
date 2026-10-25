@@ -2,6 +2,7 @@
 import gzip
 import hashlib
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -21,7 +22,8 @@ def answers(*values):
     return lambda question='': next(it)
 
 
-class RestoreAsOfTests(unittest.TestCase):
+class Restoring(unittest.TestCase):
+    """A server whose USB drive holds a Nextcloud backup tree (filled by each test class)."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -32,6 +34,27 @@ class RestoreAsOfTests(unittest.TestCase):
         self.config = {'media_mount': str(self.media), 'data_mount': str(self.root / 'ssd'),
                        'photos': {'archive_dir': 'photos/archive'}}
         self.tree = self.root / 'usb/nextcloud'
+
+    def write(self, path, body):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+
+    def restore(self, *choices):
+        """Every restored file (its path under files/) with its content, and what was said."""
+        # An earlier restore in the same second would get the same folder name.
+        shutil.rmtree(self.media / 'restored', ignore_errors=True)
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+            out = []
+            recovery_wizard.restore_cloud(self.config, answers(*choices), out.append)
+        restored = next((self.media / 'restored').iterdir()) / 'files'
+        got = {p.relative_to(restored).as_posix(): p.read_bytes() for p in restored.rglob('*') if p.is_file()}
+        return got, '\n'.join(out)
+
+
+class RestoreAsOfTests(Restoring):
+    def setUp(self):
+        super().setUp()
         # What the USB drive holds after two weekly runs. Run 1: keep.txt, gone.txt and
         # old-name.txt. Run 2: gone.txt deleted, old-name.txt renamed to new-name.txt,
         # keep.txt edited (its new content is kept as a dated version, as the copy does).
@@ -46,22 +69,10 @@ class RestoreAsOfTests(unittest.TestCase):
                                             'alice/files/old-name.txt': 'old-name.txt'})
         self.inventory('20261101T030000Z', {'alice/files/keep.txt': EDIT, 'alice/files/new-name.txt': 'new-name.txt'})
 
-    def write(self, path, body):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(body)
-
     def inventory(self, stamp, files):
         """The same format the runtime writes (inventory.rs)."""
         self.write(self.tree / '.neko-inventory' / f'{stamp}.json.gz', gzip.compress(json.dumps(
             {'format': 'neko-inventory-v1', 'made_at': stamp, 'files': files}).encode()))
-
-    def restore(self, *choices):
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
-            out = []
-            recovery_wizard.restore_cloud(self.config, answers(*choices), out.append)
-        restored = next((self.media / 'restored').iterdir()) / 'files'
-        return {p.name: p.read_bytes() for p in restored.iterdir()}, '\n'.join(out)
 
     def test_as_of_the_last_backup_restores_only_the_live_set(self):
         got, out = self.restore('1', 'yes', '1')
@@ -117,6 +128,94 @@ class RestoreAsOfTests(unittest.TestCase):
         self.inventory('20261101T030000Z-1', {})
         names = [p.name for p, _ in recovery_wizard.inventories(self.tree)]
         self.assertEqual(names, ['20261101T030000Z-1.json.gz', '20261101T030000Z.json.gz', '20261025T030000Z.json.gz'])
+
+
+
+def sha(body):
+    return hashlib.sha256(body).hexdigest()
+
+
+class FileFolderFileTests(Restoring):
+    """A file `Projects`, then a folder `Projects`, then a file `Projects` again, across
+    three weekly copies, laid out as the backup's move logic leaves it (backup.rs
+    move_aside): what stood in the way is moved into alice/neko-replaced/<when>/ with its
+    checksum, and the new one takes the old name. An older date must restore the content
+    it had then, never today's file under the same name."""
+    def setUp(self):
+        super().setUp()
+        self.saved = {
+            'alice/neko-replaced/20261101T030000Z/Projects': b'OLD CONTENT',            # run 1's file
+            'alice/neko-replaced/20261108T030000Z/Projects/notes.txt': b'notes',        # run 2's folder
+            'alice/files/Projects': b'NEW CONTENT',                                     # run 3's file
+        }
+        for key, body in self.saved.items():
+            self.write(self.tree / key, body)
+        self.ledger({key: sha(body) for key, body in self.saved.items()})
+
+    def ledger(self, sums):
+        entries = {k: {'sha256': v, 'size': 1, 'verified_at': 1.0, 'how': 'copied'} for k, v in sums.items()}
+        self.write(self.tree / '.neko-ledger.json', json.dumps({'format': 'neko-ledger-v1', 'entries': entries}).encode())
+
+    def lists(self, version):
+        """The three runs' lists, as the runtime writes them (v2 with checksums, v1 without)."""
+        runs = (('20261025T030000Z', {'alice/files/Projects': ('Projects', b'OLD CONTENT')}),
+                ('20261101T030000Z', {'alice/files/Projects/notes.txt': ('notes.txt', b'notes')}),
+                ('20261108T030000Z', {'alice/files/Projects': ('Projects', b'NEW CONTENT')}))
+        for stamp, files in runs:
+            listed = {k: ({'copy': c, 'sha256': sha(b)} if version == 2 else c) for k, (c, b) in files.items()}
+            self.write(self.tree / '.neko-inventory' / f'{stamp}.json.gz', gzip.compress(json.dumps(
+                {'format': f'neko-inventory-v{version}', 'made_at': stamp, 'files': listed}).encode()))
+
+    def test_each_date_restores_the_content_it_had_then(self):
+        self.lists(2)
+        # Newest first: the last backup, then (choosing a date) the second and the first.
+        last, _ = self.restore('1', 'yes', '1')
+        self.assertEqual(last, {'Projects': b'NEW CONTENT'})
+        second, _ = self.restore('1', 'yes', '2', '1')
+        self.assertEqual(second, {'Projects/notes.txt': b'notes'})
+        first, out = self.restore('1', 'yes', '2', '2')
+        self.assertEqual(first, {'Projects': b'OLD CONTENT'})
+        self.assertIn('1 files matched their recorded checksums', out)
+        self.assertNotIn('NOT restored', out)
+
+    def test_content_no_saved_copy_has_is_missing_never_another_file(self):
+        self.lists(2)
+        (self.tree / 'alice/neko-replaced/20261101T030000Z/Projects').unlink()
+        first, out = self.restore('1', 'yes', '2', '2', 'yes')
+        self.assertEqual(first, {})
+        self.assertIn('1 files were NOT restored', out)
+
+    def test_a_saved_copy_whose_content_changed_is_not_taken_for_the_listed_one(self):
+        # The ledger and the copy agree with each other but not with the list: the list's
+        # checksum decides, so today's file is never handed out as the old one.
+        self.lists(2)
+        self.ledger({'alice/files/Projects': sha(b'NEW CONTENT')})
+        (self.tree / 'alice/neko-replaced').rename(self.root / 'aside')
+        first, _ = self.restore('1', 'yes', '2', '2', 'yes')
+        self.assertNotIn(b'NEW CONTENT', first.values())
+
+    def test_an_older_list_without_checksums_leaves_such_a_file_out(self):
+        self.lists(1)
+        first, out = self.restore('1', 'yes', '2', '2', 'yes')
+        self.assertEqual(first, {})
+        self.assertIn('can\'t be told', out)
+        self.assertIn('1 files were left out: they became a folder', out)
+        # A file that was never replaced still restores from such a list.
+        self.write(self.tree / 'alice/files/plain.txt', b'plain')
+        stamp = self.tree / '.neko-inventory/20261025T030000Z.json.gz'
+        stamp.write_bytes(gzip.compress(json.dumps({'format': 'neko-inventory-v1', 'files': {
+            'alice/files/Projects': 'Projects', 'alice/files/plain.txt': 'plain.txt'}}).encode()))
+        first, _ = self.restore('1', 'yes', '2', '2', 'yes')
+        self.assertEqual(first, {'plain.txt': b'plain'})
+
+    def test_lists_mixing_formats_or_with_bad_checksums_are_not_trusted(self):
+        bad = self.tree / 'bad.json.gz'
+        for kind, files in (('neko-inventory-v2', {'alice/files/a': 'a'}),
+                            ('neko-inventory-v1', {'alice/files/a': {'copy': 'a', 'sha256': sha(b'a')}}),
+                            ('neko-inventory-v2', {'alice/files/a': {'copy': 'a', 'sha256': 'abc'}}),
+                            ('neko-inventory-v2', {'alice/files/a': {'copy': '../a', 'sha256': sha(b'a')}})):
+            self.write(bad, gzip.compress(json.dumps({'format': kind, 'files': files}).encode()))
+            self.assertIsNone(recovery_wizard.read_inventory(bad), (kind, files))
 
 
 if __name__ == '__main__':
