@@ -390,6 +390,33 @@ class ExistingDockerTests(unittest.TestCase):
                     docker.check_existing_docker(ssd / 'docker-engine')
         self.assertIn('## Replace the OS and reattach the existing store', (ROOT / 'RECOVERY.md').read_text())
 
+    def test_a_docker_with_nothing_in_it_is_taken_over_one_with_something_is_not(self):
+        # Docker makes its folder tree on its first start: an empty tree (the package just
+        # installed, or NekoServer uninstalled) is not "Docker already used on this PC".
+        from modules import docker
+        with tempfile.TemporaryDirectory() as d:
+            default = Path(d) / 'var-lib-docker'
+            for sub in ('containers', 'volumes', 'image/overlay2/imagedb/content/sha256', 'network', 'overlay2', 'tmp'):
+                (default / sub).mkdir(parents=True)
+            (default / 'volumes/metadata.db').write_bytes(b'')
+            (default / 'volumes/backingFsBlockDev').write_bytes(b'')
+            self.assertFalse(docker.store_in_use(default))
+            with mock.patch.object(docker, 'Path', side_effect=lambda p: default if p == '/var/lib/docker' else Path(p)):
+                docker.check_existing_docker(Path(d) / 'docker-engine')   # no complaint
+            (default / 'containers/0123abcd').mkdir()
+            self.assertTrue(docker.store_in_use(default))
+            with mock.patch.object(docker, 'Path', side_effect=lambda p: default if p == '/var/lib/docker' else Path(p)):
+                with self.assertRaisesRegex(RuntimeError, 'keeps its data in'):
+                    docker.check_existing_docker(Path(d) / 'docker-engine')
+        # A running Docker: by its own count.
+        answers = {('docker', 'info', '--format', '{{.Containers}} {{.Images}}'): '0 0', ('docker', 'volume', 'ls', '-q'): ''}
+        self.assertFalse(docker.active_store_in_use(call=lambda argv, timeout=120: answers[tuple(argv)]))
+        answers[('docker', 'volume', 'ls', '-q')] = 'myvolume'
+        self.assertTrue(docker.active_store_in_use(call=lambda argv, timeout=120: answers[tuple(argv)]))
+        answers[('docker', 'volume', 'ls', '-q')] = ''
+        answers[('docker', 'info', '--format', '{{.Containers}} {{.Images}}')] = '0 3'
+        self.assertTrue(docker.active_store_in_use(call=lambda argv, timeout=120: answers[tuple(argv)]))
+
     def test_a_reinstalled_linux_may_bring_a_newer_docker_never_an_older_one(self):
         import recovery_tools
         ok = recovery_tools.docker_new_enough

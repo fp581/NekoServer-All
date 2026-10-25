@@ -3272,4 +3272,245 @@ mod tests {
         assert!(prune_dumps(&root, 0, None).unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn a_full_check_is_recorded_and_due_again_after_four_weeks() {
+        let now = 1_800_000_000.0;
+        // Four weeks, not a day: weekly jobs would otherwise read every copy every time.
+        assert_eq!(FULL_CHECK_EVERY, 28.0 * 86400.0);
+        assert!(!due_since(Some(now - 27.0 * 86400.0), now));
+        let data = scratch("full-check");
+        fs::create_dir_all(data.join("reports/jobs")).unwrap();
+        assert!(full_check_due(&data, "archive"), "no record yet");
+        record_full_check(&data, "archive").unwrap();
+        assert!(!full_check_due(&data, "archive"));
+        assert!(
+            full_check_due(&data, "external"),
+            "each job has its own record"
+        );
+        let _ = fs::remove_dir_all(data);
+    }
+    #[test]
+    fn a_backup_never_copies_into_itself_or_a_parent() {
+        let root = scratch("separate");
+        let source = root.join("hdd/archive");
+        fs::create_dir_all(source.join("inner")).unwrap();
+        fs::create_dir_all(root.join("usb")).unwrap();
+        let (s, d) = separate(&source, &root.join("usb/archive")).unwrap();
+        assert!(s.is_absolute() && d.ends_with("usb/archive"));
+        for dest in [
+            source.clone(),
+            source.join("inner"),
+            root.join("hdd"),
+            root.clone(),
+        ] {
+            let error = separate(&source, &dest).unwrap_err().to_string();
+            assert!(error.contains("overlap"), "{}: {error}", dest.display());
+        }
+        write(&root.join("usb/file"), b"not a folder");
+        let error = separate(&source, &root.join("usb/file"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must be a directory"), "{error}");
+        let error = separate(&root.join("missing"), &root.join("usb"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Source directory missing"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_dry_run_says_which_copies_it_would_make() {
+        let root = scratch("dry-run");
+        let (src, dst) = (root.join("a.txt"), root.join("out/a.txt"));
+        write(&src, b"content");
+        assert!(
+            verified_copy(&src, &dst, false, 0o644).unwrap(),
+            "would be made"
+        );
+        assert!(!root.join("out").exists(), "a dry run writes nothing");
+        assert!(verified_copy(&src, &dst, true, 0o644).unwrap());
+        assert!(
+            !verified_copy(&src, &dst, false, 0o644).unwrap(),
+            "already there"
+        );
+        assert!(!verified_copy(&src, &dst, true, 0o644).unwrap());
+        // Another file in the way, or a folder, is a collision: nothing is overwritten.
+        write(&root.join("out/b.txt"), b"theirs");
+        write(&root.join("b.txt"), b"ours");
+        let error = copy_verified(&root.join("b.txt"), &root.join("out/b.txt"), true, 0o644)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Collision"), "{error}");
+        assert_eq!(fs::read(root.join("out/b.txt")).unwrap(), b"theirs");
+        fs::create_dir_all(root.join("out/c.txt")).unwrap();
+        write(&root.join("c.txt"), b"ours");
+        let error = copy_verified(&root.join("c.txt"), &root.join("out/c.txt"), true, 0o644)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Collision"), "{error}");
+        // A dry run of a file not backed up yet says it would be new, and writes nothing.
+        write(&root.join("d.txt"), b"new");
+        let kept = kept_copy(
+            &root.join("d.txt"),
+            &root.join("out/d.txt"),
+            false,
+            0o644,
+            Check::Quick,
+            None,
+        )
+        .unwrap();
+        assert_eq!(kept.added, Added::New);
+        assert!(!root.join("out/d.txt").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn private_copies_get_a_private_folder() {
+        let root = scratch("private-folder");
+        write(&root.join("key"), b"secret");
+        write(&root.join("photo.jpg"), b"public");
+        copy_verified(&root.join("key"), &root.join("secrets/key"), true, 0o600).unwrap();
+        copy_verified(
+            &root.join("photo.jpg"),
+            &root.join("shared/photo.jpg"),
+            true,
+            0o644,
+        )
+        .unwrap();
+        let mode = |p: &str| fs::metadata(root.join(p)).unwrap().mode() & 0o777;
+        assert_eq!((mode("secrets"), mode("secrets/key")), (0o700, 0o600));
+        assert_eq!((mode("shared"), mode("shared/photo.jpg")), (0o755, 0o644));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_partial_file_that_is_not_a_file_is_refused() {
+        let root = scratch("partial");
+        write(&root.join("a.mov"), b"video");
+        let partial = root.join("out").join(partial_name("a.mov"));
+        fs::create_dir_all(&partial).unwrap();
+        let error = copy_verified(&root.join("a.mov"), &root.join("out/a.mov"), true, 0o644)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Unsafe partial file"), "{error}");
+        assert!(partial.is_dir(), "left for checking");
+        assert!(!root.join("out/a.mov").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn dry_runs_write_no_names_and_versions_accumulate() {
+        let root = scratch("names");
+        let name = "a very long name.txt";
+        remember_name(&root, "short", name, false).unwrap();
+        remember_version(&root, "short.neko-1", name, false).unwrap();
+        assert!(!root.join(NAMES).exists(), "a dry run writes nothing");
+        remember_name(&root, "short", name, true).unwrap();
+        remember_version(&root, "short.neko-1", name, true).unwrap();
+        remember_version(&root, "short.neko-2", name, true).unwrap();
+        let saved = common::json(&root.join(NAMES), 1_000_000);
+        assert_eq!(saved["names"]["short"], name);
+        assert_eq!(saved["versions"]["short.neko-1"], name);
+        assert_eq!(
+            saved["versions"]["short.neko-2"], name,
+            "the first version is kept"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn changes_within_one_second_get_numbered_versions() {
+        let root = scratch("same-second");
+        let (src, dst) = (root.join("notes.txt"), root.join("out/notes.txt"));
+        for body in [b"one".as_slice(), b"two", b"three", b"four"] {
+            write(&src, body);
+            kept_copy(&src, &dst, true, 0o644, Check::Full, None).unwrap();
+        }
+        let versions: Vec<String> = names(&root.join("out"))
+            .into_iter()
+            .filter(|n| n.contains(".neko-") && !n.starts_with('.'))
+            .collect();
+        assert_eq!(versions.len(), 3, "{versions:?}");
+        let dated = regex::Regex::new(r"^notes\.neko-\d{8}T\d{6}Z(-[1-9]\d*)?\.txt$").unwrap();
+        for name in &versions {
+            assert!(dated.is_match(name), "{name}");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_problem_text_lists_ten_files_and_counts_the_rest() {
+        let mut report = Integrity::default();
+        assert!(report.problem("archive").is_none());
+        report.damaged = (1..=10).map(|n| format!("photo{n}.jpg")).collect();
+        let text = report.problem("archive").unwrap();
+        assert!(
+            text.starts_with("10 archive files no longer match"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("photo10.jpg") && !text.contains("more"),
+            "{text}"
+        );
+        report.damaged.push("photo11.jpg".into());
+        let text = report.problem("archive").unwrap();
+        assert!(text.ends_with("photo10.jpg and 1 more"), "{text}");
+        assert!(!text.contains("photo11"));
+    }
+    #[test]
+    fn backup_bookkeeping_is_not_part_of_the_tree() {
+        let root = scratch("tree-files");
+        write(&root.join("upload/photo.jpg"), b"photo");
+        write(&root.join(LEDGER), b"{}");
+        write(&root.join(".neko-ledger.lock"), b"");
+        write(&root.join(".neko-ledger.json.123.tmp"), b"");
+        write(&root.join(NAMES), b"{}");
+        write(&latest_marker(&root.join("upload/photo.jpg")), b"");
+        write(
+            &root.join("upload").join(partial_name("photo.jpg")),
+            b"half",
+        );
+        write(
+            &root
+                .join(QUARANTINE)
+                .join("20260101T000000Z/upload/photo.jpg"),
+            b"damaged",
+        );
+        let keys: Vec<String> = tree_files(&root)
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(keys, ["upload/photo.jpg"]);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn an_audit_counts_every_file_without_a_checksum() {
+        let root = scratch("audit-count");
+        write(&root.join("upload/a.jpg"), b"a");
+        write(&root.join("upload/b.jpg"), b"b");
+        let ledger = Ledger::open(&root).unwrap();
+        let mut report = Integrity::default();
+        audit(&root, &ledger, &mut report).unwrap();
+        assert_eq!(report.unverified, 2);
+        assert!(report.damaged.is_empty() && report.missing.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_name_kept_only_on_the_usb_drive_still_counts_on_exfat() {
+        let root = scratch("case-kept-only");
+        let cloud = root.join("cloud");
+        let usb = root.join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        write(&cloud.join("alice/files/Documents/report.pdf"), b"old");
+        copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        // The folder is renamed to lower case in Nextcloud and nothing of the old
+        // spelling is left there: only the USB drive (add-only) still has it, and that
+        // alone must keep the new file out of a merged folder.
+        fs::remove_dir_all(cloud.join("alice/files/Documents")).unwrap();
+        write(&cloud.join("alice/files/documents/report.pdf"), b"new");
+        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        assert_eq!(fat.refused, ["alice/documents/report.pdf"]);
+        assert_eq!(fat.copied, 0);
+        assert_eq!(
+            fs::read(usb.join("nextcloud/alice/files/Documents/report.pdf")).unwrap(),
+            b"old"
+        );
+        assert!(!usb.join("nextcloud/alice/files/documents").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

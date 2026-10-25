@@ -2037,6 +2037,79 @@ mod tests {
         // name, count, data, then: custom mode + LEDs, effect, custom mode + LEDs (off).
         assert_eq!(ids, vec![50, 0, 1, 1100, 1050, 1101, 1100, 1050]);
     }
+    #[test]
+    fn a_second_sign_in_keeps_the_first_device_signed_in() {
+        let mut gate = Gate::new(Some(pin_record("4321", "salt")));
+        let phone = gate.unlock("4321")["token"].as_str().unwrap().to_string();
+        let laptop = gate.unlock("4321")["token"].as_str().unwrap().to_string();
+        assert_ne!(phone, laptop);
+        assert!(gate.signed_in(&json!({"token": phone})));
+        assert!(gate.signed_in(&json!({"token": laptop})));
+        assert!(!gate.signed_in(&json!({})));
+    }
+    #[test]
+    fn a_curve_needs_a_temperature_the_board_has() {
+        let board = fans::tests::Board::new("curve-sensor");
+        let s = service(&board, None, 1);
+        let output = first_output(&s, 0);
+        let sensor = s.fans.lock().unwrap().controller.inventory.temps[0]
+            .id
+            .clone();
+        let curve = |sensor: &str| {
+            answer(
+                &s,
+                &json!({"op": "fan", "local": true, "output": output, "setting": {
+                    "mode": "curve", "sensor": sensor, "points": [[30, 20], [60, 60], [80, 100]]}}),
+            )
+        };
+        let refused = curve("hwmon9/temp7_input");
+        assert_eq!(refused["error"], "E42");
+        assert_eq!(refused["message"], "Unknown temperature sensor");
+        assert_eq!(board.get("pwm1_enable"), "5", "nothing changed");
+        assert_eq!(curve(&sensor)["ok"], true);
+    }
+    #[test]
+    fn an_unreadable_journal_is_reported_not_taken_for_absent() {
+        let root = std::env::temp_dir().join(format!("neko-journal-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        assert!(matches!(
+            read_journal(&root.join(JOURNALS[0])),
+            Journal::Absent
+        ));
+        assert!(report_unreadable(&root).is_none());
+        // A journal that cannot be read for another reason than being absent (here it is
+        // a folder) is kept and named, never taken for "nothing to hand back".
+        fs::create_dir_all(root.join(JOURNALS[1])).unwrap();
+        assert!(matches!(
+            read_journal(&root.join(JOURNALS[1])),
+            Journal::Unreadable
+        ));
+        let report = report_unreadable(&root).unwrap();
+        assert!(
+            report.contains(JOURNALS[1]) && report.contains("can't be read"),
+            "{report}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn saved_fan_settings_are_loaded_at_start() {
+        let root = std::env::temp_dir().join(format!("neko-fan-settings-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        assert!(load_settings(&root).is_empty());
+        fs::write(
+            root.join("fans.json"),
+            r#"{"outputs": {"hwmon1/pwm1": {"mode": "fixed", "fixed": 60}, "hwmon1/pwm2": {"mode": "nonsense"}}}"#,
+        )
+        .unwrap();
+        let settings = load_settings(&root);
+        assert_eq!(settings.keys().collect::<Vec<_>>(), ["hwmon1/pwm1"]);
+        assert!(
+            matches!(settings["hwmon1/pwm1"].mode, fans::Mode::Fixed(f) if (f - 60.0).abs() < 1e-9)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 }
 
 #[cfg(test)]

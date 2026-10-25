@@ -1,4 +1,4 @@
-# NekoServer v0.39.1
+# NekoServer v0.39.2
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -108,7 +108,7 @@ sudo bash install.sh
 
 Your `my-config.json` stays where it is (git does not touch it); setup updates what changed, builds the runtime for the new version and keeps everything else. Read the new version's *Upgrade notes* in [CHANGELOG.md](../CHANGELOG.md) first.
 
-Coming from a release before 0.39.1, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in. The old folder can then be deleted.
+Coming from a release before 0.39.2, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in. The old folder can then be deleted.
 
 ---
 
@@ -213,7 +213,7 @@ It removes NekoServer from this PC: what you choose, after two confirmations, an
 - **NekoServer itself always goes:** its services and timers, programs, settings, the Samba shares and account it made, the Docker and Samba storage guards, the pages it served on your tailnet, its group, the desktop shortcuts.
 - **Everything else is a checklist** you switch on or off: the apps' containers and networks; the apps' data on the SSD (databases, settings, passwords, downloads, NekoServer's own files; Docker's data-root setting is put back); your photos and videos; your movies, shows and music; your Nextcloud files; the backups on the HDD and the USB drive; the drive mounts (the lines NekoServer wrote in `/etc/fstab`, the empty mount folders).
 - **Then the plan**, every path with its size, and the first confirmation (`yes`). **Then the phrase** that names what goes, typed exactly, such as `remove NekoServer and delete my photos, backups`. Nothing listed can be brought back afterwards.
-- **What stays:** the drives and whatever you kept on them, this folder (delete it yourself), and the packages NekoServer installed (Docker, Samba, Caddy, Tailscale, Rust, OpenRGB, Steam if the TV step added it): remove any you do not want with your package manager. This PC stays logged in to Tailscale.
+- **What stays:** the drives and whatever you kept on them, this folder (delete it yourself), and the packages NekoServer installed (Docker, Samba, Caddy, Tailscale, Rust, OpenRGB, Steam if the TV step added it): remove any you do not want with your package manager (the package repositories NekoServer added for Docker and Tailscale stay with them). Samba's own example `smb.conf`, set aside by setup, is put back. This PC stays logged in to Tailscale.
 
 `bash uninstall.sh --dry-run` only shows what each choice would remove.
 

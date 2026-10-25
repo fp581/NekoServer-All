@@ -214,6 +214,24 @@ class SambaRewriteTests(unittest.TestCase):
             samba.check_rewrite('[global]\n   workgroup = HOME\n', 'lan', {})
 
 
+class SambaExampleTests(unittest.TestCase):
+    """A smb.conf that is not NekoServer's: the package's untouched example is set aside
+    (nobody's settings); a file someone wrote stops setup."""
+    def test_the_packages_example_is_set_aside_and_a_written_one_stays(self):
+        with tempfile.TemporaryDirectory() as d:
+            main = Path(d) / 'smb.conf'
+            main.write_text('# Sample configuration file\n[global]\n')
+            logged = []
+            samba.unmanaged_config(main, mock.Mock(packaged_example=lambda path: True), logged.append)
+            self.assertFalse(main.exists())
+            self.assertEqual((Path(d) / 'smb.conf.packaged').read_text(), '# Sample configuration file\n[global]\n')
+            self.assertIn("the package's unchanged example", logged[0])
+            main.write_text('[global]\n   workgroup = HOME\n')
+            with self.assertRaisesRegex(RuntimeError, 'not written by NekoServer'):
+                samba.unmanaged_config(main, mock.Mock(packaged_example=lambda path: False), logged.append)
+            self.assertTrue(main.exists())
+
+
 class SambaSharesTests(unittest.TestCase):
     """A media-only server (Immich off) has no photo archive: no default Photos share."""
     def test_the_default_photos_share_follows_immich(self):

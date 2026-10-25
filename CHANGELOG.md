@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.39.2 — 2026-10-25
+
+Two things the uninstall-then-install cycle turned up, and four more real tries on the rig.
+
+### Fixed
+- **Setup after the uninstaller, or on a PC whose Docker holds nothing.** Found by reinstalling on Ubuntu after the uninstaller had run: Docker, back on its default store, had started once and made its empty folder tree, and the Docker step refused with "Docker is already set up on this PC and keeps its data in /var/lib/docker". A Docker store with no container, image or volume in it (just installed, or NekoServer uninstalled) is now taken over: a running one is stopped, and Docker runs from the SSD from then on. One with something in it still stops setup, as before.
+- **Samba's untouched example `smb.conf` no longer stops the Samba step.** The same reinstall showed the other half: with the package's example back in place (the uninstaller puts it back; Samba installed before NekoServer leaves it there too), the step refused with "the Samba package's unchanged example, not your settings", and the nightly settings backup refused the unmanaged Samba. The step now sets that example aside as `smb.conf.packaged` itself, as the bootstrap already did for a package it installed, and says so. A `smb.conf` someone wrote still stops the step as before. With both fixes, the whole cycle on Ubuntu 24.04 (the uninstaller with every choice, then a fresh installation that took the settings left in the `nekoserver-v0.36.1` folder): 26 of 28 steps, 46 of 46 checks.
+
+### Tried for real
+- **The OS-reinstall recovery path, tried for real on openSUSE Tumbleweed** (RECOVERY.md, "Replace the OS and reattach the existing store"; until now only on AlmaLinux): the uninstaller stood in for the reinstall (NekoServer itself, the containers and the mounts gone, every drive's data kept), the storage module mounted the drives from the saved settings, the Docker step refused the existing store and pointed at `recover.py`, `recover.py check` / `reattach` / `reattach --apply --confirm <SSD UUID>` reattached it from the copy kept on the SSD, and a normal setup run brought everything back: 26 of 28 steps, 47 of 47 checks, passwords and photos as they were, all 16 containers up. No code change was needed.
+- **The setup window's rough edges, tried for real:** setup started from the window's Start button; a question (Tailscale) stayed on the page after a refresh and was answered there, which the terminal showed as `no  (from the setup window)`; the window was then closed and the run went on from the terminal to the end. Nothing to fix.
+- **The uninstaller on an older install of the Debian family, tried for real** (Ubuntu 24.04 with NekoServer 0.36.1, the 0.39.1 uninstaller, every choice): 22 seconds; no units, containers, networks, settings, Samba pieces, group, fstab lines or mounts left; Docker back on its default data-root; the apt repositories NekoServer added for Docker and Tailscale kept with their packages. One thing it showed: Samba's own example `smb.conf`, which setup sets aside as `smb.conf.packaged` when it writes its own, was left aside. The uninstaller now puts it back when NekoServer's `smb.conf` goes, and says so in the plan. Then on AlmaLinux 10 with NekoServer 0.31.0 (the RHEL family: `smb.service`, dnf repositories): the same, 22 seconds, the example `smb.conf` back in place, the repositories kept.
+
+### Tests
+- **A first mutation-testing pass** (`tests/MUTATION-NOTES.md`): cargo-mutants over the runtime's maintenance, backup, control and serve code (1,459 mutants) and mutmut over the deploy and kept-copy rules, the settings migration, the package maps and the maintenance guard (868 mutants, every one killed by the existing tests). Of the 559 Rust survivors, 25 new tests close the real gaps: above all the monthly update's Compose sandbox checks (`valid_model`, 54 survivors: a model with `privileged`, another network or PID namespace, a bind mount outside the app's folders or a port off loopback must be refused; one test covered one bind mount), the weekly copy's kept-names bookkeeping (the existing test never reached it), the dashboard sign-in's second device, the nvidia readings' freshness window. The rest are boundary swaps no input distinguishes, or defence in depth, each noted. No product bug turned up.
+
+### Upgrade notes
+- `git pull` in `nekoserver`, then `sudo bash install.sh` there (the runtime is built again for this release).
+
 ## v0.39.1 — 2026-10-25
 
 SonarCloud's review of the uninstaller, and what a dry run without sudo turned up.
