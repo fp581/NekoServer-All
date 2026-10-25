@@ -23,7 +23,9 @@ The full profile includes music setup. A music profile is also provided; it resp
 sudo bash install.sh --profile music --apply --config /absolute/path/to/confirmed-config.json
 ```
 
-In Navidrome's initial web page, create the administrator. In its Users settings create a **separate non-administrator listener**. Use that listener for the phone/desktop and the music checks. Account creation still requires you to choose credentials on the actual server; the installer never invents an account or stores an administrator password for monitoring.
+**Your logins.** Setup creates two Navidrome accounts for you: an **administrator** (for managing Navidrome) and a separate **listener** that is not an administrator. Use the listener on your phone and desktop. Both names and passwords are in your credentials file: `sudo less /srv/nekoserver/secrets/accounts/APP-CREDENTIALS.txt` (see ACCOUNT-SETUP.md). If you change one of these passwords in Navidrome, tell setup: in the NekoServer folder (where `install.sh` is) run `sudo python3 account-setup.py --apply --config my-config.json` (press **c** at that account's question).
+
+Only with account setup switched off (`accounts.enabled: false`) do you make them yourself: in Navidrome's first web page create the administrator, then in its Users settings create a separate non-administrator listener.
 
 The interactive installer invokes music-setup.py. You can also run it afterward from this release's preserved SSD directory:
 

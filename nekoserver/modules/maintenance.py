@@ -103,6 +103,6 @@ def run(ctx):
                     'UNENCRYPTED inside data.tar on the HDD (readable by root only), so a restore still has them')
     atomic_json(guard,config)
     write_units(units)
-    for args in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', 'nekoserver-maintenance-resume.service'], ['systemctl', 'enable', '--now', 'nekoserver-maintenance.timer']):
+    for args in (['systemctl', 'daemon-reload'], ['systemctl', 'enable', '--now', '--no-block', 'nekoserver-maintenance-resume.service'], ['systemctl', 'enable', '--now', 'nekoserver-maintenance.timer']):
         subprocess.run(args, check=True, capture_output=True, timeout=1200)
     ctx.log('Monthly overnight maintenance enabled: app-state snapshot on the HDD, then updates. The newest '+str(options(ctx.config).get('keep_snapshots',3) or 'all')+' complete snapshots are kept.')

@@ -370,6 +370,7 @@ pub fn run(a: &Args) -> Result<()> {
     let _recovery = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
     backup::execute_with(Some(&job.data), "host", &job.cfgpath, || {
+        backup::no_unfinished_update()?;
         snapshot(&job.cfgpath, &job.cfg, &job.data, &job.media, &selected)
     })
 }

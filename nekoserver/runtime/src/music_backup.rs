@@ -40,6 +40,7 @@ pub fn run(a: &Args) -> Result<()> {
     } = backup::open_job(a, 64000)?;
     let _lock = backup::coordinate(&config, &data, &media)?;
     backup::execute(Some(&data), "music", &config, || {
+        backup::no_unfinished_update()?;
         let source = common::safe(&data.join("library/music"))?;
         let root = common::safe(&media.join("backups/music"))?;
         let mut rows = vec![];

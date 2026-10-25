@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.39.5 — 2026-10-25
+
+A review round of the parts everyone meets first: installing and setting up, setting up the apps, and the monthly update.
+
+### Fixed: setting up the apps
+- **Lidarr can import music downloads.** qBittorrent puts a download in its category's folder only in its automatic mode, and starts new torrents in manual mode unless told otherwise, so an album landed on the HDD, where Lidarr (which sees only the SSD) could never find it. Setup now switches new torrents to automatic mode. Torrents you already have keep their mode.
+- **Choosing an indexer in the terminal works.** Prowlarr refused every indexer chosen there (its catalogue leaves the indexer without a profile), so each one ended at "do it in the Prowlarr page". It now goes into Prowlarr's own profile, switched on.
+- **Hardware video you switched off stays off.** Switching it off in Jellyfin or Immich was undone by the next `sudo bash install.sh`. **Intel graphics older than about 2014** (before Broadwell) use VA-API instead of Quick Sync, which they can't do on Linux: a one-second Quick Sync test encode decides, and a Quick Sync setting an earlier NekoServer made on such a chip is replaced.
+- **Imported TV shows show up as shows.** Each imported folder went into a folder of its own inside the library, which Jellyfin read as one show (with the real shows as its seasons), and Sonarr, Radarr and Lidarr as one item. Imports now land in the library folder itself. What an earlier release imported is moved up there (a rename on the same drive, nothing copied again); a show already there under the same name is named for you to merge. A file already in the library that differs is never replaced.
+- **Importing again is quick, and a source that is gone after its import no longer nags.** A rerun read every file twice (source and copy) to compare them; copies now keep their original's date, so they are recognised by size and date. A drive unplugged after its import finished is reported as "copied before", not as a step left to do.
+- **New Jellyfin libraries are scanned at once,** so films and shows imported before them appear without waiting for Jellyfin's 12-hourly scan.
+- **A failed onboarding says why,** not only the error's type.
+- **NEXTCLOUD.md and MUSIC.md** say where your logins really are (the credentials file) and that a password you change in the app must also be told to setup (`account-setup.py`, **c**); following the old text made every later run stop at the account check.
+
+### Fixed: installing and setup
+- **Commands in the docs use your settings.** `sudo bash install.sh --module … --apply` without `--config` ran on the template `config.json` (no drives in it) and saved your answers into it, which git tracks, so the next `git pull` failed. Your `my-config.json` is now the default once the wizard has made it, and changes are never saved into the template.
+- **What setup can't run without is said first.** SELinux enforcing (Fedora's default), an older systemd, a pending restart: said before minutes of package installs and the runtime build, and checked once more just before setup starts (an automatic update may have installed a kernel meanwhile).
+- **Start in the setup window no longer says yes to everything.** It sent every switch as drawn, all on, so the TV (Steam), phone alerts and outage alerts were saved as wanted without being asked. Only the switches you press are saved; the TV and the alerts you leave alone are asked about when setup gets to them.
+- **The setup window's last screen** shows setup's own verdict ("ready" or "almost ready"), the same as the terminal, the first checkup included.
+- **A desktop whose Desktop folder is the home folder** (as xdg-user-dirs sets it once `~/Desktop` was deleted) gets its app shortcuts in the menu, instead of a failed step.
+- **Ctrl+C at "Use them for this release?"** stops setup. It used to count as "no", make new settings, and never offer the earlier ones again.
+- **Reinstalling Linux keeps your earlier settings on the SSD.** Setup made new settings before it could see the SSD and then wrote them over the copy kept there, the one recovery needs. Earlier copies are now kept beside it (`config.previous-<date-time>.json`, the newest five).
+- **A FAT32 or NTFS USB stick** is named, with how to make it usable (exFAT or ext4), instead of "connect it first".
+- The welcome text and README no longer claim more than setup does (a full system update happens on Arch only; the timezone is the PC's own).
+
+### Fixed: the monthly update
+- **Updates are downloaded before any app stops.** The release lookups and image downloads ran after the apps had been stopped for the snapshot and its restore test, often for hours, and one GitHub or registry hiccup then cancelled the month. They now run first, with the apps still up, and a download refused for now is tried again (after 30 s, 1½ and 4 minutes). A new Immich release that can't be checked waits for next month without holding back the other apps.
+- **The apps are never stopped in the morning.** On a big library, checking every copy could run past the night window; the apps were then stopped anyway, and the updates deferred, month after month. The window is now checked right before anything stops: past it, nothing is stopped or changed.
+- **A full or unmountable USB drive no longer cancels the monthly update.** Only damage found by the checksum check does; anything else is "done in part", with the reason.
+- **Old app images are cleaned up.** Each update left the replaced images on the SSD for good (a few GB a month). NekoServer's own images from two updates ago that nothing uses are removed; your own images are never touched.
+- **A rollback can start apps whose old image Docker lost** (`docker image prune -a`, say): it is loaded from the snapshot's `images.tar` first.
+- **Nightly backups wait for an unfinished monthly update** (after a power cut, say) instead of saving its half-updated apps as the newest backup. **The weekly USB copy** no longer runs during the monthly update.
+- **A run cut off while it tidied old snapshots** (a restart, the time limit) is finished as the installed update it is, not reported as a failure.
+- **A later NekoServer release can finish an unfinished run** an earlier one started. A restore test cut off part-way has its unpacked copy removed (it took a second copy's space on the HDD for months), and a test container Docker can't remove never keeps the real apps from starting. The resume step at boot no longer waits for the backups' lock when there is nothing to finish.
+
+### Upgrade notes
+- `git pull` in `nekoserver`, then `sudo bash install.sh` there (the runtime is built again for this release).
+- If you imported TV shows with an earlier release, this run moves them up into the TV library; Jellyfin then shows them as shows. If it names a show already in the library, compare and merge the two folders by hand.
+
 ## v0.39.4 — 2026-10-25
 
 A review round of the parts no review had covered yet: recovery, the gateways and remote access, and the dashboard.

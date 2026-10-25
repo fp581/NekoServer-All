@@ -62,6 +62,25 @@ class DesktopShortcutTests(unittest.TestCase):
                 mock.patch('shutil.which', return_value=None):
             return desktop.run(ctx)
 
+    def test_a_desktop_set_to_the_home_folder_gets_menu_entries_only(self):
+        # xdg-user-dirs points DESKTOP at the home folder once ~/Desktop is deleted; the
+        # step failed ("must be a non-symlink directory inside the user home").
+        home = self.root / 'home'
+        home.mkdir()
+        me = pwd.getpwuid(os.getuid())
+        user = mock.Mock(pw_uid=me.pw_uid, pw_gid=me.pw_gid, pw_name=me.pw_name)
+        with mock.patch('shutil.which', return_value='/usr/bin/xdg-user-dir'), \
+                mock.patch.object(tv, 'command', return_value=mock.Mock(returncode=0, stdout=str(home) + '\n')):
+            self.assertIsNone(tv.desktop_folder(user, home))
+        with mock.patch('os.geteuid', return_value=0), \
+                mock.patch.object(tv, 'desktop_user', return_value=(user, home)), \
+                mock.patch.object(tv, 'desktop_folder', return_value=None), \
+                mock.patch.object(tv, 'has_desktop', return_value=True), \
+                mock.patch('shutil.which', return_value=None):
+            desktop.run(mock.Mock(apply=True, config=self.config, log=lambda message: None))
+        self.assertTrue((home / '.local/share/applications/nekoserver-navidrome.desktop').is_file())
+        self.assertFalse(any(p.suffix == '.desktop' for p in home.iterdir()))
+
     def test_old_shortcuts_are_updated_and_big_picture_no_longer_starts_at_login(self):
         home = self.root / 'home'
         autostart = home / desktop.OLD_AUTOSTART

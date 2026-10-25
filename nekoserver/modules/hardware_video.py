@@ -80,6 +80,16 @@ def test_encode(cid, node, run):
     return result.returncode == 0
 
 
+def test_qsv(cid, node, run):
+    """The same test encode through Quick Sync. Intel chips before Broadwell (2014)
+    pass the VA-API test but cannot do Quick Sync on Linux; those use VA-API."""
+    result = run(['docker', 'exec', cid, FFMPEG, '-hide_banner', '-loglevel', 'error', '-init_hw_device', 'vaapi=va:' + node,
+                  '-init_hw_device', 'qsv=qs@va', '-filter_hw_device', 'qs', '-f', 'lavfi',
+                  '-i', 'testsrc=duration=1:size=320x240:rate=10', '-vf', 'format=nv12,hwupload=extra_hw_frames=64',
+                  '-c:v', 'h264_qsv', '-f', 'null', '-'], capture_output=True, text=True, timeout=120)
+    return result.returncode == 0
+
+
 def probe(app, node, run=subprocess.run):
     """What the chip does for video, asked from inside this app's container:
     {'codecs': [...], 'encode': bool}, or None when it decodes nothing there. Some chips
@@ -92,7 +102,10 @@ def probe(app, node, run=subprocess.run):
     support = video_support(result.stdout) if result.returncode == 0 else {'codecs': []}
     if not support['codecs']:
         return None
-    return {'codecs': support['codecs'], 'encode': support['encoder'] and test_encode(cid, node, run)}
+    video = {'codecs': support['codecs'], 'encode': support['encoder'] and test_encode(cid, node, run)}
+    if video['encode']:
+        video['qsv'] = test_qsv(cid, node, run)
+    return video
 
 
 def login_jellyfin(client, entry):
@@ -125,15 +138,18 @@ def ask_for(app, method, node):
 JELLYFIN_DEVICE = {'qsv': 'QsvDevice', 'vaapi': 'VaapiDevice'}
 
 
-def configure_jellyfin(entry, method, node, client, video, ours=False, several=False):
+def configure_jellyfin(entry, method, node, client, video, ours=False, several=False, was_on=False, replace=False):
     """Turn on hardware transcoding unless you already picked a setting yourself: decoding
-    of the formats the chip decodes, and encoding only when the chip passed the test encode."""
+    of the formats the chip decodes, and encoding only when the chip passed the test encode.
+    `was_on`: it was on at the last run, so "off" now is your choice and stays."""
     login_jellyfin(client, entry)
     device = JELLYFIN_DEVICE[method]
     try:
         encoding = client.call('/System/Configuration/encoding')
         current = encoding.get('HardwareAccelerationType') or 'none'
-        if current != 'none':
+        if current == 'none' and was_on:
+            return SWITCHED_OFF
+        if current != 'none' and not (replace and current == 'qsv'):
             action = unset_device(current, method, encoding.get(device), ours, several)
             if action == 'ask':
                 return ask_for('Jellyfin', method, node)
@@ -147,7 +163,7 @@ def configure_jellyfin(entry, method, node, client, video, ours=False, several=F
         client.call('/Sessions/Logout', 'POST')
 
 
-def configure_immich(entry, method, node, client, video, ours=False, several=False):
+def configure_immich(entry, method, node, client, video, ours=False, several=False, was_on=False, replace=False):
     """Turn on hardware transcoding unless you already picked a setting yourself, on the
     chip that passed the check. Immich otherwise picks a device by itself, and on a
     computer with two chips that can be the other one (an AMD chip with Intel's qsv).
@@ -161,7 +177,9 @@ def configure_immich(entry, method, node, client, video, ours=False, several=Fal
     try:
         settings = client.call('/api/system-config')
         current = settings.get('ffmpeg', {}).get('accel') or 'disabled'
-        if current != 'disabled':
+        if current == 'disabled' and was_on:
+            return SWITCHED_OFF
+        if current != 'disabled' and not (replace and current == 'qsv'):
             action = unset_device(current, method, settings['ffmpeg'].get('preferredHwDevice'), ours, several)
             if action == 'ask':
                 return ask_for('Immich', method, node)
@@ -200,12 +218,20 @@ def configure_app(app, chip, entry, client, video, before=None, several=False):
     ("on (qsv)" when NekoServer turned it on)."""
     _, node, jellyfin_method, immich_method = chip
     method = jellyfin_method if app == 'jellyfin' else immich_method
+    # Quick Sync that NekoServer set on a chip that can't do it (releases before 0.39.5
+    # did not test it): replaced by VA-API. Quick Sync someone else set stays theirs.
+    replace = method == 'qsv' and video.get('qsv') is False and str(before or '').startswith('on (qsv')
+    if method == 'qsv' and video.get('qsv') is False:
+        method = 'vaapi'
     ours = str(before or '').startswith('on (' + method)
+    # On at the last run (NekoServer's setting or yours), or already left off by you.
+    was_on = str(before or '').startswith(('on', 'kept')) or before == SWITCHED_OFF
     configure = configure_jellyfin if app == 'jellyfin' else configure_immich
-    return configure(entry, method, node, client, video, ours, several)
+    return configure(entry, method, node, client, video, ours, several, was_on, replace)
 
 
 SOFTWARE = 'converts video in software: the chip did not pass the video check inside it'
+SWITCHED_OFF = 'off: you switched hardware video off in the app, so it is left off'
 NO_ENCODER = 'converts video in software: the chip decodes video but has no working encoder, which Immich needs'
 
 
@@ -295,7 +321,7 @@ def outcome(ctx, report, choices, done):
                          'devices': [c[1] for c in choices], 'apps': done})
     # Waiting for you: an app the chip works with but that couldn't be switched over.
     # A chip that fails an app's own check is an answer, not a step left to do.
-    waiting = [a for a, s in done.items() if not s.startswith(('on', 'kept')) and s != SOFTWARE]
+    waiting = [a for a, s in done.items() if not s.startswith(('on', 'kept')) and s not in (SOFTWARE, SWITCHED_OFF)]
     if waiting:
         return {'status': 'needs_setup', 'reason': 'Graphics chip works; turn on hardware transcoding in: ' +
                 ', '.join(waiting) + ' (see HARDWARE-VIDEO.md)'}

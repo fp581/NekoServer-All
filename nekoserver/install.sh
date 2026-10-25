@@ -372,6 +372,11 @@ if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
     echo '(such as Linux Mint 21, based on Ubuntu 22.04) does not get it from updates: upgrade to the next release first.' >&2
     exit 1
 fi
+if "$apply" && ! "$recover"; then
+    # What setup cannot run without (SELinux enforcing, an older systemd, a restart an
+    # update is waiting for): said now, before minutes of installing and building.
+    python3 "$ROOT/capabilities.py" preflight || exit 1
+fi
 if "$apply" && "$full"; then
     # Every system package the apps need that is not inside their containers (host.py
     # APP_PACKAGES), installed up front so a missing one stops the setup before it
@@ -401,5 +406,11 @@ if "$apply" && ! "$recover" && python3 "$ROOT/native_runtime.py" needs-build; th
     else
         NEKOSERVER_BUILD_AS_ROOT=1 python3 "$ROOT/runtime/build.py"
     fi
+fi
+if "$apply" && ! "$recover"; then
+    # Once more after the packages and the build, before "Ready to start?": an
+    # automatic update (Ubuntu's unattended upgrades) may have installed a new kernel
+    # in those minutes and be waiting for a restart.
+    python3 "$ROOT/capabilities.py" preflight || exit 1
 fi
 exec python3 "$ROOT/installer.py" "$@"

@@ -91,11 +91,27 @@ def choose(items, prompt, ask=input, attempts=3):
     return None
 
 
+def prepared(selected, profiles):
+    """A new indexer from Prowlarr's catalogue entry, ready to save: switched on, and in
+    an app profile (the catalogue leaves the profile at 0, which Prowlarr refuses). The
+    profile Prowlarr made itself ("Standard") is preferred, else the first one."""
+    ids = [p for p in profiles if isinstance(p, dict) and isinstance(p.get('id'), int) and p['id'] > 0]
+    if not ids:
+        raise RuntimeError('Prowlarr has no app profile to put the indexer in; open Prowlarr '
+                           '(Settings, Apps, Sync Profiles), add one, and run setup again')
+    profile = next((p for p in ids if p.get('name') == 'Standard'), ids[0])
+    entry = copy.deepcopy(selected)
+    entry['appProfileId'] = profile['id']
+    entry['enable'] = True
+    return entry
+
+
 def configure_indexers(root, apply, config=None):
     failures=[]
     key = app_key('prowlarr', root)
     schemas = request('prowlarr', key, '/indexer/schema')
     existing = request('prowlarr', key, '/indexer')
+    profiles = request('prowlarr', key, '/appprofile')
     print(f'Prowlarr catalog: {len(schemas)} definitions; {len(existing)} configured indexers')
     query = input('Filter catalog by name (blank for all): ').strip().casefold()
     matches = [s for s in schemas if query in str(s.get('name', '')).casefold()]
@@ -109,7 +125,7 @@ def configure_indexers(root, apply, config=None):
             return
         if any(e.get('implementation') == selected.get('implementation') and e.get('name') == selected.get('name') for e in existing):
             print('Already configured; skipping duplicate'); continue
-        entry = copy.deepcopy(selected)
+        entry = prepared(selected, profiles)
         if apply and config is not None:
             import guided_setup
             from types import SimpleNamespace

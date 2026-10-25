@@ -184,3 +184,19 @@ def require(rows):
     problems = missing(rows)
     if problems:
         raise RuntimeError('This computer cannot run NekoServer setup: ' + '; '.join(problems))
+
+
+def preflight(rows=None, out=sys.stderr):
+    """install.sh's check before it installs or builds anything (and again just before
+    setup starts): the things setup must stop without, said in plain sentences. 0 when
+    there are none, 1 otherwise. The same check runs inside setup too."""
+    problems = missing(detect() if rows is None else rows)
+    for problem in problems:
+        print('This computer cannot run NekoServer setup yet: ' + problem, file=out)
+    return 1 if problems else 0
+
+
+if __name__ == '__main__':
+    if sys.argv[1:] != ['preflight']:
+        sys.exit('usage: python3 capabilities.py preflight')
+    sys.exit(preflight())
