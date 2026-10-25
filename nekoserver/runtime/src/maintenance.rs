@@ -2559,6 +2559,9 @@ fn download_updates(
                 .as_str()
                 .filter(|s| image_id(s))
                 .ok_or_else(|| Error::new("Invalid candidate image"))?;
+            // Noted at once: a run that stops later (the night ran out, a later download
+            // failed, a rollback) leaves no other record of what it downloaded.
+            remember_images(data, &[id.to_string()]);
             v["image"] = json!(id);
         }
         updated[name] = candidate;
@@ -2802,19 +2805,28 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     // the installed update it is, not reported as a failure rolled back.
     // Read before the old snapshots are tidied: with keep_snapshots 1 the run that names
     // them is among those removed.
-    let older = previous_images(media, &run);
+    // The record on the SSD (OLD_IMAGES) also names those whose run folders are gone.
+    let mut older = previous_images(media, &run);
+    older.extend(recorded_images(data));
     retention["after_update"] = match mounts(cfgpath, cfg, false)
         .and_then(|_| prune_monthly(data, media, keep, Some(&run)))
     {
         Ok(report) => report,
         Err(e) => json!({"status":"skipped","reason":e.to_string()}),
     };
-    let _ = common::atomic_json(&snapshot.join("retention.json"), &retention);
     let own = own_repositories(&updated, &image_tags);
     let removed = prune_images(&older, &updated, &models, &|id| {
         image_tags(id).is_some_and(|tags| only_ours(&tags, &own))
             && docker(&["image", "rm", id]).is_ok()
     });
+    let recorded = still_recorded(&older, &removed, &models, &|id| image_tags(id).is_some());
+    if let Err(e) = save_recorded_images(data, &recorded) {
+        println!(
+            "Monthly update: could not note the replaced images for next month's clean-up ({e})"
+        );
+    }
+    retention["images_removed"] = json!(removed);
+    let _ = common::atomic_json(&snapshot.join("retention.json"), &retention);
     if !removed.is_empty() {
         println!("Monthly update: removed {} app image(s) from two updates ago that nothing uses (each kept snapshot still has its own in images.tar)", removed.len());
     }
@@ -2978,9 +2990,71 @@ fn previous_images(media: &Path, current: &str) -> std::collections::BTreeSet<St
         .iter()
         .filter(|r| !folder.join(r).join("result.json").exists())
     {
+        // Immich, Nextcloud and the apps that change the library are checked from a
+        // "-quarantine.json" model before the commit, so a rollback leaves only that one.
         named(run, "-new.json", &mut older);
+        named(run, "-quarantine.json", &mut older);
     }
     older
+}
+/// On the SSD, outside every run folder: the image IDs the monthly update downloaded or
+/// replaced. The run folders that also name them can be gone by the time the clean-up
+/// looks (with keep_snapshots 1 the run of two updates ago is tidied first; a rolled-back
+/// or cut-off run's folder goes once newer snapshots replace it, or at once when nothing
+/// was archived), so the clean-up reads them from here as well.
+const OLD_IMAGES: &str = "backups/maintenance-old-images.json";
+const OLD_IMAGES_FORMAT: &str = "neko-old-images-v1";
+/// The IDs recorded in OLD_IMAGES. A missing, damaged or unknown file is "none
+/// recorded": only something nothing is known about is left in place.
+fn recorded_images(data: &Path) -> std::collections::BTreeSet<String> {
+    let saved = common::json(&data.join(OLD_IMAGES), 4_000_000);
+    if saved["format"] != OLD_IMAGES_FORMAT {
+        return Default::default();
+    }
+    saved["images"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|s| image_id(s))
+        .map(str::to_string)
+        .collect()
+}
+fn save_recorded_images(data: &Path, ids: &std::collections::BTreeSet<String>) -> Result<()> {
+    common::atomic_json(
+        &data.join(OLD_IMAGES),
+        &json!({"format": OLD_IMAGES_FORMAT, "images": ids}),
+    )
+}
+/// Add `ids` to OLD_IMAGES. Best effort: an image that is not recorded is only left on
+/// the SSD (as before), so a failure here never stops an update.
+fn remember_images(data: &Path, ids: &[String]) {
+    let mut all = recorded_images(data);
+    let before = all.len();
+    all.extend(ids.iter().filter(|s| image_id(s)).cloned());
+    if all.len() != before {
+        if let Err(e) = save_recorded_images(data, &all) {
+            println!("Monthly update: could not note a downloaded image for the clean-up ({e})");
+        }
+    }
+}
+/// What OLD_IMAGES keeps after a clean-up: the images this update replaced (they go at
+/// the next update) and every one that could not be removed yet (still in use, or
+/// carrying a name of your own), except those Docker no longer has.
+fn still_recorded(
+    older: &std::collections::BTreeSet<String>,
+    removed: &[String],
+    replaced: &Value,
+    present: &dyn Fn(&str) -> bool,
+) -> std::collections::BTreeSet<String> {
+    let mut keep: std::collections::BTreeSet<String> = older
+        .iter()
+        .filter(|id| !removed.contains(id))
+        .filter(|id| present(id))
+        .cloned()
+        .collect();
+    keep.extend(model_images(replaced));
+    keep
 }
 /// The repositories NekoServer's apps use ("jellyfin/jellyfin"), from the tags of the
 /// images this update installed (each was just downloaded under its app's tag).
@@ -4726,6 +4800,69 @@ mod tests {
         let older = previous_images(&media, "200-1");
         assert!(older.contains(&id('e')));
         assert!(!older.contains(&id('f')));
+        let _ = fs::remove_dir_all(media.parent().unwrap());
+    }
+    #[test]
+    fn images_are_cleaned_up_after_their_run_folders_are_gone() {
+        // keep_snapshots 1: the run of two updates ago and a rolled-back run were tidied
+        // away before this update's clean-up looked. The record on the SSD still names
+        // what they downloaded and replaced.
+        let root = scratch("old-images");
+        let (data, media) = (root.join("ssd"), root.join("hdd"));
+        let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        // The last update replaced "a" with "b"; a rolled-back one then downloaded "f";
+        // this run downloaded "c" (noted as it was downloaded).
+        save_recorded_images(&data, &[id('a')].into_iter().collect()).unwrap();
+        remember_images(&data, &[id('f')]);
+        remember_images(&data, &[id('c'), "nextcloud:31-apache".to_string()]);
+        let mut older = previous_images(&media, "300-1");
+        assert!(older.is_empty());
+        older.extend(recorded_images(&data));
+        assert_eq!(older, [id('a'), id('c'), id('f')].into_iter().collect());
+        let replaced = json!({"jellyfin":{"services":{"jellyfin":{"image":id('b')}}}});
+        let updated = json!({"jellyfin":{"services":{"jellyfin":{"image":id('c')}}}});
+        let removed = prune_images(&older, &updated, &replaced, &|i| i != id('f'));
+        assert_eq!(removed, vec![id('a')]);
+        // "f" could not be removed (say, still in use): it stays recorded, with "b" (to
+        // go at the next update) and "c" (in use now). An image Docker no longer has
+        // ("e") is dropped.
+        older.insert(id('e'));
+        let kept = still_recorded(&older, &removed, &replaced, &|i| i != id('e'));
+        assert_eq!(kept, [id('b'), id('c'), id('f')].into_iter().collect());
+        save_recorded_images(&data, &kept).unwrap();
+        assert_eq!(recorded_images(&data), kept);
+        // A damaged or unknown record is "nothing recorded", never a crash.
+        fs::write(data.join(OLD_IMAGES), b"{not json").unwrap();
+        assert!(recorded_images(&data).is_empty());
+        fs::write(
+            data.join(OLD_IMAGES),
+            br#"{"format":"other","images":["x"]}"#,
+        )
+        .unwrap();
+        assert!(recorded_images(&data).is_empty());
+        // Downloads are noted as they happen; the clean-up reads the record.
+        let source = include_str!("maintenance.rs");
+        let pulls = &source[source.find("fn download_updates(").unwrap()..];
+        let pulls = &pulls[..pulls.find("\nfn transaction(").unwrap()];
+        assert!(pulls.contains("remember_images(data, &[id.to_string()]);"));
+        let commit = &source[source
+            .find("let mut older = previous_images(media, &run);")
+            .unwrap()..];
+        assert!(commit[..200].contains("older.extend(recorded_images(data));"));
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn a_rolled_back_immich_update_s_images_are_found_in_its_quarantine_model() {
+        let media = scratch("rolled-quarantine").join("hdd");
+        let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        let failed = media.join("backups/monthly/150-1");
+        fs::create_dir_all(&failed).unwrap();
+        common::atomic_json(
+            &failed.join("immich-quarantine.json"),
+            &json!({"services":{"immich-server":{"image":id('e')}}}),
+        )
+        .unwrap();
+        assert!(previous_images(&media, "200-1").contains(&id('e')));
         let _ = fs::remove_dir_all(media.parent().unwrap());
     }
     #[test]

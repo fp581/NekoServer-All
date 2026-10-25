@@ -1,5 +1,5 @@
 """Explicit LAN or tailnet Samba shares, no guest access or destructive configuration replacement."""
-import os,pwd,re,shutil,subprocess,sys
+import json,os,pwd,re,shutil,subprocess,sys
 import network_access
 from pathlib import Path
 import host
@@ -185,9 +185,10 @@ def run(context):
             raise RuntimeError(f'Share directory missing: {path}. Create it, or take the "{name}" share out of "shares" under "networking" in my-config.json')
     if waiting:
         return {'status':'needs_setup','reason':'Shared folders wait for '+', '.join(waiting)+': finish those steps, then run setup again'}
+    main=safe_path('/etc/samba/smb.conf'); managed=safe_path(SHARE_FILE)
+    remember_service(service,managed)
     if not shutil.which('smbd'):
         family.install(['samba'])
-    main=safe_path('/etc/samba/smb.conf'); managed=safe_path(SHARE_FILE)
     desired=share_config(settings,media,user)
     # Safest: don't modify a pre-existing unmanaged Samba installation.
     if main.exists() and not includes_ours(main.read_text()):
@@ -229,6 +230,30 @@ def run(context):
         # (shares of your own use it) is never on this list, and stays.
         remember_account(user)
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')
+
+
+# Whether Samba was switched on before NekoServer switched it on: the uninstaller then
+# switches it off again only when it was not (an uninstall leaves Samba as it found it).
+SERVICE_BEFORE='/etc/samba/nekoserver-samba-before.json'
+
+def service_state(unit,run=subprocess.run):
+    """(switched on at startup, running now) of a unit; both False when it is not installed."""
+    shown=run(['systemctl','show',unit,'-p','LoadState','-p','UnitFileState','-p','ActiveState'],
+              capture_output=True,text=True,timeout=15,check=False).stdout
+    state={key:value for key,_,value in (line.partition('=') for line in shown.splitlines() if '=' in line)}
+    loaded=state.get('LoadState')=='loaded'
+    return (loaded and state.get('UnitFileState') in ('enabled','enabled-runtime'),
+            loaded and state.get('ActiveState') in ('active','activating','reloading'))
+
+def remember_service(unit,managed,record=None,run=subprocess.run):
+    """Written once, before the first setup of the shares (before Samba is installed or
+    switched on). A server whose shares are already NekoServer's (set up by a release from
+    before this record) gets none: then the uninstaller decides from smb.conf."""
+    record=Path(record or SERVICE_BEFORE)
+    if record.exists() or Path(managed).exists():
+        return
+    enabled,active=service_state(unit,run)
+    atomic_write(record,json.dumps({'format':'neko-samba-before-v1','unit':unit,'enabled':enabled,'active':active})+'\n',0o644)
 
 
 # The Samba accounts NekoServer created itself, one per line.

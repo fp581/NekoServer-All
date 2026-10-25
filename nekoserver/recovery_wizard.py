@@ -5,6 +5,7 @@ live data is never overwritten. Each restore ends with what to do next.
 """
 import datetime as dt
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zlib
 
 import guided_setup
 from neko_common import (QUARANTINE, BackupDamaged, atomic_json, backup_files, copy_checked, ensure_room, findmnt, read_ledger,
@@ -392,16 +394,141 @@ def copy_latest(sources, destination, output=print, checked=None):
     return len(chosen)
 
 
-def copy_choice(sources, target, prompt, output, ledger_root=None):
-    """Newest version of each file (recommended), or every version as stored. Every
-    file is checked against the checksum ledger at `ledger_root`."""
-    checked = Checked(ledger_root)
-    missing = checked.require_present(sources)
+# Since 0.39.6 each weekly copy that finishes writes which files you had then (their
+# path in the backup and the saved copy holding each one's content then), as
+# .neko-inventory/<UTC time>.json.gz at the backup's root (runtime inventory.rs).
+INVENTORY_DIR = '.neko-inventory'
+INVENTORY_NAME = re.compile(r'^(\d{8}T\d{6}Z)(?:-(\d{1,9}))?\.json\.gz$')
+INVENTORY_LIMIT = 1 << 30   # unpacked; a list this big is not trusted
+
+
+def inventories(root):
+    """[(path, date)] of a backup's lists of the files you had, newest first."""
+    folder = Path(root) / INVENTORY_DIR
+    found = []
+    if folder.is_dir() and not folder.is_symlink():
+        for path in folder.iterdir():
+            match = INVENTORY_NAME.match(path.name)
+            if match and path.is_file() and not path.is_symlink():
+                found.append(((match[1], int(match[2] or 0)), path))
+    return [(path, readable(key[0])) for key, path in sorted(found, reverse=True)]
+
+
+def read_inventory(path):
+    """{path in the backup: name of the saved copy beside it}, or None when the list is
+    missing, damaged or of an unknown kind (then nothing is restored from it)."""
+    try:
+        with gzip.open(path, 'rb') as stream:
+            raw = stream.read(INVENTORY_LIMIT + 1)
+        value = json.loads(raw) if len(raw) <= INVENTORY_LIMIT else None
+    except (OSError, EOFError, ValueError, zlib.error):
+        return None
+    files = value.get('files') if isinstance(value, dict) and value.get('format') == 'neko-inventory-v1' else None
+    if not isinstance(files, dict):
+        return None
+    for key, copy in files.items():
+        if not valid_ledger_path(key) or not isinstance(copy, str) or not valid_ledger_path(copy) or '/' in copy:
+            return None
+    return files
+
+
+def plain_file(root, key):
+    """A regular file at `key` under `root`, reached without following any link."""
+    path = Path(root)
+    for part in key.split('/'):
+        path = path / part
+        if path.is_symlink():
+            return False
+    return path.is_file()
+
+
+def listed_versions(sources, root, files):
+    """([(saved copy, path in the restore)], [paths missing from the backup]) for the
+    files an inventory lists under the restored folders."""
+    chosen, missing = [], []
+    for name, folder in sources:
+        try:
+            prefix = Path(folder).relative_to(root).as_posix() + '/'
+        except ValueError:
+            continue
+        for key, copy in sorted(files.items()):
+            if not key.startswith(prefix):
+                continue
+            saved = key.rsplit('/', 1)[0] + '/' + copy
+            if plain_file(root, saved):
+                chosen.append((Path(root) / saved, Path(name) / key[len(prefix):]))
+            else:
+                missing.append(key)
+    return chosen, missing
+
+
+def copy_listed(chosen, destination, checked):
+    """Copy each listed file's saved copy under the file's own name."""
+    ensure_room(destination.parent, sum(p.stat().st_size for p, _ in chosen), 'The restore')
+    destination.mkdir(mode=0o700)
+    for path, target in chosen:
+        checked.copy(path, destination / target)
+    return len(chosen)
+
+
+NO_INVENTORY = ('This backup has no list yet of which files you had at each backup (it is written by each '
+                'weekly copy since 0.39.6), so files you deleted or renamed come back too.')
+
+
+def restore_scope(listed, prompt, output):
+    """('as_of', inventory path, date) or ('everything', None, None); None to go back."""
+    if not listed:
+        output(NO_INVENTORY)
+        return 'everything', None, None
+    options = [('last', f'As of the last backup ({listed[0][1]}): only the files you had then (recommended)')]
+    if len(listed) > 1:
+        options.append(('date', 'As of an earlier backup: choose the date'))
+    options.append(('everything', 'Everything ever kept, also files you deleted or renamed'))
+    pick = choose('Which files?', options, prompt, output)
+    if pick == 'date':
+        path = choose('As of which backup?', listed[1:], prompt, output)
+        return None if path is None else ('as_of', path, dict(listed)[path])
+    if pick == 'last':
+        return 'as_of', listed[0][0], listed[0][1]
+    return None if pick is None else ('everything', None, None)
+
+
+def missing_check(missing, checked, prompt, output):
+    """Say which checked files this backup lost, and stop if you say so."""
     if missing:
         output(f'{len(missing)} files that were backed up and checked are missing from this backup '
                f'(for example {", ".join(missing[:5])}). The other backup (HDD or USB) may have them.')
         if not ask('Restore everything else from this backup now? ("no" stops, with nothing restored)', prompt, output):
             raise RuntimeError('Nothing was restored. Use the other backup (HDD or USB), or the recovery menu\'s repair option.')
+    checked.missing = missing
+
+
+def copy_as_of(sources, target, checked, inventory, output, prompt):
+    """Only the files an inventory lists, each as it was then. None: the list is unusable."""
+    path, date = inventory
+    files = read_inventory(path)
+    if files is None:
+        output(f'The list of files from {date} could not be read, so everything ever kept is offered instead.')
+        return None
+    chosen, missing = listed_versions(sources, checked.root, files)
+    missing_check(missing, checked, prompt, output)
+    output(f'Restoring the {len(chosen)} files you had at the backup of {date}.')
+    return copy_listed(chosen, target, checked)
+
+
+def copy_choice(sources, target, prompt, output, ledger_root=None):
+    """The files you had at a backup (when the backup lists them; recommended), else the
+    newest version of each file ever kept, or every version as stored. Every file is
+    checked against the checksum ledger at `ledger_root`."""
+    checked = Checked(ledger_root)
+    scope = restore_scope(inventories(ledger_root) if ledger_root else [], prompt, output)
+    if scope is None:
+        raise RuntimeError('Nothing was restored (you went back).')
+    count = copy_as_of(sources, target, checked, scope[1:], output, prompt) if scope[0] == 'as_of' else None
+    if count is not None:
+        output(checked.summary(target))
+        return count - len(checked.damaged), True
+    missing_check(checked.require_present(sources), checked, prompt, output)
     if ask('Restore only the NEWEST version of each file? (recommended; "no" copies every version)',
            prompt, output):
         count, latest = copy_latest(sources, target, output, checked), True

@@ -8,6 +8,7 @@ mod drive_return;
 mod fans;
 mod heartbeat;
 mod host_snapshot;
+mod inventory;
 mod ledger;
 mod live;
 mod maintenance;

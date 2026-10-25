@@ -10,6 +10,7 @@ music, your Nextcloud files, the backups, the drive mounts. Nothing is ever form
 a drive you keep is left exactly as it is, and the packages NekoServer installed
 (Docker, Samba, Caddy, Tailscale, Rust, OpenRGB, ...) are left for you to keep or remove.
 """
+import errno
 import fcntl
 import grp
 import json
@@ -34,6 +35,8 @@ SAMBA_CONFIG = '/etc/samba/smb.conf'
 SAMBA_CREATED = '/etc/samba/nekoserver-accounts'   # the Samba accounts setup created (modules/samba.py)
 OWN_SMB_CONF = '[global]\n   include = /etc/samba/nekoserver.conf\n'   # the smb.conf setup writes when there was none
 PACKAGED_SMB_CONF = '/etc/samba/smb.conf.packaged'   # the package's example, set aside by setup; put back when NekoServer's own goes
+SAMBA_BEFORE = '/etc/samba/nekoserver-samba-before.json'   # was Samba on before NekoServer switched it on (modules/samba.py)
+SAMBA_UNITS = ('smbd.service', 'smb.service')   # Debian and Ubuntu; Arch and Fedora
 MANAGED = '# Managed by NekoServer'
 DAEMON_JSON = '/etc/docker/daemon.json'
 DOCKER_GUARD = '/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf'   # modules/docker.py
@@ -90,16 +93,67 @@ USB_OWN = ('upload', 'library', 'nextcloud', 'immich-database', 'neko-damaged')
 FILESYSTEM_OWN = ('lost+found',)
 
 
-def read_settings(root=ROOT):
-    """my-config.json, or the template's defaults when the folder has none."""
-    for name in (SETTINGS, TEMPLATE):
-        try:
-            value = json.loads((Path(root) / name).read_text())
-        except (OSError, ValueError):
-            continue
-        if isinstance(value, dict):
-            return value
-    return {}
+# What setup wrote about the drives outside this folder: the mount folders and the drives'
+# UUIDs (native_runtime.storage_config: data_mount, media_mount, storage). Used when this
+# folder has no my-config.json (the uninstaller run from a fresh download, say).
+DRIVE_RECORDS = ('/etc/nekoserver-os/drives.json', '/etc/nekoserver-backups/storage.json')
+
+
+def _json_object(path):
+    try:
+        value = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def drive_record(path):
+    """The drives part of one of setup's records, or None when it is missing, unreadable or
+    not one (a mount folder that is not text, no drive with a UUID)."""
+    value = _json_object(path)
+    if not value or not all(isinstance(value.get(key), str) for key in ('data_mount', 'media_mount')):
+        return None
+    storage = value.get('storage')
+    if not isinstance(storage, dict) or not any(isinstance(v, dict) and isinstance(v.get('uuid'), str) and v['uuid'] for v in storage.values()):
+        return None
+    return {key: value[key] for key in ('data_mount', 'media_mount', 'storage')}
+
+
+def newest_drive_record(root='/'):
+    """(record, its path) of the one setup wrote last, or (None, None)."""
+    found = []
+    for name in DRIVE_RECORDS:
+        path = system_file(root, name)
+        record = drive_record(path)
+        if record is not None:
+            found.append((path.stat().st_mtime, name, record))
+    if not found:
+        return None, None
+    _, name, record = max(found, key=lambda item: item[0])
+    return record, name
+
+
+def find_settings(root=ROOT, system='/'):
+    """(settings, where they came from, in words). my-config.json in this folder first. Without
+    it, the drives setup recorded in /etc (newest of DRIVE_RECORDS) on top of the template, so
+    that a fresh download still finds the real mount folders and UUIDs."""
+    mine = _json_object(Path(root) / SETTINGS)
+    if mine is not None:
+        return mine, str(Path(root) / SETTINGS)
+    template = _json_object(Path(root) / TEMPLATE) or {}
+    record, name = newest_drive_record(system)
+    if record is not None:
+        return {**template, **record}, (name + " (the drives setup recorded: this folder has no " + SETTINGS
+                                        + "; the USB backup drive is not in that record)")
+    if template:
+        return template, ('the template ' + str(Path(root) / TEMPLATE) + ' (no ' + SETTINGS + ' here and no record of the drives in '
+                          + ' or '.join(DRIVE_RECORDS) + '), so nothing on the drives is removed')
+    return {}, 'no settings found, so nothing on the drives is removed'
+
+
+def read_settings(root=ROOT, system='/'):
+    """my-config.json, or setup's record of the drives with the template's defaults."""
+    return find_settings(root, system)[0]
 
 
 def mount_folder(value, default):
@@ -280,6 +334,34 @@ class Plan:
         except OSError:
             return []
         return sorted(line.strip() for line in lines if line.strip() and not line.startswith('#'))
+
+    def samba_service(self, own):
+        """(the Samba service, True when it is to be switched off, the words for the plan), or
+        (None, False, '') when Samba is not installed or already off. Off only when NekoServer
+        switched it on: its record says it was off before, or (no record, from a release
+        before it was kept) smb.conf is NekoServer's own. Your own smb.conf means your Samba."""
+        record = _json_object(self.at(SAMBA_BEFORE))
+        if record is not None and (record.get('format') != 'neko-samba-before-v1' or record.get('unit') not in SAMBA_UNITS
+                                   or not isinstance(record.get('enabled'), bool)):
+            record = None   # not one this release can read: as if there were none
+        units = [record['unit']] if record else list(SAMBA_UNITS)
+        unit = next((u for u in units if self.unit_on(u)), None)
+        if unit is None:
+            return None, False, ''
+        if record:
+            on_before = record['enabled'] or record.get('active') is True
+            why = 'it was on before NekoServer' if on_before else 'NekoServer switched it on (it was off before)'
+            return unit, not on_before, why
+        if own:
+            return unit, True, 'NekoServer switched it on (smb.conf is only its own include)'
+        return unit, False, 'your own smb.conf uses it'
+
+    def unit_on(self, unit):
+        """Installed, and switched on at startup or running now."""
+        shown = self.run(['systemctl', 'show', unit, '-p', 'LoadState', '-p', 'UnitFileState', '-p', 'ActiveState'], 30)
+        state = dict(line.partition('=')[::2] for line in shown.splitlines() if '=' in line)
+        return state.get('LoadState') == 'loaded' and (state.get('UnitFileState') in ('enabled', 'enabled-runtime')
+                                                       or state.get('ActiveState') in ('active', 'activating', 'reloading'))
 
     def reused_accounts(self):
         """Accounts the shares used that NekoServer did not create (they stay)."""
@@ -488,8 +570,15 @@ class Plan:
     def _samba_part(self, paths, notes):
         """The Samba files NekoServer wrote (added to `paths`) and what the plan says."""
         shares, own, accounts = self.samba()
+        self.samba_off = None
+        if self.at(SAMBA_BEFORE).is_file():
+            paths.append(self.at(SAMBA_BEFORE))
         if not shares:
             return
+        unit, off, why = self.samba_service(own)
+        if unit:
+            self.samba_off = unit if off else None
+            notes.append('Samba (' + unit + ') ' + ('is switched off: ' if off else 'stays on: ') + why)
         paths.append(shares)
         if self.at(SAMBA_CREATED).is_file():
             paths.append(self.at(SAMBA_CREATED))
@@ -628,20 +717,22 @@ def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/', cal
             _reset_docker_root(system_file(root, DAEMON_JSON), call, out)
     except Stopped as exc:
         raise Stopped(str(exc) + _restore_units(before, call, out)) from None
+    left = []
     for port in plan.served:
         out('Switching off the Tailscale address on port ' + port)
-        _tried(call, out, ['tailscale', 'serve', '--bg', '--https=' + port, 'off'])
+        _tried(call, out, ['tailscale', 'serve', '--bg', '--https=' + port, 'off'], left, 'the Tailscale address on port ' + port)
     shares, own, accounts = plan.samba()
-    _remove_samba_accounts(plan, accounts, call, out)
+    _remove_samba_accounts(plan, accounts, call, out, left)
+    _switch_off_samba(plan, call, out, left)
     if plan.unmask:
         out('Unmasking ' + ', '.join(plan.unmask))
-        _tried(call, out, ['systemctl', 'unmask', *plan.unmask])
+        _tried(call, out, ['systemctl', 'unmask', *plan.unmask], left, 'the masks on ' + ', '.join(plan.unmask))
     _finish_packages(plan, call, out, reconcile)
     journal_limits = any('journald' in str(p) for p in plan.os_dropins())
-    left = _remove_files(plan, chosen, out, rmtree)
-    if journal_limits:
-        call(['systemctl', 'restart', 'systemd-journald.service'], 60)   # the log limits go now; logind's at the next start
-    _tidy_system(plan, units, shares, own, run, out)
+    left += _remove_files(plan, chosen, out, rmtree)
+    if journal_limits:   # the log limits go now; logind's at the next start
+        _tried(call, out, ['systemctl', 'restart', 'systemd-journald.service'], left, "NekoServer's log limits (until the next restart)")
+    _tidy_system(plan, units, shares and not plan.samba_off, own, run, out)
     if 'mounts' in chosen:
         left += _remove_mounts(plan, system_file(root, FSTAB), call, out)
     if units:
@@ -713,11 +804,23 @@ def _tidy_system(plan, units, shares, own, run, out):
         run(['groupdel', CONTROL_GROUP], 30)
 
 
-def _tried(call, out, argv):
-    """Run one change; when it fails, say so with the command to run by hand."""
+def _tried(call, out, argv, left=None, what=''):
+    """Run one change; when it fails, say so with the command to run by hand (and add
+    `what` to the list of what was left, when given). True when it worked."""
     code, said = call(argv, 60)
     if code != 0:
         out('  could not (' + (said or EXIT_STATUS + str(code)) + '): sudo ' + ' '.join(argv))
+        if left is not None and what:
+            left.append(what + ' (sudo ' + ' '.join(argv) + ')')
+    return code == 0
+
+
+def _switch_off_samba(plan, call, out, left):
+    """Samba switched off when NekoServer switched it on (the plan says which, and why)."""
+    unit = getattr(plan, 'samba_off', None)
+    if unit:
+        out('Switching off Samba (' + unit + '), which NekoServer switched on')
+        _tried(call, out, ['systemctl', 'disable', '--now', unit], left, 'Samba is still on')
 
 
 EXIT_STATUS = 'exit status '   # what a failed command said when it said nothing
@@ -817,7 +920,7 @@ def _reset_docker_root(path, call, out):
     replace_system_file(path, json.dumps(content, indent=2) + '\n')
 
 
-def _remove_samba_accounts(plan, accounts, call, out):
+def _remove_samba_accounts(plan, accounts, call, out, left=None):
     """Only accounts NekoServer created (its record of them); a failure is said, not hidden."""
     for account in accounts:
         if plan.run(['pdbedit', '-L', '-u', account], 30).strip():
@@ -825,6 +928,8 @@ def _remove_samba_accounts(plan, accounts, call, out):
             code, said = call(['smbpasswd', '-x', account], 30)
             if code != 0:
                 out('  could not remove it (' + (said or EXIT_STATUS + str(code)) + '): sudo smbpasswd -x ' + account)
+                if left is not None:
+                    left.append('the Samba account ' + account + ' (sudo smbpasswd -x ' + account + ')')
 
 
 def _remove_files(plan, chosen, out, rmtree):
@@ -838,20 +943,32 @@ def _remove_files(plan, chosen, out, rmtree):
             continue
         for path in (p for p in plan.groups[key]['paths'] if p not in keep):
             out('  removing ' + str(path))
-            if not _removed(path, rmtree):
+            if not _removed(path, rmtree, out):
                 left.append(str(path))
     return left
 
 
-def _removed(path, rmtree):
-    """Remove one path the plan found; True when it is gone."""
+SHOWN_FAILURES = 5   # of the files inside one folder that could not be deleted, this many are named
+
+
+def _removed(path, rmtree, out=print):
+    """Remove one path the plan found; True when it is gone. What could not be deleted
+    (a file in use, a read-only drive, permission denied) is said, never skipped quietly."""
+    failed = []
+
+    def failure(_function, where, error):
+        failed.append(str(where) + ': ' + str(error[1] if isinstance(error, tuple) else error))
     try:
         if path.is_dir() and not path.is_symlink():
-            rmtree(path, ignore_errors=True)
+            rmtree(path, **{('onexc' if sys.version_info >= (3, 12) else 'onerror'): failure})
         else:
             path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    except OSError as exc:
+        failed.append(str(path) + ': ' + str(exc))
+    for line in failed[:SHOWN_FAILURES]:
+        out('  could not delete ' + line)
+    if len(failed) > SHOWN_FAILURES:
+        out('  ... and ' + str(len(failed) - SHOWN_FAILURES) + ' more in ' + str(path))
     return not (path.exists() or path.is_symlink())
 
 
@@ -886,18 +1003,29 @@ def _remove_mounts(plan, path, call, out):
             out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
             left.append(folder + ' (still mounted)')
             continue
-        try:
-            plan.at(folder).rmdir()
-        except OSError:
-            out('  (' + folder + ' is not empty, so the folder stays)')
+        _remove_mount_folder(plan, folder, out, left)
     return left
+
+
+def _remove_mount_folder(plan, folder, out, left):
+    """The mount folder of an unmounted drive, when it is empty. Files in it (written there
+    while the drive was not mounted) stay, and so does a folder that cannot go: both said."""
+    try:
+        plan.at(folder).rmdir()
+    except OSError as exc:
+        if exc.errno == errno.ENOTEMPTY:
+            out('  (' + folder + ' is not empty, so the folder stays: look inside before you delete it)')
+            left.append(folder + ' (the mount folder: there are files in it)')
+        else:
+            out('  could not remove the folder ' + folder + ' (' + (exc.strerror or str(exc)) + ')')
+            left.append(folder + ' (the mount folder: ' + (exc.strerror or str(exc)) + ')')
 
 
 def not_removed(left):
     """The lines naming what the uninstall could not remove ([] when nothing is left)."""
     if not left:
         return []
-    return (['Done, except for these, which could not be removed (remove them yourself, or run  sudo bash uninstall.sh  again):']
+    return (['These could not be removed or switched off (do it yourself, or run  sudo bash uninstall.sh  again):']
             + ['   - ' + path for path in left])
 
 
@@ -953,7 +1081,9 @@ def main(argv):
     if blocked:
         print(blocked, file=sys.stderr)
         return 1
-    plan = Plan(read_settings())
+    settings, source = find_settings()
+    plan = Plan(settings)
+    print('Settings: ' + source)
     if dry:
         print('Dry run: what each choice would remove. Nothing is changed.')
         if os.geteuid() != 0:
@@ -977,7 +1107,7 @@ def main(argv):
         return 130
     print('')
     print(*not_removed(left), sep='\n', end='\n' if left else '')
-    print('Done. ' + PACKAGES_LEFT)
+    print(('Finished, but not everything went (see the list above). ' if left else 'Done. ') + PACKAGES_LEFT)
     if 'mounts' not in chosen:
         print('The drives stay mounted as before; take their lines out of /etc/fstab when you no longer want that.')
     print('This folder (' + str(ROOT) + ') is yours to delete.')

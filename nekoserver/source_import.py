@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Verified, add-only media copies from local folders or existing network mounts."""
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -8,7 +10,8 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from neko_common import UnreadableEntries, findmnt, partial_name, safe_path, atomic_json, publish_no_replace, ensure_directory, strict_files, verify_storage, rename_no_replace, checked_settings, default_settings
+from stat import S_ISREG
+from neko_common import UnreadableEntries, findmnt, partial_name, safe_path, atomic_json, strict_files, verify_storage, rename_no_replace, checked_settings, default_settings
 
 
 def digest(path):
@@ -89,6 +92,18 @@ class DriveGuard:
         except OSError:
             device=None
         if self.device is None:self.device=device
+        self.same(device)
+
+    def check_fd(self,fd):
+        """The same check for an open folder or file (its handle, not its name)."""
+        try:
+            device=os.fstat(fd).st_dev
+        except OSError:
+            device=None
+        if self.device is None:self.device=device
+        self.same(device)
+
+    def same(self,device):
         if mount_id(self.root)!=self.mount or device is None or device!=self.device:
             raise DriveGone('The destination drive is no longer mounted; the import stopped before writing more')
 
@@ -100,31 +115,175 @@ class IncompleteSource(RuntimeError):
         super().__init__('Could not read: '+', '.join(paths[:5]))
 
 
+# Folders are opened one name at a time, each inside the one before, never following a
+# symlink. A source folder (a download client's, say) and the library folders can be
+# changed by the apps' containers while a copy runs: a file or folder swapped for a
+# symlink between the checks and the copy could otherwise make NekoServer (which runs as
+# root) read a file from outside the source, or write one outside the library.
+FOLDER=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC
+
+
+def rename_at(folder,old,new):
+    """Rename `old` to `new` inside the open `folder`, never over something already there
+    (FileExistsError). Raises RuntimeError without Linux renameat2."""
+    libc=ctypes.CDLL(None,use_errno=True)
+    rename=getattr(libc,'renameat2',None)
+    if rename is None:raise RuntimeError('Linux renameat2 is needed to publish files safely')
+    rename.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]
+    rename.restype=ctypes.c_int
+    if rename(folder,os.fsencode(old),folder,os.fsencode(new),1)!=0:   # RENAME_NOREPLACE
+        code=ctypes.get_errno()
+        raise (FileExistsError if code==errno.EEXIST else OSError)(code,os.strerror(code),new)
+
+
+def make_folder(parent,name,mode,uid,gid):
+    """Make the folder `name` inside the open `parent` with its owner and mode already set
+    (made under a temporary name, then moved into place, as ensure_directory does)."""
+    temp='.'+name+'.neko-new'
+    try:
+        os.rmdir(temp,dir_fd=parent)   # left by a run cut off here (never a symlink: rmdir refuses one)
+    except OSError:
+        pass
+    os.mkdir(temp,mode,dir_fd=parent)
+    set_owner(parent,temp,mode,uid,gid)
+    try:
+        rename_at(parent,temp,name)
+    except FileExistsError:
+        os.rmdir(temp,dir_fd=parent)   # made meanwhile by something else: that one stays
+    except (OSError,RuntimeError):
+        # A filesystem without no-replace renames (FAT, say): made in place.
+        os.rmdir(temp,dir_fd=parent)
+        os.mkdir(name,mode,dir_fd=parent)
+        set_owner(parent,name,mode,uid,gid)
+
+
+def set_owner(parent,name,mode,uid,gid):
+    """Owner and mode of a folder just made, through its own handle (not its name)."""
+    folder=os.open(name,FOLDER,dir_fd=parent)
+    try:
+        if uid is not None:os.fchown(folder,uid,gid)
+        os.fchmod(folder,mode)   # after the owner change, whatever the umask
+    finally:os.close(folder)
+
+
+def open_folder(path,mode=None,uid=None,gid=None):
+    """A handle on the folder `path`, opened from / one name at a time without following
+    any symlink (OSError if one is in the way). With `mode`, missing folders are made."""
+    folder=os.open('/',FOLDER)
+    try:
+        for name in Path(path).parts[1:]:
+            try:
+                inner=os.open(name,FOLDER,dir_fd=folder)
+            except FileNotFoundError:
+                if mode is None:raise
+                make_folder(folder,name,mode,uid,gid)
+                inner=os.open(name,FOLDER,dir_fd=folder)
+            os.close(folder)
+            folder=inner
+    except BaseException:
+        os.close(folder)
+        raise
+    return folder
+
+
+def open_source(current,stat):
+    """The source file, opened without following a symlink anywhere below the source
+    folder, and checked to be the very file that was planned (same drive and inode, a
+    regular file). Anything else means the source changed since it was checked."""
+    parent=open_folder(current.parent)
+    try:
+        reader=os.open(current.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent)
+    finally:os.close(parent)
+    info=os.fstat(reader)
+    if not S_ISREG(info.st_mode) or (info.st_dev,info.st_ino)!=(stat.st_dev,stat.st_ino):
+        os.close(reader)
+        raise RuntimeError('Source changed during import')
+    return reader
+
+
+def fd_digest(fd):
+    h=hashlib.sha256()
+    offset=0
+    while chunk:=os.pread(fd,1024*1024,offset):
+        h.update(chunk);offset+=len(chunk)
+    return h.hexdigest()
+
+
+def remove_partial(parent,temp):
+    """A partial copy left by an interrupted run is removed (only a plain file)."""
+    try:
+        info=os.stat(temp,dir_fd=parent,follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if not S_ISREG(info.st_mode):raise RuntimeError('Unsafe partial import')
+    os.unlink(temp,dir_fd=parent)
+
+
+def copy_into(reader,writer,stat):
+    """Stream the source into the new file, then check both: the source kept its size
+    and date while it was read, and the copy on disk holds the same bytes."""
+    while chunk:=os.read(reader,1024*1024):
+        write_all(writer,chunk)
+    os.fsync(writer)
+    after=os.fstat(reader)
+    if after.st_size!=stat.st_size or after.st_mtime_ns!=stat.st_mtime_ns or fd_digest(writer)!=fd_digest(reader):
+        raise RuntimeError('Source changed during import')
+
+
+def write_all(fd,data):
+    view=memoryview(data)
+    while view:view=view[os.write(fd,view):]
+
+
+def publish_at(parent,temp,name,expected):
+    """Publish the finished copy `temp` as `name` inside the open `parent`, never over an
+    existing file: a hard link (no symlink followed), or a no-replace rename on drives
+    without hard links (exFAT). `expected` is the copy's own (device, inode): a file
+    put in its place meanwhile is never published."""
+    try:
+        os.link(temp,name,src_dir_fd=parent,dst_dir_fd=parent,follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno not in (errno.EPERM,errno.EOPNOTSUPP,errno.ENOSYS):raise
+        rename_at(parent,temp,name)
+    info=os.stat(name,dir_fd=parent,follow_symlinks=False)
+    if (info.st_dev,info.st_ino)!=expected:
+        raise RuntimeError('Library folder changed during import')
+    os.fsync(parent)
+
+
 def import_file(current,dest,stat,uid,gid,guard=None):
     """Copy one file next to its destination, check it, then publish it (never over an
-    existing file). The destination drive is checked before writing and before publishing."""
+    existing file). The destination drive is checked before writing and before publishing.
+    Source and library folders are used through handles opened without following
+    symlinks, so a folder or file swapped meanwhile can't send the copy elsewhere."""
     if guard:guard.check(dest.parent)
-    ensure_directory(dest.parent, 0o2775, uid, gid)
-    if guard:guard.check(dest.parent)
-    # A short name of its own: a 255-byte name plus a suffix would be too long.
-    temp=safe_path(dest.with_name(partial_name(dest.name)))
-    if temp.exists():
-        if not temp.is_file():raise RuntimeError('Unsafe partial import')
-        temp.unlink()
+    reader=open_source(current,stat)
+    parent=None
     try:
-        with current.open('rb') as reader,temp.open('xb') as writer:
-            for chunk in iter(lambda:reader.read(1024*1024),b''):writer.write(chunk)
-            os.fchmod(writer.fileno(), 0o664)
-            writer.flush();os.fsync(writer.fileno())
-            if uid is not None:os.fchown(writer.fileno(),uid,gid)
-        after=current.stat()
-        if after.st_size!=stat.st_size or after.st_mtime_ns!=stat.st_mtime_ns or digest(temp)!=digest(current):
-            raise RuntimeError('Source changed during import')
-        # The original's date, so a later run recognises the copy without reading both.
-        os.utime(temp,ns=(stat.st_atime_ns,stat.st_mtime_ns))
-        if guard:guard.check(temp)
-        publish_no_replace(temp,dest)
-    finally:temp.unlink(missing_ok=True)
+        parent=open_folder(safe_path(dest.parent),0o2775,uid,gid)
+        if guard:guard.check_fd(parent)
+        # A short name of its own: a 255-byte name plus a suffix would be too long.
+        temp=partial_name(dest.name)
+        remove_partial(parent,temp)
+        writer=os.open(temp,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
+        try:
+            copy_into(reader,writer,stat)
+            os.fchmod(writer,0o664)
+            if uid is not None:os.fchown(writer,uid,gid)
+            # The original's date, so a later run recognises the copy without reading both.
+            os.utime(writer,ns=(stat.st_atime_ns,stat.st_mtime_ns))
+            if guard:guard.check_fd(writer)
+            mine=os.fstat(writer)
+            publish_at(parent,temp,dest.name,(mine.st_dev,mine.st_ino))
+        finally:
+            os.close(writer)
+            try:
+                os.unlink(temp,dir_fd=parent)
+            except FileNotFoundError:
+                pass
+    finally:
+        os.close(reader)
+        if parent is not None:os.close(parent)
 
 
 def legacy_target(folder,media,category):
@@ -171,11 +330,11 @@ def already_copied(current,dest,apply=False):
     different file (never replaced). Same size and date (copies keep their original's
     date): not read again. Otherwise (a copy from before 0.39.5) the contents decide, and
     a match takes its original's date, so the next run doesn't read both again."""
-    if not dest.is_file():return False
+    if dest.is_symlink() or not dest.is_file():return False   # a symlink there is never "the copy"
     have,want=dest.stat(),current.stat()
     if (have.st_size,have.st_mtime_ns)==(want.st_size,want.st_mtime_ns):return True
     if have.st_size!=want.st_size or digest(current)!=digest(dest):return False
-    if apply:os.utime(dest,ns=(have.st_atime_ns,want.st_mtime_ns))
+    if apply:os.utime(dest,ns=(have.st_atime_ns,want.st_mtime_ns),follow_symlinks=False)
     return True
 
 
@@ -197,7 +356,8 @@ def planned_copies(folder,target,apply=False,conflicts=None):
         if dest.exists() or dest.is_symlink():
             note_conflict(current,dest,folder,apply,conflicts)
             continue
-        entries.append((current,dest,current.stat()))
+        # lstat: the file itself (strict_files found it a regular file, never a symlink).
+        entries.append((current,dest,current.lstat()))
     return entries
 
 
