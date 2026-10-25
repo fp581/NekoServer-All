@@ -1,5 +1,5 @@
 {
-  "project_name": "NekoServer v0.39.4",
+  "project_name": "NekoServer v0.39.5",
   "timezone": "auto",
   "data_mount": "/srv/nekoserver",
   "media_mount": "/mnt/nekoserver-media",

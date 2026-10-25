@@ -45,7 +45,7 @@ STEPS = {
 WELCOME = [
     f'Welcome to NekoServer {VERSION}.',
     '',
-    'The system is up to date and the packages the apps need are installed.',
+    'The packages the apps need are installed (on Arch the whole system was updated first, as Arch needs).',
     'Next, this sets up your home media server. It will:',
     '  1. Connect this server to Tailscale, so you can use your apps from anywhere, privately.',
     '  2. Ask you to pick your SSD, HDD and USB drive, and check they have enough space.',
@@ -132,7 +132,12 @@ def take_earlier_settings(root=ROOT, account=None, prompt=input, output=print):
     if source is None:
         return False
     output('This PC already has a NekoServer server set up. Its settings are in ' + str(source) + '.')
-    if not ask('Use them for this release (yes when updating)?', prompt, output):
+    answer = guided_setup.yes_no('Use them for this release (yes when updating)?', prompt, output)
+    if answer is None:
+        # Stopped here (Ctrl+C, Ctrl+D): no new settings file, or the next run would
+        # never offer these again and ask for every drive and password from the start.
+        raise KeyboardInterrupt
+    if not answer:
         output('A new settings file is made instead: setup asks for the drives and passwords again.')
         return False
     path = Path(root) / SETTINGS

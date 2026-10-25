@@ -87,10 +87,15 @@ def user_command(user,home,argv):
 
 
 def desktop_folder(user,home):
+    """The desktop user's Desktop folder, or None when there is none to put shortcuts in:
+    xdg-user-dirs sets it to the home folder itself when ~/Desktop was deleted (common
+    with a window manager), and shortcuts would then land loose in the home folder. The
+    menu entries are made either way."""
     if not shutil.which('xdg-user-dir'):return home/'Desktop'
     result=command(user_command(user,home,['xdg-user-dir','DESKTOP']))
     if result.returncode:return home/'Desktop'
-    value=safe_path(result.stdout.strip())
+    value=safe_path(result.stdout.strip().rstrip('/') or '/')
+    if value==home:return None
     if not value.is_absolute() or home not in value.parents:raise RuntimeError('Desktop location must be a non-symlink directory inside the user home')
     return value
 

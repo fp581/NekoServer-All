@@ -112,7 +112,12 @@ def run(ctx):
     files = shortcuts(ctx.config)
     folders = [home / '.local/share/applications']
     if ctx.config.get('tv', {}).get('desktop_shortcuts', True):
-        folders.append(tv.desktop_folder(user, home))
+        desktop = tv.desktop_folder(user, home)
+        if desktop is None:
+            ctx.log('Desktop shortcuts: this desktop has no Desktop folder (it is set to your home folder), '
+                    'so the apps are in the menu only')
+        else:
+            folders.append(desktop)
     for folder in folders:
         for name, text in files.items():
             place(folder / name, text, user, home, ctx.log)

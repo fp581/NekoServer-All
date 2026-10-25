@@ -1,4 +1,4 @@
-# NekoServer v0.39.4
+# NekoServer v0.39.5
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -113,7 +113,7 @@ It is one installation, which you can follow and answer in two places at the sam
 
 **2. The setup window** (on a PC with a desktop). A few seconds after you start `sudo bash install.sh`, a small window opens in your web browser by itself. The terminal says so and shows the window's address, for example `http://127.0.0.1:40123/t/AbC.../`.
 
-- **Before setup starts** it explains the optional extras (a TV, phone alerts, outage alerts, Nextcloud) and has a switch for each. Leave on what you want, then press **Start setup** (the same as typing `yes` at "Ready to start?" in the terminal). From then on the choices are fixed; to change one later, edit `my-config.json` and run setup again.
+- **Before setup starts** it explains the optional extras (a TV, phone alerts, outage alerts, Nextcloud) and has a switch for each. Switch off what you don't want (setup asks about the TV and the alerts you leave alone when it gets to them; Nextcloud is installed unless you switch it off), then press **Start setup** (the same as typing `yes` at "Ready to start?" in the terminal). From then on the choices are fixed; to change one later, edit `my-config.json` and run setup again.
 - **While setup runs** it shows the step under way, what that step installs and why, and every question setup asks, with buttons and boxes to answer it. Answer it there or in the terminal: whichever comes first counts.
 - **"Answer this step in the terminal"**: a few steps run a program of their own (connecting the media apps, music setup, the shared-folder password) whose questions can only be answered in the terminal. The window says so while they run; switch to the terminal for them.
 - **Closed the window, or it did not open?** Copy the address the terminal showed into a browser **on this PC** and it opens again. It works only on this PC (it is not reachable from another computer or a phone) and only while setup runs. Without a desktop, use the terminal alone; nothing is missing.
@@ -122,7 +122,7 @@ More detail: [GUIDED-SETUP.md](GUIDED-SETUP.md#the-setup-window).
 
 **Stopped, or something not finished?** Run `sudo bash install.sh` again. It keeps everything already done and continues with the rest. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again.
 
-Your settings are saved in `my-config.json` next to the installer. The wizard creates it the first time, with your timezone and user filled in, so you don't need to edit it. See [Optional settings](#optional-settings).
+Your settings are saved in `my-config.json` next to the installer. The wizard creates it the first time, with your user filled in (the timezone is this PC's own, `"auto"`), so you don't need to edit it. See [Optional settings](#optional-settings).
 
 **Updating to a newer release.** In the `NekoServer-All/nekoserver` folder:
 

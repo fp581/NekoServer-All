@@ -188,7 +188,16 @@ def main(argv=None):
     safe_report(output,findings)
     return max(readiness_exit(findings),2 if result else 0)
 
+def failure(exc):
+    """What stopped onboarding, in words: the reason its own checks give (written to
+    name no secret), or what the system said for a file it could not use."""
+    if isinstance(exc,OSError):
+        return (exc.strerror or type(exc).__name__)+(': '+str(exc.filename) if exc.filename else '')
+    if isinstance(exc,KeyError):
+        return 'a setting is missing from the settings file: '+str(exc)
+    return str(exc) or type(exc).__name__
+
 if __name__=='__main__':
     try: sys.exit(main())
     except (OSError,ValueError,RuntimeError,KeyError) as exc:
-        print('Onboarding failed:',type(exc).__name__,file=sys.stderr);sys.exit(2)
+        print('Onboarding failed:',failure(exc),file=sys.stderr);sys.exit(2)

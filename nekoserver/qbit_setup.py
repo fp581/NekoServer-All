@@ -47,6 +47,20 @@ def category_ok(category, path, desired='/data/downloads'):
         return path in ('', desired + '/music')
     return path in ('', desired, desired + '/' + category)
 
+def automatic_mode(preferences):
+    """The preference change that makes new torrents start in automatic mode, where each
+    category's own folder is used ({} when they already do)."""
+    return {} if preferences.get('auto_tmm_enabled') is True else {'auto_tmm_enabled':True}
+
+def retained(verified,actual,changes,categories,desired):
+    """qBittorrent kept what setup asked for: the download folders, automatic mode and
+    each category's folder."""
+    path=lambda value:str(value).rstrip('/')
+    return (path(verified.get('save_path',''))==desired
+            and ('temp_path' not in changes or path(verified.get('temp_path',''))==changes['temp_path'])
+            and verified.get('auto_tmm_enabled') is True
+            and all(c in actual and category_ok(c,path(actual[c].get('savePath','')),desired) for c in categories))
+
 def configure(username,password,apply=False,categories=('tv','movies','music'),client=None,output=print):
     client=client or Client()
     try:
@@ -69,6 +83,12 @@ def configure(username,password,apply=False,categories=('tv','movies','music'),c
                     raise RuntimeError('qBittorrent has a custom incomplete path; review manually')
                 if client.call('/torrents/info',json_result=True):raise RuntimeError('Existing torrents prevent changing the incomplete path')
                 changes['temp_path']='/data/downloads/incomplete'
+        # Each category's own folder is used only in Automatic Torrent Management mode,
+        # and qBittorrent starts new torrents in Manual mode unless told otherwise: the
+        # Arr apps send only the category, so in Manual mode an album would land in the
+        # HDD's /data/downloads, where Lidarr (which sees only the SSD) cannot find it.
+        # This changes only how new torrents start; existing torrents keep their mode.
+        changes.update(automatic_mode(preferences))
         fix={}
         for category in categories:
             if category not in existing:continue
@@ -89,8 +109,6 @@ def configure(username,password,apply=False,categories=('tv','movies','music'),c
             for category,path in fix.items():client.call('/torrents/editCategory',{'category':category,'savePath':path})
             verified=client.call('/app/preferences',json_result=True)
             actual=client.call('/torrents/categories',json_result=True)
-            if (str(verified.get('save_path','')).rstrip('/')!=desired
-                or ('temp_path' in changes and str(verified.get('temp_path','')).rstrip('/')!=changes['temp_path'])
-                or not all(c in actual and category_ok(c,str(actual[c].get('savePath','')).rstrip('/'),desired) for c in categories)):
+            if not retained(verified,actual,changes,categories,desired):
                 raise RuntimeError('qBittorrent did not retain expected download configuration')
     finally:client.close()

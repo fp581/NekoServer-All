@@ -218,6 +218,8 @@ class InstallScriptTests(unittest.TestCase):
         text = text.replace('system_path=/var/cache/pacman', 'system_path=' + str(system_path))
         text = re.sub(r'(?m)^exec python3 .*$', 'echo "START $*" >> "$LOG"', text)
         text = re.sub(r'(?m)^    python3 "\$ROOT/host.py" bootstrap$', '    echo BOOTSTRAP >> "$LOG"', text)
+        # The system check reads this machine; logged instead (capabilities' own tests check it).
+        text = text.replace('python3 "$ROOT/capabilities.py" preflight || exit 1', 'echo PREFLIGHT >> "$LOG"')
         text = text.replace('/run/reboot-required', str(self.root / 'reboot-required'))
         text = text.replace('/run/ostree-booted', str(self.root / 'ostree-booted'))
         text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
@@ -632,6 +634,7 @@ class QbitMusicCategoryTests(unittest.TestCase):
         def __init__(self, music_path, torrents):
             self.categories = {'tv': {'savePath': '/data/downloads'}, 'music': {'savePath': music_path}}
             self.torrents, self.edits = torrents, []
+            self.preferences = {'save_path': '/data/downloads', 'auto_tmm_enabled': True}
 
         def login(self, *a):
             pass
@@ -641,7 +644,9 @@ class QbitMusicCategoryTests(unittest.TestCase):
 
         def call(self, endpoint, form=None, json_result=False):
             if endpoint == '/app/preferences':
-                return {'save_path': '/data/downloads'}
+                return dict(self.preferences)
+            if endpoint == '/app/setPreferences':
+                self.preferences.update(json.loads(form['json']))
             if endpoint == '/torrents/categories':
                 return self.categories
             if endpoint.startswith('/torrents/info'):
@@ -666,6 +671,29 @@ class QbitMusicCategoryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'not /data/downloads/music'):
             qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
         self.assertEqual(fake.edits, [])
+
+    def test_new_torrents_start_in_automatic_mode_so_each_category_folder_is_used(self):
+        # Manual mode (qBittorrent's default) ignores the category's folder: albums then
+        # land on the HDD, where Lidarr cannot see them.
+        import qbit_setup
+        fake = self.Fake('/data/downloads/music', [{'name': 'a show'}])
+        fake.preferences = {'save_path': '/data/downloads'}
+        qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
+        self.assertIs(fake.preferences['auto_tmm_enabled'], True)
+
+    def test_a_qbittorrent_that_does_not_keep_automatic_mode_stops_setup(self):
+        import qbit_setup
+        fake = self.Fake('/data/downloads/music', [])
+        fake.preferences = {'save_path': '/data/downloads'}
+        real = fake.call
+
+        def forgetful(endpoint, form=None, json_result=False):
+            if endpoint == '/app/setPreferences':
+                return {}
+            return real(endpoint, form, json_result)
+        fake.call = forgetful
+        with self.assertRaisesRegex(RuntimeError, 'did not retain'):
+            qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
 
     def test_shared_folder_is_fine_for_tv_and_movies(self):
         import qbit_setup

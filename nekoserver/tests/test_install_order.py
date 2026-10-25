@@ -317,7 +317,7 @@ class HardwareVideoTests(unittest.TestCase):
             probed.append((app, node))
             return {'codecs': ['h264'], 'encode': True} if node == amd[1] else None   # Intel fails, AMD passes
 
-        def jellyfin(entry, method, node, client, video, ours=False, several=False):
+        def jellyfin(entry, method, node, client, video, ours=False, several=False, was_on=False, replace=False):
             set_to['jellyfin'] = (method, node)
             return 'on (' + method + ')'
         client = mock.Mock()
@@ -389,6 +389,27 @@ class HardwareVideoTests(unittest.TestCase):
         self.assertIn('kept your setting', hv.configure_jellyfin(entry, 'qsv', '/dev/dri/renderD128', mine, {'codecs': ['h264', 'hevc'], 'encode': True}))
         self.assertIn('kept your setting', hv.configure_immich(entry, 'qsv', '/dev/dri/renderD128', mine, {'codecs': ['h264', 'hevc'], 'encode': True}))
         self.assertEqual(mine.saved, {})
+        # Switched off in the app after NekoServer turned it on: a rerun leaves it off,
+        # and that is not a step left to do.
+        video = {'codecs': ['h264'], 'encode': True}
+        chip = ('intel', '/dev/dri/renderD128', 'qsv', 'qsv')
+        for before in ('on (qsv)', 'kept your setting (vaapi)', hv.SWITCHED_OFF):
+            off = Fake({'HardwareAccelerationType': 'none'}, {'accel': 'disabled'})
+            self.assertEqual(hv.configure_app('jellyfin', chip, entry, off, video, before=before), hv.SWITCHED_OFF)
+            self.assertEqual(hv.configure_app('immich', chip, entry, off, video, before=before), hv.SWITCHED_OFF)
+            self.assertEqual(off.saved, {})
+        # Never on before (first run, or the chip failed last time): turned on.
+        for before in (None, hv.SOFTWARE, 'needs your login: turn it on in the app (see HARDWARE-VIDEO.md)'):
+            fresh = Fake({'HardwareAccelerationType': 'none'}, {'accel': 'disabled'})
+            self.assertEqual(hv.configure_app('jellyfin', chip, entry, fresh, video, before=before), 'on (qsv)')
+
+    def test_an_app_you_switched_off_is_not_waited_for(self):
+        from modules import hardware_video as hv
+        with tempfile.TemporaryDirectory() as d:
+            ctx = mock.Mock()
+            result = hv.outcome(ctx, Path(d) / 'r.json', [('intel', '/dev/dri/renderD128', 'qsv', 'qsv')],
+                                {'jellyfin': hv.SWITCHED_OFF, 'immich': 'on (qsv)'})
+            self.assertIsNone(result)
 
     def test_a_setting_an_older_release_made_gets_its_device(self):
         from modules import hardware_video as hv
@@ -432,9 +453,52 @@ class HardwareVideoTests(unittest.TestCase):
                 return mock.Mock(stdout='VAProfileH264Main : VAEntrypointVLD\nVAProfileH264Main : VAEntrypointEncSlice\n', returncode=0)
             return mock.Mock(stdout='', returncode=0)     # the test encode
         VAINFO = '/usr/lib/jellyfin-ffmpeg/vainfo'
-        self.assertEqual(hv.probe('jellyfin', '/dev/dri/renderD128', run), {'codecs': ['h264'], 'encode': True})
+        self.assertEqual(hv.probe('jellyfin', '/dev/dri/renderD128', run), {'codecs': ['h264'], 'encode': True, 'qsv': True})
         self.assertIn(VAINFO, calls[1])
         self.assertIn('h264_vaapi', calls[2])
+        self.assertIn('h264_qsv', calls[3])
+
+    def test_an_intel_chip_without_quick_sync_uses_va_api(self):
+        # Before Broadwell (2014): the VA-API test passes, Quick Sync does not.
+        from modules import hardware_video as hv
+
+        def run(argv, **kw):
+            if argv[:2] == ['docker', 'ps']:
+                return mock.Mock(stdout='abc123\n', returncode=0)
+            if 'h264_qsv' in argv:
+                return mock.Mock(stdout='', returncode=1)
+            return mock.Mock(stdout='VAProfileH264Main : VAEntrypointVLD\nVAProfileH264Main : VAEntrypointEncSlice\n', returncode=0)
+        video = hv.probe('jellyfin', '/dev/dri/renderD128', run)
+        self.assertIs(video['qsv'], False)
+        seen = []
+        with mock.patch.object(hv, 'configure_jellyfin', lambda entry, method, *a: seen.append(method) or 'on (' + method + ')'):
+            result = hv.configure_app('jellyfin', ('intel', '/dev/dri/renderD128', 'qsv', 'qsv'), {}, None, video)
+        self.assertEqual((seen, result), (['vaapi'], 'on (vaapi)'))
+
+    def test_quick_sync_an_earlier_release_set_on_such_a_chip_is_replaced(self):
+        from modules import hardware_video as hv
+        saved = {}
+        fake = mock.Mock()
+        fake.headers = {'Authorization': 'MediaBrowser Client="x"'}
+
+        def call(endpoint, method='GET', payload=None):
+            if endpoint == '/Users/AuthenticateByName':
+                return {'AccessToken': 't', 'User': {'Policy': {'IsAdministrator': True}}}
+            if endpoint == '/System/Configuration/encoding':
+                if method == 'POST':
+                    saved.update(payload)
+                return {'HardwareAccelerationType': 'qsv', 'QsvDevice': '/dev/dri/renderD128'}
+            return {}
+        fake.call = call
+        entry = {'username': 'admin', 'password': 'pw'}
+        video = {'codecs': ['h264'], 'encode': True, 'qsv': False}
+        chip = ('intel', '/dev/dri/renderD128', 'qsv', 'qsv')
+        self.assertEqual(hv.configure_app('jellyfin', chip, entry, fake, video, before='on (qsv)'), 'on (vaapi)')
+        self.assertEqual(saved['HardwareAccelerationType'], 'vaapi')
+        saved.clear()
+        # Set to Quick Sync by someone else: theirs, left alone.
+        self.assertIn('kept your setting', hv.configure_app('jellyfin', chip, entry, fake, video, before=None))
+        self.assertEqual(saved, {})
 
     def test_a_chip_that_only_decodes_gets_decoding_only(self):
         from modules import hardware_video as hv

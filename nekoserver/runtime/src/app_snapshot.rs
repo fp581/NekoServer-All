@@ -307,6 +307,7 @@ pub fn run(a: &Args) -> Result<()> {
     let _recovery_lock = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
     let result = backup::execute(Some(&job.data), "applications", &job.cfgpath, || {
+        backup::no_unfinished_update()?;
         snapshot(&job.cfgpath, &job.data, &job.media, &names)
     });
     if result.is_ok() {

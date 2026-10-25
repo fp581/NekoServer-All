@@ -70,8 +70,30 @@ def preserve(data,project,config,log=print):
         target=safe_path(dest/rel)
         if not target.exists():atomic_write(target,payload,0o750 if target.suffix in ('.py','.sh') or target.name=='nekoserver-runtime' else 0o640)
     atomic_json(dest/MANIFEST,{'version':VERSION,'sha256':{rel:hashlib.sha256(payload).hexdigest() for rel,payload in payloads.items()}})
+    keep_previous(dest/'config.json',config,log)
     atomic_json(dest/'config.json',config)
     return dest
+
+
+PREVIOUS_KEPT=5
+
+
+def keep_previous(saved,config,log=print,now=None):
+    """Settings different from the copy already kept keep that copy beside it, as
+    config.previous-<time>.json (the newest five). After Linux is reinstalled, setup makes
+    new settings before it can see the SSD, then copies them here, maybe more than once:
+    the earlier ones, the ones recovery needs, stay."""
+    try:
+        earlier=json.loads(safe_path(saved).read_text())
+    except (OSError,ValueError):
+        return
+    if earlier==config:return
+    stamp=time.strftime('%Y%m%d-%H%M%S',time.localtime(now))
+    previous=saved.with_name('config.previous-'+stamp+'.json')
+    atomic_json(previous,earlier)
+    for old in sorted(saved.parent.glob('config.previous-*.json'))[:-PREVIOUS_KEPT]:
+        old.unlink()
+    log(f'The settings kept on the SSD were different; the earlier ones are kept at {previous}')
 
 
 def run(ctx):

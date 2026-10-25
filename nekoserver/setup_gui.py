@@ -117,7 +117,8 @@ class Window:
                 'current': current['id'] if current else None,
                 'done': sum(1 for s in steps if s['status'] in SETTLED), 'total': len(steps),
                 'question': question, 'terminal': setup_progress.terminal_handoff(),
-                'finish': finished['lines'] if finished else []}
+                'finish': finished['lines'] if finished else [],
+                'complete': bool(finished and finished.get('complete') is True)}
 
     def freeze(self):
         """Setup has started (in the terminal or the window): from now on the choices

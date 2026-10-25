@@ -194,6 +194,19 @@ class WizardFlowTests(unittest.TestCase):
         self.assertTrue(any('asks for the drives and passwords again' in line for line in out))
         self.assertEqual(self.settings_uuid(), '')
 
+    def test_stopping_at_that_question_keeps_them_for_the_next_run(self):
+        # Ctrl+C counted as "no": a new settings file was made, and since it then
+        # existed, no later run offered the earlier settings again.
+        self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')
+
+        def stopped(question=''):
+            raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            wizard.run(mock.Mock(), self.root / 'state', prompt=stopped, output=lambda *_: None, root=self.root)
+        self.assertFalse((self.root / 'my-config.json').exists())
+        self.setup_until_ready('yes')
+        self.assertEqual(self.settings_uuid(), 'kept')
+
     def test_settings_already_here_are_used_without_asking(self):
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'old folder')
         self.saved(self.root / 'my-config.json', 'here')

@@ -139,7 +139,7 @@ def jellyfin(client, media, apply, username, password):
                 results.append(row('jellyfin:' + category, 'needs_setup', 'Preview: library would be created'))
                 continue
             if not existing:
-                query = urllib.parse.urlencode({'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'false'})
+                query = urllib.parse.urlencode({'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'true'})
                 client.call('/Library/VirtualFolders?' + query, 'POST', {})
                 existing = matching(folders(client), category, name, kind)
                 if not existing:

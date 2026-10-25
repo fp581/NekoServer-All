@@ -1796,6 +1796,22 @@ pub fn publish_snapshot(
 /// check the drives again. Anything that starts or stops services (including resuming
 /// after an interrupted backup) runs only after this, so it never acts on the wrong
 /// drives or in the middle of a monthly update or its rollback.
+/// Refused while a monthly update is unfinished (its journal is there): after a power
+/// cut its half-updated apps would otherwise be saved as the newest backup, just before
+/// its way back replaces them. Checked with the shared lock held, after which the
+/// monthly run cannot start or finish. The resume steps don't call this: they must
+/// still be able to start the apps.
+pub(crate) fn no_unfinished_update() -> Result<()> {
+    no_unfinished_update_at(Path::new(crate::maintenance::JOURNAL))
+}
+fn no_unfinished_update_at(journal: &Path) -> Result<()> {
+    if journal.exists() {
+        return Err(Error::new(
+            "A monthly update has not finished yet, so this backup waits (it would save half-updated apps). It is finished by: sudo systemctl start nekoserver-maintenance-resume.service",
+        ));
+    }
+    Ok(())
+}
 pub fn coordinate(cfgpath: &Path, data: &Path, media: &Path) -> Result<fs::File> {
     guard(cfgpath, data, media)?;
     let held = common::lock_wait(
@@ -2142,9 +2158,20 @@ fn cloud_encrypted(cloud: &Path) -> bool {
                 .any(|u| fs::symlink_metadata(u).is_ok_and(|m| m.is_dir()) && keys(u))
         })
 }
+/// The weekly USB copy. It takes the shared lock first (as the photo archive does), so it
+/// never runs during the monthly snapshot and update, which read the same HDD; the
+/// monthly run makes its own copy of the drive while holding that lock.
 pub fn weekly(a: &Args) -> Result<()> {
+    let cfg = a.path("config")?;
+    let data = common::mount_path(a.get("data")?)?;
+    let media = common::mount_path(a.get("media-root")?)?;
+    let _recovery = coordinate(&cfg, &data, &media)?;
     usb_copy(a, Check::Quick)
 }
+/// How a USB copy failure that is damage (a copy no longer matching its checksum, a
+/// verified file gone) begins, unlike a drive that is full or would not mount: the
+/// monthly run stops only for damage.
+pub(crate) const INTEGRITY: &str = "Backup copies failed their checksum check: ";
 /// The monthly run's first step for the USB drive: the weekly copy, with every copy on
 /// the drive compared with its checksum (the weekly runs compare size and date only).
 pub fn monthly_usb_check(a: &Args) -> Result<()> {
@@ -2315,7 +2342,7 @@ fn usb_copy(a: &Args, check: Check) -> Result<()> {
             .flatten()
             .collect();
             if !damage.is_empty() {
-                return Err(Error::new(&damage.join(". ")));
+                return Err(Error::new(&format!("{INTEGRITY}{}", damage.join(". "))));
             }
             Ok(incomplete(
                 cloud_copy.and_then(|c| c.missing()),

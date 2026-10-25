@@ -410,6 +410,18 @@ def execute(args, root=ROOT):
     finally:
         os.close(fd)
 
+def settings_for(args, parser):
+    """The settings file a command without --wizard/--recover uses (those two default to
+    my-config.json themselves). Everything else uses it too once the wizard has made it:
+    the template next to it (config.json, which git tracks) has no drives in it, and
+    setup would save into it, so changes are never applied to the template."""
+    mine = ROOT / 'my-config.json'
+    chosen = args.config or str(mine if mine.exists() else ROOT / 'config.json')
+    if args.apply and Path(chosen).resolve() == (ROOT / 'config.json').resolve():
+        parser.error('config.json is the template, not your settings. Run  sudo bash install.sh  first '
+                     '(it makes my-config.json with your drives and choices), or name a settings file with --config')
+    return chosen
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='NekoServer safe phase-one installer framework')
     mode = parser.add_mutually_exclusive_group()
@@ -422,12 +434,11 @@ def main(argv=None):
     parser.add_argument('--apply', action='store_true', help='Allow explicitly supported system changes (requires root for Docker install)')
     parser.add_argument('--check', action='store_true', help='Validate configuration and dependency graph without running')
     parser.add_argument('--dry-run', action='store_true', help='Preview execution; writes nothing')
-    parser.add_argument('--config', help='Settings file (default: config.json here; the wizard and recovery use my-config.json)')
+    parser.add_argument('--config', help='Settings file (default: my-config.json here, the one the wizard made)')
     parser.add_argument('--state-dir', default=str(DEFAULT_STATE))
     args = parser.parse_args(argv)
     if not (args.wizard or args.recover):
-        # The wizard and recovery default to my-config.json themselves.
-        args.config = args.config or str(ROOT / 'config.json')
+        args.config = settings_for(args, parser)
     if args.config:
         try:
             args.config = str(settings_path(args.config))

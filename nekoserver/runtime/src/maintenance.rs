@@ -1138,8 +1138,92 @@ fn rehearse(
     }
     Ok(())
 }
+/// What a restore test cut off part-way left behind (a power cut, a restart): its test
+/// containers and its unpacked copy of the app data under the snapshot, which would
+/// otherwise take a second copy's space on the HDD for months. Best effort: a test
+/// container Docker can't remove now never keeps the real apps from being started;
+/// what is left is said, and the next run tries again.
+fn tidy_restore_test(journal: &Value, snapshot: &Path) {
+    for r in journal["rehearsals"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+    {
+        let (Some(file), Some(project)) = (r["file"].as_str(), r["project"].as_str()) else {
+            continue;
+        };
+        if let Err(e) = compose(
+            Path::new(file),
+            project,
+            &["down", "--volumes", "--remove-orphans"],
+        ) {
+            println!("Monthly update: the restore test's containers ({project}) could not be removed now ({e}); the apps are started anyway");
+        }
+    }
+    let stage = snapshot.join("restore-test");
+    if stage.exists() {
+        if let Err(e) =
+            common::safe(&stage).and_then(|s| fs::remove_dir_all(s).map_err(Error::from))
+        {
+            println!(
+                "Monthly update: the restore test's unpacked copy at {} could not be removed ({e})",
+                stage.display()
+            );
+        }
+    }
+}
+/// The old apps' images (by ID) put back from the snapshot's images.tar when Docker no
+/// longer has one (`docker image prune -a`, a reset Docker store): the old apps start
+/// with `--pull never`, and without its image a rolled-back app would stay stopped.
+fn restore_images(
+    models: &Value,
+    snapshot: &Path,
+    present: &dyn Fn(&str) -> bool,
+    load: &dyn Fn(&str) -> Result<()>,
+) -> Result<()> {
+    let wanted: Vec<String> = models
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .flat_map(|m| {
+            m["services"]
+                .as_object()
+                .into_iter()
+                .flat_map(|s| s.values())
+        })
+        .filter_map(|v| v["image"].as_str().map(str::to_string))
+        .collect();
+    let missing: Vec<&String> = wanted.iter().filter(|id| !present(id)).collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let archive = snapshot.join("images.tar");
+    if !archive.is_file() {
+        return Err(Error::new(&format!(
+            "The apps' earlier images are gone from Docker ({}) and this snapshot has no saved copy (images.tar); they can't be started again by themselves",
+            missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        )));
+    }
+    println!("Monthly update: {} earlier app image(s) missing from Docker; loading them from the snapshot", missing.len());
+    load(&archive.to_string_lossy())?;
+    if let Some(still) = wanted.iter().find(|id| !present(id)) {
+        return Err(Error::new(&format!(
+            "The snapshot's images.tar does not hold the earlier image {still}"
+        )));
+    }
+    Ok(())
+}
 fn save_journal(value: &Value) -> Result<()> {
     common::atomic_json(Path::new(JOURNAL), value)
+}
+/// A journal this program can finish: the same journal format, for the same drives and
+/// folders. Any release may finish it, not only the one that started it, so a fix to
+/// the way back can reach a server whose earlier way back failed.
+fn resumable(journal: &Value, cfg: &Value) -> bool {
+    journal["format"] == "neko-maintenance-resume-v1"
+        && journal["storage"] == cfg["storage"]
+        && journal["data_mount"] == cfg["data_mount"]
+        && journal["media_mount"] == cfg["media_mount"]
 }
 fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     if !Path::new(JOURNAL).exists() {
@@ -1147,27 +1231,12 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     }
     private(Path::new(JOURNAL))?;
     let mut journal = load(Path::new(JOURNAL))?;
-    if journal["format"] != "neko-maintenance-resume-v1"
-        || journal["version"] != VERSION
-        || journal["storage"] != cfg["storage"]
-        || journal["data_mount"] != cfg["data_mount"]
-        || journal["media_mount"] != cfg["media_mount"]
-    {
+    if !resumable(&journal, cfg) {
         return Err(Error::new("Maintenance recovery identity mismatch"));
     }
     mounts(cfgpath, cfg, false)?;
-    for r in journal["rehearsals"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-    {
-        compose(
-            Path::new(string(&r, "file")?),
-            string(&r, "project")?,
-            &["down", "--volumes", "--remove-orphans"],
-        )?;
-    }
     let snapshot = PathBuf::from(string(&journal, "snapshot")?);
+    tidy_restore_test(&journal, &snapshot);
     let phase = string(&journal, "phase")?.to_string();
     if phase == "committed" {
         // The update stands: finish opening the apps up, never roll back.
@@ -1307,6 +1376,12 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             compose(&file, &format!("neko-{name}"), &["stop", "--timeout", "60"])?;
         }
     }
+    restore_images(
+        &journal["models"],
+        &snapshot,
+        &|id| docker(&["image", "inspect", id]).is_ok(),
+        &|archive| docker(&["load", "--input", archive]).map(|_| ()),
+    )?;
     for (name, _) in journal["models"].as_object().unwrap() {
         let file = snapshot.join(format!("{name}-old.json"));
         compose(
@@ -1495,6 +1570,9 @@ fn source_model(folder: &Path, name: &str) -> Result<Value> {
     Ok(serde_json::from_str(&docker(&args)?)?)
 }
 fn release_fetch(url: &str) -> Result<String> {
+    retry_transient(PULL_WAITS, sleep_seconds, || release_fetch_once(url))
+}
+fn release_fetch_once(url: &str) -> Result<String> {
     checked(
         &[
             "curl",
@@ -2204,7 +2282,7 @@ fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>
 /// copy compared with its recorded checksum (the hourly and weekly copies compare only
 /// size and dates). Damage stops the run here, with nothing changed. The USB drive is
 /// checked when it is plugged in.
-fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<()> {
+fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
     let (archive, usb) = copies_to_check(cfg, cfgpath);
@@ -2221,17 +2299,143 @@ fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<()> {
         let uuid = options.get("uuid")?;
         if Path::new("/dev/disk/by-uuid").join(uuid).exists() {
             common::stage("checking every copy on the USB drive by checksum");
-            backup::monthly_usb_check(&options)?;
+            if let Err(e) = backup::monthly_usb_check(&options) {
+                if usb_damage(&e) {
+                    return Err(e);
+                }
+                // A full drive, one that would not mount, another filesystem: no damage
+                // found, so the snapshot and updates go on, and the result says so.
+                println!("USB drive: its copies could not be checked this month ({e}); the snapshot and updates go on");
+                return Ok(vec![format!("USB check: {e}")]);
+            }
         } else {
             println!("USB drive not plugged in: its copies are checked by checksum in a monthly run it is plugged in for");
         }
     }
-    Ok(())
+    Ok(vec![])
 }
-fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
+/// The USB check found damage (rather than failing to run): that stops the monthly run.
+fn usb_damage(e: &Error) -> bool {
+    e.to_string().starts_with(backup::INTEGRITY)
+}
+/// Said when the night ended before the apps were stopped: nothing was changed.
+const NIGHT_BEFORE_STOP: &str = "Night window ended before the apps were stopped (checking every copy took the night); nothing was changed, and the next monthly run tries again";
+/// Waits between tries of a download refused for now (a busy registry, GitHub's hourly
+/// limit, a dropped connection), in seconds.
+const PULL_WAITS: &[u64] = &[30, 90, 240];
+/// What a download refused for now says (Docker's and curl's own words, lower case).
+const TRANSIENT: [&str; 15] = [
+    "toomanyrequests",
+    "too many requests",
+    "tls handshake timeout",
+    "unexpected eof",
+    "i/o timeout",
+    "connection reset",
+    "temporary failure",
+    "service unavailable",
+    "503",
+    "502",
+    "504",
+    "429",
+    "timed out",
+    "could not resolve",
+    "rate limit",
+];
+fn sleep_seconds(seconds: u64) {
+    std::thread::sleep(std::time::Duration::from_secs(seconds));
+}
+/// `attempt`, tried again after each wait in `waits` while it fails for a reason that
+/// passes (TRANSIENT); any other failure, or one that keeps failing, is returned.
+fn retry_transient<T>(
+    waits: &[u64],
+    sleep: impl Fn(u64),
+    mut attempt: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let mut left = waits.iter();
+    loop {
+        match attempt() {
+            Ok(value) => return Ok(value),
+            Err(e) => {
+                let said = e.to_string().to_lowercase();
+                match left.next() {
+                    Some(&wait) if TRANSIENT.iter().any(|mark| said.contains(mark)) => {
+                        println!("Monthly update: a download was refused for now ({e}); trying again in {wait} seconds");
+                        sleep(wait);
+                    }
+                    _ => return Err(e),
+                }
+            }
+        }
+    }
+}
+type Downloads = (Value, Option<PathBuf>, Option<(u64, u64)>, Vec<String>);
+/// Each app's new model with its downloaded images pinned by ID, the new Immich release
+/// files (when there is one), the approved Nextcloud major step (when there is one) and
+/// what was left for next month (said in the run's result).
+fn download_updates(
+    cfg: &Value,
+    names: &[String],
+    data: &Path,
+    media: &Path,
+    snapshot: &Path,
+    work: &Path,
+) -> Result<Downloads> {
+    common::stage("downloading app updates");
+    // Pull the declared version streams. Major-version migrations and OS upgrades are excluded.
+    let mut updated = json!({});
+    let mut immich_files = None;
+    let mut nextcloud_step = None;
+    let mut deferred = vec![];
+    for name in names {
+        let source = if name == "immich" {
+            // A new Immich release that can't be looked up or checked this month waits
+            // for the next one; the other apps (and Immich's own pinned release) update.
+            immich_files = immich_candidate(cfg, snapshot, work).unwrap_or_else(|e| {
+                println!("Immich: the new release could not be checked ({e}); it waits for next month's run");
+                deferred.push(format!("Immich release: {e}"));
+                None
+            });
+            immich_files
+                .clone()
+                .unwrap_or_else(|| data.join("compose/immich"))
+        } else {
+            data.join("compose").join(name)
+        };
+        let mut candidate = source_model(&source, name)?;
+        valid_model(&candidate, name, data, media)?;
+        if name == "nextcloud" {
+            let step = nextcloud_major_step(cfg, &source)?;
+            // Only report a newer major when none is being installed this month;
+            // otherwise the notice would describe the version being replaced.
+            if step.is_none() {
+                if let Err(e) = nextcloud_major_notice(cfg, snapshot) {
+                    println!("Nextcloud: could not check for a newer major version ({e})");
+                }
+            }
+            if let Some((from, to)) = step {
+                println!("Nextcloud: installing approved major {to} (from {from})");
+                step_nextcloud_images(&mut candidate, from, to)?;
+                nextcloud_step = Some((from, to));
+            }
+        }
+        for v in candidate["services"].as_object_mut().unwrap().values_mut() {
+            let image = string(v, "image")?.to_string();
+            retry_transient(PULL_WAITS, sleep_seconds, || docker(&["pull", &image]))?;
+            let info: Value = serde_json::from_str(&docker(&["image", "inspect", &image])?)?;
+            let id = info[0]["Id"]
+                .as_str()
+                .filter(|s| image_id(s))
+                .ok_or_else(|| Error::new("Invalid candidate image"))?;
+            v["image"] = json!(id);
+        }
+        updated[name] = candidate;
+    }
+    Ok((updated, immich_files, nextcloud_step, deferred))
+}
+fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     mounts(cfgpath, cfg, false)?;
     // First the checksum check, then the backup, then the updates.
-    check_copies(cfgpath, cfg)?;
+    let mut notes = check_copies(cfgpath, cfg)?;
     mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
@@ -2308,6 +2512,16 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
     }
     integrations(cfgpath, cfg, false)?;
     no_other_writers(&rows, data, media, &paths)?;
+    // Release lookups and image downloads while the apps still run: the running apps,
+    // the snapshot's restore test and a rollback use the current images by their IDs,
+    // which a download does not change. A GitHub or registry failure then stops the run
+    // before any app is stopped, instead of after hours of downtime.
+    let (updated, immich_files, nextcloud_step, deferred) =
+        download_updates(cfg, &names, data, media, &snapshot, &work)?;
+    notes.extend(deferred);
+    if !night(cfg) {
+        return Err(Error::new(NIGHT_BEFORE_STOP));
+    }
     common::directory(Path::new("/etc/nekoserver-backups"), 0o700)?;
     save_journal(
         &json!({"format":"neko-maintenance-resume-v1","version":VERSION,"run":run,"phase":"snapshot","snapshot":snapshot,"storage":cfg["storage"],"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"models":models,"containers":rows,"rehearsals":[]}),
@@ -2370,56 +2584,8 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
             "Night window ended; backups complete, updates deferred",
         ));
     }
-    common::stage("downloading app updates");
-    // Pull the declared version streams. Major-version migrations and OS upgrades are excluded.
-    let mut updated = json!({});
-    let mut immich_files = None;
-    let mut nextcloud_step = None;
-    for name in &names {
-        let source = if name == "immich" {
-            immich_files = immich_candidate(cfg, &snapshot, &work)?;
-            immich_files
-                .clone()
-                .unwrap_or_else(|| data.join("compose/immich"))
-        } else {
-            data.join("compose").join(name)
-        };
-        let mut candidate = source_model(&source, name)?;
-        valid_model(&candidate, name, data, media)?;
-        if name == "nextcloud" {
-            let step = nextcloud_major_step(cfg, &source)?;
-            // Only report a newer major when none is being installed this month;
-            // otherwise the notice would describe the version being replaced.
-            if step.is_none() {
-                if let Err(e) = nextcloud_major_notice(cfg, &snapshot) {
-                    println!("Nextcloud: could not check for a newer major version ({e})");
-                }
-            }
-            if let Some((from, to)) = step {
-                println!("Nextcloud: installing approved major {to} (from {from})");
-                step_nextcloud_images(&mut candidate, from, to)?;
-                nextcloud_step = Some((from, to));
-            }
-        }
-        for v in candidate["services"].as_object_mut().unwrap().values_mut() {
-            let image = string(v, "image")?.to_string();
-            docker(&["pull", &image])?;
-            let info: Value = serde_json::from_str(&docker(&["image", "inspect", &image])?)?;
-            let id = info[0]["Id"]
-                .as_str()
-                .filter(|s| image_id(s))
-                .ok_or_else(|| Error::new("Invalid candidate image"))?;
-            v["image"] = json!(id);
-        }
-        updated[name] = candidate;
-    }
-    if !night(cfg) {
-        return Err(Error::new(
-            "Night window ended during image downloads; updates deferred",
-        ));
-    }
     mounts(cfgpath, cfg, false)?;
-    journal = load(Path::new(JOURNAL))?;
+    let mut journal = load(Path::new(JOURNAL))?;
     journal["phase"] = json!("updating");
     save_journal(&journal)?;
     if let Some(folder) = immich_files {
@@ -2477,12 +2643,11 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
             save_journal(&journal)
         },
     )?;
-    fs::remove_file(JOURNAL)?;
-    fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
-    scrub_all(media);
-    clear_work(data);
     // The update is committed. Cleanup is best effort: a failure here must never be
     // mistaken for a failed update, and deletes only touch a re-verified USB drive.
+    // Done while the journal still says "committed": checking the snapshots kept can
+    // take long, and a run cut off here (a restart, the time limit) is then finished as
+    // the installed update it is, not reported as a failure rolled back.
     retention["after_update"] = match mounts(cfgpath, cfg, false)
         .and_then(|_| prune_monthly(data, media, keep, Some(&run)))
     {
@@ -2490,7 +2655,17 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
         Err(e) => json!({"status":"skipped","reason":e.to_string()}),
     };
     let _ = common::atomic_json(&snapshot.join("retention.json"), &retention);
-    Ok(())
+    let removed = prune_images(media, &run, &updated, &models, &|id| {
+        docker(&["image", "rm", id]).is_ok()
+    });
+    if !removed.is_empty() {
+        println!("Monthly update: removed {} app image(s) from two updates ago that nothing uses (each kept snapshot still has its own in images.tar)", removed.len());
+    }
+    fs::remove_file(JOURNAL)?;
+    fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+    scrub_all(media);
+    clear_work(data);
+    Ok(notes)
 }
 pub fn run(a: &Args, recover: bool) -> Result<()> {
     common::require_root()?;
@@ -2498,6 +2673,11 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
     private(&cfgpath)?;
     let cfg = load(&cfgpath)?;
     let data = common::mount_path(string(&cfg, "data_mount")?)?;
+    if recover && nothing_to_finish(&data) {
+        // At every boot, and when setup enables this: nothing to finish, so no wait for
+        // the lock a nightly backup may hold for hours.
+        return Ok(());
+    }
     mounts(&cfgpath, &cfg, false)?;
     let _lock = common::lock_wait(
         &data.join("installer/recovery.lock"),
@@ -2535,8 +2715,16 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         ));
     }
     backup::execute_with(Some(&data), "maintenance", &cfgpath, || {
-        let Err(failure) = transaction(&cfgpath, &cfg) else {
-            return Ok(backup::Outcome::default());
+        let failure = match transaction(&cfgpath, &cfg) {
+            Ok(deferred) if deferred.is_empty() => return Ok(backup::Outcome::default()),
+            // Updated, with one part left for next month (a new Immich release that
+            // could not be checked): done in part, and the dashboard says which.
+            Ok(deferred) => {
+                return Ok(backup::Outcome {
+                    partial: Some(json!(deferred)),
+                })
+            }
+            Err(failure) => failure,
         };
         // Said first, so the reason survives whatever happens while putting things right.
         println!("Monthly update: {failure}");
@@ -2559,6 +2747,78 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         }
         Err(failure)
     })
+}
+/// Every image ID the apps' models in `models` ({app: model}) name.
+fn model_images(models: &Value) -> std::collections::BTreeSet<String> {
+    models
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .flat_map(|m| {
+            m["services"]
+                .as_object()
+                .into_iter()
+                .flat_map(|s| s.values())
+        })
+        .filter_map(|v| {
+            v["image"]
+                .as_str()
+                .filter(|s| image_id(s))
+                .map(str::to_string)
+        })
+        .collect()
+}
+/// NekoServer's own images from two updates ago, removed once nothing uses them: the
+/// images the update before this one replaced (named in that run's *-old.json). The
+/// images in use now and the ones this update replaced stay. Docker refuses to remove
+/// one a container still uses, which is fine. Images of your own are never touched:
+/// only IDs a NekoServer snapshot names. Each pulled update otherwise stays on the SSD
+/// for good, a few GB a month. Returns the IDs removed.
+fn prune_images(
+    media: &Path,
+    current: &str,
+    updated: &Value,
+    replaced: &Value,
+    remove: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut keep = model_images(updated);
+    keep.extend(model_images(replaced));
+    let Ok(runs) = monthly_runs(media) else {
+        return vec![];
+    };
+    let folder = media.join("backups/monthly");
+    // The newest complete run before this one.
+    let Some(previous) = runs
+        .iter()
+        .rev()
+        .filter(|r| r.as_str() != current)
+        .find(|r| folder.join(r).join("result.json").is_file())
+    else {
+        return vec![];
+    };
+    let mut older = std::collections::BTreeSet::new();
+    if let Ok(entries) = fs::read_dir(folder.join(previous)) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with("-old.json") {
+                if let Ok(model) = load(&entry.path()) {
+                    older.extend(model_images(&json!({ "app": model })));
+                }
+            }
+        }
+    }
+    older
+        .into_iter()
+        .filter(|id| !keep.contains(id))
+        .filter(|id| remove(id))
+        .collect()
+}
+/// No unfinished monthly run: no journal, and the last run's report doesn't still say
+/// "running" (a run cut off before it wrote its journal is marked failed by recovery).
+fn nothing_to_finish(data: &Path) -> bool {
+    !Path::new(JOURNAL).exists()
+        && load(&data.join("reports/jobs/maintenance.json"))
+            .map_or(true, |r| r["status"] != "running")
 }
 /// What the dashboard says about a monthly run that was cut off (a power cut, a restart)
 /// before its update was installed, once the resume service has put things right.
@@ -3944,5 +4204,161 @@ mod tests {
             keep_snapshots(&json!({"maintenance": {"keep_snapshots": "7"}})),
             3
         );
+    }
+
+    // ---- 0.39.5 review: the monthly update
+
+    #[test]
+    fn a_refused_download_is_tried_again_and_another_failure_is_not() {
+        let tries = std::cell::Cell::new(0);
+        let waited = std::cell::RefCell::new(vec![]);
+        let result = retry_transient(
+            &[30, 90],
+            |s| waited.borrow_mut().push(s),
+            || {
+                tries.set(tries.get() + 1);
+                if tries.get() < 3 {
+                    Err(Error::new("Error response from daemon: toomanyrequests: You have reached your pull rate limit"))
+                } else {
+                    Ok("pulled")
+                }
+            },
+        );
+        assert_eq!(result.unwrap(), "pulled");
+        assert_eq!(*waited.borrow(), vec![30, 90]);
+        // Not a passing reason (an image that does not exist): no second try.
+        tries.set(0);
+        let missing: Result<()> = retry_transient(
+            &[30],
+            |_| panic!("waited"),
+            || {
+                tries.set(tries.get() + 1);
+                Err(Error::new("manifest unknown"))
+            },
+        );
+        assert!(missing.is_err());
+        assert_eq!(tries.get(), 1);
+        // One that keeps failing: tried once per wait, then given up.
+        tries.set(0);
+        let busy: Result<()> = retry_transient(
+            &[1, 1],
+            |_| (),
+            || {
+                tries.set(tries.get() + 1);
+                Err(Error::new(
+                    "curl: (22) The requested URL returned error: 503",
+                ))
+            },
+        );
+        assert!(busy.is_err());
+        assert_eq!(tries.get(), 3);
+    }
+
+    #[test]
+    fn the_downloads_and_the_night_check_come_before_any_app_is_stopped() {
+        let source = include_str!("maintenance.rs");
+        let body = &source[source.find("fn transaction(").unwrap()..];
+        let body = &body[..body.find("\npub fn run(").unwrap()];
+        let at = |s: &str| body.find(s).unwrap_or_else(|| panic!("{s}"));
+        assert!(at("download_updates(") < at("save_journal("));
+        assert!(at("NIGHT_BEFORE_STOP") < at("stop(&rows)"));
+        assert!(at("download_updates(") < at("stop(&rows)"));
+        // The night ended before anything stopped: done in part, not a failure.
+        assert!(NIGHT_BEFORE_STOP.starts_with("Night window ended"));
+    }
+
+    #[test]
+    fn a_later_release_may_finish_an_earlier_releases_run() {
+        let cfg = json!({"storage":{"data_ssd":{"uuid":"a"}},"data_mount":"/srv/n","media_mount":"/mnt/m"});
+        let journal = json!({"format":"neko-maintenance-resume-v1","version":"0.0.1","storage":{"data_ssd":{"uuid":"a"}},
+            "data_mount":"/srv/n","media_mount":"/mnt/m"});
+        assert!(resumable(&journal, &cfg));
+        let mut other = journal.clone();
+        other["storage"]["data_ssd"]["uuid"] = json!("b");
+        assert!(!resumable(&other, &cfg));
+        let mut unknown = journal;
+        unknown["format"] = json!("neko-maintenance-resume-v2");
+        assert!(!resumable(&unknown, &cfg));
+    }
+
+    #[test]
+    fn a_rollback_puts_back_earlier_images_docker_no_longer_has() {
+        let dir = std::env::temp_dir().join(format!("neko-images-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        let models = json!({"jellyfin":{"services":{"jellyfin":{"image":id('a')}}},
+                            "immich":{"services":{"server":{"image":id('b')}}}});
+        let have = std::cell::RefCell::new(vec![id('a')]);
+        let loads = std::cell::Cell::new(0);
+        let present = |i: &str| have.borrow().iter().any(|h| h == i);
+        // No saved copy: said plainly instead of an app left stopped without a reason.
+        let gone = restore_images(&models, &dir, &present, &|_| Ok(()));
+        assert!(gone.unwrap_err().to_string().contains("images.tar"));
+        fs::write(dir.join("images.tar"), b"x").unwrap();
+        restore_images(&models, &dir, &present, &|_| {
+            loads.set(loads.get() + 1);
+            have.borrow_mut().push(id('b'));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(loads.get(), 1);
+        // Everything there: nothing loaded.
+        restore_images(&models, &dir, &present, &|_| panic!("loaded")).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn images_from_two_updates_ago_are_removed_and_nothing_newer() {
+        let root = scratch("images");
+        let media = root.join("hdd");
+        let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        let earlier = media.join("backups/monthly/100-1");
+        fs::create_dir_all(&earlier).unwrap();
+        fs::write(earlier.join("result.json"), b"{}").unwrap();
+        // Two months ago the update replaced images "d" (old) and "e" (still in use now).
+        common::atomic_json(
+            &earlier.join("jellyfin-old.json"),
+            &json!({"services":{"jellyfin":{"image":id('d')},"db":{"image":id('e')}}}),
+        )
+        .unwrap();
+        fs::create_dir_all(media.join("backups/monthly/200-1")).unwrap();
+        let replaced =
+            json!({"jellyfin":{"services":{"jellyfin":{"image":id('f')},"db":{"image":id('e')}}}});
+        let updated =
+            json!({"jellyfin":{"services":{"jellyfin":{"image":id('c')},"db":{"image":id('e')}}}});
+        let asked = std::cell::RefCell::new(vec![]);
+        let removed = prune_images(&media, "200-1", &updated, &replaced, &|i| {
+            asked.borrow_mut().push(i.to_string());
+            true
+        });
+        assert_eq!(removed, vec![id('d')]);
+        assert_eq!(*asked.borrow(), vec![id('d')]);
+        // The first update ever (no earlier run): nothing removed.
+        let fresh = scratch("images-fresh");
+        assert!(prune_images(
+            &fresh.join("hdd"),
+            "200-1",
+            &updated,
+            &replaced,
+            &|_| panic!("removed")
+        )
+        .is_empty());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&fresh);
+    }
+
+    #[test]
+    fn only_damage_on_the_usb_drive_stops_the_monthly_run() {
+        assert!(usb_damage(&Error::new(&format!(
+            "{}2 HDD archive files no longer match",
+            backup::INTEGRITY
+        ))));
+        assert!(!usb_damage(&Error::new(
+            "Filesystem or process operation failed"
+        )));
+        assert!(!usb_damage(&Error::new(
+            "Nonempty mount destination refused"
+        )));
     }
 }
