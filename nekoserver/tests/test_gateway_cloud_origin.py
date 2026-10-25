@@ -64,9 +64,28 @@ class CloudOriginTests(unittest.TestCase):
         self.assertNotIn('overwritehost', fake.system)
         self.assertEqual(fake.system['trusted_domains'],
                          ['localhost', '127.0.0.1', '192.168.1.20', 'neko.tail1234.ts.net'])
-        self.assertEqual(fake.system['overwriteprotocol'], 'https')
+        # No forced https: Nextcloud on this PC itself (http://127.0.0.1:8088) keeps working;
+        # both gateways say the client used https.
+        self.assertNotIn('overwriteprotocol', fake.system)
         # The first gateway's address stays the canonical one for background jobs.
         self.assertEqual(fake.system['overwrite.cli.url'], 'https://192.168.1.20:8447')
+
+    def test_an_earlier_forced_https_is_taken_out(self):
+        fake = FakeNextcloud({'trusted_domains': ['localhost'], 'overwriteprotocol': 'https'})
+        self.run_gateways(fake, '192.168.1.20')
+        self.assertNotIn('overwriteprotocol', fake.system)
+
+    def test_the_link_address_does_not_flip_between_gateway_ports(self):
+        # The home gateway on a spare port, then Tailscale on 8447, then the home one again.
+        fake = FakeNextcloud()
+        with mock.patch.object(gateway_tools, 'command', fake), \
+                mock.patch('neko_common.compose_image_override', return_value=[]):
+            gateway_tools.configure_cloud_origin(CONFIG, '192.168.1.20', 8452)
+            gateway_tools.configure_cloud_origin(CONFIG, 'neko.tail1234.ts.net', 8447)
+            gateway_tools.configure_cloud_origin(CONFIG, '192.168.1.20', 8452)
+        self.assertEqual(fake.system['overwrite.cli.url'], 'https://192.168.1.20:8452')
+        sets = [c for c in fake.calls if 'overwrite.cli.url' in c and 'config:system:set' in c]
+        self.assertEqual(len(sets), 1)
 
     def test_removes_overwritehost_left_by_v0210(self):
         fake = FakeNextcloud({'trusted_domains': ['localhost'], 'overwritehost': '192.168.1.20:8447'})
@@ -128,7 +147,41 @@ class ReadinessTests(unittest.TestCase):
         installed.start()
         self.addCleanup(installed.stop)
 
+    def opener(self, pages):
+        """A local opener answering each path with its body."""
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, limit):
+                return self.body.encode()
+        fake = mock.Mock()
+        fake.open.side_effect = lambda url, timeout=5: Response(next(b for p, b in pages.items() if url.endswith(p)))
+        return fake
+
+    def test_an_app_without_its_first_account_is_never_published(self):
+        cases = (('immich', {'/api/server/config': '{"isInitialized": false}'}),
+                 ('nextcloud', {'/status.php': '{"installed": false}'}),
+                 ('navidrome', {'/app/': '<script>window.__APP_CONFIG__ = "{\\"firstTime\\":true}"</script>'}))
+        for app, pages in cases:
+            config = {'gateway': {'services': [app], 'confirmed_services': [app]}, 'media': {}}
+            with mock.patch.object(gateway_tools, 'local_opener', return_value=self.opener(pages)), \
+                    self.assertRaisesRegex(RuntimeError, 'has no account yet'):
+                gateway_tools.readiness(config)
+
+    def test_navidrome_with_its_account_passes_its_check(self):
+        page = '<script>window.__APP_CONFIG__ = "{\\"firstTime\\":false}"</script>'
+        gateway_tools.navidrome_onboarded(self.opener({'/app/': page}))
+
     def test_a_snap_docker_is_named_before_any_container_is_checked(self):
+        mock.patch.object(gateway_tools, 'navidrome_onboarded').start()
+        self.addCleanup(mock.patch.stopall)
         # Tried on Ubuntu: the snap's Docker took over Docker's socket, so every app's
         # container looked missing and the gateway said only that containers were wrong.
         with mock.patch.object(gateway_tools.host, 'snap_docker', return_value=True), \
@@ -146,6 +199,8 @@ class ReadinessTests(unittest.TestCase):
                 gateway_tools.readiness(config)
 
     def test_the_containers_not_verified_are_named(self):
+        mock.patch.object(gateway_tools, 'navidrome_onboarded').start()
+        self.addCleanup(mock.patch.stopall)
         rows = [{'id': 'container:navidrome', 'name': 'Music / navidrome', 'status': 'fail'}]
         with mock.patch.object(gateway_tools.host, 'snap_docker', return_value=False), \
                 mock.patch('acceptance.containers', return_value=rows):

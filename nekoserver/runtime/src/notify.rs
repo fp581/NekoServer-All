@@ -160,8 +160,10 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
         }
     }
     for row in s["applications"].as_array().unwrap() {
+        // Running, healthy and answering (as the dashboard shows it): only then recovered.
         if row["state"] == "running"
             && !["unhealthy", "starting"].contains(&row["health"].as_str().unwrap_or(""))
+            && row["responding"] != false
         {
             unknown.remove(&format!("app:{}", row["id"].as_str().unwrap_or("")));
         }
@@ -251,6 +253,31 @@ fn send(cfg: &Value, runtime: &Path, message: &str, critical: bool) -> Result<()
         "Notification delivery failed",
     )
 }
+/// What is no longer looked after, so an alert sent about it is dropped without a
+/// "RECOVERED" (nothing recovered): a backup switched off with its app, an app taken out
+/// of the selection (the dashboard lists every app set up, running or not).
+fn retired(s: &Value) -> BTreeSet<String> {
+    let listed: BTreeSet<String> = s["applications"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["id"].as_str().map(|id| format!("app:{id}")))
+        .collect();
+    let mut out: BTreeSet<String> = crate::collect::APPS
+        .iter()
+        .map(|(id, ..)| format!("app:{id}"))
+        .filter(|id| !listed.contains(id))
+        .collect();
+    out.extend(
+        s["backups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["status"] == "disabled")
+            .filter_map(|r| r["id"].as_str().map(|id| format!("backup:{id}"))),
+    );
+    out
+}
 /// Pure transition logic; only successfully delivered events advance deduplication.
 fn plan(
     s: &Value,
@@ -293,8 +320,9 @@ fn plan(
         .keys()
         .cloned()
         .collect::<Vec<_>>();
+    let gone = if fresh { retired(s) } else { BTreeSet::new() };
     for id in keys {
-        if label(&id).is_none() {
+        if label(&id).is_none() || (gone.contains(&id) && !active.contains_key(&id)) {
             state["entries"].as_object_mut().unwrap().remove(&id);
             continue;
         }
@@ -571,6 +599,36 @@ mod tests {
                 "recovered".into()
             )]
         );
+    }
+    #[test]
+    fn an_alert_about_something_no_longer_looked_after_is_dropped_quietly() {
+        let previous = json!({"format":"neko-notifications-v1","entries":{
+            "backup:archive":{"last_sent":1000},"app:qbittorrent":{"last_sent":1000}}});
+        let mut s = snapshot(2000., json!([]));
+        s["backups"] = json!([{"id":"archive","status":"disabled"}]);
+        // qBittorrent is not in the list any more: taken out of the selection.
+        let (state, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert!(
+            e.is_empty(),
+            "no RECOVERED for what was switched off: {e:?}"
+        );
+        assert!(state["entries"].as_object().unwrap().is_empty(), "{state}");
+    }
+    #[test]
+    fn an_app_that_runs_but_does_not_answer_has_not_recovered() {
+        let previous =
+            json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000}}});
+        let mut s = snapshot(2000., json!([]));
+        s["applications"] =
+            json!([{"id":"sonarr","state":"running","health":"unknown","responding":false}]);
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        let shown = crate::collect::alerts(&s);
+        assert!(shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "app:sonarr" && a["level"] == "critical"));
     }
     #[test]
     fn unknown_app_is_not_recovered() {

@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -196,8 +197,22 @@ def restore(snapshot, destination, password, key_dir=KEY_DIR, out=print):
     plain = openssl(['cms', '-decrypt', '-binary', '-inform', 'DER', '-in', str(archive), '-inkey', str(key),
                      '-passin', 'fd:{fd}', '-recip', str(cert)], b'', password, timeout=600)
     destination.mkdir(mode=0o700)
-    subprocess.run(['tar', '--extract', '--file', '-', '--no-same-owner', '--no-same-permissions', '-C', str(destination)],
-                   input=plain, check=True, timeout=600)
+    try:
+        # Unpacked inside the new folder (its working directory), so the folder's name is
+        # never an argument tar could read as an option.
+        unpacked = subprocess.run(['tar', '--extract', '--file', '-', '--no-same-owner', '--no-same-permissions'],
+                                  input=plain, capture_output=True, timeout=600, check=False, cwd=destination)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        unpacked = None
+        reason = str(exc)
+    if unpacked is None or unpacked.returncode:
+        if unpacked is not None:
+            reason = (unpacked.stderr or b'').decode(errors='replace').strip().splitlines()[-1:] or ['no reason given']
+            reason = reason[0]
+        # Nothing half-unpacked is left behind to be mistaken for the full list.
+        shutil.rmtree(destination, ignore_errors=True)
+        raise RuntimeError(f'The password files could not be unpacked ({reason}); nothing was restored. '
+                           'Check the free space there, or choose another folder and try again')
     return destination
 
 

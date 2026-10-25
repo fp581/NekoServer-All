@@ -38,12 +38,18 @@ def firewall_hint(firewalls):
         # One call cannot add a service and ports both: firewall-cmd refuses the pair.
         example = ('sudo firewall-cmd --permanent --add-service=samba && sudo firewall-cmd --permanent '
                    '--add-port=8442-8447/tcp --add-port=8450-8499/tcp && sudo firewall-cmd --reload')
-    else:
+    elif 'ufw' in firewalls:
         example = ('sudo ufw allow from 192.168.1.0/24 to any port 445,8442:8447,8450:8499 proto tcp  '
                    '(your network instead of 192.168.1.0/24)')
+    else:
+        # nftables on its own (Arch's nftables.service, say): a rule in its own ruleset.
+        example = ('sudo nft add rule inet filter input ip saddr 192.168.1.0/24 tcp dport { 445, 8442-8447, 8450-8499 } accept  '
+                   '(your network instead of 192.168.1.0/24, and the same rule in /etc/nftables.conf so it stays '
+                   'after a restart)')
     return (', '.join(firewalls) + ' is on: allow your home network to reach shared folders (port 445) and the home '
             'addresses (ports 8442-8447, or 8450-8499 when one of those is taken), for example  ' + example
-            + '. Tailscale needs no rule')
+            + '. Tailscale needs no rule. Setup checks the home addresses from this PC itself, which a firewall '
+            'does not block: test them from a phone on your home Wi-Fi')
 
 
 def memory_gib(root='/'):

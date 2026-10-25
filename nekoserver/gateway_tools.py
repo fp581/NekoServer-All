@@ -4,6 +4,7 @@ import native_runtime
 import permission_checks
 import hashlib,html,ipaddress,json,os,pwd,re,shutil,socket,subprocess,sys,tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 import status_checks as health
 import recovery_tools
 from network_access import lan,verify_lan,choose_lan,save_settings
@@ -46,7 +47,11 @@ def owned_listeners(config):
 
 def port_free(ip,port):
     try:
-        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as probe:probe.bind((ip,port))
+        with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as probe:
+            # Connections the gateway closed a moment ago (TIME_WAIT) do not make its own
+            # port look taken; a program listening on it still does.
+            probe.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            probe.bind((ip,port))
     except OSError:
         return False
     return True
@@ -56,7 +61,10 @@ def choose_lan_ports(ctx):
     already has one, which gets the next free spare instead (saved for later runs, so an
     address never changes once given out)."""
     config=ctx.config;ip,_=lan(config);ports=lan_ports(config);owned=owned_listeners(config)
-    taken=set(ports.values());changed=[]
+    # Ports given out before stay with their app, also while it is not selected: its old
+    # address never opens another app, and it gets the same one back.
+    saved={k:v for k,v in config.get('gateway',{}).get('lan_ports',{}).items() if type(v) is int}
+    taken=set(ports.values())|set(saved.values());changed=[]
     for app,port in ports.items():
         if ip+':'+str(port) in owned or port_free(ip,port):continue
         spare=next((p for p in SPARE_PORTS if p not in taken and port_free(ip,p)),None)
@@ -65,7 +73,7 @@ def choose_lan_ports(ctx):
     for app,port,spare in changed:
         ctx.log(f'Home address: port {port} is used by another program on this PC, so {APPS[app][0] if app in APPS else "the app menu"} uses port {spare} instead')
     if changed:
-        config.setdefault('gateway',{})['lan_ports']=ports;save_settings(ctx)
+        config.setdefault('gateway',{})['lan_ports']={**saved,**ports};save_settings(ctx)
     return ports
 
 LAN_CONFIG=Path('/etc/nekoserver-gateway/lan.json')   # the home gateway's Caddy settings
@@ -140,7 +148,12 @@ def configure(ctx,kind):
 
 # The apps whose first-run setup must be finished before they get a home address:
 # (app, the address that says so, the field that is true once it is).
-ONBOARDING=(('jellyfin','/System/Info/Public','StartupWizardCompleted'),('seerr','/api/v1/settings/public','initialized'))
+# Each app's own word that its first account exists, checked before it is published: an
+# app reset or restored empty would otherwise let whoever opens it first become its admin.
+ONBOARDING=(('jellyfin','/System/Info/Public','StartupWizardCompleted'),('seerr','/api/v1/settings/public','initialized'),
+            ('immich','/api/server/config','isInitialized'),('nextcloud','/status.php','installed'))
+# Navidrome says it in its page: firstTime is true until its first account is made.
+NAVIDROME_FIRST_TIME=re.compile(r'firstTime\\?"\s*:\s*true')
 
 def onboarded(opener,app,endpoint,key):
     """The app answers on this PC and says its first-run setup is finished."""
@@ -150,7 +163,20 @@ def onboarded(opener,app,endpoint,key):
         # Usually the app is not running (its own step names why): say which one.
         raise RuntimeError(f'{APPS[app][0]} did not answer on this PC ({LOOPBACK}{APPS[app][1]}: {getattr(exc,"reason",exc)}); '
                            'the home addresses are set up once it runs: see the apps step above, then run setup again') from None
-    if not isinstance(value,dict) or value.get(key) is not True:raise RuntimeError('Initial application account setup is incomplete')
+    if not isinstance(value,dict) or value.get(key) is not True:raise RuntimeError(incomplete(app))
+
+def incomplete(app):
+    return (f'{APPS[app][0]} has no account yet (its first-run setup is not finished), so it is not put on the home '
+            'or Tailscale address, where whoever opened it first would become its administrator. Finish its setup '
+            f'on this PC ({LOOPBACK}{APPS[app][1]}/), then run setup again')
+
+def navidrome_onboarded(opener):
+    """Navidrome has its first account (its page no longer says firstTime)."""
+    try:
+        with opener.open(LOOPBACK+str(APPS['navidrome'][1])+'/app/',timeout=5) as r:page=r.read(200000).decode('utf-8','replace')
+    except OSError as exc:
+        raise RuntimeError(f'{APPS["navidrome"][0]} did not answer on this PC ({getattr(exc,"reason",exc)}); see the music step above, then run setup again') from None
+    if NAVIDROME_FIRST_TIME.search(page):raise RuntimeError(incomplete('navidrome'))
 
 def unverified_containers(config,apps):
     """The names of the selected apps' containers whose mounts, networks or ports are not
@@ -170,6 +196,7 @@ def readiness(config):
     opener=local_opener()
     for app,endpoint,key in ONBOARDING:
         if app in apps:onboarded(opener,app,endpoint,key)
+    if 'navidrome' in apps:navidrome_onboarded(opener)
     # A snap's Docker takes over Docker's socket: every container would look missing.
     if host.snap_docker():raise RuntimeError(host.SNAP_DOCKER)
     failed=unverified_containers(config,apps)
@@ -312,9 +339,6 @@ def desired(host,apps,dashboard=None):
 
 def serve_state():return canonical(json.loads(command(['tailscale','serve','status','--json'])))
 
-def subset(current,owned):
-    return all(isinstance(current[k],dict) and isinstance(owned.get(k),dict) and all(owned[k].get(key)==value for key,value in current[k].items()) for k in ('TCP','Web')) and len(current['TCP'])==len(current['Web'])
-
 def tailnode():
     v=json.loads(command(['tailscale','status','--json']));name=v.get('Self',{}).get('DNSName','').rstrip('.')
     if v.get('BackendState')!='Running' or not re.fullmatch(r'[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.ts\.net',name):raise RuntimeError('Authenticate Tailscale and enable tailnet HTTPS/MagicDNS first')
@@ -334,40 +358,90 @@ def tailnet_routes(config,host):
     read-only dashboard. Installation and the acceptance check both use this one."""
     return desired(host,selected(config),dashboard_target(config))
 
-def gateway_owned(host,owned,dashboard=None):
-    try:
-        if not isinstance(owned,dict) or set(owned)!= {'TCP','Web'}:return False
-        ports={str(v[2]):app for app,v in APPS.items()}
-        if not isinstance(owned['TCP'],dict) or not set(owned['TCP'])<=set(ports)|{str(DASHBOARD_PORT)}:return False
-        board=dashboard if str(DASHBOARD_PORT) in owned['TCP'] else None
-        return owned==desired(host,[ports[p] for p in owned['TCP'] if p in ports],board)
-    except (ValueError,TypeError,KeyError):return False
+def tailnet_ports():
+    """Every Tailscale port NekoServer may use: one per app and the dashboard's."""
+    return {str(v[2]) for v in APPS.values()}|{str(DASHBOARD_PORT)}
+
+def valid_owned(owned):
+    """The routes in the ownership journal have the shape NekoServer writes: HTTPS on its
+    own ports, each to a service on this PC. The host name and the local port are not
+    compared: the server may have been renamed, the dashboard moved to another port."""
+    if not isinstance(owned,dict) or set(owned)!={'TCP','Web'} or not all(isinstance(owned[k],dict) for k in owned):return False
+    if not set(owned['TCP'])<=tailnet_ports() or any(v!={'HTTPS':True} for v in owned['TCP'].values()):return False
+    for key,value in owned['Web'].items():
+        proxy=value.get('Handlers',{}).get('/',{}).get('Proxy') if isinstance(value,dict) else None
+        if key.rpartition(':')[2] not in owned['TCP'] or not isinstance(proxy,str) or not proxy.startswith(LOOPBACK):return False
+    return True
+
+def handlers(web,port):
+    """The handlers of every host name on this Serve port."""
+    return [value for key,value in web.items() if key.rpartition(':')[2]==port]
+
+def https(port):
+    """tailscale serve's --https= argument for a port: a number from 1 to 65535 (it comes
+    from Tailscale's own state and the journal, so it is checked before it is used)."""
+    number=int(port)
+    if not 0<number<65536:raise ValueError('Not a Tailscale port: '+str(port))
+    return '--https='+str(number)
+
+def ours(state,owned):
+    """The Serve ports still exactly as NekoServer set them (its journal), whatever host
+    name they were set under. Any other port, or one changed since, is someone else's."""
+    mine=set()
+    for port,value in state['TCP'].items():
+        recorded=handlers(owned.get('Web',{}),port)
+        found=handlers(state['Web'],port)
+        if owned.get('TCP',{}).get(port)==value and recorded and found and all(h==recorded[0] for h in found):
+            mine.add(port)
+    return mine
+
+def only(state,ports):
+    """The part of a Serve state on these ports."""
+    return {'TCP':{p:v for p,v in state['TCP'].items() if p in ports},
+            'Web':{k:v for k,v in state['Web'].items() if k.rpartition(':')[2] in ports}}
 
 def _apply_tailnet(config):
     recovery_tools.require_root();recovery_tools.mounts(config);readiness(config);host=tailnode();apps=selected(config);board=dashboard_target(config);target=tailnet_routes(config,host);state=serve_state();ledger=safe_path(Path(config['data_mount'])/'gateway/tailnet-owned.json');saved=health.read_json(ledger);owned=saved.get('owned',{'TCP':{},'Web':{}})
-    # An older journal may predate the dashboard route; recognise it either way.
-    allowed=gateway_owned(host,owned,board) or gateway_owned(host,owned,dashboard_target({}))
-    if ledger.exists() and (saved.get('format')!='neko-tailnet-owned-v1' or saved.get('status') not in ('pending','configured') or not allowed):raise RuntimeError('Malformed gateway ownership journal preserved; review it locally')
-    if state!={'TCP':{},'Web':{}} and (saved.get('host')!=host or not subset(state,owned)):raise RuntimeError('Existing Tailscale routes are not owned by NekoServer; no route changed')
-    if saved and saved.get('host')!=host:raise RuntimeError('Tailscale node identity changed; inspect preserved ownership before adopting routes')
+    if ledger.exists() and (saved.get('format')!='neko-tailnet-owned-v1' or saved.get('status') not in ('pending','configured') or not valid_owned(owned)):raise RuntimeError('Malformed gateway ownership journal preserved; review it locally')
+    # NekoServer's routes are recognised by port and handler, so a renamed server, a
+    # dashboard on another port or a route of your own on another port changes nothing.
+    mine=ours(state,owned);theirs=set(state['TCP'])-mine;needed=sorted(theirs&set(target['TCP']))
+    if needed:raise RuntimeError('Tailscale port '+', '.join(needed)+' already has a route of your own, and NekoServer needs it. '
+                                 'Move your route to another port (sudo tailscale serve --https='+needed[0]+' off), then run setup again')
     configure_cloud_origin(config,host,8447)
     # Journal ownership before requests; interrupted/partly completed configuration remains identifiable.
-    union={k:{**owned.get(k,{}),**target[k]} for k in ('TCP','Web')};atomic_json(ledger,{'format':'neko-tailnet-owned-v1','host':host,'owned':union,'status':'pending'})
+    union={k:{**only(owned,mine)[k],**target[k]} for k in ('TCP','Web')};atomic_json(ledger,{'format':'neko-tailnet-owned-v1','host':host,'owned':union,'status':'pending'})
     try:
-        for port in list(state['TCP']):
-            if port not in target['TCP']:command(['tailscale','serve','--bg','--https='+port,'off'])
+        for port in sorted(mine):
+            # Ours but no longer wanted, or set under the server's old name: off first.
+            if port not in target['TCP'] or only(state,{port})!=only(target,{port}):command(['tailscale','serve','--bg',https(port),'off'])
         for port in target['TCP']:
-            if state['Web'].get(host+':'+port)==target['Web'][host+':'+port] and state['TCP'].get(port)==target['TCP'][port]:continue
-            command(['tailscale','serve','--bg','--https='+port,target['Web'][host+':'+port]['Handlers']['/']['Proxy']],45)
-        if serve_state()!=target:raise RuntimeError('Tailnet routes did not match the planned private configuration')
+            if only(state,{port})==only(target,{port}):continue
+            command(['tailscale','serve','--bg',https(port),target['Web'][host+':'+port]['Handlers']['/']['Proxy']],45)
+        if only(serve_state(),set(target['TCP']))!=target:raise RuntimeError('Tailnet routes did not match the planned private configuration')
     except (RuntimeError,ValueError,TypeError) as exc:
-        # Fail closed for our routes when their complete current configuration is still recognizable.
-        current=serve_state()
-        if subset(current,union):
-            for port in current['TCP']:command(['tailscale','serve','--bg','--https='+port,'off'])
+        # Fail closed for our routes (only those) when they are still recognisable.
+        for port in sorted(ours(serve_state(),union)):command(['tailscale','serve','--bg',https(port),'off'])
         raise RuntimeError(f'Tailscale addresses not set up ({exc}). The addresses were switched off again until the next run') from None
     atomic_json(ledger,{'format':'neko-tailnet-owned-v1','host':host,'owned':target,'status':'configured'})
     result={'format':'neko-gateway-v1','mode':'tailnet','status':'configured','client_acceptance':'needs_setup','services':apps,'links':{**{a:HTTPS+host+':'+str(APPS[a][2])+'/' for a in apps},**({'dashboard':HTTPS+host+':'+str(DASHBOARD_PORT)+'/'} if board else {})},'reason':'Restrict tailnet policy to intended users/devices and verify each application login and streaming/upload from a client.'};atomic_json(Path(config['data_mount'])/'reports/gateway-tailnet.json',result);return result
+
+def refresh_dashboard_route(config,log):
+    """The dashboard moved to another port (or was switched off for remote use) after the
+    Tailscale addresses were set up: only its route is brought up to date, when it is
+    still NekoServer's. True when it changed."""
+    ledger=safe_path(Path(config['data_mount'])/'gateway/tailnet-owned.json');saved=health.read_json(ledger)
+    owned=saved.get('owned')
+    if saved.get('format')!='neko-tailnet-owned-v1' or saved.get('status')!='configured' or not valid_owned(owned):return False
+    port=str(DASHBOARD_PORT);host=tailnode();state=serve_state();board=dashboard_target(config)
+    if port not in owned['TCP'] or port not in ours(state,owned):return False
+    if handlers(state['Web'],port)==[{'Handlers':{'/':{'Proxy':board}}}]:return False
+    command(['tailscale','serve','--bg',https(port),'off'])
+    if board:command(['tailscale','serve','--bg',https(port),board],45)
+    kept=only(owned,set(owned['TCP'])-{port});mine=desired(host,[],board) if board else {'TCP':{},'Web':{}}
+    atomic_json(ledger,{**saved,'host':host,'owned':{k:{**kept[k],**mine[k]} for k in ('TCP','Web')}})
+    log('Dashboard: its Tailscale address now leads to '+(board or 'nothing (remote use switched off)'))
+    return True
 
 def apply_lan(config):
     recovery_tools.require_root();recovery_tools.mounts(config)
@@ -382,8 +456,8 @@ def configure_cloud_origin(config, host, port):
     """Make Nextcloud answer on this gateway host without breaking any other gateway.
 
     Each gateway (LAN, tailnet) only adds its host to trusted_domains. Caddy passes
-    the client's Host header through, so Nextcloud builds links for whichever
-    address the client used. A single overwritehost would force every client onto
+    the client's Host header through, and says it used https (X-Forwarded-Proto), so
+    Nextcloud builds links for whichever address and protocol the client used. A single overwritehost would force every client onto
     one address, so it is never set here, and a value an earlier release set for a
     gateway is removed. The proxy hop is trusted so client addresses are preserved.
     """
@@ -401,12 +475,20 @@ def configure_cloud_origin(config, host, port):
     values=get('trusted_domains')
     if not isinstance(values,list):raise RuntimeError('Cannot inspect Nextcloud trusted hosts')
     if host not in values:command(base+[OCC_SET,'trusted_domains',str(len(values)),'--value='+host])
-    command(base+[OCC_SET,'overwriteprotocol','--value=https'])
+    # Both gateways tell Nextcloud the client used https (X-Forwarded-Proto, from a
+    # trusted proxy), so it builds https links for them and plain ones on this PC itself
+    # (http://127.0.0.1:8088). A forced protocol, set by releases before 0.39.4, sent
+    # this PC's own browser to https on that port, which fails: it is removed.
+    if get('overwriteprotocol')=='https':
+        command(base+[OCC_DELETE,'overwriteprotocol'])
     previous=get('overwritehost')
     if isinstance(previous,str) and previous.endswith(':'+str(port)):
         command(base+[OCC_DELETE,'overwritehost'])
+    # The address Nextcloud's background jobs put in links: the first gateway's, kept
+    # while it is still one of its gateway addresses (whatever that gateway's port).
     cli=get('overwrite.cli.url')
-    if not (isinstance(cli,str) and cli.startswith(HTTPS) and cli.endswith(':'+str(port))):
+    known=urlsplit(cli).hostname if isinstance(cli,str) and cli.startswith(HTTPS) else None
+    if known not in [*values,host] or known in ('localhost','127.0.0.1'):
         command(base+[OCC_SET,'overwrite.cli.url','--value=https://'+host+':'+str(port)])
     for index,proxy in enumerate(cloud_proxies(compose)):
         command(base+[OCC_SET,'trusted_proxies',str(index),'--value='+proxy])

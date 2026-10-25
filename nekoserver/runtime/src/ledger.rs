@@ -85,6 +85,16 @@ impl Ledger {
         ledger._lock = Some(lock);
         Ok(ledger)
     }
+    /// Open it for writing, waiting up to `max` for another job that has it open (the
+    /// weekly USB copy and the photo archive both write the HDD archive's ledger, and
+    /// one may still be at work when the other starts).
+    pub fn open_waiting(root: &Path, max: std::time::Duration) -> Result<Ledger> {
+        common::safe(root)?;
+        let lock = common::lock_wait(&root.join(LOCK), max)?;
+        let mut ledger = Ledger::read(root)?;
+        ledger._lock = Some(lock);
+        Ok(ledger)
+    }
     /// Read a ledger without locking (restores and checks only read it).
     pub fn read(root: &Path) -> Result<Ledger> {
         let path = root.join(LEDGER);
