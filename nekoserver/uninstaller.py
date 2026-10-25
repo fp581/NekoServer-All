@@ -26,6 +26,7 @@ UNITS = '/etc/systemd/system'
 SAMBA_SHARES = '/etc/samba/nekoserver.conf'
 SAMBA_CONFIG = '/etc/samba/smb.conf'
 OWN_SMB_CONF = '[global]\n   include = /etc/samba/nekoserver.conf\n'   # the smb.conf setup writes when there was none
+PACKAGED_SMB_CONF = '/etc/samba/smb.conf.packaged'   # the package's example, set aside by setup; put back when NekoServer's own goes
 MANAGED = '# Managed by NekoServer'
 DAEMON_JSON = '/etc/docker/daemon.json'
 FSTAB = '/etc/fstab'
@@ -48,7 +49,8 @@ SYSTEM_PATHS = ('/etc/nekoserver-dashboard', '/etc/nekoserver-control', '/etc/ne
                 '/var/lib/nekoserver-notifications', '/var/lib/nekoserver-dashboard', '/var/lib/nekoserver-control')
 SYSTEM_GLOBS = ('usr/local/lib/nekoserver-*', 'run/nekoserver-*', 'etc/systemd/system/*.d/10-nekoserver-storage.conf')
 PACKAGES_LEFT = ('Docker, Samba, Caddy, Tailscale, Rust and gcc, smartmontools, qrencode, OpenRGB, and Steam if the TV step '
-                 'added it, are packages of your Linux: they stay installed. Remove any you do not want with your package manager.')
+                 'added it, are packages of your Linux: they stay installed, with the package repositories NekoServer added for '
+                 "them (Docker's and Tailscale's own, on Debian and Ubuntu). Remove any you do not want with your package manager.")
 
 # The choices. 'server' is always on; the rest is yours. (key, default on, title, personal data)
 CHOICES = (('server', True, 'NekoServer itself: its services, programs and settings', False),
@@ -261,7 +263,8 @@ class Plan:
             paths.append(shares)
             notes.append('Samba: the shares NekoServer defined go' + (', with the account ' + ', '.join(accounts) if accounts else '')
                          + ('; smb.conf (only the include NekoServer wrote) goes too' if own else
-                            '; your own smb.conf stays (take out its "include = ' + SAMBA_SHARES + '" line yourself)'))
+                            '; your own smb.conf stays (take out its "include = ' + SAMBA_SHARES + '" line yourself)')
+                         + ("; the package's example smb.conf, set aside by setup, comes back" if own and self.at(PACKAGED_SMB_CONF).is_file() else ''))
             if own:
                 paths.append(own)
         if self.tailnet_served():
@@ -389,9 +392,13 @@ def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/'):
     if plan.tailnet_served():
         out('Switching off what NekoServer served on your tailnet')
         run(['tailscale', 'serve', 'reset'], 60)
-    shares, _, accounts = plan.samba()
+    shares, own, accounts = plan.samba()
     _remove_samba_accounts(plan, accounts, run, out)
     _remove_files(plan, chosen, out, rmtree)
+    packaged = plan.at(PACKAGED_SMB_CONF)
+    if own and packaged.is_file():
+        out("Putting the package's example smb.conf back")
+        packaged.rename(plan.at(SAMBA_CONFIG))
     if units:
         run(['systemctl', 'daemon-reload'], 120)
         run(['systemctl', 'reset-failed'], 60)

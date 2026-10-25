@@ -3502,4 +3502,244 @@ mod tests {
             .unwrap();
         assert!(commit < opened);
     }
+    #[test]
+    fn only_known_apps_are_selected_and_each_once() {
+        let cfg = |services: Value| json!({"media": {"services": services}});
+        assert_eq!(
+            names(&cfg(json!(["jellyfin", "sonarr"]))).unwrap(),
+            ["jellyfin", "sonarr"]
+        );
+        for bad in [
+            json!(["jellyfin", "jellyfin"]),
+            json!(["plex"]),
+            json!([7]),
+            json!(["immich"]),
+        ] {
+            let error = names(&cfg(bad.clone())).unwrap_err().to_string();
+            assert_eq!(error, "Invalid media selection", "{bad}");
+        }
+        assert_eq!(
+            names(&json!({})).unwrap_err().to_string(),
+            "No maintenance applications selected"
+        );
+        let all = json!({"media": {"services": ["navidrome"]}, "photos": {"deploy_immich": true}, "nextcloud": {"enabled": true}});
+        assert_eq!(names(&all).unwrap(), ["navidrome", "immich", "nextcloud"]);
+        let flags = json!({"photos": {"deploy_immich": "yes"}, "nextcloud": {"enabled": true}});
+        assert_eq!(names(&flags).unwrap(), ["nextcloud"]);
+    }
+    #[test]
+    fn an_image_id_is_a_full_hex_digest() {
+        assert!(image_id(&format!("sha256:{}", "0f".repeat(32))));
+        assert!(!image_id(&format!("sha256:{}", "a".repeat(63))));
+        assert!(!image_id(&format!("sha256:{}", "g".repeat(64))));
+        assert!(!image_id(&"a".repeat(71)));
+    }
+    #[test]
+    fn the_update_refuses_models_that_leave_their_sandbox() {
+        let root = scratch("sandbox");
+        let (data, media) = (root.join("srv"), root.join("mnt"));
+        fs::create_dir_all(data.join("appdata/jellyfin")).unwrap();
+        fs::create_dir_all(data.join("appdata/sonarr")).unwrap();
+        fs::create_dir_all(media.join("library/movies")).unwrap();
+        let port = json!([{"host_ip": "127.0.0.1", "published": "8096", "target": 8096}]);
+        let plain = json!({"services": {"jellyfin": {"image": "sha256:8", "ports": port}}});
+        valid_model(&plain, "jellyfin", &data, &media).unwrap();
+        let with = |key: &str, value: Value| {
+            let mut m = plain.clone();
+            m["services"]["jellyfin"][key] = value;
+            m
+        };
+        let refused =
+            |m: &Value, name: &str| valid_model(m, name, &data, &media).unwrap_err().to_string();
+        for (key, value) in [
+            ("privileged", json!(true)),
+            ("network_mode", json!("host")),
+            ("pid", json!("host")),
+            ("ipc", json!("host")),
+            ("build", json!({"context": "."})),
+        ] {
+            assert_eq!(
+                refused(&with(key, value), "jellyfin"),
+                "Unsupported Compose isolation",
+                "{key}"
+            );
+        }
+        assert!(valid_model(&with("privileged", json!(false)), "jellyfin", &data, &media).is_ok());
+        // Another app's name, an unknown one, or a second service: refused.
+        assert_eq!(refused(&plain, "sonarr"), "Unsupported Compose isolation");
+        assert_eq!(refused(&plain, "plex"), "Unsupported Compose isolation");
+        let mut two = plain.clone();
+        two["services"]["helper"] = json!({"image": "sha256:9"});
+        assert_eq!(
+            refused(&two, "jellyfin"),
+            "Unexpected services; automated maintenance refused"
+        );
+        // Bind mounts: the app's own folder and the library; the clock read-only; nothing else.
+        let bind = |source: &Path, read_only: bool| json!([{"type": "bind", "source": source, "target": "/x", "read_only": read_only}]);
+        let own = data.join("appdata/jellyfin/cache");
+        assert!(valid_model(
+            &with("volumes", bind(&own, false)),
+            "jellyfin",
+            &data,
+            &media
+        )
+        .is_ok());
+        let movies = media.join("library/movies");
+        assert!(valid_model(
+            &with("volumes", bind(&movies, true)),
+            "jellyfin",
+            &data,
+            &media
+        )
+        .is_ok());
+        // Each app's own library folders, and nobody else's.
+        for folder in [
+            "library/music",
+            "library/downloads/music",
+            "photos/immich-library",
+        ] {
+            fs::create_dir_all(data.join(folder)).unwrap();
+        }
+        fs::create_dir_all(media.join("cloud/files")).unwrap();
+        fs::create_dir_all(media.join("library/tv")).unwrap();
+        let one = |name: &str, source: &Path| json!({"services": {name: {"image": "sha256:1", "ports": port, "volumes": bind(source, false)}}});
+        for (name, folder) in [
+            ("jellyfin", media.join("library/tv")),
+            ("navidrome", data.join("library/music")),
+            ("lidarr", data.join("library")),
+            ("qbittorrent", data.join("library/downloads/music")),
+            ("sonarr", media.join("library")),
+        ] {
+            fs::create_dir_all(data.join("appdata").join(name)).unwrap();
+            assert!(
+                valid_model(&one(name, &folder), name, &data, &media).is_ok(),
+                "{name}"
+            );
+        }
+        for (name, folder) in [
+            ("navidrome", data.join("library")),
+            ("sonarr", data.join("library/music")),
+            ("jellyfin", data.join("library/downloads/music")),
+            ("lidarr", media.join("library/tv")),
+        ] {
+            assert_eq!(
+                refused(&one(name, &folder), name),
+                "Uncovered container bind mount",
+                "{name}"
+            );
+        }
+        let mut photos = models()["immich"].clone();
+        photos["services"]["immich-server"]["volumes"] =
+            bind(&data.join("photos/immich-library"), false);
+        valid_model(&photos, "immich", &data, &media).unwrap();
+        photos["services"]["immich-server"]["volumes"] = bind(&media.join("cloud/files"), false);
+        assert_eq!(refused(&photos, "immich"), "Uncovered container bind mount");
+        let mut cloud = models()["nextcloud"].clone();
+        valid_model(&cloud, "nextcloud", &data, &media).unwrap();
+        cloud["services"]["nextcloud"]["volumes"] = bind(&media.join("cloud/files"), false);
+        valid_model(&cloud, "nextcloud", &data, &media).unwrap();
+        cloud["services"]["nextcloud"]["volumes"] =
+            bind(&data.join("photos/immich-library"), false);
+        assert_eq!(
+            refused(&cloud, "nextcloud"),
+            "Uncovered container bind mount"
+        );
+        let clock = Path::new("/etc/localtime");
+        assert!(valid_model(
+            &with("volumes", bind(clock, true)),
+            "jellyfin",
+            &data,
+            &media
+        )
+        .is_ok());
+        assert!(valid_model(
+            &with("volumes", bind(clock, false)),
+            "jellyfin",
+            &data,
+            &media
+        )
+        .is_err());
+        let other = data.join("appdata/sonarr");
+        assert_eq!(
+            refused(&with("volumes", bind(&other, false)), "jellyfin"),
+            "Uncovered container bind mount"
+        );
+        let named = json!([{"type": "volume", "source": "cache", "target": "/x"}]);
+        assert_eq!(
+            refused(&with("volumes", named), "jellyfin"),
+            "Uncovered persistent volume"
+        );
+        // Ports: the app on loopback only; supporting services publish nothing.
+        let open = json!([{"host_ip": "0.0.0.0", "published": "8096", "target": 8096}]);
+        assert_eq!(
+            refused(&with("ports", open), "jellyfin"),
+            "Loopback application ports required"
+        );
+        assert_eq!(
+            refused(&with("ports", json!([])), "jellyfin"),
+            "Loopback application ports required"
+        );
+        let mut immich = models()["immich"].clone();
+        valid_model(&immich, "immich", &data, &media).unwrap();
+        immich["services"]["redis"]["ports"] = port.clone();
+        assert_eq!(
+            refused(&immich, "immich"),
+            "Unexpected supporting service publication"
+        );
+        immich["services"]["redis"]["ports"] = json!([]);
+        immich["services"]["redis"]["volumes"] =
+            json!([{"type": "volume", "source": "redis", "target": "/data"}]);
+        valid_model(&immich, "immich", &data, &media).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn every_app_is_probed_on_its_own_port() {
+        let probes = [
+            ("jellyfin", 8096, "/health"),
+            ("navidrome", 4533, "/ping"),
+            ("sonarr", 8989, "/ping"),
+            ("radarr", 7878, "/ping"),
+            ("lidarr", 8686, "/ping"),
+            ("prowlarr", 9696, "/ping"),
+            ("seerr", 5055, "/api/v1/settings/public"),
+            ("qbittorrent", 8080, "/"),
+            ("immich", 2283, "/api/server/ping"),
+            ("nextcloud", 80, "/status.php"),
+        ];
+        for (name, port, path) in probes {
+            assert_eq!(app_port(name).unwrap(), (port, path), "{name}");
+        }
+        assert!(app_port("plex").is_err());
+    }
+    #[test]
+    fn the_secrets_key_is_ready_only_with_its_certificate() {
+        let dir = scratch("secrets-key");
+        assert!(!secrets_key_ready(&dir));
+        fs::write(dir.join(SECRETS_KEY), b"key").unwrap();
+        assert!(!secrets_key_ready(&dir), "the key alone encrypts nothing");
+        fs::write(dir.join(SECRETS_CERT), b"cert").unwrap();
+        assert!(secrets_key_ready(&dir));
+        fs::remove_file(dir.join(SECRETS_KEY)).unwrap();
+        assert!(
+            !secrets_key_ready(&dir),
+            "the certificate alone decrypts nothing"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn three_monthly_snapshots_are_kept_unless_the_settings_say_otherwise() {
+        assert_eq!(keep_snapshots(&json!({})), 3);
+        assert_eq!(
+            keep_snapshots(&json!({"maintenance": {"keep_snapshots": 7}})),
+            7
+        );
+        assert_eq!(
+            keep_snapshots(&json!({"maintenance": {"keep_snapshots": 0}})),
+            0
+        );
+        assert_eq!(
+            keep_snapshots(&json!({"maintenance": {"keep_snapshots": "7"}})),
+            3
+        );
+    }
 }
