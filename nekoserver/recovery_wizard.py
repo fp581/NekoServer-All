@@ -199,15 +199,18 @@ class Checked:
         self.unverified = 0
         self.damaged = []
         self.missing = []
+        self.uncertain = []
 
-    def copy(self, source, target):
+    def copy(self, source, target, expected=None):
+        """Copy one file, checked against `expected` (a list of the files you had names
+        the content it means) or else the checksum list's entry for the file."""
         key = None
         if self.root:
             try:
                 key = Path(source).relative_to(self.root).as_posix()
             except ValueError:
                 key = None
-        expected = self.sums.get(key)
+        expected = expected or self.sums.get(key)
         try:
             copy_checked(source, target, expected)
         except BackupDamaged:
@@ -244,6 +247,11 @@ class Checked:
         text += '.'
         if self.ledger_problem:
             text += f' This backup\'s checksum list could not be used ({self.ledger_problem}), so no file was checked.'
+        if self.uncertain:
+            text += (f' {len(self.uncertain)} files were left out because the list from that backup can\'t say which '
+                     'saved copy is theirs: they became a folder (or a folder became a file) after it, and that list '
+                     'is from before 0.39.7, which keeps no checksums. "Everything ever kept" restores every saved '
+                     'copy of them.')
         left = self.damaged + self.missing
         if left:
             text += (f' {len(left)} files were NOT restored, because this backup has them damaged ({len(self.damaged)}) '
@@ -397,7 +405,10 @@ def copy_latest(sources, destination, output=print, checked=None):
 
 # Since 0.39.6 each weekly copy that finishes writes which files you had then (their
 # path in the backup and the saved copy holding each one's content then), as
-# .neko-inventory/<UTC time>.json.gz at the backup's root (runtime inventory.rs).
+# .neko-inventory/<UTC time>.json.gz at the backup's root (runtime inventory.rs). Since
+# 0.39.7 (format v2) each entry also has that content's SHA-256: a saved copy can be
+# moved later (into neko-replaced, when a file became a folder) and a new file can take
+# its old name, so the checksum, not the name, says which content the list meant.
 INVENTORY_DIR = '.neko-inventory'
 INVENTORY_NAME = re.compile(r'^(\d{8}T\d{6}Z)(?:-(\d{1,9}))?\.json\.gz$')
 INVENTORY_LIMIT = 1 << 30   # unpacked; a list this big is not trusted
@@ -415,22 +426,45 @@ def inventories(root):
     return [(path, readable(key[0])) for key, path in sorted(found, reverse=True)]
 
 
+INVENTORY_FORMATS = ('neko-inventory-v1', 'neko-inventory-v2')
+SHA256 = re.compile(r'^[0-9a-f]{64}$')
+
+
+def inventory_entry(value):
+    """(saved copy's name, its SHA-256 or None for a v1 list) of one list entry, or None
+    when the entry is not one NekoServer writes."""
+    if isinstance(value, str):
+        copy, sha = value, None
+    elif isinstance(value, dict) and isinstance(value.get('sha256'), str) and SHA256.match(value['sha256']):
+        copy, sha = value.get('copy'), value['sha256']
+    else:
+        return None
+    if not isinstance(copy, str) or not valid_ledger_path(copy) or '/' in copy:
+        return None
+    return copy, sha
+
+
 def read_inventory(path):
-    """{path in the backup: name of the saved copy beside it}, or None when the list is
-    missing, damaged or of an unknown kind (then nothing is restored from it)."""
+    """{path in the backup: (name of the saved copy beside it, its SHA-256 or None)}, or
+    None when the list is missing, damaged or of an unknown kind (then nothing is
+    restored from it). A v2 list's entries all have a checksum; a v1 list's have none."""
     try:
         with gzip.open(path, 'rb') as stream:
             raw = stream.read(INVENTORY_LIMIT + 1)
         value = json.loads(raw) if len(raw) <= INVENTORY_LIMIT else None
     except (OSError, EOFError, ValueError, zlib.error):
         return None
-    files = value.get('files') if isinstance(value, dict) and value.get('format') == 'neko-inventory-v1' else None
+    kind = value.get('format') if isinstance(value, dict) else None
+    files = value.get('files') if kind in INVENTORY_FORMATS else None
     if not isinstance(files, dict):
         return None
-    for key, copy in files.items():
-        if not valid_ledger_path(key) or not isinstance(copy, str) or not valid_ledger_path(copy) or '/' in copy:
+    out = {}
+    for key, raw in files.items():
+        entry = inventory_entry(raw)
+        if not valid_ledger_path(key) or entry is None or (entry[1] is None) != (kind == 'neko-inventory-v1'):
             return None
-    return files
+        out[key] = entry
+    return out
 
 
 def plain_file(root, key):
@@ -443,32 +477,103 @@ def plain_file(root, key):
     return path.is_file()
 
 
-def listed_versions(sources, root, files):
-    """([(saved copy, path in the restore)], [paths missing from the backup]) for the
-    files an inventory lists under the restored folders."""
-    chosen, missing = [], []
+REPLACED = 'neko-replaced'   # <user>/neko-replaced/<when>/<path in files> (runtime backup.rs)
+
+
+def replaced_since(key, sums):
+    """A Nextcloud file (<user>/files/<path>) whose place was taken over by a folder, or
+    one of whose folders was once a file: the backup moved what stood in the way into
+    <user>/neko-replaced/<when>/, so a name in an old list may now hold other content."""
+    user, _, rest = key.partition('/')
+    if not rest.startswith('files/'):
+        return False
+    inside = rest[len('files/'):]
+    aside = re.compile(re.escape(user) + '/' + REPLACED + r'/[^/]+/(.+)$')
+    for saved in sums:
+        moved = aside.match(saved)
+        if moved and (moved[1] == inside or moved[1].startswith(inside + '/') or inside.startswith(moved[1] + '/')):
+            return True
+    return False
+
+
+class Located:
+    """Where the content a list names is now. With its checksum (lists since 0.39.7): the
+    saved copy beside the file when it still holds that content, else any saved copy the
+    checksum list records with that checksum (a copy moved into neko-replaced, say). Never
+    a copy whose content differs, even under the same name."""
+    def __init__(self, root, sums):
+        self.root, self.sums = Path(root), sums
+        self.by_sum = {}
+        for key, sha in sums.items():
+            self.by_sum.setdefault(sha, []).append(key)
+
+    def holds(self, saved, sha):
+        if not plain_file(self.root, saved):
+            return False
+        recorded = self.sums.get(saved)
+        if recorded is not None:
+            return recorded == sha
+        try:
+            return sha256_file(self.root / saved) == sha
+        except OSError:
+            return False
+
+    def find(self, key, copy, sha):
+        """The saved copy (a path in the backup) holding `sha`, or None."""
+        saved = key.rsplit('/', 1)[0] + '/' + copy
+        if self.holds(saved, sha):
+            return saved
+        # The same name first (the copy moved aside keeps it), then any other.
+        others = sorted(self.by_sum.get(sha, []), key=lambda k: (k.rsplit('/', 1)[-1] != copy, k))
+        return next((k for k in others if k != saved and plain_file(self.root, k)), None)
+
+
+def listed_place(located, key, copy, sha):
+    """Where one listed file's content is: a saved copy's path in the backup, None when no
+    saved copy holds it, or UNCERTAIN (a list without checksums, and a file that changed
+    between file and folder since)."""
+    if sha is not None:
+        return located.find(key, copy, sha)
+    if replaced_since(key, located.sums):
+        return UNCERTAIN
+    saved = key.rsplit('/', 1)[0] + '/' + copy
+    return saved if plain_file(located.root, saved) else None
+
+
+UNCERTAIN = object()
+
+
+def listed_versions(sources, root, files, sums=None):
+    """([(saved copy, path in the restore, checksum or None)], [paths missing from the
+    backup], [paths a list without checksums can't place]) for the files an inventory
+    lists under the restored folders."""
+    located = Located(root, sums or {})
+    chosen, missing, uncertain = [], [], []
     for name, folder in sources:
         try:
             prefix = Path(folder).relative_to(root).as_posix() + '/'
         except ValueError:
             continue
-        for key, copy in sorted(files.items()):
+        for key, (copy, sha) in sorted(files.items()):
             if not key.startswith(prefix):
                 continue
-            saved = key.rsplit('/', 1)[0] + '/' + copy
-            if plain_file(root, saved):
-                chosen.append((Path(root) / saved, Path(name) / key[len(prefix):]))
-            else:
+            saved = listed_place(located, key, copy, sha)
+            if saved is UNCERTAIN:
+                uncertain.append(key)
+            elif saved is None:
                 missing.append(key)
-    return chosen, missing
+            else:
+                chosen.append((Path(root) / saved, Path(name) / key[len(prefix):], sha))
+    return chosen, missing, uncertain
 
 
 def copy_listed(chosen, destination, checked):
-    """Copy each listed file's saved copy under the file's own name."""
-    ensure_room(destination.parent, sum(p.stat().st_size for p, _ in chosen), RESTORE)
+    """Copy each listed file's saved copy under the file's own name, checked against the
+    checksum the list recorded (when it has one)."""
+    ensure_room(destination.parent, sum(p.stat().st_size for p, _, _ in chosen), RESTORE)
     destination.mkdir(mode=0o700)
-    for path, target in chosen:
-        checked.copy(path, destination / target)
+    for path, target, sha in chosen:
+        checked.copy(path, destination / target, sha)
     return len(chosen)
 
 
@@ -511,7 +616,13 @@ def copy_as_of(sources, target, checked, inventory, output, prompt):
     if files is None:
         output(f'The list of files from {date} could not be read, so everything ever kept is offered instead.')
         return None
-    chosen, missing = listed_versions(sources, checked.root, files)
+    chosen, missing, uncertain = listed_versions(sources, checked.root, files, checked.sums)
+    if uncertain:
+        output(f'{len(uncertain)} files from that backup became a folder (or a folder became a file) later, and its '
+               f'list is from before 0.39.7, which keeps no checksums: which saved copy is theirs can\'t be told, so '
+               f'they are left out (for example {", ".join(uncertain[:5])}). "Everything ever kept" brings back '
+               'every saved copy of them.')
+    checked.uncertain = uncertain
     missing_check(missing, checked, prompt, output)
     output(f'Restoring the {len(chosen)} files you had at the backup of {date}.')
     return copy_listed(chosen, target, checked)

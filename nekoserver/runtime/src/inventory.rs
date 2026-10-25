@@ -2,10 +2,15 @@
 //! file ever seen (a deleted or renamed file stays), so a restore of everything brings
 //! back what you had removed. Each run that finishes its copy writes the live set as
 //! `.neko-inventory/<UTC>.json.gz` at the root of the backup tree: each file's path in
-//! the tree (under its own name) and the saved copy that held its content then. The
+//! the tree (under its own name), the saved copy that held its content then, and that
+//! content's SHA-256. The checksum is what a restore goes by: a saved copy can move
+//! later (a file that became a folder is kept aside in neko-replaced, backup.rs
+//! move_aside) and a new file can take its old place, so the name alone may point at
+//! newer content. The
 //! recovery menu (recovery_wizard.py) restores "as of the last backup" from it. A
 //! missing or damaged inventory only means the restore offers everything, as before.
 use crate::common::{self, Error, Result};
+use crate::ledger::Ledger;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -15,7 +20,8 @@ use std::process::{Command, Stdio};
 
 /// Folder at a backup tree's root; never data (backup.rs tree_files leaves it out).
 pub(crate) const FOLDER: &str = ".neko-inventory";
-const FORMAT: &str = "neko-inventory-v1";
+/// v2 (0.39.7) adds each copy's SHA-256; v1 lists (0.39.6) named the copy only.
+const FORMAT: &str = "neko-inventory-v2";
 /// Inventories kept per tree (half a year of weekly runs); older ones go.
 pub(crate) const KEPT: usize = 26;
 
@@ -105,8 +111,29 @@ fn compressed(value: &Value) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+/// Each listed file with its saved copy and that copy's SHA-256: the one the checksum
+/// list (`ledger`) records for it, else read from the copy now. A copy that can be read
+/// neither way is left out (a restore then names it missing, never guesses).
+fn with_checksums(root: &Path, inventory: &Inventory, ledger: &Ledger) -> BTreeMap<String, Value> {
+    let mut out = BTreeMap::new();
+    for (key, copy) in &inventory.files {
+        let saved = match key.rsplit_once('/') {
+            Some((folder, _)) => format!("{folder}/{copy}"),
+            None => copy.clone(),
+        };
+        let sum = ledger
+            .get(&saved)
+            .map(|e| e.sha256.clone())
+            .or_else(|| common::digest(&root.join(&saved)).ok());
+        if let Some(sha256) = sum {
+            out.insert(key.clone(), json!({"copy": copy, "sha256": sha256}));
+        }
+    }
+    out
+}
+
 /// Write `inventory` for the tree at `root`, then keep the newest KEPT. Returns its path.
-pub(crate) fn write(root: &Path, inventory: &Inventory) -> Result<PathBuf> {
+pub(crate) fn write(root: &Path, inventory: &Inventory, ledger: &Ledger) -> Result<PathBuf> {
     let folder = root.join(FOLDER);
     common::directory(&folder, 0o700)?;
     let now = chrono::DateTime::from_timestamp(common::now() as i64, 0)
@@ -118,7 +145,8 @@ pub(crate) fn write(root: &Path, inventory: &Inventory) -> Result<PathBuf> {
         path = folder.join(format!("{now}-{n}.json.gz"));
         n += 1;
     }
-    let value = json!({"format": FORMAT, "made_at": now, "files": inventory.files});
+    let files = with_checksums(root, inventory, ledger);
+    let value = json!({"format": FORMAT, "made_at": now, "files": files});
     common::atomic(&path, &compressed(&value)?, 0o600)?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     prune(&folder, KEPT, &name)?;

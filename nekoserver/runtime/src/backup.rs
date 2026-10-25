@@ -914,8 +914,8 @@ fn audit(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<()> {
 }
 /// Write the run's inventory of live files. Best effort: without it a restore offers
 /// every file ever kept, as before 0.39.6, so a failure is said but stops nothing.
-fn save_inventory(root: &Path, live: &Inventory, what: &str) {
-    match inventory::write(root, live) {
+fn save_inventory(root: &Path, live: &Inventory, ledger: &Ledger, what: &str) {
+    match inventory::write(root, live, ledger) {
         Ok(path) => println!(
             "{what}: noted the {} files you have now ({})",
             live.len(),
@@ -1044,7 +1044,7 @@ pub fn archive_checked(
         }
         // Published after every file it lists.
         ledger.save()?;
-        save_inventory(&archive, &live, "Archive");
+        save_inventory(&archive, &live, &ledger, "Archive");
     }
     report.print("Archive");
     if versions > 0 {
@@ -1533,7 +1533,7 @@ pub fn copy_cloud(
             missing_from(&root, &ledger, &mut report)?;
         }
         ledger.save()?;
-        save_inventory(&root, &live, "Nextcloud");
+        save_inventory(&root, &live, &ledger, "Nextcloud");
     }
     report.print("Nextcloud");
     println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
@@ -3920,7 +3920,7 @@ mod tests {
         }
         copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
         let first = newest_inventory(&usb.join("nextcloud"));
-        assert_eq!(first["format"], "neko-inventory-v1");
+        assert_eq!(first["format"], "neko-inventory-v2");
         assert_eq!(first["files"].as_object().unwrap().len(), 3);
         // Next week: one deleted, one renamed, one edited.
         fs::remove_file(cloud.join("alice/files/gone.txt")).unwrap();
@@ -3937,13 +3937,20 @@ mod tests {
         let keys: Vec<&String> = files.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["alice/files/keep.txt", "alice/files/new-name.txt"]);
         // The edit's saved copy holds the content you have now.
-        let copy = files["alice/files/keep.txt"].as_str().unwrap();
+        let copy = files["alice/files/keep.txt"]["copy"].as_str().unwrap();
+        assert_eq!(
+            files["alice/files/keep.txt"]["sha256"],
+            common::sha(b"edited")
+        );
         assert!(copy.starts_with("keep.neko-"), "{copy}");
         assert_eq!(
             fs::read(usb.join("nextcloud/alice/files").join(copy)).unwrap(),
             b"edited"
         );
-        assert_eq!(files["alice/files/new-name.txt"], "new-name.txt");
+        assert_eq!(
+            files["alice/files/new-name.txt"],
+            json!({"copy": "new-name.txt", "sha256": common::sha(b"old-name.txt")})
+        );
         // Everything is still kept, and the inventories are not counted as data.
         assert!(usb.join("nextcloud/alice/files/gone.txt").is_file());
         let keys: Vec<String> = tree_files(&usb.join("nextcloud"))
@@ -3979,7 +3986,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1100));
         archive(&library, &hdd, true, 60, Check::Quick).unwrap();
         let files = newest_inventory(&hdd)["files"].clone();
-        assert_eq!(files, json!({"upload/u/a.jpg": "a.jpg"}));
+        assert_eq!(
+            files,
+            json!({"upload/u/a.jpg": {"copy": "a.jpg", "sha256": common::sha(b"a.jpg")}})
+        );
         mirror(&hdd, &usb, true, Check::Quick).unwrap();
         assert_eq!(newest_inventory(&usb)["files"], files);
         // Only the newest KEPT stay.
@@ -4052,6 +4062,79 @@ mod tests {
         assert_eq!(kept.len(), 1, "the folder is kept aside with its file");
         let full = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
         assert!(full.integrity.problem("USB Nextcloud").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+    /// Every inventory of a tree, oldest first, unpacked.
+    fn all_inventories(root: &Path) -> Vec<Value> {
+        let mut names: Vec<String> = fs::read_dir(root.join(inventory::FOLDER))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        names
+            .iter()
+            .map(|n| {
+                let out = Command::new("gzip")
+                    .args(["-dc"])
+                    .arg(root.join(inventory::FOLDER).join(n))
+                    .output()
+                    .unwrap();
+                serde_json::from_slice(&out.stdout).unwrap()
+            })
+            .collect()
+    }
+    #[test]
+    fn each_inventory_keeps_the_checksum_of_what_you_had_then() {
+        // File, then folder, then file again under the same name, across three weekly
+        // copies. The first file's copy is moved into neko-replaced and a new copy takes
+        // its place, so only the checksum still says which content the first list meant.
+        let root = scratch("cloud-inventory-history");
+        let cloud = root.join("cloud");
+        let usb = root.join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        write(&cloud.join("alice/files/Projects"), b"OLD CONTENT");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        fs::remove_file(cloud.join("alice/files/Projects")).unwrap();
+        write(&cloud.join("alice/files/Projects/notes.txt"), b"notes");
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // a new run's time
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        fs::remove_dir_all(cloud.join("alice/files/Projects")).unwrap();
+        write(&cloud.join("alice/files/Projects"), b"NEW CONTENT");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let tree = usb.join("nextcloud");
+        let lists = all_inventories(&tree);
+        assert_eq!(lists.len(), 3);
+        let entry = |n: usize, key: &str| lists[n]["files"][key].clone();
+        assert_eq!(lists[0]["format"], "neko-inventory-v2");
+        assert_eq!(
+            entry(0, "alice/files/Projects")["sha256"],
+            common::sha(b"OLD CONTENT")
+        );
+        assert_eq!(
+            entry(1, "alice/files/Projects/notes.txt")["sha256"],
+            common::sha(b"notes")
+        );
+        assert!(entry(1, "alice/files/Projects").is_null());
+        assert_eq!(
+            entry(2, "alice/files/Projects")["sha256"],
+            common::sha(b"NEW CONTENT")
+        );
+        // The same copy name points at the new content now; the old content is still
+        // saved (in neko-replaced), and the checksum list knows where.
+        assert_eq!(
+            fs::read(tree.join("alice/files/Projects")).unwrap(),
+            b"NEW CONTENT"
+        );
+        let ledger = Ledger::read(&tree).unwrap();
+        let old: Vec<&String> = ledger
+            .entries()
+            .filter(|(_, e)| e.sha256 == common::sha(b"OLD CONTENT"))
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(old.len(), 1);
+        assert!(old[0].starts_with(&format!("alice/{REPLACED}/")), "{old:?}");
+        assert_eq!(fs::read(tree.join(old[0])).unwrap(), b"OLD CONTENT");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

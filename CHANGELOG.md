@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.39.7 — 2026-10-25
+
+### Fixed: backups
+- **Restoring an earlier date can no longer return newer content.** When a Nextcloud file became a folder, the weekly copy moved the file's saved copy into `neko-replaced`, but the list of files from that earlier date still pointed at the old place. That date's restore then called the file missing, and if a new file later took the same name, it restored the new file's content and said its checksum matched. Each list now keeps the checksum of every file's content, and a restore goes by that checksum: it finds the saved copy wherever it was moved, and names a file as not restored rather than hand out other content. Lists made by 0.39.6 have no checksums; from those, a file that changed between file and folder later is left out (with a note), and "Everything ever kept" still has every saved copy.
+
 ## v0.39.6 — 2026-10-25
 
 The improvements left out of 0.39.5, plus a fresh review of the drive checks, each with a regression test.
