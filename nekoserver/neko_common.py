@@ -475,13 +475,32 @@ def file_entry(path, problems):
     return None
 
 
+# The system's own folders. A folder NekoServer walks (to restore, import, copy or size
+# it) comes from a settings file or a backup's own record, so a changed record must not
+# be able to point a restore or an import at them. Drives and folders anywhere else
+# (/srv, /mnt, /data, /home, a desktop drive under /media or /run/media) are fine.
+SYSTEM_FOLDERS = ('/bin', '/boot', '/dev', '/etc', '/lib', '/lib32', '/lib64', '/proc', '/root', '/run', '/sbin',
+                  '/sys', '/usr')
+DESKTOP_DRIVES = '/run/media'
+
+
+def inside(path, folder):
+    """True when `path` (already resolved) is `folder` or somewhere under it."""
+    return os.path.commonpath([path, folder]) == folder
+
+
 def plain_folder(value):
     """A folder about to be walked, checked first (folder paths come from settings
-    files): absolute, with no '..' and no symlinks along the way."""
+    files): absolute, with no '..', no symlinks along the way, and not one of the
+    system's own folders."""
     text = str(value)
     if '\x00' in text or '..' in Path(text).parts or not Path(text).is_absolute():
         raise RuntimeError('A folder to read must be a plain absolute path: ' + text)
-    return safe_path(Path(text))
+    real = os.path.realpath(text)
+    if real == '/' or (any(inside(real, system) for system in SYSTEM_FOLDERS) and not inside(real, DESKTOP_DRIVES)):
+        raise RuntimeError('NekoServer does not read the system\'s own folders: ' + text)
+    safe_path(Path(text))   # no symlinks along the way, so the resolved path is the same folder
+    return Path(real)
 
 
 def strict_files(root, skip=None, skip_dirs=()):

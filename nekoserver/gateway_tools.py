@@ -377,6 +377,13 @@ def handlers(web,port):
     """The handlers of every host name on this Serve port."""
     return [value for key,value in web.items() if key.rpartition(':')[2]==port]
 
+def https(port):
+    """tailscale serve's --https= argument for a port: a number from 1 to 65535 (it comes
+    from Tailscale's own state and the journal, so it is checked before it is used)."""
+    number=int(port)
+    if not 0<number<65536:raise ValueError('Not a Tailscale port: '+str(port))
+    return '--https='+str(number)
+
 def ours(state,owned):
     """The Serve ports still exactly as NekoServer set them (its journal), whatever host
     name they were set under. Any other port, or one changed since, is someone else's."""
@@ -407,14 +414,14 @@ def _apply_tailnet(config):
     try:
         for port in sorted(mine):
             # Ours but no longer wanted, or set under the server's old name: off first.
-            if port not in target['TCP'] or only(state,{port})!=only(target,{port}):command(['tailscale','serve','--bg','--https='+port,'off'])
+            if port not in target['TCP'] or only(state,{port})!=only(target,{port}):command(['tailscale','serve','--bg',https(port),'off'])
         for port in target['TCP']:
             if only(state,{port})==only(target,{port}):continue
-            command(['tailscale','serve','--bg','--https='+port,target['Web'][host+':'+port]['Handlers']['/']['Proxy']],45)
+            command(['tailscale','serve','--bg',https(port),target['Web'][host+':'+port]['Handlers']['/']['Proxy']],45)
         if only(serve_state(),set(target['TCP']))!=target:raise RuntimeError('Tailnet routes did not match the planned private configuration')
     except (RuntimeError,ValueError,TypeError) as exc:
         # Fail closed for our routes (only those) when they are still recognisable.
-        for port in sorted(ours(serve_state(),union)):command(['tailscale','serve','--bg','--https='+port,'off'])
+        for port in sorted(ours(serve_state(),union)):command(['tailscale','serve','--bg',https(port),'off'])
         raise RuntimeError(f'Tailscale addresses not set up ({exc}). The addresses were switched off again until the next run') from None
     atomic_json(ledger,{'format':'neko-tailnet-owned-v1','host':host,'owned':target,'status':'configured'})
     result={'format':'neko-gateway-v1','mode':'tailnet','status':'configured','client_acceptance':'needs_setup','services':apps,'links':{**{a:HTTPS+host+':'+str(APPS[a][2])+'/' for a in apps},**({'dashboard':HTTPS+host+':'+str(DASHBOARD_PORT)+'/'} if board else {})},'reason':'Restrict tailnet policy to intended users/devices and verify each application login and streaming/upload from a client.'};atomic_json(Path(config['data_mount'])/'reports/gateway-tailnet.json',result);return result
@@ -429,8 +436,8 @@ def refresh_dashboard_route(config,log):
     port=str(DASHBOARD_PORT);host=tailnode();state=serve_state();board=dashboard_target(config)
     if port not in owned['TCP'] or port not in ours(state,owned):return False
     if handlers(state['Web'],port)==[{'Handlers':{'/':{'Proxy':board}}}]:return False
-    command(['tailscale','serve','--bg','--https='+port,'off'])
-    if board:command(['tailscale','serve','--bg','--https='+port,board],45)
+    command(['tailscale','serve','--bg',https(port),'off'])
+    if board:command(['tailscale','serve','--bg',https(port),board],45)
     kept=only(owned,set(owned['TCP'])-{port});mine=desired(host,[],board) if board else {'TCP':{},'Web':{}}
     atomic_json(ledger,{**saved,'host':host,'owned':{k:{**kept[k],**mine[k]} for k in ('TCP','Web')}})
     log('Dashboard: its Tailscale address now leads to '+(board or 'nothing (remote use switched off)'))

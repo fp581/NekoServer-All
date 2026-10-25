@@ -623,13 +623,31 @@ class ManualSnapshotTests(unittest.TestCase):
     def test_a_snapshot_copy_on_a_desktop_drive_with_spaces_is_read(self):
         import recovery_tools as rt
         with tempfile.TemporaryDirectory() as d:
-            folder = Path(d) / 'My Passport/first-test'
+            folder = Path(d) / 'My Passport (2)/first-test'
             folder.mkdir(parents=True)
             (folder / 'a.jpg').write_bytes(b'a')
             self.assertEqual(len(rt.regular_files(folder)), 1)
-            for bad in (Path(d) / 'x/../y', Path(d + '/tab\there')):
+            for bad in (Path(d) / 'x/../y', Path(d + '/tab\there'), Path(d + '/a;b'), Path(d + '/$(x)')):
                 with self.assertRaisesRegex(RuntimeError, 'not a plain absolute path'):
                     rt.regular_files(bad)
+
+    def test_a_record_pointing_at_the_systems_own_folders_is_refused_unread(self):
+        # Folders to walk come from settings files and backup records; a changed record
+        # must not turn a restore or an import into a copy of /etc or /root.
+        import neko_common
+        import recovery_tools as rt
+        for system in ('/', '/etc', '/root/.ssh', '/proc/1', '/usr/share', '/run/user/1000'):
+            with self.assertRaisesRegex(RuntimeError, "system's own folders"):
+                neko_common.plain_folder(system)
+            with self.assertRaises(RuntimeError):
+                rt.regular_files(Path(system))
+        for fine in ('/srv/nekoserver/media', '/data/photos', '/run/media/you/My Passport', '/media/you/USB', '/home/you/Music'):
+            self.assertEqual(neko_common.plain_folder(fine), Path(fine))
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'real').mkdir()
+            (Path(d) / 'link').symlink_to(Path(d) / 'real')
+            with self.assertRaisesRegex(RuntimeError, 'symlink'):
+                neko_common.plain_folder(Path(d) / 'link')
 
     def test_an_unreadable_album_stops_the_snapshot(self):
         import recovery_tools as rt
