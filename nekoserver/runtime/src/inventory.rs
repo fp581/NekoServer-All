@@ -38,7 +38,7 @@ fn order(name: &str) -> Option<(String, u64)> {
     let n = found.get(2).map_or(Some(0), |m| m.as_str().parse().ok())?;
     Some((found[1].to_string(), n))
 }
-fn oldest_first(names: &mut [String]) {
+pub(crate) fn oldest_first(names: &mut [String]) {
     names.sort_by_key(|n| order(n));
 }
 
@@ -132,6 +132,34 @@ fn with_checksums(root: &Path, inventory: &Inventory, ledger: &Ledger) -> BTreeM
     out
 }
 
+/// The name for a new inventory in `folder`, made at `now` (a UTC stamp): it always sorts
+/// after every inventory already there, since the restore takes the last one as "as of
+/// the last backup". A clock that was set back (a flat clock battery corrected later,
+/// say) would otherwise give the newest list an older name than the one before it; then
+/// it takes the newest name's stamp with the next number instead.
+fn next_name(folder: &Path, now: &str) -> Result<PathBuf> {
+    let newest = fs::read_dir(common::safe(folder)?)?
+        .flatten()
+        .filter_map(|e| order(&e.file_name().to_string_lossy()))
+        .max();
+    let (stamp, mut n) = match newest {
+        Some((stamp, n)) if stamp.as_str() >= now => (stamp, n + 1),
+        _ => (now.to_string(), 0),
+    };
+    loop {
+        let name = if n == 0 {
+            format!("{stamp}.json.gz")
+        } else {
+            format!("{stamp}-{n}.json.gz")
+        };
+        let path = folder.join(name);
+        if fs::symlink_metadata(&path).is_err() {
+            return Ok(path);
+        }
+        n += 1;
+    }
+}
+
 /// Write `inventory` for the tree at `root`, then keep the newest KEPT. Returns its path.
 pub(crate) fn write(root: &Path, inventory: &Inventory, ledger: &Ledger) -> Result<PathBuf> {
     let folder = root.join(FOLDER);
@@ -139,12 +167,7 @@ pub(crate) fn write(root: &Path, inventory: &Inventory, ledger: &Ledger) -> Resu
     let now = chrono::DateTime::from_timestamp(common::now() as i64, 0)
         .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
         .unwrap_or_default();
-    let mut path = folder.join(format!("{now}.json.gz"));
-    let mut n = 1;
-    while fs::symlink_metadata(&path).is_ok() {
-        path = folder.join(format!("{now}-{n}.json.gz"));
-        n += 1;
-    }
+    let path = next_name(&folder, &now)?;
     let files = with_checksums(root, inventory, ledger);
     let value = json!({"format": FORMAT, "made_at": now, "files": files});
     common::atomic(&path, &compressed(&value)?, 0o600)?;
@@ -224,5 +247,30 @@ mod tests {
                 "20261101T030000Z.json.gz"
             ]
         );
+    }
+    #[test]
+    fn a_new_inventory_sorts_last_even_after_the_clock_was_set_back() {
+        let folder =
+            std::env::temp_dir().join(format!("neko-inventory-names-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        let name = |now: &str| {
+            let path = next_name(&folder, now).unwrap();
+            fs::write(&path, b"").unwrap();
+            path.file_name().unwrap().to_string_lossy().to_string()
+        };
+        assert_eq!(name("20261025T030000Z"), "20261025T030000Z.json.gz");
+        assert_eq!(name("20261025T030000Z"), "20261025T030000Z-1.json.gz");
+        // The clock went back a week: the next list still comes after the newest one.
+        assert_eq!(name("20261018T030000Z"), "20261025T030000Z-2.json.gz");
+        assert_eq!(name("20261101T030000Z"), "20261101T030000Z.json.gz");
+        let mut names: Vec<String> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        oldest_first(&mut names);
+        assert_eq!(names.last().unwrap(), "20261101T030000Z.json.gz");
+        assert_eq!(names[2], "20261025T030000Z-2.json.gz");
+        fs::remove_dir_all(folder).unwrap();
     }
 }

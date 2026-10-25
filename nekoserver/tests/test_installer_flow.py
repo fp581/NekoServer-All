@@ -109,7 +109,9 @@ class InstallerFlowTests(unittest.TestCase):
         (self.root / 'modules' / 'storage.py').write_text('DEPENDENCIES = []\ndef run(ctx):\n    pass\n')
         logged = []
         for _ in range(2):
+            # Nobody at the keyboard, also when the suite itself runs in a terminal.
             with mock.patch('config_checks.validate'), mock.patch.object(installer.os.path, 'ismount', return_value=False), \
+                    mock.patch.object(installer.sys.stdin, 'isatty', return_value=False), \
                     mock.patch('builtins.print', side_effect=lambda *a, **k: logged.append(' '.join(map(str, a)))):
                 installer._execute(self.args(module='storage'), self.root)
             saved = json.loads(self.config.read_text())

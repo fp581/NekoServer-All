@@ -4059,7 +4059,7 @@ mod tests {
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
-        names.sort();
+        inventory::oldest_first(&mut names);
         names
             .iter()
             .map(|n| {
