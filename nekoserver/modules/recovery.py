@@ -1,11 +1,12 @@
 """Preserve an immutable installer bundle and current config on the data SSD."""
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import time
 from pathlib import Path
-from neko_common import VERSION, safe_path, atomic_write, atomic_json
+from neko_common import VERSION, safe_path, atomic_write, atomic_json, plain_folder
 
 DEPENDENCIES=['storage','capacity']
 DESCRIPTION='Preserve installer, templates and current configuration on the application SSD'
@@ -27,6 +28,7 @@ def bundle_files(project):
 
 MANIFEST='release-manifest.json'   # in the kept copy: the checksum of every file as NekoServer wrote it
 SET_ASIDE='.replaced-'             # v<VERSION>.replaced-<time>: the kept copy another build of the version replaced
+SETTINGS_FILE='config.json'        # in the kept copy: the settings this installation runs with
 
 def own_untouched(dest):
     """True when every file of the kept copy is what its manifest recorded: NekoServer
@@ -38,13 +40,56 @@ def own_untouched(dest):
 
 def set_aside(dest,log):
     """The kept copy moved to v<VERSION>.replaced-<time> (an earlier one set aside for this
-    version goes: one is enough to look at). Returns the new place."""
-    for earlier in dest.parent.glob(dest.name+SET_ASIDE+'*'):shutil.rmtree(safe_path(earlier))
+    version goes: one is enough to look at, and the settings it kept are carried over
+    first, so none is lost). Returns the new place."""
+    for earlier in dest.parent.glob(dest.name+SET_ASIDE+'*'):
+        carry_settings(earlier,dest)
+        shutil.rmtree(safe_path(earlier))
     aside=dest.with_name(dest.name+SET_ASIDE+time.strftime('%Y%m%d-%H%M%S'))
     dest.rename(aside)
+    # The settings it kept (the ones from before a reinstall, say) stay where recovery and
+    # RECOVERY.md look for them: in the copy that takes its place.
+    carry_settings(aside,dest)
     log(f'The copy of NekoServer {VERSION} kept on the SSD was from other sources than this one (the same version, built or '
         f'downloaded again): it is set aside at {aside} and this one takes its place')
     return aside
+
+
+def settings_files(folder):
+    """The settings a release folder keeps: config.json and its earlier copies."""
+    folder=Path(folder)
+    return sorted(p for p in folder.glob('config*.json') if p.is_file() and not p.is_symlink()) if folder.is_dir() else []
+
+
+def free_name(folder,stem):
+    """folder/<stem>.json, or <stem>-2.json, -3, ... when that name is taken."""
+    target,count=folder/(stem+'.json'),1
+    while target.exists():
+        count+=1
+        target=folder/f'{stem}-{count}.json'
+    return target
+
+
+def carry_settings(source,dest):
+    """The settings kept in `source` that `dest` does not hold yet (by content) are copied
+    into dest, with their dates, so the history follows a kept copy that is set aside: its
+    config.json as dest's config.json when dest has none yet, otherwise as an earlier copy
+    (config.previous-...). Returns the copies made."""
+    dest=plain_folder(dest) if Path(dest).exists() else Path(dest)
+    held={p.read_bytes() for p in settings_files(dest)}
+    made=[]
+    for path in settings_files(plain_folder(source)):
+        payload=path.read_bytes()
+        if payload in held:continue
+        target=dest/path.name
+        if target.exists():
+            target=free_name(dest,'config.previous-'+time.strftime('%Y%m%d-%H%M%S',time.localtime(path.stat().st_mtime)))
+        dest.mkdir(parents=True,exist_ok=True)
+        atomic_write(target,payload,0o600)
+        os.utime(target,ns=(path.stat().st_atime_ns,path.stat().st_mtime_ns))
+        held.add(payload);made.append(target)
+    return made
+
 
 def preserve(data,project,config,log=print):
     """This release's files and the settings, kept on the SSD (installer/releases/v<VERSION>)
@@ -70,8 +115,38 @@ def preserve(data,project,config,log=print):
         target=safe_path(dest/rel)
         if not target.exists():atomic_write(target,payload,0o750 if target.suffix in ('.py','.sh') or target.name=='nekoserver-runtime' else 0o640)
     atomic_json(dest/MANIFEST,{'version':VERSION,'sha256':{rel:hashlib.sha256(payload).hexdigest() for rel,payload in payloads.items()}})
-    atomic_json(dest/'config.json',config)
+    keep_previous(dest/SETTINGS_FILE,config,log)
+    atomic_json(dest/SETTINGS_FILE,config)
     return dest
+
+
+PREVIOUS_KEPT=5
+
+
+def keep_previous(saved,config,log=print,now=None):
+    """Settings different from the copy already kept keep that copy beside it, as
+    config.previous-<time>.json: the oldest one always (after Linux is reinstalled, setup
+    makes new settings before it can see the SSD and copies them here, maybe on every
+    run since: the oldest is the one from before, which recovery needs) and the newest
+    four after it."""
+    # The release folder on the SSD, checked (absolute, no links, not a system folder).
+    folder=plain_folder(Path(saved).parent)
+    try:
+        earlier=json.loads((folder/SETTINGS_FILE).read_text())
+    except (OSError,ValueError):
+        return
+    if earlier==config:return
+    stamp=time.strftime('%Y%m%d-%H%M%S',time.localtime(now))
+    previous=free_name(folder,'config.previous-'+stamp)   # two changes in one second: each keeps its own copy
+    atomic_json(previous,earlier)
+    # The copy keeps the date of the settings it holds, so "the oldest" stays the oldest
+    # settings, also for ones carried over from a set-aside copy.
+    with contextlib.suppress(OSError):
+        os.utime(previous,ns=(time.time_ns(),(folder/SETTINGS_FILE).stat().st_mtime_ns))
+    kept=sorted(folder.glob('config.previous-*.json'),key=lambda p:p.stat().st_mtime_ns)
+    for old in kept[1:-(PREVIOUS_KEPT-1)] if len(kept)>PREVIOUS_KEPT else []:
+        old.unlink()
+    log(f'The settings kept on the SSD were different; the earlier ones are kept at {previous}')
 
 
 def run(ctx):
@@ -80,4 +155,4 @@ def run(ctx):
     dest=preserve(Path(ctx.config['data_mount']),Path(__file__).resolve().parents[1],ctx.config,ctx.log)
     ctx.log(f'Installer preserved: {dest}/install.sh; config: {dest}/config.json')
     # Future modules and retries use the persistent configuration copy.
-    ctx.config_path=dest/'config.json'
+    ctx.config_path=dest/SETTINGS_FILE

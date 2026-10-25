@@ -239,6 +239,16 @@ class PlanTests(unittest.TestCase):
         self.assertTrue(any('Could not look in' in w and 'run with sudo' in w for w in plan.warnings), plan.warnings)
         self.assertIn('!! Could not look in', plan.describe({'server'}))
 
+    def test_permission_denied_is_not_taken_for_no_folder(self):
+        # Since Python 3.14 Path.is_dir() says False for "permission denied" too; the plan
+        # must still notice the folder it could not look into (this runs as root as well).
+        folder = mock.Mock()
+        folder.stat.side_effect = PermissionError(13, 'Permission denied')
+        with self.assertRaises(PermissionError):
+            uninstaller.Plan.folder_here(folder)
+        self.assertFalse(uninstaller.Plan.folder_here(self.system.root / 'not-there'))
+        self.assertTrue(uninstaller.Plan.folder_here(self.system.root))
+
     def test_every_path_stays_under_the_plans_root(self):
         self.assertEqual(self.plan.at('/etc/fstab'), self.system.root / 'etc/fstab')
         self.assertEqual(self.plan.at('/'), Path(os.path.normpath(str(self.system.root))))
@@ -317,9 +327,62 @@ class RemoveTests(unittest.TestCase):
             uninstaller.remove(self.plan, chosen, run=self.system.run, out=self.shown.append, root=self.system.root,
                                call=self.system.call, sleep=lambda seconds: None)
 
+    def unfinished_install(self):
+        """What a package installation cut off on Debian leaves: its record, NekoServer's
+        policy-rc.d, and the masks on the services it brings (one masked by its package)."""
+        record = self.system.root / 'var/lib/nekoserver-host/package-install.json'
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({'format': 'neko-package-install-v1', 'packages': ['docker', 'samba'],
+                                      'before': {'new_units': ['docker.service', 'docker.socket', 'smbd.service', 'x; rm -rf /']}}))
+        policy = self.system.root / 'usr/sbin/policy-rc.d'
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(uninstaller.host.OUR_POLICY)
+        package_mask = self.system.root / uninstaller.host.PACKAGE_MASKS.lstrip('/') / 'smbd.service'
+        package_mask.parent.mkdir(parents=True, exist_ok=True)
+        package_mask.write_text('')
+        self.plan = self.system.plan()
+        return record, policy
+
+    def test_an_unfinished_package_installation_is_finished_before_its_record_goes(self):
+        record, policy = self.unfinished_install()
+        self.assertIn('package installation setup left unfinished', self.plan.describe({'server'}))
+        finished = []
+
+        def reconcile():
+            finished.append(record.exists())
+            record.unlink()
+            policy.unlink()
+        with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+            uninstaller.remove(self.plan, {'server'}, run=self.system.run, out=self.shown.append, root=self.system.root,
+                               call=self.system.call, sleep=lambda seconds: None, reconcile=reconcile)
+        self.assertEqual(finished, [True])          # while its record was still there
+        self.assertFalse(self.exists('/var/lib/nekoserver-host'))
+
+    def test_when_it_cannot_be_finished_its_protection_is_lifted(self):
+        _, policy = self.unfinished_install()
+
+        def reconcile():
+            raise RuntimeError('dpkg could not finish setting up docker-ce')
+        with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+            uninstaller.remove(self.plan, {'server'}, run=self.system.run, out=self.shown.append, root=self.system.root,
+                               call=self.system.call, sleep=lambda seconds: None, reconcile=reconcile)
+        self.assertFalse(policy.exists())
+        self.assertIn(['systemctl', 'unmask', 'docker.service', 'docker.socket'], self.system.calls)   # not the package's own mask
+        self.assertTrue(any('could not finish it (dpkg could not finish' in line for line in self.shown))
+        self.assertFalse(self.exists('/var/lib/nekoserver-host'))
+
+    def test_someone_elses_policy_is_left_alone(self):
+        policy = self.system.root / 'usr/sbin/policy-rc.d'
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text('#!/bin/sh\nexit 101\n')
+        self.plan = self.system.plan()
+        self.remove({'server'})
+        self.assertTrue(policy.exists())
+        self.assertFalse(any('unfinished' in line for line in self.shown))
+
     def test_the_server_alone_leaves_every_drive_and_the_apps_data(self):
         self.remove({'server'})
-        for gone in ('/etc/systemd/system/nekoserver-dashboard.service', '/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf',
+        for gone in ('/etc/systemd/system/nekoserver-dashboard.service', '/etc/systemd/system/smb.service.d/10-nekoserver-storage.conf',
                      '/usr/local/lib/nekoserver-dashboard', '/etc/nekoserver-gateway', '/home/neko/Desktop/nekoserver-steam.desktop',
                      '/etc/samba/nekoserver.conf', '/etc/samba/smb.conf.packaged', '/var/lib/nekoserver-openrgb', '/run/nekoserver-control'):
             self.assertFalse(self.exists(gone), gone)
@@ -327,7 +390,9 @@ class RemoveTests(unittest.TestCase):
         self.assertTrue((self.system.root / 'etc/samba/smb.conf').read_text().startswith('# Sample configuration file'))
         for kept in ('/etc/systemd/system/other.service', '/home/neko/Desktop/nekoserver-mine.desktop', '/srv/nekoserver/appdata/jellyfin/config.xml',
                      '/srv/nekoserver/photos/immich-library/upload/a.jpg', '/mnt/nekoserver-media/library/movies/film.mkv',
-                     '/mnt/nekoserver-photos/upload/2026/a.jpg', '/etc/fstab', '/etc/docker/daemon.json'):
+                     '/mnt/nekoserver-photos/upload/2026/a.jpg', '/etc/fstab', '/etc/docker/daemon.json',
+                     # Docker keeps its data-root on the SSD, so its start guard stays with it.
+                     '/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf'):
             self.assertTrue(self.exists(kept), kept)
         calls = self.system.calls
         self.assertIn(['systemctl', 'disable', '--now', 'nekoserver-maintenance.timer'], calls)
@@ -450,6 +515,119 @@ class RemoveTests(unittest.TestCase):
                         next(i for i, line in enumerate(self.shown) if line.startswith('  removing')) + len(calls))
 
 
+
+class ReviewFixTests(unittest.TestCase):
+    """The uninstaller review of 0.39.5: a stopped uninstall puts the services back, system
+    files are replaced in one step, it waits for a monthly update or a setup, and it says
+    what it could not remove."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.system = FakeSystem(self.tmp.name).populate()
+        self.plan = self.system.plan()
+        self.shown = []
+
+    def remove(self, chosen):
+        with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+            return uninstaller.remove(self.plan, chosen, run=self.system.run, out=self.shown.append, root=self.system.root,
+                                      call=self.system.call, sleep=lambda seconds: None)
+
+    def test_a_stopped_uninstall_switches_the_services_back_on(self):
+        """The reported case: every service and timer was disabled, then the containers could
+        not be removed, and the message said nothing had been changed."""
+        for unit in ('nekoserver-dashboard.service', 'nekoserver-maintenance.timer'):
+            self.system.failing[('systemctl', 'is-enabled', unit)] = (0, 'enabled')
+        self.system.failing[('systemctl', 'is-active', 'nekoserver-dashboard.service')] = (0, 'active')
+        self.system.failing[('docker', 'rm')] = (1, 'container is busy')
+        with self.assertRaisesRegex(uninstaller.Stopped, 'switched back on as they were'):
+            self.remove({key for key, *_ in uninstaller.CHOICES})
+        calls = self.system.calls
+        self.assertIn(['systemctl', 'enable', 'nekoserver-dashboard.service'], calls)
+        self.assertIn(['systemctl', 'enable', 'nekoserver-maintenance.timer'], calls)
+        self.assertIn(['systemctl', 'start', 'nekoserver-dashboard.service'], calls)
+        self.assertNotIn(['systemctl', 'enable', 'nekoserver-control.service'], calls)   # it was not on
+
+    def test_one_that_cannot_be_switched_back_on_is_named(self):
+        self.system.failing[('systemctl', 'is-enabled', 'nekoserver-dashboard.service')] = (0, 'enabled')
+        self.system.failing[('systemctl', 'enable', 'nekoserver-dashboard.service')] = (1, 'Failed')
+        self.system.failing[('docker', 'rm')] = (1, 'container is busy')
+        with self.assertRaisesRegex(uninstaller.Stopped, 'could not be switched back on: nekoserver-dashboard.service.*sudo bash install.sh'):
+            self.remove({key for key, *_ in uninstaller.CHOICES})
+
+    def test_fstab_and_daemon_json_are_replaced_in_one_step_with_a_copy_kept(self):
+        fstab = self.system.root / 'etc/fstab'
+        before = fstab.read_text()
+        fstab.chmod(0o644)
+        with mock.patch('neko_common.os.replace', side_effect=OSError('disk full')), self.assertRaises(OSError):
+            self.remove({key for key, *_ in uninstaller.CHOICES})
+        self.assertEqual(fstab.read_text(), before)
+        daemon = json.loads((self.system.root / 'etc/docker/daemon.json').read_text())
+        self.assertEqual(daemon['data-root'], '/srv/nekoserver/docker-engine')   # never half written
+        self.system = FakeSystem(tempfile.mkdtemp(dir=self.tmp.name)).populate()
+        self.plan = self.system.plan()
+        fstab = self.system.root / 'etc/fstab'
+        fstab.chmod(0o644)
+        self.remove({key for key, *_ in uninstaller.CHOICES})
+        self.assertEqual(fstab.read_text(), '# static\nUUID=cccc-3333 / ext4 defaults 0 1\n')
+        self.assertEqual(fstab.stat().st_mode & 0o777, 0o644)
+        [copy] = fstab.parent.glob('fstab.before-nekoserver-uninstall-*')
+        self.assertEqual(copy.read_text(), before)
+        self.assertTrue(list(fstab.parent.glob('docker/daemon.json.before-nekoserver-uninstall-*')))
+
+    def test_a_drive_that_cannot_be_unmounted_is_said_and_listed(self):
+        self.system.failing[('umount', '/srv/nekoserver')] = (32, 'target is busy')
+        left = self.remove({key for key, *_ in uninstaller.CHOICES})
+        self.assertIn('/srv/nekoserver (still mounted)', left)
+        self.assertTrue(any('could not unmount (busy: target is busy): sudo umount /srv/nekoserver' in line for line in self.shown), self.shown)
+
+    def test_what_could_not_be_removed_is_listed(self):
+        stubborn = self.system.root / 'etc/nekoserver-gateway'
+        left = self.remove_with(lambda path, ignore_errors=False: None, {'server'})
+        self.assertIn(str(stubborn), left)
+
+    def remove_with(self, rmtree, chosen):
+        with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+            return uninstaller.remove(self.plan, chosen, run=self.system.run, out=self.shown.append, root=self.system.root,
+                                      call=self.system.call, sleep=lambda seconds: None, rmtree=rmtree)
+
+    def test_dockers_start_guard_goes_only_with_its_ssd_data_root(self):
+        guard = self.system.root / 'etc/systemd/system/docker.service.d/10-nekoserver-storage.conf'
+        self.assertNotIn('remove ' + str(guard), self.plan.describe({'server', 'apps'}))
+        self.assertIn('remove ' + str(guard), self.plan.describe({'server', 'data'}))
+        self.remove({'server', 'apps'})
+        self.assertTrue(guard.exists())
+
+    def test_it_waits_for_a_monthly_update_or_a_running_setup(self):
+        journal = Path(self.tmp.name) / 'maintenance-resume.json'
+        journal.write_text('{"version": "0.39.5"}')
+        with mock.patch('neko_common.maintenance_running', return_value=False):
+            blocked, held = uninstaller.busy(locks=(), journal=journal)
+        self.assertIn('did not finish', blocked)
+        self.assertIn('Nothing was removed', blocked)
+        with mock.patch('neko_common.maintenance_running', return_value=True):
+            blocked, _ = uninstaller.busy(locks=(), journal=Path(self.tmp.name) / 'none.json')
+        self.assertIn('running right now', blocked)
+        lock = Path(self.tmp.name) / 'setup.lock'
+        lock.write_text('')
+        import fcntl
+        with lock.open() as setup:
+            fcntl.flock(setup, fcntl.LOCK_EX)     # a setup holds it
+            with mock.patch('neko_common.maintenance_running', return_value=False):
+                blocked, _ = uninstaller.busy(locks=(str(lock),), journal=Path(self.tmp.name) / 'none.json')
+            self.assertIn('setup is running', blocked)
+        with mock.patch('neko_common.maintenance_running', return_value=False):
+            blocked, held = uninstaller.busy(locks=(str(lock), str(lock) + '.missing'), journal=Path(self.tmp.name) / 'none.json')
+        self.assertIsNone(blocked)
+        self.assertEqual(len(held), 1)
+
+    def test_main_refuses_before_any_change(self):
+        with mock.patch.object(uninstaller.os, 'geteuid', return_value=0), \
+                mock.patch.object(uninstaller, 'busy', return_value=('A monthly update did not finish.', [])), \
+                mock.patch.object(uninstaller, 'Plan') as plan, mock.patch('builtins.print'):
+            self.assertEqual(uninstaller.main([]), 1)
+        plan.assert_not_called()
+
 class EntryTests(unittest.TestCase):
     def test_the_dry_run_shows_everything_and_changes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -477,6 +655,7 @@ class EntryTests(unittest.TestCase):
             system = FakeSystem(tmp).populate()
             with mock.patch.object(uninstaller, 'Plan', return_value=system.plan()), \
                     mock.patch.object(uninstaller.os, 'geteuid', return_value=0), \
+                    mock.patch.object(uninstaller, 'busy', return_value=(None, [])), \
                     mock.patch('builtins.input', side_effect=['', 'no']), \
                     mock.patch('builtins.print'):
                 self.assertEqual(uninstaller.main([]), 2)

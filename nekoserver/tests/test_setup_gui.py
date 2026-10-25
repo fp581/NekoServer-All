@@ -158,16 +158,24 @@ class WindowTests(unittest.TestCase):
         self.window = setup_gui.Window(self.settings, self.config, wizard.STEPS, self.config['profiles']['full'])
         self.addCleanup(self.window.stop)
         self.addCleanup(setup_progress.disable)
+        # The window's browser: it keeps the cookie the first page load gives it.
+        self.browser = self.cookie_browser()
+        self.browser.open(self.window.url, timeout=5).read()
 
-    def get(self, route, token=None):
+    @staticmethod
+    def cookie_browser():
+        import http.cookiejar
+        return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    def get(self, route, token=None, browser=None):
         url = self.window.url.replace(self.window.token, token or self.window.token) + route
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with (browser or self.browser).open(url, timeout=5) as response:
             return response.status, response.headers.get('Content-Type', ''), response.read()
 
     def post(self, route, payload):
         request = urllib.request.Request(self.window.url + route, data=json.dumps(payload).encode(),
                                          headers={'Content-Type': 'application/json'}, method='POST')
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with self.browser.open(request, timeout=5) as response:
             return json.loads(response.read())
 
     def state(self):
@@ -315,8 +323,44 @@ class WindowTests(unittest.TestCase):
             request = urllib.request.Request(self.window.url + 'api/choose', data=data,
                                              headers={'Content-Type': 'application/json'}, method='POST')
             with self.assertRaises(urllib.error.HTTPError) as caught:
-                urllib.request.urlopen(request, timeout=5)
+                self.browser.open(request, timeout=5)
             self.assertEqual(caught.exception.code, code)
+
+    def test_the_address_works_once_and_then_only_for_that_browser(self):
+        # Another account on this PC can read the address from the browser's command
+        # line; once the window has opened it, the address alone lets nobody in.
+        other = self.cookie_browser()
+        for route in ('', 'api/state', 'static/setup.js'):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.get(route, browser=other)
+            self.assertEqual(caught.exception.code, 403, route)
+        request = urllib.request.Request(self.window.url + 'api/answer', data=b'{"seq": 1, "text": "yes"}', method='POST')
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            other.open(request, timeout=5)
+        self.assertEqual(caught.exception.code, 403)
+        self.assertEqual(self.get('')[0], 200)          # a reload in the window's own browser
+
+    def test_only_this_pcs_own_name_is_answered(self):
+        request = urllib.request.Request(self.window.url + 'api/state', headers={'Host': 'evil.example:80'})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.browser.open(request, timeout=5)
+        self.assertEqual(caught.exception.code, 404)
+
+    def test_a_broken_length_is_refused_quietly(self):
+        import io
+        import socket
+        port = self.window.server.server_address[1]
+        for length in ('abc', '-5'):
+            with socket.create_connection(('127.0.0.1', port), timeout=5) as conn:
+                conn.sendall(f'POST /t/{self.window.token}/api/choose HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n'
+                             f'Content-Length: {length}\r\n\r\n'.encode())
+                self.assertIn(b' 40', conn.recv(200))   # 400 (or 403 without the cookie), never a hang
+        with mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+            with socket.create_connection(('127.0.0.1', port), timeout=5) as conn:
+                conn.sendall(f'GET /t/{self.window.token}/api/state HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n'.encode())
+            import time
+            time.sleep(0.3)
+        self.assertNotIn('Traceback', err.getvalue())
 
 
 class WindowPlacementTests(unittest.TestCase):

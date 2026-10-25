@@ -15,15 +15,19 @@ from neko_common import find_program, safe_path
 
 def yes_no(question, prompt=None, output=None):
     """Ask until the answer is yes or no. Returns True or False, or None when the person
-    stopped with Ctrl+D or Ctrl+C. The one yes/no question used across NekoServer."""
+    pressed Ctrl+D (leave it for now). Ctrl+C stops setup (KeyboardInterrupt goes on),
+    as it does everywhere else. The one yes/no question used across NekoServer."""
     prompt = prompt or input
     output = output or print
     while True:
         try:
             answer = prompt(question + ' [yes/no]: ').strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             output('')
             return None
+        except KeyboardInterrupt:
+            output('')
+            raise
         if answer in ('yes', 'y'):
             return True
         if answer in ('no', 'n'):
@@ -194,7 +198,7 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None,
                     output('Automatic launch unavailable. Open ' + kind + ' from your desktop menu.')
             answer = yes_no('Have you completed this step successfully?', prompt, output)
             if answer is None:
-                raise KeyboardInterrupt
+                raise EOFError
             if not answer:
                 output('Reopening this step and repeating its instructions.')
                 continue
@@ -208,7 +212,7 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None,
                     output('The automatic check has not passed' + (': ' + why if why else '') + '. Review the step, then try again.')
                     continue
             return True
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
         output('\nStep remains pending. Reapply this profile to resume; saved choices are kept.')
         return False
 
@@ -221,7 +225,7 @@ def private_entry(question, valid, hint, ask=None, output=print, attempts=3):
     for _ in range(attempts):
         try:
             value = ask(question).strip().rstrip('/')
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             return ''
         if not value or valid(value):
             return value

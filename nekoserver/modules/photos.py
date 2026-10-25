@@ -58,6 +58,26 @@ def localize_manifest(content):
     return text
 
 
+GPU_DEVICE=Path('/dev/dri')
+
+
+def usable_additions(compose, log=print, gpu=None):
+    """Immich's extra Compose files, without the graphics-device one (hardware.yaml, from
+    the hardware video step) while this PC has no graphics device: Docker refuses to start a
+    container whose device is missing, so Immich would not start at all. It converts video
+    in software meanwhile; the hardware video step takes the file out for good."""
+    extra=compose_image_override(compose)
+    if (GPU_DEVICE if gpu is None else Path(gpu)).is_dir():
+        return extra
+    kept=[]
+    for flag,path in zip(extra[::2],extra[1::2]):
+        if Path(path).name=='hardware.yaml':
+            log('Immich: started without the graphics device, which is not on this PC now (video is converted in software)')
+            continue
+        kept+=[flag,path]
+    return kept
+
+
 def switch_off(ctx, folder, run=subprocess.run, journal=None):
     """Immich switched off after it was set up: its containers are removed (under the
     shared lock, see run()), so it doesn't keep running unwatched, without monitoring,
@@ -96,7 +116,7 @@ def _run(ctx):
     ver=opts.get('immich_version','auto'); bind=opts.get('bind_ip','127.0.0.1')
     if bind!='127.0.0.1': raise RuntimeError('Invalid Immich bind address')
     if not shutil.which('docker'): raise RuntimeError('Docker is not installed')
-    subprocess.run(['docker','info'],check=True,stdout=subprocess.DEVNULL)
+    subprocess.run(['docker','info'],check=True,stdout=subprocess.DEVNULL,timeout=120)
     compose_dir=data/'compose'/'immich'; db=data/'appdata'/'immich'/'postgres'; upload=data/'photos'/'immich-library'; archive=media/relative_path(opts.get('archive_dir','photos/archive')); inbox=media/relative_path(opts.get('inbox_dir','photos/inbox'))
     for target in (compose_dir,db,upload,archive,inbox):
         safe_path(target)
@@ -139,7 +159,7 @@ def _run(ctx):
     ensure_directory(db, 0o700)
     for target in (upload, archive, inbox): ensure_directory(target, 0o755)
     verify_storage(cfg)
-    base=['docker','compose','-p','neko-immich','-f',str(compose),'--env-file',str(env),*compose_image_override(compose)]
+    base=['docker','compose','-p','neko-immich','-f',str(compose),'--env-file',str(env),*usable_additions(compose,ctx.log)]
     checked_run([*base,'config','-q'],60,'Immich (docker compose config)')
     compose_up(base,'Immich',ctx.log,1200)
     ctx.log('Immich deployed; upload library and permanent photo archive are separate. Configure phone settings and verify no deletion sync before use.')

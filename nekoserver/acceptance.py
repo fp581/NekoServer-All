@@ -10,7 +10,7 @@ import host
 import permission_checks
 import os_checks
 from modules import docker as docker_module,tv
-from neko_common import VERSION,mount_path,safe_path,atomic_json,reading_max_age,local_opener,app_port,DOCKER_STORAGE_DROPIN,dashboard_port
+from neko_common import VERSION,mount_path,safe_path,atomic_json,reading_max_age,local_opener,app_port,DOCKER_STORAGE_DROPIN,dashboard_port,checked_settings,default_settings
 from acceptance_summary import scope_digest
 
 STATES={'pass','fail','needs_setup','warning','blocked'}
@@ -224,6 +224,9 @@ def accepted_modules(config,modules):
     down ("wanted": false), nor what this PC can't have (the same decision the step
     itself makes, and what setup recorded as not available)."""
     skipped=unavailable_steps(config)
+    # Nextcloud switched off in the settings ("enabled": false) is not set up: its checks
+    # and its client test would only ever fail or wait (the nextcloud step skips itself).
+    if config.get('nextcloud',{}).get('enabled',True) is not True:skipped=skipped|{'nextcloud'}
     return [m for m in modules if not (m in OPTIONAL and config.get(m,{}).get('wanted') is False)
             and not (m=='tv' and not tv.available()) and m not in skipped]
 
@@ -337,7 +340,19 @@ def inspect(config,profile='full',now=None):
         try:checks.extend(native_runtime.acceptance_checks(config,modules))
         except (OSError,ValueError,TypeError,KeyError,RuntimeError):add('runtime','Native runtime','needs_setup','Verify native build integrity and reapply the affected modules.')
     else:add('runtime','Native runtime','blocked','Drive verification is required before inspecting installed native workers.')
-    run['manual']=manual_tests(modules,config);return summarize(run)
+    run['manual']=carried(manual_tests(modules,config),previous,prior,now);return summarize(run)
+
+def carried(manual,previous,same,now):
+    """The witnessed tests, with what you recorded before for the same profile and settings
+    (`same`): a later check, the one setup runs after every run included, must not throw
+    away a test restore you watched. Only results you recorded (pass or fail, with when)
+    are kept; anything else stays pending."""
+    earlier={row.get('id'):row for row in previous.get('manual',[]) if isinstance(row,dict)} if same and isinstance(previous.get('manual'),list) else {}
+    for check in manual:
+        row=earlier.get(check['id'],{})
+        if row.get('status') in ('pass','fail') and row.get('evidence')=='user_reported' and health.number(row.get('confirmed_at'),0,now+60) is not None:
+            check.update(status=row['status'],confirmed_at=row['confirmed_at'],evidence='user_reported')
+    return manual
 
 def summarize(report):
     report['summary']={group:{s:sum(x['status']==s for x in report[group]) for s in STATES} for group in ('automatic','manual')}
@@ -389,7 +404,7 @@ def save(config,report):
     path=safe_path(Path(config['data_mount'])/'reports/acceptance/latest.json');atomic_json(path,report);return path
 
 def main(argv=None):
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--config',type=Path,default=ROOT/'config.json');parser.add_argument('--profile',default='full');parser.add_argument('--save',action='store_true');parser.add_argument('--manual',action='store_true');a=parser.parse_args(argv)
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--config',type=lambda v:Path(checked_settings(v)),default=default_settings(ROOT));parser.add_argument('--profile',default='full');parser.add_argument('--save',action='store_true');parser.add_argument('--manual',action='store_true');a=parser.parse_args(argv)
     if a.manual and (not a.save or not sys.stdin.isatty()):parser.error('--manual requires --save and an interactive terminal')
     if os.geteuid()!=0:print('Run with sudo for complete local inspection.',file=sys.stderr);return 2
     try:

@@ -6,7 +6,8 @@ Nextcloud is included in the full profile and has its own cloud profile. No VM i
 - HDD: cloud/files, mounted as Nextcloud's data directory. Do not modify this directory through Samba or edit its files directly.
 - Local setup: http://127.0.0.1:8088. Only the app publishes a host port, bound to loopback.
 - First deployment resolves a stable Nextcloud release and saves its major Apache tag, e.g. nextcloud:35-apache. Monthly updates follow that major stream; they do not skip major releases.
-- Initial credentials: the administrator name is nextcloud.admin_user (default admin). The generated initial password is in the root-only SSD compose/nextcloud/.env. Read it locally as root; change the password after first login. The installer never prints it or puts it in the dashboard. Set account recovery/email and MFA in Nextcloud if desired.
+- **Your login.** Setup creates the Nextcloud administrator for you (the name you chose, or one it made up) and writes the name and password into your credentials file. Read it on the server with `sudo less /srv/nekoserver/secrets/accounts/APP-CREDENTIALS.txt` (see ACCOUNT-SETUP.md). The installer never prints the password or puts it in the dashboard. Set account recovery/email and MFA in Nextcloud if you like.
+- **Changing that password** in Nextcloud is fine, but tell setup too, or every later `sudo bash install.sh` stops at the Nextcloud account check. In the NekoServer folder (where `install.sh` is) run `sudo python3 account-setup.py --apply --config my-config.json`: it finds that the saved login no longer works. Run it once more: it now asks about Nextcloud; press **c** and type the new password. (With account setup switched off, `accounts.enabled: false`, the administrator is `nextcloud.admin_user`, default `admin`, and its first password is in the root-only `compose/nextcloud/.env` on the SSD.)
 - The same application and data mounts are shared by Nextcloud and cron. PostgreSQL/Redis have no public ports. Nextcloud owns new HDD files as www-data UID/GID 33. Existing populated directories are refused instead of silently adopted or recursively chmodded.
 
 Apply with the already confirmed configuration:
@@ -16,6 +17,10 @@ sudo bash install.sh --profile cloud --apply --config /absolute/path/to/confirme
 ```
 
 The LAN gateway adds Nextcloud at https://YOUR-LAN-IP:8447; optional Tailscale Serve uses its private node name on the same port. Complete initial login/security setup before confirming secured gateway services. The gateway checks all four containers, expected storage mounts, localhost publication and the live installed/migration status before exposure. It sets an explicit trusted host and canonical HTTPS origin via upstream occ. The most recently applied gateway becomes the canonical origin: choose LAN or tailnet as the primary client URL, especially if using both. Reapply the chosen gateway when its address changes. Client certificate trust and real phone/desktop/share permissions still need witnessed acceptance.
+
+**Switching Nextcloud off** (`"enabled": false` under `"nextcloud"`, then `sudo bash install.sh`) stops its four containers; your files and its database stay, and switching it on again starts it as it was. Its home and Tailscale addresses are taken away by the same run. Phones and computers with the Nextcloud app keep trying to sync until you remove the account in that app.
+
+Nextcloud trusts the gateways' hop through Docker for the whole of Docker's own range (`172.16.0.0/12`), not one address, so it keeps making https links (and signing in keeps working) after its Docker network is made again with another number. Docker's other range, `192.168.0.0/16`, which most home networks use, is not trusted as a whole. Nextcloud only answers on this PC itself (`127.0.0.1:8088`), so no other device can talk to it directly.
 
 The dashboard lists Nextcloud, and acceptance includes automatic container/status checks plus a manual client upload/download/sharing test.
 

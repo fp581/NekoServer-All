@@ -45,6 +45,28 @@ const SERVICES: [&str; 4] = [
     "nekoserver-gateway-lan.service",
 ];
 
+/// Started again once the drives are back, after the services above:
+/// - the HDD's power settings (a oneshot that applies them): the drive keeps its own
+///   until then, after it was missing at boot or lost them when it reset;
+/// - the dashboard's web and control services, when they run: started before the SSD was
+///   mounted, their view of it (the folders systemd opened or hid for them) is stale.
+///   Without `--no-block`, a restart of the control service would wait for an app
+///   restart it is in the middle of.
+fn refresh_commands(enabled: impl Fn(&str) -> bool) -> Vec<Vec<&'static str>> {
+    let mut commands = vec![];
+    if enabled("nekoserver-hdd-policy.service") {
+        commands.push(vec![
+            "systemctl",
+            "restart",
+            "nekoserver-hdd-policy.service",
+        ]);
+    }
+    for unit in ["nekoserver-dashboard.service", "nekoserver-control.service"] {
+        commands.push(vec!["systemctl", "try-restart", "--no-block", unit]);
+    }
+    commands
+}
+
 /// The recovery services of the jobs that stop apps (the monthly update, the nightly app
 /// and host snapshots, a photo snapshot), in the order they are finished: the monthly
 /// update's journal first (it decides whether apps roll back), then the snapshots'.
@@ -161,6 +183,17 @@ pub fn run(a: &Args) -> Result<()> {
             println!("Drive return: started {unit} again");
         }
     }
+    let enabled = |unit: &str| {
+        common::command(&["systemctl", "is-enabled", "--quiet", unit], 15)
+            .is_ok_and(|(code, _)| code == 0)
+    };
+    for args in refresh_commands(enabled) {
+        // Not being able to set the drive's power, say, never stops the apps coming back.
+        match run_ok(&args, 240) {
+            Ok(_) => println!("Drive return: {} {}", args[1], args[args.len() - 1]),
+            Err(e) => println!("Drive return: {e}"),
+        }
+    }
     finish_interrupted_jobs(
         |unit| common::command(&["systemctl", "cat", unit], 15).is_ok_and(|(code, _)| code == 0),
         |unit| run_ok(&["systemctl", "start", unit], 3 * 3600).map(|_| ()),
@@ -222,6 +255,29 @@ mod tests {
         );
         assert!(failed.unwrap_err().to_string().contains("apps not back"));
         assert_eq!(started.borrow().len(), 4, "the others are still tried");
+    }
+    #[test]
+    fn the_hdd_power_settings_and_the_dashboard_are_renewed_after_a_remount() {
+        let with_policy = refresh_commands(|u| u == "nekoserver-hdd-policy.service");
+        assert_eq!(
+            with_policy[0],
+            ["systemctl", "restart", "nekoserver-hdd-policy.service"]
+        );
+        assert!(with_policy.contains(&vec![
+            "systemctl",
+            "try-restart",
+            "--no-block",
+            "nekoserver-control.service"
+        ]));
+        assert!(with_policy.contains(&vec![
+            "systemctl",
+            "try-restart",
+            "--no-block",
+            "nekoserver-dashboard.service"
+        ]));
+        // Policy "unchanged" (the unit is switched off): no HDD command.
+        let without = refresh_commands(|_| false);
+        assert!(without.iter().all(|c| c[1] == "try-restart"));
     }
     #[test]
     fn a_dead_mount_is_released_only_once_the_drive_is_back() {

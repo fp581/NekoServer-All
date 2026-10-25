@@ -27,7 +27,7 @@ from neko_common import (
 DEPENDENCIES=['storage','capacity']
 DESCRIPTION='Install the weekly add-only USB copy of photos and Nextcloud files (requires --apply and external UUID)'
 
-SYSTEM_MOUNTS=('/','/boot','/boot/efi','/home','/var')
+SYSTEM_MOUNTS=('/','/boot','/boot/efi','/efi','/home','/var')   # /efi: where Arch often mounts the EFI partition
 BACKUP_FILESYSTEMS=('ext4','xfs','btrfs','exfat')
 
 def disk_layout(config, inventory):
@@ -36,7 +36,9 @@ def disk_layout(config, inventory):
     rows=[];busy_disks=set()
     def walk(row,disk=None):
         physical=row.get('name') if row.get('type')=='disk' else disk
-        if row.get('uuid') in forbidden or row.get('mountpoint') in SYSTEM_MOUNTS:busy_disks.add(physical)
+        # Every folder it is mounted at: a Btrfs system partition may show /home in MOUNTPOINT.
+        mounted={row.get('mountpoint')}|set(row.get('mountpoints') or ())
+        if row.get('uuid') in forbidden or mounted&set(SYSTEM_MOUNTS):busy_disks.add(physical)
         rows.append((row,physical))
         for child in row.get('children',[]):walk(child,physical)
     for row in inventory.get('blockdevices',[]):walk(row)
@@ -65,11 +67,35 @@ def shared_disk(config, inventory, uuid):
                     'Choose a separate drive: remove "external_backup_uuid" under "photos" in your settings and run setup again.')
     return None
 
+# What a drive's filesystem is called in the message about one that can't be used.
+UNSUITABLE={'vfat':'FAT (FAT32)','ntfs':'NTFS (Windows)'}
+
+def plugged_in(row):
+    """A disk lsblk reports as removable or on USB: a stick or an external drive, never
+    an internal disk (a second disk with Windows on it, say)."""
+    return row.get('rm') in (True, '1', 1) or row.get('tran') == 'usb'
+
+def no_backup_drive(config, inventory):
+    """Why no drive can hold the USB backup: a plugged-in USB or removable drive whose
+    filesystem can't (FAT32 on many small sticks, NTFS) is named, with what to do.
+    Formatting is only ever suggested for such a drive."""
+    rows,busy_disks,_=disk_layout(config, inventory)
+    external={row.get('name') for row,_ in rows if row.get('type')=='disk' and plugged_in(row)}
+    wrong=[f"/dev/{row.get('name')} is formatted {UNSUITABLE[row['fstype']]}"
+           for row,physical in rows if row.get('type') in ('disk','part') and row.get('fstype') in UNSUITABLE
+           and physical in external and physical not in busy_disks]
+    if wrong:
+        return ('No drive can hold the USB backup yet: '+'; '.join(wrong)+'. A backup drive must be exFAT or ext4 '
+                '(FAT32 cannot hold files over 4 GB, such as videos). Copy off anything you need from it, then format it '
+                'as exFAT or ext4 (this erases it) with the Disks app (GNOME) or KDE Partition Manager, and run setup again')
+    return ('No eligible backup drive: it must be a formatted drive of its own, not a partition of the system disk, '
+            'the SSD or the media HDD; connect it first')
+
 def select_external(config, inventory, input_fn=input, out_fn=print):
     """Explicitly identify a formatted external filesystem; never guess or format."""
     candidates=eligible(config, inventory)
     if len({v['uuid'] for v in candidates})!=len(candidates):raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')
-    if not candidates:raise RuntimeError('No eligible backup drive: it must be a formatted drive of its own, not a partition of the system disk, the SSD or the media HDD; connect it first')
+    if not candidates:raise RuntimeError(no_backup_drive(config, inventory))
     chosen=pick_drive(candidates,'the USB backup drive',input_fn,out_fn,skippable=True)
     if chosen is None:return None   # skipped for now, as offered
     config.setdefault('photos',{}).update(external_backup_uuid=chosen['uuid'],external_backup_fstype=chosen['fstype'])
@@ -143,8 +169,8 @@ def install_units(config,cmd,photos,day,when,unit=None,timer=None):
         if current!=text and not current.startswith((MANAGED_UNIT, '[Unit]\nDescription=Weekly NekoServer photo backup\n')):
             raise RuntimeError(f'Unmanaged systemd unit preserved: {path}')
     atomic_write(unit,service,0o644);atomic_write(timer,schedule,0o644)
-    subprocess.run(['systemctl','daemon-reload'],check=True)
-    subprocess.run(['systemctl','enable','--now',timer.name],check=True,capture_output=True,text=True)   # (see photo_preservation)
+    subprocess.run(['systemctl','daemon-reload'],check=True,timeout=120)
+    subprocess.run(['systemctl','enable','--now',timer.name],check=True,capture_output=True,text=True,timeout=120)   # (see photo_preservation)
 
 def run(ctx):
     opts=ctx.config.setdefault('photos',{})

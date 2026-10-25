@@ -64,14 +64,67 @@ fn resume() -> Result<()> {
     if rows.len() > 8 {
         return Err(Error::new("Invalid resume journal"));
     }
-    let mut failed = false;
+    let mut problems = vec![];
     for row in rows {
         let service = row["service"].as_str().unwrap_or("");
         let id = row["id"].as_str().unwrap_or("");
-        let restored = (|| {
-            if !SERVICES.contains(&service) {
-                return Err(Error::new("Unknown application"));
-            }
+        if let Err(e) = restart(service, id) {
+            problems.push(format!("{service}: {e}"));
+        }
+    }
+    if !problems.is_empty() {
+        return Err(Error::new(&format!(
+            "Applications still need recovery; journal retained ({})",
+            problems.join("; ")
+        )));
+    }
+    backup::finish_journal(path)
+}
+/// What is there now for an app the journal names by its container ID.
+#[derive(Debug, PartialEq)]
+enum Found {
+    /// The container the backup stopped.
+    Same,
+    /// It is gone, and exactly one container with the app's Compose labels is there
+    /// instead (the app was set up again, which makes a new container).
+    Replaced(String),
+    /// It is gone, and this many containers have the app's labels (none, or several).
+    Unclear(usize),
+}
+fn found(id: &str, labelled: &[&str]) -> Found {
+    match labelled {
+        _ if labelled.contains(&id) => Found::Same,
+        [only] => Found::Replaced(only.to_string()),
+        _ => Found::Unclear(labelled.len()),
+    }
+}
+/// What to do when the app's container cannot be told apart, so the journal stays.
+fn unclear(service: &str, count: usize) -> String {
+    let start = format!("start it again (sudo bash install.sh sets it up again), then run: sudo systemctl start nekoserver-app-resume.service. If you removed {service} on purpose, delete {JOURNAL} instead");
+    if count == 0 {
+        format!("its container from before the backup is gone and no {service} container is there now; {start}")
+    } else {
+        format!("its container from before the backup is gone and {count} {service} containers are there now, so it is not clear which one to start; remove the extra ones (sudo docker ps -a lists them) and {start}")
+    }
+}
+fn restart(service: &str, id: &str) -> Result<()> {
+    if !SERVICES.contains(&service) {
+        return Err(Error::new("Unknown application"));
+    }
+    let project = format!("label=com.docker.compose.project=neko-{service}");
+    let label = format!("label=com.docker.compose.service={service}");
+    let listed = docker(&[
+        "ps",
+        "-aq",
+        "--no-trunc",
+        "--filter",
+        &project,
+        "--filter",
+        &label,
+    ])?;
+    let labelled: Vec<&str> = listed.split_whitespace().collect();
+    match found(id, &labelled) {
+        Found::Same => {
             let state = inspect(id)?;
             if !identity(&state, service, id) {
                 return Err(Error::new("Container identity changed"));
@@ -85,18 +138,25 @@ fn resume() -> Result<()> {
             if inspect(id)?["State"]["Running"] != true {
                 return Err(Error::new("Application did not restart"));
             }
-            Ok(())
-        })();
-        if restored.is_err() {
-            failed = true;
         }
+        // Set up again since the backup stopped it (by setup or the monthly update): the
+        // app's one container now is the one to have running.
+        Found::Replaced(new) => {
+            let state = inspect(&new)?;
+            if !identity(&state, service, &new) {
+                return Err(Error::new("Container identity changed"));
+            }
+            if state["State"]["Running"] != true {
+                docker(&["start", &new])?;
+            }
+            if inspect(&new)?["State"]["Running"] != true {
+                return Err(Error::new("Application did not restart"));
+            }
+            println!("Resume: {service} was set up again since the backup stopped it; its new container is running");
+        }
+        Found::Unclear(count) => return Err(Error::new(&unclear(service, count))),
     }
-    if failed {
-        return Err(Error::new(
-            "Applications still need recovery; journal retained",
-        ));
-    }
-    backup::finish_journal(path)
+    Ok(())
 }
 pub fn resume_command(a: &Args) -> Result<()> {
     let job = backup::open_job(a, 64000)?;
@@ -307,6 +367,7 @@ pub fn run(a: &Args) -> Result<()> {
     let _recovery_lock = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
     let result = backup::execute(Some(&job.data), "applications", &job.cfgpath, || {
+        backup::no_unfinished_update()?;
         snapshot(&job.cfgpath, &job.data, &job.media, &names)
     });
     if result.is_ok() {
@@ -349,6 +410,20 @@ fn current_checkpoint(saved: &Value, version: &str, root: &str) -> Option<Value>
     let mut updated = saved.clone();
     updated["docker_version"] = json!(version);
     Some(updated)
+}
+/// Space kept free on the HDD after a nightly app backup (2 GB, as the settings backup
+/// keeps by default): the HDD also holds the media library and the other backups.
+const RESERVE: u128 = 2 << 30;
+/// The nightly app backup's message when the HDD is too full even after older app
+/// backups were removed (the newest is always kept).
+fn short_of_space(media: &Path, have: u128, needed: u128) -> String {
+    let gb = |b: u128| format!("{:.1}", b as f64 / (1u64 << 30) as f64);
+    format!(
+        "Not enough space on the HDD ({}) for the nightly app backup: {} GB free, about {} GB needed (the app files plus 2 GB kept free), even after removing older app backups (the newest one is always kept). Free up space there",
+        media.display(),
+        gb(have),
+        gb(needed)
+    )
 }
 fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Result<()> {
     let mut containers = vec![];
@@ -453,18 +528,29 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
             }
         }
         backup::guard(cfgpath, data, media)?;
+        // A HDD that drops out mid-run stops it (see common::expect_drive).
+        let _hdd = common::expect_drive(media)?;
         let root = media.join("backups/media-applications");
         common::directory(&root, 0o700)?;
         // Existing backup destination must also be private; do not silently chmod it.
         if fs::metadata(&root)?.mode() & 0o077 != 0 || fs::metadata(&root)?.uid() != 0 {
             return Err(Error::new("Private application backup directory required"));
         }
-        let stage = backup::stage_snapshot(&root)?;
-        let payload = &stage.payload;
+        // Half-made snapshots of runs that failed or were cut off go first (each is as
+        // big as a whole snapshot), then room is made for this one.
+        common::clear_leftovers(&root, true)?;
         let device = fs::metadata(data)?.dev();
         let mut files = vec![];
         let mut skipped = vec![];
         listing(data, names, device, &mut files, &mut skipped)?;
+        let needed = files
+            .iter()
+            .map(|r| r["size"].as_u64().unwrap_or(0) as u128)
+            .sum::<u128>()
+            + RESERVE;
+        backup::make_room(&root, needed, &|have| short_of_space(media, have, needed))?;
+        let stage = backup::stage_snapshot(&root)?;
+        let payload = &stage.payload;
         for row in &mut files {
             let rel = PathBuf::from(row["path"].as_str().unwrap());
             let target = payload.join(&rel);
@@ -513,6 +599,32 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         dir(&root);
         root
+    }
+    #[test]
+    fn an_app_set_up_again_is_started_instead_of_blocking_backups() {
+        let (old, new) = ("a".repeat(64), "b".repeat(64));
+        assert_eq!(found(&old, &[old.as_str()]), Found::Same);
+        // Re-created since the backup stopped it: its one container now is started.
+        assert_eq!(found(&old, &[new.as_str()]), Found::Replaced(new.clone()));
+        // None, or several: nothing is guessed, and the message says what to do.
+        assert_eq!(found(&old, &[]), Found::Unclear(0));
+        assert_eq!(
+            found(&old, &[new.as_str(), "c".repeat(64).as_str()]),
+            Found::Unclear(2)
+        );
+        for count in [0, 2] {
+            let said = unclear("sonarr", count);
+            assert!(said.contains("nekoserver-app-resume.service"), "{said}");
+            assert!(said.contains(JOURNAL), "{said}");
+        }
+        assert!(unclear("sonarr", 2).contains("sudo docker ps -a"));
+    }
+    #[test]
+    fn a_full_hdd_message_says_what_is_free_and_needed() {
+        let said = short_of_space(Path::new("/mnt/media"), 1 << 29, 3 << 30);
+        assert!(said.contains("HDD (/mnt/media)"), "{said}");
+        assert!(said.contains("0.5 GB free, about 3.0 GB needed"), "{said}");
+        assert!(said.contains("newest one is always kept"), "{said}");
     }
     #[test]
     fn the_checkpoint_follows_the_docker_the_os_updated_to() {

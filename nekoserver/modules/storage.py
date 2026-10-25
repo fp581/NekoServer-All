@@ -12,8 +12,8 @@ DEPENDENCIES = ['system']
 DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and media HDD by UUID'
 
 
-def call(argv):
-    p = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+def call(argv, timeout=30):
+    p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
     if p.returncode:
         raise RuntimeError(f'{argv[0]} failed: {p.stderr.strip()[:400]}')
     return p.stdout.strip()
@@ -21,25 +21,102 @@ def call(argv):
 
 def inventory_now():
     """Every disk and partition, as lsblk JSON (one command, used by all drive pickers)."""
-    return json.loads(call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MODEL']))
+    return json.loads(call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MOUNTPOINTS,MODEL,RM,TRAN']))
+
+
+# What can hold a filesystem: a disk or partition, an opened encrypted drive (LUKS), an
+# LVM volume or a software RAID array. The last three sit on top of one or more disks.
+VOLUME_KINDS=('part','disk','crypt','lvm','raid0','raid1','raid4','raid5','raid6','raid10','md')
+# Where Linux keeps itself: the root and the boot folders (Arch often mounts the EFI
+# partition at /efi). A disk holding any of them is the system disk.
+SYSTEM_MOUNTS=('/','/boot','/boot/efi','/efi')
+
+
+def mount_points(dev):
+    """Every folder an lsblk row is mounted at. MOUNTPOINT names only one of them: a
+    Btrfs system partition mounted as several subvolumes (/, /home, /.snapshots) may
+    show /home there, so MOUNTPOINTS (util-linux 2.37 and newer) is read too."""
+    found={dev.get('mountpoint')}|set(dev.get('mountpoints') or ())
+    return {m for m in found if m}
+
+
+def holds_system(dev):
+    """This lsblk row, or anything under it, holds the system (SYSTEM_MOUNTS)."""
+    return bool(mount_points(dev)&set(SYSTEM_MOUNTS)) or any(holds_system(c) for c in dev.get('children',[]))
+
+
+def merged(rows):
+    """One candidate per filesystem. A filesystem lsblk lists more than once is still one:
+    an LVM volume or RAID array under each disk it spans (same name), or a Btrfs pool
+    over several drives (one UUID, a device each). Two other devices with one UUID are
+    clones, which mounting by UUID can't tell apart."""
+    by_uuid={}
+    for row in rows:by_uuid.setdefault(row['uuid'],[]).append(row)
+    return [one_filesystem(group) for group in by_uuid.values()]
+
+
+def one_filesystem(group):
+    """The lsblk rows of one UUID as one candidate, on every disk they span."""
+    if len({r['name'] for r in group})>1 and not all(r['fstype']=='btrfs' for r in group):
+        raise RuntimeError('Duplicate filesystem UUID detected; identify cloned drives before continuing')
+    disks=sorted({d for r in group for d in r['physical_disks'] if d})
+    return {**group[0],'physical_disks':disks,'physical_disk':disks[0] if disks else None,
+            'mountpoint':next((r['mountpoint'] for r in group if r['mountpoint']),None)}
+
+
+CRYPTTAB=Path('/etc/crypttab')
+
+
+def unlocked_at_boot(name,crypttab=CRYPTTAB):
+    """An opened encrypted drive (`name` as lsblk shows it) that Linux unlocks at every
+    start, so it can be mounted then: it is listed in /etc/crypttab."""
+    try:
+        lines=crypttab.read_text().splitlines()
+    except OSError:
+        return False
+    return any(line.split()[0]==name for line in lines if line.strip() and not line.lstrip().startswith('#'))
+
+
+def boot_unlock_problem(device,crypttab=CRYPTTAB):
+    """Why an encrypted drive can't be used yet, or None."""
+    if device.get('kind')!='crypt' or unlocked_at_boot(device['name'],crypttab):
+        return None
+    return (f"/dev/mapper/{device['name']} is an encrypted drive that you opened by hand. Setup mounts it at every "
+            'start, so Linux must unlock it then: add it to /etc/crypttab (with a key file, or a password asked '
+            'at start-up), restart, and run setup again.')
+
+
+def candidate(dev, parent, physical):
+    """One lsblk row as a filesystem setup could use, or None."""
+    uuid=dev.get('uuid'); fs=dev.get('fstype'); kind=dev.get('type','')
+    if kind not in VOLUME_KINDS or not uuid or fs not in ('ext4','xfs','btrfs'):
+        return None
+    return {'uuid':uuid,'fstype':fs,'name':dev.get('name',''),'size':dev.get('size'),'model':dev.get('model') or parent,
+            'mountpoint':dev.get('mountpoint') or next(iter(sorted(mount_points(dev))),None),'physical_disks':[physical],'kind':kind}
+
+
+def unlocked(device):
+    """The chosen drive, unless it is an encrypted one Linux doesn't unlock at start."""
+    problem=boot_unlock_problem(device)
+    if problem:raise RuntimeError(problem)
+    return device
 
 
 def discover_filesystems(inventory):
     """Return candidates, never auto-select a device on model/size alone."""
-    candidates=[]
-    os_disks=set()
+    rows=[]
+    os_disks,system_ids=set(),set()
     def walk(dev, parent='', disk=None):
-        name=dev.get('name',''); kind=dev.get('type',''); uuid=dev.get('uuid')
-        physical=name if kind=='disk' else disk
-        fs=dev.get('fstype'); mp=dev.get('mountpoint')
-        if mp in ('/','/boot','/boot/efi') and physical:os_disks.add(physical)
-        if kind in ('part','disk') and uuid and fs in ('ext4','xfs','btrfs') and mp not in ('/','/boot','/boot/efi'):
-            candidates.append({'uuid':uuid, 'fstype':fs,'name':name,'size':dev.get('size'),'model':dev.get('model') or parent,'mountpoint':mp,'physical_disk':physical})
+        physical=dev.get('name','') if dev.get('type')=='disk' else disk
+        if mount_points(dev)&set(SYSTEM_MOUNTS):
+            system_ids.add(dev.get('uuid'))
+            os_disks.add(physical)
+        row=candidate(dev,parent,physical)
+        if row:rows.append(row)
         for child in dev.get('children',[]): walk(child,dev.get('model') or parent,physical)
     for device in inventory.get('blockdevices',[]): walk(device)
-    if len({x['uuid'] for x in candidates}) != len(candidates):
-        raise RuntimeError('Duplicate filesystem UUID detected; identify cloned drives before continuing')
-    return [v for v in candidates if v['physical_disk'] not in os_disks]
+    # The system's own filesystems (and anything sharing a disk with them) are never offered.
+    return [v for v in merged(rows) if v['uuid'] not in system_ids and not set(v['physical_disks'])&os_disks]
 
 
 NOT_LINUX = {'ntfs': 'NTFS (Windows)', 'exfat': 'exFAT', 'vfat': 'FAT'}
@@ -57,8 +134,6 @@ def empty_disk(dev):
 def nothing_eligible(inventory, items, selected, label):
     """Why no drive can be picked for `label`, drive by drive, and what to do."""
     lines = []
-    def system_disk(dev):
-        return dev.get('mountpoint') == '/' or any(system_disk(child) for child in dev.get('children', []))
     def walk(dev):
         if dev.get('type') in ('part', 'disk') and dev.get('fstype') in NOT_LINUX:
             fs = dev['fstype']
@@ -71,7 +146,7 @@ def nothing_eligible(inventory, items, selected, label):
         for child in dev.get('children', []):
             walk(child)
     for device in inventory.get('blockdevices', []):
-        if not system_disk(device):   # its boot partition (FAT) is never a choice
+        if not holds_system(device):   # its boot partition (FAT) is never a choice
             walk(device)
     for v in items:
         if v['uuid'] in selected:
@@ -108,21 +183,26 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
             options=[v for v in items if v['uuid'] not in selected and (not v['mountpoint'] or v['mountpoint']==config.get('data_mount' if key=='data_ssd' else 'media_mount') or str(v['mountpoint']).startswith(('/run/media/','/media/')))]
             if not options: raise RuntimeError(nothing_eligible(inventory, items, selected, label))
             out_fn(f'Select {label}:')
-            device=pick_drive(options, label, input_fn, out_fn)
+            device=unlocked(pick_drive(options, label, input_fn, out_fn))
             record['uuid']=device['uuid']; record['fstype']=device['fstype']
             uuid=device['uuid']
         else:
             out_fn(f'{key} is not configured; {len(items)} formatted candidates discovered (dry-run only)')
             continue
         if uuid in selected: raise RuntimeError('SSD and HDD cannot use the same filesystem')
-        physical=next(v['physical_disk'] for v in items if v['uuid']==uuid)
-        if physical:
-            if physical in selected_disks:raise RuntimeError('SSD and HDD must be on different physical disks')
-            selected_disks.add(physical)
-        elif apply:
-            raise RuntimeError('Cannot verify the physical parent disk; inspect full lsblk topology first')
+        selected_disks|=own_disks(uuid,items,selected_disks,apply)
         selected.add(uuid)
     return configured
+
+
+def own_disks(uuid,items,taken,apply):
+    """The physical disks the chosen filesystem is on (all of them, for a pool or an
+    array), none of which the other drive may share."""
+    physical=set(next(v['physical_disks'] for v in items if v['uuid']==uuid))
+    if physical&taken:raise RuntimeError('SSD and HDD must be on different physical disks')
+    if not physical and apply:
+        raise RuntimeError('Cannot verify the physical parent disk; inspect full lsblk topology first')
+    return physical
 
 
 def mount_specs(config):
@@ -215,14 +295,41 @@ def fstab_line(uuid, fstype, mountpoint, subvolume=None):
     return f'UUID={uuid} {mountpoint} {fstype} {options} 0 2'
 
 
-def existing_line(lines, uuid, mountpoint, entry):
+def uuid_of(source):
+    """The filesystem UUID an fstab source names (LABEL=, PARTUUID=, PARTLABEL=, a /dev
+    path), or None when it can't be found (a drive not connected)."""
+    try:
+        device = source if source.startswith('/dev/') else call(['findfs', source])
+        return call(['blkid', '-s', 'UUID', '-o', 'value', device]) or None
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def fstab_folder(field):
+    """An fstab mount folder as a plain path (\\040 is a space; /srv/x/ is /srv/x)."""
+    return os.path.normpath(field.replace('\\040', ' '))
+
+
+def same_drive(source, uuid, resolve=uuid_of):
+    """An fstab source that names this drive, however it is written."""
+    plain = source.replace('"', '')
+    if plain in (f'UUID={uuid}', f'/dev/disk/by-uuid/{uuid}'):
+        return True
+    if plain.startswith('UUID='):
+        return False
+    return plain.startswith(('LABEL=', 'PARTUUID=', 'PARTLABEL=', '/dev/')) and resolve(plain) == uuid
+
+
+def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of):
     """The index of the fstab line already mounting this drive or folder, None when there
     is none. One NekoServer wrote with older options may be brought up to date; any
-    other line for the same drive or folder stops setup."""
+    other line for the same drive or folder (however its drive or folder is written)
+    stops setup: two lines for one folder would mount whichever comes first."""
     wanted = entry.split()
+    folder = fstab_folder(mountpoint)
     matches = [(i, s.split()) for i, s in enumerate(lines)
                if s.strip() and not s.lstrip().startswith('#') and len(s.split()) >= 2
-               and (s.split()[0] == f'UUID={uuid}' or s.split()[1] == mountpoint)]
+               and (fstab_folder(s.split()[1]) == folder or same_drive(s.split()[0], uuid, resolve))]
     if not matches:
         return None
     index, found = matches[0]
@@ -239,6 +346,28 @@ def existing_line(lines, uuid, mountpoint, entry):
                            f'Take that line out of /etc/fstab, unmount the drive if it is mounted there '
                            f'(sudo umount <folder>), and run  sudo bash install.sh  again.')
     return index
+
+
+def keep_first(path, backup):
+    """The fstab as it was before NekoServer, kept whole: written aside, then published
+    under its name (never over one), so a power cut can't leave a cut-off copy behind
+    that would then be kept for good."""
+    temp = safe_path(backup.with_name(backup.name + '.part'))
+    temp.unlink(missing_ok=True)
+    with temp.open('xb') as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(path.read_bytes())
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        os.link(temp, backup)
+    finally:
+        temp.unlink()
+    directory = os.open(backup.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def install_fstab(specs, path=Path('/etc/fstab')):
@@ -261,9 +390,7 @@ def install_fstab(specs, path=Path('/etc/fstab')):
     backup = safe_path(path.with_name(path.name + '.nekoserver.bak'))
     # The first backup is the fstab as it was before NekoServer: kept, never replaced.
     if path.exists() and not backup.exists():
-        with backup.open('xb') as stream:
-            os.fchmod(stream.fileno(),0o600)
-            stream.write(path.read_bytes());stream.flush();os.fsync(stream.fileno())
+        keep_first(path, backup)
     payload = '\n'.join(lines).rstrip('\n') + '\n' + ''.join(a + '\n' for a in additions)
     atomic_write(path,payload,0o644)
     return True
@@ -284,8 +411,6 @@ def run(context):
             raise RuntimeError(f'Required tool missing: {tool}')
     resolve_storage_identity(context.config, inventory, apply=True, interactive=sys.stdin.isatty(), out_fn=context.log)
     remember_subvolumes(context.config)
-    # Persist selected identities in a root-owned config for unattended reruns.
-    save_storage(context)
     specs = mount_specs(context.config)
     for _, uuid, fstype, target, _ in specs:
         validate_device(uuid, fstype)  # raises if the drive identity is wrong
@@ -294,8 +419,13 @@ def run(context):
             mounted = current.split('[')[0]
             if not Path(mounted).exists() or Path(mounted).resolve() != source_path(uuid):
                 raise RuntimeError(f'Wrong filesystem already mounted at {target}: {mounted}')
+            only_a_folder(target, fstype, mounted_subvolume(target))
         elif Path(target).exists() and any(Path(target).iterdir()):
-            raise RuntimeError(f'Refusing mount over nonempty directory {target}')
+            raise RuntimeError(f'Refusing mount over nonempty directory {target}: something is already in that folder '
+                               f'(on the system disk). Move it elsewhere, or pick another drive, and run setup again')
+    # Saved for unattended reruns only once the choice passed these checks: a wrong pick
+    # is asked again on the next run instead of being kept.
+    save_storage(context)
     mount_all(context, specs)
     choose_usb(context)
 
@@ -322,7 +452,7 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
     call(['systemctl', 'daemon-reload'])
     pinned = []
     for key, uuid, fstype, target, subvolume in specs:
-        found = mount_and_check(uuid, target, subvolume)
+        found = mount_and_check(uuid, target, subvolume, fstype)
         if found != subvolume:
             context.config['storage'][key]['subvolume'] = found
             pinned.append((key, uuid, fstype, target, found))
@@ -334,17 +464,39 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
         call(['systemctl', 'daemon-reload'])
 
 
-def mount_and_check(uuid, target, subvolume):
+MOUNT_WAIT = 600
+
+
+def only_a_folder(target, fstype, inside):
+    """Only Btrfs has subvolumes. On an ext4 or XFS drive, findmnt showing a folder
+    (/dev/sdb1[/films]) means a folder of the drive is mounted there (a bind mount), not
+    the whole drive: the apps would see only that folder, and a restart would mount the
+    whole drive instead. Setup stops and says so."""
+    if fstype != 'btrfs' and inside:
+        raise RuntimeError(f'Only the folder {inside} of the drive is mounted at {target}, not the whole drive. '
+                           f'Unmount it (sudo umount {target}, and take out its line in /etc/fstab if you added one), '
+                           'then run  sudo bash install.sh  again: setup mounts the whole drive there itself')
+
+
+def mount_and_check(uuid, target, subvolume, fstype='btrfs'):
     """Mount the drive (unless it is) and make sure what is mounted is the drive, and the
     Btrfs subvolume, the settings name. Returns the subvolume mounted: with none saved
-    (the fstab line names none) that is the filesystem's default tree, whatever it is."""
+    (the fstab line names none) that is the filesystem's default tree, whatever it is;
+    always None for a drive that is not Btrfs."""
     Path(target).mkdir(parents=True, exist_ok=True)
     if findmnt('TARGET', target) is None:
-        call(['mount', target])
+        try:
+            # A big drive replaying its journal after a power cut can take minutes.
+            call(['mount', target], timeout=MOUNT_WAIT)
+        except subprocess.TimeoutExpired:
+            if findmnt('TARGET', target) is None:   # the kernel may still have finished it
+                raise RuntimeError(f'Mounting {target} took longer than {MOUNT_WAIT // 60} minutes; check the drive '
+                                   '(sudo dmesg shows what it is doing) and run setup again') from None
     current = (findmnt('SOURCE', target) or '').split('[')[0]
     if not Path(current).exists() or Path(current).resolve() != source_path(uuid):
         raise RuntimeError(f'Post-mount validation failed for {target}')
     found = mounted_subvolume(target)
+    only_a_folder(target, fstype, found)
     if subvolume is not None and found != subvolume:
         raise RuntimeError(f'{target} is mounted with Btrfs subvolume {found or "(default)"}, but the settings say '
                            f'{subvolume}; a restart would mount a different tree')

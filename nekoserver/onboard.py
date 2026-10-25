@@ -17,7 +17,15 @@ from pathlib import Path
 import media_libraries
 import media_readiness
 import seerr_providers
-from neko_common import MEDIA_APPS, app_ports, atomic_json, local_opener, safe_path
+from neko_common import (
+    MEDIA_APPS,
+    app_ports,
+    atomic_json,
+    checked_settings,
+    default_settings,
+    local_opener,
+    safe_path,
+)
 
 # The apps on this computer: no proxy (sudo can keep http_proxy), no redirects.
 OPENER = local_opener()
@@ -90,7 +98,7 @@ def wait_ready(apps,seconds,probe=None,clock=time.monotonic,sleep=time.sleep):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description='NekoServer interactive media onboarding and status')
-    p.add_argument('--config',default=str(Path(__file__).with_name('config.json')))
+    p.add_argument('--config',type=checked_settings,default=default_settings(Path(__file__).parent))
     p.add_argument('--data-root')
     p.add_argument('--media-root')
     p.add_argument('--apply',action='store_true',help='Allow the selected setup/import steps to save changes')
@@ -188,7 +196,16 @@ def main(argv=None):
     safe_report(output,findings)
     return max(readiness_exit(findings),2 if result else 0)
 
+def failure(exc):
+    """What stopped onboarding, in words: the reason its own checks give (written to
+    name no secret), or what the system said for a file it could not use."""
+    if isinstance(exc,OSError):
+        return (exc.strerror or type(exc).__name__)+(': '+str(exc.filename) if exc.filename else '')
+    if isinstance(exc,KeyError):
+        return 'a setting is missing from the settings file: '+str(exc)
+    return str(exc) or type(exc).__name__
+
 if __name__=='__main__':
     try: sys.exit(main())
     except (OSError,ValueError,RuntimeError,KeyError) as exc:
-        print('Onboarding failed:',type(exc).__name__,file=sys.stderr);sys.exit(2)
+        print('Onboarding failed:',failure(exc),file=sys.stderr);sys.exit(2)

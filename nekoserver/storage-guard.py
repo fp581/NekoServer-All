@@ -4,7 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
-from neko_common import findmnt, mount_path
+from neko_common import identity_matches, mount_path
 
 
 def verify(config):
@@ -14,9 +14,10 @@ def verify(config):
         expected = config['storage'][key]['uuid']
         if not expected:
             raise RuntimeError(f'{key}: no configured UUID')
-        fields = (findmnt('UUID,FSTYPE', path) or '').split()
-        if fields != [expected, config['storage'][key]['fstype']]:
-            raise RuntimeError(f'{key}: missing or wrong filesystem at {path}')
+        # The Btrfs subvolume too, as the runtime's guard checks it: the same drive
+        # mounted with another subvolume holds a different tree.
+        if not identity_matches(path, config['storage'][key]):
+            raise RuntimeError(f'{key}: missing or wrong filesystem (or Btrfs subvolume) at {path}')
         identities.append(expected)
     if identities[0] == identities[1]:
         raise RuntimeError('SSD and HDD must be different filesystems')

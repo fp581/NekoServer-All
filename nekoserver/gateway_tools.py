@@ -319,7 +319,7 @@ def canonical(value):
     if any(k not in ('TCP','Web','AllowFunnel','Foreground','Services','ETag') for k in value) or value.get('Foreground') or value.get('Services') or any(funnel.values()):raise RuntimeError('Unsupported/Funnel/foreground Tailscale routes preserved; manual review required')
     return {k:value.get(k) or {} for k in ('TCP','Web')}
 
-DASHBOARD_PORT=8448  # private, read-only dashboard over Tailscale (see serve.rs PUBLIC_PORT)
+DASHBOARD_PORT=8448  # private dashboard over Tailscale; changes need its PIN (see serve.rs PUBLIC_PORT)
 
 # Installed by the dashboard step; the phone is only sent to a dashboard that exists.
 DASHBOARD_UNIT=SYSTEMD_UNITS/'nekoserver-dashboard.service'
@@ -355,7 +355,7 @@ def https_ready():
 
 def tailnet_routes(config,host):
     """The private Tailscale routes this server should have: the selected apps plus the
-    read-only dashboard. Installation and the acceptance check both use this one."""
+    dashboard (changes on it need its PIN). Installation and the acceptance check both use this one."""
     return desired(host,selected(config),dashboard_target(config))
 
 def tailnet_ports():
@@ -494,8 +494,18 @@ def configure_cloud_origin(config, host, port):
         command(base+[OCC_SET,'trusted_proxies',str(index),'--value='+proxy])
 
 
+# Docker's own default range for the networks it makes (172.17.0.0/16 to 172.31.0.0/16).
+# Trusted as a whole, so a Nextcloud network made again later (with another number)
+# still trusts the hop. 192.168.0.0/16, Docker's other default range, is not trusted as a
+# whole: it is the usual home network range too.
+DOCKER_RANGE='172.16.0.0/12'
+
 def cloud_proxies(compose):
-    """Docker network gateways that relay the gateway's connections to Nextcloud."""
+    """The addresses that relay the gateway's connections to Nextcloud (Docker's network
+    gateway): Docker's default range, plus a gateway outside it (192.168.x.1 once Docker has
+    used up its 172 networks) by itself. With only the one gateway trusted, Nextcloud's
+    network made again with another number (taken down and up) no longer trusted the hop
+    and made http links behind the https gateways, which broke signing in."""
     ids=command(compose+['ps','-q','nextcloud']).split()
     if len(ids)!=1:raise RuntimeError('Nextcloud container not found')
     try:info=json.loads(command(['docker','--host','unix:///var/run/docker.sock','inspect',ids[0]]))[0]
@@ -506,4 +516,5 @@ def cloud_proxies(compose):
         except ValueError:continue
         if gateway.is_private and str(gateway) not in out:out.append(str(gateway))
     if not out:raise RuntimeError('Nextcloud has no private Docker network gateway')
-    return out
+    docker=ipaddress.ip_network(DOCKER_RANGE)
+    return [DOCKER_RANGE,*(g for g in out if ipaddress.ip_address(g) not in docker)]

@@ -1,5 +1,97 @@
 # Changelog
 
+## v0.39.5 — 2026-10-25
+
+A review round of the parts everyone meets first (installing and setting up, setting up the apps, the monthly update), then a strict review for edge cases, races and system failures, and a full independent review of the whole project, each finding checked against the code and fixed with a regression test.
+
+### Fixed: setting up the apps
+- **Lidarr can import music downloads.** qBittorrent puts a download in its category's folder only in its automatic mode, and starts new torrents in manual mode unless told otherwise, so an album landed on the HDD, where Lidarr (which sees only the SSD) could never find it. Setup now switches new torrents to automatic mode. Torrents you already have keep their mode.
+- **Choosing an indexer in the terminal works.** Prowlarr refused every indexer chosen there (its catalogue leaves the indexer without a profile), so each one ended at "do it in the Prowlarr page". It now goes into Prowlarr's own profile, switched on.
+- **Hardware video you switched off stays off.** Switching it off in Jellyfin or Immich was undone by the next `sudo bash install.sh`. **Intel graphics older than about 2014** (before Broadwell) use VA-API instead of Quick Sync, which they can't do on Linux: a one-second Quick Sync test encode decides, and a Quick Sync setting an earlier NekoServer made on such a chip is replaced.
+- **Imported TV shows show up as shows.** Each imported folder went into a folder of its own inside the library, which Jellyfin read as one show (with the real shows as its seasons), and Sonarr, Radarr and Lidarr as one item. Imports now land in the library folder itself. What an earlier release imported is moved up there (a rename on the same drive, nothing copied again); a show already there under the same name is named for you to merge. A file already in the library that differs is never replaced.
+- **Importing again is quick, and a source that is gone after its import no longer nags.** A rerun read every file twice (source and copy) to compare them; copies now keep their original's date, so they are recognised by size and date. A drive unplugged after its import finished is reported as "copied before", not as a step left to do.
+- **New Jellyfin libraries are scanned at once,** so films and shows imported before them appear without waiting for Jellyfin's 12-hourly scan.
+- **A failed onboarding says why,** not only the error's type.
+- **NEXTCLOUD.md and MUSIC.md** say where your logins really are (the credentials file) and that a password you change in the app must also be told to setup (`account-setup.py`, **c**); following the old text made every later run stop at the account check.
+
+### Fixed: installing and setup
+- **Commands in the docs use your settings.** `sudo bash install.sh --module … --apply` without `--config` ran on the template `config.json` (no drives in it) and saved your answers into it, which git tracks, so the next `git pull` failed. Your `my-config.json` is now the default once the wizard has made it, and changes are never saved into the template.
+- **What setup can't run without is said first.** SELinux enforcing (Fedora's default), an older systemd, a pending restart: said before minutes of package installs and the runtime build, and checked once more just before setup starts (an automatic update may have installed a kernel meanwhile).
+- **Start in the setup window no longer says yes to everything.** It sent every switch as drawn, all on, so the TV (Steam), phone alerts and outage alerts were saved as wanted without being asked. Only the switches you press are saved; the TV and the alerts you leave alone are asked about when setup gets to them.
+- **The setup window's last screen** shows setup's own verdict ("ready" or "almost ready"), the same as the terminal, the first checkup included.
+- **A desktop whose Desktop folder is the home folder** (as xdg-user-dirs sets it once `~/Desktop` was deleted) gets its app shortcuts in the menu, instead of a failed step.
+- **Ctrl+C at "Use them for this release?"** stops setup. It used to count as "no", make new settings, and never offer the earlier ones again.
+- **A FAT32 or NTFS USB stick** is named, with how to make it usable (exFAT or ext4), instead of "connect it first".
+- The welcome text and README no longer claim more than setup does (a full system update happens on Arch only; the timezone is the PC's own).
+
+### Fixed: the monthly update
+- **Updates are downloaded before any app stops.** The release lookups and image downloads ran after the apps had been stopped for the snapshot and its restore test, often for hours, and one GitHub or registry hiccup then cancelled the month. They now run first, with the apps still up, and a download refused for now is tried again (after 30 s, 1½ and 4 minutes); one that can never work (no such image, no access) is not. A new Immich release that can't be checked waits for next month without holding back the other apps.
+- **The apps are never stopped in the morning, and big libraries still get their monthly snapshot.** On a big library, checking every copy could run past the night window. The check now reads each copy once instead of three times; the window is checked right before anything stops (past it, nothing is stopped or changed); and after a month whose night ran out, the next month takes its snapshot first and checks the copies the month after. If even that does not fit, the run fails and says how to give it a longer night.
+- **A full or unmountable USB drive no longer cancels the monthly update.** Only damage found by the checksum check does; anything else is "done in part", with the reason.
+- **Old app images are cleaned up.** Each update left the replaced images on the SSD for good (a few GB a month). NekoServer's own images from two updates ago that nothing uses are removed; your own images are never touched.
+- **A rollback can start apps whose old image Docker lost** (`docker image prune -a`, say): it is loaded from the snapshot's `images.tar` first.
+- **Nightly backups wait for an unfinished monthly update** (after a power cut, say) instead of saving its half-updated apps as the newest backup. **The weekly USB copy** no longer runs during the monthly update.
+- **A run cut off while it tidied old snapshots** (a restart, the time limit) is finished as the installed update it is, not reported as a failure.
+- **A later NekoServer release can finish an unfinished run** an earlier one started. A restore test cut off part-way has its unpacked copy removed (it took a second copy's space on the HDD for months), and a test container Docker can't remove never keeps the real apps from starting. The resume step at boot no longer waits for the backups' lock when there is nothing to finish.
+
+### Fixed: backups and checksums
+- **Damage found by the monthly checksum check stays on the dashboard and in the repair tool until it is repaired.** The next weekly or hourly copy (which compares only size and date) wiped it: the dashboard said "Checksums match", the phone got a false "RECOVERED", and the repair tool found nothing to repair. "Checksums match" now means a full check in the last 35 days.
+- **A backup drive unplugged or failing during a backup** stops the backup with a clear message, instead of writing onto the system disk.
+- **A full HDD no longer stops the nightly app backup for good:** what failed runs left is cleaned up, then older app backups if needed, always keeping the newest. A power cut while old backups are deleted no longer leaves a broken one that looks complete.
+- **Files deleted or renamed during a backup** are skipped and counted instead of failing it; Nextcloud names that are not valid text are left out and listed; photos dated in the future (a camera with a wrong clock) are backed up; a copy dated in the future is checked by content. Music added in the last 10 minutes waits for the next run instead of failing it.
+- **Errors say the system's reason** ("No space left on device"). If the USB drive fails to unmount, the real reason the copy failed is still shown. After the clock is put back, "last success" and alerts are no longer lost or held back.
+- **The weekly USB copy no longer blocks the nightly backups for hours**, and never overlaps the monthly update. **Nightly backups wait only while a monthly update is cut off half-way** through installing or rolling back (the settings backup never waits), and an unfinished update is tried again every hour.
+- **The dashboard says why a monthly run was "done in part"** (USB drive full, Immich release not checked).
+- **A monthly run that stops before its update** no longer leaves a downloaded version for the next `sudo bash install.sh` to start untested: apps are pinned to the images they run before anything is downloaded.
+- **The old-image clean-up** never removes an image that carries a name of your own, and also removes images from updates that were rolled back. Monthly runs that archived nothing no longer leave folders behind.
+- **`sudo bash install.sh --finish-update`** lets a newer release finish a monthly update an earlier one left unfinished.
+- **A restore that fails says why** (a full drive, a folder that already exists, a damaged file) and names the half-filled folder it left. A restored file is read back from the drive, not from memory, so damage on the drive is seen.
+- The docs say which data is backed up nightly, weekly and monthly (the Nextcloud database only monthly), how to start a restored app at its exact saved versions, and that restoring an add-only copy brings back deleted and renamed files.
+
+### Fixed: drives, recovery after reinstalling Linux
+- **Reinstalling Linux keeps your earlier settings on the SSD,** also when the runtime is built again: they move with the kept copy, as `config.previous-<date-time>.json` (the oldest is always kept).
+- **Reattaching checks first that the NekoServer program kept on the SSD runs on the new Linux** (one built on Arch, Ubuntu 24.04 or Fedora may not run on Debian 12); if not, it says to run `sudo bash install.sh` first and changes nothing. New `recover.py install-docker --apply` installs Docker the way setup does and leaves it stopped for reattaching (RECOVERY.md step 4).
+- **More drive layouts work:** a Btrfs pool over several drives (it stopped setup with "Duplicate filesystem UUID"), LVM volumes, software RAID and encrypted (LUKS) drives that Linux unlocks at start. The disk Linux runs from is recognised from every place it is mounted (a Btrfs system partition, an EFI partition at `/efi`).
+- **Setup's and the recovery tools' drive checks also check the Btrfs subvolume**, and refuse a mounted folder of an ext4 or XFS drive instead of saving it as a "subvolume" that stopped every later run.
+- **Docker's settings are checked before they are written,** and never point Docker at the SSD before its drive guard exists: a setup cut off in between could let Docker fill the folder on the system disk. Settings Docker's service already sets as flags are named instead of leaving Docker unable to start.
+- **An fstab line for the same drive or folder written another way** (`/dev/disk/by-uuid/`, `LABEL=`, `PARTUUID=`, a trailing slash) is found, instead of a second line being added. A slow mount (a big drive replaying its journal) is waited for up to 10 minutes. A drive choice is saved only once it passed the checks. The first fstab copy is never left cut off.
+- **The shared lock never makes folders on the system disk** when the SSD is not mounted. When the HDD comes back, its power settings are applied again and the dashboard sees the drives again.
+- RECOVERY.md: reinstall with a normal `sudo bash install.sh` first; the read-only mount commands for copying the settings off the SSD are really read-only; rebuilding Immich from the USB drive uses the recovery menu's newest-version restore.
+
+### Fixed: setup, packages and interruptions
+- **Upgraded servers get the steps newer releases added** (desktop shortcuts, hardware video): they are added to your `my-config.json` profiles (a step you took out stays out), and "ready" counts every step of the release.
+- **The tools in the NekoServer folder use your `my-config.json`** without `--config` (`acceptance.py --save` from the docs failed on the template); the copy kept on the SSD uses its own settings. Settings you once put into the template `config.json` are recognised, with how to keep them.
+- **Ctrl+C stops setup** at any question (it skipped that step); Ctrl+D leaves a question for later. **Closing the terminal or losing an SSH connection** no longer leaves services blocked from starting.
+- **A slow package download** makes setup ask the package manager to stop and wait for it, instead of killing it; a pacman lock left by a cut-off pacman is removed. If automatic updates or a software centre are installing, setup says so and waits (up to 10 minutes). A package source that only gives a warning is tried again. A package that can't finish installing is named, with how to fix it. On Debian and Ubuntu, Steam's licence is accepted for the TV step.
+- **A damaged Docker or Tailscale repository key** is downloaded again. **A wrong clock** is named, with `sudo timedatectl set-ntp true`.
+- **The runtime build** retries its downloads, says what failed in one line, and is rebuilt when a build was cut off.
+- **The setup window's address works once:** the browser that opened it gets a private session, so another account on the PC that reads the address can't answer setup's questions. A window closed mid-reply no longer prints errors into the terminal.
+- **Folders setup makes are never left owned by root** after an interruption (TV, desktop shortcuts, app settings); earlier leftovers are repaired. A leftover file from a cut-off first save no longer blocks the account store. An old record on the system disk can no longer undo newer results. Connecting the media apps holds the backups' lock. Onboarding problems end as "needs setup" with the reason.
+- **Samba share paths** may use only letters, digits, spaces and `. _ - /` (a line break could have added settings to Samba's configuration). Shared folders over Tailscale work after a restart: Samba waits up to a minute for the Tailscale address.
+- **The TV step** brings its own YouTube and Steam shortcuts up to date when the browser or Steam moved, instead of stopping. Debian's Firefox ESR gets the Web Browser shortcut.
+
+### Fixed: apps
+- **The setup checkup no longer reports Sonarr, Radarr and Lidarr as "still to set up"** when their qBittorrent connection is correct, and **no longer fails Nextcloud when you switched it off**.
+- **Imports:** a finished import is not copied again (Sonarr, Radarr or Lidarr may have renamed those files since; to copy what is new: `source_import.py --again`); a file the library already has differently is kept and named instead of refusing the whole source; earlier imports move up even with their drive unplugged; a network share no longer mounted after its import is "copied before". The source wizard asks for the folder that contains your shows, films or artists.
+- **Hardware video you switched off stays off**, even after a run that couldn't check the app. Intel chips that encode only in low-power mode get hardware encoding in Jellyfin. Immich still starts when the graphics chip is gone (also in the monthly update).
+- **Nextcloud keeps working over the home and Tailscale addresses** after its Docker network is recreated, and its database gets a minute to shut down cleanly. Seerr request setup accepts Sonarr 5.
+
+### Fixed: dashboard, alerts and fans
+- **Restore tests you witnessed stay recorded** through later checks (including the one setup runs at the end), and a complete server check no longer turns into "Finish checking your server" the next day; a recheck is suggested after a month.
+- **Phone alerts now include** Tailscale signed out or about to sign out, monthly backups without a backup password, and the outside heartbeat not being reached. A 5-minute collection interval is no longer called "monitoring unavailable".
+- **A hung drive no longer freezes the dashboard.** The heartbeat isn't called stale right after boot. The Sensors page no longer shows unconnected 127 °C probes.
+- **Fans** keep following their curves while the control service waits for an app restart, survive a crashed request, and a fan that stops at its speed (with Detect fans run) is put to full speed with a note. A processor at its normal 95–100 °C under full load no longer triggers full speed or an urgent alert straight away: that happens at the chip's own limit, at 105 °C, or after 5 minutes above 95 °C. The fan speed slider starts at 20 %.
+- The docs no longer call the phone dashboard read-only (changes need the PIN).
+
+### Fixed: uninstalling
+- **The uninstaller waits** while a monthly update or setup is running. **If it stops part-way**, NekoServer's services are switched back on. It replaces `/etc/fstab` and Docker's `daemon.json` in one step and keeps the old ones beside them, keeps Docker's start guard while Docker's data stays on the SSD, finishes or safely undoes a package install setup left half-done, and lists drives it couldn't unmount and anything it couldn't remove.
+- **A preview of the uninstall without sudo** still says which folders it couldn't look into. On Python 3.14 those folders were quietly skipped instead.
+
+### Upgrade notes
+- `git pull` in `nekoserver`, then `sudo bash install.sh` there (the runtime is built again for this release).
+- If `git pull` stops because `config.json` has local changes (0.39.4 could save your answers into it): run `git checkout -- config.json` (your settings are in `my-config.json` and on the SSD), then `git pull` again.
+- If you imported TV shows with an earlier release, this run moves them up into the TV library; Jellyfin then shows them as shows. If it names a show already in the library, compare and merge the two folders by hand.
+
 ## v0.39.4 — 2026-10-25
 
 A review round of the parts no review had covered yet: recovery, the gateways and remote access, and the dashboard.

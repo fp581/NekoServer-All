@@ -70,6 +70,14 @@ def generate(app):
     return username, password
 
 
+def drop_unfinished(root):
+    """Remove the unfinished write a cut-off first save left (".credentials.json-xxxx",
+    from atomic_write): it was never the store, and it may hold passwords."""
+    for item in root.iterdir():
+        if item.name.startswith(('.credentials.json-', '.APP-CREDENTIALS.txt-')) and item.is_file() and not item.is_symlink():
+            item.unlink()
+
+
 def load(config):
     root = folder(config)
     check_parent(root)
@@ -78,6 +86,7 @@ def load(config):
     private(root, directory=True)
     path = root / 'credentials.json'
     if not path.exists():
+        drop_unfinished(root)
         if any(root.iterdir()):
             raise RuntimeError('Incomplete account store; preserve files and inspect before retrying')
         return {'format': 1, 'mode': 'per-app', 'apps': {}}

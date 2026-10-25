@@ -99,7 +99,10 @@ def model(config, image):
     if opts.get('public_url'):
         env.update(OVERWRITEPROTOCOL='https', OVERWRITEHOST=opts['public_url'].split('://', 1)[1], OVERWRITECLIURL=opts['public_url'])
     services = {
-        'database': {'image': 'postgres:17-bookworm', 'restart': 'unless-stopped',
+        # A minute to stop (Docker's default is 10 s): Postgres writes out what it holds in
+        # memory first, so it starts again without having to recover (backups, updates and
+        # shutting the PC down all stop it).
+        'database': {'image': 'postgres:17-bookworm', 'restart': 'unless-stopped', 'stop_grace_period': '60s',
                      'environment': {'POSTGRES_DB': 'nextcloud', 'POSTGRES_USER': 'nextcloud', 'POSTGRES_PASSWORD': '${DB_PASSWORD}'},
                      'volumes': [str(root/'postgres')+':/var/lib/postgresql/data'],
                      'healthcheck': {'test': ['CMD-SHELL', 'pg_isready -U nextcloud -d nextcloud'], 'interval': '10s', 'timeout': '5s', 'retries': 12}},

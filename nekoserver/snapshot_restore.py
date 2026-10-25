@@ -216,16 +216,33 @@ def main(kind, description, argv=None):
     parser.add_argument('--destination')
     parser.add_argument('--preserve-owners', action='store_true')
     args = parser.parse_args(argv)
+    if args.command == 'restore' and not args.destination:
+        parser.error('restore requires --destination')
+    existed = args.command == 'restore' and Path(args.destination).exists()
     try:
         if args.command == 'verify':
             verify(kind, args.snapshot)
             print('Snapshot inventory and file checksums verified.')
         else:
-            if not args.destination:
-                parser.error('restore requires --destination')
             restore(kind, args.snapshot, args.destination, args.preserve_owners)
             print(kind.restored_message)
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-        print(kind.failed_message, file=sys.stderr)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+        print(kind.failed_message + ' Reason: ' + failure_reason(exc), file=sys.stderr)
+        if args.command == 'restore' and not existed and Path(args.destination).exists():
+            print('What was restored before it stopped is kept in ' + args.destination
+                  + ' (incomplete): look at it or delete it, then restore again into a new folder.', file=sys.stderr)
         return 1
     return 0
+
+
+def failure_reason(exc):
+    """Why a verify or restore stopped, in a line the person can act on (a full drive, a
+    folder that already exists, a damaged file). NekoServer's own messages are shown as
+    they are; for a system error its short description and the file it was about. These
+    never hold file contents or passwords."""
+    if isinstance(exc, RuntimeError):
+        return str(exc)
+    if isinstance(exc, OSError):
+        where = f' ({exc.filename})' if exc.filename else ''
+        return (exc.strerror or type(exc).__name__) + where
+    return 'the snapshot\'s list of files is not valid (' + type(exc).__name__ + ')'
