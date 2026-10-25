@@ -16,7 +16,7 @@ The improvements left out of 0.39.5, plus a fresh review of the drive checks, ea
 - **Taking an app out cleans up after it.** Removing Sonarr, Radarr, Lidarr or qBittorrent from `media.services` also removes the connections setup made to it in Prowlarr, the other apps and Seerr. Connections you made or changed yourself stay.
 - **A new qBittorrent password reaches Sonarr, Radarr and Lidarr.** A password changed with `account-setup.py` is saved in their download clients too, and each setup run checks that they can still sign in.
 - **qBittorrent's manual mode is kept when Lidarr is not used.** Automatic mode is now set only when Lidarr is selected (music needs it), and setup says when it switches it back on.
-- **Imports can't be redirected while copying.** A file or folder swapped for a link during an import can no longer make it read outside the source or write outside the library.
+- **Imports can't be redirected while copying.** A file or folder swapped for a link during an import can no longer make it read outside the source or write outside the library. An imported copy is also never more open than its original: other accounts on the server can read it only when they could read the original.
 
 ### Fixed: dashboard
 - **Wrong PINs lock out only the device that typed them.** One phone typing wrong PINs no longer locks out other devices or the server itself. Many devices guessing together are still slowed down. If you still use a 4-digit PIN from before 0.28.7, set a 6-digit one (`sudo bash install.sh`).
