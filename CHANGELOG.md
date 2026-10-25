@@ -8,6 +8,9 @@ Bug fixes only, each tried on every Linux family of the test rig.
 - **"As of the last backup" restores the newest list, also after the clock was set back.** Each weekly copy's list of the files you had is named by the time it was made, and the restore takes the newest name. A clock that went back (a flat clock battery corrected later, a virtual machine catching up) gave the new list an older name than last week's, so the restore would have used last week's files. A new list now always takes a name after the newest one there. Found by the unit tests on the test rig, where WSL's clock stepped back two seconds.
 - **The unit tests no longer stop at a question when run from a terminal.** One test let setup ask about the backup counts of releases before 0.30.0, and waited for an answer for ever; it now runs as without a keyboard, as in CI.
 
+### Upgrade notes
+- **The repository's history was cleaned**: old built runtimes and large recordings were taken out, so a clone is about a fifth of the size. A clone made before this cannot simply `git pull`. Clone again, then copy your `my-config.json` into the new `nekoserver` folder.
+
 ## v0.39.7 — 2026-10-25
 
 ### Fixed: backups
