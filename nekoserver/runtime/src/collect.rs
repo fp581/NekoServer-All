@@ -873,7 +873,12 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
         } else {
             first_overdue(success.as_f64(), installed, now, max)
         };
-        let state = if stale { "stale" } else { status };
+        // A backup that keeps failing stays a failure (urgent) once it is also overdue.
+        let state = if stale && status != "fail" {
+            "stale"
+        } else {
+            status
+        };
         let (timer, known) = timer_of(unit);
         if let Some(why) = retired(cfg, key) {
             out.push(json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]}));
@@ -1405,11 +1410,63 @@ const BACKUP_KEY_FILES: [&str; 2] = [
 fn backup_key_ready() -> bool {
     BACKUP_KEY_FILES.iter().all(|p| Path::new(p).is_file())
 }
-fn alerts(s: &Value) -> Value {
+/// Whether this server is still signed in to Tailscale, and when its sign-in runs out
+/// (`days_left`; none when key expiry is switched off). Null without Tailscale.
+fn tailscale_login(now: f64) -> Value {
+    let (code, out) = probe(&["tailscale", "status", "--json"], 10);
+    if code != 0 && out.trim().is_empty() {
+        return Value::Null;
+    }
+    login_state(&serde_json::from_str(&out).unwrap_or(Value::Null), now)
+}
+fn login_state(status: &Value, now: f64) -> Value {
+    let state = chars(status["BackendState"].as_str().unwrap_or("unknown"), 40);
+    let days_left = status["Self"]["KeyExpiry"]
+        .as_str()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| ((t.timestamp() as f64 - now) / 86400.0).floor());
+    json!({"state": state, "days_left": days_left})
+}
+pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
         out.push(json!({"id":id,"level":level,"title":title,"detail":detail}))
     };
+    // Alerts that fail to reach anyone are still said on the page.
+    if s["notifications"]["status"] == "fail" {
+        add(
+            "notifications:delivery".into(),
+            "warning",
+            "Phone alerts are not being delivered".into(),
+            "The last alerts could not be sent to your ntfy topic: check its address and access token (setup can change them).",
+        );
+    }
+    if ["fail", "stale"].contains(&text(&s["heartbeat"]["status"])) {
+        add(
+            "heartbeat:delivery".into(),
+            "warning",
+            "Outage alerts: the outside monitor is not reached".into(),
+            "This server's check-ins to your outside monitor fail or have stopped, so it cannot warn you of an outage. Check the network and the monitor's ping address.",
+        );
+    }
+    if s["tailscale"]["state"] == "NeedsLogin" {
+        add(
+            "tailscale:login".into(),
+            "critical",
+            "Phone access is signed out of Tailscale".into(),
+            "This server's Tailscale sign-in ran out, so the app addresses on your phone stop working. Sign in again: sudo tailscale up, then in the Tailscale admin console choose Disable key expiry for this server.",
+        );
+    } else if s["tailscale"]["days_left"]
+        .as_f64()
+        .is_some_and(|d| d <= 14.0)
+    {
+        add(
+            "tailscale:expiry".into(),
+            "warning",
+            "Phone access stops soon: Tailscale sign-in runs out".into(),
+            "In the Tailscale admin console (Machines), open this server's menu and choose Disable key expiry, so it stays signed in.",
+        );
+    }
     for unit in s["startup"].as_array().into_iter().flatten() {
         // Schedules can be off on purpose (the backup cards show those); the
         // services everything else depends on must start with the computer.
@@ -1508,10 +1565,13 @@ fn alerts(s: &Value) -> Value {
             ]
             .contains(&text(&a["state"]))
                 || a["health"] == "unhealthy"
+                // Running but not answering its own page (no Docker health check to say
+                // so): the dashboard shows it as not responding, the alert agrees.
+                || (a["state"] == "running" && a["responding"] == false)
             {
                 add(
                     format!("app:{}", text(&a["id"])),
-                    if a["health"] == "unhealthy" {
+                    if a["health"] == "unhealthy" || a["responding"] == false {
                         "critical"
                     } else {
                         "warning"
@@ -1709,6 +1769,7 @@ pub fn run(a: &Args) -> Result<()> {
     result["updates"] = updates(&cfg, media_ok);
     result["integrity"] = integrity(data, ok);
     result["backup_key"] = json!(backup_key_ready());
+    result["tailscale"] = tailscale_login(now);
     result["alerts"] = alerts(&result);
     // The readings are published even when the SSD can't keep the collector's own state
     // (unplugged since the readings began, or remounted read-only after errors): a
@@ -1753,6 +1814,49 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn failing_alert_delivery_is_said_on_the_page() {
+        let shown =
+            alerts(&json!({"notifications":{"status":"fail"},"heartbeat":{"status":"stale"}}));
+        let ids: Vec<&str> = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["notifications:delivery", "heartbeat:delivery"]);
+        assert_eq!(
+            alerts(&json!({"notifications":{"status":"pass"},"heartbeat":{"status":"unknown"}})),
+            json!([])
+        );
+    }
+    #[test]
+    fn a_tailscale_sign_in_that_runs_out_is_told() {
+        let now = 1_792_900_000.0;
+        let signed_out = login_state(&json!({"BackendState":"NeedsLogin"}), now);
+        let shown = alerts(&json!({"tailscale": signed_out}));
+        assert_eq!(shown[0]["id"], "tailscale:login");
+        assert_eq!(shown[0]["level"], "critical");
+        let soon = login_state(
+            &json!({"BackendState":"Running","Self":{"KeyExpiry":"2026-10-30T00:00:00Z"}}),
+            now,
+        );
+        assert_eq!(
+            alerts(&json!({"tailscale": soon}))[0]["id"],
+            "tailscale:expiry"
+        );
+        // Expiry switched off (no KeyExpiry), or far away: nothing to say.
+        for status in [
+            json!({"BackendState":"Running","Self":{}}),
+            json!({"BackendState":"Running","Self":{"KeyExpiry":"2027-06-01T00:00:00Z"}}),
+        ] {
+            assert_eq!(
+                alerts(&json!({"tailscale": login_state(&status, now)})),
+                json!([])
+            );
+        }
+        assert_eq!(alerts(&json!({"tailscale": null})), json!([]));
+    }
     #[test]
     fn each_backup_names_the_restore_tests_of_what_it_holds() {
         let cloud_only = json!({"photos":{"deploy_immich":false},"nextcloud":{"enabled":true}});

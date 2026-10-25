@@ -47,6 +47,9 @@ def archive_folder(config):
     return Path(config['media_mount']) / config.get('photos', {}).get('archive_dir', 'photos/archive')
 
 
+# A file Nextcloud is still receiving (backup.rs nextcloud_upload_in_progress): any other
+# name ending in .part is someone's own file, and is copied.
+NEXTCLOUD_UPLOAD = re.compile(r'\.ocTransferId[0-9]+\.part$')
 # The form of the name Nextcloud gives its own folder in its data folder.
 NEXTCLOUD_APPDATA = re.compile(r'appdata_oc[a-z0-9]{10}')
 
@@ -128,7 +131,7 @@ def pending_bytes(root, pairs, mirror=()):
     for source, name in pairs:
         noted = current_files(source) if name in mirror else set()
         for path, size in regular_files(source):
-            if path.name.endswith(('.part', '.neko-part')):
+            if path.name.endswith('.neko-part') or NEXTCLOUD_UPLOAD.search(path.name):
                 continue
             target = root / name / path.relative_to(source)
             done = (mirrored(path, target, path in noted) if name in mirror

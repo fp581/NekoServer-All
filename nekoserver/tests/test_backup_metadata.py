@@ -29,8 +29,37 @@ class MetadataNameTests(unittest.TestCase):
             (root / 'alice/files').mkdir(parents=True)
             for name in ('alice/files/.neko-notes.txt', 'alice/files/a.txt', '.neko-ledger.json', 'alice/files/.neko-names.json'):
                 (root / name).write_text('x')
-            found = sorted(p.relative_to(root).as_posix() for p, _ in backup_files(root))
+            found = sorted(p.relative_to(root).as_posix() for p, _ in backup_files(root, root))
             self.assertEqual(found, ['alice/files/.neko-notes.txt', 'alice/files/a.txt'])
+
+
+    def test_below_the_tree_root_nekoservers_root_names_are_ordinary_files(self):
+        # A user's own folder named neko-damaged, at the top of their Nextcloud files.
+        with tempfile.TemporaryDirectory() as d:
+            files = Path(d) / 'alice/files'
+            (files / 'neko-damaged').mkdir(parents=True)
+            (files / 'neko-damaged/plan.txt').write_text('mine')
+            (files / '.neko-ledger.json').write_text('mine too')
+            found = sorted(p.relative_to(files).as_posix() for p, _ in backup_files(files))
+            self.assertEqual(found, ['.neko-ledger.json', 'neko-damaged/plan.txt'])
+            # At the tree's own root they are the backup's.
+            self.assertEqual(backup_files(files, files), [])
+
+
+class TrailingDotTests(unittest.TestCase):
+    def test_a_name_ending_in_a_dot_gets_its_newest_version_back(self):
+        import json
+
+        import recovery_wizard
+        with tempfile.TemporaryDirectory() as d:
+            files = Path(d) / 'files'
+            files.mkdir()
+            (files / 'notes.').write_text('old')
+            (files / 'notes.neko-20261020T010000Z.').write_text('new')
+            (files / '.neko-names.json').write_text(json.dumps(
+                {'format': 'neko-names-v1', 'names': {}, 'versions': {'notes.neko-20261020T010000Z.': 'notes.'}}))
+            chosen = recovery_wizard.latest_versions([('files', files)])
+            self.assertEqual([(p.name, str(t)) for p, t, _, _ in chosen], [('notes.neko-20261020T010000Z.', 'files/notes.')])
 
 
 if __name__ == '__main__':

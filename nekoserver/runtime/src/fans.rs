@@ -20,6 +20,9 @@ use std::{
 
 pub const MIN_FLOOR: f64 = 20.0;
 const EMERGENCY_C: f64 = 95.0;
+/// What a probe input with nothing connected reads on many boards (nct67xx AUXTIN): no
+/// working part of a PC reaches it, so it is never taken for a temperature.
+const UNCONNECTED_C: f64 = 127.0;
 /// How fast a fan may slow down per control step (speeding up is immediate).
 const STEP_DOWN: f64 = 5.0;
 /// SATA drive temperatures are never read here (it can keep a hard drive awake).
@@ -350,11 +353,17 @@ impl Controller {
             None => Ok(()),
         }
     }
+    /// A sensor's reading in °C, or None when it can't be read or is not a reading at all:
+    /// a probe input with nothing connected reads 127 °C (or -128 °C) on many boards, or
+    /// says so in its `_fault` file. No working part of a PC gets that hot.
     pub fn temperature(&self, id: &str) -> Option<f64> {
         let t = self.inventory.temps.iter().find(|t| t.id == id)?;
+        if read(&t.path("_fault")) == "1" {
+            return None;
+        }
         number(&t.path("_input"))
             .map(|v| v / 1000.0)
-            .filter(|v| (-40.0..=150.0).contains(v))
+            .filter(|v| (-40.0..UNCONNECTED_C).contains(v))
     }
     /// Any sensor at its critical temperature (less 3 °C), or at 95 °C: everything to full.
     pub fn emergency(&self) -> Option<String> {
@@ -368,7 +377,7 @@ impl Controller {
             return Some("no temperature can be read".to_string());
         }
         self.inventory.temps.iter().find_map(|t| {
-            let v = number(&t.path("_input"))? / 1000.0;
+            let v = self.temperature(&t.id)?;
             let crit = number(&t.path("_crit"))
                 .map(|c| c / 1000.0)
                 .filter(|c| *c > 40.0);
@@ -979,6 +988,44 @@ mod review_fault_tests {
             "128",
             "controller took over even though its original mode could not be read"
         );
+    }
+    #[test]
+    fn an_unconnected_probe_is_not_an_overheating_one() {
+        let b = tests::Board::new("unconnected-probe");
+        // AUXTIN with nothing connected reads 127 °C on many nct67xx boards.
+        b.set("temp2_input", "127000");
+        b.set("temp2_label", "AUXTIN3");
+        let inv = discover(&b.hwmon());
+        let c = Controller::new(inv, BTreeMap::new());
+        assert_eq!(c.emergency(), None);
+        let probe = c
+            .inventory
+            .temps
+            .iter()
+            .find(|t| t.label == "AUXTIN3")
+            .map(|t| t.id.clone());
+        if let Some(id) = probe {
+            assert_eq!(c.temperature(&id), None);
+        }
+        // A real one that overheats still sends everything to full speed.
+        b.set("temp1_input", "99000");
+        assert!(c.emergency().is_some());
+        // A sensor that says it has a fault is not read either; with no other reading
+        // left, that is "no temperature can be read": full speed, as before.
+        b.set("temp1_input", "45000");
+        b.set("temp1_fault", "1");
+        let cpu = c
+            .inventory
+            .temps
+            .iter()
+            .find(|t| t.label == "CPUTIN")
+            .unwrap()
+            .id
+            .clone();
+        assert_eq!(c.temperature(&cpu), None);
+        b.set("temp1_fault", "0");
+        assert_eq!(c.temperature(&cpu), Some(45.0));
+        assert_eq!(c.emergency(), None);
     }
     #[test]
     fn review_full_speed_is_not_claimed_when_the_emergency_write_fails() {

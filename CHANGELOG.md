@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.39.4 — 2026-10-25
+
+A review round of the parts no review had covered yet: recovery, the gateways and remote access, and the dashboard.
+
+### Fixed: recovery
+- **One damaged or missing file no longer stops a whole restore.** A photo damaged on the HDD (and so never copied to the USB drive), or a file a backup lost, made the recovery menu refuse every photo or Nextcloud restore from that backup, whichever backup was tried. Now the good files are restored. The damaged or missing ones are left out and named (in the restore folder's `NOT-RESTORED.txt`) so they can be taken from the other backup. A missing file is asked about first. A checksum list a drive lost mid-write no longer blocks the restore either: the files come back unchecked, and the restore says so.
+- **A Nextcloud folder of your own named `neko-damaged`** (or a file named like NekoServer's checksum list) at the top of your files is restored like any other. Only the backup's own, at the top of the whole backup, is left out, the same line the backup program draws.
+- **App and settings restores keep each file's owner and permissions,** so a file copied back works for its app (copy it with `sudo cp -a`). A night when Steam was open (no Steam files in it) is marked in the list of nights and named after the restore.
+- **Names that end in a dot** (`notes.`) get their newest version back; **a file without an extension** (`README`) no longer takes another file's versions (`README.md`'s).
+- **The monthly restore** says where the password files are when the snapshot was made without a backup key (in it, unencrypted). **Restore tests of a photo snapshot** accept copies on a desktop drive whose path has spaces (`/run/media/you/My Passport`). **A password-list restore that cannot unpack** (a full disk) says why and leaves nothing half-done, instead of a Python traceback.
+- **Nextcloud files ending in `.part`** that are your own are backed up; only Nextcloud's own unfinished uploads are left out.
+- **The weekly USB copy waits** for a restore from the USB drive (up to 8 hours) and for a photo archive run still writing (up to 6 hours), instead of failing.
+
+### Fixed: gateways and remote access
+- **Tailscale routes are recognised by their port and where they lead,** not by the server's name or the dashboard's port. A renamed server (or one added to the tailnet again after a reinstall), a dashboard moved to another port, or a Serve route of your own on another port no longer stops remote-access setup with "Malformed gateway ownership journal". A route of your own is never touched. A route of yours on a port NekoServer needs is named, with what to do. A dashboard moved later keeps its phone address: the route follows after every setup run.
+- **Nextcloud on this PC itself (`http://127.0.0.1:8088`) works with a gateway set up.** Nextcloud was told to build every link as https, so this PC's own browser was sent to https on that port, which fails. Both gateways already tell Nextcloud the client used https, so the forced setting is taken out (and removed where an earlier release set it). Its link address no longer flips between the two gateways' ports either.
+- **Tailscale's 180-day sign-in.** Setup now says to switch off key expiry for the server. The dashboard warns two weeks before a sign-in runs out, and says so at once when the server is signed out.
+- **Firewall advice for nftables** gets an `nft` command instead of a `ufw` one, and every firewall hint says to test the home addresses from a phone (the check from the PC itself passes through any firewall).
+- **An old home address never opens another app.** A port given to an app stays with it while the app is not selected, and the app gets it back. A port the gateway closed a moment ago no longer looks taken.
+- **Immich, Navidrome and Nextcloud are published only once their first account exists,** as Jellyfin and Seerr already were: an app reset or restored empty would otherwise let whoever opened it first become its administrator.
+
+### Fixed: dashboard
+- **An unplugged temperature probe no longer holds every fan at full speed.** Many boards report a probe input with nothing connected as 127 °C. Fan control and fan detection took it for overheating. Readings of 127 °C and above, and sensors reporting a fault, are not taken for temperatures.
+- **Failing phone alerts and a failing outage monitor** now show as "needs attention", not only as a badge on one card.
+- **A backup that keeps failing stays "Failed"** once it is also overdue, instead of dropping to "Overdue".
+- **An app that runs but does not answer** raises an urgent alert, as the page shows it, and is not reported as recovered by phone.
+- **A switched-off backup** no longer shows "schedule is off" among the issues. An alert sent about a switched-off backup or an app taken out of the list is dropped quietly, never followed by "RECOVERED".
+
+### Upgrade notes
+- `git pull` in `nekoserver`, then `sudo bash install.sh` there (the runtime is built again for this release). Afterwards, in the Tailscale admin console, choose **Disable key expiry** for this server if it isn't already.
+
 ## v0.39.3 — 2026-10-25
 
 The monthly run now starts by checking every backup copy, a guide for both ways of following the installation and for uninstalling, and a round of fixes to the uninstaller, the setup window, the backups and the dashboard.

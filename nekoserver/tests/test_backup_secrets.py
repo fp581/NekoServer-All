@@ -109,6 +109,21 @@ class BackupSecretsTests(unittest.TestCase):
         self.assertEqual((out / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), SECRET)
         self.assertEqual(out.stat().st_mode & 0o777, 0o700)
 
+    def test_a_failed_unpack_says_why_and_leaves_nothing_behind(self):
+        from unittest import mock
+        self.make_key()
+        snap = self.seal_snapshot()
+        real = backup_secrets.subprocess.run
+
+        def run(argv, **kw):
+            if argv[0] == 'tar':
+                return mock.Mock(returncode=2, stderr=b'tar: secrets: Cannot write: No space left on device\n')
+            return real(argv, **kw)
+        with mock.patch.object(backup_secrets.subprocess, 'run', side_effect=run), \
+                self.assertRaisesRegex(RuntimeError, 'No space left on device.*nothing was restored'):
+            backup_secrets.restore(snap, self.root / 'out', 'correct horse')
+        self.assertFalse((self.root / 'out').exists())
+
     def test_a_damaged_archive_is_refused_before_anything_is_restored(self):
         # CMS decryption does not notice changed bytes; the snapshot's checksum must.
         self.make_key()

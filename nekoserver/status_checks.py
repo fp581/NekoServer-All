@@ -195,7 +195,8 @@ def job_row(config, now, data_ok, key, name, unit, maximum):
     started = number(saved.get('started_at'), 0, now + 60)
     # Running too long, or not succeeding for too long: overdue.
     since = started if status == 'running' else success
-    state = 'stale' if since is not None and now - since > maximum else status
+    # A backup that keeps failing stays a failure once it is also overdue.
+    state = 'stale' if since is not None and now - since > maximum and status != 'fail' else status
     timer, known = timer_and_known(unit)
     row = {'id': key, 'name': name, 'status': state, 'last_success': success, 'last_attempt': started, 'timer': timer,
            'restore': restore_tests(config, key)}

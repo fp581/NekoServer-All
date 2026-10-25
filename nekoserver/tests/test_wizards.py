@@ -398,7 +398,8 @@ class CapacityTests(unittest.TestCase):
                 hdd / 'photos/archive/library/changed.xmp': (b'c' * 30, b'c' * 5),
                 hdd / 'cloud/files/alice/files/doc.txt': (b'd' * 40, None),
                 hdd / 'cloud/files/appdata_oc1a2b3c4d5e/files/skip.bin': (b'e' * 50, None),
-                hdd / 'photos/archive/upload/u/live.jpg.part': (b'f' * 60, None),
+                hdd / 'photos/archive/upload/u/live.jpg.neko-part': (b'f' * 60, None),
+                hdd / 'cloud/files/alice/files/v.mp4.ocTransferId42.part': (b'g' * 70, None),
             }
             for path, (source, copy) in files.items():
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -752,12 +753,39 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((restored / 'a.txt').read_bytes(), b'kept safe')
         self.assertIn('1 files matched their recorded checksums; 1 had no recorded checksum yet', '\n'.join(out))
 
-    def test_a_damaged_backup_file_stops_the_restore(self):
+    def test_a_damaged_backup_file_is_left_out_and_named_and_the_rest_restored(self):
         self.write('usb/nextcloud/alice/files/a.txt', b'kept safe')
-        self.ledger('usb/nextcloud', {'alice/files/a.txt': b'kept safe'})
+        self.write('usb/nextcloud/alice/files/b.txt', b'also safe')
+        self.ledger('usb/nextcloud', {'alice/files/a.txt': b'kept safe', 'alice/files/b.txt': b'also safe'})
         self.write('usb/nextcloud/alice/files/a.txt', b'kept s?fe')  # bit rot on the USB drive
-        with self.assertRaisesRegex(RuntimeError, 'damaged on the backup'):
-            self.restore_cloud('1', 'yes', 'yes')
+        out = '\n'.join(self.restore_cloud('1', 'yes', 'yes'))
+        restored = next((self.media / 'restored').iterdir())
+        self.assertEqual((restored / 'files/b.txt').read_bytes(), b'also safe')
+        self.assertFalse((restored / 'files/a.txt').exists(), 'a damaged copy is never left in the restore')
+        self.assertIn('1 files were NOT restored', out)
+        self.assertIn('Done: 1 files copied', out)
+        self.assertIn('damaged: alice/files/a.txt', (restored / 'NOT-RESTORED.txt').read_text())
+
+    def test_a_file_missing_from_the_backup_is_asked_about_then_named(self):
+        self.write('usb/nextcloud/alice/files/b.txt', b'also safe')
+        self.ledger('usb/nextcloud', {'alice/files/b.txt': b'also safe', 'alice/files/gone.txt': b'x'})
+        # "no": nothing is restored.
+        with self.assertRaisesRegex(RuntimeError, 'Nothing was restored'):
+            self.restore_cloud('1', 'yes', 'no')
+        # "yes": the rest comes back and the missing one is listed.
+        out = '\n'.join(self.restore_cloud('1', 'yes', 'yes', 'yes'))
+        restored = next(p for p in (self.media / 'restored').iterdir() if (p / 'files').is_dir())
+        self.assertEqual((restored / 'files/b.txt').read_bytes(), b'also safe')
+        self.assertIn('missing: alice/files/gone.txt', (restored / 'NOT-RESTORED.txt').read_text())
+        self.assertIn('1 files were NOT restored', out)
+
+    def test_an_unreadable_checksum_list_does_not_stop_the_restore(self):
+        self.write('usb/nextcloud/alice/files/b.txt', b'also safe')
+        self.write('usb/nextcloud/.neko-ledger.json', b'{"format": "neko-ledg')   # cut off mid-write
+        out = '\n'.join(self.restore_cloud('1', 'yes', 'yes'))
+        restored = next((self.media / 'restored').iterdir())
+        self.assertEqual((restored / 'files/b.txt').read_bytes(), b'also safe')
+        self.assertIn('checksum list could not be used', out)
 
     def test_an_unreadable_or_odd_backup_entry_stops_the_restore(self):
         self.write('usb/nextcloud/alice/files/a.txt', b'a')
@@ -886,12 +914,52 @@ class RecoveryWizardTests(unittest.TestCase):
         kept = list((hdd / 'neko-damaged').rglob('a.jpg'))
         self.assertEqual([k.read_bytes() for k in kept], [b'hdd version'])  # set aside, not deleted
 
+    def test_nightly_restores_keep_owners_and_say_when_steam_is_missing(self):
+        import json as json_module
+        nights = self.media / 'backups/host-user'
+        for stamp, left_out in (('1792900000', ['steam']), ('1792800000', [])):
+            run = nights / f'snapshot-{stamp}-1'
+            run.mkdir(parents=True)
+            (run / 'manifest.json').write_text(json_module.dumps({'format': 'neko-host-snapshot-v1', 'left_out': left_out}))
+        out, calls = [], []
+        with mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: calls.append(a) or True):
+            recovery_wizard.restore_nightly(self.config, 'host', answers('1', 'yes'), out.append)
+        said = '\n'.join(out)
+        self.assertIn('(no Steam files: Steam was open)', said.split('2.')[0])   # the newest night is marked
+        self.assertNotIn('(no Steam files', said.split('2.')[1].split('0. Back')[0])
+        self.assertIn('--preserve-owners', calls[0])
+        self.assertIn('choose another night for those', said)
+        self.assertIn('sudo cp -a', said)
+
+    def test_the_monthly_restore_says_where_the_password_files_are(self):
+        import json as json_module
+        for kept, expect in (('unencrypted_in_data_tar', 'are in it, unencrypted'), ('sealed', 'App password list')):
+            month = self.media / 'backups/monthly' / f'1792900000-{len(kept)}'
+            month.mkdir(parents=True)
+            (month / 'manifest.json').write_text(json_module.dumps({'password_files': kept}))
+            (month / 'restore-tests.json').write_text('{}')
+            out = []
+            with mock.patch.object(recovery_wizard, 'tool', return_value=True):
+                recovery_wizard.restore_monthly(self.config, answers('1', 'yes', 'no'), out.append)
+            self.assertIn(expect, '\n'.join(out))
+            for path in sorted(month.parent.iterdir()):
+                (path / 'manifest.json').unlink()
+                (path / 'restore-tests.json').unlink()
+                path.rmdir()
+
     def test_a_restore_stops_when_a_verified_file_is_missing(self):
         self.write('usb/nextcloud/alice/files/a.txt', b'kept')
         self.ledger('usb/nextcloud', {'alice/files/a.txt': b'kept', 'alice/files/gone.txt': b'was here',
                                       'bob/files/other.txt': b'not restored'})
-        with self.assertRaisesRegex(RuntimeError, 'alice/files/gone.txt'):
-            self.restore_cloud('1', 'yes', 'yes')
+        shown = []
+        usb = self.root / 'usb'
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None), \
+                self.assertRaisesRegex(RuntimeError, 'Nothing was restored'):
+            recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'no'), shown.append)
+        said = '\n'.join(shown)
+        self.assertIn('1 files that were backed up and checked are missing', said)   # bob's file is not counted
+        self.assertIn('alice/files/gone.txt', said)
         self.assertFalse((self.media / 'restored').exists() and any((self.media / 'restored').iterdir()))
 
     def test_a_dated_version_is_repaired_from_its_live_original(self):
