@@ -19,7 +19,7 @@ from pathlib import Path
 import explanations
 import guided_setup
 import setup_progress
-from neko_common import VERSION, atomic_json, find_program
+from neko_common import VERSION, atomic_json, find_program, settings_path
 
 ROOT = Path(__file__).resolve().parent
 FILES = ROOT / 'setup-gui'
@@ -54,6 +54,7 @@ class Window:
         self.version = version
         self.token = secrets.token_urlsafe(24)
         self.started = threading.Event()     # Start was pressed in the window
+        self.frozen = False                  # setup has started: the choices are fixed
         self.delivered = threading.Event()   # the page has shown the finishing screen
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), self._handler())
@@ -97,7 +98,7 @@ class Window:
     def _phase(self, finished, steps):
         if finished:
             return 'finished'
-        if self.started.is_set() or any(s['status'] != 'pending' for s in steps):
+        if self.frozen or self.started.is_set() or any(s['status'] != 'pending' for s in steps):
             return 'running'
         return 'choose'
 
@@ -115,20 +116,49 @@ class Window:
         return {'version': self.version, 'phase': phase, 'extras': self._extras(), 'steps': steps,
                 'current': current['id'] if current else None,
                 'done': sum(1 for s in steps if s['status'] in SETTLED), 'total': len(steps),
-                'question': question, 'finish': finished['lines'] if finished else []}
+                'question': question, 'terminal': setup_progress.terminal_handoff(),
+                'finish': finished['lines'] if finished else []}
 
-    def choose(self, changes):
-        """Switch extras on or off, saved to the settings file at once (owner kept)."""
+    def freeze(self):
+        """Setup has started (in the terminal or the window): from now on the choices
+        are fixed, so a late request from the window cannot change the settings file
+        the installer is writing to."""
+        with self.lock:
+            self.frozen = True
+
+    def _saved(self):
+        """The settings file as it is now (what the installer may have added since the
+        window opened), or the window's copy when it cannot be read."""
+        try:
+            value = json.loads(settings_path(self.config_path).read_text(encoding='utf-8'))
+        except (OSError, ValueError, RuntimeError):
+            return self.config
+        return value if isinstance(value, dict) else self.config
+
+    def choose(self, changes, start=False):
+        """Switch extras on or off, saved to the settings file at once (owner kept):
+        only the switches change, on the file as it is now. False once setup has
+        started; with start, the choices are saved and setup starts in one step."""
         by_id = {e['id']: e for e in explanations.EXTRAS}
         chosen = {k: v for k, v in changes.items() if k in by_id and isinstance(v, bool)}
         with self.lock:
-            for key, value in chosen.items():
-                explanations.set_extra(self.config, by_id[key], value)
-            owner = (self.config_path.stat().st_uid, self.config_path.stat().st_gid) if self.config_path.exists() else None
-            atomic_json(self.config_path, self.config)
-            if owner is not None and os.geteuid() == 0:
-                os.chown(self.config_path, *owner)
-        setup_progress.event('chosen', **chosen)
+            if self.frozen:
+                return False
+            if chosen:
+                config = self._saved()
+                for key, value in chosen.items():
+                    explanations.set_extra(config, by_id[key], value)
+                owner = (self.config_path.stat().st_uid, self.config_path.stat().st_gid) if self.config_path.exists() else None
+                atomic_json(self.config_path, config)
+                if owner is not None and os.geteuid() == 0:
+                    os.chown(self.config_path, *owner)
+                self.config = config
+            if start:
+                self.frozen = True
+                self.started.set()
+        if chosen:
+            setup_progress.event('chosen', **chosen)
+        return True
 
     # ----- the requests
 
@@ -146,13 +176,10 @@ class Window:
     def post(self, route, body):
         """(status, body, content type) for a POST with its JSON body."""
         if route == 'api/choose' and isinstance(body, dict):
-            self.choose(body)
-            return 200, b'{"ok": true}', JSON
+            return self._fixed_or_ok(self.choose(body))
         if route == 'api/start':
-            if isinstance(body, dict) and body.get('choices'):
-                self.choose(body['choices'])
-            self.started.set()
-            return 200, b'{"ok": true}', JSON
+            choices = body.get('choices') if isinstance(body, dict) else None
+            return self._fixed_or_ok(self.choose(choices if isinstance(choices, dict) else {}, start=True))
         if route == 'api/answer' and isinstance(body, dict):
             # The window's answer to the question setup is waiting on; the terminal may
             # have answered first, in which case this says so.
@@ -160,6 +187,12 @@ class Window:
                      and len(body['text']) <= 1000 and setup_progress.answer_from_window(body['seq'], body['text']))
             return 200, json.dumps({'ok': bool(taken)}).encode(), JSON
         return NOT_FOUND
+
+    @staticmethod
+    def _fixed_or_ok(taken):
+        if taken:
+            return 200, b'{"ok": true}', JSON
+        return 409, b'{"ok": false, "reason": "Setup has started, so the choices are fixed."}', JSON
 
     # ----- the server
 

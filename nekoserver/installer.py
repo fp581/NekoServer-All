@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 import capabilities
+import guided_setup
 import host
 import setup_progress
 from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path, pending_maintenance
@@ -138,9 +139,10 @@ def require_settings(config):
                              'or delete my-config.json and run  sudo bash install.sh  to make a new one')
 
 
-# Backup counts whose template default changed in v0.30.0: a settings file made from an
-# earlier template holds the old default without anyone having chosen it, so it moves to
-# the new one; any other number is the owner's choice and stays.
+# Backup counts whose template default changed in v0.30.0. A settings file from an earlier
+# template may hold the old default without anyone having chosen it, but a settings file
+# cannot tell that from a choice, so fewer backups are never kept without asking: setup
+# asks once (when someone is at the keyboard), and the answer is kept.
 # (group, key, earlier default, current default, what is counted)
 RETIRED_DEFAULTS = (
     ('app_backup', 'keep_snapshots', 14, 7, 'nightly app backups'),
@@ -148,17 +150,42 @@ RETIRED_DEFAULTS = (
     ('photos', 'database_keep', 8, 4, 'weekly Immich database copies'),
 )
 
-def retire_old_defaults(config):
-    """Move backup counts still at an earlier template default to the current one.
-    Returns a line for the log for each one moved."""
-    moved = []
+# Set in the settings once the earlier defaults were reviewed: a number seen after that is
+# someone's choice, also when it equals an earlier default.
+RETENTION_REVIEWED = 'retention_reviewed'
+
+def retire_old_defaults(config, ask=None):
+    """Backup counts still at an earlier template default, reviewed once: with `ask` (a
+    yes/no question to the person at the keyboard) each one moves to the current default
+    only when they say so; without it each one stays. Returns (lines for the log, whether
+    the settings changed). Never asked again once reviewed."""
+    if config.get(RETENTION_REVIEWED) is True:
+        return [], False
+    lines = []
     for group, key, old, new, what in RETIRED_DEFAULTS:
         options = config.get(group)
-        if isinstance(options, dict) and type(options.get(key)) is int and options[key] == old:
+        if not (isinstance(options, dict) and type(options.get(key)) is int and options[key] == old):
+            continue
+        if ask is not None and ask(f'Your settings keep the newest {old} {what}, the default before v0.30.0 '
+                                   f'(now {new}). Keep fewer from now on, the newest {new}?') is True:
             options[key] = new
-            moved.append(f'Backups: the newest {new} {what} are kept now, not {old} (the earlier default). '
-                         f'To keep more, set "{key}" under "{group}" in my-config.json')
-    return moved
+            lines.append(f'Backups: the newest {new} {what} are kept from now on, not {old}')
+        else:
+            lines.append(f'Backups: the newest {old} {what} stay kept (the default is {new} now; '
+                         f'set "{key}" under "{group}" in my-config.json to change it)')
+    if ask is None and lines:
+        return lines, False      # asked when someone is at the keyboard
+    config[RETENTION_REVIEWED] = True
+    return lines, True
+
+def review_retention(ctx, apply):
+    """The earlier default backup counts reviewed (retire_old_defaults), asking only
+    when someone is at the keyboard; the answer saved with --apply."""
+    lines, changed = retire_old_defaults(ctx.config, guided_setup.yes_no if apply and sys.stdin.isatty() else None)
+    for line in lines:
+        ctx.log(line)
+    if changed and apply:
+        ctx.persist_config()
 
 def validate_config(config):
     require_settings(config)
@@ -263,11 +290,7 @@ def _execute(args, root=ROOT):
             setup_progress.note(message)   # a step's own words, for the setup window
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan
-    moved = retire_old_defaults(config)
-    for line in moved:
-        log(line)
-    if moved and args.apply:
-        ctx.persist_config()
+    review_retention(ctx, args.apply)
     for name in plan:
         bad_deps = [d for d in modules[name]['deps'] if states.get(d, {}).get('status') != complete_status]
         if bad_deps:
@@ -359,7 +382,7 @@ def tidy_old_releases(config, states, log):
 UNAVAILABLE = 'unavailable'
 
 # Steps whose saved settings are brought up to date after every run.
-REFRESHED = ('dashboard', 'host_backup', 'app_backup', 'maintenance')
+REFRESHED = ('dashboard', 'host_backup', 'app_backup', 'maintenance', 'photo_backup', 'media_monitor')
 
 def execute(args, root=ROOT):
     if not args.apply:

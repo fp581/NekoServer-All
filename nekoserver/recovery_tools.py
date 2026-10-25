@@ -188,7 +188,8 @@ def reattach(config,bundle,apply=False,confirm=''):
     daemon=safe_path(Path('/etc/docker/daemon.json'))
     desired=docker_module.prepare_daemon_config(daemon,target)
     default=safe_path(Path('/var/lib/docker'))
-    if default.exists() and any(default.iterdir()):raise RuntimeError('Default Docker store contains data; manual migration required')
+    # Docker's own empty folder tree (made on its first start) is no data: the same test as setup.
+    if default.exists() and docker_module.store_in_use(default):raise RuntimeError('Default Docker store contains data; manual migration required')
     override=safe_path(DOCKER_STORAGE_DROPIN)
     if override.exists() and not override.read_text().startswith('# Managed by NekoServer\n'):raise RuntimeError('Unmanaged Docker guard preserved; review it first')
     if not apply:return {'status':'needs_setup','reason':'Verified reattachment preview; explicit SSD UUID confirmation required','docker_version':saved['docker_version']}

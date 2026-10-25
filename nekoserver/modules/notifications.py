@@ -116,6 +116,17 @@ def definitions(binary, config):
     }
 
 
+def current_destination(context, private):
+    """(address, token) set up before, or the one the settings name instead (switch);
+    a needs_setup result when that switch is not finished."""
+    existing = json.loads(private.read_text()) if private.exists() else {}
+    address, token = existing.get('endpoint', ''), existing.get('token', '')
+    configured = context.config.get('notifications', {}).get('endpoint', '')
+    if configured and configured != address:
+        return switch(context, configured, address, token)
+    return address, token
+
+
 def run(context):
     timing = options(context.config)
     if not context.apply:
@@ -123,15 +134,15 @@ def run(context):
         return
     if os.geteuid() != 0:
         raise RuntimeError('Notification installation requires root')
+    from modules._schedules import switched_off
+    if switched_off(context.config, 'notifications', 'nekoserver-notifications', context.log):
+        context.log('Phone alerts: off by choice')
+        return
     private = safe_path(PRIVATE_CONFIG)
-    existing = json.loads(private.read_text()) if private.exists() else {}
-    address, token = existing.get('endpoint', ''), existing.get('token', '')
-    configured = context.config.get('notifications', {}).get('endpoint', '')
-    if configured and configured != address:
-        chosen = switch(context, configured, address, token)
-        if isinstance(chosen, dict):
-            return chosen
-        address, token = chosen
+    chosen = current_destination(context, private)
+    if isinstance(chosen, dict):
+        return chosen
+    address, token = chosen
     if not address:
         chosen = first_destination(context)
         if chosen is None:

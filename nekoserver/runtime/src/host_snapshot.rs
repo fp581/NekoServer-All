@@ -75,12 +75,19 @@ fn resume() -> Result<()> {
 }
 pub fn resume_command(a: &Args) -> Result<()> {
     let job = backup::open_job(a, 128000)?;
+    let report = job.data.join("reports/jobs/host.json");
+    // Nothing to finish (the usual case: right after a backup that ended well, and at
+    // every boot): no lock is waited for, so this never waits on another job.
+    if !backup::needs_resume(Path::new(JOURNAL), &report) {
+        return Ok(());
+    }
     // Another resume may be at work (the one run as the cut-off job stopped): wait for
-    // it, within the 5 minutes the resume service is given, rather than fail.
+    // it rather than fail. The service allows for the 3-hour wait for the recovery lock
+    // below (neko_common.RESUME_TIMEOUT).
     let _lock = common::lock_wait(Path::new(LOCK), std::time::Duration::from_secs(4 * 60))?;
     let _recovery = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
-    backup::mark_interrupted(&job.data.join("reports/jobs/host.json"))
+    backup::mark_interrupted(&report)
 }
 fn probe_absent(args: &[&str]) -> Result<()> {
     let (code, found) = common::command(args, 15)?;

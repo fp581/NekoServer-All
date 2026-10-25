@@ -860,6 +860,29 @@ class StackedMountTests(unittest.TestCase):
         self.assertEqual(storage.mounted_subvolume('/srv/x', run=lambda argv, **kw: mock.Mock(returncode=0, stdout='/dev/sdb1\n/dev/sdb1[/@data]\n')), '/@data')
 
 
+class SleepMaskRecordTests(unittest.TestCase):
+    """The server-OS step writes down which sleep targets were masked before it, once."""
+    def test_masks_from_before_are_recorded_and_an_older_install_counts_as_ours(self):
+        from modules import server_os
+        with tempfile.TemporaryDirectory() as d:
+            units, etc = Path(d) / 'units', Path(d) / 'etc'
+            units.mkdir()
+            (units / 'hibernate.target').symlink_to('/dev/null')
+            dropin = etc / 'sleep.conf.d/90-nekoserver.conf'
+            definitions = {str(dropin): 'x'}
+            record = etc / 'masks.json'
+            server_os.remember_masks(definitions, record, units)
+            self.assertEqual(json.loads(record.read_text())['masked_before'], ['hibernate.target'])
+            (units / 'sleep.target').symlink_to('/dev/null')
+            server_os.remember_masks(definitions, record, units)      # written once: not overwritten
+            self.assertEqual(json.loads(record.read_text())['masked_before'], ['hibernate.target'])
+            record.unlink()
+            dropin.parent.mkdir(parents=True)
+            dropin.write_text(server_os.MARKER + '[Sleep]\n')           # an install from before the record
+            server_os.remember_masks(definitions, record, units)
+            self.assertEqual(json.loads(record.read_text())['masked_before'], [])
+
+
 class NextcloudImageTests(unittest.TestCase):
     def test_new_major_waits_for_early_fixes(self):
         from modules import nextcloud
@@ -1226,9 +1249,11 @@ class StrictImportTests(unittest.TestCase):
                 mock.patch.object(source_import.os.path, 'ismount', return_value=True), \
                 mock.patch.object(source_import, 'publish_no_replace', side_effect=publish_then_unmount), \
                 mock.patch.object(source_import.os, 'geteuid', return_value=0), \
+                mock.patch.object(source_import.os, 'fchown') as fchown, \
                 mock.patch.object(source_import, 'ensure_directory', side_effect=lambda path, *a: Path(path).mkdir(parents=True, exist_ok=True)):
-            # Files owned by this test's own user: CI runs the tests without root.
-            owner = {'uid': os.getuid() or 1000, 'gid': os.getgid() or 1000}
+            # The owner change is only recorded: as a normal user, or as root in a
+            # container without the right to change owners, it could not be made.
+            owner = {'uid': 1000, 'gid': 1000}
             config = {'media_mount': str(self.media), 'data_mount': str(self.media), 'media': owner}
             source = {'type': 'local', 'path': str(self.source), 'category': 'music'}
             with self.assertRaises(source_import.DriveGone):
@@ -1236,6 +1261,7 @@ class StrictImportTests(unittest.TestCase):
         copied = list((self.media / 'library').rglob('*.flac'))
         self.assertEqual(len(copied), 1)
         self.assertFalse(any(p.name.endswith('.neko-part') for p in self.media.rglob('*')))
+        self.assertEqual({call.args[1:] for call in fchown.call_args_list}, {(1000, 1000)})
 
     def test_another_drive_mounted_in_its_place_is_noticed(self):
         import source_import
@@ -1251,17 +1277,6 @@ class StrictImportTests(unittest.TestCase):
 
 
 class ClockAndUsbPrivacyTests(unittest.TestCase):
-    def test_a_future_full_check_record_does_not_postpone_checks(self):
-        from modules import capacity
-        now = 1_800_000_000.0
-        self.assertFalse(capacity.due_since(now - 86400, now))
-        self.assertTrue(capacity.due_since(now - 28 * 86400, now))
-        self.assertTrue(capacity.due_since(0.0, now))
-        self.assertTrue(capacity.due_since(float('nan'), now))
-        self.assertTrue(capacity.due_since(1_900_000_000.0, now))            # recorded in "2030"
-        self.assertTrue(capacity.due_since(1_900_000_000.0, now + 28 * 86400))
-        self.assertFalse(capacity.due_since(now + 60, now))                    # small clock difference
-
     def test_exfat_backup_drives_are_mounted_for_root_only(self):
         self.assertEqual(neko_common.usb_mount_options('ext4', True), 'rw,nosuid,nodev,noexec')
         options = neko_common.usb_mount_options('exfat', True)

@@ -378,7 +378,9 @@ if "$apply" && "$full"; then
     # starts. Installing does not start Docker; its setup step does that on the SSD.
     python3 "$ROOT/host.py" bootstrap
 fi
-if "$apply" && python3 "$ROOT/native_runtime.py" needs-build; then
+# Recovery needs no runtime: its menu and every restore in it are Python, so it opens
+# without the internet or Rust (on a reinstalled PC, say). Setup run afterwards builds it.
+if "$apply" && ! "$recover" && python3 "$ROOT/native_runtime.py" needs-build; then
     # NekoServer's own background program (the Rust runtime) is built here, on this PC,
     # the first time and after each update: git keeps its sources, not the binary.
     echo "Building NekoServer's background program for this PC (Rust is installed from your Linux's packages,"

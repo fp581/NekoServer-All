@@ -8,7 +8,7 @@ import subprocess
 
 import native_runtime
 import host
-from neko_common import SYSTEMD_UNITS, VERSION, atomic_json, check_units, host_timezone, refresh_settings, safe_path, verify_storage, write_units
+from neko_common import RESUME_TIMEOUT, SYSTEMD_UNITS, VERSION, atomic_json, check_units, host_timezone, refresh_settings, safe_path, verify_storage, write_units
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Nightly host, Steam and standalone Samba snapshots; staged restore only'
@@ -187,10 +187,10 @@ def definitions(config, binary, private):
     # runs too and holds the same job lock: the backup waits for it instead of failing.
     return {
         BACKUP_UNIT: '[Unit]\nDescription=NekoServer host and user snapshot\n'+mounts+f'After={RESUME_UNIT}\n'+
-            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec=5min\n',
+            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec={RESUME_TIMEOUT}\n',
         BACKUP_TIMER: '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'+f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
         RESUME_UNIT: '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'+mounts+
-            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=5min\n'+f'ExecStart={resume}\n[Install]\nWantedBy=multi-user.target\n',
+            f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\n'+f'ExecStart={resume}\n[Install]\nWantedBy=multi-user.target\n',
     }
 
 

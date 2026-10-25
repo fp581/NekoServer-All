@@ -112,10 +112,30 @@ def chosen_drive(ctx,opts):
         saved=json.loads(ctx.config_path.read_text());saved['photos']=opts;atomic_json(ctx.config_path,saved)
     return opts['external_backup_uuid']
 
-def install_units(config,cmd,photos,day,when):
+SERVICE_UNIT=SYSTEMD_UNITS/'nekoserver-photo-backup.service'
+TIMER_UNIT=SYSTEMD_UNITS/'nekoserver-photo-backup.timer'
+
+def archive_source(config):
+    """Immich's photo archive folder (a real folder, never a link)."""
+    source=safe_path(Path(config['media_mount'])/relative_path(config.get('photos',{}).get('archive_dir','photos/archive')))
+    if source.is_symlink(): raise RuntimeError(f'Archive folder is a link, not a folder: {source}')
+    return source
+
+def destination(config):
+    dest=mount_path(config['external_backup_mount'])
+    if not dest.is_absolute() or str(dest) in ('/','/home','/mnt','/srv') or dest.is_symlink(): raise RuntimeError('Unsafe USB destination')
+    return dest
+
+def schedule(opts):
+    """(weekday, HH:MM) of the weekly copy."""
+    when=opts.get('backup_time','03:00');day=opts.get('backup_weekday','Sun')
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',when) or day not in ('Mon','Tue','Wed','Thu','Fri','Sat','Sun'): raise RuntimeError('Invalid schedule')
+    return day,when
+
+def install_units(config,cmd,photos,day,when,unit=None,timer=None):
     """Write the weekly service and timer and switch the timer on. Only a unit NekoServer
     wrote is replaced (the timer's older wording included)."""
-    unit=SYSTEMD_UNITS/'nekoserver-photo-backup.service';timer=SYSTEMD_UNITS/'nekoserver-photo-backup.timer'
+    unit=unit or SERVICE_UNIT;timer=timer or TIMER_UNIT
     service='[Unit]\nDescription=NekoServer add-only USB backup of photos and Nextcloud files\nRequiresMountsFor='+config['media_mount']+'\n'+('After=nekoserver-immich-db-backup.service\n' if photos else '')+'[Service]\nType=oneshot\nExecStart='+cmd+'\n'
     schedule='[Unit]\nDescription=NekoServer weekly USB backup schedule\n[Timer]\nOnCalendar='+day+' *-*-* '+when+':00 '+host_timezone(config)+'\nPersistent=true\n[Install]\nWantedBy=timers.target\n'
     for path,text in ((unit,service),(timer,schedule)):
@@ -133,6 +153,7 @@ def run(ctx):
     if os.geteuid()!=0: raise RuntimeError('Root required')
     photos,cloud=copies(ctx.config)
     if not (photos or cloud):
+        switch_off(ctx.log)
         ctx.log('USB backup: neither Immich nor Nextcloud is set up, so there is nothing for it to copy')
         return {'status':'unavailable','reason':'Nothing to copy: Immich and Nextcloud are both switched off'}
     uuid=chosen_drive(ctx,opts)
@@ -141,20 +162,60 @@ def run(ctx):
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}',uuid): raise RuntimeError('Set photos.external_backup_uuid from lsblk -f')
     fstype=opts.get('external_backup_fstype','ext4')
     check_drive(ctx.config,uuid,fstype)
-    source=None
-    if photos:
-        source=safe_path(Path(ctx.config['media_mount'])/relative_path(opts.get('archive_dir','photos/archive')))
-        if source.is_symlink(): raise RuntimeError(f'Archive folder is a link, not a folder: {source}')
-        if not source.is_dir():
-            # The photos step makes this folder; when it could not run (Docker failed,
-            # say), this step waits for it instead of failing on its account.
-            return {'status':'needs_setup','reason':f'Waiting for the photos (Immich) step, which makes the photo archive {source}: finish that step, then run setup again'}
-    dest=mount_path(ctx.config['external_backup_mount'])
-    if not dest.is_absolute() or str(dest) in ('/','/home','/mnt','/srv') or dest.is_symlink(): raise RuntimeError('Unsafe USB destination')
-    when=opts.get('backup_time','03:00');day=opts.get('backup_weekday','Sun')
-    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d',when) or day not in ('Mon','Tue','Wed','Thu','Fri','Sat','Sun'): raise RuntimeError('Invalid schedule')
+    source=archive_source(ctx.config) if photos else None
+    # The photos step makes this folder; when it could not run (Docker failed, say),
+    # this step waits for it instead of failing on its account.
+    if photos and not source.is_dir():
+        return {'status':'needs_setup','reason':f'Waiting for the photos (Immich) step, which makes the photo archive {source}: finish that step, then run setup again'}
+    dest=destination(ctx.config)
+    day,when=schedule(opts)
     binary=native_runtime.deploy(Path(__file__).resolve().parents[1],ctx.config,Path(ctx.config['data_mount'])/'installer'/'runtime'/('v'+VERSION))
     cmd=command_line(ctx.config,binary,native_runtime.backup_guard(ctx.config),uuid,fstype,source,dest)
     install_units(ctx.config,cmd,photos,day,when)
-    what=' and '.join(name for name,on in (('Immich photos/videos',photos),('Nextcloud files',cloud)) if on)
-    ctx.log('Enabled weekly USB copy of '+what+'; when the USB drive is absent the run fails visibly instead of writing to the OS disk')
+    ctx.log('Enabled weekly USB copy of '+what_is_copied(photos,cloud)+'; when the USB drive is absent the run fails visibly instead of writing to the OS disk')
+
+def switch_off(log,unit=None,timer=None,run=None):
+    """Nothing to copy any more (Immich and Nextcloud both switched off): an installed
+    weekly copy is stopped and its schedule switched off, so it no longer runs with the
+    old selection. Its unit files stay (the dashboard shows the job as switched off) and
+    the copies already on the USB drive are kept."""
+    from modules._schedules import retire
+    units=[unit or SERVICE_UNIT,timer or TIMER_UNIT]
+    if any(u.exists() for u in units):
+        retire(units,run or subprocess.run)
+        log('USB backup: switched off (nothing to copy); the copies on the USB drive stay')
+
+def what_is_copied(photos,cloud):
+    return ' and '.join(name for name,on in (('Immich photos/videos',photos),('Nextcloud files',cloud)) if on)
+
+def refresh(config,log,unit=None,timer=None):
+    """After every setup run: the installed weekly copy takes what is set up now, so
+    Nextcloud (or Immich) added later is on the USB drive from the next week on. The
+    program the installed job already runs stays; nothing happens when the copy is not
+    installed or has nothing to copy now."""
+    unit=unit or SERVICE_UNIT;timer=timer or TIMER_UNIT
+    if not unit.is_file():return False
+    current=unit.read_text()
+    found=re.search(r'^ExecStart=(\S+) weekly ',current,re.MULTILINE)
+    opts=config.get('photos',{})
+    uuid=str(opts.get('external_backup_uuid','')).strip()
+    photos,cloud=copies(config)
+    if not found or not re.fullmatch(r'[A-Za-z0-9-]{8,80}',uuid):return False
+    if not (photos or cloud):
+        switch_off(log,unit,timer)
+        return False
+    try:
+        source=archive_source(config) if photos else None
+        if source is not None and not source.is_dir():
+            log(f'USB backup: not refreshed yet, the photo archive {source} does not exist')
+            return False
+        cmd=command_line(config,found.group(1),native_runtime.backup_guard(config),uuid,
+                         opts.get('external_backup_fstype','ext4'),source,destination(config))
+        if 'ExecStart='+cmd+'\n' in current:return False
+        day,when=schedule(opts)
+        install_units(config,cmd,photos,day,when,unit,timer)
+    except (KeyError,OSError,RuntimeError,subprocess.SubprocessError) as exc:
+        log(f'USB backup: settings not refreshed ({exc})')
+        return False
+    log('USB backup: the weekly copy now takes '+what_is_copied(photos,cloud))
+    return True

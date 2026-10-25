@@ -225,8 +225,20 @@ class ToolchainTests(unittest.TestCase):
     class Family:
         name = 'debian'
 
-        def __init__(self):
+        def __init__(self, ubuntu=True, offers=None, has=()):
             self.installed = []
+            self.is_ubuntu = ubuntu
+            self.offers = offers or {'rustc': (1, 75)}   # apt's candidate versions
+            self.present = set(has)
+
+        def ubuntu(self):
+            return self.is_ubuntu
+
+        def candidate(self, package):
+            return self.offers.get(package)
+
+        def has(self, package):
+            return package in self.present
 
         def install(self, wanted, timeout=900):
             self.installed.append(list(wanted))
@@ -243,12 +255,58 @@ class ToolchainTests(unittest.TestCase):
         host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 75))
         self.assertEqual(family.installed, [['rust', 'gcc'], ['rustc-1.85', 'cargo-1.85']])
 
+    def test_debian_12_gets_rustc_web_debians_newer_rust(self):
+        """The reported case: stock Debian 12 has rustc 1.63, and the versioned names Ubuntu
+        uses (rustc-1.85) do not exist there."""
+        import host
+        family = self.Family(ubuntu=False, offers={'rustc': (1, 63), 'rustc-web': (1, 85)})
+        version = lambda: (1, 85) if family.installed else None   # rustc appears once installed
+        host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=version)
+        self.assertEqual(family.installed, [['gcc', 'rustc-web', 'cargo-web']])
+        self.assertFalse(any('rustc-1.85' in names for names in family.installed))
+
+    def test_debian_12_with_an_older_rust_installed_is_told_how_to_switch(self):
+        import host
+        family = self.Family(ubuntu=False, offers={'rustc': (1, 63), 'rustc-web': (1, 96)}, has={'rustc', 'cargo'})
+        with self.assertRaisesRegex(RuntimeError, r'older than 1.85.*sudo apt install rustc-web cargo-web'):
+            host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 63))
+        self.assertEqual(family.installed, [])        # nothing replaced behind your back
+
+    def test_debian_without_a_new_enough_rust_says_what_to_check(self):
+        import host
+        family = self.Family(ubuntu=False, offers={'rustc': (1, 63)})
+        with self.assertRaisesRegex(RuntimeError, 'rustc-web is not available.*security repositories.*Debian 13'):
+            host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: None)
+
+    def test_debian_13s_own_rust_is_used(self):
+        import host
+        family = self.Family(ubuntu=False, offers={'rustc': (1, 85)})
+        version = lambda: (1, 85) if family.installed else None
+        host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=version)
+        self.assertEqual(family.installed, [['rust', 'gcc']])
+
     def test_another_family_with_too_old_a_rust_is_told(self):
         import host
         family = self.Family()
         family.name = 'fedora'
         with self.assertRaisesRegex(RuntimeError, 'Rust 1.85 or newer is needed .* this system has 1.70'):
             host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 70))
+
+    def test_apts_candidate_version_is_read(self):
+        import host
+        policies = {'rustc': 'rustc:\n  Installed: (none)\n  Candidate: 1.63.0+dfsg1-2\n',
+                    'rustc-web': 'rustc-web:\n  Installed: (none)\n  Candidate: 1:1.96.0+dfsg1-1~deb12u2\n',
+                    'nothing': 'nothing:\n  Installed: (none)\n  Candidate: (none)\n'}
+
+        def run(argv, **kw):
+            return mock.Mock(returncode=0, stdout=policies.get(argv[-1], '') if argv[0] == 'apt-cache' else '')
+        with mock.patch('host.shutil.which', return_value='/usr/bin/apt-get'):
+            family = host.Debian(run, {'ID': 'debian', 'VERSION_ID': '12', 'VERSION_CODENAME': 'bookworm'})
+            family.refreshed = True     # the lists' lock of the PC running the tests is not asked
+            self.assertEqual(family.candidate('rustc'), (1, 63))
+            self.assertEqual(family.candidate('rustc-web'), (1, 96))
+            self.assertIsNone(family.candidate('nothing'))
+            self.assertFalse(family.ubuntu())
 
     def test_the_oldest_rust_comes_from_cargo_toml(self):
         import host

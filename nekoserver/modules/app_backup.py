@@ -5,7 +5,7 @@ import re
 import subprocess
 
 import native_runtime
-from neko_common import VERSION, atomic_json, host_timezone, refresh_settings, safe_path, verify_storage, check_units, write_units
+from neko_common import RESUME_TIMEOUT, VERSION, atomic_json, host_timezone, refresh_settings, safe_path, verify_storage, check_units, write_units
 
 DEPENDENCIES = ['media', 'recovery']
 DESCRIPTION = 'Nightly private media application snapshots with automatic restart recovery'
@@ -64,7 +64,7 @@ def definitions(config, binary, guard):
             f'RequiresMountsFor={data} {media}\nAfter=docker.service nekoserver-app-resume.service\n'
             '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'
             f'ExecStart={binary} app-snapshot --config {guard}\n'
-            f'ExecStopPost={resume}\nTimeoutStopSec=20min\n'
+            f'ExecStopPost={resume}\nTimeoutStopSec={RESUME_TIMEOUT}\n'
         ),
         'nekoserver-app-backup.timer': (
             '[Unit]\nDescription=NekoServer nightly media application snapshot\n'
@@ -74,7 +74,7 @@ def definitions(config, binary, guard):
         'nekoserver-app-resume.service': (
             '[Unit]\nDescription=NekoServer restart applications after interrupted snapshot\n'
             f'RequiresMountsFor={data}\nAfter=docker.service\nRequires=docker.service\n'
-            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=20min\n'
+            f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\n'
             f'ExecStart={resume}\n[Install]\nWantedBy=multi-user.target\n'
         ),
     }

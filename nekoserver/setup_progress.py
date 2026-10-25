@@ -179,6 +179,28 @@ def answer_from_window(seq, text):
         return True
 
 
+@contextlib.contextmanager
+def in_terminal(what):
+    """A program of its own asks questions now (onboarding, music setup, smbpasswd):
+    its prompts reach only the terminal, so the window says to answer there."""
+    event('terminal', text=str(what)[:300])
+    try:
+        yield
+    finally:
+        event('terminal_done')
+
+
+def terminal_handoff():
+    """What is being answered in the terminal right now, or None."""
+    with _lock:
+        for record in reversed(_events):
+            if record['kind'] == 'terminal_done':
+                return None
+            if record['kind'] == 'terminal':
+                return record['text']
+    return None
+
+
 class _Unwatchable(Exception):
     """The terminal cannot be watched (not a real stream): ask the plain way."""
 

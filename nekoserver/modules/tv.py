@@ -178,8 +178,10 @@ def steam_ready(family):
     return family.name!='debian' or 'i386' in family.foreign_architectures()
 
 def available():
-    """TV setup can run on this Linux."""
-    return host.detect() is not None and unavailable_reason(host.current()) is None
+    """TV setup can run on this PC: its Linux has Steam and the PC has a desktop. The
+    same decision as the step itself (not_possible), so acceptance never asks for TV
+    checks on a PC the step skipped (a server without a desktop, say)."""
+    return host.detect() is not None and unavailable_reason(host.current()) is None and has_desktop()
 
 def not_possible(ctx):
     """Why TV setup can't run on this PC (an unavailable result), or None when it can."""

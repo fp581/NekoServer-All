@@ -204,6 +204,75 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(json.loads(self.settings.read_text())['notifications']['wanted'])
         self.assertEqual(self.state()['phase'], 'running')
 
+    def refused(self, route, payload):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post(route, payload)
+        self.assertEqual(caught.exception.code, 409)
+        return json.loads(caught.exception.read())
+
+    def test_a_late_choice_after_the_start_cannot_change_the_saved_settings(self):
+        self.post('api/start', {'choices': {'tv': False}})
+        # The installer saves what it found (the SSD) while setup runs...
+        saved = json.loads(self.settings.read_text())
+        saved['storage'] = {'data_ssd': {'uuid': 'aaaa-1111'}}
+        self.settings.write_text(json.dumps(saved))
+        # ...then a stale switch or a second Start arrives from the window.
+        self.assertFalse(self.refused('api/choose', {'tv': True})['ok'])
+        self.assertIn('fixed', self.refused('api/start', {'choices': {'notifications': False}})['reason'])
+        after = json.loads(self.settings.read_text())
+        self.assertEqual(after, saved)
+        self.assertFalse(after['tv']['wanted'])
+
+    def test_a_terminal_start_also_fixes_the_choices(self):
+        self.window.freeze()
+        self.assertFalse(self.window.started.is_set())
+        self.assertEqual(self.state()['phase'], 'running')
+        self.refused('api/choose', {'tv': False})
+        self.refused('api/start', {})
+        self.assertFalse(self.window.started.is_set())
+        self.assertEqual(json.loads(self.settings.read_text()), self.config)
+
+    def test_a_choice_keeps_what_the_file_gained_since_the_window_opened(self):
+        saved = json.loads(self.settings.read_text())
+        saved['storage'] = {'data_ssd': {'uuid': 'bbbb-2222'}}
+        self.settings.write_text(json.dumps(saved))
+        self.post('api/choose', {'tv': False})
+        after = json.loads(self.settings.read_text())
+        self.assertEqual(after['storage'], {'data_ssd': {'uuid': 'bbbb-2222'}})
+        self.assertFalse(after['tv']['wanted'])
+
+    def test_a_program_asking_in_the_terminal_is_handed_off_there(self):
+        self.window.started.set()
+        self.assertIsNone(self.state()['terminal'])
+        seen = []
+        from modules import samba
+        samba.samba_password('neko', run=lambda argv, **_: seen.append(self.state()['terminal']) or mock.Mock(returncode=0))
+        self.assertIn('account neko', seen[0])
+        self.assertIsNone(self.state()['terminal'])     # over once the program ended
+        with self.assertRaises(RuntimeError), setup_progress.in_terminal('Music listener setup'):
+            self.assertEqual(self.state()['terminal'], 'Music listener setup')
+            raise RuntimeError('it failed')
+        self.assertIsNone(self.state()['terminal'])
+
+    def test_onboarding_asks_in_the_terminal_with_the_window_told(self):
+        from modules import onboarding
+        release = Path(self.tmp.name) / 'data/installer/releases' / ('v' + setup_gui.VERSION)
+        release.mkdir(parents=True)
+        (release / 'onboard.py').write_text('')
+        ctx = mock.Mock(apply=True, plan=(), log=lambda line: None,
+                        config={'data_mount': str(Path(self.tmp.name) / 'data'), 'onboarding': {}, 'media': {'services': []}})
+        seen = []
+        def ran(cmd, **_):
+            seen.append(setup_progress.terminal_handoff())
+            return mock.Mock(returncode=0)
+        with mock.patch.object(onboarding.sys.stdin, 'isatty', return_value=True), \
+                mock.patch.object(onboarding.account_store, 'enabled', return_value=False), \
+                mock.patch.object(onboarding.subprocess, 'run', side_effect=ran), \
+                mock.patch.object(onboarding, 'witness_playback'):
+            onboarding.run(ctx)
+        self.assertIn('media apps', seen[0])
+        self.assertIsNone(setup_progress.terminal_handoff())
+
     def test_the_run_as_the_window_sees_it(self):
         self.window.started.set()
         setup_progress.step('system', 'running')
@@ -308,3 +377,19 @@ class ReadyToStartTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WindowAddressTests(unittest.TestCase):
+    """The terminal always shows the window's address, so a closed window can be opened again."""
+    def test_the_address_is_shown_whether_or_not_the_window_opened(self):
+        with tempfile.TemporaryDirectory() as d:
+            settings = Path(d) / 'my-config.json'
+            settings.write_text(json.dumps({'profiles': {'full': ['system']}}))
+            for opened in (True, False):
+                shown = []
+                with mock.patch.object(setup_gui, 'open_window', return_value=opened):
+                    window = wizard.setup_window(settings, shown.append)
+                try:
+                    self.assertIn(window.url, '\n'.join(shown), opened)
+                finally:
+                    window.stop()
