@@ -51,26 +51,34 @@ def category_ok(category, path, desired='/data/downloads'):
         return path in ('', desired + '/music')
     return path in ('', desired, desired + '/' + category)
 
-def automatic_mode(preferences):
+def automatic_mode(preferences,categories=('music',)):
     """The preference change that makes new torrents start in automatic mode, where each
-    category's own folder is used ({} when they already do)."""
-    return {} if preferences.get('auto_tmm_enabled') is True else {'auto_tmm_enabled':True}
+    category's own folder is used ({} when they already do, or when nothing needs it).
+    Only Lidarr's music needs it: in manual mode TV and films still land in
+    /data/downloads, where Sonarr and Radarr find them, but an album would not reach the
+    SSD's /data/downloads/music, the only place Lidarr sees. Without Lidarr, a choice of
+    manual mode made in qBittorrent is left alone."""
+    if 'music' not in categories or preferences.get('auto_tmm_enabled') is True:return {}
+    return {'auto_tmm_enabled':True}
 
 def retained(verified,actual,changes,categories,desired):
-    """qBittorrent kept what setup asked for: the download folders, automatic mode and
-    each category's folder."""
+    """qBittorrent kept what setup asked for: the download folders, automatic mode (when
+    Lidarr needs it) and each category's folder."""
     path=lambda value:str(value).rstrip('/')
     return (path(verified.get('save_path',''))==desired
             and ('temp_path' not in changes or path(verified.get('temp_path',''))==changes['temp_path'])
-            and verified.get('auto_tmm_enabled') is True
+            and ('music' not in categories or verified.get('auto_tmm_enabled') is True)
             and all(c in actual and category_ok(c,path(actual[c].get('savePath','')),desired) for c in categories))
 
 def save_preferences(client,changes,output):
     """Save the preference changes (if any). Switching automatic mode on is said, once:
-    only the run that switches it says so (later runs find it on)."""
+    only the run that switches it says so (later runs find it on). It is also said when
+    it switches it back on after someone chose manual mode in qBittorrent."""
     if changes.get('auto_tmm_enabled'):
-        output('qBittorrent: new torrents now start in automatic mode, so each one is saved in its '
-               "category's folder (music on the SSD, where Lidarr finds it). Torrents you already have keep their mode")
+        output('qBittorrent: new torrents now start in automatic mode (again, if you had chosen manual mode). '
+               "Lidarr needs it: each torrent is then saved in its category's folder, and music on the SSD, "
+               'where Lidarr finds it. Torrents you already have keep their mode. Without Lidarr in '
+               'media.services, setup leaves this setting as you choose')
     if changes:client.call('/app/setPreferences',{'json':json.dumps(changes)})
 
 def configure(username,password,apply=False,categories=('tv','movies','music'),client=None,output=print):
@@ -99,8 +107,9 @@ def configure(username,password,apply=False,categories=('tv','movies','music'),c
         # and qBittorrent starts new torrents in Manual mode unless told otherwise: the
         # Arr apps send only the category, so in Manual mode an album would land in the
         # HDD's /data/downloads, where Lidarr (which sees only the SSD) cannot find it.
+        # So it is switched on only with Lidarr (the music category), and said each time.
         # This changes only how new torrents start; existing torrents keep their mode.
-        changes.update(automatic_mode(preferences))
+        changes.update(automatic_mode(preferences,categories))
         fix={}
         for category in categories:
             if category not in existing:continue

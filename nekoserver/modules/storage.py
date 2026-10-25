@@ -61,7 +61,8 @@ def one_filesystem(group):
         raise RuntimeError('Duplicate filesystem UUID detected; identify cloned drives before continuing')
     disks=sorted({d for r in group for d in r['physical_disks'] if d})
     return {**group[0],'physical_disks':disks,'physical_disk':disks[0] if disks else None,
-            'mountpoint':next((r['mountpoint'] for r in group if r['mountpoint']),None)}
+            'mountpoint':next((r['mountpoint'] for r in group if r['mountpoint']),None),
+            'unlocks':sorted({n for r in group for n in r.get('unlocks',())})}
 
 
 CRYPTTAB=Path('/etc/crypttab')
@@ -69,30 +70,37 @@ CRYPTTAB=Path('/etc/crypttab')
 
 def unlocked_at_boot(name,crypttab=CRYPTTAB):
     """An opened encrypted drive (`name` as lsblk shows it) that Linux unlocks at every
-    start, so it can be mounted then: it is listed in /etc/crypttab."""
+    start, so it can be mounted then: it is listed in /etc/crypttab, without `noauto`
+    (a line with it is only unlocked by hand)."""
     try:
         lines=crypttab.read_text().splitlines()
     except OSError:
         return False
-    return any(line.split()[0]==name for line in lines if line.strip() and not line.lstrip().startswith('#'))
+    rows=[line.split() for line in lines if line.strip() and not line.lstrip().startswith('#')]
+    return any(row[0]==name and 'noauto' not in (row[3].split(',') if len(row)>3 else ()) for row in rows)
 
 
 def boot_unlock_problem(device,crypttab=CRYPTTAB):
-    """Why an encrypted drive can't be used yet, or None."""
-    if device.get('kind')!='crypt' or unlocked_at_boot(device['name'],crypttab):
+    """Why an encrypted drive can't be used yet, or None. That is the drive itself, or the
+    encrypted drives under it (an LVM volume or RAID array on top of encrypted drives)."""
+    names=[*(device.get('unlocks') or ()),*([device['name']] if device.get('kind')=='crypt' else [])]
+    locked=[n for n in names if not unlocked_at_boot(n,crypttab)]
+    if not locked:
         return None
-    return (f"/dev/mapper/{device['name']} is an encrypted drive that you opened by hand. Setup mounts it at every "
+    return (f"/dev/mapper/{locked[0]} is an encrypted drive that you opened by hand. Setup mounts it at every "
             'start, so Linux must unlock it then: add it to /etc/crypttab (with a key file, or a password asked '
             'at start-up), restart, and run setup again.')
 
 
-def candidate(dev, parent, physical):
-    """One lsblk row as a filesystem setup could use, or None."""
+def candidate(dev, parent, physical, unlocks=()):
+    """One lsblk row as a filesystem setup could use, or None. `unlocks`: the encrypted
+    drives it sits on, which Linux must open before it can be mounted."""
     uuid=dev.get('uuid'); fs=dev.get('fstype'); kind=dev.get('type','')
     if kind not in VOLUME_KINDS or not uuid or fs not in ('ext4','xfs','btrfs'):
         return None
     return {'uuid':uuid,'fstype':fs,'name':dev.get('name',''),'size':dev.get('size'),'model':dev.get('model') or parent,
-            'mountpoint':dev.get('mountpoint') or next(iter(sorted(mount_points(dev))),None),'physical_disks':[physical],'kind':kind}
+            'mountpoint':dev.get('mountpoint') or next(iter(sorted(mount_points(dev))),None),'physical_disks':[physical],'kind':kind,
+            'unlocks':list(unlocks)}
 
 
 def unlocked(device):
@@ -106,14 +114,15 @@ def discover_filesystems(inventory):
     """Return candidates, never auto-select a device on model/size alone."""
     rows=[]
     os_disks,system_ids=set(),set()
-    def walk(dev, parent='', disk=None):
+    def walk(dev, parent='', disk=None, unlocks=()):
         physical=dev.get('name','') if dev.get('type')=='disk' else disk
         if mount_points(dev)&set(SYSTEM_MOUNTS):
             system_ids.add(dev.get('uuid'))
             os_disks.add(physical)
-        row=candidate(dev,parent,physical)
+        row=candidate(dev,parent,physical,unlocks)
         if row:rows.append(row)
-        for child in dev.get('children',[]): walk(child,dev.get('model') or parent,physical)
+        below=(*unlocks,dev.get('name','')) if dev.get('type')=='crypt' else unlocks
+        for child in dev.get('children',[]): walk(child,dev.get('model') or parent,physical,below)
     for device in inventory.get('blockdevices',[]): walk(device)
     # The system's own filesystems (and anything sharing a disk with them) are never offered.
     return [v for v in merged(rows) if v['uuid'] not in system_ids and not set(v['physical_disks'])&os_disks]

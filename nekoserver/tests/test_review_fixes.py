@@ -1269,17 +1269,16 @@ class StrictImportTests(unittest.TestCase):
         """The drive drops out after the first file: nothing more is written into the
         folder underneath (the system disk), and the whole import stops."""
         import source_import
-        real_publish = source_import.publish_no_replace
+        real_publish = source_import.publish_at
 
-        def publish_then_unmount(temp, dest):
-            real_publish(temp, dest)
+        def publish_then_unmount(*args):
+            real_publish(*args)
             self.mount_table(mounted=False)      # the USB cable is pulled, say
         with mock.patch.object(source_import, 'MOUNT_TABLE', self.mount_table()), \
                 mock.patch.object(source_import.os.path, 'ismount', return_value=True), \
-                mock.patch.object(source_import, 'publish_no_replace', side_effect=publish_then_unmount), \
+                mock.patch.object(source_import, 'publish_at', side_effect=publish_then_unmount), \
                 mock.patch.object(source_import.os, 'geteuid', return_value=0), \
-                mock.patch.object(source_import.os, 'fchown') as fchown, \
-                mock.patch.object(source_import, 'ensure_directory', side_effect=lambda path, *a: Path(path).mkdir(parents=True, exist_ok=True)):
+                mock.patch.object(source_import.os, 'fchown') as fchown:
             # The owner change is only recorded: as a normal user, or as root in a
             # container without the right to change owners, it could not be made.
             owner = {'uid': 1000, 'gid': 1000}
@@ -1462,8 +1461,7 @@ class ImportLayoutTests(unittest.TestCase):
         with mock.patch.object(source_import.os.path, 'ismount', return_value=True), \
                 mock.patch.object(source_import.os, 'geteuid', return_value=0), \
                 mock.patch.object(source_import.os, 'fchown'), \
-                mock.patch.object(source_import, 'DriveGuard'), \
-                mock.patch.object(source_import, 'ensure_directory', side_effect=lambda path, *a: Path(path).mkdir(parents=True, exist_ok=True)):
+                mock.patch.object(source_import, 'DriveGuard'):
             self.assertEqual(source_import.run(config, [self.entry], apply=True), 0)
             import shutil
             shutil.rmtree(self.source)

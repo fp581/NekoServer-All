@@ -2,6 +2,8 @@
 //!
 //! OpenRGB (installed by setup and run as a local service) does the hardware work for
 //! hundreds of devices; NekoServer speaks its network protocol on 127.0.0.1:6742.
+//! That address is inside a private network OpenRGB shares with the control service
+//! only (modules/dashboard.py), so no other program on the computer can reach it.
 //! Protocol 0 is used: every OpenRGB server understands it. Little-endian throughout.
 use serde_json::{json, Value};
 use std::{

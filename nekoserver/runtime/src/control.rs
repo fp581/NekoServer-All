@@ -106,27 +106,22 @@ pub fn pin_matches(record: &Value, pin: &str) -> bool {
         && same(&pin_hash(salt, pin, rounds as u32), hash)
 }
 
-/// Who may change things: the server itself, or a device that unlocked with the PIN.
+/// Wrong PINs from one place (a device on the tailnet, or the server itself), and the
+/// lockout they earned.
 #[derive(Default)]
-pub struct Gate {
-    pin: Option<Value>,
-    tokens: BTreeMap<String, Instant>,
+struct Strikes {
     failures: usize,
     lockouts: u32,
     locked_until: Option<Instant>,
+    last: Option<Instant>,
 }
-impl Gate {
-    pub fn new(pin: Option<Value>) -> Self {
-        Gate {
-            pin,
-            ..Default::default()
-        }
-    }
+impl Strikes {
     fn locked(&self) -> bool {
         self.locked_until
             .is_some_and(|until| Instant::now() < until)
     }
     fn failed(&mut self) {
+        self.last = Some(Instant::now());
         self.failures += 1;
         if self.failures >= MAX_TRIES {
             self.failures = 0;
@@ -137,8 +132,93 @@ impl Gate {
             self.locked_until = Some(Instant::now() + length);
         }
     }
-    pub fn unlock(&mut self, pin: &str) -> Value {
-        if self.locked() {
+    /// Not locked, and no wrong PIN for a day: safe to forget when the list is full.
+    fn quiet(&self) -> bool {
+        !self.locked() && self.last.is_none_or(|t| t.elapsed() > LONGEST_LOCKOUT)
+    }
+}
+
+/// Wrong PINs that all other devices together may still type. Each device has its own
+/// lockout, so one phone typing wrong PINs never locks out another (or the server). This
+/// shared allowance stops many devices from guessing side by side: it refills slowly
+/// (one try every two hours), and when it is used up, only the server itself can unlock.
+struct Allowance {
+    left: f64,
+    refilled: Instant,
+}
+const SHARED_TRIES: f64 = 50.0;
+const SHARED_REFILL: Duration = Duration::from_secs(2 * 3600);
+/// Devices remembered one by one; more than this (only an attack makes so many) share
+/// one entry.
+const MAX_SOURCES: usize = 256;
+impl Default for Allowance {
+    fn default() -> Self {
+        Allowance {
+            left: SHARED_TRIES,
+            refilled: Instant::now(),
+        }
+    }
+}
+impl Allowance {
+    fn refill(&mut self) {
+        let earned = self.refilled.elapsed().as_secs_f64() / SHARED_REFILL.as_secs_f64();
+        if earned > 0.0 {
+            self.left = (self.left + earned).min(SHARED_TRIES);
+            self.refilled = Instant::now();
+        }
+    }
+    fn used_up(&mut self) -> bool {
+        self.refill();
+        self.left < 1.0
+    }
+}
+
+/// Who may change things: the server itself, or a device that unlocked with the PIN.
+#[derive(Default)]
+pub struct Gate {
+    pin: Option<Value>,
+    tokens: BTreeMap<String, Instant>,
+    strikes: BTreeMap<String, Strikes>,
+    shared: Allowance,
+}
+/// Where an unlock comes from, as the web server determined it (never the page): the
+/// server itself, or the Tailscale login or address that Tailscale Serve passed on.
+fn source_of(request: &Value) -> String {
+    if request["local"] == true {
+        return LOCAL.to_string();
+    }
+    match request["source"].as_str() {
+        Some(s) if !s.is_empty() && s.len() <= 200 && s != LOCAL => format!("remote:{s}"),
+        _ => "remote".to_string(),
+    }
+}
+const LOCAL: &str = "local";
+impl Gate {
+    pub fn new(pin: Option<Value>) -> Self {
+        Gate {
+            pin,
+            ..Default::default()
+        }
+    }
+    /// The record for this source, making room when the list is full.
+    fn strikes_for(&mut self, source: &str) -> &mut Strikes {
+        if !self.strikes.contains_key(source) && self.strikes.len() >= MAX_SOURCES {
+            self.strikes.retain(|_, s| !s.quiet());
+        }
+        let key = if source == LOCAL
+            || self.strikes.contains_key(source)
+            || self.strikes.len() < MAX_SOURCES
+        {
+            source.to_string()
+        } else {
+            "remote:others".to_string()
+        };
+        self.strikes.entry(key).or_default()
+    }
+    pub fn unlock(&mut self, pin: &str, request: &Value) -> Value {
+        let source = source_of(request);
+        let local = source == LOCAL;
+        if (!local && self.shared.used_up()) || self.strikes_for(&source).locked() {
             return coded("E45");
         }
         let Some(record) = &self.pin else {
@@ -148,11 +228,14 @@ impl Gate {
             );
         };
         if !valid_pin(pin) || !pin_matches(record, pin) {
-            self.failed();
+            self.strikes_for(&source).failed();
+            if !local {
+                self.shared.left -= 1.0;
+            }
             return coded("E44");
         }
-        self.failures = 0;
-        self.lockouts = 0;
+        // The right PIN starts this device over; the shared allowance only refills with time.
+        self.strikes.remove(&source);
         let token = random_hex(24).unwrap_or_default();
         if token.is_empty() {
             return coded("E21");
@@ -626,7 +709,7 @@ pub fn answer(service: &Arc<Service>, request: &Value) -> Value {
         return unavailable();
     };
     match op {
-        "unlock" => return gate.unlock(request["pin"].as_str().unwrap_or("")),
+        "unlock" => return gate.unlock(request["pin"].as_str().unwrap_or(""), request),
         "status" => {
             let access = json!({"local": request["local"] == true, "pin_set": gate.pin_set(),
                 "unlocked": gate.allowed(request), "signed_in": gate.signed_in(request)});
@@ -1214,31 +1297,38 @@ mod tests {
         assert!(pin_matches(&record, "4321") && !pin_matches(&record, "1234"));
         assert!(!record.to_string().contains("4321"));
         let mut gate = Gate::new(Some(record));
+        let phone = json!({"source": "phone@example.com"});
         for _ in 0..MAX_TRIES {
-            assert_eq!(gate.unlock("0000")["error"], "E44");
+            assert_eq!(gate.unlock("0000", &phone)["error"], "E44");
         }
         assert_eq!(
-            gate.unlock("4321")["error"],
+            gate.unlock("4321", &phone)["error"],
             "E45",
             "locked out even with the right PIN"
         );
         // Each lockout is twice as long as the one before.
         let mut gate = Gate::new(Some(pin_record("4321", "salt")));
+        let key = "remote:phone@example.com";
         for round in 0..3u32 {
-            gate.locked_until = None;
-            for _ in 0..MAX_TRIES {
-                gate.unlock("0000");
+            if let Some(s) = gate.strikes.get_mut(key) {
+                s.locked_until = None;
             }
-            let left = gate.locked_until.unwrap() - Instant::now();
+            for _ in 0..MAX_TRIES {
+                gate.unlock("0000", &phone);
+            }
+            let left = gate.strikes[key].locked_until.unwrap() - Instant::now();
             assert!(left > LOCKOUT * (1 << round) - Duration::from_secs(5));
             assert!(left <= LOCKOUT * (1 << round));
         }
-        gate.locked_until = None;
-        assert!(gate.unlock("4321")["ok"] == true);
-        assert_eq!((gate.lockouts, gate.failures), (0, 0));
+        gate.strikes.get_mut(key).unwrap().locked_until = None;
+        assert!(gate.unlock("4321", &phone)["ok"] == true);
+        assert!(!gate.strikes.contains_key(key), "the right PIN starts over");
         assert!(valid_new_pin("123456") && !valid_new_pin("1234"));
         let mut gate = Gate::new(Some(pin_record("4321", "salt")));
-        let token = gate.unlock("4321")["token"].as_str().unwrap().to_string();
+        let token = gate.unlock("4321", &json!({}))["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert!(gate.allowed(&json!({"token": token})));
         assert!(!gate.allowed(&json!({"token": "guess"})));
         assert!(gate.allowed(&json!({"local": true})));
@@ -2049,12 +2139,90 @@ mod tests {
     #[test]
     fn a_second_sign_in_keeps_the_first_device_signed_in() {
         let mut gate = Gate::new(Some(pin_record("4321", "salt")));
-        let phone = gate.unlock("4321")["token"].as_str().unwrap().to_string();
-        let laptop = gate.unlock("4321")["token"].as_str().unwrap().to_string();
+        let phone = gate.unlock("4321", &json!({}))["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let laptop = gate.unlock("4321", &json!({}))["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert_ne!(phone, laptop);
         assert!(gate.signed_in(&json!({"token": phone})));
         assert!(gate.signed_in(&json!({"token": laptop})));
         assert!(!gate.signed_in(&json!({})));
+    }
+    /// A quick PIN record for tests that type many PINs (the real one is slow on purpose).
+    fn quick_pin(pin: &str) -> Value {
+        json!({"format": "neko-pin-v1", "salt": "s", "rounds": 1000, "hash": pin_hash("s", pin, 1000)})
+    }
+    #[test]
+    fn one_device_locked_out_never_locks_out_another_or_the_server() {
+        let mut gate = Gate::new(Some(quick_pin("4321")));
+        let phone = json!({"source": "phone@example.com"});
+        let laptop = json!({"source": "laptop@example.com"});
+        for _ in 0..MAX_TRIES {
+            assert_eq!(gate.unlock("0000", &phone)["error"], "E44");
+        }
+        assert_eq!(gate.unlock("4321", &phone)["error"], "E45");
+        assert_eq!(gate.unlock("4321", &laptop)["ok"], true);
+        assert_eq!(gate.unlock("4321", &json!({"local": true}))["ok"], true);
+        // Whatever the page sends, the server itself has its own entry.
+        let pretend = json!({"source": "local"});
+        assert_eq!(source_of(&pretend), "remote");
+        assert_eq!(source_of(&json!({"local": true, "source": "x"})), "local");
+        assert_eq!(source_of(&json!({"source": "a".repeat(300)})), "remote");
+        // The server itself is still limited on its own.
+        let local = json!({"local": true});
+        for _ in 0..MAX_TRIES {
+            gate.unlock("0000", &local);
+        }
+        assert_eq!(gate.unlock("4321", &local)["error"], "E45");
+        assert_eq!(gate.unlock("4321", &laptop)["ok"], true);
+    }
+    #[test]
+    fn many_devices_guessing_side_by_side_are_still_stopped() {
+        let mut gate = Gate::new(Some(quick_pin("4321")));
+        // Each device stays below its own limit, but together they use up the allowance.
+        let mut tried = 0;
+        let mut device = 0;
+        while gate.unlock("0000", &json!({"source": format!("d{device}")}))["error"] == "E44" {
+            tried += 1;
+            if tried % (MAX_TRIES - 1) == 0 {
+                device += 1;
+            }
+            assert!(tried <= 100, "never stopped");
+        }
+        assert_eq!(tried, SHARED_TRIES as usize);
+        // Now every other device waits, even with the right PIN; the server itself doesn't.
+        assert_eq!(
+            gate.unlock("4321", &json!({"source": "new"}))["error"],
+            "E45"
+        );
+        assert_eq!(gate.unlock("4321", &json!({}))["error"], "E45");
+        assert_eq!(gate.unlock("4321", &json!({"local": true}))["ok"], true);
+        // It refills slowly: one more try two hours later.
+        // (Only where the computer has been up that long: Instant can't go before boot.)
+        if let Some(earlier) = Instant::now().checked_sub(SHARED_REFILL) {
+            gate.shared.refilled = earlier;
+            assert_eq!(
+                gate.unlock("0000", &json!({"source": "new"}))["error"],
+                "E44"
+            );
+            assert_eq!(
+                gate.unlock("4321", &json!({"source": "new"}))["error"],
+                "E45"
+            );
+        }
+        // So many devices that the list is full: the rest share one entry.
+        let mut gate = Gate::new(Some(quick_pin("4321")));
+        for n in 0..MAX_SOURCES + 10 {
+            gate.unlock("0000", &json!({"source": format!("d{n}")}));
+            gate.shared.left = SHARED_TRIES;
+        }
+        assert!(gate.strikes.len() <= MAX_SOURCES + 2);
+        assert!(gate.strikes["remote:others"].locked());
+        assert_eq!(gate.unlock("4321", &json!({"local": true}))["ok"], true);
     }
     #[test]
     fn a_curve_needs_a_temperature_the_board_has() {

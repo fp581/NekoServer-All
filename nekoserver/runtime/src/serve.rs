@@ -94,8 +94,9 @@ fn asset_files() -> Vec<&'static str> {
     files
 }
 
-fn reply(stream: &mut TcpStream, code: u16, body: &[u8], mime: &str, head: bool) {
-    let reason = match code {
+/// The standard reason phrase for each status the server answers with.
+fn reason(code: u16) -> &'static str {
+    match code {
         200 => "OK",
         400 => "Bad Request",
         403 => "Forbidden",
@@ -103,9 +104,13 @@ fn reply(stream: &mut TcpStream, code: u16, body: &[u8], mime: &str, head: bool)
         405 => "Method Not Allowed",
         413 => "Payload Too Large",
         429 => "Too Many Requests",
+        409 => "Conflict",
         431 => "Request Header Fields Too Large",
         _ => "Service Unavailable",
-    };
+    }
+}
+fn reply(stream: &mut TcpStream, code: u16, body: &[u8], mime: &str, head: bool) {
+    let reason = reason(code);
     // Pages are checked with the server each time (no-cache); readings never stored.
     let cache = if mime.starts_with("application/json") {
         "no-store"
@@ -174,8 +179,8 @@ fn ask_control(socket: &Path, request: &Value) -> std::result::Result<Value, &'s
 
 /// The request the control service gets: only the fields it knows, plus who is asking.
 /// `local` is decided here, never taken from the page.
-pub fn control_request(op: &str, body: &Value, local: bool, token: Option<&str>) -> Value {
-    let mut request = json!({"op": op, "local": local});
+pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -> Value {
+    let mut request = json!({"op": op, "local": who.local});
     for key in [
         "pin",
         "output",
@@ -196,7 +201,42 @@ pub fn control_request(op: &str, body: &Value, local: bool, token: Option<&str>)
     if let Some(t) = token {
         request["token"] = json!(t);
     }
+    if let Some(source) = &who.source {
+        request["source"] = json!(source);
+    }
     request
+}
+
+/// Who is asking, as this server determined it from the connection and the headers
+/// Tailscale Serve adds (it removes any the browser sent), never from the page.
+#[derive(Default)]
+pub struct Who {
+    /// The server itself.
+    pub local: bool,
+    /// Another device: its Tailscale login, or else its tailnet address. Wrong PINs are
+    /// counted per source, so one device can't lock out the others.
+    pub source: Option<String>,
+}
+fn printable(v: &[u8]) -> Option<&str> {
+    std::str::from_utf8(v)
+        .ok()
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && v.len() <= 200 && v.bytes().all(|b| b.is_ascii_graphic()))
+}
+/// The source of a forwarded request: the login Tailscale Serve names, or else the last
+/// X-Forwarded-For address (the one the proxy itself added).
+fn source_of(login: &[&[u8]], forwarded_for: &[&[u8]]) -> Option<String> {
+    if let [one] = login {
+        if let Some(login) = printable(one) {
+            return Some(format!("login:{login}"));
+        }
+    }
+    let last = forwarded_for.last()?;
+    let address = std::str::from_utf8(last).ok()?.rsplit(',').next()?.trim();
+    address
+        .parse::<std::net::IpAddr>()
+        .ok()
+        .map(|ip| format!("ip:{ip}"))
 }
 
 struct Server {
@@ -395,6 +435,12 @@ fn handle(mut stream: TcpStream, server: &Server) {
         .any(|h| !values(h).is_empty());
         let local = !forwarded
             && (hosts[0].starts_with(b"127.0.0.1:") || hosts[0].starts_with(b"localhost:"));
+        let who = Who {
+            local,
+            source: (!local)
+                .then(|| source_of(&values("tailscale-user-login"), &values("x-forwarded-for")))
+                .flatten(),
+        };
         let token = values("x-neko-token")
             .first()
             .and_then(|v| std::str::from_utf8(v).ok())
@@ -412,7 +458,7 @@ fn handle(mut stream: TcpStream, server: &Server) {
             path,
             post,
             &body[..body.len().min(length)],
-            local,
+            &who,
             token.as_deref(),
             length,
         );
@@ -474,7 +520,7 @@ fn control(
     path: &str,
     post: bool,
     body: &[u8],
-    local: bool,
+    who: &Who,
     token: Option<&str>,
     length: usize,
 ) -> std::result::Result<(u16, Vec<u8>), &'static str> {
@@ -498,7 +544,7 @@ fn control(
             .ok_or("E42")?,
         _ => return Err("E42"),
     };
-    let answer = ask_control(&server.control, &control_request(op, &body, local, token))?;
+    let answer = ask_control(&server.control, &control_request(op, &body, who, token))?;
     let status = match answer["error"].as_str() {
         Some(code) => status_of(code),
         None => 200,
@@ -642,11 +688,39 @@ mod tests {
     #[test]
     fn app_controls_pass_on_only_what_they_need() {
         let body = json!({"app": "immich", "pid": 5, "start": 6, "local": true, "signal": 9, "path": "/system.slice"});
-        let request = control_request("app_restart", &body, false, Some("t"));
+        let request = control_request("app_restart", &body, &Who::default(), Some("t"));
         assert_eq!(
             request,
             json!({"op": "app_restart", "local": false, "app": "immich", "pid": 5, "start": 6, "token": "t"})
         );
+    }
+    #[test]
+    fn the_source_of_a_forwarded_request_is_what_tailscale_added() {
+        let ff: &[&[u8]] = &[b"9.9.9.9, 100.64.0.7"];
+        assert_eq!(source_of(&[], ff).as_deref(), Some("ip:100.64.0.7"));
+        assert_eq!(
+            source_of(&[b"bo@example.com"], ff).as_deref(),
+            Some("login:bo@example.com")
+        );
+        // Two logins, or one that isn't plain text, don't count as one.
+        assert_eq!(
+            source_of(&[b"a@x", b"b@x"], ff).as_deref(),
+            Some("ip:100.64.0.7")
+        );
+        assert_eq!(source_of(&[b"a b"], &[]), None);
+        assert_eq!(source_of(&[], &[b"not an address"]), None);
+        assert_eq!(source_of(&[], &[]), None);
+    }
+    #[test]
+    fn every_status_has_its_own_reason_phrase() {
+        for (_, status, _) in ERRORS {
+            let phrase = reason(*status);
+            assert!(
+                *status == 503 || phrase != "Service Unavailable",
+                "{status}"
+            );
+        }
+        assert_eq!(reason(409), "Conflict");
     }
     #[test]
     fn errors_are_short_coded_sentences() {
@@ -809,12 +883,34 @@ mod tests {
             "neko.tail1234.ts.net:8448",
             remote,
             "X-Forwarded-For: 100.64.0.2\r\nX-Neko-Token: abc\r\n",
-            r#"{"device":"d","local":true}"#,
+            r#"{"device":"d","local":true,"source":"local"}"#,
         );
         let request = seen(&reply);
         assert_eq!(
             (request["local"].as_bool(), request["token"].as_str()),
             (Some(false), Some("abc")),
+            "{reply}"
+        );
+        // Wrong PINs are counted per device: the server names it, never the page.
+        assert_eq!(request["source"], "ip:100.64.0.2", "{reply}");
+        let reply = post(
+            "/api/control/unlock",
+            "neko.tail1234.ts.net:8448",
+            remote,
+            "X-Forwarded-For: 1.2.3.4, 100.64.0.9\r\nTailscale-User-Login: amy@example.com\r\n",
+            r#"{"pin":"1234","source":"local"}"#,
+        );
+        assert_eq!(seen(&reply)["source"], "login:amy@example.com", "{reply}");
+        let reply = post(
+            "/api/control/unlock",
+            &local,
+            &here,
+            "",
+            r#"{"pin":"1234","source":"phone"}"#,
+        );
+        assert_eq!(
+            (seen(&reply)["local"].as_bool(), seen(&reply).get("source")),
+            (Some(true), None),
             "{reply}"
         );
         // A loopback Host forwarded by Tailscale is still not the server itself.
