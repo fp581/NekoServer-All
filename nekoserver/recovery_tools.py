@@ -22,6 +22,7 @@ import neko_common
 from neko_common import VERSION, systemd_arg, safe_path, mount_path, atomic_json, atomic_write, local_opener, DOCKER_STORAGE_DROPIN
 from installer import validate_config
 from modules import docker as docker_module
+import native_runtime
 
 # The settings file, next to the installer and in its preserved copy on the SSD.
 CONFIG_NAME='config.json'
@@ -97,7 +98,16 @@ def lock(config,changes_apps=True):
     apps checks for an unfinished update again once the lock is held, right before it
     begins. Docker re-attachment and backup repair (changes_apps=False) stay allowed:
     they may be what lets a stuck update finish."""
-    path=safe_path(Path(config['data_mount'])/'installer/recovery.lock');path.parent.mkdir(parents=True,exist_ok=True)
+    # The SSD folder comes from the settings file, so it is checked first (a plain absolute
+    # path, no symlinks, not a system folder) and only the checked path is looked at.
+    mount=neko_common.plain_folder(config['data_mount'])
+    path=safe_path(mount/'installer/recovery.lock')
+    # The installer folder is made only on the mounted SSD: with the SSD missing it would
+    # be made on the system disk underneath (a lock the backups never see, and a folder
+    # that later stops the SSD's own mount there).
+    if not path.parent.is_dir() and not os.path.ismount(mount):
+        raise RuntimeError(f'The data SSD is not mounted at {mount}; connect it (or restart) and try again')
+    path.parent.mkdir(parents=True,exist_ok=True)
     with path.open('a') as stream:
         os.fchmod(stream.fileno(),0o600)
         wait_for(stream,sys.stdin.isatty())
@@ -170,8 +180,71 @@ def docker_new_enough(found,saved):
     if have is None or want is None:return found==saved or found.startswith('Docker version '+saved+',')
     return have>=want
 
+def tool_path(config,name=RECOVER_TOOL):
+    """This release's recovery tool as the person types it: the copy kept on the SSD."""
+    return f"{config.get('data_mount','/srv/nekoserver')}/installer/releases/v{VERSION}/{name}"
+
+def runtime_problem(bundle,runs=None):
+    """Why the NekoServer program kept with this release on the SSD cannot be Docker's
+    start guard on this Linux, or None. It was built on the PC that set the server up: one
+    built on a newer Linux (Arch, Ubuntu 24.04, Fedora) may not start on an older one
+    (Debian 12), and Docker would then never start."""
+    binary=Path(bundle)/'runtime/bin'/native_runtime.NAME
+    if (runs or native_runtime.runs_here)(binary):return None
+    return ('The NekoServer program kept on the SSD ('+str(binary)+') was built on the earlier Linux and does not start '
+            'on this one, so Docker could not be started with it. Run  sudo bash install.sh  with your settings first: it '
+            'builds the program for this Linux and puts it in place of the kept copy (it stops at the Docker step, '
+            'which is expected). Then run reattach again. Nothing was changed.')
+
+# Docker's two systemd units: the service, and the socket that would start it again on demand.
+DOCKER_UNITS=('docker.service','docker.socket')
+
+def install_docker(config,apply=False,family=None):
+    """Docker's packages for this Linux, installed the way setup installs them (Docker's
+    own repository on Debian, Ubuntu, Fedora and RHEL; the system's on Arch and openSUSE),
+    and left stopped: a fresh Docker that starts would make its own empty store, and the
+    reattach step starts Docker itself, from the SSD."""
+    import host
+    family=family or host.current()
+    if not apply:
+        return {'status':'needs_setup','reason':f'Preview: installs Docker and its Compose plugin for {family.label} and keeps them '
+                'stopped. Run again with --apply to install them'}
+    require_root()
+    installed=family.install(['docker','docker-compose'])
+    still=[unit for unit in DOCKER_UNITS
+           if subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False).returncode==0]
+    if still:
+        raise RuntimeError('Docker is running ('+', '.join(still)+'). Stop it before reattaching:  sudo systemctl stop '
+                           +' '.join(DOCKER_UNITS))
+    return {'status':'needs_setup','installed':installed,
+            'reason':'Docker is installed and stopped. Next:  sudo python3 '+tool_path(config)+' reattach'}
+
+def docker_installed(config):
+    """The Docker client and daemon programs are there."""
+    if not (shutil.which('docker') and shutil.which('dockerd')):
+        raise RuntimeError('Docker is not installed on this Linux yet. Install it (kept stopped) with  sudo python3 '
+                           +tool_path(config)+' install-docker --apply  and run this again')
+
+def docker_ready(config,wanted):
+    """Docker is installed, the version that last ran the store (`wanted`) or newer, and
+    stopped: reattach starts it itself, from the SSD."""
+    docker_installed(config)
+    for argv in (DOCKER+['--version'],['dockerd','--version']):
+        installed=command(argv).strip()
+        if not docker_new_enough(installed,wanted):
+            raise RuntimeError(f'Install Docker {wanted} or newer (client and daemon) before reattachment: the apps last '
+                               f'ran with Docker {wanted}, and an older one may not read their store. This PC has: {installed}. '
+                               'A Docker from the system\'s own packages (docker.io on Debian) is often older: remove it '
+                               '(sudo apt remove docker.io) and install Docker\'s own with  sudo python3 '
+                               +tool_path(config)+' install-docker --apply')
+    for unit in DOCKER_UNITS:
+        result=subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False)
+        if result.returncode==0:raise RuntimeError('Stop Docker service and socket before reattachment:  sudo systemctl stop '+' '.join(DOCKER_UNITS))
+
 def reattach(config,bundle,apply=False,confirm=''):
     mounts(config);verify_bundle(bundle,config)
+    problem=runtime_problem(bundle)
+    if problem:raise RuntimeError(problem)
     saved=json.loads(safe_path(Path(config['data_mount'])/'installer/host-checkpoint.json').read_text())
     if saved.get('format')!='neko-host-checkpoint-v1' or saved.get('architecture')!=platform.machine() or saved.get('driver')!='overlay2':raise RuntimeError('Host checkpoint is incompatible')
     for key in ('storage','data_mount','media_mount'):
@@ -180,14 +253,7 @@ def reattach(config,bundle,apply=False,confirm=''):
     target=Path(config['data_mount'])/'docker-engine'
     if saved.get('docker_root')!=str(target) or not target.is_dir() or not any(target.iterdir()):raise RuntimeError('Expected persistent Docker store is missing or empty')
     if not host_supported():import host;raise RuntimeError('Automatic reattachment supports x86_64 '+', '.join(f.label for f in host.FAMILIES)+'; Bazzite migration remains unvalidated')
-    for argv in (DOCKER+['--version'],['dockerd','--version']):
-        installed=command(argv).strip()
-        if not docker_new_enough(installed,saved['docker_version']):
-            raise RuntimeError(f'Install Docker {saved["docker_version"]} or newer (client and daemon) before reattachment: the apps last '
-                               f'ran with Docker {saved["docker_version"]}, and an older one may not read their store. This PC has: {installed}')
-    for unit in ('docker.service','docker.socket'):
-        result=subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False)
-        if result.returncode==0:raise RuntimeError('Stop Docker service and socket before reattachment')
+    docker_ready(config,saved['docker_version'])
     daemon=safe_path(Path('/etc/docker/daemon.json'))
     desired=docker_module.prepare_daemon_config(daemon,target)
     default=safe_path(Path('/var/lib/docker'))
@@ -204,6 +270,9 @@ def reattach(config,bundle,apply=False,confirm=''):
         docker_module.install_storage_guard(config)
         atomic_write(daemon,json.dumps(desired,indent=2)+'\n',0o644)
         try:
+            # A start tried by hand earlier (and refused) leaves systemd's "started too
+            # often" count behind, which would refuse this start too.
+            subprocess.run(['systemctl','reset-failed',*DOCKER_UNITS],capture_output=True,timeout=30,check=False)
             command(['systemctl','enable','--now','docker'],90)
             actual=checkpoint(config)
             if not docker_new_enough(actual['docker_version'],saved['docker_version']):raise RuntimeError('Running Docker is older than the checkpoint')
@@ -211,7 +280,7 @@ def reattach(config,bundle,apply=False,confirm=''):
             checkpoint(config,apply=True)
         except BaseException:
             # A failed adoption must not keep a mismatched daemon running.
-            stopped=subprocess.run(['systemctl','stop','docker.service','docker.socket'],capture_output=True,timeout=30,check=False)
+            stopped=subprocess.run(['systemctl','stop',*DOCKER_UNITS],capture_output=True,timeout=30,check=False)
             if stopped.returncode:raise RuntimeError('Post-start verification failed and Docker could not be stopped; inspect service/socket locally') from None
             raise
     return {'status':'needs_setup','reason':'Docker store reattached; rerun deployment profiles and verify applications/reboots before acceptance'}
@@ -362,6 +431,28 @@ def resume(config):
         mounts(config)
         return {'status':'pass','reason':'Immich services running','restarted':restart_owed(config)}
 
+@contextmanager
+def restarted_after(config,base,resume):
+    """Whatever was running runs again afterwards, also when stopping failed half-way. If
+    that fails too, the snapshot's own reason stays the one reported, with this beside it."""
+    failed=False
+    try:
+        yield
+    except BaseException:
+        failed=True
+        raise
+    finally:
+        if resume:restart_again(config,base,failed)
+
+def restart_again(config,base,failed):
+    """Immich started again after a snapshot. When the snapshot itself failed, a failed
+    restart is said (with how to retry it) instead of hiding why the snapshot failed."""
+    try:
+        restart_owed(config,base)
+    except Exception as exc:
+        if not failed:raise
+        print(f'Immich could not be started again ({exc}); start it with:  sudo python3 recover.py resume',file=sys.stderr)
+
 def snapshot(config,destination,apply=False,config_path=None):
     if not apply:
         plan=snapshot_plan(config,destination);version,files=plan[4],plan[6]
@@ -373,7 +464,7 @@ def snapshot(config,destination,apply=False,config_path=None):
         base,model,upload,database,version,destination,files,resume=snapshot_plan(config,destination)
         destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700);destination.mkdir(mode=0o700)
         atomic_json(destination/'.incomplete',{'reason':'Snapshot is not usable until manifest publication','source_project':'neko-immich','resume_services':resume})
-        try:
+        with restarted_after(config,base,resume):
             if resume:
                 owe_restart(config,config_path or Path(__file__).with_name(CONFIG_NAME),resume)
                 command(base+['stop','-t','60',*resume],180)
@@ -398,9 +489,6 @@ def snapshot(config,destination,apply=False,config_path=None):
             metadata={'format':FORMAT,'created_at':dt.datetime.now(dt.timezone.utc).isoformat(),'immich_version':version,'source_upload':str(upload),'source_database':str(database),'database_bytes':database_bytes,'sha256':entries,'empty_directories':[str(p.relative_to(photo)) for p in sorted(photo.rglob('*')) if p.is_dir()]}
             atomic_json(destination/'snapshot.json',metadata)
             (destination/'.incomplete').unlink()
-        finally:
-            # Also when stopping failed half-way: whatever was running runs again.
-            if resume:restart_owed(config,base)
     return {'status':'pass','reason':'Matched full-upload/database snapshot created; restore acceptance still required','snapshot':str(destination),'files':len(files)}
 
 def verify_snapshot(path):

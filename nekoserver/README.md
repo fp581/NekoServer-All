@@ -1,4 +1,4 @@
-# NekoServer v0.39.4
+# NekoServer v0.39.5
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -47,9 +47,11 @@ Also included: shared folders on your home network (Samba) and, if you want them
 | **HDD** | Movies, shows, Nextcloud files, backups | Large drive. |
 | **USB drive** | Weekly copy of your photos and Nextcloud files | Can be exFAT or ext4. Keep it plugged in. |
 
+The SSD and HDD can be ext4, XFS or Btrfs (a Btrfs pool over several drives counts as one), also inside an LVM volume, a software RAID array or an encrypted (LUKS) drive. An encrypted drive must be unlocked by Linux at every start (listed in `/etc/crypttab`), because setup mounts it then.
+
 > ⚠️ **Formatting erases everything on a drive.** NekoServer will never do it for you. Format the SSD, HDD and USB drive yourself (for example with GNOME Disks), and double-check which drive you are formatting.
 
-The TV extras (Steam Big Picture on a TV) come from your Linux's own repositories on Arch/Nyarch, Debian, Ubuntu, Fedora and openSUSE Tumbleweed; RHEL (and Rocky/AlmaLinux) and openSUSE Leap have no Steam package, so the step skips itself there. Steam lives in a part of the repositories that is off by default (Arch's **multilib**, Debian's contrib/non-free with 32-bit packages, Fedora's RPM Fusion Steam repository, openSUSE's non-OSS): setup never switches those on itself; it tells you the exact command and you run setup again. See [TV-SETUP.md](TV-SETUP.md).
+The TV extras (Steam Big Picture on a TV) come from your Linux's own repositories on Arch/Nyarch, Debian, Ubuntu, Fedora and openSUSE Tumbleweed; RHEL (and Rocky/AlmaLinux) and openSUSE Leap have no Steam package, so the step skips itself there. Steam lives in a part of the repositories that is off by default (Arch's **multilib**, Debian's contrib/non-free with 32-bit packages, Fedora's RPM Fusion Steam repository, openSUSE's non-OSS): setup never switches those on itself; it tells you the exact command and you run setup again. On Debian and Ubuntu, Steam's installer asks you to accept Valve's licence: since you chose the TV step, setup answers "I agree" for you (without an answer the install fails). See [TV-SETUP.md](TV-SETUP.md).
 
 ---
 
@@ -72,6 +74,8 @@ That's it: one command does everything. First it gets the system ready, which wo
 - **Debian / Ubuntu:** it only **refreshes the package lists** (`apt-get update`) and installs just what NekoServer needs. Updating the rest of your system stays your own routine. If an earlier update is waiting for a restart, it asks you to restart first. Docker comes from Docker's own repository and Tailscale from Tailscale's. If Debian's or Ubuntu's own Docker (`docker.io`) is installed, it stops and asks you to remove it first, because the two must not be mixed.
 
 Then it **installs the packages the apps need** (Docker, Tailscale, Caddy, Samba and a few tools). They are installed switched off; each setup step switches its own service on once its drive and settings are ready. Setup needs 5 GB free on the system disk for this, and it stops before changing anything if there is less.
+
+While it installs, a package source that does not answer is tried again a little later (also when `apt-get update` only warns about it), and when another program is already installing packages (automatic updates, a software centre) setup says so and waits for it, up to 10 minutes. A package manager that runs out of time is asked to stop and waited for, never killed, so it never leaves its lock or a half-made change behind; a pacman lock that no program has open (left by one that was cut off) is removed. A damaged repository key (Docker's or Tailscale's) is downloaded again. If the PC's clock is wrong, downloads and package checks fail ("not yet valid", "expired"); setup then says so and how to fix it: `sudo timedatectl set-ntp true`. The list of what setup found on this computer notes it too when the network does not keep the clock right.
 
 Then it **builds NekoServer's own background program** (the Rust runtime that runs the backups, the dashboard and the checks) on your PC, the first time and after each update: it installs Rust from your Linux's own packages and compiles the program, which takes a few minutes and needs the internet. Nothing of it is downloaded ready-made.
 
@@ -113,7 +117,7 @@ It is one installation, which you can follow and answer in two places at the sam
 
 **2. The setup window** (on a PC with a desktop). A few seconds after you start `sudo bash install.sh`, a small window opens in your web browser by itself. The terminal says so and shows the window's address, for example `http://127.0.0.1:40123/t/AbC.../`.
 
-- **Before setup starts** it explains the optional extras (a TV, phone alerts, outage alerts, Nextcloud) and has a switch for each. Leave on what you want, then press **Start setup** (the same as typing `yes` at "Ready to start?" in the terminal). From then on the choices are fixed; to change one later, edit `my-config.json` and run setup again.
+- **Before setup starts** it explains the optional extras (a TV, phone alerts, outage alerts, Nextcloud) and has a switch for each. Switch off what you don't want (setup asks about the TV and the alerts you leave alone when it gets to them; Nextcloud is installed unless you switch it off), then press **Start setup** (the same as typing `yes` at "Ready to start?" in the terminal). From then on the choices are fixed; to change one later, edit `my-config.json` and run setup again.
 - **While setup runs** it shows the step under way, what that step installs and why, and every question setup asks, with buttons and boxes to answer it. Answer it there or in the terminal: whichever comes first counts.
 - **"Answer this step in the terminal"**: a few steps run a program of their own (connecting the media apps, music setup, the shared-folder password) whose questions can only be answered in the terminal. The window says so while they run; switch to the terminal for them.
 - **Closed the window, or it did not open?** Copy the address the terminal showed into a browser **on this PC** and it opens again. It works only on this PC (it is not reachable from another computer or a phone) and only while setup runs. Without a desktop, use the terminal alone; nothing is missing.
@@ -122,7 +126,7 @@ More detail: [GUIDED-SETUP.md](GUIDED-SETUP.md#the-setup-window).
 
 **Stopped, or something not finished?** Run `sudo bash install.sh` again. It keeps everything already done and continues with the rest. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again.
 
-Your settings are saved in `my-config.json` next to the installer. The wizard creates it the first time, with your timezone and user filled in, so you don't need to edit it. See [Optional settings](#optional-settings).
+Your settings are saved in `my-config.json` next to the installer. The wizard creates it the first time, with your user filled in (the timezone is this PC's own, `"auto"`), so you don't need to edit it. See [Optional settings](#optional-settings).
 
 **Updating to a newer release.** In the `NekoServer-All/nekoserver` folder:
 
@@ -131,7 +135,7 @@ git pull
 sudo bash install.sh
 ```
 
-Your `my-config.json` stays where it is (git does not touch it); setup updates what changed, builds the runtime for the new version and keeps everything else. Read the new version's *Upgrade notes* in [CHANGELOG.md](../CHANGELOG.md) first.
+Your `my-config.json` stays where it is (git does not touch it); setup updates what changed, builds the runtime for the new version and keeps everything else. Steps the new release added are added to your settings' profiles (the log names them); a step you took out yourself stays out. Read the new version's *Upgrade notes* in [CHANGELOG.md](../CHANGELOG.md) first.
 
 Coming from a release before 0.39.2, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in. The old folder can then be deleted.
 
@@ -245,10 +249,17 @@ It removes NekoServer from this PC: what you choose, after two confirmations, an
 
 What each choice means:
 
-- **NekoServer itself always goes:** its services and timers, programs, settings, the Samba shares and account it made, the Docker and Samba storage guards, the pages it served on your tailnet, its group, the desktop shortcuts.
+- **NekoServer itself always goes:** its services and timers, programs, settings, the Samba shares and account it made, the Samba storage guard (and Docker's, when its data goes too: see below), the pages it served on your tailnet, its group, the desktop shortcuts.
 - **Everything else is a checklist** you switch on or off: the apps' containers and networks; the apps' data on the SSD (databases, settings, passwords, downloads, NekoServer's own files; Docker's data-root setting is put back); your photos and videos; your movies, shows and music; your Nextcloud files; the backups on the HDD and the USB drive; the drive mounts (the lines NekoServer wrote in `/etc/fstab`, the empty mount folders).
 - **Then the plan**, every path with its size, and the first confirmation (`yes`). **Then the phrase** that names what goes, typed exactly, such as `remove NekoServer and delete my photos, backups`. Nothing listed can be brought back afterwards.
-- **What stays:** the drives and whatever you kept on them, this folder (delete it yourself), and the packages NekoServer installed (Docker, Samba, Caddy, Tailscale, Rust, OpenRGB, Steam if the TV step added it): remove any you do not want with your package manager (the package repositories NekoServer added for Docker and Tailscale stay with them). Samba's own example `smb.conf`, set aside by setup, is put back. This PC stays logged in to Tailscale.
+- **What stays:** the drives and whatever you kept on them, this folder (delete it yourself), and the packages NekoServer installed (Docker, Samba, Caddy, Tailscale, Rust, OpenRGB, Steam if the TV step added it): remove any you do not want with your package manager (the package repositories NekoServer added for Docker and Tailscale stay with them). Samba's own example `smb.conf`, set aside by setup, is put back. A package installation setup left unfinished is finished first, as setup would (or, when that is not possible, the protection it kept is lifted: the masks on the new services and NekoServer's `/usr/sbin/policy-rc.d`), so no service stays unable to start. This PC stays logged in to Tailscale.
+
+Good to know:
+
+- **It waits** while a monthly update is running or did not finish, and while setup is running: it says what to do and removes nothing.
+- **If it stops part-way** (a service or a container that won't stop), nothing has been deleted, and NekoServer's services and timers are switched back on as they were; fix what it names and run it again.
+- **Docker's start guard stays** while Docker keeps its data on the SSD (you kept the SSD data and the mounts), so Docker never starts an empty store on the system disk while the SSD is missing. It goes with the SSD data or the mounts.
+- **`/etc/fstab`** is replaced in one step, and the file as it was is kept beside it (`fstab.before-nekoserver-uninstall-<date-time>`); so is Docker's `daemon.json`. A drive that is still in use is not unmounted: it says `could not unmount (busy): sudo umount …`, and at the end it lists everything it could not remove.
 
 `bash uninstall.sh --dry-run` only shows what each choice would remove.
 

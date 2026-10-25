@@ -23,6 +23,7 @@ from neko_common import VERSION, atomic_json, find_program, settings_path
 
 ROOT = Path(__file__).resolve().parent
 FILES = ROOT / 'setup-gui'
+INDEX = 'index.html'
 PLAIN = 'text/plain'
 JSON = 'application/json'
 HTML = 'text/html; charset=utf-8'
@@ -30,6 +31,9 @@ STATIC = {'setup.css': ('setup.css', 'text/css; charset=utf-8'),
           'setup.js': ('setup.js', 'text/javascript; charset=utf-8'),
           'logo.svg': ('../dashboard/logo.svg', 'image/svg+xml')}
 NOT_FOUND = (404, b'Not found', PLAIN)
+SPENT = (403, (b'This setup window was already opened. Use that window (or the same browser); to open it '
+               b'somewhere else, stop setup with Ctrl+C and run  sudo bash install.sh  again.'), PLAIN)
+COOKIE = 'neko_setup'
 # The browsers that open a page as a small window of its own (Chromium's --app), in the
 # order tried; any other browser gets a normal window.
 APP_BROWSERS = ('chromium', 'chromium-browser', 'google-chrome-stable', 'google-chrome', 'brave', 'brave-browser',
@@ -53,18 +57,42 @@ class Window:
         self.plan = [name for name in plan if name in self.titles]
         self.version = version
         self.token = secrets.token_urlsafe(24)
+        # The address (with the token) is in the browser's command line, which any account
+        # on this PC can read. So it works once: the first page load gets this session's
+        # cookie, and every request after it needs that cookie (a reload in the same
+        # browser has it). Another account that reads the address later gets nothing.
+        self.session = secrets.token_urlsafe(32)
+        self.opened = False
         self.started = threading.Event()     # Start was pressed in the window
         self.frozen = False                  # setup has started: the choices are fixed
         self.delivered = threading.Event()   # the page has shown the finishing screen
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), self._handler())
         self.server.daemon_threads = True
+        # Nothing about one request (a window closed mid-reply, a broken one) is printed:
+        # the setup terminal is asking its own questions meanwhile.
+        self.server.handle_error = lambda request, address: None
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True, name='setup-window')
         self.thread.start()
 
     @property
     def url(self):
         return 'http://127.0.0.1:' + str(self.server.server_address[1]) + '/t/' + self.token + '/'
+
+    def admit(self, route, cookie):
+        """(allowed, new session cookie to send or None) for a request with this cookie
+        header. The page itself, the first time, is let in and given the cookie."""
+        sent = {}
+        for part in (cookie or '').split(';'):
+            name, _, value = part.strip().partition('=')
+            sent[name] = value
+        if secrets.compare_digest(sent.get(COOKIE, ''), self.session):
+            return True, None
+        with self.lock:
+            if route in ('', INDEX) and not self.opened:
+                self.opened = True
+                return True, self.session
+        return False, None
 
     def stop(self):
         self.server.shutdown()
@@ -117,7 +145,8 @@ class Window:
                 'current': current['id'] if current else None,
                 'done': sum(1 for s in steps if s['status'] in SETTLED), 'total': len(steps),
                 'question': question, 'terminal': setup_progress.terminal_handoff(),
-                'finish': finished['lines'] if finished else []}
+                'finish': finished['lines'] if finished else [],
+                'complete': bool(finished and finished.get('complete') is True)}
 
     def freeze(self):
         """Setup has started (in the terminal or the window): from now on the choices
@@ -164,8 +193,8 @@ class Window:
 
     def get(self, route):
         """(status, body, content type) for a GET inside the token's path."""
-        if route in ('', 'index.html'):
-            return 200, (FILES / 'index.html').read_bytes(), HTML
+        if route in ('', INDEX):
+            return 200, (FILES / INDEX).read_bytes(), HTML
         if route.startswith('static/') and route[7:] in STATIC:
             name, kind = STATIC[route[7:]]
             return 200, (FILES / name).read_bytes(), kind
@@ -208,13 +237,33 @@ class Window:
 
             def route(self):
                 prefix = '/t/' + window.token + '/'
+                port = str(window.server.server_address[1])
+                # Only this PC's own address: a web page elsewhere can't reach it by a
+                # name it points at 127.0.0.1 (DNS rebinding).
+                if self.headers.get('Host') not in ('127.0.0.1:' + port, 'localhost:' + port):
+                    return None
                 if not self.path.startswith(prefix):
                     return None
                 return self.path[len(prefix):].split('?', 1)[0]
 
+            def handle_one_request(self):
+                # A window closed in the middle of a reply is not an error to print on
+                # the setup terminal (in the middle of a question, say).
+                try:
+                    super().handle_one_request()
+                except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                    self.close_connection = True
+
+            def admitted(self, route):
+                allowed, given = window.admit(route, self.headers.get('Cookie'))
+                self.given = given
+                return allowed
+
             def reply(self, answer):
                 code, body, kind = answer
                 self.send_response(code)
+                if getattr(self, 'given', None):
+                    self.send_header('Set-Cookie', f'{COOKIE}={self.given}; Path=/t/{window.token}/; HttpOnly; SameSite=Strict')
                 self.send_header('Content-Type', kind)
                 self.send_header('Content-Length', str(len(body)))
                 self.send_header('Cache-Control', 'no-store')
@@ -225,13 +274,22 @@ class Window:
 
             def do_GET(self):
                 route = self.route()
-                self.reply(NOT_FOUND if route is None else window.get(route))
+                if route is None:
+                    return self.reply(NOT_FOUND)
+                self.reply(window.get(route) if self.admitted(route) else SPENT)
 
             def do_POST(self):
                 route = self.route()
                 if route is None:
                     return self.reply(NOT_FOUND)
-                length = int(self.headers.get('Content-Length') or 0)
+                if not self.admitted(route):
+                    return self.reply(SPENT)
+                try:
+                    length = int(self.headers.get('Content-Length') or 0)
+                except ValueError:
+                    return self.reply((400, b'Bad length', PLAIN))
+                if length < 0:
+                    return self.reply((400, b'Bad length', PLAIN))
                 if length > LARGEST_BODY:
                     return self.reply((413, b'Too large', PLAIN))
                 try:

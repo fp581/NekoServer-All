@@ -6,11 +6,18 @@ Does not mount remote shares, add trackers, or handle secrets.
 """
 import argparse
 import json
+import re
 import urllib.parse
 from pathlib import Path
-from neko_common import safe_path, atomic_json
+from neko_common import safe_path, atomic_json, checked_settings, default_settings
 
 KINDS = ('movies', 'tv', 'music')
+# What the folder to give holds, per category: its folders are copied into the library as
+# they are, each one becoming a film, a show or an artist there.
+HOLDS = {'movies': 'your films (one folder per film)', 'tv': 'your shows (one folder per show)',
+         'music': 'your artists (one folder per artist)'}
+VIDEO = ('.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.ts', '.webm')
+SEASON = re.compile(r'(season|series|staffel|saison|temporada)[ ._-]*\d+|s\d{1,2}', re.IGNORECASE)
 
 def valid_local_path(value):
     p = Path(value).expanduser()
@@ -83,6 +90,27 @@ def add_sources(sources, reader):
             print('Added (configuration only).')
 
 
+def level_warning(folder, category):
+    """A warning when the folder looks like one level too deep: seasons at its top (a
+    single show's folder), or video files lying loose in it. Its folders become the shows,
+    films and artists of the library, so "Season 1" would become a show. None when it
+    looks right, or can't be read now (a drive not plugged in yet)."""
+    try:
+        names = [entry.name for entry in Path(folder).iterdir()]
+    except OSError:
+        return None
+    seasons = [n for n in names if SEASON.fullmatch(n.strip())]
+    loose = [n for n in names if n.lower().endswith(VIDEO)] if category in ('tv', 'movies') else []
+    if seasons:
+        return ('This folder holds seasons (' + ', '.join(sorted(seasons)[:3]) + '): it looks like one show. '
+                'Give the folder that contains your shows instead (the one above it), or each season would '
+                'become a show of its own.')
+    if loose:
+        return ('This folder holds video files directly (' + ', '.join(sorted(loose)[:3]) + '). The library expects '
+                + HOLDS.get(category, 'one folder per item') + '; loose files may not be recognised.')
+    return None
+
+
 def one_source(reader):
     """One source typed in, checked; None for an unusable name (asked again)."""
     def ask(prompt):
@@ -94,13 +122,20 @@ def one_source(reader):
         print('Invalid name; try again')
         return None
     field = 'path' if kind == 'local' else 'uri'
+    where = 'Folder that contains ' + HOLDS.get(category, 'your media') + ', as an absolute path'
     candidate = {'category': category, 'type': kind, 'name': label,
-                 field: ask('Absolute folder path' if kind == 'local' else 'Reference URL (no passwords)')}
+                 field: ask(where if kind == 'local' else 'Reference URL (no passwords)')}
     if kind == 'remote':
         mounted = ask('Already mounted local folder (blank to defer)')
         if mounted:
             candidate['mounted_path'] = mounted
     candidate = validate_source(candidate)
+    folder = candidate.get('path') or candidate.get('mounted_path')
+    warning = level_warning(folder, category) if folder else None
+    if warning:
+        print(warning)
+        if not agreed('Use this folder anyway?', reader):
+            return None
     if kind in ('local', 'remote'):
         candidate['copy_to_library'] = agreed('Copy this folder into its managed library (music on SSD, '
                                               'video on HDD) during onboarding?', reader)
@@ -109,7 +144,7 @@ def one_source(reader):
 
 def main():
     parser = argparse.ArgumentParser(description='NekoServer media source wizard')
-    parser.add_argument('--config',default=str(Path(__file__).with_name('config.json')))
+    parser.add_argument('--config',type=checked_settings,default=default_settings(Path(__file__).parent))
     parser.add_argument('--output')
     parser.add_argument('--list', action='store_true', help='Show existing source references (no secrets)')
     args = parser.parse_args()

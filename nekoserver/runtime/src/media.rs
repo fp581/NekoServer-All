@@ -706,6 +706,16 @@ fn reachability(app: &str) -> Option<u16> {
 /// Whether the app on this local port answers a web request: the HTTP status for a
 /// page, a login redirect or a login challenge, None otherwise. API JSON is not
 /// required at the HTML root, and redirects are not followed.
+/// The status of an HTTP response from its first line alone. The rest of what was read
+/// may end inside a character (a page's text cut at 4096 bytes), so it is never decoded.
+fn status_code(response: &[u8]) -> u16 {
+    let line = response.split(|b| *b == b'\n').next().unwrap_or_default();
+    String::from_utf8_lossy(line)
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0)
+}
 pub(crate) fn answers(port: u16) -> Option<u16> {
     let result = (|| -> Result<Option<u16>> {
         let mut stream = TcpStream::connect_timeout(
@@ -720,17 +730,7 @@ pub(crate) fn answers(port: u16) -> Option<u16> {
         )?;
         let mut buf = [0u8; 4096];
         let n = stream.read(&mut buf)?;
-        let first = std::str::from_utf8(&buf[..n])
-            .map_err(|_| Error::new("Invalid HTTP response"))?
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string();
-        let status = first
-            .split_whitespace()
-            .nth(1)
-            .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or(0);
+        let status = status_code(&buf[..n]);
         Ok(
             if (200..400).contains(&status) || [401, 403].contains(&status) {
                 Some(status)
@@ -995,5 +995,24 @@ mod tests {
     fn api_records_must_be_objects() {
         assert!(array(&json!([1, 2])).is_err());
         assert!(array(&json!({"unexpected":true})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod status_line_tests {
+    use super::*;
+    /// A page whose text is cut inside a character by the 4096-byte read still answers.
+    #[test]
+    fn a_page_cut_inside_a_character_still_answers() {
+        let mut page = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n".to_vec();
+        page.extend("é".repeat(3000).as_bytes());
+        let cut = &page[..4095.min(page.len())];
+        assert!(
+            std::str::from_utf8(cut).is_err(),
+            "the read ends inside a character"
+        );
+        assert_eq!(status_code(cut), 200);
+        assert_eq!(status_code(b"HTTP/1.1 302 Found\r\n"), 302);
+        assert_eq!(status_code(b"garbage"), 0);
     }
 }

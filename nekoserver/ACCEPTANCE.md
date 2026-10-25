@@ -29,12 +29,12 @@ The recovery module preserves the current scripts/configuration under the config
 ## Collect a baseline, then check after reboot
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.39.4/acceptance.py --profile full
+sudo python3 /srv/nekoserver/installer/releases/v0.39.5/acceptance.py --profile full
 # Inspection only: no report write.
-sudo python3 /srv/nekoserver/installer/releases/v0.39.4/acceptance.py --profile full --save
+sudo python3 /srv/nekoserver/installer/releases/v0.39.5/acceptance.py --profile full --save
 # Now reboot normally through the desktop or your normal system administration flow.
 # After reboot, return to the same directory and run:
-sudo python3 /srv/nekoserver/installer/releases/v0.39.4/acceptance.py --profile full --save
+sudo python3 /srv/nekoserver/installer/releases/v0.39.5/acceptance.py --profile full --save
 ```
 
 --config can select another actual configuration file. --profile defaults to full and uses that profile's dependency closure. Standard scopes are foundation, media, photos, network, networking, lan_access, remote_access, media_monitor, dashboard, tv and full. Custom configured profiles can be inspected in the CLI, but the dashboard summary only displays the standard scopes. The dashboard-only profile does not inspect absent media applications, Docker or backup jobs.
@@ -70,7 +70,7 @@ A passing automatic check describes that evidence, not every possible behavior o
 The runner prints the tests required by the chosen profile. Perform each applicable test on the server, then use:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.39.4/acceptance.py --profile full --save --manual
+sudo python3 /srv/nekoserver/installer/releases/v0.39.5/acceptance.py --profile full --save --manual
 ```
 
 The command reruns automatic checks and, by default, opens relevant pages/apps and asks yes/no for each witnessed test. Yes records that specific test as user-reported; no repeats its instructions and reopens its targets. Ctrl+C leaves that test pending. Confirmation timestamps and user_reported labels are retained. Do not confirm a planned/unperformed test. These answers never override an automatic failure. With guided_setup.enabled=false, the legacy explicit PASS exact_test_id / FAIL exact_test_id / Enter prompt remains available.
@@ -95,7 +95,7 @@ The runner uses only the tests relevant to your configured profile. Manual answe
 
 Exit 0 means **all checks in that selected profile** passed, including user-reported witnessed tests. Exit 1 means setup/tests remain pending; exit 2 means a check failed or inspection/save could not finish. The command does not assert hardware safety, silently start downloads, change access controls or perform restores for you.
 
-Backups & recovery on the dashboard shows profile, age, automatic/manual counts and acceptance state. It exposes only fixed labels and aggregate outcomes, not boot identifiers or private detailed records. Old-release or changed storage/service-selection reports are outdated. Reports over 24 hours old are stale. Unsupported/malformed/empty reports cannot show complete, and manual passes need witness metadata. The page remains read-only.
+Backups & recovery on the dashboard shows profile, age, automatic/manual counts and acceptance state. It exposes only fixed labels and aggregate outcomes, not boot identifiers or private detailed records. Old-release or changed storage/service-selection reports are outdated. A complete report over 24 hours old still counts as complete, only older (the dashboard suggests a recheck after 30 days); a failed or unfinished one stays failed or pending however old it is. Each saved check keeps the witnessed results you recorded before for the same profile and settings (setup's own checkup at the end of every run included), so a test restore is recorded once; changing the settings or the profile starts them over. Unsupported/malformed/empty reports cannot show complete, and manual passes need witness metadata. The page remains read-only.
 
 The existing restoration warning remains visible even when a checklist is complete: original-photo recovery acceptance is an ongoing responsibility, not a permanent guarantee. The dashboard report is shown on its next collection; reload once the collector has run. No new external notification or remote gateway is introduced by this release.
 

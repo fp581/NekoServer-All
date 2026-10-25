@@ -275,3 +275,22 @@ class SambaSharesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SambaTailnetStartTests(unittest.TestCase):
+    """With "bind interfaces only", smbd started before tailscale0 had its address never
+    listened on the tailnet until it was restarted (Samba after a reboot)."""
+
+    def test_tailnet_mode_waits_for_the_address_and_never_fails_the_start(self):
+        from modules import samba
+        text = samba.storage_guard('/mnt/m', 'mnt-m.mount', 'tailnet', 'tailscaled.service')
+        start = [line for line in text.splitlines() if line.startswith('ExecStartPre=')]
+        self.assertEqual(len(start), 1)
+        self.assertTrue(start[0].startswith('ExecStartPre=-/bin/sh -c '))   # "-": a failure is ignored too
+        self.assertIn('tailscale0', start[0])
+        self.assertTrue(start[0].rstrip("'").endswith('exit 0'))
+        self.assertIn('$$i', start[0])                                      # systemd's own $ escaped
+
+    def test_home_network_mode_does_not_wait_for_tailscale(self):
+        from modules import samba
+        self.assertNotIn('ExecStartPre', samba.storage_guard('/mnt/m', 'mnt-m.mount', 'lan', 'tailscaled.service'))

@@ -27,7 +27,7 @@ Only HTTPS URLs with a hostname/IP, optional port and a single topic path are ac
 ## Test on your phone
 
 ```bash
-sudo /usr/local/lib/nekoserver-notifications/v0.39.4/nekoserver-runtime notify \
+sudo /usr/local/lib/nekoserver-notifications/v0.39.5/nekoserver-runtime notify \
   --config /etc/nekoserver-notifications/config.json \
   --state /var/lib/nekoserver-notifications \
   --runtime /run/nekoserver-notifications \
@@ -43,7 +43,8 @@ The explicit test sends a labelled test message and records whether the provider
 | Condition | Behavior |
 | --- | --- |
 | Missing/wrong mounted drive | Immediately eligible for a critical alert; subject to global delivery spacing/backoff |
-| Low disk space, SMART warnings, high CPU temperature | Warn from current collector findings |
+| Low disk space, SMART warnings, CPU temperature high for five minutes (or at the chip's own limit) | Warn from current collector findings |
+| Tailscale signed out or its sign-in running out, monthly backups without a backup password, the outside heartbeat not reached, phone alerts that could not be delivered for a while | Warn like the others, so a problem shown on the dashboard also reaches the phone |
 | Failed/overdue photo or media application backups | Report the affected job; a running/unknown job does not establish recovery |
 | Media app unavailable/unhealthy | Wait through the configured debounce to avoid brief restart interruptions |
 | Failed/stale media connection checks | Report the media connection audit status; no raw API response is sent |
@@ -52,7 +53,7 @@ The explicit test sends a labelled test message and records whether the provider
 
 Default timings are a 60-second worker interval, 180-second debounce, 5-minute minimum between normal batches and a 12-hour repeat interval for persistent problems. Set `notifications.debounce_seconds`, `notifications.minimum_interval_seconds` and `notifications.repeat_seconds` in your installer config and reapply the module. Repeats and escalation join a single batch; brief problems that were never delivered produce no recovery message.
 
-HTTP failures, authentication rejection, rate limiting and network errors keep the alert unsent and schedule exponential retry delays from one minute up to one hour. Success alone advances the delivered ledger. Changing the private destination or token starts a new destination ledger. Delivery is at least once: a crash after the provider accepts a message but before local state is committed can cause a duplicate.
+HTTP failures, authentication rejection, rate limiting and network errors keep the alert unsent and schedule exponential retry delays from one minute up to one hour. A retry time more than an hour ahead can only come from a clock that was ahead and was put back, so it is ignored and the alert is sent at the next check instead of waiting until the clock reaches it again. Success alone advances the delivered ledger. Changing the private destination or token starts a new destination ledger. Delivery is at least once: a crash after the provider accepts a message but before local state is committed can cause a duplicate.
 
 ## Monitoring and permissions
 
@@ -60,11 +61,13 @@ The worker reads the sanitized collector snapshot and uses fixed approved alert 
 
 The OS-local ledger is private under `/var/lib/nekoserver-notifications`; transient delivery status is under `/run/nekoserver-notifications`. This lets the worker run when the application SSD is missing. The service has a read-only system view, private state/runtime directories and no Docker socket access. The root collector publishes only sanitized delivery status to the unprivileged dashboard. The dashboard shows missing setup, inactive scheduling, stale status, failed delivery or last provider acceptance. Existing browser-local notifications remain a separate option.
 
-Notifications require the PC to be powered, the OS/service to function and outbound connectivity. A total PC outage cannot be reported by that same PC; independent remote heartbeat monitoring is a future addition. Backup snapshots can stop apps longer than the debounce on large datasets; adjust the schedule/debounce if maintenance alerts are unwanted.
+Notifications require the PC to be powered, the OS/service to function and outbound connectivity. A total PC outage cannot be reported by that same PC: for that, set up the outside heartbeat (HEARTBEAT.md), which an independent monitor watches. Backup snapshots can stop apps longer than the debounce on large datasets; adjust the schedule/debounce if maintenance alerts are unwanted.
 
 ## Acceptance
 
 ```bash
+# In the NekoServer folder (it reads your my-config.json). Add --manual to record the
+# tests you witness yourself; a test recorded before is kept by later checks.
 sudo python3 acceptance.py --profile full --save
 ```
 

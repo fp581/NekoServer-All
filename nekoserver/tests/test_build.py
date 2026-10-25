@@ -37,6 +37,52 @@ class SpaceTests(unittest.TestCase):
             run.assert_not_called()
 
 
+class FailureTests(unittest.TestCase):
+    """A build that fails says so in one line; only the downloads are tried again."""
+    def test_the_dependencies_are_downloaded_again_before_an_offline_build(self):
+        results, slept, said = [1, 101, 0], [], []
+        run = mock.Mock(side_effect=lambda argv, **kwargs: mock.Mock(returncode=results.pop(0)))
+        build.fetch('cargo', [], run=run, sleep=slept.append, say=said.append)
+        self.assertEqual([c.args[0] for c in run.call_args_list], [['cargo', 'fetch', '--locked']] * 3)
+        self.assertEqual(slept, [build.FETCH_PAUSE] * 2)
+        self.assertIn('2 of 3', said[0])
+        run = mock.Mock(return_value=mock.Mock(returncode=101))
+        with self.assertRaisesRegex(RuntimeError, r'dependencies failed 3 times .*connected to the internet'):
+            build.fetch('cargo', ['--target', build.STATIC], run=run, sleep=slept.append, say=said.append)
+        self.assertEqual(run.call_args.args[0], ['cargo', 'fetch', '--locked', '--target', build.STATIC])
+
+    def test_the_build_itself_needs_no_network_and_fails_in_one_line(self):
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return mock.Mock(returncode=101 if 'build' in argv else 0)
+        with mock.patch.object(build, 'free_megabytes', return_value=4096), \
+                mock.patch.object(build.os, 'geteuid', return_value=1000), \
+                mock.patch.object(build.platform, 'system', return_value='Linux'), \
+                mock.patch.object(build.platform, 'machine', return_value='x86_64'), \
+                mock.patch.object(build, 'toolchain', return_value=('cargo', 'rustc', 'host', Path('/none'), 'rustc 1.90')), \
+                mock.patch.object(build.subprocess, 'run', side_effect=run), \
+                mock.patch('sys.stderr') as stderr:
+            self.assertEqual(build.cli(), 1)
+        self.assertIn(['cargo', 'build', '--release', '--locked', '--offline'], calls)
+        self.assertLess(calls.index(['cargo', 'fetch', '--locked']), calls.index(['cargo', 'build', '--release', '--locked', '--offline']))
+        printed = ''.join(c.args[0] for c in stderr.write.call_args_list)
+        self.assertIn('ERROR: building the runtime: Compiling the runtime failed', printed)
+        self.assertNotIn('Traceback', printed)
+
+    def test_files_are_replaced_whole(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / 'nekoserver-runtime'
+            target.write_bytes(b'old')
+            # Cut off just before the rename.
+            with mock.patch.object(build.os, 'replace', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+                build.replace_file(target, b'new build', 0o750)
+            self.assertEqual(target.read_bytes(), b'old')
+            build.replace_file(target, b'new build', 0o750)
+            self.assertEqual((target.read_bytes(), target.stat().st_mode & 0o777), (b'new build', 0o750))
+
+
 class BuiltPathTests(unittest.TestCase):
     """The executable is read from where cargo put it: a CARGO_TARGET_DIR in the
     environment moves it (the rig's shared build folder, a developer's own)."""
@@ -123,6 +169,20 @@ class BuildNeededTests(unittest.TestCase):
             self.assertTrue(native_runtime.build_needed(tmp, runs))          # the record without its binary
             (root / 'build.json').write_text('{')
             self.assertTrue(native_runtime.build_needed(tmp, runs))          # an unreadable record
+
+    def test_a_binary_its_record_does_not_describe_is_built_again(self):
+        # A build cut off after the new binary was written, before its record was.
+        import native_runtime
+        from neko_common import VERSION
+
+        def runs(*args, **kwargs):
+            return mock.Mock(returncode=0, stdout='nekoserver-runtime ' + VERSION + '\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.project(tmp)
+            self.record(root)
+            self.assertFalse(native_runtime.build_needed(tmp, runs))
+            (root / 'bin/nekoserver-runtime').write_bytes(b'\x7fELF\x02\x01another build')
+            self.assertTrue(native_runtime.build_needed(tmp, runs))
 
     def test_a_runtime_that_does_not_run_here_is_built_again(self):
         # A copy built on another Linux (kept on the SSD through a reinstall), or of

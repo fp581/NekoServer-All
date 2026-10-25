@@ -13,7 +13,7 @@ def command_line(binary,guard,data,media,age,archive,keep):
 
 def require_mounts(*paths):
     for p in paths:
-        if p.is_symlink() or subprocess.run(['findmnt','-n','--mountpoint',str(p)],stdout=subprocess.DEVNULL,check=False).returncode:raise RuntimeError(f'Missing mount: {p}')
+        if p.is_symlink() or subprocess.run(['findmnt','-n','--mountpoint',str(p)],stdout=subprocess.DEVNULL,check=False,timeout=30).returncode:raise RuntimeError(f'Missing mount: {p}')
 
 # The schedules this step installs (legacy and weekly); the USB copy has its own.
 TIMER='.timer'
@@ -70,8 +70,8 @@ def run(ctx):
                 if f'Description={name}' not in previous:raise RuntimeError(f'Unmanaged existing unit: {target}')
             safe_path(target)
             atomic_write(target,content,0o644)
-    subprocess.run(['systemctl','daemon-reload'],check=True)
+    subprocess.run(['systemctl','daemon-reload'],check=True,timeout=120)
     # Output captured: systemd's "Created symlink" notes stay off the screen; a failure's own
     # words still reach the log (installer.failure_reason).
-    for name in services:subprocess.run(['systemctl','enable','--now',name+TIMER],check=True,capture_output=True,text=True)
+    for name in services:subprocess.run(['systemctl','enable','--now',name+TIMER],check=True,capture_output=True,text=True,timeout=120)
     ctx.log('Enabled '+('weekly combined photo originals/database backup' if schedule=='weekly' else 'periodic archive and nightly SQL')+'; no deletions')

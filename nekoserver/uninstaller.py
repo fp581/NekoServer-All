@@ -10,14 +10,20 @@ music, your Nextcloud files, the backups, the drive mounts. Nothing is ever form
 a drive you keep is left exactly as it is, and the packages NekoServer installed
 (Docker, Samba, Caddy, Tailscale, Rust, OpenRGB, ...) are left for you to keep or remove.
 """
+import fcntl
 import grp
 import json
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+
+import host
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
@@ -30,6 +36,7 @@ OWN_SMB_CONF = '[global]\n   include = /etc/samba/nekoserver.conf\n'   # the smb
 PACKAGED_SMB_CONF = '/etc/samba/smb.conf.packaged'   # the package's example, set aside by setup; put back when NekoServer's own goes
 MANAGED = '# Managed by NekoServer'
 DAEMON_JSON = '/etc/docker/daemon.json'
+DOCKER_GUARD = '/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf'   # modules/docker.py
 FSTAB = '/etc/fstab'
 GATEWAY_SETTINGS = '/etc/nekoserver-gateway'
 TAILNET_LEDGER = 'gateway/tailnet-owned.json'   # on the SSD: the Tailscale routes setup made (gateway_tools.py)
@@ -215,11 +222,22 @@ class Plan:
         for home in homes:
             for folder in (home / '.local/share/applications', home / 'Desktop', self.xdg_desktop(home)):
                 try:
-                    if folder is not None and folder.is_dir():
+                    if folder is not None and self.folder_here(folder):
                         found.extend(p for p in folder.glob('nekoserver-*.desktop') if self.ours(p))
                 except OSError:   # not readable by this account (a dry run without sudo)
                     self.warnings.append('Could not look in ' + str(folder) + ' (run with sudo for the whole plan)')
         return sorted(set(found))
+
+    @staticmethod
+    def folder_here(folder):
+        """True for a folder, False when there is none; a folder this account may not look into raises.
+
+        Path.is_dir() cannot be used: since Python 3.14 it answers False for "permission denied"
+        too, and the plan would then quietly miss what it could not see."""
+        try:
+            return stat.S_ISDIR(folder.stat().st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
 
     @staticmethod
     def xdg_desktop(home):
@@ -426,6 +444,9 @@ class Plan:
         if units:
             notes.append('Stop and remove ' + str(len(units)) + ' services and timers: ' + ', '.join(units))
         paths = self.system_paths() + self.shortcuts() + self.os_dropins()
+        if self.unfinished_packages():
+            notes.append('A package installation setup left unfinished is finished first, as setup would, so no '
+                         'service stays masked or kept from starting')
         self._sleep_part(notes)
         self._samba_part(paths, notes)
         self.served = self.tailnet_routes()
@@ -435,8 +456,26 @@ class Plan:
         if self.group_exists(CONTROL_GROUP):
             notes.append('The ' + CONTROL_GROUP + ' group goes')
         if self.docker_root():
-            notes.append('Docker keeps its data-root on the SSD (' + self.docker_root() + ') unless the SSD data or the mounts go')
+            notes.append('Docker keeps its data-root on the SSD (' + self.docker_root() + ') unless the SSD data or the mounts go; '
+                         'while it does, its start guard stays too (' + str(self.docker_guard()) + '), so Docker never starts '
+                         'on the system disk while the SSD is missing')
         return {'paths': paths, 'notes': notes}
+
+    def docker_guard(self):
+        return self.at(DOCKER_GUARD)
+
+    def kept_for_docker(self, chosen):
+        """What stays although its group goes: Docker's start guard, while Docker keeps its
+        data-root on the SSD (neither the SSD data nor the mounts chosen). Without it a
+        missing SSD would make Docker start a new, empty data-root on the system disk."""
+        if self.docker_root() and not {'data', 'mounts'} & set(chosen):
+            return {self.docker_guard()}
+        return set()
+
+    def unfinished_packages(self):
+        """A package installation setup left unfinished (host.py's record of it), or the
+        start protection it keeps until it is tidied up (NekoServer's policy-rc.d)."""
+        return self.at(host.Debian.journal).exists() or _our_policy(self.at(host.POLICY))
 
     def _sleep_part(self, notes):
         """The sleep targets to unmask (self.unmask) and what the plan says about them."""
@@ -512,7 +551,9 @@ class Plan:
             group = self.groups[key]
             lines.append('== ' + title)
             lines.extend('   - ' + note for note in group['notes'])
-            lines.extend('   - remove ' + str(p) + ('  (' + self.size(p) + ')' if p.is_dir() and key != 'server' else '') for p in group['paths'])
+            keep = self.kept_for_docker(chosen)
+            lines.extend('   - remove ' + str(p) + ('  (' + self.size(p) + ')' if p.is_dir() and key != 'server' else '')
+                         for p in group['paths'] if p not in keep)
             if not group['notes'] and not group['paths']:
                 lines.append('   - nothing of this is on this PC')
         return '\n'.join(lines)
@@ -572,16 +613,21 @@ def system_file(root, path):
     return Path(root) / path.lstrip('/')
 
 
-def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/', call=call, sleep=None):
+def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/', call=call, sleep=None, reconcile=None):
     """Do it, in a safe order: stop everything, then the files, then the mounts. When
     something does not stop (a service, the fan control, a container, Docker), Stopped is
-    raised before any file is deleted."""
+    raised before any file is deleted. `reconcile` finishes an unfinished package
+    installation (host.py's, on this PC by default)."""
     units = plan.units()
-    _stop_units(plan, units, call, out, sleep)
-    if 'apps' in chosen:
-        _remove_containers(plan, call, out)
-    if plan.docker_root() and ('data' in chosen or 'mounts' in chosen):
-        _reset_docker_root(system_file(root, DAEMON_JSON), call, out)
+    before = _unit_states(plan, units, call)
+    try:
+        _stop_units(plan, units, call, out, sleep)
+        if 'apps' in chosen:
+            _remove_containers(plan, call, out)
+        if plan.docker_root() and ('data' in chosen or 'mounts' in chosen):
+            _reset_docker_root(system_file(root, DAEMON_JSON), call, out)
+    except Stopped as exc:
+        raise Stopped(str(exc) + _restore_units(before, call, out)) from None
     for port in plan.served:
         out('Switching off the Tailscale address on port ' + port)
         _tried(call, out, ['tailscale', 'serve', '--bg', '--https=' + port, 'off'])
@@ -590,15 +636,66 @@ def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/', cal
     if plan.unmask:
         out('Unmasking ' + ', '.join(plan.unmask))
         _tried(call, out, ['systemctl', 'unmask', *plan.unmask])
+    _finish_packages(plan, call, out, reconcile)
     journal_limits = any('journald' in str(p) for p in plan.os_dropins())
-    _remove_files(plan, chosen, out, rmtree)
+    left = _remove_files(plan, chosen, out, rmtree)
     if journal_limits:
         call(['systemctl', 'restart', 'systemd-journald.service'], 60)   # the log limits go now; logind's at the next start
     _tidy_system(plan, units, shares, own, run, out)
     if 'mounts' in chosen:
-        _remove_mounts(plan, system_file(root, FSTAB), run, out)
+        left += _remove_mounts(plan, system_file(root, FSTAB), call, out)
     if units:
         run(['systemctl', 'daemon-reload'], 120)
+    return left
+
+
+def _our_policy(policy):
+    try:
+        return policy.is_file() and policy.read_text(errors='replace') == host.OUR_POLICY
+    except OSError:
+        return False
+
+
+def _reconcile_here():
+    host.current().reconcile()
+
+
+def _finish_packages(plan, call, out, reconcile=None):
+    """A package installation setup left unfinished (its record is in /var/lib/nekoserver-host,
+    which goes with NekoServer) is finished first, as the next setup run would: its packages
+    set up, their new services unmasked and left switched off, NekoServer's policy-rc.d
+    removed. With only the record deleted, those services would stay masked for good, and
+    policy-rc.d would keep every package installed later from starting its service. When
+    finishing is not possible, the protection alone is lifted."""
+    if not plan.unfinished_packages():
+        return
+    out('Finishing the package installation setup left unfinished')
+    try:
+        (reconcile or _reconcile_here)()
+        return
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:   # host.Unsupported is a RuntimeError
+        out('  could not finish it (' + str(exc) + '); lifting the protection it kept instead')
+    record = plan.at(host.Debian.journal)
+    # A mask the package set itself (Debian's record of those) stays.
+    units = [unit for unit in _recorded_units(record) if not plan.at(host.PACKAGE_MASKS + '/' + unit).exists()]
+    if units:
+        out('Unmasking ' + ', '.join(units))
+        _tried(call, out, ['systemctl', 'unmask', *units])
+    policy = plan.at(host.POLICY)
+    if _our_policy(policy):
+        out('  removing ' + str(policy))
+        policy.unlink(missing_ok=True)
+
+
+def _recorded_units(record):
+    """The services the unfinished installation masked (its record's new_units)."""
+    try:
+        units = json.loads(record.read_text())['before']['new_units']
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    if not isinstance(units, list):
+        return []
+    return [unit for unit in units if isinstance(unit, str) and re.fullmatch(r'[\w@.:-]+\.(service|socket)', unit)]
 
 
 def _tidy_system(plan, units, shares, own, run, out):
@@ -626,6 +723,38 @@ def _tried(call, out, argv):
 EXIT_STATUS = 'exit status '   # what a failed command said when it said nothing
 STILL_RUNNING = ('active', 'activating', 'deactivating', 'reloading', 'refreshing')
 NOTHING_DELETED = ' Nothing has been deleted yet. Fix that (or restart the computer), then run  sudo bash uninstall.sh  again.'
+
+
+def _unit_states(plan, units, call):
+    """{unit: (switched on at startup, running now, starts again by itself)} before anything
+    is stopped, so a stopped uninstall can put them back as they were."""
+    states = {}
+    for unit in units:
+        enabled = call(['systemctl', 'is-enabled', unit], 30)[1].split()[:1] == ['enabled']
+        active = call(['systemctl', 'is-active', unit], 30)[1].split()[:1] == ['active']
+        try:
+            text = (plan.at(UNITS) / unit).read_text(errors='replace')
+        except OSError:
+            text = ''
+        # A finished oneshot job (a backup, say) is not run again; a service is started.
+        oneshot = 'Type=oneshot' in text and 'RemainAfterExit=yes' not in text
+        states[unit] = (enabled, active, active and not oneshot)
+    return states
+
+
+def _restore_units(before, call, out):
+    """After a stopped uninstall: every NekoServer service and timer switched on again as
+    it was. Returns the words for the message."""
+    failed = []
+    for unit, (enabled, _active, restart) in before.items():
+        for wanted, argv in ((enabled, ['systemctl', 'enable', unit]), (restart, ['systemctl', 'start', unit])):
+            if wanted and call(argv, 120)[0] != 0:
+                failed.append(unit)
+    if failed:
+        return (' These could not be switched back on: ' + ', '.join(dict.fromkeys(failed))
+                + '; running  sudo bash install.sh  switches everything on again.')
+    out("NekoServer's services and timers were switched back on as they were")
+    return " NekoServer's services and timers were switched back on as they were."
 
 
 def _stop_units(plan, units, call, out, sleep=None):
@@ -685,9 +814,7 @@ def _reset_docker_root(path, call, out):
         raise Stopped('Docker did not stop (' + (said or state or 'still running') + '), so its data stays where it is.' + NOTHING_DELETED)
     content = json.loads(path.read_text())
     content.pop('data-root', None)
-    with path.open('w') as handle:
-        json.dump(content, handle, indent=2)
-        handle.write('\n')
+    replace_system_file(path, json.dumps(content, indent=2) + '\n')
 
 
 def _remove_samba_accounts(plan, accounts, call, out):
@@ -702,39 +829,129 @@ def _remove_samba_accounts(plan, accounts, call, out):
 
 def _remove_files(plan, chosen, out, rmtree):
     """The paths of every chosen group: each one the plan itself found, under NekoServer's
-    own places or its drives (mount_folder), never anywhere the settings alone point."""
+    own places or its drives (mount_folder), never anywhere the settings alone point.
+    Returns what could not be removed (said at the end)."""
+    keep = plan.kept_for_docker(chosen)
+    left = []
     for key, *_ in CHOICES:
         if key not in chosen:
             continue
-        for path in plan.groups[key]['paths']:
+        for path in (p for p in plan.groups[key]['paths'] if p not in keep):
             out('  removing ' + str(path))
-            if path.is_dir() and not path.is_symlink():
-                rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
+            if not _removed(path, rmtree):
+                left.append(str(path))
+    return left
 
 
-def _remove_mounts(plan, path, run, out):
+def _removed(path, rmtree):
+    """Remove one path the plan found; True when it is gone."""
+    try:
+        if path.is_dir() and not path.is_symlink():
+            rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return not (path.exists() or path.is_symlink())
+
+
+def replace_system_file(path, text):
+    """A system file (/etc/fstab, Docker's daemon.json) replaced in one step, never left
+    half written (a cut-off write of /etc/fstab can stop the PC from starting). It keeps
+    its permissions, and the file as it was is kept beside it."""
+    from neko_common import atomic_write
+    path = Path(path)
+    mode = path.stat().st_mode & 0o7777
+    backup = path.with_name(path.name + '.before-nekoserver-uninstall-' + time.strftime('%Y%m%d-%H%M%S'))
+    shutil.copy2(path, backup)
+    atomic_write(path, text, mode)
+    return backup
+
+
+def _remove_mounts(plan, path, call, out):
+    """The drives' lines out of /etc/fstab, then each drive unmounted and its empty folder
+    removed. Returns what stayed (a drive still in use, say)."""
+    left = []
     lines = plan.fstab_lines()
     if lines:
         kept = [line for line in path.read_text().splitlines() if line not in lines]
-        path.write_text('\n'.join(kept) + '\n')
-        out('Took ' + str(len(lines)) + ' line(s) out of ' + FSTAB)
+        backup = replace_system_file(path, '\n'.join(kept) + '\n')
+        out('Took ' + str(len(lines)) + ' line(s) out of ' + FSTAB + ' (the file as it was is kept as ' + backup.name + ')')
     for folder in (plan.external, plan.media, plan.data):
         if not plan.mounted(folder):
             continue
         out('Unmounting ' + folder)
-        run(['umount', folder], 120)
+        code, said = call(['umount', folder], 120)
+        if code != 0:
+            out('  could not unmount (busy' + (': ' + said if said else '') + '): sudo umount ' + folder)
+            left.append(folder + ' (still mounted)')
+            continue
         try:
             plan.at(folder).rmdir()
         except OSError:
             out('  (' + folder + ' is not empty, so the folder stays)')
+    return left
+
+
+def not_removed(left):
+    """The lines naming what the uninstall could not remove ([] when nothing is left)."""
+    if not left:
+        return []
+    return (['Done, except for these, which could not be removed (remove them yourself, or run  sudo bash uninstall.sh  again):']
+            + ['   - ' + path for path in left])
+
+
+# Held by a running setup (install.sh, then installer.py): one is enough to wait for.
+SETUP_LOCKS = ('/run/nekoserver-setup.lock', '/run/nekoserver-install.lock')
+
+
+def hold_setup_locks(locks=SETUP_LOCKS):
+    """The setup locks, held for the whole uninstall so that no setup starts meanwhile, or
+    None when a setup is running now. (A lock file that is not there: no setup ever ran.)"""
+    held = []
+    for lock in locks:
+        try:
+            fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            for other in held:
+                os.close(other)
+            return None
+        held.append(fd)
+    return held
+
+
+def busy(locks=SETUP_LOCKS, journal=None):
+    """Why the uninstall must wait, or None (and the setup locks it holds). A monthly
+    update that is running or did not finish must finish first: stopping it part-way and
+    then deleting its record would leave the apps half updated, with nothing that can
+    finish or roll it back."""
+    import neko_common
+    blocked = neko_common.pending_maintenance(**({'journal': journal} if journal else {}), outcome='Nothing was removed.')
+    if blocked is None and neko_common.maintenance_running():
+        blocked = ('A monthly update is running right now. Let it finish (sudo systemctl status nekoserver-maintenance.service '
+                   'shows "inactive" once it has), then run  sudo bash uninstall.sh  again. Nothing was removed.')
+    if blocked:
+        return blocked, []
+    held = hold_setup_locks(locks)
+    if held is None:
+        return ('NekoServer setup is running right now. Let it finish (or stop it), then run  sudo bash uninstall.sh  again. '
+                'Nothing was removed.'), []
+    return None, held
 
 
 def main(argv):
     dry = '--dry-run' in argv
     if not dry and os.geteuid() != 0:
         print('Run with sudo:  sudo bash uninstall.sh   (or  --dry-run  to only look)', file=sys.stderr)
+        return 1
+    blocked, _held = (None, []) if dry else busy()   # the locks stay held until the uninstall ends
+    if blocked:
+        print(blocked, file=sys.stderr)
         return 1
     plan = Plan(read_settings())
     if dry:
@@ -751,7 +968,7 @@ def main(argv):
         if not confirm(plan, chosen, input, print):
             print('Stopped. Nothing was changed.')
             return 2
-        remove(plan, chosen, out=print)
+        left = remove(plan, chosen, out=print)
     except Stopped as exc:
         print('\nStopped: ' + str(exc))
         return 1
@@ -759,6 +976,7 @@ def main(argv):
         print('\nStopped.')
         return 130
     print('')
+    print(*not_removed(left), sep='\n', end='\n' if left else '')
     print('Done. ' + PACKAGES_LEFT)
     if 'mounts' not in chosen:
         print('The drives stay mounted as before; take their lines out of /etc/fstab when you no longer want that.')

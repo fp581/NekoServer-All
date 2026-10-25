@@ -20,7 +20,7 @@ sudo systemctl start nekoserver-app-backup.service
 sudo journalctl -u nekoserver-app-backup.service --no-pager
 ```
 
-Snapshots are created under `/mnt/nekoserver-media/backups/media-applications/snapshot-*` with default mount settings. Every run adds a new directory; existing snapshots are never replaced. Incomplete runs keep a hidden `.partial` directory for inspection and do not report success. The newest `app_backup.keep_snapshots` complete snapshots (default 7) are kept and older ones deleted after each successful run; `.partial` directories and anything else in the folder are never touched. Set it to `0` to keep everything, as before v0.21.1. A snapshot contains a full copy of the selected app state, so check HDD space against your chosen count.
+Snapshots are created under `/mnt/nekoserver-media/backups/media-applications/snapshot-*` with default mount settings. Every run adds a new directory; existing snapshots are never replaced. Incomplete runs leave a hidden `.partial` directory and do not report success; the next run removes it before it starts (each one is as big as a whole snapshot, so on a full HDD they used to make every later run fail too). The newest `app_backup.keep_snapshots` complete snapshots (default 7) are kept and older ones deleted after each successful run; anything else in the folder is never touched. A snapshot is deleted by first renaming it to a hidden `.snapshot-….deleting` name, so a power cut part-way never leaves a half-deleted snapshot that still looks complete; the next run finishes such a delete. Set it to `0` to keep everything, as before v0.21.1. A snapshot contains a full copy of the selected app state, so check HDD space against your chosen count. Before copying, each run checks the HDD has room for the app files plus 2 GB; when it does not, the oldest app snapshots are removed early, one at a time, but the newest complete one is always kept. If that is still not enough, the run fails with a message saying how much is free and how much is needed.
 
 Symlinks, sockets, FIFOs, devices and nested filesystems inside an app's folder are not restorable state; they are skipped and listed under `skipped` in the snapshot's manifest instead of failing the night's backup. Hard-linked files are copied as ordinary files. The SSD music library and downloads (`library/` on the SSD) are media, not app state, and are not included.
 
@@ -53,7 +53,7 @@ The generated `restore-report.json` records file verification and explicitly kee
 
 ## Interrupted runs
 
-The worker saves a private resume journal before stopping any container. On ordinary failure it attempts every restart and retains the journal if a restart fails. The backup service runs the native resume command through `ExecStopPost`; an enabled boot service retries after Docker starts. Recovery uses saved container IDs and exact Compose labels, never starts containers that were already stopped, and refuses replaced/missing identities. A later snapshot retries pending recovery before stopping apps again.
+The worker saves a private resume journal before stopping any container. On ordinary failure it attempts every restart and retains the journal if a restart fails. The backup service runs the native resume command through `ExecStopPost`; an enabled boot service retries after Docker starts. Recovery uses saved container IDs and exact Compose labels and never starts containers that were already stopped. When a saved container is gone because the app was set up again since (which gives it a new container), and exactly one container with that app's Compose labels is there now, that one is started if it is stopped and the app counts as recovered; with none or several, nothing is guessed and the log says what to do (start the app again, or remove the extra containers, then run the resume service below; if you removed the app on purpose, delete the journal). Before, such a gone container blocked every later nightly backup. A later snapshot retries pending recovery before stopping apps again. A monthly update that was cut off holds the nightly app backup back only while its journal says it was in the middle of updating or rolling back; before it changed anything, or once the update stands, the nightly backups go on.
 
 ```bash
 sudo systemctl start nekoserver-app-resume.service
@@ -65,6 +65,8 @@ If recovery still fails, inspect Docker and the private `/etc/nekoserver-backups
 ## Acceptance
 
 ```bash
+# In the NekoServer folder (it reads your my-config.json). Add --manual to record the
+# tests you witness yourself; a test recorded before is kept by later checks.
 sudo python3 acceptance.py --profile full --save
 ```
 

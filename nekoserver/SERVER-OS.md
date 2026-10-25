@@ -1,6 +1,6 @@
 # Server OS power, logs and memory
 
-The `server_os` module adds OS-wide safeguards to the existing GNOME TV power settings. New sample profiles include it. Existing customized profiles are preserved when upgrading; install the module explicitly with your own confirmed configuration.
+The `server_os` module adds OS-wide safeguards to the existing GNOME TV power settings. New sample profiles include it. When you update, setup adds the steps a newer release brought to the profiles in your `my-config.json` (and says so in its log); a step you took out of a profile yourself stays out.
 
 ```bash
 python3 installer.py --module server_os --check
@@ -27,6 +27,8 @@ Default `server_os.hdd_policy` is `idle`, with `hdd_idle_minutes: 60`. The nativ
 
 A drive behind a USB bridge, an SSD, a virtual disk or a RAID/device-mapper (encrypted, LVM) device keeps its own power settings: no command is sent to it, the boot job ends normally and says why, and setup shows that line and goes on (before v0.30.0 the step stayed pending for good, with a failed service on the dashboard). An accepted command means the legacy standby command succeeded; it does not prove every drive firmware/controller policy obeys it. Firmware EPC/APM, head parking and bridge idle timers are separate and are not modified automatically. Observe the intended drive after reboot and an idle period before calling its spindle policy verified.
 
+When the HDD was missing at startup, or disappeared and came back (a loose cable, a USB case that reset), the drive-return service sets its power settings again as soon as it is back, together with Docker and the shared folders; until then the drive keeps its own.
+
 ```bash
 systemctl status nekoserver-hdd-policy.service
 sudo journalctl -u nekoserver-hdd-policy.service --no-pager
@@ -51,6 +53,8 @@ The module does not install a cache-flushing timer, arbitrary swappiness tuning,
 ## Acceptance and reversal
 
 ```bash
+# In the NekoServer folder (it reads your my-config.json). Add --manual to record the
+# tests you witness yourself; a test recorded before is kept by later checks.
 sudo python3 acceptance.py --profile full --save
 # Reboot normally and repeat; perform the server_idle witnessed check.
 ```

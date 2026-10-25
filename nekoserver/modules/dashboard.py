@@ -61,7 +61,7 @@ def choose_port(ctx,port,running=None):
     has it, then the next free spare (saved, so the address stays the same later). The
     dashboard's own running service is not "another program"."""
     if running is None:
-        running=own_port(installed_unit()) if subprocess.run(['systemctl','is-active','--quiet',SERVICE],check=False).returncode==0 else None
+        running=own_port(installed_unit()) if subprocess.run(['systemctl','is-active','--quiet',SERVICE],check=False,timeout=30).returncode==0 else None
     if port==running or port_free(port):return port
     taken={*APP_PORTS,ctx.config.get('media',{}).get('torrent_port')}
     spare=next((p for p in SPARE_PORTS if p not in taken and (p==running or port_free(p))),None)

@@ -68,7 +68,12 @@ The private report is `/srv/nekoserver/reports/tv-setup.json` with default mount
 After completing first-run application web wizards, run the current onboarding command from README.md. To inspect live configuration without changing it:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.39.4/media-health.py --config /srv/nekoserver/installer/releases/v0.39.4/config.json --json-out /srv/nekoserver/reports/media/manual.json
+sudo python3 /srv/nekoserver/installer/releases/v0.39.5/media-health.py --config /srv/nekoserver/installer/releases/v0.39.5/config.json --json-out /srv/nekoserver/reports/media/manual.json
 ```
 
 For hourly monitoring, reapply the `media_monitor` profile from this release. Current checks use existing local application keys for GET requests; missing keys/server linkage stay incomplete. They check configured libraries and existing request-provider connectivity, while authenticated qBittorrent transfers, music playback and a complete request/download/import/playback exercise still need real-server validation. Keep original photos until a full independent Immich restore succeeds.
+
+## Taking an app out, or changing the qBittorrent password
+
+- **An app you take out of `services` under `media`** (in `my-config.json`, then `sudo bash install.sh`) is stopped; its settings and data stay, so putting it back starts it as it was. The connections other apps have to it stay too: Prowlarr keeps its `neko-sonarr`, `neko-radarr` or `neko-lidarr` app, Sonarr, Radarr and Lidarr keep their `Neko-qBittorrent` download client, and Seerr keeps its Sonarr and Radarr servers. Those apps then show a warning that it can't be reached. If you don't plan to bring the app back, delete that connection in the app that has it (Prowlarr: Settings, Apps; Sonarr, Radarr, Lidarr: Settings, Download Clients; Seerr: Settings, Services).
+- **A new qBittorrent password** has to be entered in two places besides qBittorrent itself. First tell setup, as for any app login: in the NekoServer folder run `sudo python3 account-setup.py --apply --config my-config.json` and choose **c** at qBittorrent. Then type the new password into the `Neko-qBittorrent` download client in Sonarr, Radarr and Lidarr (Settings, Download Clients, Neko-qBittorrent, Password, then Test and Save). Setup never changes a download client that already exists, so until you do, Sonarr, Radarr and Lidarr can't send anything to qBittorrent.

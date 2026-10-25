@@ -7,7 +7,7 @@
   const WORDS = { success: 'done', running: 'running', needs_setup: 'needs you', unavailable: 'not on this PC',
                   failed: 'did not finish', blocked: 'waiting on another step', pending: '' };
   const HEADERS = { 'Content-Type': 'application/json' };
-  let chosen = {};
+  let chosen = {};          // only the switches the person pressed: one left alone is asked about by setup
   let built = false;
   let misses = 0;
   let shownCurrent = null;   // the running step the list was last scrolled to
@@ -38,7 +38,6 @@
     const box = $('extras');
     box.replaceChildren();
     for (const extra of extras) {
-      chosen[extra.id] = extra.on;
       const input = el('input', { type: 'checkbox', 'aria-label': extra.title });
       input.checked = extra.on;
       input.addEventListener('change', () => { chosen[extra.id] = input.checked; void save({ [extra.id]: input.checked }); });
@@ -180,9 +179,10 @@
 
   function renderFinished(state) {
     progress(state);
-    const left = state.steps.filter((s) => ['needs_setup', 'failed', 'blocked'].includes(s.status));
-    $('finish-title').textContent = left.length ? 'NekoServer is almost ready' : 'NekoServer is ready';
-    badge(left.length ? 'Almost ready' : 'Ready', left.length ? 'waiting' : 'done');
+    // Setup's own verdict (the first checkup included), as the terminal shows it.
+    const ready = state.complete === true;
+    $('finish-title').textContent = ready ? 'NekoServer is ready' : 'NekoServer is almost ready';
+    badge(ready ? 'Ready' : 'Almost ready', ready ? 'done' : 'waiting');
     // The terminal's ruled lines and its own title are the card's title here.
     $('finish-lines').textContent = state.finish.filter((l) => !/^=+$/.test(l.trim()) && !/^\s*NekoServer is (ready|almost ready)!?$/.test(l)).join('\n').trim();
     stepList($('steps-final'), state.steps, null);

@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -90,9 +91,33 @@ def _still_needed(group, met, pending, satisfies):
     return next((name for name, _, _ in options if name in pending), None)
 
 
+# What a clock set wrong makes package managers and downloads say: signatures and
+# certificates look not valid yet, or expired, and keys look made in the future.
+CLOCK = re.compile(r'not yet valid|not valid yet|certificate has expired|seconds? in the future|time warp'
+                   r'|clock problem', re.IGNORECASE)
+CLOCK_HINT = (" (this PC's clock looks wrong: check the date and time with  timedatectl, and let the network "
+              'set them:  sudo timedatectl set-ntp true)')
+
+
+def clock_hint(text):
+    """CLOCK_HINT when a message is what a wrong clock causes, otherwise ''."""
+    return CLOCK_HINT if CLOCK.search(text or '') else ''
+
+
+def _output(result):
+    return (result.stdout or '') + '\n' + (result.stderr or '')
+
+
+def _up_to(seconds):
+    """The end of a "waiting for it to finish" line: how long it waits at most."""
+    return '(up to ' + str(seconds // 60) + ' minutes)...'
+
+
 def _reason(result):
-    """The last line a package manager printed, for error messages."""
-    return ((result.stderr or result.stdout or '').strip().splitlines()[-1:] or ['no details'])[0]
+    """The last line a package manager printed, for error messages (with a word on the
+    clock when that is what went wrong)."""
+    last = ((result.stderr or result.stdout or '').strip().splitlines()[-1:] or ['no details'])[0]
+    return last + clock_hint(_output(result))
 
 
 # A package source that did not answer: a mirror hiccup, a download cut off, the network
@@ -108,9 +133,31 @@ RETRIES = 3            # attempts in all
 RETRY_PAUSE = 20       # seconds between them
 
 
+# Another program holds the package manager's lock (automatic updates, PackageKit, a
+# software centre, another pacman): waited out, up to LOCK_WAIT seconds, instead of
+# counting as a failure. (apt-get and zypper wait for some of these locks themselves.)
+BUSY = re.compile(r'could not get lock|is held by process|failed to obtain rpm transaction lock'
+                  r'|unable to lock database|system management is locked', re.IGNORECASE)
+LOCK_WAIT = 600
+
+
 def transient(result):
     """The package manager failed because a source did not answer."""
-    return bool(result.returncode) and bool(TRANSIENT.search((result.stdout or '') + '\n' + (result.stderr or '')))
+    return bool(result.returncode) and bool(TRANSIENT.search(_output(result)))
+
+
+def busy(result):
+    """The package manager failed because another program was using it."""
+    return bool(result.returncode) and bool(BUSY.search(_output(result)))
+
+
+# apt-get update says these and still succeeds when a source did not answer: it goes on
+# with that source's lists from before, so a new repository may have none at all.
+STALE_LISTS = re.compile(r'^W: (Failed to fetch|Some index files failed to download)', re.MULTILINE)
+
+
+def stale_lists(result):
+    return bool(STALE_LISTS.search(_output(result)))
 
 
 def environment():
@@ -125,6 +172,63 @@ def environment():
 # apt waits this long (seconds) for another package job, such as Ubuntu's automatic
 # security updates, instead of failing at once because dpkg is busy.
 APT_WAIT = ['-o', 'DPkg::Lock::Timeout=600']
+
+
+# The package managers: never killed when they run out of time (run_command).
+PACKAGE_TOOLS = frozenset({'pacman', 'apt-get', 'dpkg', 'dnf', 'zypper'})
+# How long a package manager asked to stop (as Ctrl+C asks) gets before it is asked
+# again with SIGTERM; after that it is waited for however long it takes.
+STOP_GRACE = 300
+
+
+def run_command(argv, **kwargs):
+    """subprocess.run, except for a package manager (see run_patiently)."""
+    if Path(argv[0]).name in PACKAGE_TOOLS:
+        return run_patiently(argv, **kwargs)
+    check = kwargs.pop('check', False)
+    return subprocess.run(argv, check=check, **kwargs)
+
+
+def run_patiently(argv, *, capture_output=False, timeout=None, check=False, **kwargs):
+    """subprocess.run for a package manager. When it runs out of time, or setup itself is
+    stopped, it is asked to stop and waited for instead of being killed (as
+    subprocess.run does): killed, pacman leaves its lock behind (and every later run
+    then waits for it), and dnf or zypper can stop half-way through changing the system."""
+    if capture_output:
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    given = kwargs.pop('input', None)
+    if given is not None:
+        kwargs['stdin'] = subprocess.PIPE
+    with subprocess.Popen(argv, **kwargs) as process:
+        try:
+            stdout, stderr = process.communicate(given, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = _stop_patiently(process)
+            raise subprocess.TimeoutExpired(argv, timeout, stdout, stderr) from None
+        except BaseException:
+            _stop_patiently(process)
+            raise
+    result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    if check:
+        result.check_returncode()
+    return result
+
+
+def _stop_patiently(process, grace=None):
+    """Ask a package manager to stop as Ctrl+C does (pacman, dnf and zypper then finish
+    or undo the step they are on) and wait for it; one still running after `grace`
+    seconds gets SIGTERM and is waited for. (Only the package manager itself is asked:
+    a dpkg it started goes on to the end, as it must.)"""
+    if process.poll() is not None:
+        return process.communicate()
+    with contextlib.suppress(OSError):      # the terminal may be gone (an SSH connection that dropped)
+        print('Asking ' + Path(str(process.args[0])).name + ' to stop; waiting until it has stopped safely...')
+    process.send_signal(signal.SIGINT)
+    try:
+        return process.communicate(timeout=STOP_GRACE if grace is None else grace)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        return process.communicate()
 
 
 def _fetch(url, timeout=60):
@@ -152,21 +256,36 @@ class Family:
     sleep = staticmethod(time.sleep)
     say = staticmethod(print)   # a word to the person running setup
 
-    def __init__(self, run=subprocess.run, release=None):
+    def __init__(self, run=run_command, release=None):
         self.run = run
         self.release = os_release() if release is None else release
 
-    def retrying(self, call):
-        """call() runs the package manager; when a source did not answer, it is called
-        again a little later, RETRIES times in all. The last result is returned."""
-        for attempt in range(1, RETRIES + 1):
+    def retrying(self, call, failed=transient):
+        """call() runs the package manager; when a source did not answer (`failed`), it is
+        called again a little later, RETRIES times in all. While another program holds the
+        package manager's lock it is called again until that one has finished (up to
+        LOCK_WAIT seconds, also counting the time the package manager waited itself),
+        without counting as an attempt. The last result is returned."""
+        attempt, waited, start = 1, 0, time.monotonic()
+        while True:
             result = call()
-            if not transient(result) or attempt == RETRIES:
+            if busy(result) and max(waited, time.monotonic() - start) < LOCK_WAIT:
+                waited = self._wait_for_other(result, waited)
+                continue
+            if not failed(result) or attempt == RETRIES:
                 return result
             self.say('The package source did not answer (' + _reason(result) + '); trying again in '
                      + str(RETRY_PAUSE) + ' seconds (' + str(attempt + 1) + ' of ' + str(RETRIES) + ')...')
             self.sleep(RETRY_PAUSE)
-        return result
+            attempt += 1
+
+    def _wait_for_other(self, result, waited):
+        """One pause while another program uses the package manager (said once)."""
+        if not waited:
+            self.say('Another program is installing or updating packages (' + _reason(result) + '); waiting for it '
+                     'to finish ' + _up_to(LOCK_WAIT))
+        self.sleep(RETRY_PAUSE)
+        return waited + RETRY_PAUSE
 
     @classmethod
     def matches(cls, release):
@@ -386,21 +505,51 @@ class Arch(Family):
 
     def wait_until_idle(self):
         """pacman's lock file is there while another pacman (an updater, say) works: wait
-        for it. (install.sh removes one left from before the last restart.)"""
+        for it. One that no program has open was left by a pacman that was cut off
+        (killed, or the PC lost power): nothing would ever remove it, so it goes now."""
         lock = self.path(PACMAN_LOCK)
         waited = 0
         while lock.exists():
+            if self.lock_holders() == []:
+                lock.unlink(missing_ok=True)
+                self.say("pacman's lock (" + PACMAN_LOCK + ') was left by a pacman that was cut off (no program has '
+                         'it open): removed.')
+                return
             if waited >= self.wait:
                 raise RuntimeError(f'pacman is still locked ({PACMAN_LOCK}) after {self.wait // 60} minutes: '
                                    'another installation is running. Let it finish, then run setup again. If '
                                    'nothing is installing, the lock is left from one that was cut off: remove it '
                                    f'(sudo rm {PACMAN_LOCK}), run  sudo pacman -Syu, then setup again.')
+            if not waited:
+                self.say('Another package installation is running (pacman is locked); waiting for it to finish ' + _up_to(self.wait))
             self.sleep(5)
             waited += 5
+
+    def lock_holders(self):
+        """The processes that have pacman's lock open: libalpm, which pacman and the
+        graphical updaters use, keeps it open while it works. None when that cannot be
+        seen (no /proc, or another account's processes that this one may not look at)."""
+        try:
+            found = {fds.parent.name: _open_files(fds) for fds in self.path('/proc').glob('[0-9]*/fd')}
+        except PermissionError:
+            return None
+        seen = {pid: files for pid, files in found.items() if files is not None}
+        return [pid for pid, files in seen.items() if PACMAN_LOCK in files] if seen else None
 
     def _install(self, names, timeout):
         self.wait_until_idle()
         return self._call(['pacman', '-S', '--needed', '--noconfirm', *names], timeout)
+
+
+def _open_files(fds):
+    """The files one process has open (its /proc/<pid>/fd), None when it ended meanwhile.
+    PermissionError when this account may not look."""
+    try:
+        return [os.readlink(fd) for fd in fds.iterdir()]
+    except PermissionError:
+        raise
+    except OSError:
+        return None
 
 
 class Repository:
@@ -429,7 +578,7 @@ SAMBA_CONFIG = '/etc/samba/smb.conf'
 POLICY = '/usr/sbin/policy-rc.d'
 # Held by NekoServer for each package job (install, tidy-up, repository repair).
 PACKAGE_LOCK = '/run/nekoserver-packages.lock'
-# There while a pacman works (created and deleted by pacman itself, never held open).
+# There while a pacman works (created, held open and deleted by pacman itself).
 PACMAN_LOCK = '/var/lib/pacman/db.lck'
 # Where snapd mounts installed snaps: Ubuntu's folder, and other systems'.
 SNAP_FOLDERS = ('/snap', '/var/lib/snapd/snap')
@@ -453,6 +602,34 @@ APT_LISTS_LOCK = '/var/lib/apt/lists/lock'
 # deb-systemd-helper's record of units a package masked itself.
 PACKAGE_MASKS = '/var/lib/systemd/deb-systemd-helper-masked'
 OUR_POLICY = '#!/bin/sh\n# NekoServer: no service starts while packages install.\nexit 101\n'
+
+
+# What apt says when it cannot check a repository with the key its definition names.
+KEY_REJECTED = re.compile(r'NO_PUBKEY|EXPKEYSIG|is not signed|unsupported filetype'
+                          r"|signatures? (couldn't|could not) be verified")
+
+
+def valid_key(data):
+    """An OpenPGP public key as apt reads it: ASCII-armoured (whole, from its first line to
+    its last), or binary, starting with a public-key packet (old or new packet format)."""
+    text = data.strip()
+    if text.startswith(b'-----BEGIN PGP PUBLIC KEY BLOCK-----'):
+        return text.endswith(b'-----END PGP PUBLIC KEY BLOCK-----')
+    return bool(data) and data[0] in (0x98, 0x99, 0x9a, 0xc6)
+
+
+def _valid_key_file(path):
+    try:
+        return path.is_file() and valid_key(path.read_bytes())
+    except OSError:
+        return False
+
+
+# Questions a package asks while it is set up, answered beforehand (debconf-set-selections):
+# with no terminal to ask on, Steam's installer takes its licence as declined and fails.
+# The TV step installs Steam because it was chosen, so its licence is accepted then.
+ANSWERS = MappingProxyType({
+    'steam-installer': 'steam-installer steam/question select I AGREE\nsteam-installer steam/license note \n'})
 
 
 def _deb822(text):
@@ -533,23 +710,29 @@ class PackageLock:
         path = self.path(PACKAGE_LOCK)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open('a') as handle:
-            waited = 0
-            while True:
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if waited >= self.wait:
-                        raise RuntimeError('Another NekoServer setup is installing packages; let it finish, '
-                                           'then run setup again') from None
-                    self.sleep(5)
-                    waited += 5
+            self._take(handle)
             self.holding = 1
             try:
                 yield
             finally:
                 self.holding = 0
                 fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _take(self, handle):
+        """The lock, once another setup's package job has finished (up to self.wait seconds)."""
+        waited = 0
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if waited >= self.wait:
+                    raise RuntimeError('Another NekoServer setup is installing packages; let it finish, '
+                                       'then run setup again') from None
+                if not waited:
+                    self.say('Another NekoServer setup is installing packages; waiting for it to finish ' + _up_to(self.wait))
+                self.sleep(5)
+                waited += 5
 
 
 class Debian(PackageLock, Family):
@@ -594,7 +777,7 @@ class Debian(PackageLock, Family):
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
 
-    def __init__(self, run=subprocess.run, release=None, fetch=_fetch):
+    def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release)
         self.fetch = fetch
         self.refreshed = False
@@ -629,14 +812,45 @@ class Debian(PackageLock, Family):
         lock, so that wait is here (apt-get names the holder if it outlasts it)."""
         if self.refreshed:
             return
-        waited = 0
-        while waited < self.wait and not _free(self.path(APT_LISTS_LOCK)):
-            self.sleep(5)
-            waited += 5
-        result = self.retrying(lambda: self._call(['apt-get', *APT_WAIT, 'update'], 1200))
+        self._wait_for_lists()
+        result = self._update()
+        if self._renew_rejected_keys(result):
+            result = self._update()
         if result.returncode:
             raise RuntimeError('Refreshing the package lists failed: ' + _reason(result))
+        if stale_lists(result):
+            line = next(line for line in _output(result).splitlines() if STALE_LISTS.match(line))
+            self.say('Some package sources could not be reached (' + line[3:].strip() + '); going on with their '
+                     'lists from before' + clock_hint(_output(result)) + '.')
         self.refreshed = True
+
+    def _wait_for_lists(self):
+        waited = 0
+        while waited < self.wait and not _free(self.path(APT_LISTS_LOCK)):
+            if not waited:
+                self.say('The system is refreshing its package lists itself; waiting for it to finish ' + _up_to(self.wait))
+            self.sleep(5)
+            waited += 5
+
+    def _update(self):
+        """apt-get update, tried again when a source did not answer, also when apt only
+        warned about it (it exits 0 then)."""
+        return self.retrying(lambda: self._call(['apt-get', *APT_WAIT, 'update'], 1200),
+                             failed=lambda result: transient(result) or stale_lists(result))
+
+    def _renew_rejected_keys(self, result):
+        """NekoServer's own repositories whose signing key apt could not use (missing,
+        damaged, or replaced by its maker): their key is downloaded again. True when one was."""
+        rejected = [line for line in _output(result).splitlines() if KEY_REJECTED.search(line)]
+        system, codename = self.vendor_release()
+        renewed = False
+        for repository in dict.fromkeys(self.repositories.values()):
+            if not any(repository.address in line for line in rejected) \
+                    or not self.own_listing(repository, system, codename):
+                continue
+            self.say('apt could not check the ' + repository.name + ' repository with its key; downloading the key again')
+            renewed = self.add_repository(repository, renew=True) or renewed
+        return renewed
 
     def has(self, package):
         # "install ok installed", or "hold ok installed" for a package someone holds.
@@ -699,16 +913,19 @@ class Debian(PackageLock, Family):
             raise RuntimeError(f'Downloading the {name} repository key failed (HTTP {exc.code} from {url}); '
                                'try again later') from None
         except (OSError, http.client.HTTPException) as exc:
-            raise RuntimeError(f'Downloading the {name} repository key failed ({getattr(exc, "reason", exc)}). '
-                               'Check that this PC is connected to the internet, then run setup again') from None
-        if not data or len(data) >= 65536:
-            raise RuntimeError(f'The {name} repository key downloaded from {url} is not a key file; try again later')
+            reason = str(getattr(exc, 'reason', exc))
+            raise RuntimeError(f'Downloading the {name} repository key failed ({reason}). Check that this PC is '
+                               'connected to the internet, then run setup again' + clock_hint(reason)) from None
+        if not data or len(data) >= 65536 or not valid_key(data):
+            raise RuntimeError(f'The {name} repository key downloaded from {url} is not a key file (a Wi-Fi login '
+                               'page or a proxy may have answered instead); try again later')
         return data
 
-    def add_repository(self, repository):
+    def add_repository(self, repository, renew=False):
         """Make a maker's repository usable. Someone else's definition of it, in any
         file, is left alone (a second one makes apt refuse to work); NekoServer's own
-        is brought up to date and its key restored when missing."""
+        is brought up to date and its key restored when missing or damaged (or, with
+        `renew`, downloaded again because apt could not use it)."""
         system, codename = self.vendor_release()
         if not codename:
             raise RuntimeError('Cannot tell this system\'s release codename for the ' + repository.name + ' repository')
@@ -726,7 +943,7 @@ class Debian(PackageLock, Family):
                                + '; rename or remove it, then run setup again.')
         desired = Repository.MARKER + repository.listing(repository.key_path, system, codename)
         key = self.path(repository.key_path)
-        if ours and listing.read_text() == desired and key.is_file() and key.stat().st_size:
+        if not renew and ours and listing.read_text() == desired and _valid_key_file(key):
             return False
         data = self.fetch_key(repository, system, codename)
         key.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -738,12 +955,31 @@ class Debian(PackageLock, Family):
     def wait_until_idle(self):
         """Wait until neither apt nor dpkg is working any more."""
         waited = 0
-        while not all(_free(self.path(lock)) for lock in DPKG_LOCKS):
+        while not self.dpkg_idle():
             if waited >= self.wait:
                 raise RuntimeError('apt or dpkg is still working (another installation, or one that was cut '
                                    'off). New services stay switched off; run setup again once it has finished.')
+            if not waited:
+                self.say('apt or dpkg is still working (another installation, or one that was cut off); waiting for '
+                         'it to finish ' + _up_to(self.wait))
             self.sleep(5)
             waited += 5
+
+    def dpkg_idle(self):
+        return all(_free(self.path(lock)) for lock in DPKG_LOCKS)
+
+    def answer_questions(self, names):
+        """The questions these packages would ask while they are set up, answered first."""
+        answers = ''.join(ANSWERS[name] for name in dict.fromkeys(names) if name in ANSWERS)
+        if not answers:
+            return
+        if 'steam-installer' in names:
+            self.say("Steam's installer asks to accept Valve's Steam licence: setup answers \"I agree\" for you "
+                     '(the TV step, which you chose, installs Steam).')
+        result = self._call(['debconf-set-selections'], 60, input=answers)
+        if result.returncode:
+            raise RuntimeError('Could not answer the setup questions of ' + ', '.join(n for n in names if n in ANSWERS)
+                               + ' beforehand: ' + _reason(result))
 
     def finish_configuring(self, names):
         """Packages an interrupted installation left unpacked but not set up are set up
@@ -758,10 +994,17 @@ class Debian(PackageLock, Family):
         if not ours:
             return              # nothing of this installation (someone else's is theirs)
         # Only these and the unfinished packages they need, never someone else's.
-        result = self._call(['dpkg', '--configure', *self._with_dependencies(ours, pending)], 1800)
+        self.answer_questions(ours)
+        chosen = self._with_dependencies(ours, pending)
+        result = self._call(['dpkg', '--configure', *chosen], 1800)
         if result.returncode:
-            raise RuntimeError('dpkg could not finish setting up the packages: ' + _reason(result)
-                               + '. Their services stay switched off; fix the problem, then run setup again.')
+            # Setup cannot go on past it (apt refuses to install anything while a package
+            # is half set up), so it says which, and both ways out.
+            raise RuntimeError('dpkg could not finish setting up ' + ', '.join(chosen) + ' (left unfinished by an '
+                               'earlier installation): ' + _reason(result) + '. Their services stay switched off. '
+                               'Fix the problem and run setup again; or, if you no longer need ' + ', '.join(ours)
+                               + ', remove ' + ('it' if len(ours) == 1 else 'them') + ' (sudo apt-get remove '
+                               + ' '.join(ours) + ') and run setup again.')
 
     def _with_dependencies(self, names, pending):
         """These packages plus the unfinished packages they need, directly or not. For a
@@ -809,9 +1052,8 @@ class Debian(PackageLock, Family):
         with self.locked():
             system, codename = self.vendor_release()
             for repository in dict.fromkeys(self.repositories.values()):
-                listing = self.path('/etc/apt/sources.list.d/' + repository.name + '.list')
-                if listing not in self.sources(repository.address) \
-                        or not self._ours(repository, listing, system, codename):
+                listing = self.own_listing(repository, system, codename)
+                if not listing:
                     continue
                 try:
                     self.add_repository(repository)
@@ -821,14 +1063,21 @@ class Debian(PackageLock, Family):
                                            'be downloaded: ' + str(exc)) from None
                     log('Keeping the ' + repository.name + ' repository as it is for now (' + str(exc) + ')')
 
+    def own_listing(self, repository, system, codename):
+        """NekoServer's own definition of this repository, when apt uses it (else None)."""
+        listing = self.path('/etc/apt/sources.list.d/' + repository.name + '.list')
+        if listing in self.sources(repository.address) and self._ours(repository, listing, system, codename):
+            return listing
+        return None
+
     def _usable(self, listing):
-        """The key the definition points to is there (apt can use it as it is)."""
+        """The key the definition points to is there and is a key (apt can use it as it is)."""
         found = re.search(r'signed-by=([^\s\]]+)', listing.read_text(errors='replace'))
-        key = self.path(found.group(1)) if found else None
-        return bool(key and key.is_file() and key.stat().st_size)
+        return bool(found) and _valid_key_file(self.path(found.group(1)))
 
     def prepare(self, missing):
         self.refuse_conflicts(missing)
+        self.answer_questions([real for name in missing for real in self.names(name)])
         for repository in dict.fromkeys(self.repositories[name] for name in missing if name in self.repositories):
             self.add_repository(repository)
         self.refresh()
@@ -883,6 +1132,9 @@ class Debian(PackageLock, Family):
             return False
 
     def _install(self, names, timeout):
+        if not self.dpkg_idle():
+            self.say('Another program (automatic updates, say) is installing packages; apt waits for it to finish '
+                     'first (up to 10 minutes)...')
         return self._call(['apt-get', *APT_WAIT, 'install', '-y', '-o', 'Dpkg::Options::=--force-confold', *names],
                           timeout + 600)
 
@@ -987,7 +1239,7 @@ class Fedora(PackageLock, Family):
     # Fedora's own container packages that would conflict with Docker's.
     conflicts = ('moby-engine', 'podman-docker', 'containerd')
 
-    def __init__(self, run=subprocess.run, release=None, fetch=_fetch):
+    def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release)
         self.fetch = fetch
 
@@ -1037,8 +1289,9 @@ class Fedora(PackageLock, Family):
             raise RuntimeError(f'Checking the {repository.maker} repository failed (HTTP {exc.code} from {url}); '
                                'try again later') from None
         except (OSError, http.client.HTTPException) as exc:
-            raise RuntimeError(f'Reaching the {repository.maker} repository failed ({getattr(exc, "reason", exc)}). '
-                               'Check that this PC is connected to the internet, then run setup again') from None
+            reason = str(getattr(exc, 'reason', exc))
+            raise RuntimeError(f'Reaching the {repository.maker} repository failed ({reason}). Check that this PC is '
+                               'connected to the internet, then run setup again' + clock_hint(reason)) from None
 
     def add_repository(self, repository):
         """Make a maker's repository usable. Someone else's definition of it is used as it
@@ -1121,7 +1374,7 @@ class Rhel(Fedora):
     epel = frozenset({'caddy', 'qrencode'})
     EPEL_ADDRESS = 'repo=epel-'      # in every EPEL repository definition (its metalink)
 
-    def __init__(self, run=subprocess.run, release=None, fetch=_fetch):
+    def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release, fetch)
         # Docker packages RHEL itself under rhel/ and its rebuilds under centos/; Tailscale
         # packages them all under rhel/<major version>.
@@ -1231,7 +1484,7 @@ def detect(path=OS_RELEASE):
     return next((family for family in FAMILIES if family.matches(release)), None)
 
 
-def current(run=subprocess.run, path=OS_RELEASE):
+def current(run=run_command, path=OS_RELEASE):
     """This system's family, ready to use. Raises Unsupported on other systems."""
     family = detect(path)
     release = os_release(path)
@@ -1353,11 +1606,13 @@ def main(argv):
     if len(argv) != 1 or argv[0] not in commands:
         print('usage: python3 host.py bootstrap|repair|toolchain', file=sys.stderr)
         return 2
+    before = _stop_on_hangup()
     try:
         commands[argv[0]]()
     except KeyboardInterrupt:
-        print('\nStopped. Packages already installed stay installed (switched off). Run  sudo bash install.sh  again '
-              'when you are ready.', file=sys.stderr)
+        with contextlib.suppress(OSError):      # the terminal may be gone
+            print('\nStopped. Packages already installed stay installed (switched off). Run  sudo bash install.sh  '
+                  'again when you are ready.', file=sys.stderr)
         return 130
     except subprocess.TimeoutExpired as exc:
         print('ERROR: ' + str(exc.cmd[0]) + ' did not finish within ' + str(int(exc.timeout) // 60)
@@ -1366,7 +1621,29 @@ def main(argv):
     except (RuntimeError, OSError, http.client.HTTPException) as exc:
         print('ERROR: ' + str(exc), file=sys.stderr)
         return 1
+    finally:
+        for number, handler in before.items():
+            signal.signal(number, handler)
     return 0
+
+
+HANGUPS = (signal.SIGHUP, signal.SIGTERM)
+
+
+def _stop_on_hangup():
+    """A closed terminal or SSH connection (SIGHUP), or the system shutting down
+    (SIGTERM), stops host.py as Ctrl+C does, so the cleanup in its finally blocks still
+    runs: start protection (policy-rc.d, the masks) lifted once nothing is left to tidy.
+    Only the first one: a second does not cut that cleanup short. Returns the handlers
+    there were before."""
+    stopping = []
+
+    def stop(number, frame):
+        if not stopping:
+            stopping.append(number)
+            raise KeyboardInterrupt
+
+    return {number: signal.signal(number, stop) for number in HANGUPS}
 
 
 if __name__ == '__main__':

@@ -44,6 +44,9 @@ A family can also override:
 - `journal`: where an installation is recorded before it starts, so one that fails, times out or is cut off is tidied up by `reconcile()`, at once when the package tools have stopped, or else at the next install or setup run.
 - `protect(before)`, run just before installing: Debian masks the new services and writes a `policy-rc.d`, and both stay until `settle` has switched the services off.
 - `locked()`: one package job at a time across processes (`/run/nekoserver-packages.lock`). `install.sh` also holds `/run/nekoserver-setup.lock` for the whole setup.
+- `wait_until_idle()`: wait until the package tools have stopped (another program's job, or one that was cut off). Arch removes a `db.lck` that no process has open (libalpm keeps it open while it works); the others wait for the lock to be free. Every wait says when it starts.
+
+The package managers (`pacman`, `apt-get`, `dpkg`, `dnf`, `zypper`) are run through `host.run_command`: one that runs out of time, or is running when setup is stopped, is asked to stop (SIGINT, then SIGTERM after five minutes) and waited for, never killed. `retrying()` tries a command again when a source did not answer (`TRANSIENT`), and waits up to 10 minutes, without counting attempts, while another program holds the package manager's lock (`BUSY`). A question a package asks while it is set up is answered beforehand from `ANSWERS` (debconf on Debian: Steam's licence).
 - `repair()`: brings NekoServer's own package-manager settings up to date on every setup run, whether or not anything needs installing. `install.sh` runs it (`python3 host.py repair`) before the package manager first runs.
 - `reboot_pending(root)`: Debian and Ubuntu leave `/run/reboot-required` after an update that needs a restart.
 

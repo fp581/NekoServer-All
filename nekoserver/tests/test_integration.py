@@ -218,6 +218,8 @@ class InstallScriptTests(unittest.TestCase):
         text = text.replace('system_path=/var/cache/pacman', 'system_path=' + str(system_path))
         text = re.sub(r'(?m)^exec python3 .*$', 'echo "START $*" >> "$LOG"', text)
         text = re.sub(r'(?m)^    python3 "\$ROOT/host.py" bootstrap$', '    echo BOOTSTRAP >> "$LOG"', text)
+        # The system check reads this machine; logged instead (capabilities' own tests check it).
+        text = text.replace('python3 "$ROOT/capabilities.py" preflight || exit 1', 'echo PREFLIGHT >> "$LOG"')
         text = text.replace('/run/reboot-required', str(self.root / 'reboot-required'))
         text = text.replace('/run/ostree-booted', str(self.root / 'ostree-booted'))
         text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
@@ -245,6 +247,24 @@ class InstallScriptTests(unittest.TestCase):
         result = subprocess.run(['bash', str(script), *args], capture_output=True, text=True, timeout=60,
                                 env={**os.environ, 'PATH': path, 'LOG': str(self.log)})
         return result, self.log.read_text()
+
+    def test_finish_update_builds_and_finishes_only_the_unfinished_update(self):
+        # Setup refuses to run while a monthly update is unfinished; --finish-update is
+        # the one way for a newer release's fix to finish it: no system update, no steps.
+        finish = ('python3 "$ROOT/installer.py" --finish-update',
+                  'echo "START --finish-update" >> "$LOG"')
+        (self.root / 'maintenance-resume.json').write_text('{"version": "0.39.4", "phase": "restoring"}')
+        result, log = self.run_script(self.root, args=('--finish-update',), replace=(finish,))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('START --finish-update', log)
+        self.assertNotIn('PACMAN', log)
+        self.assertNotIn('BOOTSTRAP', log)
+        # Without one, it says so and stops.
+        (self.root / 'maintenance-resume.json').unlink()
+        result, log = self.run_script(self.root, args=('--finish-update',), replace=(finish,))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('No monthly update is waiting', result.stdout)
+        self.assertNotIn('START', log)
 
     def test_real_df_measures_and_the_setup_starts(self):
         self.assertTrue(shutil.which('df'))
@@ -501,7 +521,81 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('pacman is still locked', result.stderr)
         self.assertIn('sudo rm ' + str(lock), result.stderr)
         self.assertTrue(lock.exists())
-        self.assertEqual(log, '')
+        self.assertEqual(log, 'PREFLIGHT\n')      # the system check only: pacman never ran
+
+    def processes(self, *targets):
+        """Stand-ins for /proc/<pid>/fd: one process with these files open."""
+        fds = self.root / 'proc/77/fd'
+        fds.mkdir(parents=True)
+        for number, target in enumerate(targets):
+            (fds / str(number)).symlink_to(target)
+        return [('/proc/[0-9]*/fd', str(self.root / 'proc') + '/[0-9]*/fd'), ('sleep 5', 'sleep 0')]
+
+    def test_a_pacman_lock_no_program_has_open_is_removed_at_once(self):
+        # Left by a pacman killed since this boot (a timeout, say): nothing would ever remove it.
+        lock = self.root / 'db.lck'
+        lock.write_text('')
+        os.utime(lock, (1_000_000_500, 1_000_000_500))      # after this boot
+        result, log = self.run_script(self.root, replace=self.processes('/dev/null'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(lock.exists())
+        self.assertIn('no program has it open): removed', result.stdout)
+        self.assertNotIn('waiting for it to finish', result.stdout)
+        self.assertIn('PACMAN -Syu --noconfirm', log)
+
+    def test_a_pacman_lock_a_program_has_open_is_kept(self):
+        lock = self.root / 'db.lck'
+        lock.write_text('')
+        os.utime(lock, (1_000_000_500, 1_000_000_500))
+        result, log = self.run_script(self.root, replace=self.processes('/dev/null', str(lock)))
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(lock.exists())
+        self.assertIn('waiting for it to finish (up to 10 minutes)', result.stdout)
+        self.assertIn('pacman is still locked', result.stderr)
+        self.assertEqual(log, 'PREFLIGHT\n')      # the system check only: pacman never ran
+
+    def test_a_source_apt_only_warned_about_is_tried_again(self):
+        # apt-get update exits 0 when a source did not answer; its lists from before are used.
+        self.use_debian()
+        counter = self.root / 'apt-warnings'
+        counter.write_text('1')
+        (self.root / 'bin/apt-get').write_text(
+            '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\nn=$(cat "$APT_WARNINGS")\n'
+            'case "$*" in *update) if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$APT_WARNINGS"; '
+            'echo "W: Failed to fetch https://download.docker.com/linux/ubuntu/dists/noble/InRelease  Could not resolve"; '
+            'echo "W: Some index files failed to download. They have been ignored, or old ones used instead."; fi;; esac\nexit 0\n')
+        os.environ['APT_WARNINGS'] = str(counter)
+        self.addCleanup(os.environ.pop, 'APT_WARNINGS', None)
+        result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.count('update'), 2)
+        self.assertIn('trying again in 20 seconds (2 of 3)', result.stdout)
+        self.assertNotIn('could not be reached', result.stdout)
+        # One that never answers: three attempts, then setup goes on with the lists from before.
+        counter.write_text('9')
+        result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.count('update'), 3)
+        self.assertIn('Some package sources could not be reached', result.stdout)
+        self.assertIn('START --wizard', log)
+
+    def test_a_lock_another_program_holds_is_waited_out(self):
+        self.use_debian()
+        self.flaky_apt('E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242 (packagekitd)', failures='4')
+        result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(log.count('update'), 5)          # more than three attempts: waiting is not failing
+        self.assertEqual(result.stdout.count('waiting for it to finish (up to 10 minutes)'), 1)
+        self.assertNotIn('did not answer', result.stdout)
+
+    def test_a_wrong_clock_is_named(self):
+        self.use_debian()
+        self.flaky_apt('E: Release file for http://archive.ubuntu.com/ubuntu/dists/noble/InRelease is not valid yet '
+                       '(invalid for another 5h 2min 3s). Updates for this repository will not be applied.', failures='9')
+        result, _ = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
+        self.assertEqual(result.returncode, 100)
+        self.assertIn("clock looks wrong", result.stderr)
+        self.assertIn('sudo timedatectl set-ntp true', result.stderr)
 
     def test_image_based_systems_are_refused_before_any_package_manager_runs(self):
         # Fedora Silverblue / Kinoite (ostree): Fedora by name, dnf present, /usr read-only.
@@ -632,6 +726,7 @@ class QbitMusicCategoryTests(unittest.TestCase):
         def __init__(self, music_path, torrents):
             self.categories = {'tv': {'savePath': '/data/downloads'}, 'music': {'savePath': music_path}}
             self.torrents, self.edits = torrents, []
+            self.preferences = {'save_path': '/data/downloads', 'auto_tmm_enabled': True}
 
         def login(self, *a):
             pass
@@ -641,7 +736,9 @@ class QbitMusicCategoryTests(unittest.TestCase):
 
         def call(self, endpoint, form=None, json_result=False):
             if endpoint == '/app/preferences':
-                return {'save_path': '/data/downloads'}
+                return dict(self.preferences)
+            if endpoint == '/app/setPreferences':
+                self.preferences.update(json.loads(form['json']))
             if endpoint == '/torrents/categories':
                 return self.categories
             if endpoint.startswith('/torrents/info'):
@@ -666,6 +763,29 @@ class QbitMusicCategoryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'not /data/downloads/music'):
             qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
         self.assertEqual(fake.edits, [])
+
+    def test_new_torrents_start_in_automatic_mode_so_each_category_folder_is_used(self):
+        # Manual mode (qBittorrent's default) ignores the category's folder: albums then
+        # land on the HDD, where Lidarr cannot see them.
+        import qbit_setup
+        fake = self.Fake('/data/downloads/music', [{'name': 'a show'}])
+        fake.preferences = {'save_path': '/data/downloads'}
+        qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
+        self.assertIs(fake.preferences['auto_tmm_enabled'], True)
+
+    def test_a_qbittorrent_that_does_not_keep_automatic_mode_stops_setup(self):
+        import qbit_setup
+        fake = self.Fake('/data/downloads/music', [])
+        fake.preferences = {'save_path': '/data/downloads'}
+        real = fake.call
+
+        def forgetful(endpoint, form=None, json_result=False):
+            if endpoint == '/app/setPreferences':
+                return {}
+            return real(endpoint, form, json_result)
+        fake.call = forgetful
+        with self.assertRaisesRegex(RuntimeError, 'did not retain'):
+            qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
 
     def test_shared_folder_is_fine_for_tv_and_movies(self):
         import qbit_setup
@@ -692,6 +812,7 @@ class NextcloudOffTests(unittest.TestCase):
             self.assertEqual(calls, [])  # never installed: nothing to stop
             folder = Path(data) / 'compose/nextcloud'
             folder.mkdir(parents=True)
+            (Path(data) / 'installer').mkdir()     # as on a set-up SSD
             (folder / 'compose.yaml').write_text('{}')
             (folder / '.env').write_text('DB_PASSWORD=x\n')
             with mock.patch.object(nextcloud, 'compose_image_override', return_value=[]), \
