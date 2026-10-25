@@ -49,7 +49,7 @@ def archive_folder(config):
 
 # A file Nextcloud is still receiving (backup.rs nextcloud_upload_in_progress): any other
 # name ending in .part is someone's own file, and is copied.
-NEXTCLOUD_UPLOAD = re.compile(r'\.ocTransferId[0-9]+\.part$')
+NEXTCLOUD_UPLOAD = re.compile(r'\.ocTransferId\d+\.part$')
 # The form of the name Nextcloud gives its own folder in its data folder.
 NEXTCLOUD_APPDATA = re.compile(r'appdata_oc[a-z0-9]{10}')
 

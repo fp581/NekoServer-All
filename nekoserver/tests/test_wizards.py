@@ -953,14 +953,16 @@ class RecoveryWizardTests(unittest.TestCase):
                                       'bob/files/other.txt': b'not restored'})
         shown = []
         usb = self.root / 'usb'
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None), \
-                self.assertRaisesRegex(RuntimeError, 'Nothing was restored'):
-            recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'no'), shown.append)
+        restore = mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb)
+        done = mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None)
+        replies = answers('1', 'yes', 'no')
+        with restore, done, self.assertRaisesRegex(RuntimeError, 'Nothing was restored'):
+            recovery_wizard.restore_cloud(self.config, replies, shown.append)
         said = '\n'.join(shown)
         self.assertIn('1 files that were backed up and checked are missing', said)   # bob's file is not counted
         self.assertIn('alice/files/gone.txt', said)
-        self.assertFalse((self.media / 'restored').exists() and any((self.media / 'restored').iterdir()))
+        restored = self.media / 'restored'
+        self.assertEqual(list(restored.iterdir()) if restored.exists() else [], [])
 
     def test_a_dated_version_is_repaired_from_its_live_original(self):
         archive = 'hdd/photos/archive'

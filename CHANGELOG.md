@@ -11,6 +11,7 @@ A review round of the parts no review had covered yet: recovery, the gateways an
 - **Names that end in a dot** (`notes.`) get their newest version back; **a file without an extension** (`README`) no longer takes another file's versions (`README.md`'s).
 - **The monthly restore** says where the password files are when the snapshot was made without a backup key (in it, unencrypted). **Restore tests of a photo snapshot** accept copies on a desktop drive whose path has spaces (`/run/media/you/My Passport`). **A password-list restore that cannot unpack** (a full disk) says why and leaves nothing half-done, instead of a Python traceback.
 - **Nextcloud files ending in `.part`** that are your own are backed up; only Nextcloud's own unfinished uploads are left out.
+- **Restores and media imports never read the system's own folders** (`/etc`, `/root`, `/usr` and the like), even if a settings file or a backup's own record were changed to point there. Your drives, wherever they are mounted (`/srv`, `/mnt`, `/data`, a USB drive under `/media` or `/run/media`), and folders in `/home` work as before. A drive name may also have brackets and a few other signs (`My Passport (2)`).
 - **The weekly USB copy waits** for a restore from the USB drive (up to 8 hours) and for a photo archive run still writing (up to 6 hours), instead of failing.
 
 ### Fixed: gateways and remote access

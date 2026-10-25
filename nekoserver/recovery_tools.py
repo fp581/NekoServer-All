@@ -47,17 +47,19 @@ def digest(path):
         for block in iter(lambda:stream.read(1024*1024),b''):h.update(block)
     return h.hexdigest()
 
+RECOVERY_PATH=re.compile(r'/[\w ./,()+@~-]+')
+
 def regular_files(root):
     """Every file under root, sorted, listed strictly: a folder or file that can't be read,
     a symlink or a special file stops the job (neko_common.UnreadableEntries) instead of
     being left out. Planning, copying and verifying a snapshot all use this one listing,
     so a file missing from the copy can't also be missing from its manifest."""
     text=str(root)
-    # Absolute, without '..' or control characters (and, below, without links). Spaces
-    # and other printable characters are fine: a copy on a desktop-mounted drive sits
-    # under a name such as /run/media/you/My Passport.
-    if not re.fullmatch(r'/[^\x00-\x1f\x7f]+',text) or '..' in Path(text).parts:raise RuntimeError('Recovery folder path is not a plain absolute path: '+text)
-    root=safe_path(Path(text))
+    # Absolute, without '..' (and, below, without links), in letters (any language),
+    # digits, spaces and . _ - , ( ) + @ ~: a copy on a desktop-mounted drive sits under
+    # a name such as /run/media/you/My Passport (2). Anything else is refused unread.
+    if not RECOVERY_PATH.fullmatch(text) or '..' in Path(text).parts:raise RuntimeError('Recovery folder path is not a plain absolute path: '+text)
+    root=neko_common.plain_folder(text)
     if not root.is_dir():raise RuntimeError('Recovery source directory missing')
     return sorted(path for path,_size in neko_common.strict_files(root))
 

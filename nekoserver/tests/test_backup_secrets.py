@@ -124,6 +124,25 @@ class BackupSecretsTests(unittest.TestCase):
             backup_secrets.restore(snap, self.root / 'out', 'correct horse')
         self.assertFalse((self.root / 'out').exists())
 
+    def test_a_folder_named_like_an_option_is_unpacked_into_not_read_as_one(self):
+        # tar runs inside the new folder, so its name never reaches tar's options.
+        self.make_key()
+        snap = self.seal_snapshot()
+        seen = []
+        real = backup_secrets.subprocess.run
+
+        def run(argv, **kw):
+            if argv[0] == 'tar':
+                seen.append((argv, kw.get('cwd')))
+            return real(argv, **kw)
+        target = self.root / '--to-command=sh'
+        with mock.patch.object(backup_secrets.subprocess, 'run', side_effect=run):
+            out = backup_secrets.restore(snap, target, 'correct horse')
+        self.assertEqual((out / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), SECRET)
+        argv, cwd = seen[0]
+        self.assertEqual(Path(cwd), target)
+        self.assertFalse(any(str(target) in a for a in argv))
+
     def test_a_damaged_archive_is_refused_before_anything_is_restored(self):
         # CMS decryption does not notice changed bytes; the snapshot's checksum must.
         self.make_key()

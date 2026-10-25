@@ -198,8 +198,10 @@ def restore(snapshot, destination, password, key_dir=KEY_DIR, out=print):
                      '-passin', 'fd:{fd}', '-recip', str(cert)], b'', password, timeout=600)
     destination.mkdir(mode=0o700)
     try:
-        unpacked = subprocess.run(['tar', '--extract', '--file', '-', '--no-same-owner', '--no-same-permissions',
-                                   '-C', str(destination)], input=plain, capture_output=True, timeout=600, check=False)
+        # Unpacked inside the new folder (its working directory), so the folder's name is
+        # never an argument tar could read as an option.
+        unpacked = subprocess.run(['tar', '--extract', '--file', '-', '--no-same-owner', '--no-same-permissions'],
+                                  input=plain, capture_output=True, timeout=600, check=False, cwd=destination)
     except (OSError, subprocess.TimeoutExpired) as exc:
         unpacked = None
         reason = str(exc)

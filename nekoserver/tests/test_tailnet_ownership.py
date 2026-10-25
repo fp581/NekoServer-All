@@ -118,6 +118,15 @@ class OwnershipTests(unittest.TestCase):
             self.apply()
 
 
+class PortArgumentTests(unittest.TestCase):
+    def test_only_a_port_number_reaches_tailscale_serve(self):
+        self.assertEqual(g.https('8443'), '--https=8443')
+        self.assertEqual(g.https(443), '--https=443')
+        for bad in ('0', '65536', '-1', '443 --yes', '--set-path=/x', ''):
+            with self.assertRaises(ValueError):
+                g.https(bad)
+
+
 class UninstallerRoutesTests(unittest.TestCase):
     def test_the_uninstaller_recognises_them_the_same_way(self):
         import uninstaller
