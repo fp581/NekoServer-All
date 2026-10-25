@@ -10,7 +10,7 @@ import host
 import permission_checks
 import os_checks
 from modules import docker as docker_module,tv
-from neko_common import VERSION,safe_path,atomic_json,reading_max_age,local_opener,app_port,DOCKER_STORAGE_DROPIN,dashboard_port
+from neko_common import VERSION,mount_path,safe_path,atomic_json,reading_max_age,local_opener,app_port,DOCKER_STORAGE_DROPIN,dashboard_port
 from acceptance_summary import scope_digest
 
 STATES={'pass','fail','needs_setup','warning','blocked'}
@@ -208,7 +208,13 @@ def unavailable_steps(config):
     state on the SSD): a TV step on a PC without a desktop, the USB copy with nothing to
     copy. Empty when the state cannot be read."""
     try:
-        saved=json.loads(safe_path(Path(config['data_mount'])/'installer/state/state.json').read_text())
+        # The SSD folder only as the settings checks allow it (absolute, no '..', no
+        # links), and the state file read only from inside it.
+        root=os.path.realpath(mount_path(config['data_mount']))
+        state=os.path.realpath(os.path.join(root,'installer','state','state.json'))
+        if not state.startswith(root+os.sep):
+            return set()
+        saved=json.loads(safe_path(state).read_text())
     except (OSError,ValueError,RuntimeError,KeyError,TypeError):
         return set()
     return {name for name,row in saved.items() if isinstance(row,dict) and row.get('status')=='unavailable'} if isinstance(saved,dict) else set()
