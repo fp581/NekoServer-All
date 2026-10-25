@@ -251,6 +251,12 @@ def publish_at(parent,temp,name,expected):
     os.fsync(parent)
 
 
+def copy_mode(original):
+    """A copy's permissions: read and written by the library's owner and group (the media
+    apps), and readable by other accounts only when the original was (Samba may use another
+    account than the library's owner). A copy is never more open than its original."""
+    return 0o660|(original.st_mode&0o004)
+
 def import_file(current,dest,stat,uid,gid,guard=None):
     """Copy one file next to its destination, check it, then publish it (never over an
     existing file). The destination drive is checked before writing and before publishing.
@@ -268,7 +274,7 @@ def import_file(current,dest,stat,uid,gid,guard=None):
         writer=os.open(temp,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600,dir_fd=parent)
         try:
             copy_into(reader,writer,stat)
-            os.fchmod(writer,0o664)
+            os.fchmod(writer,copy_mode(stat))
             if uid is not None:os.fchown(writer,uid,gid)
             # The original's date, so a later run recognises the copy without reading both.
             os.utime(writer,ns=(stat.st_atime_ns,stat.st_mtime_ns))

@@ -127,7 +127,8 @@ class SymlinkSafeImportTests(unittest.TestCase):
         dest = self.media / 'library/music/Album/track.flac'
         self.assertEqual(dest.read_bytes(), b'track')
         self.assertEqual(dest.stat().st_mtime_ns, 2_000_000_000)
-        self.assertEqual(oct(dest.stat().st_mode & 0o777), oct(0o664))
+        # Owner and group may write; others may read because the original was readable.
+        self.assertEqual(oct(dest.stat().st_mode & 0o777), oct(0o660 | (self.source.joinpath('Album/track.flac').stat().st_mode & 0o004)))
         self.assertFalse(any(p.name.endswith('.neko-part') for p in self.media.rglob('*')))
         # A second run finds the copy and makes none.
         self.assertEqual(source_import.copy_source(self.entry, self.media, apply=True)['copied'], 0)
@@ -320,6 +321,14 @@ class QbitAutomaticModeOnlyForLidarrTests(unittest.TestCase):
         saved, said = self.configure(('tv', 'music'), False)
         self.assertEqual(saved, [{'auto_tmm_enabled': True}])
         self.assertTrue(any('Lidarr needs it' in line and 'manual mode' in line for line in said))
+
+
+class CopyModeTests(unittest.TestCase):
+    def test_a_copy_is_never_more_open_than_its_original(self):
+        # Sonar: no copy may give other accounts more than read, and only when the original did.
+        for original, copied in ((0o644, 0o664), (0o640, 0o660), (0o600, 0o660), (0o777, 0o664), (0o606, 0o664)):
+            with self.subTest(oct(original)):
+                self.assertEqual(source_import.copy_mode(SimpleNamespace(st_mode=0o100000 | original)), copied)
 
 
 if __name__ == '__main__':
