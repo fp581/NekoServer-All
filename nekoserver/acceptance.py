@@ -10,7 +10,7 @@ import host
 import permission_checks
 import os_checks
 from modules import docker as docker_module,tv
-from neko_common import VERSION,safe_path,atomic_json,reading_max_age,local_opener,app_port,DOCKER_STORAGE_DROPIN,dashboard_port
+from neko_common import VERSION,mount_path,safe_path,atomic_json,reading_max_age,local_opener,app_port,DOCKER_STORAGE_DROPIN,dashboard_port
 from acceptance_summary import scope_digest
 
 STATES={'pass','fail','needs_setup','warning','blocked'}
@@ -157,6 +157,17 @@ def dashboard_check(port,now):
 
 OPTIONAL=('tv','notifications','heartbeat')
 
+def restore_tests(modules,config):
+    """The witnessed restore tests of the backups set up (beside the photo restore): one per
+    kind of data, as the dashboard's RESTORE TRIED asks for (status_checks.restore_tests)."""
+    out=[]
+    if 'photo_backup' in modules and config.get('nextcloud',{}).get('enabled') is True:out += [('cloud_restore','Nextcloud files restore from the USB copy','Run  sudo bash install.sh --recover , choose "Nextcloud files" and restore one user into a new folder. Open a few files of different kinds and compare them with the originals. Uploading them back is your choice; nothing live is replaced.')]
+    if 'music_backup' in modules and config.get('music',{}).get('backup_enabled',True) is not False:out += [('music_restore','Music library restore','In the release folder, run  sudo python3 music-recovery.py --backup <HDD>/backups/music --snapshot <HDD>/backups/music/snapshots/<newest> --destination <a new folder>  (<HDD> is your media drive, /mnt/nekoserver-media by default). Play a few restored songs and check the folders match. Nothing live is replaced.')]
+    if 'host_backup' in modules:out += [('host_restore','Host and user restore rehearsal','Run host-recovery.py verify/restore into a new directory. Compare selected save/share files and retained Unix identity/Samba data. Rehearse restoration independently; links remain inert and no live settings are automatically applied.')]
+    if 'app_backup' in modules:out += [('app_restore','Media application restore rehearsal','Run app-recovery.py verify and restore into a new directory. Independently rehearse app startup with blocked network access; verify accounts, settings and databases. Check failure/reboot restart recovery on the server.')]
+    return out
+
+
 def manual_tests(modules,config):
     out=[('missing_drive','Missing-drive startup protection','With independent backups and the server shut down, test a deliberately unavailable data drive. Verify dependent services are blocked, then shut down and reconnect. Never unplug a live irreplaceable drive.')]
     if 'media' in modules:out += [('media_workflow','Media request, import and playback','Using media you are allowed to acquire, complete the configured request/download/import/playback chain. Check Jellyfin hardware acceleration if wanted.'),('music_playback','Music import and streaming','Verify configured music imports and actual Navidrome playback from the intended client.')]
@@ -169,9 +180,8 @@ def manual_tests(modules,config):
     if 'tv' in modules:out += [('tv_session','HDMI, sound, controller and Remote Play','Verify TV picture/audio, controller input, Steam login/Remote Play and browser/media launchers. Confirm idle AC settings keep server jobs running.')]
     if 'heartbeat' in modules:out += [('outage_delivery','Independent outage alert','Confirm receipt at the outside monitor, stop only nekoserver-heartbeat.timer until period plus grace has elapsed, witness an alert, re-enable/start it and witness recovery. Keep the monitor outside this PC and its power/network failure domain.')]
     if 'notifications' in modules:out += [('notification_delivery','Phone notification delivery','Subscribe the intended phone to the protected ntfy topic; run the native test command and witness receipt with the dashboard closed. Rehearse problem/recovery delivery and network interruption without touching irreplaceable drives.')]
-    if 'host_backup' in modules:out += [('host_restore','Host and user restore rehearsal','Run host-recovery.py verify/restore into a new directory. Compare selected save/share files and retained Unix identity/Samba data. Rehearse restoration independently; links remain inert and no live settings are automatically applied.')]
-    if 'app_backup' in modules:out += [('app_restore','Media application restore rehearsal','Run app-recovery.py verify and restore into a new directory. Independently rehearse app startup with blocked network access; verify accounts, settings and databases. Check failure/reboot restart recovery on the server.')]
     if 'recovery' in modules:out += [('os_recovery','OS replacement/recovery exercise','With independent verified backups, rehearse the documented supported OS recovery and confirm retained data/apps and reboot behaviour. Automatic Bazzite reattachment remains unsupported.')]
+    out += restore_tests(modules,config)
     return [item(key,name,'needs_setup',detail) for key,name,detail in out]
 
 def log_rotation():
@@ -193,11 +203,29 @@ def log_rotation_finding(unbounded):
                           'keep unlimited logs until they are recreated after Docker restarts (a reboot, then the '
                           'monthly update or rerunning setup).')
 
+def unavailable_steps(config):
+    """The steps setup itself recorded as not available on this PC ("unavailable" in its
+    state on the SSD): a TV step on a PC without a desktop, the USB copy with nothing to
+    copy. Empty when the state cannot be read."""
+    try:
+        # The SSD folder only as the settings checks allow it (absolute, no '..', no
+        # links), and the state file read only from inside it.
+        root=os.path.realpath(mount_path(config['data_mount']))
+        state=os.path.realpath(os.path.join(root,'installer','state','state.json'))
+        if not state.startswith(root+os.sep):
+            return set()
+        saved=json.loads(safe_path(state).read_text())
+    except (OSError,ValueError,RuntimeError,KeyError,TypeError):
+        return set()
+    return {name for name,row in saved.items() if isinstance(row,dict) and row.get('status')=='unavailable'} if isinstance(saved,dict) else set()
+
 def accepted_modules(config,modules):
     """The planned steps that have something to accept: not optional extras you turned
-    down ("wanted": false), nor extras this Linux can't have yet."""
+    down ("wanted": false), nor what this PC can't have (the same decision the step
+    itself makes, and what setup recorded as not available)."""
+    skipped=unavailable_steps(config)
     return [m for m in modules if not (m in OPTIONAL and config.get(m,{}).get('wanted') is False)
-            and not (m=='tv' and not tv.available())]
+            and not (m=='tv' and not tv.available()) and m not in skipped]
 
 def inspect(config,profile='full',now=None):
     now=time.time() if now is None else now;run={'format':'neko-acceptance-v1','version':VERSION,'generated_at':now,'run_id':str(uuid.uuid4()),'profile':profile,'automatic':[],'manual':[],'scope':'selected deployment profile; manual results are user reported'}

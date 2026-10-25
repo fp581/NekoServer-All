@@ -643,6 +643,15 @@ class Debian(PackageLock, Family):
         result = self._call(['dpkg-query', '-W', '-f=${Status}', package], 30)
         return result.returncode == 0 and result.stdout.split()[1:] == ['ok', 'installed']
 
+    def candidate(self, package):
+        """(major, minor) of the version apt would install for this package, or None."""
+        if not self.ready():
+            return None
+        self.refresh()
+        policy = self._call(['apt-cache', 'policy', package], 60).stdout or ''
+        match = re.search(r'Candidate:\s*(?:\d+:)?(\d+)\.(\d+)', policy)
+        return (int(match[1]), int(match[2])) if match else None
+
     def available(self, wanted):
         if not self.ready():
             return False
@@ -1257,8 +1266,10 @@ def bootstrap(family=None, log=print):
 
 # What building the runtime on this PC needs (runtime/build.py): Rust with cargo, and
 # the C compiler cargo links with. Cargo.toml's rust-version is the oldest Rust that
-# builds it; a family whose Rust is older offers a newer one under a versioned name
-# (Ubuntu 24.04: rustc-1.85 and cargo-1.85).
+# builds it; a family whose Rust is older offers a newer one: Ubuntu 24.04 beside the old
+# one under a versioned name (rustc-1.85, cargo-1.85), Debian 12 in place of it as
+# rustc-web and cargo-web (Debian's newer Rust, the same rustc and cargo commands).
+DEBIAN_NEWER_RUST = ('rustc-web', 'cargo-web')
 TOOLCHAIN_PACKAGES = ('rust', 'gcc')
 RUST_VERSION = re.compile(r'^rust-version\s*=\s*"(\d+)\.(\d+)', re.MULTILINE)
 
@@ -1286,18 +1297,55 @@ def toolchain(family=None, log=print, oldest=None, version=rustc_version):
     (which build.py then finds by its versioned name)."""
     family = family or current()
     oldest = oldest or oldest_rust()
+    label = '%d.%d' % oldest
     log('Installing what building the runtime needs: Rust and a C compiler')
+    if debian_needs_newer_rust(family, oldest, version):
+        return debian_newer_rust(family, oldest, label, log, version)
     family.install(TOOLCHAIN_PACKAGES)
     found = version()
     if found is not None and found >= oldest:
         return
-    label = '%d.%d' % oldest
     if family.name != 'debian':
         raise RuntimeError('Rust ' + label + ' or newer is needed to build the runtime; this system has '
                            + ('%d.%d' % found if found else 'none') + '. Update it, or install a newer Rust and run setup again.')
     # Ubuntu keeps the plain rustc at the release's version and newer ones beside it.
     log('This system\'s Rust is older than ' + label + ': installing rustc-' + label + ' and cargo-' + label)
     family.install(['rustc-' + label, 'cargo-' + label])
+
+
+def debian_needs_newer_rust(family, oldest, version=rustc_version):
+    """Debian itself (not Ubuntu), whose plain rustc is older than the runtime needs (Debian
+    12 has 1.63): its newer Rust, rustc-web, is the way. Nothing to do when a new enough
+    Rust is already there."""
+    if family.name != 'debian' or family.ubuntu():
+        return False
+    found = version()
+    if found is not None and found >= oldest:
+        return False
+    plain = family.candidate('rustc')
+    return plain is None or plain < oldest
+
+
+def debian_newer_rust(family, oldest, label, log, version=rustc_version):
+    """rustc-web and cargo-web in place of the older rustc and cargo. They take over the same
+    commands, so an older rustc already installed (perhaps for something else) is never
+    replaced without you: setup says how instead."""
+    newer = family.candidate(DEBIAN_NEWER_RUST[0])
+    if newer is None or newer < oldest:
+        raise RuntimeError('Rust ' + label + ' or newer is needed to build the runtime, and this Debian offers none (rustc-web '
+                           + (f'{newer[0]}.{newer[1]}' if newer else 'is not available') + '). Make sure the "main" and security '
+                           'repositories are enabled in /etc/apt/sources.list, or use Debian 13 or newer.')
+    found = version()
+    if found is not None or family.has('rustc') or family.has('cargo'):
+        raise RuntimeError('This system\'s Rust (' + (f'{found[0]}.{found[1]}' if found else 'rustc') + ') is older than ' + label
+                           + ', which building the runtime needs. Debian\'s newer Rust takes its place: run  sudo apt install '
+                           'rustc-web cargo-web  (apt replaces the older rustc and cargo with them), then  sudo bash install.sh  again.')
+    log('Debian\'s own Rust is older than ' + label + ': installing rustc-web and cargo-web (Debian\'s newer Rust, the same commands)')
+    family.install(['gcc', *DEBIAN_NEWER_RUST])
+    found = version()
+    if found is None or found < oldest:
+        raise RuntimeError('rustc-web was installed, but rustc still reports ' + (f'{found[0]}.{found[1]}' if found else 'nothing')
+                           + ' (Rust ' + label + ' is needed); check  rustc --version  and run setup again')
 
 
 def main(argv):

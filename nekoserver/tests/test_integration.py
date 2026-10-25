@@ -369,6 +369,17 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('APT-GET', log)
         self.assertIn('START --recover', log)
 
+    def test_recovery_opens_without_building_the_runtime(self):
+        # A reinstalled PC without the runtime (or one it cannot run): no Rust, no build.
+        self.use_debian()
+        os.environ['NEEDS_BUILD'] = '1'
+        self.addCleanup(os.environ.pop, 'NEEDS_BUILD', None)
+        result, log = self.run_script(self.root, args=('--recover',))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('TOOLCHAIN', log)
+        self.assertNotIn('BUILD', log)
+        self.assertIn('START --recover', log)
+
     def test_a_second_setup_stops_before_any_change(self):
         lock = self.root / 'setup.lock'
         holder = subprocess.Popen(['flock', str(lock), 'sleep', '30'])

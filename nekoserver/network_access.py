@@ -20,13 +20,23 @@ def lan(config):
     if not 16<=net.prefixlen<=30 or ipaddress.ip_address(ip) not in net or ipaddress.ip_address(ip) in (net.network_address,net.broadcast_address) or not any(net.subnet_of(ipaddress.ip_network(n)) for n in ('10.0.0.0/8','172.16.0.0/12','192.168.0.0/16')):raise RuntimeError('LAN subnet must be a restricted RFC1918 network containing the server')
     return ip,str(net)
 
+# Interfaces that are never the home network: the loopback, Docker's (docker0, and
+# br-<12 hex> for each Docker network), Podman's, libvirt's virtual networks, container
+# veths, Tailscale and VPN tunnels. A bridge of your own that carries the home network
+# (br0, bridge0, br-lan) is not one of them. (startup.rs internal_interface is the same.)
+INTERNAL_PREFIXES=('lo','docker','veth','virbr','podman','cni-','tailscale','tun','tap','wg')
+DOCKER_NETWORK_BRIDGE=re.compile(r'br-[0-9a-f]{12}')
+
+def internal_interface(name):
+    return name.startswith(INTERNAL_PREFIXES) or DOCKER_NETWORK_BRIDGE.fullmatch(name) is not None
+
 def candidates():
     try:rows=json.loads(command(['ip','-j','address','show','up']))
     except (ValueError,RuntimeError):return []
     out=[]
     for row in rows:
         name=row.get('ifname','')
-        if not re.fullmatch(r'[A-Za-z0-9_.-]+',name) or name.startswith(('lo','docker','br','veth','virbr','tailscale','tun','tap','wg')):continue
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+',name) or internal_interface(name):continue
         for info in row.get('addr_info',[]):
             if info.get('family')!='inet' or info.get('scope')!='global':continue
             try:ip=private_ip(info.get('local'));net=str(ipaddress.ip_network(ip+'/'+str(info['prefixlen']),strict=False));lan({'gateway':{'lan_ip':ip,'lan_cidr':net}})

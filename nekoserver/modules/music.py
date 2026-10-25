@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 import music_client
+import setup_progress
 from neko_common import VERSION, atomic_json
 
 DEPENDENCIES = ['media', 'recovery', 'music_backup']
@@ -36,7 +37,8 @@ def run(ctx):
     result = music_client.check(ctx.config)
     if result['status'] != 'pass' and sys.stdin.isatty():
         release = Path(ctx.config['data_mount'])/'installer/releases'/('v'+VERSION)
-        code = subprocess.run([sys.executable, str(release/'music-setup.py'), '--config', str(ctx.config_path), '--configure'], check=False).returncode
+        with setup_progress.in_terminal('Music listener setup'):
+            code = subprocess.run([sys.executable, str(release/'music-setup.py'), '--config', str(ctx.config_path), '--configure'], check=False).returncode
         if code == 2:
             raise RuntimeError('Music listener setup failed; credentials/configuration preserved')
         result = music_client.check(ctx.config)

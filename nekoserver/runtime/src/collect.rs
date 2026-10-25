@@ -753,12 +753,82 @@ fn parse_startup(out: &str) -> Vec<Value> {
         })
         .collect()
 }
+/// Why a job is intentionally not part of this server now (its app or backup switched
+/// off), or None when its schedule is expected (status_checks.retired says the same).
+fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
+    let immich = cfg["photos"]["deploy_immich"] == true;
+    match key {
+        "music" if cfg["music"]["backup_enabled"] == false => {
+            Some("Switched off: the music backup is turned off in the settings")
+        }
+        "archive" | "database" if !immich => Some("Switched off: Immich is not set up"),
+        "external" if !immich && cfg["nextcloud"]["enabled"] != true => {
+            Some("Switched off: neither Immich nor Nextcloud is set up")
+        }
+        _ => None,
+    }
+}
+/// The witnessed restore tests (acceptance.py manual tests) that show this backup can
+/// be restored: one per kind of data it holds (status_checks.restore_tests says the same).
+fn restore_tests(cfg: &Value, key: &str) -> Value {
+    let immich = cfg["photos"]["deploy_immich"] == true;
+    let cloud = cfg["nextcloud"]["enabled"] == true;
+    let tests: Vec<&str> = match key {
+        "archive" | "database" => vec!["independent_restore"],
+        "external" => [(immich, "independent_restore"), (cloud, "cloud_restore")]
+            .into_iter()
+            .filter_map(|(on, test)| on.then_some(test))
+            .collect(),
+        "music" => vec!["music_restore"],
+        "applications" => vec!["app_restore"],
+        "host" => vec!["host_restore"],
+        _ => vec![],
+    };
+    json!(tests)
+}
+/// The backup's timer as the dashboard shows it, and whether systemd could be asked.
+fn timer_of(unit: &str) -> (Value, bool) {
+    let (code, s) = probe(
+        &[
+            "systemctl",
+            "show",
+            &format!("{unit}.timer"),
+            "--property=LoadState,ActiveState,NextElapseUSecRealtime",
+        ],
+        8,
+    );
+    let fields = s
+        .lines()
+        .filter_map(|s| s.split_once('='))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let next = fields
+        .get("NextElapseUSecRealtime")
+        .filter(|s| !s.is_empty())
+        .map(|s| chars(s, 80));
+    (
+        json!({"installed":code==0&&fields.get("LoadState")==Some(&"loaded"),"active":fields.get("ActiveState")==Some(&"active"),"next_run":next}),
+        code == 0 && fields.contains_key("LoadState"),
+    )
+}
+/// A schedule that stopped while its job is still wanted: switched off, or gone after it
+/// had run. None while it is in place (or systemd could not be asked).
+fn schedule_stopped(timer: &Value, known: bool, ever_ran: bool) -> Option<String> {
+    if !known {
+        None
+    } else if timer["installed"] == true && timer["active"] != true {
+        Some("Run setup again to switch its schedule back on.".to_string())
+    } else if timer["installed"] != true && ever_ran {
+        Some(
+            "Its schedule is gone, so it no longer runs: run setup again to put it back."
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
 fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
     let mut out = vec![];
     for (key, name, unit, base_max) in JOBS {
-        if key == "music" && cfg["music"]["backup_enabled"] == false {
-            continue;
-        }
         let weekly =
             cfg["photos"]["backup_schedule"] == "weekly" && ["archive", "database"].contains(&key);
         let report_key = if weekly { "database" } else { key };
@@ -804,23 +874,11 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
             first_overdue(success.as_f64(), installed, now, max)
         };
         let state = if stale { "stale" } else { status };
-        let (code, s) = probe(
-            &[
-                "systemctl",
-                "show",
-                &format!("{unit}.timer"),
-                "--property=LoadState,ActiveState,NextElapseUSecRealtime",
-            ],
-            8,
-        );
-        let fields = s
-            .lines()
-            .filter_map(|s| s.split_once('='))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let next = fields
-            .get("NextElapseUSecRealtime")
-            .filter(|s| !s.is_empty())
-            .map(|s| chars(s, 80));
+        let (timer, known) = timer_of(unit);
+        if let Some(why) = retired(cfg, key) {
+            out.push(json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]}));
+            continue;
+        }
         // A worker that systemd could not even start writes no report: its service says so.
         let (_, service) = probe(
             &[
@@ -839,7 +897,15 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
             service_failure(unit, &service)
         };
         let state = if unrun.is_some() { "fail" } else { state };
+        let stopped = if ["fail", "running"].contains(&state) {
+            None
+        } else {
+            schedule_stopped(&timer, known, !success.is_null())
+        };
+        let state = if stopped.is_some() { "stale" } else { state };
         let reason = if let Some(why) = unrun {
+            Some(why)
+        } else if let Some(why) = stopped {
             Some(why)
         } else if status == "fail" {
             Some(failure_reason(&saved))
@@ -854,7 +920,7 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
         } else {
             None
         };
-        out.push(json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":{"installed":code==0&&fields.get("LoadState")==Some(&"loaded"),"active":fields.get("ActiveState")==Some(&"active"),"next_run":next},"reason":reason}));
+        out.push(json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key)}));
     }
     json!(out)
 }
@@ -985,11 +1051,13 @@ fn heartbeat(cfg: &Value, now: f64) -> Value {
         .filter_map(|s| s.split_once('='))
         .collect::<std::collections::BTreeMap<_, _>>();
     let installed = code == 0 && fields.get("LoadState") == Some(&"loaded");
+    // A timer switched off by choice ("wanted": false) is not a missed check-in.
+    let running = installed && fields.get("ActiveState") == Some(&"active");
     let interval = cfg["heartbeat"]["interval_seconds"]
         .as_u64()
         .filter(|v| (60..=3600).contains(v))
         .unwrap_or(300);
-    let state = if installed
+    let state = if running
         && attempt
             .as_f64()
             .is_none_or(|t| now - t > interval as f64 + 90.0)
@@ -1144,6 +1212,22 @@ fn recovery(cfg: &Value, data_ok: bool, media_ok: bool) -> Value {
     }
     r
 }
+/// The photo and USB-copy settings in the acceptance scope (acceptance_summary.PHOTO_SCOPE):
+/// a different USB drive or archive folder makes an earlier acceptance run outdated.
+fn photo_scope(cfg: &Value) -> Value {
+    let photos = &cfg["photos"];
+    let mut v = json!({"deploy_immich": photos["deploy_immich"].as_bool().unwrap_or(false)});
+    for key in [
+        "external_backup_uuid",
+        "external_backup_fstype",
+        "archive_dir",
+        "backup_weekday",
+        "backup_time",
+    ] {
+        v[key] = photos[key].clone();
+    }
+    v
+}
 fn scope(cfg: &Value) -> String {
     if let Some(value) = cfg["acceptance_scope"].as_str().filter(|v| {
         v.len() == 64
@@ -1152,7 +1236,7 @@ fn scope(cfg: &Value) -> String {
     }) {
         return value.into();
     }
-    let v = json!({"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"external_backup_mount":cfg["external_backup_mount"],"storage":cfg["storage"],"review_settings":{"server_os":cfg["server_os"],"heartbeat":cfg["heartbeat"],"host_backup":cfg["host_backup"],"tv":cfg["tv"],"networking":cfg["networking"],"dashboard":cfg["dashboard"],"monitoring":cfg["monitoring"],"app_backup":cfg["app_backup"],"nextcloud":cfg["nextcloud"],"maintenance":cfg["maintenance"]},"runtime":{"backend":cfg["runtime"]["backend"]},"gateway":{"services":cfg["gateway"]["services"],"lan_ip":cfg["gateway"]["lan_ip"],"lan_cidr":cfg["gateway"]["lan_cidr"]},"services":cfg["media"]["services"].as_array().cloned().unwrap_or_default(),"photos":cfg["photos"]["deploy_immich"].as_bool().unwrap_or(false)});
+    let v = json!({"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"external_backup_mount":cfg["external_backup_mount"],"storage":cfg["storage"],"review_settings":{"server_os":cfg["server_os"],"heartbeat":cfg["heartbeat"],"host_backup":cfg["host_backup"],"tv":cfg["tv"],"networking":cfg["networking"],"dashboard":cfg["dashboard"],"monitoring":cfg["monitoring"],"app_backup":cfg["app_backup"],"nextcloud":cfg["nextcloud"],"maintenance":cfg["maintenance"]},"runtime":{"backend":cfg["runtime"]["backend"]},"gateway":{"services":cfg["gateway"]["services"],"lan_ip":cfg["gateway"]["lan_ip"],"lan_cidr":cfg["gateway"]["lan_cidr"]},"services":cfg["media"]["services"].as_array().cloned().unwrap_or_default(),"photos":photo_scope(cfg)});
     common::sha(&serde_json::to_vec(&v).unwrap())
 }
 fn manual(key: &str) -> Option<&'static str> {
@@ -1167,6 +1251,8 @@ fn manual(key: &str) -> Option<&'static str> {
         "music_playback" => Some("Music streaming"),
         "photo_preservation" => Some("Photo deletion safety"),
         "independent_restore" => Some("Independent full restore"),
+        "cloud_restore" => Some("Nextcloud files restore"),
+        "music_restore" => Some("Music library restore"),
         "external_backup" => Some("External copy/reconnect"),
         "remote_permissions" => Some("Remote permissions"),
         "tv_session" => Some("TV and controller"),
@@ -1551,7 +1637,8 @@ fn notification_status(now: f64) -> Value {
     } else {
         "unknown"
     };
-    if timer["installed"] == true
+    // A timer switched off by choice ("wanted": false) is not an overdue delivery check.
+    if timer["active"] == true
         && saved["generated_at"]
             .as_f64()
             .is_none_or(|t| t > now + 30.0 || now - t > 180.0)
@@ -1666,6 +1753,75 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn each_backup_names_the_restore_tests_of_what_it_holds() {
+        let cloud_only = json!({"photos":{"deploy_immich":false},"nextcloud":{"enabled":true}});
+        assert_eq!(
+            restore_tests(&cloud_only, "external"),
+            json!(["cloud_restore"])
+        );
+        let both = json!({"photos":{"deploy_immich":true},"nextcloud":{"enabled":true}});
+        assert_eq!(
+            restore_tests(&both, "external"),
+            json!(["independent_restore", "cloud_restore"])
+        );
+        assert_eq!(restore_tests(&both, "music"), json!(["music_restore"]));
+        assert_eq!(restore_tests(&both, "maintenance"), json!([]));
+        for key in [
+            "independent_restore",
+            "cloud_restore",
+            "music_restore",
+            "app_restore",
+            "host_restore",
+        ] {
+            assert!(manual(key).is_some(), "{key}");
+        }
+    }
+    #[test]
+    fn jobs_of_a_switched_off_app_are_retired_not_overdue() {
+        let both = json!({"photos":{"deploy_immich":true},"nextcloud":{"enabled":true}});
+        for key in ["music", "archive", "database", "external", "host"] {
+            assert_eq!(retired(&both, key), None, "{key}");
+        }
+        let cloud_only = json!({"photos":{"deploy_immich":false},"nextcloud":{"enabled":true}});
+        assert!(retired(&cloud_only, "archive").is_some());
+        assert!(retired(&cloud_only, "database").is_some());
+        assert_eq!(retired(&cloud_only, "external"), None);
+        let neither = json!({"photos":{"deploy_immich":false},"music":{"backup_enabled":false}});
+        assert!(retired(&neither, "external").is_some());
+        assert!(retired(&neither, "music").is_some());
+        assert_eq!(retired(&neither, "applications"), None);
+    }
+    #[test]
+    fn a_wanted_schedule_that_stopped_is_flagged() {
+        let on = json!({"installed":true,"active":true});
+        let off = json!({"installed":true,"active":false});
+        let gone = json!({"installed":false,"active":false});
+        assert_eq!(schedule_stopped(&on, true, true), None);
+        assert!(schedule_stopped(&off, true, false).is_some());
+        assert!(schedule_stopped(&gone, true, true).is_some());
+        // Never set up yet, or systemd could not be asked: no evidence.
+        assert_eq!(schedule_stopped(&gone, true, false), None);
+        assert_eq!(schedule_stopped(&off, false, true), None);
+    }
+    /// The same scope as acceptance_summary.scope_digest for the same settings
+    /// (test_acceptance_scope.py checks this digest on the Python side).
+    #[test]
+    fn the_acceptance_scope_names_the_usb_drive_and_archive_like_python() {
+        let mut cfg = json!({"data_mount":"/srv/nekoserver","media_mount":"/mnt/m",
+            "photos":{"deploy_immich":true,"external_backup_uuid":"cccc-3333","archive_dir":"photos/archive"},
+            "media":{"services":["jellyfin"]},"gateway":{"lan_ip":"192.168.1.5"}});
+        assert_eq!(
+            scope(&cfg),
+            "4a3c4b125516bde8707230fcae0595b16d6db218ffc0d344dcfcc6394cc5828d"
+        );
+        let first = scope(&cfg);
+        cfg["photos"]["external_backup_uuid"] = json!("dddd-4444");
+        assert_ne!(scope(&cfg), first);
+        let second = scope(&cfg);
+        cfg["photos"]["archive_dir"] = json!("pictures/archive");
+        assert_ne!(scope(&cfg), second);
+    }
     #[test]
     fn a_run_cut_off_by_a_restart_is_not_running() {
         let now = 10_000.0;

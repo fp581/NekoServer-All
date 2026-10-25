@@ -40,36 +40,10 @@ pub enum Check {
 /// file: same size, and the copy was written after the source's last *status change*.
 /// The status-change time (ctime) cannot be set back by tools that preserve
 /// timestamps; any rewrite, replacement or metadata change moves it forward, so such a
-/// source is compared by content. Full checks (every 4 weeks) compare everything.
+/// source is compared by content. Full checks (the monthly run's first step) compare everything.
 fn copied_since_change(source: &Metadata, copy: &Metadata) -> bool {
     source.len() == copy.len()
         && (copy.mtime(), copy.mtime_nsec()) >= (source.ctime(), source.ctime_nsec())
-}
-/// Weekly jobs compare every copy by checksum once every this many seconds (28 days).
-const FULL_CHECK_EVERY: f64 = 28.0 * 86400.0;
-/// Is a full checksum comparison due for `job`? Recorded in reports/jobs/<job>-full-check.json.
-pub fn full_check_due(data: &Path, job: &str) -> bool {
-    let last = common::json(
-        &data.join(format!("reports/jobs/{job}-full-check.json")),
-        64000,
-    )["at"]
-        .as_f64();
-    due_since(last, common::now())
-}
-/// Due when there is no valid record, when it is older than FULL_CHECK_EVERY, or when it
-/// lies in the future: a check made while the clock was wrong (set to 2030, say) must
-/// not postpone the next one for years once the clock is corrected.
-fn due_since(last: Option<f64>, now: f64) -> bool {
-    match last {
-        Some(at) if at.is_finite() && at > 0.0 && at <= now + 300.0 => now - at >= FULL_CHECK_EVERY,
-        _ => true,
-    }
-}
-fn record_full_check(data: &Path, job: &str) -> Result<()> {
-    common::atomic_json(
-        &data.join(format!("reports/jobs/{job}-full-check.json")),
-        &json!({"at": common::now()}),
-    )
 }
 fn separate(source: &Path, dest: &Path) -> Result<(PathBuf, PathBuf)> {
     common::safe(source)?;
@@ -245,6 +219,24 @@ const VERSION_TAG: usize = 27;
 /// takes a file that only looks like a version (`report.neko-20261022T120000Z.txt`
 /// saved in its own right) for one.
 pub(crate) const NAMES: &str = ".neko-names.json";
+/// The ledger's files at a tree's root: the ledger, its lock, its temporary copies and
+/// one set aside as unreadable (neko_common.not_backup_data says the same).
+fn ledger_file(key: &str) -> bool {
+    ledger::own_file(key) || key.starts_with(&format!("{}.", ledger::LEDGER))
+}
+/// Backup metadata kept in any folder of a tree, by exact name or pattern only: the
+/// version names, current-version notes, partial copies and atomic-write temporaries.
+/// Any other name, a user's own `.neko-notes.txt` among them, is data.
+pub(crate) fn metadata_name(name: &str) -> bool {
+    let atomic_temp = name.strip_prefix(".neko-").is_some_and(|rest| {
+        let parts: Vec<&str> = rest.split('-').collect();
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    });
+    name == NAMES || name.ends_with(".neko-latest") || name.ends_with(".neko-part") || atomic_temp
+}
 /// The first 8 hex digits of a name's SHA-256: two long names cut to the same start
 /// still get different short names.
 fn name_tag(whole: &str) -> String {
@@ -403,34 +395,10 @@ pub(crate) fn kept_copy(
         .to_string_lossy()
         .to_string();
     let (stem, ext) = version_parts(&name);
-    // Versions saved before 0.28.5 kept the whole name even when it was very long.
-    let plain = match name.rsplit_once('.') {
-        Some((s, _)) if !s.is_empty() => s.to_string(),
-        _ => name.clone(),
-    };
     let parent = target
         .parent()
         .ok_or_else(|| Error::new("Target parent missing"))?;
-    let mut versions = vec![];
-    for entry in fs::read_dir(parent)? {
-        let path = entry?.path();
-        let other = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        if [&stem, &plain]
-            .iter()
-            .any(|s| other.starts_with(&format!("{s}.neko-")))
-            && other.ends_with(&ext)
-            && !other.ends_with(".neko-part")
-            && path.is_file()
-        {
-            versions.push((other, path));
-        }
-    }
-    versions.sort();
-    for (other, path) in &versions {
+    for (other, path) in &saved_versions(target)? {
         let quick =
             check == Check::Quick && copied_since_change(&source_meta, &fs::metadata(path)?);
         if quick || common::digest(path)? == wanted {
@@ -477,6 +445,119 @@ pub(crate) fn kept_copy(
         how: "copied",
         source_sha256: Some(wanted),
     })
+}
+/// The dated versions saved beside `target` (name, path), oldest first.
+fn saved_versions(target: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let name = target
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let (stem, ext) = version_parts(&name);
+    // Versions saved before 0.28.5 kept the whole name even when it was very long.
+    let plain = match name.rsplit_once('.') {
+        Some((s, _)) if !s.is_empty() => s.to_string(),
+        _ => name.clone(),
+    };
+    let parent = target
+        .parent()
+        .ok_or_else(|| Error::new("Target parent missing"))?;
+    let mut versions = vec![];
+    for entry in fs::read_dir(parent)? {
+        let path = entry?.path();
+        let other = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if [&stem, &plain]
+            .iter()
+            .any(|s| other.starts_with(&format!("{s}.neko-")))
+            && other.ends_with(&ext)
+            && !other.ends_with(".neko-part")
+            && path.is_file()
+        {
+            versions.push((other, path));
+        }
+    }
+    versions.sort();
+    Ok(versions)
+}
+/// Where a user's Nextcloud copy keeps what a later change of shape replaced (a file
+/// that became a folder, or a folder that became a file), beside `files`:
+/// `<user>/REPLACED/<when>/<its path in files>`. Restores offer it with the files.
+pub(crate) const REPLACED: &str = "neko-replaced";
+/// What stands in the way of copying `relative` into `files`: a file where one of its
+/// folders must go, or a folder where the file must go (the shape changed since the
+/// last copy). The additive copy never deletes, so these are moved aside first.
+fn in_the_way(files: &Path, relative: &Path) -> Vec<PathBuf> {
+    let mut found = vec![];
+    let mut here = files.to_path_buf();
+    let parts: Vec<_> = relative.components().collect();
+    for (i, part) in parts.iter().enumerate() {
+        here.push(part);
+        let Ok(meta) = fs::symlink_metadata(&here) else {
+            break;
+        };
+        let last = i + 1 == parts.len();
+        if (!last && !meta.is_dir()) || (last && meta.is_dir()) {
+            found.push(here.clone());
+            break;
+        }
+    }
+    found
+}
+/// Move `object` (a file with its dated versions and note, or a whole folder) from
+/// `files` to the same place under `history`, its checksums moving with it in the
+/// ledger. Returns how many saved files moved.
+fn move_aside(
+    object: &Path,
+    files: &Path,
+    history: &Path,
+    ledger: &mut Ledger,
+    root: &Path,
+) -> Result<usize> {
+    let rel = object
+        .strip_prefix(files)
+        .map_err(|_| Error::new("Invalid relative path"))?;
+    let to = history.join(rel);
+    let parent = to
+        .parent()
+        .ok_or_else(|| Error::new("Target parent missing"))?;
+    fs::create_dir_all(parent)?;
+    let mut moving = vec![object.to_path_buf()];
+    if !fs::symlink_metadata(object)?.is_dir() {
+        moving.extend(saved_versions(object)?.into_iter().map(|(_, p)| p));
+        let note = latest_marker(object);
+        if note.exists() {
+            moving.push(note);
+        }
+        // The folder's record of which version belongs to which file goes too.
+        let names = object.with_file_name(NAMES);
+        if names.is_file() && !parent.join(NAMES).exists() {
+            fs::copy(&names, parent.join(NAMES))?;
+        }
+    }
+    let mut moved = 0;
+    for from in moving {
+        let target = parent.join(from.file_name().unwrap_or_default());
+        if target.exists() {
+            return Err(Error::new(&format!(
+                "Cannot keep the replaced {} aside: {} exists",
+                common::sanitize(&from.to_string_lossy()),
+                common::sanitize(&target.to_string_lossy())
+            )));
+        }
+        let (old, new) = (ledger_key(&from, root)?, ledger_key(&target, root)?);
+        moved += if from.is_dir() {
+            tree_files(&from)?.len()
+        } else {
+            1
+        };
+        fs::rename(&from, &target)?;
+        ledger.moved(&old, &new)?;
+    }
+    Ok(moved)
 }
 /// `.name.ext.neko-latest` next to a file that has saved versions: names the saved copy
 /// (`name.ext` or one of its dated versions) that matches the file as the backup last
@@ -653,10 +734,8 @@ fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if !(key == QUARANTINE
             || key.starts_with(&format!("{QUARANTINE}/"))
-            || ledger::own_file(&key)
-            || name.ends_with(".neko-latest")
-            || name.ends_with(".neko-part")
-            || name.starts_with(".neko-"))
+            || ledger_file(&key)
+            || metadata_name(&name))
         {
             out.push((key, path.to_path_buf()));
         }
@@ -664,7 +743,7 @@ fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
     })?;
     Ok(out)
 }
-/// The 4-weekly deep audit: read every file again and compare it with its recorded
+/// The monthly deep audit: read every file again and compare it with its recorded
 /// checksum, whatever its size and dates say (silent bit rot keeps both).
 /// Ledger entries whose file is gone from `root` (an add-only backup never removes one).
 fn missing_from(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<()> {
@@ -803,7 +882,7 @@ pub fn archive_checked(
 /// A file without a recorded checksum is unverified: when both copies agree, their
 /// checksum is recorded; when they differ, both are kept and it is reported.
 /// Size and dates only let unchanged files be skipped; files named by a
-/// current-version note are read every week and everything every 4 weeks (`Full`).
+/// current-version note are read every week and everything in the monthly check (`Full`).
 /// The archive's notes and ledger are mirrored after the files they describe.
 pub fn copy_tree(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<u64> {
     let (copied, report) = mirror(source, dest, apply, check)?;
@@ -979,9 +1058,32 @@ fn replace_damaged(source: &Path, target: &Path, quarantine: &Path) -> Result<()
     verified_copy(source, target, true, 0o644)?;
     Ok(())
 }
+/// Nextcloud's own folder in its data folder, `appdata_<instance id>` (previews, caches):
+/// named by `instanceid` in its config.php on the SSD, or, when that cannot be read, a
+/// name of the form Nextcloud gives it (`appdata_oc` and 10 lowercase letters and
+/// digits). Only that folder is Nextcloud's: a user named `appdata_alice` is a user.
+fn nextcloud_internal(data: &Path) -> Option<String> {
+    let config = common::bytes(
+        &data.join("appdata/nextcloud/html/config/config.php"),
+        1_000_000,
+    )
+    .ok()?;
+    regex::Regex::new(r"'instanceid'\s*=>\s*'([a-z0-9]{2,40})'")
+        .unwrap()
+        .captures(&String::from_utf8_lossy(&config))
+        .map(|c| format!("appdata_{}", &c[1]))
+}
+fn is_nextcloud_internal(name: &str, known: Option<&str>) -> bool {
+    match known {
+        Some(own) => name == own,
+        None => regex::Regex::new(r"^appdata_oc[a-z0-9]{10}$")
+            .unwrap()
+            .is_match(name),
+    }
+}
 /// Add-only copy of each Nextcloud user's own files (`<user>/files`) to
-/// `dest/nextcloud/<user>/files`. Previews (appdata_*), trash, versions, caches and
-/// logs are skipped. A file that changes or disappears mid-copy (a live upload or
+/// `dest/nextcloud/<user>/files`. Nextcloud's own folder (`internal`, see
+/// nextcloud_internal), trash, versions, caches and logs are skipped. A file that changes or disappears mid-copy (a live upload or
 /// delete) is skipped this week rather than failing the backup.
 /// exFAT (and FAT) refuse some names Linux allows: `"*:<>?\|`, control characters,
 /// and a trailing dot or space. Such files cannot be stored on that USB drive.
@@ -1099,6 +1201,7 @@ pub fn copy_cloud(
     apply: bool,
     fat_names: bool,
     check: Check,
+    internal: Option<&str>,
 ) -> Result<CloudCopy> {
     let (cloud, dest) = separate(cloud, dest)?;
     let (mut copied, mut versions, mut skipped) = (0, 0, 0);
@@ -1116,6 +1219,8 @@ pub fn copy_cloud(
     };
     let mut report = Integrity::default();
     let quarantine = quarantine_folder(&root);
+    let when = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let mut replaced = 0;
     for user_dir in list(&cloud)? {
         let user = user_dir
             .file_name()
@@ -1123,7 +1228,7 @@ pub fn copy_cloud(
             .to_string_lossy()
             .to_string();
         let files = user_dir.join("files");
-        if user.starts_with("appdata_")
+        if is_nextcloud_internal(&user, internal)
             || user.starts_with('.')
             || !fs::symlink_metadata(&user_dir)?.is_dir()
             || !fs::symlink_metadata(&files).is_ok_and(|m| m.is_dir())
@@ -1153,11 +1258,19 @@ pub fn copy_cloud(
                     return Ok(());
                 }
             }
-            let target = dest
-                .join("nextcloud")
-                .join(&user)
-                .join("files")
-                .join(relative);
+            let user_files = root.join(&user).join("files");
+            let target = user_files.join(relative);
+            let in_way = in_the_way(&user_files, relative);
+            if !in_way.is_empty() {
+                if !apply {
+                    copied += 1; // a dry run moves nothing; the copy would go ahead
+                    return Ok(());
+                }
+                let history = root.join(&user).join(REPLACED).join(&when);
+                for object in &in_way {
+                    replaced += move_aside(object, &user_files, &history, &mut ledger, &root)?;
+                }
+            }
             let key = ledger_key(&target, &root)?;
             let expected = ledger.get(&key).map(|e| e.sha256.clone());
             match kept_copy(path, &target, apply, 0o600, check, expected.as_deref()) {
@@ -1196,6 +1309,9 @@ pub fn copy_cloud(
     }
     report.print("Nextcloud");
     println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
+    if replaced > 0 {
+        println!("Nextcloud: {replaced} saved files were in the way of a file that became a folder (or a folder that became a file); they are kept in {REPLACED}/{when} beside the user's files");
+    }
     if !refused.is_empty() {
         println!(
             "Nextcloud: {} files not copied because the USB drive (exFAT) cannot store their names; rename them or use an ext4 USB drive: {}",
@@ -1249,19 +1365,27 @@ pub(crate) fn describe_dump(dump: &Path, immich_env: &Path) -> Result<()> {
     )?;
     Ok(())
 }
+/// The Immich database goes to the USB drive only with the photos it belongs to: a
+/// Nextcloud-only run never asks for a database Immich no longer backs up (its Compose
+/// file stays when Immich is switched off, so it is no sign Immich is in use).
+fn wants_database(photos_selected: bool, data: &Path) -> bool {
+    photos_selected && data.join("compose/immich/compose.yaml").is_file()
+}
 /// Put the newest Immich database copy on the USB drive with its note, so the USB alone
 /// can rebuild albums, faces and users as well as the photos. Returns what makes the
 /// USB copy incomplete (no copy, a stale one, one without a note), or None. A copy
 /// whose checksum does not match its note is never copied. Only the version is
 /// recorded, never the database password.
 pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> {
-    let newest = fs::read_dir(hdd_dumps)
+    let now = common::now();
+    let dumps: Vec<String> = fs::read_dir(hdd_dumps)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| immich_dump(n))
-        .max();
+        .collect();
+    let (newest, future) = newest_believable(dumps, now);
     let Some(name) = newest else {
         return Ok(Some(
             "no Immich database copy was found, so the USB drive cannot rebuild albums, faces and users"
@@ -1272,6 +1396,15 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> 
     let note = common::json(&dump_note(&source), 64000);
     let expected = note["sha256"].as_str().map(str::to_string);
     let mut problems = vec![];
+    if !future.is_empty() {
+        // Kept on the HDD (and never pruned): made while the clock was wrong, so their
+        // names cannot say when. The newest copy with a believable date goes to the USB.
+        problems.push(format!(
+            "{} Immich database copies are dated in the future ({}); they were made while the server's clock was wrong (check it with timedatectl) and are kept, but the newest copy with a believable date was used",
+            future.len(),
+            future.join(", ")
+        ));
+    }
     match &expected {
         Some(sum) if common::digest(&source)? != *sum => {
             return Ok(Some(format!(
@@ -1283,10 +1416,7 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> 
             "the newest Immich database copy ({name}) has no record of its Immich version (made before v0.24.3)"
         )),
     }
-    let made = chrono::NaiveDateTime::parse_from_str(&name[7..22], "%Y%m%dT%H%M%S")
-        .map(|t| t.and_utc().timestamp() as f64)
-        .unwrap_or(0.0);
-    let age_days = (common::now() - made) / 86400.0;
+    let age_days = (now - dump_time(&name)) / 86400.0;
     if age_days < -1.0 {
         problems.push(format!(
             "the newest Immich database copy ({name}) is dated in the future; check the server's clock (timedatectl)"
@@ -1326,6 +1456,27 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> 
     prune_dumps(&folder, USB_DUMPS, Some(&name))?;
     println!("USB: Immich database copy {name} (Immich {version})");
     Ok((!problems.is_empty()).then(|| problems.join("; ")))
+}
+/// When a database copy was made, from its name (0 when the name cannot say).
+fn dump_time(name: &str) -> f64 {
+    chrono::NaiveDateTime::parse_from_str(name.get(7..22).unwrap_or(""), "%Y%m%dT%H%M%S")
+        .map(|t| t.and_utc().timestamp() as f64)
+        .unwrap_or(0.0)
+}
+/// A copy dated more than a day ahead of the clock was made while the clock was wrong.
+fn dated_in_future(name: &str, now: f64) -> bool {
+    dump_time(name) > now + 86400.0
+}
+/// (the newest copy with a believable date, the ones dated in the future). With only
+/// future-dated copies, the newest of them, flagged by its date.
+fn newest_believable(mut dumps: Vec<String>, now: f64) -> (Option<String>, Vec<String>) {
+    dumps.sort();
+    let (future, fine): (Vec<String>, Vec<String>) =
+        dumps.into_iter().partition(|n| dated_in_future(n, now));
+    match fine.last() {
+        Some(newest) => (Some(newest.clone()), future),
+        None => (future.last().cloned(), vec![]),
+    }
 }
 /// `immich-<UTC stamp>.sql`: a weekly Immich database copy (the stamp sorts by time).
 fn immich_dump(name: &str) -> bool {
@@ -1560,6 +1711,11 @@ pub fn open_job(a: &crate::Args, limit: usize) -> Result<Job> {
     })
 }
 /// A job interrupted while running is recorded as failed.
+/// A cut-off snapshot left something to finish: its resume journal, or a report still
+/// saying "running" (cut off before it wrote a journal).
+pub fn needs_resume(journal: &Path, report: &Path) -> bool {
+    journal.exists() || common::json(report, 64000)["status"] == "running"
+}
 pub fn mark_interrupted(report: &Path) -> Result<()> {
     let mut row = common::json(report, 64000);
     if row["status"] == "running" {
@@ -1790,16 +1946,21 @@ pub(crate) fn dump_complete(path: &Path) -> Result<bool> {
 /// Keep the newest `keep` `immich-<UTC stamp>.sql` dumps in `folder` (0 keeps all).
 /// The stamp sorts by time; other files are never touched.
 /// `newest` (the copy just made) is never removed, even if a clock jump made its name
-/// sort before older copies.
+/// sort before older copies; copies dated in the future are kept aside (never removed,
+/// not counted), so they cannot push out the real ones.
 pub fn prune_dumps(folder: &Path, keep: u64, newest: Option<&str>) -> Result<Vec<String>> {
     if keep == 0 || !folder.is_dir() {
         return Ok(vec![]);
     }
+    let now = common::now();
     let mut dumps = vec![];
     for entry in fs::read_dir(common::safe(folder)?)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
+        // A copy dated in the future (made while the clock was wrong) would sort as the
+        // newest and push out the real ones: it is kept aside, never removed here.
         if immich_dump(&name)
+            && !dated_in_future(&name, now)
             && Some(name.as_str()) != newest
             && fs::symlink_metadata(entry.path())?.is_file()
         {
@@ -1826,14 +1987,56 @@ pub fn prune_dumps(folder: &Path, keep: u64, newest: Option<&str>) -> Result<Vec
     }
     Ok(removed)
 }
+/// New Immich originals copied to the HDD archive, the copies checked as `check` says.
+fn archive_step(data: &Path, archive: &Path, min_age: u64, check: Check) -> Result<()> {
+    common::stage("copying new photos and videos to the HDD");
+    let (_, checks) = archive_checked(
+        &data.join("photos/immich-library"),
+        archive,
+        true,
+        min_age,
+        check,
+    )?;
+    save_integrity(data, "archive", &checks)?;
+    if let Some(problem) = checks.problem("HDD archive") {
+        return Err(Error::new(&problem));
+    }
+    Ok(())
+}
+/// The monthly run's first step for the HDD photo archive: every copy compared with its
+/// checksum, before anything is backed up or updated. Damage stops the monthly run.
+/// The caller holds the recovery lock already.
+pub fn monthly_archive_check(
+    cfg: &Path,
+    data: &Path,
+    media: &Path,
+    archive_dir: &str,
+    min_age: u64,
+) -> Result<()> {
+    guard(cfg, data, media)?;
+    let _lock = common::lock_wait(
+        Path::new("/run/nekoserver-photo-preservation.lock"),
+        std::time::Duration::from_secs(3600),
+    )?;
+    archive_step(
+        data,
+        &media.join(common::relative(archive_dir)?),
+        min_age,
+        Check::Full,
+    )?;
+    println!("Archive: compared every copy with its checksum (monthly check)");
+    Ok(())
+}
 pub fn preservation(a: &Args) -> Result<()> {
     common::require_root()?;
     let data = common::mount_path(a.get("data")?)?;
     let media = common::mount_path(a.get("media")?)?;
     let cfg = a.path("config")?;
     guard(&cfg, &data, &media)?;
-    let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
+    // The recovery lock first: the monthly run holds it while it checks the archive
+    // (and then waits for this lock), so taking them the other way round could deadlock.
     let _recovery = coordinate(&cfg, &data, &media)?;
+    let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
     execute(
         Some(&data),
         if a.flag("db-backup") {
@@ -1845,23 +2048,13 @@ pub fn preservation(a: &Args) -> Result<()> {
         || {
             guard(&cfg, &data, &media)?;
             let archive_dir = common::relative(&a.value("archive-dir", "photos/archive"))?;
-            let full = full_check_due(&data, "archive");
-            common::stage("copying new photos and videos to the HDD");
-            let (_, checks) = archive_checked(
-                &data.join("photos/immich-library"),
+            // Every copy is compared by checksum only in the monthly run (monthly_archive_check).
+            archive_step(
+                &data,
                 &media.join(archive_dir),
-                true,
                 a.number("min-age", 600)?,
-                if full { Check::Full } else { Check::Quick },
+                Check::Quick,
             )?;
-            save_integrity(&data, "archive", &checks)?;
-            if let Some(problem) = checks.problem("HDD archive") {
-                return Err(Error::new(&problem));
-            }
-            if full {
-                println!("Archive: compared every existing copy by checksum (every 4 weeks)");
-                record_full_check(&data, "archive")?;
-            }
             guard(&cfg, &data, &media)?;
             if a.flag("db-backup") {
                 guard(&cfg, &data, &media)?;
@@ -1937,6 +2130,14 @@ fn cloud_encrypted(cloud: &Path) -> bool {
         })
 }
 pub fn weekly(a: &Args) -> Result<()> {
+    usb_copy(a, Check::Quick)
+}
+/// The monthly run's first step for the USB drive: the weekly copy, with every copy on
+/// the drive compared with its checksum (the weekly runs compare size and date only).
+pub fn monthly_usb_check(a: &Args) -> Result<()> {
+    usb_copy(a, Check::Full)
+}
+fn usb_copy(a: &Args, check: Check) -> Result<()> {
     common::require_root()?;
     let uuid = a.get("uuid")?;
     let fstype = a.get("fstype")?;
@@ -1985,9 +2186,11 @@ pub fn weekly(a: &Args) -> Result<()> {
         }
         separate(source, &dest)?;
     }
-    let _lock = common::lock(Path::new("/run/nekoserver-photo-backup.lock"))?;
-    let full = full_check_due(&data, "external");
-    let check = if full { Check::Full } else { Check::Quick };
+    // A weekly copy and the monthly check of the same drive wait for each other.
+    let _lock = common::lock_wait(
+        Path::new("/run/nekoserver-photo-backup.lock"),
+        std::time::Duration::from_secs(3600),
+    )?;
     execute_with(Some(&data), "external", &cfg, || {
         common::stage("checking the USB drive");
         guard(&cfg, &data, &media)?;
@@ -2042,7 +2245,7 @@ pub fn weekly(a: &Args) -> Result<()> {
                 guard(&cfg, &data, &media)?;
             }
             let mut database_problem = None;
-            if data.join("compose/immich/compose.yaml").is_file() {
+            if wants_database(source.is_some(), &data) {
                 common::stage("copying the Immich database to the USB drive");
                 database_problem = copy_newest_dump(&media.join("backups/immich-database"), &dest)?;
             }
@@ -2053,7 +2256,14 @@ pub fn weekly(a: &Args) -> Result<()> {
             if let Some(cloud) = &cloud {
                 if cloud.is_dir() {
                     common::stage("copying Nextcloud files to the USB drive");
-                    cloud_copy = Some(copy_cloud(cloud, &dest, true, fstype == "exfat", check)?);
+                    cloud_copy = Some(copy_cloud(
+                        cloud,
+                        &dest,
+                        true,
+                        fstype == "exfat",
+                        check,
+                        nextcloud_internal(&data).as_deref(),
+                    )?);
                     validate_external(&dest, uuid)?;
                     guard(&cfg, &data, &media)?;
                     if cloud_encrypted(cloud) {
@@ -2103,9 +2313,10 @@ pub fn weekly(a: &Args) -> Result<()> {
             success(&["umount", &dest.to_string_lossy()], 45)?;
         }
         let partial = result?;
-        if full {
-            println!("Backup: compared every existing copy by checksum (every 4 weeks)");
-            record_full_check(&data, "external")?;
+        if check == Check::Full {
+            println!(
+                "Backup: compared every copy on the USB drive with its checksum (monthly check)"
+            );
         }
         Ok(Outcome { partial })
     })
@@ -2113,6 +2324,130 @@ pub fn weekly(a: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_named_metadata_is_left_out_not_every_neko_name() {
+        for name in [
+            NAMES,
+            ".IMG_1.jpg.neko-latest",
+            "a.jpg.neko-part",
+            ".neko-123-456-7",
+        ] {
+            assert!(metadata_name(name), "{name}");
+        }
+        for name in [
+            ".neko-notes.txt",
+            ".neko-ledger.json",
+            "notes.neko-20261022T120000Z.txt",
+            ".neko-1-2",
+        ] {
+            assert!(!metadata_name(name), "{name}");
+        }
+        for key in [
+            ledger::LEDGER,
+            ".neko-ledger.lock",
+            ".neko-ledger.json.1.tmp",
+            ".neko-ledger.json.unreadable-1",
+        ] {
+            assert!(ledger_file(key), "{key}");
+        }
+        assert!(!ledger_file("alice/.neko-ledger.json"));
+        assert!(!ledger_file(".neko-notes.txt"));
+        let root = scratch("neko-named-data");
+        fs::create_dir_all(root.join("alice")).unwrap();
+        for name in [
+            ".neko-notes.txt",
+            "alice/.neko-notes.txt",
+            ".neko-ledger.lock",
+            "alice/.neko-names.json",
+        ] {
+            fs::write(root.join(name), b"x").unwrap();
+        }
+        let keys: Vec<String> = tree_files(&root)
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(keys, vec![".neko-notes.txt", "alice/.neko-notes.txt"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_resume_has_work_only_with_a_journal_or_a_cut_off_report() {
+        let root = scratch("needs-resume");
+        let (journal, report) = (root.join("resume.json"), root.join("report.json"));
+        assert!(!needs_resume(&journal, &report));
+        fs::write(&report, br#"{"status":"pass"}"#).unwrap();
+        assert!(!needs_resume(&journal, &report));
+        fs::write(&report, br#"{"status":"running"}"#).unwrap();
+        assert!(needs_resume(&journal, &report));
+        fs::write(&report, br#"{"status":"pass"}"#).unwrap();
+        fs::write(&journal, b"{}").unwrap();
+        assert!(needs_resume(&journal, &report));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_dump_dated_in_the_future_never_hides_the_fresh_one() {
+        let now = 1_792_900_000.0; // 2026-10-25
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (newest, future) = newest_believable(
+            names(&[
+                "immich-20261018T021500Z.sql",
+                "immich-20300101T021500Z.sql",
+                "immich-20261025T021500Z.sql",
+            ]),
+            now,
+        );
+        assert_eq!(newest.as_deref(), Some("immich-20261025T021500Z.sql"));
+        assert_eq!(future, ["immich-20300101T021500Z.sql"]);
+        // Only a future-dated one: it is used, and flagged by its date.
+        let (newest, future) = newest_believable(names(&["immich-20300101T021500Z.sql"]), now);
+        assert_eq!(newest.as_deref(), Some("immich-20300101T021500Z.sql"));
+        assert!(future.is_empty());
+        // Copied end to end: the fresh dump reaches the USB drive, the 2030 one is named.
+        let root = scratch("future-dump");
+        let (hdd, usb) = (root.join("hdd"), root.join("usb"));
+        fs::create_dir_all(&hdd).unwrap();
+        fs::create_dir_all(&usb).unwrap();
+        let today = chrono::Utc::now()
+            .format("immich-%Y%m%dT%H%M%SZ.sql")
+            .to_string();
+        for name in [today.as_str(), "immich-20990101T021500Z.sql"] {
+            let dump = hdd.join(name);
+            fs::write(&dump, b"-- PostgreSQL database dump complete\n").unwrap();
+            fs::write(
+                dump_note(&dump),
+                serde_json::to_vec(
+                    &json!({"sha256": common::digest(&dump).unwrap(), "immich_version": "v2.1.0"}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let said = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
+        assert!(usb.join("immich-database").join(&today).is_file());
+        assert!(!usb
+            .join("immich-database/immich-20990101T021500Z.sql")
+            .exists());
+        assert!(
+            said.contains("immich-20990101T021500Z.sql") && said.contains("dated in the future")
+        );
+        // Retention keeps it aside and never counts it against the real ones.
+        let removed = prune_dumps(&hdd, 1, Some(&today)).unwrap();
+        assert!(removed.is_empty());
+        assert!(hdd.join("immich-20990101T021500Z.sql").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_nextcloud_only_run_never_needs_the_immich_database() {
+        let data = std::env::temp_dir().join(format!("neko-wants-db-{}", std::process::id()));
+        fs::create_dir_all(data.join("compose/immich")).unwrap();
+        // Immich switched off keeps its Compose file: no photos selected, no database.
+        fs::write(data.join("compose/immich/compose.yaml"), "services: {}\n").unwrap();
+        assert!(!wants_database(false, &data));
+        assert!(wants_database(true, &data));
+        fs::remove_file(data.join("compose/immich/compose.yaml")).unwrap();
+        assert!(!wants_database(true, &data));
+        fs::remove_dir_all(&data).unwrap();
+    }
     #[test]
     fn a_drive_mismatch_names_what_was_expected_and_found() {
         let data = Path::new("/srv/nekoserver");
@@ -2185,22 +2520,6 @@ mod tests {
         ));
         assert!(!private_options("rw,relatime", "exfat"));
         assert!(private_options("rw,relatime", "ext4"));
-    }
-    #[test]
-    fn a_full_check_is_due_after_four_weeks_or_with_a_future_record() {
-        let now = 1_800_000_000.0;
-        assert!(!due_since(Some(now - 86400.0), now));
-        assert!(due_since(Some(now - FULL_CHECK_EVERY), now));
-        assert!(due_since(None, now));
-        assert!(due_since(Some(0.0), now));
-        assert!(due_since(Some(f64::NAN), now));
-        // Recorded while the clock said 2030; the clock is now right (2026).
-        assert!(due_since(Some(1_900_000_000.0), now));
-        assert!(due_since(Some(1_900_000_000.0), now + FULL_CHECK_EVERY));
-        assert!(
-            !due_since(Some(now + 60.0), now),
-            "a small clock difference is not a future record"
-        );
     }
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("neko-backup-{name}-{}", std::process::id()));
@@ -2867,7 +3186,7 @@ mod tests {
             .flatten()
             .collect();
         assert_eq!(fs::read(kept[0].path().join(&current)).unwrap(), b"ZZZZ");
-        // A damaged file no note names is found by the 4-weekly full check.
+        // A damaged file no note names is found by the monthly full check.
         fs::write(usb.join("a.jpg"), b"XXXX").unwrap();
         copy_tree(&hdd, &usb, true, Check::Full).unwrap();
         assert_eq!(fs::read(usb.join("a.jpg")).unwrap(), b"AAAA");
@@ -2917,6 +3236,113 @@ mod tests {
         );
     }
     #[test]
+    fn a_file_that_became_a_folder_and_back_never_blocks_the_copy() {
+        let root = scratch("cloud-shape");
+        let cloud = root.join("cloud");
+        let usb = root.join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        write(&cloud.join("alice/files/Projects"), b"a file");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        write(&cloud.join("alice/files/Projects"), b"a file, edited");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap(); // a dated version too
+                                                                            // The file is deleted and a folder of the same name made.
+        fs::remove_file(cloud.join("alice/files/Projects")).unwrap();
+        write(&cloud.join("alice/files/Projects/notes.txt"), b"notes");
+        let made = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert!(made.complete());
+        let user = usb.join("nextcloud/alice");
+        assert_eq!(
+            fs::read(user.join("files/Projects/notes.txt")).unwrap(),
+            b"notes"
+        );
+        let history = fs::read_dir(user.join(REPLACED))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let kept = names(&history);
+        assert!(kept.contains(&"Projects".to_string()), "{kept:?}");
+        assert!(
+            kept.iter().any(|n| n.starts_with("Projects.neko-2")),
+            "the version went too"
+        );
+        assert_eq!(fs::read(history.join("Projects")).unwrap(), b"a file");
+        // The checksums moved with the files: nothing is reported missing or damaged.
+        let full = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
+        assert!(full.integrity.problem("USB Nextcloud").is_none());
+        let ledger = Ledger::read(&usb.join("nextcloud")).unwrap();
+        assert!(ledger.get("alice/files/Projects").is_none());
+        assert!(ledger
+            .keys()
+            .any(|k| k.starts_with(&format!("alice/{REPLACED}/")) && k.ends_with("/Projects")));
+        // And back: the folder becomes a file again.
+        fs::remove_dir_all(cloud.join("alice/files/Projects")).unwrap();
+        write(&cloud.join("alice/files/Projects"), b"a file again");
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // a new run's time
+        let back = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert!(back.complete());
+        assert_eq!(
+            fs::read(user.join("files/Projects")).unwrap(),
+            b"a file again"
+        );
+        let kept: Vec<String> = fs::read_dir(user.join(REPLACED))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().join("Projects/notes.txt").is_file())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(kept.len(), 1, "the folder is kept aside with its file");
+        let full = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
+        assert!(full.integrity.problem("USB Nextcloud").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_user_named_appdata_something_is_backed_up() {
+        let root = scratch("cloud-appdata-user");
+        let cloud = root.join("cloud");
+        write(&cloud.join("appdata_alice/files/notes.txt"), b"notes");
+        write(&cloud.join("appdata_ocq1w2e3r4t5/files/x.css"), b"internal");
+        let usb = root.join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        // Known from config.php: only that folder is Nextcloud's.
+        let made = copy_cloud(
+            &cloud,
+            &usb,
+            true,
+            false,
+            Check::Quick,
+            Some("appdata_ocq1w2e3r4t5"),
+        )
+        .unwrap();
+        assert_eq!(made.copied, 1);
+        assert!(usb
+            .join("nextcloud/appdata_alice/files/notes.txt")
+            .is_file());
+        assert!(!usb.join("nextcloud/appdata_ocq1w2e3r4t5").exists());
+        // Unknown: Nextcloud's own name form only.
+        assert!(is_nextcloud_internal("appdata_ocq1w2e3r4t5", None));
+        assert!(!is_nextcloud_internal("appdata_alice", None));
+        assert!(!is_nextcloud_internal(
+            "appdata_ocq1w2e3r4t5",
+            Some("appdata_oczzzzzzzzzz")
+        ));
+        // The instance id is read from config.php.
+        let data = root.join("ssd");
+        fs::create_dir_all(data.join("appdata/nextcloud/html/config")).unwrap();
+        fs::write(
+            data.join("appdata/nextcloud/html/config/config.php"),
+            "<?php\n$CONFIG = array (\n  'instanceid' => 'ocq1w2e3r4t5',\n);\n",
+        )
+        .unwrap();
+        assert_eq!(
+            nextcloud_internal(&data).as_deref(),
+            Some("appdata_ocq1w2e3r4t5")
+        );
+        assert_eq!(nextcloud_internal(&root.join("none")), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn nextcloud_copy_takes_only_users_own_files() {
         let root = scratch("cloud");
         let cloud = root.join("cloud");
@@ -2925,13 +3351,16 @@ mod tests {
         write(&cloud.join("alice/files_trashbin/files/old.txt"), b"trash");
         write(&cloud.join("alice/files_versions/plan.odt.v1"), b"old");
         write(&cloud.join("alice/uploads/chunk.part"), b"partial");
-        write(&cloud.join("appdata_oc123/preview/1/big.png"), b"preview");
+        write(
+            &cloud.join("appdata_oc1a2b3c4d5e/preview/1/big.png"),
+            b"preview",
+        );
         write(&cloud.join("bob/files/todo.txt"), b"todo");
         write(&cloud.join("nextcloud.log"), b"log");
         write(&cloud.join(".ocdata"), b"");
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
-        let first = copy_cloud(&cloud, &usb, true, false, Check::Quick).unwrap();
+        let first = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
         assert_eq!((first.copied, first.versions, first.skipped), (3, 0, 0));
         assert!(first.complete());
         assert_eq!(
@@ -2953,11 +3382,11 @@ mod tests {
         // Second week, one edit and one new file.
         write(&cloud.join("alice/files/Documents/plan.odt"), b"plan v2");
         write(&cloud.join("bob/files/new.txt"), b"new");
-        let second = copy_cloud(&cloud, &usb, true, false, Check::Quick).unwrap();
+        let second = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
         assert_eq!((second.copied, second.versions, second.skipped), (1, 1, 0));
         // Deleted on the server: kept on the USB.
         fs::remove_file(cloud.join("bob/files/todo.txt")).unwrap();
-        copy_cloud(&cloud, &usb, true, false, Check::Quick).unwrap();
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
         assert!(usb.join("nextcloud/bob/files/todo.txt").exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -2980,12 +3409,12 @@ mod tests {
         write(&cloud.join("alice/files/Meeting 10:30.docx"), b"colon");
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
-        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
         assert_eq!((fat.copied, fat.refused.len()), (1, 1));
         assert!(!fat.complete());
         assert_eq!(names(&usb.join("nextcloud/alice/files")), ["ok.txt"]);
         // On a Linux filesystem the same file is copied normally.
-        let linux = copy_cloud(&cloud, &usb, true, false, Check::Quick).unwrap();
+        let linux = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
         assert_eq!(linux.copied, 1);
         assert!(linux.complete());
         fs::remove_dir_all(root).unwrap();
@@ -2997,7 +3426,7 @@ mod tests {
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
         write(&cloud.join("alice/files/Documents/report.pdf"), b"old");
-        copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
         // The folder is removed from Nextcloud and made again in lower case: the old
         // backup stays (add-only), so the new file would merge into its folder.
         fs::remove_dir_all(cloud.join("alice/files/Documents")).unwrap();
@@ -3006,7 +3435,7 @@ mod tests {
             &cloud.join("alice/files/Documents/plan.pdf"),
             b"same folder, same case",
         );
-        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
         assert_eq!(fat.refused, ["alice/documents/report.pdf"]);
         assert_eq!(fat.copied, 1);
         assert_eq!(
@@ -3027,7 +3456,7 @@ mod tests {
         write(&cloud.join("alice/files/Notes/a.txt"), b"six"); // no clash
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
-        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
         // The first of each clash keeps its place; the others are left out and reported.
         assert_eq!(fat.copied, 3);
         assert_eq!(
@@ -3047,7 +3476,7 @@ mod tests {
         // Two users whose names differ only in case clash as well.
         write(&cloud.join("Bob/files/x.txt"), b"bob");
         write(&cloud.join("bob/files/y.txt"), b"other bob");
-        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
         assert!(
             fat.refused.contains(&"bob/y.txt".to_string()),
             "{:?}",
@@ -3056,7 +3485,7 @@ mod tests {
         // A Linux filesystem keeps them apart, so everything is copied there.
         let linux_usb = root.join("ext4");
         fs::create_dir_all(&linux_usb).unwrap();
-        let linux = copy_cloud(&cloud, &linux_usb, true, false, Check::Quick).unwrap();
+        let linux = copy_cloud(&cloud, &linux_usb, true, false, Check::Quick, None).unwrap();
         assert!(linux.complete());
         assert_eq!(linux.copied, 8);
         fs::remove_dir_all(root).unwrap();
@@ -3077,7 +3506,7 @@ mod tests {
             write(&cloud.join("alice/files").join(&name), b"first");
             names.push(name);
         }
-        let first = copy_cloud(&cloud, &usb, true, false, Check::Quick).unwrap();
+        let first = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
         assert_eq!((first.copied, first.complete()), (4, true));
         let folder = usb.join("nextcloud/alice/files");
         for name in &names {
@@ -3092,7 +3521,7 @@ mod tests {
         for name in &names {
             write(&cloud.join("alice/files").join(name), b"edited");
         }
-        let edit = copy_cloud(&cloud, &usb, true, false, Check::Full).unwrap();
+        let edit = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
         assert_eq!((edit.versions, edit.complete()), (4, true), "{edit:?}");
         let saved = names_in(&folder);
         assert!(saved.iter().all(|n| n.len() <= NAME_MAX), "{saved:?}");
@@ -3114,7 +3543,7 @@ mod tests {
         for name in &names {
             write(&cloud.join("alice/files").join(name), b"first");
         }
-        let undone = copy_cloud(&cloud, &usb, true, false, Check::Full).unwrap();
+        let undone = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
         assert_eq!((undone.versions, undone.copied), (0, 0));
         // No partial file is left behind, whatever the name's length.
         assert!(!names_in(&folder).iter().any(|n| n.ends_with(".neko-part")));
@@ -3271,23 +3700,6 @@ mod tests {
         );
         assert!(prune_dumps(&root, 0, None).unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn a_full_check_is_recorded_and_due_again_after_four_weeks() {
-        let now = 1_800_000_000.0;
-        // Four weeks, not a day: weekly jobs would otherwise read every copy every time.
-        assert_eq!(FULL_CHECK_EVERY, 28.0 * 86400.0);
-        assert!(!due_since(Some(now - 27.0 * 86400.0), now));
-        let data = scratch("full-check");
-        fs::create_dir_all(data.join("reports/jobs")).unwrap();
-        assert!(full_check_due(&data, "archive"), "no record yet");
-        record_full_check(&data, "archive").unwrap();
-        assert!(!full_check_due(&data, "archive"));
-        assert!(
-            full_check_due(&data, "external"),
-            "each job has its own record"
-        );
-        let _ = fs::remove_dir_all(data);
     }
     #[test]
     fn a_backup_never_copies_into_itself_or_a_parent() {
@@ -3497,13 +3909,13 @@ mod tests {
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
         write(&cloud.join("alice/files/Documents/report.pdf"), b"old");
-        copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
         // The folder is renamed to lower case in Nextcloud and nothing of the old
         // spelling is left there: only the USB drive (add-only) still has it, and that
         // alone must keep the new file out of a merged folder.
         fs::remove_dir_all(cloud.join("alice/files/Documents")).unwrap();
         write(&cloud.join("alice/files/documents/report.pdf"), b"new");
-        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick).unwrap();
+        let fat = copy_cloud(&cloud, &usb, true, true, Check::Quick, None).unwrap();
         assert_eq!(fat.refused, ["alice/documents/report.pdf"]);
         assert_eq!(fat.copied, 0);
         assert_eq!(

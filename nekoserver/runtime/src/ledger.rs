@@ -183,6 +183,36 @@ impl Ledger {
         self.unsaved += 1;
         Ok(Recorded::New)
     }
+    /// A saved file (or a folder of them) moved within the tree, as when a copy is kept
+    /// aside: its checksums go with it, unchanged. Nothing recorded is dropped.
+    pub fn moved(&mut self, from: &str, to: &str) -> Result<()> {
+        if !valid_path(from) || !valid_path(to) {
+            return Err(Error::new("Refusing an invalid checksum ledger entry"));
+        }
+        if self._lock.is_none() {
+            return Err(Error::new("Checksum ledger opened read-only"));
+        }
+        let inside = format!("{from}/");
+        let keys: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|k| *k == from || k.starts_with(&inside))
+            .cloned()
+            .collect();
+        for key in keys {
+            let new = format!("{to}{}", &key[from.len()..]);
+            if self.entries.contains_key(&new) {
+                return Err(Error::new(
+                    "Checksum ledger already has an entry where a copy is moved",
+                ));
+            }
+            if let Some(entry) = self.entries.remove(&key) {
+                self.entries.insert(new, entry);
+                self.unsaved += 1;
+            }
+        }
+        Ok(())
+    }
     /// Every recorded path with its entry.
     pub fn entries(&self) -> impl Iterator<Item = (&String, &Entry)> {
         self.entries.iter()

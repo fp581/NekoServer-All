@@ -50,6 +50,8 @@ sudo bash install.sh
 
 Then follow the step-by-step guide: **[nekoserver/README.md](nekoserver/README.md)**.
 
+You can follow the installation in the terminal, and on a PC with a desktop also in a setup window in your browser: [how to open each](nekoserver/README.md#two-ways-to-follow-the-installation-the-terminal-and-the-setup-window).
+
 Already running NekoServer? Run `git pull`, then `sudo bash install.sh` in the same folder: your settings stay where they are ([Updating to a newer release](nekoserver/README.md#install)).
 
 Want it gone? `sudo bash uninstall.sh` in the same folder: it lists what it would remove, you choose, and it asks twice ([Uninstalling](nekoserver/README.md#uninstalling)).

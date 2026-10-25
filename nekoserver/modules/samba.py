@@ -3,6 +3,7 @@ import os,pwd,shutil,subprocess,sys
 import network_access
 from pathlib import Path
 import host
+import setup_progress
 from neko_common import safe_path, atomic_write, findmnt, last_words, SYSTEMD_UNITS
 DEPENDENCIES=['storage','system']
 DESCRIPTION='Set up explicit LAN or tailnet SMB shares with no guest access'
@@ -85,7 +86,9 @@ def samba_password(user,run=subprocess.run,tries=3):
     """smbpasswd asks for the password twice on the terminal. Two that differ (or an
     empty one) make it fail; that is a typo, not a broken setup, so it is asked again."""
     for attempt in range(tries):
-        if run(['smbpasswd','-a',user],check=False).returncode==0:
+        with setup_progress.in_terminal(f'The password for the shared folders (account {user}), typed twice'):
+            code=run(['smbpasswd','-a',user],check=False).returncode
+        if code==0:
             return True
         if attempt<tries-1:
             print('The two passwords did not match (or one was empty). Try again.')
@@ -199,7 +202,25 @@ def run(context):
         account=subprocess.run(['pdbedit','-L','-u',user],capture_output=True,text=True,timeout=15,check=False)
         if account.returncode or not any(line.startswith(user+':') for line in account.stdout.splitlines()):
             raise RuntimeError('Samba user was not retained; inspect local authentication setup')
+        # Made by NekoServer: the uninstaller removes it again. One that was there before
+        # (shares of your own use it) is never on this list, and stays.
+        remember_account(user)
     context.log(f'Samba configured for {mode}, authenticated user {user}; existing password preserved')
+
+
+# The Samba accounts NekoServer created itself, one per line.
+CREATED_ACCOUNTS='/etc/samba/nekoserver-accounts'
+
+def created_accounts(path=CREATED_ACCOUNTS):
+    try:
+        return [line.strip() for line in Path(path).read_text().splitlines() if line.strip() and not line.startswith('#')]
+    except OSError:
+        return []
+
+def remember_account(user,path=CREATED_ACCOUNTS):
+    known=created_accounts(path)
+    if user not in known:
+        atomic_write(Path(path),'# Managed by NekoServer: Samba accounts it created (the uninstaller removes only these)\n'+''.join(a+'\n' for a in [*known,user]),0o600)
 
 
 def unmanaged_config(main,family,log):

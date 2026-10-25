@@ -45,6 +45,18 @@ const SERVICES: [&str; 4] = [
     "nekoserver-gateway-lan.service",
 ];
 
+/// The recovery services of the jobs that stop apps (the monthly update, the nightly app
+/// and host snapshots, a photo snapshot), in the order they are finished: the monthly
+/// update's journal first (it decides whether apps roll back), then the snapshots'.
+/// Each finds its own journal and does nothing without one. Starting Docker alone does
+/// not do this: containers a job stopped stay stopped under `unless-stopped`.
+const RESUMES: [&str; 4] = [
+    "nekoserver-maintenance-resume.service",
+    "nekoserver-app-resume.service",
+    "nekoserver-host-resume.service",
+    "nekoserver-immich-snapshot-resume.service",
+];
+
 /// The device of the mount in effect at `path`: with mounts stacked on one folder
 /// findmnt lists them oldest first, and the last one is in use.
 fn mounted(path: &Path) -> Result<Option<String>> {
@@ -149,12 +161,68 @@ pub fn run(a: &Args) -> Result<()> {
             println!("Drive return: started {unit} again");
         }
     }
-    Ok(())
+    finish_interrupted_jobs(
+        |unit| common::command(&["systemctl", "cat", unit], 15).is_ok_and(|(code, _)| code == 0),
+        |unit| run_ok(&["systemctl", "start", unit], 3 * 3600).map(|_| ()),
+    )
+}
+
+/// A job a drive cut off part-way (the apps it stopped, its journal) is finished now that
+/// both drives are back: each installed recovery service runs, in RESUMES order. Every
+/// one is tried; the first failure is returned, so the run shows as failed.
+fn finish_interrupted_jobs(
+    installed: impl Fn(&str) -> bool,
+    start: impl Fn(&str) -> Result<()>,
+) -> Result<()> {
+    let mut first = None;
+    for unit in RESUMES.iter().filter(|u| installed(u)) {
+        match start(unit) {
+            Ok(()) => println!("Drive return: {unit} finished what a cut-off job left"),
+            Err(e) => {
+                println!("Drive return: {unit} failed ({e})");
+                first.get_or_insert(e);
+            }
+        }
+    }
+    first.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interrupted_jobs_are_finished_in_order_and_a_failure_is_reported() {
+        use std::cell::RefCell;
+        let started = RefCell::new(vec![]);
+        let installed = |u: &str| u != "nekoserver-immich-snapshot-resume.service";
+        finish_interrupted_jobs(installed, |u| {
+            started.borrow_mut().push(u.to_string());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            *started.borrow(),
+            [
+                "nekoserver-maintenance-resume.service",
+                "nekoserver-app-resume.service",
+                "nekoserver-host-resume.service"
+            ]
+        );
+        started.borrow_mut().clear();
+        let failed = finish_interrupted_jobs(
+            |_| true,
+            |u| {
+                started.borrow_mut().push(u.to_string());
+                if u == "nekoserver-app-resume.service" {
+                    Err(Error::new("apps not back"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(failed.unwrap_err().to_string().contains("apps not back"));
+        assert_eq!(started.borrow().len(), 4, "the others are still tried");
+    }
     #[test]
     fn a_dead_mount_is_released_only_once_the_drive_is_back() {
         // A live mount: nothing to do (also the case at every boot).

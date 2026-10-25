@@ -2,6 +2,7 @@
 import guided_setup
 import time
 import account_store
+import setup_progress
 import subprocess
 import sys
 from pathlib import Path
@@ -33,8 +34,11 @@ def run(ctx):
         if settings.get('configure_request_providers',True) and 'seerr' in services and set(services)&{'sonarr','radarr'}:cmd.append('--request-providers')
         if settings.get('collect_sources',True):cmd.append('--sources')
         if settings.get('configure_indexers',True) and 'prowlarr' in ctx.config.get('media',{}).get('services',[]):cmd.append('--indexers')
-    else:cmd.append('--report-only')
-    result=subprocess.run(cmd,check=False).returncode
+        with setup_progress.in_terminal('Connecting the media apps: your download sources and sign-ins'):
+            result=subprocess.run(cmd,check=False).returncode
+    else:
+        cmd.append('--report-only')
+        result=subprocess.run(cmd,check=False).returncode
     if result==2:raise RuntimeError('Onboarding has failures; see SSD reports and rerun onboard.py')
     if result:
         ports = app_ports(MEDIA_APPS)

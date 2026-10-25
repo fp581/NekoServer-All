@@ -15,7 +15,13 @@ import uninstaller  # noqa: E402
 RealPlan = uninstaller.Plan   # the tests below stand in for Plan in main(); the fake system still builds a real one
 
 SETTINGS = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media', 'external_backup_mount': '/mnt/nekoserver-photos',
-            'storage': {'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'}, 'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'}}}
+            'storage': {'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'}, 'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'}},
+            'photos': {'external_backup_uuid': 'dddd-4444'}}
+HOST = 'neko.tail1234.ts.net'
+MINE = {'TCP': {'8443': {'HTTPS': True}, '8448': {'HTTPS': True}},
+        'Web': {HOST + ':8443': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:8096'}}},
+                HOST + ':8448': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:8787'}}}}}
+DRIVES = {'/srv/nekoserver': 'aaaa-1111', '/mnt/nekoserver-media': 'bbbb-2222', '/mnt/nekoserver-photos': 'dddd-4444'}
 
 
 class FakeSystem:
@@ -24,6 +30,14 @@ class FakeSystem:
         self.root = Path(root)
         self.calls = []
         self.projects = ['neko-jellyfin', 'neko-immich']
+        self.drives = dict(DRIVES)   # mount folder -> UUID of what is mounted there
+        self.removed = False         # the apps' containers
+        self.failing = {}            # argv prefix (tuple) -> (exit code, what it says): a command that fails
+        self.running = set()         # units still running after a stop
+        self.keeps_fans = False      # the control service stops but leaves its fan records
+        # Tailscale Serve as it is now: NekoServer's two routes, and one of your own.
+        self.serve = {'TCP': {**MINE['TCP'], '443': {'HTTPS': True}},
+                      'Web': {**MINE['Web'], HOST + ':443': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:3000'}}}}}
         self.networks = ['neko-jellyfin_default', 'bridge']
 
     def write(self, path, text='x\n'):
@@ -42,6 +56,8 @@ class FakeSystem:
         w('/etc/nekoserver-dashboard/settings.json', '{}')
         w('/etc/nekoserver-backups/storage.json', '{}')
         w('/etc/nekoserver-gateway/lan.json', '{}')
+        w('/srv/nekoserver/gateway/tailnet-owned.json', json.dumps({'format': 'neko-tailnet-owned-v1', 'host': HOST, 'owned': MINE,
+                                                                      'status': 'configured'}))
         w('/usr/local/lib/nekoserver-dashboard/v0.38.1/nekoserver-runtime')
         w('/usr/local/lib/nekoserver-os/v0.38.1/nekoserver-runtime')
         w('/usr/local/bin/nekoserver-dashboard', '#!/bin/sh\n# Managed by NekoServer\n')
@@ -52,8 +68,18 @@ class FakeSystem:
         w('/run/nekoserver-control/originals.json', '{}')
         w('/var/lib/nekoserver-openrgb/OpenRGB/OpenRGB.json', '{}')
         w('/etc/modules-load.d/nekoserver-i2c.conf', '# Managed by NekoServer\ni2c-dev\n')
+        for dropin in uninstaller.OS_DROPINS:
+            w(dropin, uninstaller.OS_MARKER + '\n[Sleep]\n')
+        w('/etc/systemd/logind.conf.d/50-mine.conf', '[Login]\nHandleLidSwitch=ignore\n')     # someone's own
+        for target in uninstaller.SLEEP_TARGETS:
+            link = self.root / 'etc/systemd/system' / target
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to('/dev/null')
+        # hibernate was masked before NekoServer (this PC is never meant to hibernate)
+        w('/etc/nekoserver-os/sleep-masks-before.json', json.dumps({'format': 'neko-sleep-masks-v1', 'masked_before': ['hibernate.target']}))
         w('/etc/samba/nekoserver.conf', '# Managed by NekoServer\n[Media]\n   path = /mnt/nekoserver-media/library\n   valid users = neko\n')
         w('/etc/samba/smb.conf', uninstaller.OWN_SMB_CONF)
+        w('/etc/samba/nekoserver-accounts', '# Managed by NekoServer\nneko\n')   # setup created the account
         w('/etc/samba/smb.conf.packaged', '# Sample configuration file for the Samba suite for Debian GNU/Linux.\n[global]\n')
         w('/etc/docker/daemon.json', json.dumps({'data-root': '/srv/nekoserver/docker-engine', 'log-driver': 'json-file'}))
         w('/etc/fstab', '# static\nUUID=cccc-3333 / ext4 defaults 0 1\nUUID=aaaa-1111 /srv/nekoserver ext4 defaults,nofail 0 2\n'
@@ -63,7 +89,8 @@ class FakeSystem:
                      '/srv/nekoserver/photos/immich-library/upload/a.jpg', '/srv/nekoserver/library/downloads/music/song.mp3',
                      '/mnt/nekoserver-media/library/movies/film.mkv', '/mnt/nekoserver-media/photos/archive/2026/a.jpg',
                      '/mnt/nekoserver-media/cloud/files/neko/doc.txt', '/mnt/nekoserver-media/backups/apps/x.tar',
-                     '/mnt/nekoserver-media/recovery-snapshots/first-test/manifest.json', '/mnt/nekoserver-photos/photos/2026/a.jpg',
+                     '/mnt/nekoserver-media/recovery-snapshots/first-test/manifest.json', '/mnt/nekoserver-photos/upload/2026/a.jpg',
+                     '/mnt/nekoserver-photos/.neko-ledger.json',
                      '/mnt/nekoserver-photos/lost+found/keep'):
             w(path)
         return self
@@ -73,14 +100,34 @@ class FakeSystem:
         if argv[:3] == ['docker', 'ps', '-a']:
             return '\n'.join(self.projects + ['', 'something-else']) + '\n'
         if argv[:3] == ['docker', 'ps', '-aq']:
-            return 'c1\nc2\n'
+            return '' if self.removed else 'c1\nc2\n'
         if argv[:3] == ['docker', 'network', 'ls']:
             return '\n'.join(self.networks) + '\n'
         if argv[0] == 'du':
             return '12M\t' + argv[-1] + '\n'
+        if argv[:3] == ['tailscale', 'serve', 'status']:
+            return json.dumps(self.serve)
+        if argv[0] == 'findmnt':
+            mountpoint = '/' + str(Path(argv[-1]).relative_to(self.root))
+            return self.drives.get(mountpoint, '') + '\n'
         if argv[0] == 'pdbedit':
             return 'neko:1000:\n'
         return ''
+
+    def call(self, argv, timeout=0):
+        """A command that changes something: (exit code, what it said)."""
+        self.calls.append(argv)
+        for prefix, answer in self.failing.items():
+            if tuple(argv[:len(prefix)]) == prefix:
+                return answer
+        if argv[:2] == ['systemctl', 'is-active']:
+            return (0, 'active') if argv[-1] in self.running else (3, 'inactive')
+        if argv[:3] == ['systemctl', 'disable', '--now'] and argv[-1] == 'nekoserver-control.service' and not self.keeps_fans:
+            for record in ('run/nekoserver-control/originals.json', 'run/nekoserver-control/originals-detect.json'):
+                (self.root / record).unlink(missing_ok=True)
+        if argv[:2] == ['docker', 'rm']:
+            self.removed = True
+        return 0, ''
 
     def plan(self, group_exists=lambda name: name == 'nekoserver-control'):
         with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
@@ -113,10 +160,10 @@ class PlanTests(unittest.TestCase):
                                              'nekoserver-maintenance.service', 'nekoserver-maintenance.timer'])
         notes = '\n'.join(group['notes'])
         self.assertIn('4 services and timers', notes)
-        self.assertIn('with the account neko', notes)
+        self.assertIn('with the account neko it created', notes)
         self.assertIn('smb.conf (only the include NekoServer wrote) goes too', notes)
         self.assertIn("the package's example smb.conf, set aside by setup, comes back", notes)
-        self.assertIn('tailscale serve reset', notes)
+        self.assertIn('switched off (ports 8443, 8448); any of your own stay', notes)
         self.assertIn('nekoserver-control group goes', notes)
 
     def test_someones_own_smb_conf_stays(self):
@@ -127,11 +174,40 @@ class PlanTests(unittest.TestCase):
 
     def test_the_drives_are_split_into_what_is_whose(self):
         rel = lambda key: sorted(str(p.relative_to(self.system.root)) for p in self.plan.groups[key]['paths'])  # noqa: E731
-        self.assertEqual(rel('data'), ['srv/nekoserver/appdata', 'srv/nekoserver/docker-engine', 'srv/nekoserver/installer', 'srv/nekoserver/secrets'])
+        self.assertEqual(rel('data'), ['srv/nekoserver/appdata', 'srv/nekoserver/docker-engine', 'srv/nekoserver/gateway', 'srv/nekoserver/installer', 'srv/nekoserver/secrets'])
         self.assertEqual(rel('photos'), ['mnt/nekoserver-media/photos', 'srv/nekoserver/photos'])
         self.assertEqual(rel('media'), ['mnt/nekoserver-media/library', 'srv/nekoserver/library'])
         self.assertEqual(rel('cloud'), ['mnt/nekoserver-media/cloud'])
-        self.assertEqual(rel('backups'), ['mnt/nekoserver-media/backups', 'mnt/nekoserver-media/recovery-snapshots', 'mnt/nekoserver-photos/photos'])
+        self.assertEqual(rel('backups'), ['mnt/nekoserver-media/backups', 'mnt/nekoserver-media/recovery-snapshots', 'mnt/nekoserver-photos/.neko-ledger.json', 'mnt/nekoserver-photos/upload'])
+
+    def test_your_own_folders_on_the_drives_stay_whatever_is_chosen(self):
+        """The reported case: a folder of your own at the top of the SSD or the USB drive was
+        taken for the apps' data (or the backups) and deleted."""
+        for path in ('/srv/nekoserver/PersonalDocuments/taxes.pdf', '/mnt/nekoserver-photos/Holiday 2019/a.jpg',
+                     '/mnt/nekoserver-media/MyStuff/notes.txt'):
+            self.system.write(path)
+        plan = self.system.plan()
+        chosen = {key for key, *_ in uninstaller.CHOICES}
+        planned = {str(p) for key in chosen for p in plan.groups[key]['paths']}
+        for name in ('srv/nekoserver/PersonalDocuments', 'mnt/nekoserver-photos/Holiday 2019', 'mnt/nekoserver-media/MyStuff'):
+            self.assertNotIn(str(self.system.root / name), planned)
+        description = plan.describe(chosen)
+        self.assertIn("Not NekoServer's, so these stay", description)
+        self.assertIn('PersonalDocuments', description)
+        self.assertIn('Holiday 2019', description)
+        self.assertNotIn('lost+found', description)
+
+    def test_a_drive_that_is_not_the_one_in_the_settings_loses_nothing(self):
+        self.system.drives['/srv/nekoserver'] = 'ffff-9999'    # another drive mounted at the SSD's folder
+        del self.system.drives['/mnt/nekoserver-photos']        # the USB drive not mounted
+        plan = self.system.plan()
+        self.assertEqual(plan.groups['data']['paths'], [])
+        self.assertFalse(any('srv/nekoserver' in str(p) for key in ('photos', 'media', 'backups') for p in plan.groups[key]['paths']))
+        self.assertFalse(any('nekoserver-photos' in str(p) for p in plan.groups['backups']['paths']))
+        self.assertTrue(plan.groups['cloud']['paths'])          # the HDD is the right one: its choices still work
+        warnings = '\n'.join(plan.warnings)
+        self.assertIn('/srv/nekoserver is not the one the settings name (UUID ffff-9999, not aaaa-1111)', warnings)
+        self.assertIn('/mnt/nekoserver-photos is not mounted', warnings)
 
     def test_apps_and_mounts_say_what_they_do(self):
         self.assertEqual(self.plan.groups['apps']['notes'], ['Remove the containers of neko-immich, neko-jellyfin',
@@ -238,7 +314,8 @@ class RemoveTests(unittest.TestCase):
 
     def remove(self, chosen):
         with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
-            uninstaller.remove(self.plan, chosen, run=self.system.run, out=self.shown.append, root=self.system.root)
+            uninstaller.remove(self.plan, chosen, run=self.system.run, out=self.shown.append, root=self.system.root,
+                               call=self.system.call, sleep=lambda seconds: None)
 
     def test_the_server_alone_leaves_every_drive_and_the_apps_data(self):
         self.remove({'server'})
@@ -250,25 +327,111 @@ class RemoveTests(unittest.TestCase):
         self.assertTrue((self.system.root / 'etc/samba/smb.conf').read_text().startswith('# Sample configuration file'))
         for kept in ('/etc/systemd/system/other.service', '/home/neko/Desktop/nekoserver-mine.desktop', '/srv/nekoserver/appdata/jellyfin/config.xml',
                      '/srv/nekoserver/photos/immich-library/upload/a.jpg', '/mnt/nekoserver-media/library/movies/film.mkv',
-                     '/mnt/nekoserver-photos/photos/2026/a.jpg', '/etc/fstab', '/etc/docker/daemon.json'):
+                     '/mnt/nekoserver-photos/upload/2026/a.jpg', '/etc/fstab', '/etc/docker/daemon.json'):
             self.assertTrue(self.exists(kept), kept)
         calls = self.system.calls
         self.assertIn(['systemctl', 'disable', '--now', 'nekoserver-maintenance.timer'], calls)
         self.assertLess(calls.index(['systemctl', 'disable', '--now', 'nekoserver-maintenance.timer']),
                         calls.index(['systemctl', 'disable', '--now', 'nekoserver-maintenance.service']))   # timers first
-        self.assertIn(['tailscale', 'serve', 'reset'], calls)
+        self.assertIn(['tailscale', 'serve', '--bg', '--https=8443', 'off'], calls)
+        self.assertIn(['tailscale', 'serve', '--bg', '--https=8448', 'off'], calls)
+        self.assertFalse(any(c[:3] == ['tailscale', 'serve', 'reset'] or '--https=443' in c for c in calls))   # your own route stays
         self.assertIn(['groupdel', 'nekoserver-control'], calls)
         self.assertIn(['systemctl', 'daemon-reload'], calls)
         self.assertFalse(any(c[:2] == ['docker', 'rm'] or c[:3] == ['docker', 'network', 'rm'] for c in calls))
         self.assertFalse(any(c[0] == 'umount' for c in calls))
         self.assertEqual(json.loads((self.system.root / 'etc/docker/daemon.json').read_text())['data-root'], '/srv/nekoserver/docker-engine')
-        self.assertFalse(any(c[0] in ('smbpasswd', 'pdbedit') for c in calls))   # a test root: no real Samba accounts touched
+        self.assertIn(['smbpasswd', '-x', 'neko'], calls)        # the account setup created
+        self.assertFalse(self.exists('/etc/samba/nekoserver-accounts'))
+
+    def test_a_samba_account_that_was_there_before_stays(self):
+        """The reported case: setup reused an existing Samba account, and uninstall deleted it
+        (shares of your own that use it would then refuse you)."""
+        (self.system.root / 'etc/samba/nekoserver-accounts').unlink()   # setup reused 'neko', so it never wrote it down
+        self.plan = self.system.plan()
+        notes = '\n'.join(self.plan.groups['server']['notes'])
+        self.assertIn('the account neko was there before NekoServer and stays', notes)
+        self.remove({'server'})
+        self.assertFalse(any(c[0] == 'smbpasswd' for c in self.system.calls))
+        self.assertFalse(self.exists('/etc/samba/nekoserver.conf'))     # NekoServer's shares still go
+
+    def test_tailscale_is_left_alone_without_a_record_of_nekoservers_routes(self):
+        """The reported case: home-network access only (no Tailscale routes of NekoServer's), and
+        uninstall cleared every Serve route with  tailscale serve reset."""
+        (self.system.root / 'srv/nekoserver/gateway/tailnet-owned.json').unlink()
+        self.plan = self.system.plan()
+        self.remove({'server'})
+        self.assertFalse(any(c[0] == 'tailscale' and c[:3] != ['tailscale', 'serve', 'status'] for c in self.system.calls))
+
+    def test_a_route_changed_since_setup_stays(self):
+        self.system.serve['Web'][HOST + ':8443'] = {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:9999'}}}   # changed by you
+        self.plan = self.system.plan()
+        self.assertEqual(self.plan.served, ['8448'])
+
+    def test_the_pc_may_sleep_again_but_masks_from_before_stay(self):
+        """The reported case: after uninstall the PC still could not suspend or hibernate, with
+        NekoServer's log limits still on."""
+        notes = '\n'.join(self.plan.groups['server']['notes'])
+        self.assertIn('The PC may sleep again', notes)
+        self.assertIn('unmasked: sleep.target, suspend.target, hybrid-sleep.target, suspend-then-hibernate.target', notes)
+        self.remove({'server'})
+        for dropin in uninstaller.OS_DROPINS:
+            self.assertFalse(self.exists(dropin), dropin)
+        self.assertTrue(self.exists('/etc/systemd/logind.conf.d/50-mine.conf'))
+        self.assertIn(['systemctl', 'unmask', 'sleep.target', 'suspend.target', 'hybrid-sleep.target', 'suspend-then-hibernate.target'],
+                      self.system.calls)
+        self.assertIn(['systemctl', 'restart', 'systemd-journald.service'], self.system.calls)
+
+    def test_without_a_record_the_masks_are_nekoservers_only_when_its_settings_are_there(self):
+        (self.system.root / 'etc/nekoserver-os/sleep-masks-before.json').unlink()
+        self.assertEqual(self.system.plan().sleep_masks(), list(uninstaller.SLEEP_TARGETS))
+        for dropin in uninstaller.OS_DROPINS:
+            (self.system.root / dropin.lstrip('/')).unlink()
+        self.assertEqual(self.system.plan().sleep_masks(), [])   # masked by someone else: left alone
+
+    def assert_nothing_deleted(self):
+        for kept in ('/etc/systemd/system/nekoserver-control.service', '/run/nekoserver-control', '/srv/nekoserver/appdata',
+                     '/srv/nekoserver/docker-engine', '/etc/samba/nekoserver.conf', '/mnt/nekoserver-media/library'):
+            self.assertTrue(self.exists(kept), kept)
+
+    def test_a_service_that_does_not_stop_ends_the_uninstall_before_any_deletion(self):
+        """The reported case: the control service failed to stop and the uninstall went on to
+        delete its definition and the fan records."""
+        self.system.failing[('systemctl', 'disable', '--now', 'nekoserver-control.service')] = (1, 'Job for nekoserver-control.service failed')
+        self.system.running.add('nekoserver-control.service')
+        with self.assertRaisesRegex(uninstaller.Stopped, r'nekoserver-control.service \(Job for nekoserver-control.service failed\).*Nothing has been deleted'):
+            self.remove({key for key, *_ in uninstaller.CHOICES})
+        self.assert_nothing_deleted()
+        self.assertFalse(any(c[:2] == ['docker', 'rm'] for c in self.system.calls))
+
+    def test_a_stop_that_times_out_counts_as_not_stopped(self):
+        self.system.failing[('systemctl', 'disable', '--now', 'nekoserver-maintenance.service')] = (None, 'did not finish within 120 seconds')
+        with self.assertRaisesRegex(uninstaller.Stopped, 'nekoserver-maintenance.service \\(did not finish within 120 seconds\\)'):
+            self.remove({'server'})
+        self.assert_nothing_deleted()
+
+    def test_fans_not_handed_back_end_the_uninstall(self):
+        self.system.keeps_fans = True
+        with self.assertRaisesRegex(uninstaller.Stopped, 'not handed back to the motherboard'):
+            self.remove({'server'})
+        self.assert_nothing_deleted()
+
+    def test_containers_or_docker_that_do_not_go_keep_the_data(self):
+        self.system.failing[('docker', 'rm')] = (1, 'Error response from daemon: container is busy')
+        with self.assertRaisesRegex(uninstaller.Stopped, 'containers of neko-immich could not be removed \\(Error response from daemon: container is busy\\)'):
+            self.remove({key for key, *_ in uninstaller.CHOICES})
+        self.assert_nothing_deleted()
+        self.system.failing = {('systemctl', 'stop', 'docker.service'): (1, 'Failed to stop docker.service')}
+        with self.assertRaisesRegex(uninstaller.Stopped, 'Docker did not stop \\(Failed to stop docker.service\\)'):
+            self.remove({key for key, *_ in uninstaller.CHOICES})
+        self.assert_nothing_deleted()
+        self.assertEqual(json.loads((self.system.root / 'etc/docker/daemon.json').read_text())['data-root'], '/srv/nekoserver/docker-engine')
 
     def test_everything_goes_in_the_right_order_and_the_drives_are_only_unmounted(self):
         self.remove({key for key, *_ in uninstaller.CHOICES})
         for gone in ('/srv/nekoserver/appdata', '/srv/nekoserver/secrets', '/srv/nekoserver/docker-engine', '/srv/nekoserver/photos',
                      '/mnt/nekoserver-media/library', '/mnt/nekoserver-media/photos', '/mnt/nekoserver-media/cloud',
-                     '/mnt/nekoserver-media/backups', '/mnt/nekoserver-photos/photos'):
+                     '/mnt/nekoserver-media/backups', '/mnt/nekoserver-photos/upload', '/mnt/nekoserver-photos/.neko-ledger.json'):
             self.assertFalse(self.exists(gone), gone)
         self.assertTrue(self.exists('/mnt/nekoserver-photos/lost+found/keep'))
         calls = self.system.calls

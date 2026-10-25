@@ -17,6 +17,18 @@ ROWS = [{'interface': 'enp3s0', 'ip': '192.168.1.20', 'cidr': '192.168.1.0/24'},
         {'interface': 'wlan0', 'ip': '10.0.0.5', 'cidr': '10.0.0.0/24'}]
 
 
+class HomeBridgeTests(unittest.TestCase):
+    """A bridge of your own carrying the home network (br0, bridge0) is offered like a
+    network card; Docker's, libvirt's and the tunnels never are (startup.rs agrees)."""
+    def test_a_home_bridge_is_a_candidate_and_dockers_bridges_are_not(self):
+        import json
+        rows = [{'ifname': name, 'addr_info': [{'family': 'inet', 'scope': 'global', 'local': '192.168.1.20', 'prefixlen': 24}]}
+                for name in ('enp2s0', 'br0', 'bridge0', 'br-lan', 'docker0', 'br-0123456789ab', 'virbr0', 'veth1', 'tailscale0')]
+        with mock.patch.object(network_access, 'command', return_value=json.dumps(rows)):
+            found = [row['interface'] for row in network_access.candidates()]
+        self.assertEqual(found, ['enp2s0', 'br0', 'bridge0', 'br-lan'])
+
+
 class LanChoiceTests(unittest.TestCase):
     def ctx(self, **gateway):
         saved = []
@@ -92,6 +104,20 @@ class LanChoiceTests(unittest.TestCase):
         self.assertEqual(result['status'], 'needs_setup')
         self.assertNotIn('gateway_lan', result['reason'])
 
+
+
+class SambaAccountRecordTests(unittest.TestCase):
+    """Setup writes down the Samba accounts it creates, so the uninstaller removes only those."""
+    def test_a_created_account_is_recorded_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            record = Path(d) / 'nekoserver-accounts'
+            self.assertEqual(samba.created_accounts(record), [])
+            samba.remember_account('neko', record)
+            samba.remember_account('neko', record)
+            samba.remember_account('dana', record)
+            self.assertEqual(samba.created_accounts(record), ['neko', 'dana'])
+            self.assertTrue(record.read_text().startswith('# Managed by NekoServer'))
+            self.assertEqual(record.stat().st_mode & 0o777, 0o600)
 
 
 class SambaWaitsForItsFoldersTests(unittest.TestCase):

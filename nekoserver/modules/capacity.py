@@ -1,8 +1,8 @@
 """Check drive space right after the drives are chosen, before anything is installed."""
+import datetime as dt
 import glob
 import hashlib
-import json
-import math
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,12 +40,32 @@ def used_bytes(path):
 
 
 PHOTO_SECTIONS = ('upload', 'library')
-FULL_CHECK_DAYS = 28  # the weekly USB job compares every copy by checksum this often
 
 
 def archive_folder(config):
     """The permanent photo archive on the HDD (what the weekly USB job copies)."""
     return Path(config['media_mount']) / config.get('photos', {}).get('archive_dir', 'photos/archive')
+
+
+# The form of the name Nextcloud gives its own folder in its data folder.
+NEXTCLOUD_APPDATA = re.compile(r'appdata_oc[a-z0-9]{10}')
+
+
+def nextcloud_appdata(config):
+    """Nextcloud's own folder in its data folder, `appdata_<instance id>`, named by
+    `instanceid` in its config.php on the SSD; None when that cannot be read (backup.rs
+    nextcloud_internal reads it the same way)."""
+    try:
+        text = (Path(config['data_mount']) / 'appdata/nextcloud/html/config/config.php').read_text(errors='replace')
+    except (OSError, KeyError):
+        return None
+    found = re.search(r"'instanceid'\s*=>\s*'([a-z0-9]{2,40})'", text)
+    return 'appdata_' + found[1] if found else None
+
+
+def nextcloud_internal(name, known):
+    """Only Nextcloud's own folder is skipped: a user named `appdata_alice` is a user."""
+    return name == known if known else NEXTCLOUD_APPDATA.fullmatch(name) is not None
 
 
 def usb_sources(config):
@@ -55,12 +75,14 @@ def usb_sources(config):
     media = Path(config['media_mount'])
     pairs = [(archive_folder(config) / name, name) for name in PHOTO_SECTIONS]
     cloud = media / 'cloud/files'
+    internal = nextcloud_appdata(config)
     try:
         users = sorted(cloud.iterdir()) if cloud.is_dir() else []
     except OSError:
         users = []
     for user in users:
-        if user.name.startswith(('appdata_', '.')) or user.is_symlink() or not (user / 'files').is_dir():
+        if nextcloud_internal(user.name, internal) or user.name.startswith('.') or user.is_symlink() \
+                or not (user / 'files').is_dir():
             continue
         pairs.append((user / 'files', f'nextcloud/{user.name}/files'))
     return pairs
@@ -73,22 +95,35 @@ def awaiting_archive(config):
     return pending_bytes(archive_folder(config), [(library / name, name) for name in PHOTO_SECTIONS])
 
 
-def newest_dump_bytes(config):
-    """Size of the newest Immich database copy; the weekly job adds one to the USB drive."""
-    folder = Path(config['media_mount']) / 'backups/immich-database'
+def dated_in_future(name, now):
+    """A copy named more than a day ahead of the clock was made while the clock was wrong
+    (backup.rs dated_in_future): it is not the newest copy, whatever its name says."""
     try:
-        newest = max((f for f in folder.glob('immich-*.sql') if f.is_file()), default=None)
+        made = dt.datetime.strptime(name[7:22], '%Y%m%dT%H%M%S').replace(tzinfo=dt.timezone.utc).timestamp()
+    except ValueError:
+        return False
+    return made > now + 86400
+
+
+def newest_dump_bytes(config, now=None):
+    """Size of the newest Immich database copy with a believable date; the weekly job adds
+    one to the USB drive."""
+    folder = Path(config['media_mount']) / 'backups/immich-database'
+    now = time.time() if now is None else now
+    try:
+        newest = max((f for f in folder.glob('immich-*.sql') if f.is_file() and not dated_in_future(f.name, now)), default=None)
         return newest.stat().st_size if newest else 0
     except OSError:
         return 0
 
 
-def pending_bytes(root, pairs, mirror=(), full=False):
+def pending_bytes(root, pairs, mirror=()):
     """Bytes the next weekly copy still has to write to the USB drive at root: every file
     it does not hold yet, in the current content. Earlier versions already on the drive
     are not counted as reusable room: the backup only ever adds. Folders named in
     `mirror` are copies of the HDD photo archive and follow the mirror's rules
-    (`mirrored`); `full`: the 4-weekly checksum comparison of every copy is due."""
+    (`mirrored`). The checksum comparison of every copy is the monthly run's, not the
+    weekly copy's, so it is not counted here."""
     total = 0
     for source, name in pairs:
         noted = current_files(source) if name in mirror else set()
@@ -96,7 +131,7 @@ def pending_bytes(root, pairs, mirror=(), full=False):
             if path.name.endswith(('.part', '.neko-part')):
                 continue
             target = root / name / path.relative_to(source)
-            done = (mirrored(path, target, full or path in noted) if name in mirror
+            done = (mirrored(path, target, path in noted) if name in mirror
                     else copied(path, target))
             if not done:
                 total += size
@@ -121,8 +156,8 @@ def mirrored(source, target, verify):
     """Does the USB drive hold this archive file intact, as the weekly mirror decides?
     The archive never changes a saved file, so a different copy is damaged: the mirror
     keeps it aside and writes the file again in full. A same-size copy written after the
-    file last changed is trusted without reading it, unless `verify` (a full check, or a
-    file a current-version note names), which compares checksums like the mirror does."""
+    file last changed is trusted without reading it, unless `verify` (a file a
+    current-version note names), which compares checksums like the mirror does."""
     try:
         info, copy = source.lstat(), target.stat()
     except OSError:
@@ -135,25 +170,6 @@ def mirrored(source, target, verify):
         return digest(source) == digest(target)
     except OSError:
         return False
-
-
-def full_check_due(config):
-    """Is the weekly USB job's 4-weekly checksum comparison of every copy due?"""
-    report = Path(config['data_mount']) / 'reports/jobs/external-full-check.json'
-    try:
-        last = float(json.loads(report.read_text()).get('at', 0))
-    except (OSError, ValueError, TypeError, AttributeError):
-        last = 0.0
-    return due_since(last, time.time())
-
-
-def due_since(last, now):
-    """Same rule as the backup program (backup.rs due_since): no valid record, older than
-    4 weeks, or in the future (a check made while the clock was wrong must not postpone
-    the next one for years once the clock is corrected) means a full check is due."""
-    if not math.isfinite(last) or last <= 0 or last > now + 300:
-        return True
-    return now - last >= FULL_CHECK_DAYS * 86400
 
 
 def copied(source, target):
@@ -190,7 +206,7 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def usb_room(uuid, pairs, full=False, fstype='ext4'):
+def usb_room(uuid, pairs, fstype='ext4'):
     """(free bytes, bytes still to copy) on the USB drive, or None if it is not attached.
     A drive that is not open anywhere is opened read-only, measured and closed again;
     nothing on it is changed."""
@@ -202,22 +218,22 @@ def usb_room(uuid, pairs, full=False, fstype='ext4'):
                                capture_output=True, text=True, timeout=20, check=False)
         targets = found.stdout.split('\n') if found.returncode == 0 else []
         if targets and targets[0].strip():
-            return measure(Path(targets[0].strip()), pairs, full)
+            return measure(Path(targets[0].strip()), pairs)
         with tempfile.TemporaryDirectory(prefix='neko-usb-') as folder:
             opened = subprocess.run(['mount', '-o', usb_mount_options(fstype), 'UUID=' + uuid, folder],
                                     capture_output=True, timeout=60, check=False)
             if opened.returncode:
                 return None
             try:
-                return measure(Path(folder), pairs, full)
+                return measure(Path(folder), pairs)
             finally:
                 subprocess.run(['umount', folder], capture_output=True, timeout=60, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
 
 
-def measure(root, pairs, full=False):
-    return free_bytes(root), pending_bytes(root, pairs, mirror=PHOTO_SECTIONS, full=full)
+def measure(root, pairs):
+    return free_bytes(root), pending_bytes(root, pairs, mirror=PHOTO_SECTIONS)
 
 
 def gib(value):
@@ -225,11 +241,10 @@ def gib(value):
 
 
 def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=newest_dump_bytes,
-           unarchived=awaiting_archive, thorough=True):
-    """Return (problems that stop the install, warnings worth confirming). Not
-    `thorough` (a re-run, where the result is only logged): the USB copies are compared
-    by size and date only, never read in full for the 4-weekly checksum comparison, which
-    would read every photo on both drives each time setup is run again."""
+           unarchived=awaiting_archive):
+    """Return (problems that stop the install, warnings worth confirming). The USB copies
+    are compared by size and date, as the weekly copy does; reading every photo on both
+    drives is the monthly checksum check's job."""
     data, media = Path(config['data_mount']), Path(config['media_mount'])
     stop, warn = [], []
     for name, path, (minimum, recommended), purpose in (
@@ -247,7 +262,7 @@ def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=ne
     photos = max(used(data / 'photos/immich-library'), used(archive_folder(config)))
     cloud = used(media / 'cloud/files')
     room = usb_space(config.get('photos', {}).get('external_backup_uuid', ''), usb_sources(config),
-                     full=thorough and full_check_due(config), fstype=config.get('photos', {}).get('external_backup_fstype', 'ext4'))
+                     fstype=config.get('photos', {}).get('external_backup_fstype', 'ext4'))
     if room is not None:
         # What the next copy must write (new files, changed files, this week's database
         # copy) plus room to grow. Old versions already on the drive are never reused.
@@ -277,7 +292,7 @@ def run(ctx, prompt=input, output=print):
         ctx.log('Capacity check runs after the drives are chosen')
         return
     rerun = installed(ctx.config)
-    stop, warn = assess(ctx.config, thorough=not rerun)
+    stop, warn = assess(ctx.config)
     if rerun:
         # The minimums are for a new install. Afterwards the drives fill with your own
         # photos and files; say so, but never block the rest of a re-run.
