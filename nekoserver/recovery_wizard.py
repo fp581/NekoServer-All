@@ -24,6 +24,7 @@ from neko_common import (QUARANTINE, BackupDamaged, atomic_json, backup_files, c
 ROOT = Path(__file__).resolve().parent
 # The weekly USB backup holds this lock while it mounts, copies and unmounts the drive.
 USB_LOCK = Path('/run/nekoserver-photo-backup.lock')
+RESTORE = 'The restore'   # how the room check names a restore in its message
 SNAPSHOT = re.compile(r'^snapshot-(\d+)-\d+$')
 MONTHLY = re.compile(r'^(\d+)-\d+$')
 
@@ -261,7 +262,7 @@ def copy_new(sources, destination, checked=None):
     checked = checked or Checked(None)
     files = [(name, Path(source), path) for name, source in sources if Path(source).is_dir()
              for path, _ in backup_files(source)]
-    ensure_room(destination.parent, sum(p.stat().st_size for _, _, p in files), 'The restore')
+    ensure_room(destination.parent, sum(p.stat().st_size for _, _, p in files), RESTORE)
     destination.mkdir(mode=0o700)
     for name, source, path in files:
         checked.copy(path, destination / name / path.relative_to(source))
@@ -380,7 +381,7 @@ def copy_latest(sources, destination, output=print, checked=None):
     of files that had several versions, so you can see which one you get."""
     checked = checked or Checked(None)
     chosen = latest_versions(sources)
-    ensure_room(destination.parent, sum(p.stat().st_size for p, _, _, _ in chosen), 'The restore')
+    ensure_room(destination.parent, sum(p.stat().st_size for p, _, _, _ in chosen), RESTORE)
     destination.mkdir(mode=0o700)
     for path, target, _, _ in chosen:
         checked.copy(path, destination / target)
@@ -464,7 +465,7 @@ def listed_versions(sources, root, files):
 
 def copy_listed(chosen, destination, checked):
     """Copy each listed file's saved copy under the file's own name."""
-    ensure_room(destination.parent, sum(p.stat().st_size for p, _ in chosen), 'The restore')
+    ensure_room(destination.parent, sum(p.stat().st_size for p, _ in chosen), RESTORE)
     destination.mkdir(mode=0o700)
     for path, target in chosen:
         checked.copy(path, destination / target)

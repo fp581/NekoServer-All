@@ -36,7 +36,7 @@ SAMBA_CREATED = '/etc/samba/nekoserver-accounts'   # the Samba accounts setup cr
 OWN_SMB_CONF = '[global]\n   include = /etc/samba/nekoserver.conf\n'   # the smb.conf setup writes when there was none
 PACKAGED_SMB_CONF = '/etc/samba/smb.conf.packaged'   # the package's example, set aside by setup; put back when NekoServer's own goes
 SAMBA_BEFORE = '/etc/samba/nekoserver-samba-before.json'   # was Samba on before NekoServer switched it on (modules/samba.py)
-SAMBA_UNITS = ('smbd.service', 'smb.service')   # Debian and Ubuntu; Arch and Fedora
+SAMBA_UNITS = ('smbd.service', 'smb.service')   # its name on Debian and Ubuntu, then on Arch and Fedora
 MANAGED = '# Managed by NekoServer'
 DAEMON_JSON = '/etc/docker/daemon.json'
 DOCKER_GUARD = '/etc/systemd/system/docker.service.d/10-nekoserver-storage.conf'   # modules/docker.py
@@ -359,7 +359,7 @@ class Plan:
     def unit_on(self, unit):
         """Installed, and switched on at startup or running now."""
         shown = self.run(['systemctl', 'show', unit, '-p', 'LoadState', '-p', 'UnitFileState', '-p', 'ActiveState'], 30)
-        state = dict(line.partition('=')[::2] for line in shown.splitlines() if '=' in line)
+        state = {key: value for key, sep, value in (line.partition('=') for line in shown.splitlines()) if sep}
         return state.get('LoadState') == 'loaded' and (state.get('UnitFileState') in ('enabled', 'enabled-runtime')
                                                        or state.get('ActiveState') in ('active', 'activating', 'reloading'))
 
