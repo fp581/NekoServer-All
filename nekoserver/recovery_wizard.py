@@ -248,10 +248,7 @@ class Checked:
         if self.ledger_problem:
             text += f' This backup\'s checksum list could not be used ({self.ledger_problem}), so no file was checked.'
         if self.uncertain:
-            text += (f' {len(self.uncertain)} files were left out because the list from that backup can\'t say which '
-                     'saved copy is theirs: they became a folder (or a folder became a file) after it, and that list '
-                     'is from before 0.39.7, which keeps no checksums. "Everything ever kept" restores every saved '
-                     'copy of them.')
+            text += f' {len(self.uncertain)} files were left out: {UNCERTAIN_WHY}'
         left = self.damaged + self.missing
         if left:
             text += (f' {len(left)} files were NOT restored, because this backup has them damaged ({len(self.damaged)}) '
@@ -541,6 +538,9 @@ def listed_place(located, key, copy, sha):
 
 
 UNCERTAIN = object()
+UNCERTAIN_WHY = ('they became a folder (or a folder became a file) after that backup, and its list is from before '
+                 '0.39.7, which keeps no checksums, so which saved copy is theirs can\'t be told. "Everything ever '
+                 'kept" brings back every saved copy of them.')
 
 
 def listed_versions(sources, root, files, sums=None):
@@ -618,10 +618,7 @@ def copy_as_of(sources, target, checked, inventory, output, prompt):
         return None
     chosen, missing, uncertain = listed_versions(sources, checked.root, files, checked.sums)
     if uncertain:
-        output(f'{len(uncertain)} files from that backup became a folder (or a folder became a file) later, and its '
-               f'list is from before 0.39.7, which keeps no checksums: which saved copy is theirs can\'t be told, so '
-               f'they are left out (for example {", ".join(uncertain[:5])}). "Everything ever kept" brings back '
-               'every saved copy of them.')
+        output(f'{len(uncertain)} files are left out (for example {", ".join(uncertain[:5])}): {UNCERTAIN_WHY}')
     checked.uncertain = uncertain
     missing_check(missing, checked, prompt, output)
     output(f'Restoring the {len(chosen)} files you had at the backup of {date}.')
