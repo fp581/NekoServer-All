@@ -462,6 +462,15 @@ fn saved_versions(target: &Path) -> Result<Vec<(String, PathBuf)>> {
     let parent = target
         .parent()
         .ok_or_else(|| Error::new("Target parent missing"))?;
+    // Exactly `<stem>.neko-<date>[-n]<ext>`: a file without an extension never takes
+    // another file's versions (README.neko-<date>.md belongs to README.md, not README).
+    let dated = regex::Regex::new(&format!(
+        r"^(?:{}|{})\.neko-[0-9]{{8}}T[0-9]{{6}}Z(?:-[0-9]+)?{}$",
+        regex::escape(&stem),
+        regex::escape(&plain),
+        regex::escape(&ext)
+    ))
+    .map_err(|_| Error::new("Invalid version pattern"))?;
     let mut versions = vec![];
     for entry in fs::read_dir(parent)? {
         let path = entry?.path();
@@ -470,13 +479,7 @@ fn saved_versions(target: &Path) -> Result<Vec<(String, PathBuf)>> {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        if [&stem, &plain]
-            .iter()
-            .any(|s| other.starts_with(&format!("{s}.neko-")))
-            && other.ends_with(&ext)
-            && !other.ends_with(".neko-part")
-            && path.is_file()
-        {
+        if dated.is_match(&other) && path.is_file() {
             versions.push((other, path));
         }
     }
@@ -801,7 +804,7 @@ pub fn archive_checked(
     let now = common::now();
     common::directory(&archive, 0o755)?;
     let mut ledger = if apply {
-        Ledger::open(&archive)?
+        Ledger::open_waiting(&archive, LEDGER_WAIT)?
     } else {
         Ledger::read(&archive)?
     };
@@ -891,10 +894,13 @@ pub fn copy_tree(source: &Path, dest: &Path, apply: bool, check: Check) -> Resul
         None => Ok(copied),
     }
 }
+/// How long the archive and the weekly USB copy wait for each other's hold on the HDD
+/// archive's checksum ledger (a first big archive run can take hours).
+const LEDGER_WAIT: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
 pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(u64, Integrity)> {
     let (source, dest) = separate(source, dest)?;
     let mut ledger = if apply {
-        Ledger::open(&source)?
+        Ledger::open_waiting(&source, LEDGER_WAIT)?
     } else {
         Ledger::read(&source)?
     };
@@ -1073,6 +1079,13 @@ fn nextcloud_internal(data: &Path) -> Option<String> {
         .captures(&String::from_utf8_lossy(&config))
         .map(|c| format!("appdata_{}", &c[1]))
 }
+/// A file Nextcloud is still receiving: `<name>.ocTransferId<digits>.part`. Any other
+/// name ending in .part is a user's own file and is backed up (capacity.py agrees).
+fn nextcloud_upload_in_progress(name: &str) -> bool {
+    regex::Regex::new(r"\.ocTransferId[0-9]+\.part$")
+        .unwrap()
+        .is_match(name)
+}
 fn is_nextcloud_internal(name: &str, known: Option<&str>) -> bool {
     match known {
         Some(own) => name == own,
@@ -1240,7 +1253,7 @@ pub fn copy_cloud(
         }
         walk(&files, &mut |path| {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name.ends_with(".part") || name.ends_with(".neko-part") {
+            if nextcloud_upload_in_progress(&name) || name.ends_with(".neko-part") {
                 return Ok(());
             }
             let relative = path
@@ -2186,10 +2199,11 @@ fn usb_copy(a: &Args, check: Check) -> Result<()> {
         }
         separate(source, &dest)?;
     }
-    // A weekly copy and the monthly check of the same drive wait for each other.
+    // A weekly copy, the monthly check of the same drive and a restore from it (the
+    // recovery menu holds this lock while it reads the drive) wait for each other.
     let _lock = common::lock_wait(
         Path::new("/run/nekoserver-photo-backup.lock"),
-        std::time::Duration::from_secs(3600),
+        std::time::Duration::from_secs(8 * 3600),
     )?;
     execute_with(Some(&data), "external", &cfg, || {
         common::stage("checking the USB drive");
@@ -2382,6 +2396,39 @@ mod tests {
         fs::write(&report, br#"{"status":"pass"}"#).unwrap();
         fs::write(&journal, b"{}").unwrap();
         assert!(needs_resume(&journal, &report));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_file_without_an_extension_never_takes_another_files_versions() {
+        let root = scratch("ext-less-versions");
+        fs::create_dir_all(&root).unwrap();
+        for name in [
+            "README",
+            "README.md",
+            "README.neko-20261020T010000Z.md",
+            "README.neko-20261021T010000Z",
+            "README.neko-20261022T010000Z-1",
+            "notes.",
+            "notes.neko-20261020T010000Z.",
+        ] {
+            fs::write(root.join(name), b"x").unwrap();
+        }
+        let names = |target: &str| {
+            saved_versions(&root.join(target))
+                .unwrap()
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names("README"),
+            [
+                "README.neko-20261021T010000Z",
+                "README.neko-20261022T010000Z-1"
+            ]
+        );
+        assert_eq!(names("README.md"), ["README.neko-20261020T010000Z.md"]);
+        assert_eq!(names("notes."), ["notes.neko-20261020T010000Z."]);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -3295,6 +3342,45 @@ mod tests {
         assert_eq!(kept.len(), 1, "the folder is kept aside with its file");
         let full = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
         assert!(full.integrity.problem("USB Nextcloud").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_archive_and_the_usb_copy_wait_for_each_others_ledger() {
+        let root = scratch("ledger-wait");
+        fs::create_dir_all(&root).unwrap();
+        let held = Ledger::open(&root).unwrap();
+        let waiter = {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                Ledger::open_waiting(&root, std::time::Duration::from_secs(30)).is_ok()
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_secs(3)); // longer than open's 2 s
+        drop(held);
+        assert!(
+            waiter.join().unwrap(),
+            "the second job got the ledger once the first let go"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn only_nextclouds_own_unfinished_uploads_are_left_out() {
+        assert!(nextcloud_upload_in_progress(
+            "video.mp4.ocTransferId123456.part"
+        ));
+        assert!(!nextcloud_upload_in_progress("Chapter 1.part"));
+        let root = scratch("cloud-part");
+        let cloud = root.join("cloud");
+        write(&cloud.join("alice/files/Chapter 1.part"), b"mine");
+        write(
+            &cloud.join("alice/files/v.mp4.ocTransferId42.part"),
+            b"upload",
+        );
+        let usb = root.join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        let made = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert_eq!(made.copied, 1);
+        assert!(usb.join("nextcloud/alice/files/Chapter 1.part").is_file());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

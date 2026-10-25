@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 import guided_setup
-from neko_common import (QUARANTINE, atomic_json, backup_files, copy_checked, ensure_room, findmnt, read_ledger,
+from neko_common import (QUARANTINE, BackupDamaged, atomic_json, backup_files, copy_checked, ensure_room, findmnt, read_ledger,
                          record_ledger, settings_path, sha256_file, valid_ledger_path, usb_mount_options,
                          private_mount_options, latest_note, saved_names, saved_versions)
 
@@ -87,6 +87,14 @@ def snapshots(folder):
         if match and path.is_dir() and not path.is_symlink() and (path / MANIFEST).is_file():
             found.append((int(match[1]), path))
     return [(path, when(stamp)) for stamp, path in sorted(found, reverse=True)]
+
+
+def steam_left_out(run):
+    """A nightly host snapshot made while Steam was open keeps no Steam files."""
+    try:
+        return bool(json.loads((Path(run) / MANIFEST).read_text()).get('left_out'))
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def monthly_snapshots(folder, need=None):
@@ -172,13 +180,22 @@ def tree_bytes(folder):
 
 class Checked:
     """Restores check every file against the backup tree's checksum ledger. A file the
-    ledger has no checksum for yet is restored but counted as unverified."""
+    ledger has no checksum for yet is restored but counted as unverified. A file damaged
+    on this backup, or missing from it, is not restored and is listed (the other backup
+    may have it): one bad file never keeps all the good ones from coming back."""
 
     def __init__(self, ledger_root):
         self.root = Path(ledger_root) if ledger_root else None
-        self.sums = read_ledger(self.root) if self.root else {}
+        self.ledger_problem = None
+        try:
+            self.sums = read_ledger(self.root) if self.root else {}
+        except RuntimeError as exc:
+            # A checksum list the drive lost mid-write: the files are restored unchecked.
+            self.sums, self.ledger_problem = {}, str(exc)
         self.verified = 0
         self.unverified = 0
+        self.damaged = []
+        self.missing = []
 
     def copy(self, source, target):
         key = None
@@ -188,17 +205,22 @@ class Checked:
             except ValueError:
                 key = None
         expected = self.sums.get(key)
-        copy_checked(source, target, expected)
+        try:
+            copy_checked(source, target, expected)
+        except BackupDamaged:
+            Path(target).unlink(missing_ok=True)
+            self.damaged.append(key or str(source))
+            return
         if expected:
             self.verified += 1
         else:
             self.unverified += 1
 
     def require_present(self, sources):
-        """Every file the ledger lists under the folders being restored must still be
-        there; a missing one stops the restore before anything is copied."""
+        """The files the ledger lists under the folders being restored that are not on
+        this backup any more (listed, and asked about, before anything is copied)."""
         if not self.root:
-            return
+            return []
         missing = []
         for _, folder in sources:
             try:
@@ -208,17 +230,27 @@ class Checked:
             here = {path.relative_to(self.root).as_posix() for path, _ in backup_files(folder)} \
                 if Path(folder).is_dir() else set()
             missing += sorted(k for k in self.sums if k.startswith(prefix) and k not in here)
-        if missing:
-            raise RuntimeError(f'{len(missing)} files that were backed up and verified are missing from this backup '
-                               f'(for example {", ".join(missing[:5])}); nothing was restored. Use the other '
-                               'backup (HDD or USB), or the recovery menu\'s repair option.')
+        self.missing = missing
+        return missing
 
-    def summary(self):
+    def summary(self, destination=None):
         text = f'{self.verified} files matched their recorded checksums'
         if self.unverified:
             text += (f'; {self.unverified} had no recorded checksum yet (backed up before checksums '
                      'were kept), so they could not be checked')
-        return text + '.'
+        text += '.'
+        if self.ledger_problem:
+            text += f' This backup\'s checksum list could not be used ({self.ledger_problem}), so no file was checked.'
+        left = self.damaged + self.missing
+        if left:
+            text += (f' {len(left)} files were NOT restored, because this backup has them damaged ({len(self.damaged)}) '
+                     f'or no longer has them ({len(self.missing)}). Get those from the other backup (HDD or USB), '
+                     'or try the recovery menu\'s repair option.')
+            if destination is not None and Path(destination).is_dir():
+                listed = Path(destination) / 'NOT-RESTORED.txt'
+                listed.write_text(''.join(f'damaged: {k}\n' for k in self.damaged) + ''.join(f'missing: {k}\n' for k in self.missing))
+                text += f' Their names are in {listed}.'
+        return text
 
 
 def copy_new(sources, destination, checked=None):
@@ -237,7 +269,15 @@ def copy_new(sources, destination, checked=None):
 # The weekly backup never overwrites: the first copy keeps the file's own name, and
 # each later edit is kept beside it as name.neko-<UTC time the backup saw it>[-n].ext.
 # So the dated copies are the NEWER versions.
-VERSIONED = re.compile(r'^(?P<stem>.+)\.neko-(?P<stamp>\d{8}T\d{6}Z)(?:-(?P<n>\d+))?(?:\.(?P<ext>[^.]+))?$')
+# A name that ends in a dot ("notes.") keeps it: its versions are notes.neko-<date>. (an
+# empty extension, not none).
+VERSIONED = re.compile(r'^(?P<stem>.+)\.neko-(?P<stamp>\d{8}T\d{6}Z)(?:-(?P<n>\d+))?(?:\.(?P<ext>[^.]*))?$')
+
+
+def own_name(match):
+    """The name a dated version belongs to: its stem and its extension (an empty one
+    kept: notes. stays notes.)."""
+    return match['stem'] + ('' if match['ext'] is None else '.' + match['ext'])
 
 
 class Versions:
@@ -257,7 +297,7 @@ class Versions:
     def original(self, name, match):
         if name in self.recorded:
             return self.recorded[name]
-        guess = self.names.get(match['stem']) or match['stem'] + ('.' + match['ext'] if match['ext'] else '')
+        guess = self.names.get(match['stem']) or own_name(match)
         return guess if noted_latest(self.folder, guess) == name else None
 
 
@@ -277,7 +317,7 @@ def version_of(name, record=None):
     if not match:
         return name, ('', 0)
     if record is None:
-        original = match['stem'] + ('.' + match['ext'] if match['ext'] else '')
+        original = own_name(match)
     else:
         original = record.original(name, match)
         if original is None:
@@ -356,14 +396,19 @@ def copy_choice(sources, target, prompt, output, ledger_root=None):
     """Newest version of each file (recommended), or every version as stored. Every
     file is checked against the checksum ledger at `ledger_root`."""
     checked = Checked(ledger_root)
-    checked.require_present(sources)
+    missing = checked.require_present(sources)
+    if missing:
+        output(f'{len(missing)} files that were backed up and checked are missing from this backup '
+               f'(for example {", ".join(missing[:5])}). The other backup (HDD or USB) may have them.')
+        if not ask('Restore everything else from this backup now? ("no" stops, with nothing restored)', prompt, output):
+            raise RuntimeError('Nothing was restored. Use the other backup (HDD or USB), or the recovery menu\'s repair option.')
     if ask('Restore only the NEWEST version of each file? (recommended; "no" copies every version)',
            prompt, output):
-        result = copy_latest(sources, target, output, checked), True
+        count, latest = copy_latest(sources, target, output, checked), True
     else:
-        result = copy_new(sources, target, checked), False
-    output(checked.summary())
-    return result
+        count, latest = copy_new(sources, target, checked), False
+    output(checked.summary(target))
+    return count - len(checked.damaged), latest
 
 
 VERSIONS_EXPLAINED = ('Every version was copied. A file\'s own name is its FIRST backed-up version; '
@@ -609,15 +654,21 @@ def restore_nightly(config, kind, prompt, output):
     if not runs:
         output(f'No nightly backup of {label} found on the HDD yet.')
         return
-    run = choose(f'Restore {label} from which night?', [(p, d) for p, d in runs], prompt, output)
+    # A night Steam was open has no Steam files: said in the list, not found out later.
+    shown = [(p, d + (' (no Steam files: Steam was open)' if kind == 'host' and steam_left_out(p) else '')) for p, d in runs]
+    run = choose(f'Restore {label} from which night?', shown, prompt, output)
     if run is None:
         return
     target = new_folder(restored(config) / f'{kind}-{stamp()}', prompt, output, backup_trees(config))
     if target is None:
         return
-    if tool(script, 'restore', '--snapshot', str(run), '--destination', str(target)):
-        say(output, f'\nDone: restored into {target} (checksums verified).',
-            'To use a file from it, stop the app first, copy the file back, then start the app.',
+    # With their owners and permissions, so a file copied back works for its app.
+    if tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners'):
+        say(output, f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.',
+            *(('This night has no Steam files (Steam was open then): choose another night for those.',)
+              if kind == 'host' and steam_left_out(run) else ()),
+            'To use a file from it, stop the app first, copy the file back keeping its owner',
+            '(sudo cp -a <file> <where it belongs>), then start the app.',
             'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.')
 
 
@@ -635,9 +686,15 @@ def restore_monthly(config, prompt, output):
     images = ask('Also load the saved app versions into Docker (needed on a new server)?', prompt, output)
     args = ['--snapshot', str(run), '--stage', str(target)] + (['--load-images'] if images else [])
     if tool('monthly-recovery.py', *args):
+        try:
+            sealed = json.loads((Path(run) / MANIFEST).read_text()).get('password_files') != 'unencrypted_in_data_tar'
+        except (OSError, ValueError, AttributeError):
+            sealed = True
         say(output, f'\nDone: checked and unpacked into {target}.',
-            'Nothing live was replaced. The app password files (.env files and Nextcloud\'s',
-            'config.php) are not in it: get them with "App password list" in this menu.',
+            *(('Nothing live was replaced. The app password files (.env files and Nextcloud\'s',
+               'config.php) are not in it: get them with "App password list" in this menu.') if sealed else
+              ('Nothing live was replaced. This snapshot was made without a backup key, so the app',
+               'password files (.env files and Nextcloud\'s config.php) are in it, unencrypted.')),
             'To rebuild a server from it, follow "disaster recovery" in MONTHLY-MAINTENANCE.md.')
 
 

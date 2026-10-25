@@ -139,14 +139,17 @@ CONTROL_STOP_SECONDS = 660   # it lets an app restart finish, then hands the fan
 
 
 def unchanged_routes(owned, current):
-    """The ports of `owned` (NekoServer's ledger) whose Serve entries are still exactly as
+    """The ports of `owned` (NekoServer's ledger) whose Serve entries are still as
     recorded in `current` (tailscale serve status --json)."""
     tcp, web = current.get('TCP') or {}, current.get('Web') or {}
     mine_tcp, mine_web = owned.get('TCP') or {}, owned.get('Web') or {}
     ports = []
     for port, value in sorted(mine_tcp.items()):
-        sites = [key for key in mine_web if key.endswith(':' + port)]
-        if tcp.get(port) == value and sites and all(web.get(site) == mine_web[site] for site in sites):
+        # By port and handler, whatever host name they were set under (a server renamed
+        # since keeps its routes under its old name): the same rule as gateway_tools.ours.
+        recorded = [v for key, v in mine_web.items() if key.rpartition(':')[2] == port]
+        found = [v for key, v in web.items() if key.rpartition(':')[2] == port]
+        if tcp.get(port) == value and recorded and found and all(h == recorded[0] for h in found):
             ports.append(port)
     return ports
 

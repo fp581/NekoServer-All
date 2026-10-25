@@ -10,6 +10,12 @@ DEPENDENCIES = ['storage', 'recovery', 'tailscale']
 DESCRIPTION = 'Private Tailscale addresses for the everyday apps, with phone setup for each app'
 
 
+def refresh(config, log):
+    """After every setup run: a dashboard moved to another port keeps its phone address
+    working (only that route changes). Nothing happens without NekoServer's routes."""
+    return gateway_tools.refresh_dashboard_route(config, log)
+
+
 def phone_steps(ctx, result):
     """Guide the phone, one app at a time, using the QR page for every address."""
     links = result['links']

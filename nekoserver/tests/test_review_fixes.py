@@ -792,6 +792,34 @@ class GatewayPortTests(unittest.TestCase):
             ports = gateway_tools.choose_lan_ports(ctx)
         return ports, saved, logged
 
+    def test_an_app_taken_out_keeps_its_port_so_its_address_never_opens_another(self):
+        config = self.config()
+        config['gateway']['services'] = ['jellyfin']
+        config['gateway']['lan_ports'] = {'seerr': 8450}        # Seerr had a spare, then was taken out
+        ports, _, _ = self.choose(config, busy={8443})
+        self.assertEqual(ports['jellyfin'], 8451)                 # not Seerr's 8450
+        self.assertEqual(config['gateway']['lan_ports']['seerr'], 8450)
+        config['gateway']['services'] = ['jellyfin', 'seerr']     # back: its own address again
+        ports, _, _ = self.choose(config, busy={8443})
+        self.assertEqual((ports['seerr'], ports['jellyfin']), (8450, 8451))
+
+    def test_a_port_just_closed_by_the_gateway_is_free(self):
+        import socket
+
+        import gateway_tools
+        server = socket.socket()
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(('127.0.0.1', 0))
+        port = server.getsockname()[1]
+        server.listen()
+        client = socket.create_connection(('127.0.0.1', port))
+        accepted, _ = server.accept()
+        self.assertFalse(gateway_tools.port_free('127.0.0.1', port))    # listening: taken
+        accepted.close()                                                 # the server side closes first: TIME_WAIT
+        server.close()
+        client.close()
+        self.assertTrue(gateway_tools.port_free('127.0.0.1', port))
+
     def test_usual_ports_when_free(self):
         config = self.config()
         ports, saved, logged = self.choose(config, busy=set())

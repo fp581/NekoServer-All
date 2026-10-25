@@ -53,9 +53,10 @@ def regular_files(root):
     being left out. Planning, copying and verifying a snapshot all use this one listing,
     so a file missing from the copy can't also be missing from its manifest."""
     text=str(root)
-    # Recovery folders are built from the configured mounts: the same plain characters
-    # as mount_path allows, absolute, without '..'. Anything else is refused unread.
-    if not re.fullmatch(r'/[A-Za-z0-9_./-]+',text) or '..' in Path(text).parts:raise RuntimeError('Recovery folder path is not a plain absolute path: '+text)
+    # Absolute, without '..' or control characters (and, below, without links). Spaces
+    # and other printable characters are fine: a copy on a desktop-mounted drive sits
+    # under a name such as /run/media/you/My Passport.
+    if not re.fullmatch(r'/[^\x00-\x1f\x7f]+',text) or '..' in Path(text).parts:raise RuntimeError('Recovery folder path is not a plain absolute path: '+text)
     root=safe_path(Path(text))
     if not root.is_dir():raise RuntimeError('Recovery source directory missing')
     return sorted(path for path,_size in neko_common.strict_files(root))

@@ -79,6 +79,9 @@ def run(context):
             'Click "Connect" (or "Authorize") to add this server to your account.',
             'If no page opened: open a second terminal, run  sudo tailscale up , open the '
             'link it prints, and come back here.',
+            ('Then keep it signed in: in the Tailscale admin console (login.tailscale.com, Machines), '
+             'open this server\'s menu and choose "Disable key expiry". Otherwise Tailscale signs it out '
+             'after 180 days and the app addresses on your phone stop working.'),
             'Answer yes. The installer checks that this server is connected.',
         ], prepare=login_targets, verify=connected)
         if not done:

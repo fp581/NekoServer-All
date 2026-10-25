@@ -388,6 +388,7 @@ function driveIssues(s, add) {
 }
 function backupIssues(s, add) {
   for (const job of s.backups) {
+    if (job.status === 'disabled') { continue; }   // its app is switched off: nothing to do
     const name = text(job.name, 'Backup'), unit = JOB_UNITS[job.id], timer = object(job.timer);
     if (['fail', 'partial', 'stale'].includes(job.status)) {
       add('job:' + job.id, name + ' · ' + LABELS[job.status], text(job.reason, 'Review the last backup attempt.'), 'backup', severity(job.status === 'fail'), unit);
