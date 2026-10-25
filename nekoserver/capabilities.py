@@ -112,6 +112,19 @@ def firewall(run=subprocess.run, root='/'):
     return on + [name for name in FIREWALLS if _output(run, ['systemctl', 'is-active', name + '.service']) == 'active']
 
 
+def clock(run=subprocess.run, which=shutil.which):
+    """Whether the network keeps the clock right, as systemd says: 'yes', 'no', or '' when it
+    cannot say (no timedatectl, or no answer)."""
+    return _output(run, ['timedatectl', 'show', '-p', 'NTPSynchronized', '--value']) if which('timedatectl') else ''
+
+
+# A wrong clock makes downloads and the package managers fail with errors that do not
+# name it ("certificate not yet valid", "signature from the future").
+CLOCK_NOTE = ('no: the network does not keep this PC\'s clock right. A wrong clock makes downloads and package '
+              'installs fail with confusing errors (a certificate or a signature "not yet valid" or "expired"). Check '
+              'the date and time (timedatectl) and let the network set them: sudo timedatectl set-ntp true')
+
+
 def row(name, label, found, ok, required=False, problem=None):
     """`problem`: what setup says when a required row is not met (default: "is required")."""
     return {'name': name, 'label': label, 'found': found, 'ok': bool(ok), 'required': required, 'problem': problem}
@@ -142,6 +155,7 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
     docker, compose = docker_versions(run, which)
     target = _output(run, ['systemctl', 'get-default']) if systemd else ''
     memory = memory_gib(root)
+    synchronised = clock(run, which)
     return [
         row('architecture', 'x86-64 processor', machine, machine == 'x86_64', True),
         row('python', 'Python 3.11 or newer', '.'.join(map(str, python)), tuple(python) >= MIN_PYTHON, True),
@@ -160,6 +174,8 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
         row('desktop', 'Desktop', 'yes' if target == 'graphical.target' else 'no (server)', True),
         row('memory', 'Memory (8 GB or more recommended)', memory_note(memory),
             not memory or memory >= ENOUGH_MEMORY_GIB),
+        row('clock', 'Clock set by the network', {'yes': 'yes', 'no': CLOCK_NOTE}.get(synchronised, 'unknown'),
+            synchronised != 'no'),
     ]
 
 

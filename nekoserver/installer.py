@@ -14,7 +14,7 @@ import capabilities
 import guided_setup
 import host
 import setup_progress
-from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path, pending_maintenance
+from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path, pending_maintenance, default_settings, NO_SETTINGS, BUNDLE_MANIFEST
 
 # The installer's own log lines (a step's status), as against a step's own words.
 MARKERS = ('START ', 'PASS ', 'FAILED ', 'NEEDS SETUP ', 'UNAVAILABLE ', 'BLOCKED ', 'Finished:')
@@ -231,9 +231,39 @@ def validate_config(config):
         raise InstallerError('media.services must contain unique known services')
 
 
+def template_steps(config):
+    """config_checks.merge_profiles with the template next to the installer."""
+    from config_checks import merge_profiles
+    return merge_profiles(config, template_settings(ROOT))
+
+
+def template_settings(root=ROOT):
+    """The template next to the installer (config.json), or {} when it can't be read."""
+    try:
+        value = read_json(Path(root) / 'config.json')
+    except (OSError, ValueError, InstallerError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def save_profiles(ctx, added, changed, apply):
+    """The steps merge_profiles added, said in the log (on the screen alone for a read-only
+    plan: ctx None), and the settings saved (--apply)."""
+    for line in added:
+        if ctx is None:
+            print(line + ' (not saved: read-only)')
+        else:
+            ctx.log(line)
+    if changed and apply:
+        ctx.persist_config()
+
+
 def _execute(args, root=ROOT):
     config = read_json(Path(args.config))
     validate_config(config)
+    # A settings file keeps the profiles it was made with: the steps a newer release added
+    # are added now (said in the log, and saved with --apply, once the log is open below).
+    added, profiles_changed = template_steps(config)
     modules = load_modules(root / 'modules')
     enabled = [k for k in modules if config.get('modules', {}).get(k, {}).get('enabled', False)]
     state_dir = Path(args.state_dir).expanduser()
@@ -265,6 +295,7 @@ def _execute(args, root=ROOT):
         from native_runtime import payload
         payload(ROOT,config)
     if args.check or args.dry_run:
+        save_profiles(None, added, False, False)
         print(f'NekoServer v{VERSION} — read-only plan (no changes):')
         for name in plan:
             print(f"  {name}: {getattr(modules[name]['object'], 'DESCRIPTION', '')}")
@@ -290,6 +321,7 @@ def _execute(args, root=ROOT):
             setup_progress.note(message)   # a step's own words, for the setup window
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan
+    save_profiles(ctx, added, profiles_changed, args.apply)
     review_retention(ctx, args.apply)
     for name in plan:
         bad_deps = [d for d in modules[name]['deps'] if states.get(d, {}).get('status') != complete_status]
@@ -329,10 +361,11 @@ def _execute(args, root=ROOT):
             ensure_directory(persistent,0o700)
             next_state=persistent/'state.json'
             previous_persistent=read_json(next_state) if next_state.exists() else {}
-            states={**previous_persistent,**states}
-            old_log=log_path
+            states=moved_states(previous_persistent,states,plan[:plan.index(name)+1])
+            old_log,old_state=log_path,state_path
             state_dir=persistent;state_path=next_state;log_path=persistent/'install.log'
             move_log(old_log,log_path)
+            retire(old_state)
         atomic_json_write(state_path, states)
     for name in REFRESHED:
         if args.apply and states.get(name, {}).get('status') == complete_status and name in modules:
@@ -384,6 +417,22 @@ UNAVAILABLE = 'unavailable'
 # Steps whose saved settings are brought up to date after every run.
 REFRESHED = ('dashboard', 'host_backup', 'app_backup', 'maintenance', 'photo_backup', 'media_monitor', 'gateway_tailnet')
 
+def moved_states(on_ssd, here, ran):
+    """The step records once they move to the SSD: the SSD's (the newer ones, from the
+    runs since the SSD was set up), with this run's own steps on top. The rest of the
+    file on the system disk is from an earlier run and must not undo newer results."""
+    return {**here, **on_ssd, **{name: here[name] for name in ran if name in here}}
+
+
+def retire(old_state):
+    """The record on the system disk, put aside once the SSD's is in use, so a later run
+    that starts before the SSD is mounted can't take its old results for current ones."""
+    try:
+        old_state.rename(old_state.with_name(old_state.name + '.moved-to-ssd'))
+    except OSError:
+        pass
+
+
 def execute(args, root=ROOT):
     if not args.apply:
         return _execute(args, root)
@@ -415,12 +464,42 @@ def settings_for(args, parser):
     my-config.json themselves). Everything else uses it too once the wizard has made it:
     the template next to it (config.json, which git tracks) has no drives in it, and
     setup would save into it, so changes are never applied to the template."""
-    mine = ROOT / 'my-config.json'
-    chosen = args.config or str(mine if mine.exists() else ROOT / 'config.json')
-    if args.apply and Path(chosen).resolve() == (ROOT / 'config.json').resolve():
+    found = default_settings(ROOT)
+    # In the copy kept on the SSD (release-manifest.json beside it) config.json is your
+    # settings, so it is used as they are; anywhere else it is only the template.
+    chosen = args.config or (found if found != NO_SETTINGS else str(ROOT / 'config.json'))
+    kept_copy = (ROOT / BUNDLE_MANIFEST).is_file()
+    if args.apply and not kept_copy and Path(chosen).resolve() == (ROOT / 'config.json').resolve():
+        if has_drives(ROOT / 'config.json'):
+            # Older docs had people edit the template itself.
+            parser.error('config.json holds your drives, but it is the template that git updates. Keep your settings '
+                         'as my-config.json instead: in this folder run  cp config.json my-config.json  and then '
+                         'git checkout config.json, and run the command again')
         parser.error('config.json is the template, not your settings. Run  sudo bash install.sh  first '
                      '(it makes my-config.json with your drives and choices), or name a settings file with --config')
     return chosen
+
+
+def has_drives(path):
+    """A settings file with an SSD or HDD chosen in it (a UUID under "storage")."""
+    try:
+        storage = json.loads(Path(path).read_text()).get('storage', {})
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(storage, dict) and any(isinstance(v, dict) and v.get('uuid') for v in storage.values())
+
+def finish_update():
+    """Only the unfinished monthly update, finished by this release (no other step runs)."""
+    if os.geteuid() != 0:
+        print('Run it with sudo:  sudo bash install.sh --finish-update', file=sys.stderr)
+        return 1
+    from modules import maintenance
+    try:
+        maintenance.finish_update()
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        print(f'ERROR: {exc}', file=sys.stderr)
+        return 2
+    return 0
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='NekoServer safe phase-one installer framework')
@@ -431,12 +510,16 @@ def main(argv=None):
     mode.add_argument('--retry-failed', action='store_true', help='Retry failed or blocked modules and their dependencies')
     mode.add_argument('--wizard', action='store_true', help='Guided setup of everything (what `sudo bash install.sh` runs)')
     mode.add_argument('--recover', action='store_true', help='Guided recovery from your backups')
+    mode.add_argument('--finish-update', action='store_true',
+                      help='Finish a monthly update an earlier release left unfinished, with this release (sudo bash install.sh --finish-update)')
     parser.add_argument('--apply', action='store_true', help='Allow explicitly supported system changes (requires root for Docker install)')
     parser.add_argument('--check', action='store_true', help='Validate configuration and dependency graph without running')
     parser.add_argument('--dry-run', action='store_true', help='Preview execution; writes nothing')
     parser.add_argument('--config', help='Settings file (default: my-config.json here, the one the wizard made)')
     parser.add_argument('--state-dir', default=str(DEFAULT_STATE))
     args = parser.parse_args(argv)
+    if args.finish_update:
+        return finish_update()
     if not (args.wizard or args.recover):
         args.config = settings_for(args, parser)
     if args.config:

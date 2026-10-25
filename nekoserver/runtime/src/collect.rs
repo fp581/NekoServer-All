@@ -48,7 +48,11 @@ fn integrity(data: &Path, ok: bool) -> Value {
             .filter_map(|v| v.as_str().map(|f| chars(f, 120)))
             .take(5)
             .collect();
-        rows.push(json!({"id": id, "name": name, "at": s["at"],
+        // When every copy was last compared with its checksum: a quick run (size and
+        // dates) proves nothing about copies already there. None before 0.39.6.
+        let full_at = s["full_at"].as_f64().filter(|t| t.is_finite() && *t > 0.0);
+        rows.push(json!({"id": id, "name": name, "at": s["at"], "full_at": full_at,
+            "check": if s["check"] == "quick" { "quick" } else if s["check"] == "full" { "full" } else { "unknown" },
             "unverified": s["unverified"].as_u64().unwrap_or(0),
             "repaired": s["repaired"].as_u64().unwrap_or(0),
             "damaged": count("damaged"), "both_damaged": count("both_damaged"), "disagree": count("disagree"),
@@ -204,8 +208,16 @@ fn metrics(previous: &Value) -> (Value, Value) {
                             if let Ok(value) = fs::read_to_string(sensor.path()) {
                                 if let Ok(v) = value.trim().parse::<f64>() {
                                     let v = v / 1000.0;
+                                    // The chip's own critical limit, when it reports one.
+                                    let crit = fs::read_to_string(
+                                        hw.path().join(name.replace("_input", "_crit")),
+                                    )
+                                    .ok()
+                                    .and_then(|c| c.trim().parse::<f64>().ok())
+                                    .map(|c| c / 1000.0)
+                                    .filter(|c| (40.0..=150.0).contains(c));
                                     if (-10.0..=150.0).contains(&v) {
-                                        temps.push(v)
+                                        temps.push((v, crit))
                                     }
                                 }
                             }
@@ -215,8 +227,9 @@ fn metrics(previous: &Value) -> (Value, Value) {
             }
         }
     }
-    if let Some(v) = temps.into_iter().max_by(f64::total_cmp) {
+    if let Some((v, crit)) = temps.into_iter().max_by(|a, b| a.0.total_cmp(&b.0)) {
         host["temperature"] = json!(round(v));
+        host["temperature_crit"] = json!(crit);
     }
     (host, current)
 }
@@ -346,7 +359,43 @@ fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f6
     cache[&key] = r.clone();
     r
 }
+/// Drives whose space check has not answered yet (a hung drive): not asked again until
+/// that one answers, so a stuck drive never piles up waiting threads.
+static ASKING: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+/// `ask()` about `key`, on a thread of its own: None when it gives no answer within
+/// `max` (it is left to finish alone) or is still busy with an earlier question.
+fn answered_within<T: Send + 'static>(
+    key: &Path,
+    max: std::time::Duration,
+    ask: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    {
+        let mut asking = ASKING.lock().ok()?;
+        if asking.iter().any(|p| p == key) {
+            return None;
+        }
+        asking.push(key.to_path_buf());
+    }
+    let owned = key.to_path_buf();
+    let handle = std::thread::spawn(move || {
+        let answer = ask();
+        if let Ok(mut asking) = ASKING.lock() {
+            asking.retain(|p| *p != owned);
+        }
+        answer
+    });
+    common::joined(handle, max).flatten()
+}
+/// A drive's space. Asking a hung drive blocks until it answers, so the question is
+/// asked aside: no answer within 5 seconds shows the drive as unavailable, and the
+/// rest of the dashboard carries on.
 fn usage(path: &Path) -> Option<(u64, u64)> {
+    let owned = path.to_path_buf();
+    answered_within(path, std::time::Duration::from_secs(5), move || {
+        statvfs_usage(&owned)
+    })
+}
+fn statvfs_usage(path: &Path) -> Option<(u64, u64)> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let s = CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -863,7 +912,9 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
         } else {
             "unknown"
         };
-        let success = num(&saved["last_success"], 0.0, now + 60.0);
+        // A success saved while the clock was ahead still counts (shown as now): hiding
+        // it would read as "never succeeded" after the clock was put back.
+        let success = common::shown_time(&saved["last_success"], now);
         let start = num(&saved["started_at"], 0.0, now + 60.0);
         // Never succeeded: due one interval (plus a day) after its schedule was set up.
         let installed = timer_installed_at(unit);
@@ -1002,6 +1053,23 @@ fn failure_reason(saved: &Value) -> String {
 }
 /// "3 files were not copied (2 in use, 1 with a name the USB drive cannot store): a, b, c".
 fn partial_reason(missing: &Value) -> String {
+    // The monthly run says what it left for later as a list of sentences ("USB check:
+    // the drive is full", "Immich release: …"): each is shown, the first five in full.
+    if let Some(list) = missing.as_array() {
+        let said: Vec<String> = list
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| capitalised(&chars(s, 300)))
+            .collect();
+        if !said.is_empty() {
+            let mut text = said.iter().take(5).cloned().collect::<Vec<_>>().join(". ");
+            if said.len() > 5 {
+                text += &format!(" (and {} more)", said.len() - 5);
+            }
+            return text;
+        }
+    }
     let in_use = missing["in_use"].as_u64().unwrap_or(0);
     let names = missing["unsupported_names"].as_u64().unwrap_or(0);
     let files: Vec<String> = missing["files"]
@@ -1028,16 +1096,41 @@ fn partial_reason(missing: &Value) -> String {
     // The USB copy of the Immich database (missing, stale or without its version note),
     // and a source that could not be copied at all (the Nextcloud folder missing).
     for key in ["database", "source"] {
-        let problem = chars(text(&missing[key]), 300);
-        let mut first = problem.chars();
-        if let Some(c) = first.next() {
-            parts.push(c.to_uppercase().collect::<String>() + first.as_str());
+        let problem = capitalised(&chars(text(&missing[key]), 300));
+        if !problem.is_empty() {
+            parts.push(problem);
         }
     }
     if parts.is_empty() {
         return "Incomplete; see the job's report".to_string();
     }
     parts.join(". ")
+}
+/// `text` with its first letter in capitals ("" stays "").
+fn capitalised(text: &str) -> String {
+    let mut letters = text.chars();
+    letters
+        .next()
+        .map(|c| c.to_uppercase().collect::<String>() + letters.as_str())
+        .unwrap_or_default()
+}
+/// Seconds since the computer started (None when /proc can't say).
+fn uptime() -> Option<f64> {
+    fs::read_to_string("/proc/uptime")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+/// The last check-in is overdue. Right after a start there is none yet: the first runs
+/// 90 s after boot (nekoserver-heartbeat.timer OnBootSec) and may take up to 40 s, so
+/// for the first 3 minutes "none yet" is not a missed check-in.
+fn heartbeat_late(attempt: Option<f64>, now: f64, interval: u64, uptime: Option<f64>) -> bool {
+    match attempt {
+        Some(t) => now - t > interval as f64 + 90.0,
+        None => uptime.is_none_or(|up| up > 180.0),
+    }
 }
 fn heartbeat(cfg: &Value, now: f64) -> Value {
     let row = common::json(Path::new("/run/nekoserver-heartbeat/status.json"), 64000);
@@ -1062,11 +1155,7 @@ fn heartbeat(cfg: &Value, now: f64) -> Value {
         .as_u64()
         .filter(|v| (60..=3600).contains(v))
         .unwrap_or(300);
-    let state = if running
-        && attempt
-            .as_f64()
-            .is_none_or(|t| now - t > interval as f64 + 90.0)
-    {
+    let state = if running && heartbeat_late(attempt.as_f64(), now, interval, uptime()) {
         "stale"
     } else if row["format"] == "neko-heartbeat-v1"
         && ["pass", "fail"].contains(&row["status"].as_str().unwrap_or(""))
@@ -1075,7 +1164,7 @@ fn heartbeat(cfg: &Value, now: f64) -> Value {
     } else {
         "unknown"
     };
-    json!({"status":state,"timer":{"installed":installed,"active":fields.get("ActiveState")==Some(&"active"),"next_run":fields.get("NextElapseUSecRealtime").filter(|s|!s.is_empty()).map(|s|chars(s,80))},"last_attempt":attempt,"last_success":num(&row["last_success"],0.0,now+30.0),"provider_notifications_verified":false})
+    json!({"status":state,"timer":{"installed":installed,"active":fields.get("ActiveState")==Some(&"active"),"next_run":fields.get("NextElapseUSecRealtime").filter(|s|!s.is_empty()).map(|s|chars(s,80))},"last_attempt":attempt,"last_success":common::shown_time(&row["last_success"],now),"provider_notifications_verified":false})
 }
 
 /// The latest app checks (media-health), with how current they are: "current",
@@ -1341,10 +1430,11 @@ fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
         }
         r[group] = counts;
     }
+    // "stale" means complete but over a day old: the result still holds as far as anyone
+    // knows, it is just not today's. A failed or unfinished check stays what it is.
+    let old = now - saved["generated_at"].as_f64().unwrap() > 86400.0;
     r["status"] = json!(if !valid {
         "unknown"
-    } else if now - saved["generated_at"].as_f64().unwrap() > 86400.0 {
-        "stale"
     } else if ["automatic", "manual"]
         .iter()
         .any(|g| r[g]["fail"].as_u64().unwrap_or(0) > 0)
@@ -1359,7 +1449,11 @@ fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
             .sum::<u64>()
             == r[g]["pass"].as_u64().unwrap_or(0))
     {
-        "complete"
+        if old {
+            "stale"
+        } else {
+            "complete"
+        }
     } else {
         "pending"
     });
@@ -1426,6 +1520,36 @@ fn login_state(status: &Value, now: f64) -> Value {
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|t| ((t.timestamp() as f64 - now) / 86400.0).floor());
     json!({"state": state, "days_left": days_left})
+}
+/// How hot the processor is, as an alert level. Current processors run at 95 °C (AMD)
+/// or 100 °C (Intel) under full load by design, so one such reading is no alarm: urgent
+/// at the chip's own critical limit or 105 °C at once, otherwise only after
+/// five minutes above 95 °C; a warning after five minutes at 80 °C or more.
+fn cpu_heat(s: &Value) -> Option<&'static str> {
+    let temp = s["metrics"]["temperature"].as_f64()?;
+    let crit = s["metrics"]["temperature_crit"].as_f64();
+    if crit.is_some_and(|c| temp >= c) || temp >= 105.0 {
+        return Some("critical");
+    }
+    let now = s["generated_at"].as_f64()?;
+    if temp > 95.0 && held(&s["history"], now, |v| v > 95.0) {
+        Some("critical")
+    } else if temp >= 80.0 && held(&s["history"], now, |v| v >= 80.0) {
+        Some("warning")
+    } else {
+        None
+    }
+}
+/// Every reading of the last five minutes (and there is one from five minutes ago) is hot.
+fn held(history: &Value, now: f64, hot: impl Fn(f64) -> bool) -> bool {
+    let recent: Vec<(f64, Option<f64>)> = history
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((now - r["at"].as_f64()?, r["temperature"].as_f64())))
+        .filter(|(age, _)| (0.0..=330.0).contains(age))
+        .collect();
+    recent.iter().any(|(age, _)| *age >= 290.0) && recent.iter().all(|(_, t)| t.is_some_and(&hot))
 }
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
@@ -1543,11 +1667,10 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "Inspect application memory usage and swap; cached memory alone is normal.",
         );
     }
-    let temp = s["metrics"]["temperature"].as_f64().unwrap_or(0.0);
-    if temp >= 80.0 {
+    if let Some(level) = cpu_heat(s) {
         add(
             "temperature".into(),
-            if temp >= 95.0 { "critical" } else { "warning" },
+            level,
             "CPU temperature is high".into(),
             "Check cooling and current workload.",
         );
@@ -1705,7 +1828,7 @@ fn notification_status(now: f64) -> Value {
     {
         status = "stale";
     }
-    json!({"status":status,"timer":timer,"last_success":num(&saved["last_success"],0.0,now+30.0),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
+    json!({"status":status,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
 }
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
@@ -1814,6 +1937,28 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn a_hung_drive_never_holds_up_the_dashboard() {
+        use std::time::{Duration, Instant};
+        let key = std::env::temp_dir().join(format!("neko-hung-{}", std::process::id()));
+        // A question that never comes back in time (statvfs on a hung drive).
+        let start = Instant::now();
+        let hung = answered_within(&key, Duration::from_millis(200), || {
+            std::thread::sleep(Duration::from_secs(3));
+            Some(1)
+        });
+        assert_eq!(hung, None);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        // Still busy: not asked again (no pile of stuck threads), answered at once.
+        let start = Instant::now();
+        assert_eq!(
+            answered_within(&key, Duration::from_secs(5), || Some(2)),
+            None
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // A drive that answers is shown as usual.
+        assert!(usage(Path::new("/")).is_some());
+    }
     #[test]
     fn failing_alert_delivery_is_said_on_the_page() {
         let shown =
@@ -2151,8 +2296,15 @@ mod os_tests {
             damaged: vec!["upload/u/b.jpg".into()],
             ..Default::default()
         };
-        crate::backup::save_integrity(&data, "usb_photos", &report).unwrap();
-        crate::backup::save_integrity(&data, "archive", &Default::default()).unwrap();
+        crate::backup::save_integrity(&data, "usb_photos", &report, crate::backup::Check::Full)
+            .unwrap();
+        crate::backup::save_integrity(
+            &data,
+            "archive",
+            &Default::default(),
+            crate::backup::Check::Full,
+        )
+        .unwrap();
         let rows = integrity(&data, true);
         assert_eq!(rows.as_array().unwrap().len(), 2);
         let usb = rows
@@ -2241,6 +2393,27 @@ mod os_tests {
         assert!(text(&shown[0]["detail"]).contains("bob/a:b.txt"));
     }
     #[test]
+    fn a_monthly_run_done_in_part_says_why() {
+        // The monthly run lists what it left for later as sentences; the dashboard used to
+        // show only "Incomplete; see the job's report" for them.
+        let reason = partial_reason(&json!([
+            "USB check: the USB drive is full",
+            "Immich release: it could not be looked up"
+        ]));
+        assert_eq!(
+            reason,
+            "USB check: the USB drive is full. Immich release: it could not be looked up"
+        );
+        let night = partial_reason(&json!(["night window ended before the apps were stopped"]));
+        assert_eq!(night, "Night window ended before the apps were stopped");
+        let many: Vec<String> = (1..=7).map(|n| format!("part {n}")).collect();
+        assert!(partial_reason(&json!(many)).ends_with("Part 5 (and 2 more)"));
+        assert_eq!(
+            partial_reason(&json!([])),
+            "Incomplete; see the job's report"
+        );
+    }
+    #[test]
     fn a_full_hdd_says_what_stops_and_how_to_free_it() {
         let drive = |percent: f64| json!({"storage":[{"id":"media_hdd","name":"Media HDD","status":"mounted","used_percent":percent}]});
         let full = alerts(&drive(100.0));
@@ -2276,5 +2449,161 @@ mod os_tests {
                 .iter()
                 .any(|v| v["id"] == "memory-pressure"));
         }
+    }
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+    use crate::backup::{archive_checked, save_integrity, Check};
+    fn write_old(path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+        let past = libc::timespec {
+            tv_sec: 1_000_000_000,
+            tv_nsec: 0,
+        };
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), [past, past].as_ptr(), 0) };
+    }
+    /// The monthly full check finds a damaged copy of a photo Immich no longer has; the
+    /// next weekly (quick) run must not make it look repaired.
+    #[test]
+    fn a_quick_run_keeps_the_damage_a_full_check_found() {
+        let root = std::env::temp_dir().join(format!("neko-integrity-keep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (library, hdd, data) = (root.join("library"), root.join("hdd"), root.join("data"));
+        write_old(&library.join("upload/u/b.jpg"), b"photo b");
+        let (_, quick) = archive_checked(&library, &hdd, true, 60, Check::Quick).unwrap();
+        save_integrity(&data, "archive", &quick, Check::Quick).unwrap();
+        let row = &integrity(&data, true)[0];
+        assert!(
+            row["full_at"].is_null(),
+            "a quick run is not a full check: {row}"
+        );
+        assert_eq!(row["check"], "quick");
+        fs::remove_file(library.join("upload/u/b.jpg")).unwrap();
+        fs::write(hdd.join("upload/u/b.jpg"), b"photo ?").unwrap();
+        let (_, full) = archive_checked(&library, &hdd, true, 60, Check::Full).unwrap();
+        save_integrity(&data, "archive", &full, Check::Full).unwrap();
+        let found = integrity(&data, true)[0].clone();
+        assert_eq!(found["damaged"], 1, "{found}");
+        let full_at = found["full_at"].as_f64().unwrap();
+        let (_, quick) = archive_checked(&library, &hdd, true, 60, Check::Quick).unwrap();
+        save_integrity(&data, "archive", &quick, Check::Quick).unwrap();
+        let after = integrity(&data, true)[0].clone();
+        assert_eq!(after["damaged"], 1, "{after}");
+        assert_eq!(after["files"], json!(["upload/u/b.jpg"]));
+        assert_eq!(
+            after["full_at"].as_f64(),
+            Some(full_at),
+            "the full check's date stays"
+        );
+        // The recovery menu reads the same list.
+        let saved = common::json(&data.join("reports/integrity.json"), 1_000_000);
+        assert_eq!(
+            saved["sections"]["archive"]["damaged"],
+            json!(["upload/u/b.jpg"])
+        );
+        // A later full check that finds nothing wrong replaces the list.
+        fs::write(hdd.join("upload/u/b.jpg"), b"photo b").unwrap();
+        let (_, full) = archive_checked(&library, &hdd, true, 60, Check::Full).unwrap();
+        save_integrity(&data, "archive", &full, Check::Full).unwrap();
+        assert_eq!(integrity(&data, true)[0]["damaged"], 0);
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod heat_tests {
+    use super::*;
+    fn level(
+        temp: f64,
+        crit: Option<f64>,
+        minutes_hot: u32,
+        history_temp: f64,
+    ) -> Option<&'static str> {
+        let now = 10_000.0;
+        let history: Vec<Value> = (0..=minutes_hot)
+            .map(|m| json!({"at": now - 60.0 * m as f64, "temperature": history_temp}))
+            .collect();
+        cpu_heat(&json!({"generated_at": now, "history": history,
+            "metrics": {"temperature": temp, "temperature_crit": crit}}))
+    }
+    /// A Ryzen at its designed 95 °C, or one hot reading, is no alarm; five minutes above
+    /// 95 °C, the chip's own limit or 105 °C are.
+    #[test]
+    fn processor_heat_is_judged_over_five_minutes_or_by_the_chips_own_limit() {
+        assert_eq!(
+            level(95.0, None, 10, 95.0),
+            Some("warning"),
+            "95 °C is not above 95 °C"
+        );
+        assert_eq!(level(99.0, None, 1, 99.0), None, "one minute is not five");
+        assert_eq!(level(99.0, None, 5, 99.0), Some("critical"));
+        assert_eq!(
+            level(99.0, None, 5, 70.0),
+            None,
+            "it was cool a few minutes ago"
+        );
+        assert_eq!(
+            level(100.0, Some(100.0), 0, 100.0),
+            Some("critical"),
+            "at the chip's limit"
+        );
+        assert_eq!(level(106.0, None, 0, 106.0), Some("critical"));
+        assert_eq!(level(85.0, None, 5, 85.0), Some("warning"));
+        assert_eq!(level(85.0, None, 2, 85.0), None);
+        let raised = alerts(&json!({"generated_at": 10_000.0, "metrics": {"temperature": 99.0}}));
+        assert!(raised.as_array().unwrap().is_empty(), "{raised}");
+    }
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+    #[test]
+    fn no_check_in_yet_right_after_boot_is_not_a_missed_one() {
+        assert!(
+            !heartbeat_late(None, 1000.0, 300, Some(60.0)),
+            "first check-in still to come"
+        );
+        assert!(heartbeat_late(None, 1000.0, 300, Some(600.0)));
+        assert!(heartbeat_late(None, 1000.0, 300, None));
+        assert!(!heartbeat_late(Some(900.0), 1000.0, 300, Some(60.0)));
+        assert!(heartbeat_late(Some(500.0), 1000.0, 300, Some(6000.0)));
+    }
+}
+
+#[cfg(test)]
+mod acceptance_tests {
+    use super::*;
+    /// "stale" is a complete check over a day old; a failed or unfinished one stays so.
+    #[test]
+    fn only_a_complete_check_turns_stale() {
+        let cfg = json!({});
+        let report = |automatic: &str, complete: bool| {
+            json!({"format": "neko-acceptance-v1", "profile": "full", "version": VERSION,
+                "generated_at": 1000.0, "dashboard_scope": scope(&cfg), "acceptance_complete": complete,
+                "automatic": [{"status": automatic}],
+                "manual": [{"id": "host_restore", "status": "pass", "evidence": "user_reported", "confirmed_at": 900.0}]})
+        };
+        let later = 1000.0 + 2.0 * 86400.0;
+        assert_eq!(
+            acceptance(&report("pass", true), &cfg, 1100.0)["status"],
+            "complete"
+        );
+        assert_eq!(
+            acceptance(&report("pass", true), &cfg, later)["status"],
+            "stale"
+        );
+        assert_eq!(
+            acceptance(&report("fail", false), &cfg, later)["status"],
+            "failed"
+        );
+        assert_eq!(
+            acceptance(&report("needs_setup", false), &cfg, later)["status"],
+            "pending"
+        );
     }
 }

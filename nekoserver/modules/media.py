@@ -190,6 +190,17 @@ def render(template, data, media, uid, gid, tz, bind):
     return output
 
 
+def app_folder(configs, target, uid, gid):
+    """An app's settings folder, made the app's. One a run cut off before handing it over
+    (before 0.39.5) left root's and empty is handed over: the app could never write its
+    settings there."""
+    if not target.exists():
+        ensure_directory(configs, 0o755)
+        ensure_directory(target, 0o750, uid, gid)
+    elif target.is_dir() and not target.is_symlink() and target.stat().st_uid == 0 and not any(target.iterdir()):
+        os.chown(target, uid, gid)
+
+
 def _run(context):
     settings = context.config.get('media', {})
     if not context.apply:
@@ -259,10 +270,7 @@ def _run(context):
     # No recursive chown: preserve existing users and files. Create fresh appdata owned by configured user.
     for name in selected:
         target = configs / name
-        if not target.exists():
-            ensure_directory(configs, 0o755)
-            ensure_directory(target, 0o750)
-            os.chown(target, uid, gid)
+        app_folder(configs, target, uid, gid)
         safe_path(target)
         if target.is_symlink():
             raise RuntimeError(f'Refusing symlink appdata: {target}')

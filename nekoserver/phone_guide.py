@@ -93,7 +93,7 @@ APPS = {
         'steps': [
             'Open the server address below in the phone browser.',
             'Add it to your home screen (Share, then "Add to Home Screen"; or the menu, then "Add to home screen").',
-            'It shows drives, apps, backups and alerts. Nothing can be changed from it.',
+            'It shows drives, apps, backups and alerts. Changing fans and lights, or restarting an app, asks for the dashboard PIN you chose in setup.',
         ],
     },
 }

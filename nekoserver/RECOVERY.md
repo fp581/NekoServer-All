@@ -2,6 +2,8 @@
 
 **Easiest way:** `sudo bash install.sh --recover` opens a guided menu: photos and videos, Nextcloud files, the app password list, app settings, Steam/Samba settings, or a whole monthly snapshot. It lists the backups by date and restores into a new folder, never over what you have now. The rest of this page explains the underlying tools for advanced use.
 
+**Deleted and renamed files come back too.** The weekly photo and Nextcloud copies only ever add files, so a file you deleted on purpose is still on them, and a renamed or moved file is there under both its old and its new name. A restore of photos or Nextcloud files brings all of them back (the newest version of each): it can't yet restore only what you had on a given date. Look through the restore folder and delete what you had removed before uploading the rest.
+
 ## What each operation does
 
 | Command | Default behavior | With --apply |
@@ -76,29 +78,40 @@ Do not substitute the production project name. Automatic destructive cleanup and
 
 This path supports x86_64 Arch/Nyarch, Debian/Ubuntu, Fedora, RHEL / Rocky / AlmaLinux and openSUSE (tried on AlmaLinux 10 and openSUSE Tumbleweed; not yet on Fedora) with the classic overlay2 Docker store, and a Docker client/daemon of the version that last ran the apps or newer (an older one is refused: it may not read the store). App data moves between them; host settings (the host backup) belong to the Linux they came from, so restore those only onto the same family. Bazzite/Podman conversion is blocked. A UID/GID change, drive replacement or storage-backend migration needs a separate validated plan.
 
-1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.39.5/config.json` (and, when the settings change, the earlier ones beside it as `config.previous-<date-time>.json`, the newest five), next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
+1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.39.5/config.json` (and, when the settings change, the earlier ones beside it as `config.previous-<date-time>.json`: the oldest always, and the newest four after it; when a rebuilt copy of the same release replaces the kept one, as after reinstalling Linux, its settings and their earlier copies move into the new one, so they are still there), next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
 2. Install the new OS onto the 256GB OS SSD only. Keep data SSD/HDD contents intact. Recreate the desktop user with the expected UID/GID.
-3. From the downloaded installer (the same release) and the saved settings file, mount the existing identified filesystems with the storage module. This never formats:
+3. Download the installer (the same release), put your saved settings file next to `install.sh` as `my-config.json`, and run a normal setup:
 
 ```bash
-sudo bash install.sh --config /path/to/my-config.json --module storage --apply
+sudo bash install.sh
 ```
 
-If you did not save the settings file, take the copy from the SSD. Mounting it read-only writes nothing to it. Find the SSD with `lsblk -f` (by its size or label), then, in the downloaded installer's folder:
+It mounts the drives itself (the storage step never formats) and builds NekoServer's program for this Linux, which also replaces the copy kept on the SSD: the one the old Linux built may not start on this one (one built on Arch, Ubuntu 24.04 or Fedora does not start on Debian 12), and the reattach in step 5 needs it. Until step 5 is done, that run stops at the Docker step and points here: that is expected, it never takes over the existing app store by itself.
+
+If you did not save the settings file, take the copy from the SSD first. Find the SSD with `lsblk -f` (by its size or label; `FSTYPE` shows ext4, xfs or btrfs), then, in the downloaded installer's folder, mount it read-only. The extra option keeps even a drive that was not shut down cleanly from being written to (a plain `-o ro` still finishes its journal): `noload` for ext4, `norecovery` for XFS, `nologreplay` for Btrfs. A Btrfs SSD used with a subvolume (`"subvolume"` under `data_ssd` in the settings, `/@data` say) is mounted with that subvolume:
 
 ```bash
 sudo mkdir -p /mnt/neko-ssd-read
-sudo mount -o ro /dev/sdX /mnt/neko-ssd-read
+sudo mount -o ro,noload /dev/sdX /mnt/neko-ssd-read             # ext4
+# sudo mount -o ro,norecovery /dev/sdX /mnt/neko-ssd-read       # XFS
+# sudo mount -o ro,nologreplay,subvol=/@data /dev/sdX /mnt/neko-ssd-read   # Btrfs with a subvolume (yours may have another name)
 sudo cp /mnt/neko-ssd-read/installer/releases/v0.39.5/config.json my-config.json
-# If setup already ran once on the new Linux with new settings, that file holds those:
-# take the newest config.previous-<date-time>.json beside it instead.
+# If setup already ran on the new Linux with new settings, that file holds those: take
+# the config.previous-<date-time>.json beside it whose "storage" UUIDs are your drives'
+# (the oldest one there is never removed, so the settings from before are kept).
 sudo chown "$USER": my-config.json
 sudo umount /mnt/neko-ssd-read
 ```
 
-With `my-config.json` next to `install.sh`, a normal `sudo bash install.sh` mounts the drives itself (the storage step never formats). Until step 5 is done, that run stops at the Docker step and points here: it never takes over the existing app store by itself. Settings that lived on the old system disk are asked for again: the dashboard PIN, the Samba password, the Tailscale sign-in and the backup password (a new backup key; monthly snapshots made before still open with the password they were made with, see "App password files" below). The gateway's certificate authority is kept on the SSD, so phones that trusted it keep doing so; setup hands its files to the new Linux's caddy account.
+(Not sure which Btrfs subvolume? Mount the whole filesystem with `sudo mount -o ro,nologreplay,subvolid=5 /dev/sdX /mnt/neko-ssd-read`: each subvolume is a folder there, and the settings are in the one holding `installer/`, at `/mnt/neko-ssd-read/@data/installer/releases/v0.39.5/config.json` for `/@data`.) Then run `sudo bash install.sh` as above. Mounting only the drives, without the rest of setup, is `sudo bash install.sh --config /path/to/my-config.json --module storage --apply`; it does not replace the program kept on the SSD, so run the normal setup before step 5 anyway. Settings that lived on the old system disk are asked for again: the dashboard PIN, the Samba password, the Tailscale sign-in and the backup password (a new backup key; monthly snapshots made before still open with the password they were made with, see "App password files" below). The gateway's certificate authority is kept on the SSD, so phones that trusted it keep doing so; setup hands its files to the new Linux's caddy account.
 
-4. Install the native Docker client/daemon and Compose plugin through trusted packages: the version the host checkpoint names (`docker_version`) or newer, which is what a freshly installed Linux usually has. Keep Docker service AND socket stopped. Do not start a fresh default store. If /var/lib/docker already contains data, recovery refuses it for review.
+4. Install Docker the way setup does, and keep it stopped (a Docker that starts on its own makes a fresh, empty store of its own):
+
+```bash
+sudo python3 /srv/nekoserver/installer/releases/v0.39.5/recover.py install-docker --apply
+```
+
+It takes Docker's own packages on Debian, Ubuntu, Fedora and RHEL (from Docker's repository, which setup adds) and the system's on Arch and openSUSE, with the Compose plugin, and leaves `docker.service` and `docker.socket` stopped. It must be the version the host checkpoint names (`docker_version`) or newer. Debian's own `docker.io` is usually older (20.10 on Debian 12) and is refused: if you installed it, remove it first (`sudo apt remove docker.io`). If you installed Docker yourself, stop it before step 5: `sudo systemctl stop docker.service docker.socket`. If /var/lib/docker already contains data, recovery refuses it for review.
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
@@ -107,7 +120,7 @@ sudo python3 /srv/nekoserver/installer/releases/v0.39.5/recover.py reattach
 sudo python3 /srv/nekoserver/installer/releases/v0.39.5/recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
 ```
 
-The UUID must exactly match storage.data_ssd.uuid. The tool installs the mount/UUID guard before daemon configuration/startup. The existing Docker store's restart policies may start its existing containers. Failed post-start verification stops Docker and its socket. The tool preserves foreign configuration and refuses an automatic ownership or backend change, or an older Docker; after a successful takeover the host checkpoint names the Docker version now running.
+`check` also says when NekoServer's program kept on the SSD does not start on this Linux; then run `sudo bash install.sh` (step 3) first. The UUID must exactly match storage.data_ssd.uuid. The tool installs the mount/UUID guard before daemon configuration/startup. The existing Docker store's restart policies may start its existing containers. Failed post-start verification stops Docker and its socket. The tool preserves foreign configuration and refuses an automatic ownership or backend change, or an older Docker; after a successful takeover the host checkpoint names the Docker version now running.
 
 6. Rerun the needed deployment profiles from the same release to recreate OS-side timers/networking/TV setup. Complete Tailscale authentication, Samba credentials and Steam login as required. Run media health checks and test application data, uploads/playback, backup jobs and reboot/missing-disk behavior.
 
@@ -140,7 +153,13 @@ A snapshot made without a backup key holds the list unencrypted in `data.tar` in
 Use this when both the SSD and the HDD are lost. The USB drive holds the photos and videos (`upload/` and `library/`), the newest weekly Immich database copies (`immich-database/immich-<date>.sql`, the newest 4 are kept), each with a `.sql.json` note of the Immich version that made it, when, and its checksum, and `immich-database/IMMICH-VERSION.txt`, which names the version of the newest copy. If the newest copy is missing, more than 8 days old or has no note, the weekly USB backup is reported as incomplete on the dashboard. Together they bring back albums, faces, people, users and settings as well as the pictures.
 
 1. Set up NekoServer on the new drives as usual, but before the Immich step set `"immich_version"` under `"photos"` in `my-config.json` to the version in the `.sql.json` note of the copy you will restore (`IMMICH-VERSION.txt` names it for the newest copy). A database copy must be restored into the same Immich version.
-2. Copy `upload/` and `library/` from the USB drive into the new Immich library folder (`/srv/nekoserver/photos/immich-library/`), keeping those two folder names.
+2. Get the photos back with the recovery menu, not by copying the USB drive's folders as they are: the drive keeps every version of a changed file (the plain name is the first one) and NekoServer's own notes beside them. Run `sudo bash install.sh --recover`, choose **Photos and videos (Immich)**, then **The USB drive (weekly copy)**, and answer **yes** to "Restore only the NEWEST version of each file?". It restores the current version of each file, checked against the backup's checksums, into a new folder on the HDD (`/mnt/nekoserver-media/restored/photos-<date-time>/` with the default folders; the menu names it). Then put its two folders into the Immich library folder, keeping their names:
+
+```bash
+sudo cp -a /mnt/nekoserver-media/restored/photos-DATE-TIME/upload /mnt/nekoserver-media/restored/photos-DATE-TIME/library /srv/nekoserver/photos/immich-library/
+```
+
+   Use the folder the menu named. When everything works (step 4), you can delete the restore folder.
 3. Follow Immich's own "Backup and Restore" guide (immich.app/docs/administration/backup-and-restore) with the newest `immich-<date>.sql` from the USB drive. With NekoServer the Compose files are in `/srv/nekoserver/compose/immich/`, the project name is `neko-immich`, and the dump restores into the `immich` database (it was made with `pg_dump -d immich`).
 4. Start Immich and check that albums, faces and a few photos open before using it again.
 

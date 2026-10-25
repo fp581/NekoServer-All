@@ -369,8 +369,9 @@ pub fn run(a: &Args) -> Result<()> {
     let _lock = common::lock(Path::new(LOCK))?;
     let _recovery = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
+    // Not held back by an unfinished monthly update: it never rolls these settings
+    // back, so they are saved as they are.
     backup::execute_with(Some(&job.data), "host", &job.cfgpath, || {
-        backup::no_unfinished_update()?;
         snapshot(&job.cfgpath, &job.cfg, &job.data, &job.media, &selected)
     })
 }
@@ -429,6 +430,8 @@ fn snapshot(
         }
         steam_still_closed(cfg, steam_included)?;
         backup::guard(cfgpath, data, media)?;
+        // A HDD that drops out mid-run stops it (see common::expect_drive).
+        let _hdd = common::expect_drive(media)?;
         let (mut files, missing, skipped) = inventory(selected)?;
         let root = media.join("backups/host-user");
         common::directory(&root, 0o700)?;
@@ -436,6 +439,8 @@ fn snapshot(
         if m.uid() != 0 || m.mode() & 0o077 != 0 {
             return Err(Error::new("Private host backup root required"));
         }
+        // Half-made snapshots of runs that failed or were cut off take space too.
+        common::clear_leftovers(&root, true)?;
         let total = files.iter().try_fold(0u64, |n, r| {
             n.checked_add(r["size"].as_u64().unwrap_or(0))
                 .ok_or_else(|| Error::new("Snapshot too large"))
@@ -446,14 +451,7 @@ fn snapshot(
         if !(1024 * 1024 * 1024..=1024 * 1024 * 1024 * 1024).contains(&reserve) {
             return Err(Error::new("Invalid free-space reserve"));
         }
-        let c = std::ffi::CString::new(root.as_os_str().as_encoded_bytes())
-            .map_err(|_| Error::new("Invalid backup path"))?;
-        let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-        if unsafe { libc::statvfs(c.as_ptr(), stat.as_mut_ptr()) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        let stat = unsafe { stat.assume_init() };
-        let have = (stat.f_bavail as u128) * (stat.f_frsize as u128);
+        let have = common::free_bytes(&root)?;
         if have < total as u128 + reserve as u128 {
             return Err(Error::new(&short_of_space(
                 media,

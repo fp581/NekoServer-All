@@ -314,7 +314,7 @@ def stop(process):
         process.stdout.close()
 
 
-KEY = b'-----BEGIN PGP PUBLIC KEY BLOCK-----\n'
+KEY = b'-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQINBF\n-----END PGP PUBLIC KEY BLOCK-----\n'
 
 
 class DebianTest(unittest.TestCase):
@@ -904,7 +904,7 @@ class DebianTest(unittest.TestCase):
         self.assertTrue(legacy_key.exists())   # not ours to delete: apt simply stops using it
 
     def test_offline_upgrade_keeps_a_working_definition(self):
-        self.file('usr/share/keyrings/tailscale-archive-keyring.gpg', 'old key')
+        self.file('usr/share/keyrings/tailscale-archive-keyring.gpg', KEY.decode())
         legacy = ('deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] '
                   'https://pkgs.tailscale.com/stable/ubuntu noble main\n')
         listing = self.file('etc/apt/sources.list.d/tailscale.list', legacy)
@@ -1199,6 +1199,42 @@ class CapabilitiesTest(unittest.TestCase):
             rows = capabilities.detect(self.fake(docker=''), root=tmp, machine='x86_64', python=(3, 13),
                                        which=lambda name: '/usr/bin/' + name if name == 'systemctl' else None)
             self.assertIn('setup installs it', capabilities.value(rows, 'docker'))
+
+    def test_a_clock_the_network_does_not_set_is_a_note(self):
+        def run(argv, **kwargs):
+            if argv[0] == 'timedatectl':
+                return subprocess.CompletedProcess(argv, 0, answer + '\n', '')
+            return self.fake()(argv, **kwargs)
+
+        def which(name):
+            return '/usr/bin/' + name if name in ('systemctl', 'timedatectl') else None
+        with tempfile.TemporaryDirectory() as tmp:
+            release(tmp, 'ID=arch\n')
+            for answer, ok in (('no', False), ('yes', True)):
+                rows = capabilities.detect(run, root=tmp, machine='x86_64', python=(3, 13), which=which)
+                clock = next(row for row in rows if row['name'] == 'clock')
+                self.assertEqual((clock['ok'], clock['required']), (ok, False), answer)
+                self.assertEqual('sudo timedatectl set-ntp true' in clock['found'], not ok)
+                self.assertNotIn('Clock', ' '.join(capabilities.missing(rows)))
+            self.assertEqual(capabilities.value(self.rows(tmp), 'clock'), 'unknown')   # no timedatectl
+
+    def test_a_download_refused_for_a_wrong_clock_says_so(self):
+        import ssl
+        import urllib.error
+
+        import neko_common
+
+        def opener(request, timeout):
+            raise urllib.error.URLError(ssl.SSLCertVerificationError(
+                1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate is not yet valid'))
+        with self.assertRaisesRegex(RuntimeError, r"clock looks wrong.*sudo timedatectl set-ntp true"):
+            neko_common.fetch('https://example.org/x', 'Immich', 100, opener=opener)
+
+        def offline(request, timeout):
+            raise urllib.error.URLError(OSError('Network is unreachable'))
+        with self.assertRaisesRegex(RuntimeError, 'connected to the internet') as caught:
+            neko_common.fetch('https://example.org/x', 'Immich', 100, opener=offline)
+        self.assertNotIn('clock', str(caught.exception))
 
     def test_report_marks_missing_requirements(self):
         lines = []
@@ -1676,6 +1712,324 @@ class RetryTest(unittest.TestCase):
             family.install(['vulkan-intel', 'vulkan-radeon', 'bluez', 'bluez-utils'])
         installs = [argv for argv in apt.calls if argv[:2] == ['apt-get', 'install']]
         self.assertEqual(installs[0][5:], ['mesa-vulkan-drivers', 'bluez'])
+
+
+# A package manager that, asked to stop as Ctrl+C asks, notes it and stops; SIGTERM too.
+POLITE_TOOL = ('#!' + sys.executable + '\n'
+               'import pathlib, signal, sys, time\n'
+               'def stop(number, frame):\n'
+               '    pathlib.Path(sys.argv[1]).write_text(signal.Signals(number).name)\n'
+               '    sys.exit(130)\n'
+               'signal.signal(signal.SIGINT, stop if sys.argv[2] == "int" else signal.SIG_IGN)\n'
+               'signal.signal(signal.SIGTERM, stop)\n'
+               'print("working", flush=True)\n'
+               'time.sleep(30)\n')
+
+
+class PatientStopTest(unittest.TestCase):
+    """A package manager that runs out of time is asked to stop and waited for, never
+    killed: killed, pacman leaves its lock behind and dnf or zypper stop half-way."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.tool = Path(self.tmp.name) / 'pacman'
+        self.tool.write_text(POLITE_TOOL)
+        self.tool.chmod(0o755)
+        self.note = Path(self.tmp.name) / 'asked'
+
+    def test_a_package_manager_that_runs_out_of_time_is_asked_to_stop(self):
+        family = host.Arch(release={})
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            family._call([str(self.tool), str(self.note), 'int'], 2)
+        self.assertEqual(self.note.read_text(), 'SIGINT')        # asked as Ctrl+C asks, not killed
+        self.assertIn('working', caught.exception.stdout)
+
+    def test_one_that_ignores_ctrl_c_gets_sigterm_after_the_grace_time(self):
+        with mock.patch.object(host, 'STOP_GRACE', 1), self.assertRaises(subprocess.TimeoutExpired):
+            host.run_command([str(self.tool), str(self.note), 'ignore'], capture_output=True, text=True, timeout=2)
+        self.assertEqual(self.note.read_text(), 'SIGTERM')
+
+    def test_other_commands_and_finished_ones_are_as_with_subprocess_run(self):
+        done = host.run_command(['true'], capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0)
+        quick = Path(self.tmp.name) / 'dnf'
+        quick.write_text('#!/bin/sh\necho listed\nexit 3\n')
+        quick.chmod(0o755)
+        result = host.run_command([str(quick)], capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual((result.returncode, result.stdout), (3, 'listed\n'))
+        with self.assertRaises(subprocess.CalledProcessError):
+            host.run_command([str(quick)], capture_output=True, text=True, timeout=30, check=True)
+
+
+class HangupTest(unittest.TestCase):
+    """host.py run by install.sh: a dropped SSH connection (SIGHUP) or a shutdown (SIGTERM)
+    stops it as Ctrl+C does, so its cleanup still runs."""
+    def test_a_hangup_runs_the_cleanup_and_stops_as_ctrl_c_does(self):
+        import signal
+        for number in (signal.SIGHUP, signal.SIGTERM):
+            with self.subTest(signal=number.name):
+                self.hang_up(number)
+
+    def hang_up(self, number):
+        import signal
+        cleaned, seen = [], []
+
+        def bootstrap():
+            try:
+                os.kill(os.getpid(), number)
+                time.sleep(5)            # the signal arrives here
+            finally:
+                cleaned.append(True)
+
+        def mine(*args):
+            seen.append(args)
+        # Without host.py's own handler the signal only lands here (instead of ending the tests).
+        before = signal.signal(number, mine)
+        self.addCleanup(signal.signal, number, before)
+        with mock.patch.object(host, 'bootstrap', bootstrap), mock.patch('sys.stderr'):
+            self.assertEqual(host.main(['bootstrap']), 130)
+        self.assertEqual(cleaned, [True])
+        self.assertEqual(seen, [])
+        self.assertIs(signal.getsignal(number), mine)   # put back as it was
+
+
+class StaleLockTest(unittest.TestCase):
+    """pacman's lock that no program has open was left by a pacman that was cut off: it
+    goes at once instead of being waited for in silence."""
+    def setUp(self):
+        patcher = mock.patch('host.shutil.which', return_value='/usr/bin/pacman')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.lock = self.root / 'var/lib/pacman/db.lck'
+        self.lock.parent.mkdir(parents=True)
+        self.lock.write_text('')
+        self.said, self.slept = [], []
+
+    def process(self, pid, *targets):
+        fds = self.root / 'proc' / str(pid) / 'fd'
+        fds.mkdir(parents=True)
+        for number, target in enumerate(targets):
+            (fds / str(number)).symlink_to(target)
+
+    def family(self, pacman):
+        family = host.Arch(pacman)
+        family.root, family.say, family.sleep = self.root, self.said.append, self.slept.append
+        return family
+
+    def test_a_lock_no_program_has_open_is_removed_and_the_install_runs(self):
+        self.process(1, '/dev/null', '/var/log/pacman.log')
+        pacman = FakePacman(offered={'caddy'})
+        self.assertEqual(self.family(pacman).install(['caddy']), ['caddy'])
+        self.assertFalse(self.lock.exists())
+        self.assertEqual(self.slept, [])
+        self.assertIn('was left by a pacman that was cut off', self.said[0])
+
+    def test_a_lock_a_program_has_open_is_waited_for_and_said_so(self):
+        self.process(1, '/dev/null')
+        self.process(2, '/dev/null', host.PACMAN_LOCK)        # an updater using libalpm
+        family = self.family(FakePacman(offered={'caddy'}))
+
+        def sleep(seconds):
+            self.slept.append(seconds)
+            if len(self.slept) == 3:
+                self.lock.unlink()
+        family.sleep = sleep
+        self.assertEqual(family.install(['caddy']), ['caddy'])
+        self.assertEqual(self.slept, [5, 5, 5])
+        self.assertEqual(len(self.said), 1)
+        self.assertIn('waiting for it to finish (up to 10 minutes)', self.said[0])
+
+    def test_without_a_look_at_the_processes_the_lock_is_waited_for(self):
+        family = self.family(FakePacman(offered={'caddy'}))   # no /proc to look at
+        family.wait = 0
+        with self.assertRaisesRegex(RuntimeError, 'pacman is still locked'):
+            family.install(['caddy'])
+        self.assertTrue(self.lock.exists())
+
+
+class Answers:
+    """Wraps a fake package manager: answers given in sequence for matching commands
+    (exit code, what it said), then the inner fake's own; every call's input recorded."""
+    def __init__(self, inner, when, answers):
+        self.inner, self.when, self.answers, self.inputs = inner, when, list(answers), []
+
+    def __call__(self, argv, **kwargs):
+        self.inputs.append((argv, kwargs.get('input')))
+        if self.answers and self.when(argv):
+            code, said = self.answers.pop(0)
+            return subprocess.CompletedProcess(argv, code, '', said)
+        return self.inner(argv, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    def __setattr__(self, name, value):
+        if name in ('inner', 'when', 'answers', 'inputs'):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.inner, name, value)
+
+
+def is_update(argv):
+    return argv[0] == 'apt-get' and argv[-1] == 'update'
+
+
+class PackageReviewTest(unittest.TestCase):
+    """apt: other programs' locks waited out, sources that only warned tried again, keys
+    checked, Steam's question answered, a wrong clock named."""
+    setUp, family, file, journal = DebianTest.setUp, DebianTest.family, DebianTest.file, DebianTest.journal
+
+    def quiet(self, family):
+        family.said, family.slept = [], []
+        family.say, family.sleep = family.said.append, family.slept.append
+        return family
+
+    def test_a_lock_held_by_automatic_updates_is_waited_out(self):
+        busy = 'E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242 (unattended-upgr)'
+        apt = Answers(FakeApt(offered={'samba'}), is_update, [(100, busy)] * 4)
+        family = self.quiet(self.family(apt))
+        family.refresh()
+        updates = [argv for argv, _ in apt.inputs if is_update(argv)]
+        self.assertEqual(len(updates), 5)                       # four waits, then it ran (more than 3 attempts)
+        self.assertEqual(family.slept, [host.RETRY_PAUSE] * 4)
+        self.assertEqual(len(family.said), 1)
+        self.assertIn('Another program is installing or updating packages', family.said[0])
+
+    def test_dnf5s_transaction_lock_is_waited_out_too(self):
+        self.assertTrue(host.busy(subprocess.CompletedProcess([], 1, '', 'Failed to obtain rpm transaction lock. '
+                                                                          'Another transaction is in progress.')))
+        self.assertTrue(host.busy(subprocess.CompletedProcess([], 1, '', 'error: failed to init transaction '
+                                                                          '(unable to lock database)')))
+        self.assertFalse(host.busy(subprocess.CompletedProcess([], 0, 'Could not get lock', '')))
+
+    def test_a_source_apt_only_warned_about_is_tried_again(self):
+        warned = ('W: Failed to fetch https://download.docker.com/linux/ubuntu/dists/noble/InRelease  Could not '
+                  'resolve download.docker.com\nW: Some index files failed to download. They have been ignored, '
+                  'or old ones used instead.')
+        apt = Answers(FakeApt(offered={'samba'}), is_update, [(0, warned)])
+        family = self.quiet(self.family(apt))
+        family.refresh()
+        self.assertEqual(len([argv for argv, _ in apt.inputs if is_update(argv)]), 2)
+        self.assertEqual(family.slept, [host.RETRY_PAUSE])
+        # One that never answers: three attempts, then setup goes on with the lists from before, and says so.
+        apt = Answers(FakeApt(offered={'samba'}), is_update, [(0, warned)] * 3)
+        family = self.quiet(self.family(apt))
+        family.refresh()
+        self.assertEqual(len([argv for argv, _ in apt.inputs if is_update(argv)]), 3)
+        self.assertIn('Some package sources could not be reached (Failed to fetch https://download.docker.com',
+                      family.said[-1])
+        self.assertTrue(family.refreshed)
+
+    def test_a_damaged_key_file_is_downloaded_again(self):
+        family = self.family()
+        family.add_repository(host.DOCKER)
+        key = self.root / 'etc/apt/keyrings/docker.asc'
+        for damaged in (b'<html>Sign in to the Wi-Fi</html>', KEY[:40], b''):
+            with self.subTest(damaged=damaged):
+                key.write_bytes(damaged)
+                self.assertTrue(self.family().add_repository(host.DOCKER))
+                self.assertEqual(key.read_bytes(), KEY)
+        self.assertFalse(self.family().add_repository(host.DOCKER))
+        # A binary key (Tailscale's noarmor.gpg) is a key too.
+        self.assertTrue(host.valid_key(b'\x99\x02\x0d\x04abc'))
+        self.assertTrue(host.valid_key(b'\xc6\x33\x04abc'))
+        self.assertFalse(host.valid_key(b'\x00\x01'))
+
+    def test_a_downloaded_page_that_is_no_key_is_refused(self):
+        family = self.family()
+        family.fetch = lambda url: b'<html><body>Please log in</body></html>'
+        with self.assertRaisesRegex(RuntimeError, 'is not a key file'):
+            family.add_repository(host.DOCKER)
+        self.assertFalse((self.root / 'etc/apt/keyrings/docker.asc').exists())
+
+    def test_a_key_apt_rejects_is_downloaded_again_and_the_lists_refreshed(self):
+        family = self.family()
+        family.add_repository(host.DOCKER)
+        self.keys.clear()
+        rejected = ('W: GPG error: https://download.docker.com/linux/ubuntu noble InRelease: The following signatures '
+                    "couldn't be verified because the public key is not available: NO_PUBKEY 7EA0A9C3F273FCD8\n"
+                    "E: The repository 'https://download.docker.com/linux/ubuntu noble InRelease' is not signed.")
+        apt = Answers(FakeApt(offered={'samba'}), is_update, [(100, rejected)])
+        family = self.quiet(self.family(apt))
+        family.refresh()
+        self.assertEqual(self.keys, ['https://download.docker.com/linux/ubuntu/gpg'])
+        self.assertEqual(len([argv for argv, _ in apt.inputs if is_update(argv)]), 2)
+        self.assertIn('downloading the key again', family.said[0])
+        # Someone else's repository's key is never touched.
+        self.keys.clear()
+        other = rejected.replace('download.docker.com', 'ppa.example.org')
+        apt = Answers(FakeApt(), is_update, [(100, other)])
+        with self.assertRaisesRegex(RuntimeError, 'Refreshing the package lists failed'):
+            self.quiet(self.family(apt)).refresh()
+        self.assertEqual(self.keys, [])
+
+    def test_steams_licence_question_is_answered_before_it_installs(self):
+        apt = Answers(FakeApt(offered={'steam-installer'}), lambda argv: False, [])
+        family = self.quiet(self.family(apt))
+        family.install(['steam'])
+        calls = [argv for argv, _ in apt.inputs]
+        answer = calls.index(['debconf-set-selections'])
+        self.assertLess(answer, next(i for i, argv in enumerate(calls) if argv[0] == 'apt-get' and 'install' in argv))
+        self.assertIn('steam/question select I AGREE', apt.inputs[answer][1])
+        self.assertIn('Steam licence', family.said[0])
+        # Nothing to answer for packages that ask nothing.
+        apt = Answers(FakeApt(offered={'caddy'}), lambda argv: False, [])
+        self.quiet(self.family(apt)).install(['caddy'])
+        self.assertNotIn(['debconf-set-selections'], [argv for argv, _ in apt.inputs])
+
+    def test_steam_left_half_set_up_is_answered_before_it_is_set_up_again(self):
+        apt = Answers(FakeApt(installed={'steam-installer'}), lambda argv: False, [])
+        apt.unconfigured = ['steam-installer']
+        self.file(host.Debian.journal, json.dumps({'format': 'neko-package-install-v1', 'packages': ['steam'],
+                                                    'before': {}}))
+        self.quiet(self.family(apt)).reconcile()
+        calls = [argv for argv, _ in apt.inputs]
+        self.assertLess(calls.index(['debconf-set-selections']), calls.index(['dpkg', '--configure', 'steam-installer']))
+        self.assertFalse(self.journal().exists())
+
+    def test_a_package_that_cannot_be_set_up_is_named_with_the_way_out(self):
+        apt = FakeApt(installed={'steam-installer'})
+        apt.unconfigured = ['steam-installer']
+        apt.configure_fails = True
+        self.file(host.Debian.journal, json.dumps({'format': 'neko-package-install-v1', 'packages': ['steam'],
+                                                    'before': {}}))
+        with self.assertRaisesRegex(RuntimeError, r'could not finish setting up steam-installer \(left unfinished by '
+                                                  r'an earlier installation\).*sudo apt-get remove steam-installer'):
+            self.quiet(self.family(apt)).install(['caddy'])
+
+    def test_a_wrong_clock_is_named(self):
+        not_yet = ('E: Release file for http://deb.debian.org/debian/dists/trixie/InRelease is not valid yet '
+                   '(invalid for another 5h 2min).')
+        apt = Answers(FakeApt(), is_update, [(100, not_yet)])
+        with self.assertRaisesRegex(RuntimeError, r"clock looks wrong.*sudo timedatectl set-ntp true"):
+            self.quiet(self.family(apt)).refresh()
+        family = self.family()
+        family.fetch = mock.Mock(side_effect=OSError('[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: '
+                                                     'certificate is not yet valid'))
+        with self.assertRaisesRegex(RuntimeError, 'clock looks wrong'):
+            family.add_repository(host.DOCKER)
+        self.assertEqual(host.clock_hint('E: Unable to locate package caddy'), '')
+
+    def test_long_waits_are_said_when_they_start(self):
+        lock = self.root / host.PACKAGE_LOCK.lstrip('/')
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        import fcntl
+        with lock.open('a') as other:                       # another setup's package job
+            fcntl.flock(other, fcntl.LOCK_EX)
+            family = self.quiet(self.family())
+
+            def sleep(seconds):
+                family.slept.append(seconds)
+                if len(family.slept) == 2:
+                    fcntl.flock(other, fcntl.LOCK_UN)
+            family.sleep = sleep
+            with family.locked():
+                pass
+        self.assertEqual(len(family.said), 1)
+        self.assertIn('Another NekoServer setup is installing packages; waiting', family.said[0])
 
 
 if __name__ == '__main__':

@@ -8,7 +8,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
-from neko_common import UnreadableEntries, findmnt, partial_name, safe_path, atomic_json, publish_no_replace, ensure_directory, strict_files, verify_storage
+from neko_common import UnreadableEntries, findmnt, partial_name, safe_path, atomic_json, publish_no_replace, ensure_directory, strict_files, verify_storage, rename_no_replace, checked_settings, default_settings
 
 
 def digest(path):
@@ -35,7 +35,10 @@ def source_folder(source):
         if not value:raise RuntimeError('Remote source needs an already mounted local folder')
         path=safe_path(value)
         if findmnt('FSTYPE',path,'--target') not in ('cifs','nfs','nfs4'):
-            raise RuntimeError('Remote folder is not on a verified SMB/NFS mount')
+            # The share is not mounted there now (unmounted after its import, the NAS off):
+            # the folder is then an empty one on this PC, never copied from. Gone, like an
+            # unplugged drive, so a finished import is not reported as a step left to do.
+            raise SourceGone('Remote folder is not on a mounted SMB/NFS share')
     elif source.get('type')=='local':path=safe_path(source['path'])
     else:raise RuntimeError('Unknown source type')
     if not path.is_absolute() or not path.is_dir():raise SourceGone('Source folder is not accessible')
@@ -153,28 +156,35 @@ def move_legacy(folder,media,category,guard=None):
     if guard:guard.check(legacy)
     left=[]
     for item in sorted(legacy.iterdir()):
-        place=legacy.parent/item.name
-        if item.is_symlink() or place.exists() or place.is_symlink():
+        if item.is_symlink():
             left.append(item.name);continue
-        os.rename(item,place)
+        try:
+            rename_no_replace(item,legacy.parent/item.name)
+        except FileExistsError:
+            left.append(item.name)
     if not left:legacy.rmdir()
     return left
 
 
-def already_copied(current,dest):
-    """`dest` is the copy of `current` an earlier run made, or this raises: a file there
-    that differs is never replaced. Same size and date (copies keep their original's
-    date): not read again. Otherwise (a copy from before 0.39.5) the contents decide."""
-    if not dest.is_file():raise RuntimeError('Existing imported file differs; refusing overwrite')
+def already_copied(current,dest,apply=False):
+    """True when `dest` is the copy of `current` an earlier run made; False when it is a
+    different file (never replaced). Same size and date (copies keep their original's
+    date): not read again. Otherwise (a copy from before 0.39.5) the contents decide, and
+    a match takes its original's date, so the next run doesn't read both again."""
+    if not dest.is_file():return False
     have,want=dest.stat(),current.stat()
-    if (have.st_size,have.st_mtime_ns)==(want.st_size,want.st_mtime_ns):return
-    if digest(current)!=digest(dest):raise RuntimeError('Existing imported file differs; refusing overwrite')
+    if (have.st_size,have.st_mtime_ns)==(want.st_size,want.st_mtime_ns):return True
+    if have.st_size!=want.st_size or digest(current)!=digest(dest):return False
+    if apply:os.utime(dest,ns=(have.st_atime_ns,want.st_mtime_ns))
+    return True
 
 
-def planned_copies(folder,target):
+def planned_copies(folder,target,apply=False,conflicts=None):
     """[(file, where it goes, its stat)] for every file not imported yet. Strict listing:
     a folder that cannot be read makes this source incomplete (nothing is copied),
-    instead of silently leaving an album out."""
+    instead of silently leaving an album out. A different file already at a file's place
+    in the library (another source's `folder.jpg`, one Sonarr replaced) is kept and the
+    file left out: its path, relative to the source, goes into `conflicts`."""
     try:
         found=strict_files(folder,lambda here,name:name.endswith(TEMPORARY))
     except UnreadableEntries as exc:
@@ -184,30 +194,74 @@ def planned_copies(folder,target):
     for found_path,_ in sorted(found):
         current=safe_path(found_path)
         dest=safe_path(target/current.relative_to(folder))
-        if dest.exists():
-            already_copied(current,dest)
+        if dest.exists() or dest.is_symlink():
+            note_conflict(current,dest,folder,apply,conflicts)
             continue
         entries.append((current,dest,current.stat()))
     return entries
 
 
+def note_conflict(current,dest,folder,apply,conflicts):
+    """A file already at `dest`: an earlier copy of `current` (nothing to do), or a different
+    file, kept and noted in `conflicts` (raised when no list is kept)."""
+    if already_copied(current,dest,apply):return
+    if conflicts is None:raise RuntimeError('Existing imported file differs; refusing overwrite')
+    conflicts.append(current.relative_to(folder).as_posix())
+
+
+def configured_folder(source):
+    """The folder the source list names, whether or not it is there now."""
+    value=source.get('mounted_path') if source.get('type')=='remote' else source.get('path')
+    return Path(value) if value and Path(value).is_absolute() else None
+
+
+def legacy_left(left,folder,media,category):
+    return {'status':'needs_setup','copied':0,'reason':'An earlier import of this source is in '+legacy_target(folder,media,category).name+
+            ' in the library; these folders could not be moved up because the library already has a folder of that name: '
+            +', '.join(left[:10])+'. Compare and merge them by hand, then run setup again'}
+
+
 def copy_source(source,media,apply=False,uid=None,gid=None,guard=None):
     category=source.get('category')
     if category not in ('movies','tv','music'):raise RuntimeError('Invalid media category')
-    folder=source_folder(source)
+    try:
+        folder=source_folder(source)
+    except SourceGone:
+        earlier=while_unplugged(source,media,category,apply,guard)
+        if earlier:return earlier
+        raise
     if folder is None:return {'status':'reference_only','copied':0,'reason':'Configure this indexer through Prowlarr'}
     target=import_target(folder,media,category)
     left=move_legacy(folder,media,category,guard) if apply else []
-    if left:
-        return {'status':'needs_setup','copied':0,'reason':'An earlier import of this source is in '+legacy_target(folder,media,category).name+
-                ' in the library; these folders could not be moved up because the library already has a folder of that name: '
-                +', '.join(left[:10])+'. Compare and merge them by hand, then run setup again'}
-    entries=planned_copies(folder,target)
+    if left:return legacy_left(left,folder,media,category)
+    conflicts=[]
+    entries=planned_copies(folder,target,apply,conflicts)
     required=sum(stat.st_size for _,_,stat in entries)
     if required>shutil.disk_usage(media).free:raise RuntimeError('Not enough free space on target library filesystem')
     for current,dest,stat in entries:
         if apply:import_file(current,dest,stat,uid,gid,guard)
-    return {'status':'copied' if apply else 'preview','copied':len(entries) if apply else 0,'new_files':len(entries),'bytes':required,'destination':str(target)}
+    result={'status':'copied' if apply else 'preview','copied':len(entries) if apply else 0,'new_files':len(entries),'bytes':required,'destination':str(target)}
+    return with_conflicts(result,conflicts)
+
+
+def while_unplugged(source,media,category,apply,guard):
+    """The row for a source that isn't there now but that a release before 0.39.5 (which
+    kept no record) imported: its folder in the library moves up even with the source
+    unplugged, and it was copied before. None when there was no earlier import."""
+    named=configured_folder(source)
+    if not named or not legacy_target(named,media,category).is_dir():return None
+    left=move_legacy(named,media,category,guard) if apply else []
+    if left:return legacy_left(left,named,media,category)
+    return {'status':'imported_earlier','copied':0,'reason':'Source not connected now; its files were copied before'}
+
+
+def with_conflicts(result,conflicts):
+    """The report row, naming the files left out because the library has others there."""
+    if conflicts:
+        result['kept_library_version']=len(conflicts)
+        result['reason']=(f'{len(conflicts)} files were left out because the library already has a different file at '
+                          'that place (kept as it is): '+', '.join(conflicts[:10]))
+    return result
 
 
 def finished_imports(record_path):
@@ -233,9 +287,14 @@ def gone(source,finished):
     return {'status':'needs_setup','reason':'Source folder not found: connect the drive, or take it out of the source list'}
 
 
-def import_one(source,root,apply,owner,guard,finished):
+def import_one(source,root,apply,owner,guard,finished,again=False):
     """One source copied into `root`'s library: its row for the report. A finished
-    import is recorded in `finished`. DriveGone stops the whole import (it is raised)."""
+    import is recorded in `finished`, and not done again unless asked (`again`): Sonarr,
+    Radarr or Lidarr may since have renamed or replaced those files in the library, and a
+    second copy would bring the originals back. DriveGone stops the whole import."""
+    if source_key(source) in finished and not again:
+        return {'status':'imported_earlier','copied':0,
+                'reason':'Copied before; not copied again (to copy what is new in it, in the NekoServer folder: sudo python3 source_import.py --config my-config.json --again --apply)'}
     try:
         result=copy_source(source,root,apply,*owner,guard)
     except SourceGone:
@@ -245,11 +304,11 @@ def import_one(source,root,apply,owner,guard,finished):
         return {'status':'needs_setup','reason':f'Nothing was copied: {len(exc.paths)} folders or files could not be read: '+', '.join(exc.paths[:10])}
     except (RuntimeError,OSError,KeyError,ValueError):
         return {'status':'needs_setup','reason':'Source inaccessible, unmounted, overlapping, changed, unsafe or conflicting; inspect source before retry'}
-    if apply and result['status']=='copied':finished[source_key(source)]=source.get('category')
+    if apply and result['status'] in ('copied','imported_earlier'):finished[source_key(source)]=source.get('category')
     return result
 
 
-def run(config,sources,apply=False,verify=None):
+def run(config,sources,apply=False,verify=None,again=False):
     media=safe_path(config['media_mount']);data=safe_path(config['data_mount'])
     if not os.path.ismount(media) or not os.path.ismount(data):raise RuntimeError('Mounted data SSD and media HDD required')
     uid,gid=int(config['media'].get('uid',1000)),int(config['media'].get('gid',1000))
@@ -262,7 +321,7 @@ def run(config,sources,apply=False,verify=None):
     owner=(uid,gid) if apply else (None,None)
     for index,source in enumerate(sources):
         root=data if source.get('category')=='music' else media
-        result=import_one(source,root,apply,owner,guards.get(root),finished)
+        result=import_one(source,root,apply,owner,guards.get(root),finished,again)
         # Inventory may contain private URLs; reports never serialize source entries.
         rows.append(dict(source_number=index+1,category=source.get('category'),**result))
     if verify: verify()
@@ -273,12 +332,13 @@ def run(config,sources,apply=False,verify=None):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config',default=str(Path(__file__).with_name('config.json')))
+    parser.add_argument('--config',type=checked_settings,default=default_settings(Path(__file__).parent))
     parser.add_argument('--sources')
     parser.add_argument('--data-root')
     parser.add_argument('--media-root')
     parser.add_argument('--apply',action='store_true')
     parser.add_argument('--selected-only',action='store_true',help='Copy only inventory entries explicitly selected in the source wizard')
+    parser.add_argument('--again',action='store_true',help='Copy what is new in sources copied before (they are skipped otherwise)')
     args=parser.parse_args(argv)
     try:
         config=json.loads(safe_path(args.config).read_text())
@@ -288,7 +348,7 @@ def main(argv=None):
         sources=json.loads(inventory.read_text()).get('sources',[])
         if args.selected_only:sources=[s for s in sources if s.get('copy_to_library') is True]
         if args.apply: verify_storage(config)
-        result=run(config,sources,args.apply,verify=(lambda:verify_storage(config)) if args.apply else None)
+        result=run(config,sources,args.apply,verify=(lambda:verify_storage(config)) if args.apply else None,again=args.again)
         print('Source import:', 'incomplete; check source-import report' if result else 'complete' if args.apply else 'preview complete')
         return result
     except DriveGone as exc:

@@ -10,13 +10,13 @@ import account_store
 import account_setup
 from modules.accounts import finish_pending
 from types import SimpleNamespace
-from neko_common import safe_path, verify_storage
+from neko_common import safe_path, verify_storage, checked_settings, default_settings
 from recovery_tools import lock
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, default=Path(__file__).with_name('config.json'))
+    parser.add_argument('--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent))
     parser.add_argument('--apply', action='store_true')
     args = parser.parse_args()
     if not args.apply:

@@ -276,9 +276,24 @@ def _wait_for_answer(stream, secret):
                     return answer
                 answer = _from_terminal(stream, secret)
                 if answer is not None:
-                    return answer
+                    if _claimed_by_terminal(pending, answer):
+                        return answer
+                    return _from_window(pending, secret)   # the window's came in the same moment
     except _Unwatchable:
         return None
+
+
+def _claimed_by_terminal(pending, answer):
+    """The terminal's answer taken for the question, unless the window's got there first:
+    either way only one of them is told its answer was used."""
+    if pending is None:
+        return True
+    with _lock:
+        if pending['event'].is_set():
+            return False
+        pending['answer'] = answer
+        pending['event'].set()
+        return True
 
 
 def _drop_typed(fd):
@@ -324,7 +339,7 @@ def watching_prompts():
         question(prompt, secret=secret)
         try:
             answer = _wait_for_answer(sys.stdin, secret)
-        except EOFError:
+        except BaseException:      # Ctrl+D, Ctrl+C: the window stops showing the question too
             answered()
             raise
         if answer is None:

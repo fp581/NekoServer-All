@@ -6,7 +6,7 @@ rust-lld, as the release builds are; otherwise for this PC alone, with its own C
 library, which is what `sudo bash install.sh` builds on the PC that installs NekoServer
 (git keeps the sources, not the binary). As an ordinary user, or as root from
 install.sh (NEKOSERVER_BUILD_AS_ROOT=1)."""
-import hashlib,json,os,platform,re,shutil,subprocess
+import hashlib,json,os,platform,re,shutil,subprocess,sys,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 STATIC='x86_64-unknown-linux-musl'
@@ -15,7 +15,7 @@ def oldest_rust():
     match=re.search(r'^rust-version\s*=\s*"(\d+)\.(\d+)',(ROOT/'Cargo.toml').read_text(),re.MULTILINE)
     return (int(match[1]),int(match[2])) if match else (0,0)
 def rust_version(rustc):
-    match=re.search(r'rustc (\d+)\.(\d+)',subprocess.run([rustc,'--version'],capture_output=True,text=True,check=False).stdout or '')
+    match=re.search(r'rustc (\d+)\.(\d+)',subprocess.run([rustc,'--version'],capture_output=True,text=True,timeout=60,check=False).stdout or '')
     return (int(match[1]),int(match[2])) if match else (0,0)
 def pairs(which=shutil.which,listing=None):
     """Every (cargo, rustc) on PATH: the plain pair, then the versioned ones Ubuntu
@@ -35,8 +35,8 @@ def toolchain():
     for cargo,rustc in pairs():
         if rust_version(rustc)>=oldest:
             os.environ['RUSTC']=rustc
-            details=subprocess.check_output([rustc,'-vV'],text=True);host=next(line.split(': ',1)[1] for line in details.splitlines() if line.startswith('host: '))
-            sysroot=Path(subprocess.check_output([rustc,'--print','sysroot'],text=True).strip())
+            details=subprocess.check_output([rustc,'-vV'],text=True,timeout=60);host=next(line.split(': ',1)[1] for line in details.splitlines() if line.startswith('host: '))
+            sysroot=Path(subprocess.check_output([rustc,'--print','sysroot'],text=True,timeout=60).strip())
             return cargo,rustc,host,sysroot,details.splitlines()[0]
     raise RuntimeError('Rust %d.%d or newer (cargo and rustc) is needed; sudo bash install.sh installs it on the server'%oldest)
 def plan(host,sysroot):
@@ -54,6 +54,21 @@ def built_path(target,arguments,environ=os.environ):
     build folder), else runtime/target; in the target's own folder for a cross build."""
     base=Path(environ.get('CARGO_TARGET_DIR') or ROOT/'target')
     return base/(target if arguments else '')/'release/nekoserver-runtime'
+FETCH_TRIES=3;FETCH_PAUSE=20   # crates.io can be slow or away for a moment: its downloads are tried this often
+def fetch(cargo,target_arguments,run=None,sleep=time.sleep,say=print):
+    """Download the locked dependencies, tried again a little later when that fails; the
+    build after it then needs no network (--offline), so only this part is retried."""
+    for attempt in range(1,FETCH_TRIES+1):
+        if (run or subprocess.run)([cargo,'fetch','--locked',*target_arguments],cwd=ROOT,check=False).returncode==0:return
+        if attempt<FETCH_TRIES:say(f'Downloading the runtime\'s dependencies failed; trying again in {FETCH_PAUSE} seconds ({attempt+1} of {FETCH_TRIES})...');sleep(FETCH_PAUSE)
+    raise RuntimeError(f'Downloading the runtime\'s dependencies failed {FETCH_TRIES} times (the lines above say why). Check that this PC is connected to the internet, then run  sudo bash install.sh  again.')
+def cargo_step(argv,what):
+    """One cargo step; a failure is said in one line (cargo has printed why just above)."""
+    if subprocess.run(argv,cwd=ROOT,check=False).returncode:raise RuntimeError(f'{what} failed (the lines above say why). Fix that, then run  sudo bash install.sh  again.')
+def replace_file(path,data,mode):
+    """path gets data whole or not at all (written beside it, then renamed over it): a
+    build cut off half-way never leaves half a binary, or a record of another one."""
+    temporary=path.with_name('.'+path.name+'.new');temporary.write_bytes(data);temporary.chmod(mode);os.replace(temporary,path)
 def main():
     if os.geteuid()==0 and os.environ.get('NEKOSERVER_BUILD_AS_ROOT')!='1':raise RuntimeError('Build as an ordinary user (or let sudo bash install.sh build it)')
     if platform.system()!='Linux' or platform.machine()!='x86_64':raise RuntimeError('This release build targets x86_64 Linux')
@@ -64,13 +79,23 @@ def main():
     # The runtime itself is always compiled again: cargo trusts file times, and after the
     # clock went back an older build looked newer than the sources, so the binary came out
     # unchanged while the manifest named the new sources. Dependencies stay cached.
-    subprocess.run([cargo,'clean','--release',*(['--target',target] if arguments else []),'-p','nekoserver-runtime'],cwd=ROOT,check=True)
-    subprocess.run([cargo,'build','--release','--locked',*arguments],cwd=ROOT,check=True)
+    target_arguments=['--target',target] if arguments else []
+    cargo_step([cargo,'clean','--release',*target_arguments,'-p','nekoserver-runtime'],'Cleaning the earlier runtime build')
+    fetch(cargo,target_arguments)
+    cargo_step([cargo,'build','--release','--locked','--offline',*arguments],'Compiling the runtime')
     built=built_path(target,arguments)
-    blob=built.read_bytes();out=ROOT/'bin/nekoserver-runtime';out.parent.mkdir(exist_ok=True);out.write_bytes(blob);out.chmod(0o750)
+    # The binary first, its record (build.json) last: install.sh compares the two, so a
+    # build cut off between them is built again.
+    blob=built.read_bytes();out=ROOT/'bin/nekoserver-runtime';out.parent.mkdir(exist_ok=True);replace_file(out,blob,0o750)
     sources=[ROOT/'Cargo.toml',ROOT/'Cargo.lock',ROOT/'build.py',*sorted((ROOT/'src').glob('*.rs'))]
-    version=subprocess.check_output([out,'--version'],text=True).strip().split()[-1]
+    version=subprocess.check_output([out,'--version'],text=True,timeout=60).strip().split()[-1]
     metadata={'version':version}
     metadata.update(target=target,static=target==STATIC,rustc=rustc_line,binary_sha256=hashlib.sha256(blob).hexdigest(),source_sha256={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources})
-    (ROOT/'build.json').write_text(json.dumps(metadata,indent=2)+'\n');print(('Static' if target==STATIC else 'This PC\'s')+' runtime built and its record written')
-if __name__=='__main__':main()
+    replace_file(ROOT/'build.json',(json.dumps(metadata,indent=2)+'\n').encode(),0o644);print(('Static' if target==STATIC else 'This PC\'s')+' runtime built and its record written')
+def cli():
+    """main() for the command line: a failure in one plain line, never a traceback."""
+    try:main()
+    except KeyboardInterrupt:print('\nStopped. Run  sudo bash install.sh  again to build the runtime.',file=sys.stderr);return 130
+    except (RuntimeError,OSError,subprocess.SubprocessError) as exc:print('ERROR: building the runtime: '+str(exc),file=sys.stderr);return 1
+    return 0
+if __name__=='__main__':sys.exit(cli())

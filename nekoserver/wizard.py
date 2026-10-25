@@ -13,6 +13,7 @@ import pwd
 import re
 import select
 import sys
+import termios
 
 import guided_setup
 import setup_gui
@@ -207,6 +208,11 @@ def wait_to_start(prompt, output, window, stdin=None):
             answer = _typed(stdin, output)
             if answer is not None:
                 return answer
+    # A line half-typed in the terminal meanwhile would be read as the next answer.
+    try:
+        termios.tcflush(stdin, termios.TCIFLUSH)
+    except (termios.error, OSError, ValueError):
+        pass
     output('yes (Start pressed in the setup window)')
     return True
 
@@ -303,7 +309,10 @@ def finishing_screen(config, states, page=None, output=print, checkup=None):
     data = data_folder(config)
     # Judge against the steps the installation is meant to run, not only the ones that
     # left a state behind: missing or unreadable state must never read as "ready".
-    expected = [n for n in config.get('profiles', {}).get('full', []) if n in STEPS]
+    # The template's full profile (a settings file from an earlier release may lack steps
+    # added since), without the steps you took out, plus your own.
+    from config_checks import expected_steps
+    expected = [n for n in expected_steps(config, read_json(ROOT / TEMPLATE)) if n in STEPS]
     plan = expected or [name for name in STEPS if name in states]
     states = {n: states.get(n) if isinstance(states.get(n), dict) else
               {'status': 'missing', 'reason': 'did not run (no record of this step)'} for n in plan}

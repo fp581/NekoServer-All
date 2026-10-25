@@ -129,3 +129,52 @@ class TvSleepTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TvLauncherUpdateTests(unittest.TestCase):
+    """The reported case: the TV step's YouTube launcher named Chromium; after Firefox was
+    installed every later run stopped with "custom shortcut preserved", although the
+    launcher was NekoServer's own."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.user = pwd.struct_passwd(('neko', 'x', os.getuid(), os.getgid(), '', str(self.home), '/bin/bash'))
+        self.path = self.home / '.local/share/applications/nekoserver-youtube.desktop'
+        self.path.parent.mkdir(parents=True)
+
+    def place(self, browser):
+        return {self.path: tv.launchers('/usr/bin/steam', browser)['nekoserver-youtube.desktop']}
+
+    def test_its_own_out_of_date_launcher_is_brought_up_to_date(self):
+        old = self.place('/usr/bin/chromium')
+        self.path.write_text(old[self.path])
+        self.path.chmod(0o755)
+        new = self.place('/usr/bin/firefox')
+        with mock.patch.object(os, 'chown'):
+            tv.check_launchers(new, self.user, self.home, {})
+            tv.write_launchers(new, self.user, self.home, {})
+        self.assertIn('Exec=/usr/bin/firefox ', self.path.read_text())
+
+    def test_a_launcher_someone_changed_is_kept(self):
+        self.path.write_text('[Desktop Entry]\nName=My own YouTube\nExec=/usr/bin/chromium\n')
+        self.path.chmod(0o755)
+        with self.assertRaisesRegex(RuntimeError, 'custom shortcut preserved'):
+            tv.check_launchers(self.place('/usr/bin/firefox'), self.user, self.home, {})
+
+    def test_the_recorded_checksum_also_makes_it_ours(self):
+        import hashlib
+        text = '[Desktop Entry]\nName=NekoServer YouTube\nExec=/usr/bin/chromium\n'
+        self.path.write_text(text)
+        self.path.chmod(0o755)
+        recorded = {'.local/share/applications/nekoserver-youtube.desktop': hashlib.sha256(text.encode()).hexdigest()}
+        tv.check_launchers(self.place('/usr/bin/firefox'), self.user, self.home, recorded)
+
+
+class DebianFirefoxTests(unittest.TestCase):
+    def test_debians_firefox_esr_counts_as_the_browser(self):
+        found = {'firefox-esr': '/usr/bin/firefox-esr'}
+        files = desktop.shortcuts({'data_mount': '/srv/nekoserver', 'dashboard': {'port': 8787}, 'media': {'services': []}},
+                                  which=found.get, launcher=Path('/nonexistent'))
+        self.assertIn('Exec=/usr/bin/firefox-esr\n', files['nekoserver-browser.desktop'])

@@ -219,6 +219,12 @@ fn mounts(cfgpath: &Path, cfg: &Value, external: bool) -> Result<()> {
 /// Optional per-app Compose addition written by the installer's hardware video step
 /// (graphics device for Immich). Kept next to compose.yaml and applied on every update.
 const HARDWARE: &str = "hardware.yaml";
+/// The graphics devices Immich's hardware.yaml hands to its server. Docker refuses to
+/// create a container whose device is missing (a graphics card taken out, a driver
+/// gone), so without them Immich starts without that file and converts in software.
+fn graphics_present() -> bool {
+    Path::new("/dev/dri").exists()
+}
 fn model(config: &Value, name: &str) -> Result<Value> {
     let dir = Path::new(string(config, "data_mount")?)
         .join("compose")
@@ -235,7 +241,7 @@ fn model(config: &Value, name: &str) -> Result<Value> {
     }
     let hardware = dir.join(HARDWARE);
     let hardware_name = hardware.to_string_lossy();
-    if hardware.exists() {
+    if hardware.exists() && graphics_present() {
         private(&hardware)?;
         args.extend(["-f", &hardware_name]);
     }
@@ -1219,11 +1225,33 @@ fn save_journal(value: &Value) -> Result<()> {
 /// A journal this program can finish: the same journal format, for the same drives and
 /// folders. Any release may finish it, not only the one that started it, so a fix to
 /// the way back can reach a server whose earlier way back failed.
+/// Not one written by a newer release (its phases may mean something this one does not
+/// know, after a downgrade), and only phases this release knows how to finish.
 fn resumable(journal: &Value, cfg: &Value) -> bool {
     journal["format"] == "neko-maintenance-resume-v1"
         && journal["storage"] == cfg["storage"]
         && journal["data_mount"] == cfg["data_mount"]
         && journal["media_mount"] == cfg["media_mount"]
+        && journal["version"]
+            .as_str()
+            .and_then(release)
+            .is_some_and(|v| Some(v) <= release(VERSION))
+        && journal["phase"].as_str().is_some_and(|p| {
+            [
+                "snapshot",
+                "backed_up",
+                "updating",
+                "restoring",
+                "committed",
+            ]
+            .contains(&p)
+        })
+}
+/// "0.39.5" as (0, 39, 5), to compare releases.
+fn release(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.split('.').map(|p| p.parse::<u64>().ok());
+    let found = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(found)
 }
 fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
     if !Path::new(JOURNAL).exists() {
@@ -1529,25 +1557,86 @@ fn scrub_all(media: &Path) {
 fn tidy_after_failure(cfg: &Value) {
     if let Ok(media) = string(cfg, "media_mount") {
         scrub_all(Path::new(media));
+        remove_unarchived(Path::new(media));
     }
     if let Ok(data) = string(cfg, "data_mount") {
         clear_work(Path::new(data));
     }
 }
+/// What a snapshot folder holds once anything was archived into it.
+const ARCHIVED: [&str; 6] = [
+    "data.tar",
+    "media.tar",
+    "images.tar",
+    "manifest.json",
+    "restore-tests.json",
+    "result.json",
+];
+/// Monthly run folders that never got as far as archiving anything (the night ran out
+/// before the apps were stopped, a download failed): only the apps' saved settings are
+/// in them. They are removed, so they don't pile up month after month and aren't listed
+/// as unfinished snapshots taking space. A folder a journal still needs, or one the
+/// worker did not make (not private), stays.
+fn remove_unarchived(media: &Path) {
+    let active = load(Path::new(JOURNAL)).ok();
+    let hdd = media.join("backups/monthly");
+    for run in monthly_runs(media).unwrap_or_default() {
+        let in_use = active.as_ref().is_some_and(|j| {
+            j["snapshot"]
+                .as_str()
+                .is_some_and(|s| Path::new(s).file_name().is_some_and(|f| f == run.as_str()))
+        });
+        let folder = hdd.join(&run);
+        if in_use
+            || ARCHIVED
+                .iter()
+                .any(|name| fs::symlink_metadata(folder.join(name)).is_ok())
+        {
+            continue;
+        }
+        if let Err(e) = remove_run(&folder) {
+            println!("Monthly snapshot {run}: an empty run folder was kept ({e})");
+        }
+    }
+}
 fn write_override(cfg: &Value, name: &str, model: &Value) -> Result<()> {
+    write_pins(Path::new(string(cfg, "data_mount")?), name, model)
+}
+/// The image IDs `model` runs, saved where setup and every `docker compose up` read them
+/// (compose/<app>/maintenance-images.json), so they start exactly those images.
+fn write_pins(data: &Path, name: &str, model: &Value) -> Result<()> {
     let services = model["services"]
         .as_object()
-        .unwrap()
+        .ok_or_else(|| Error::new("Invalid model"))?
         .iter()
         .map(|(k, v)| (k.clone(), json!({"image":v["image"]})))
         .collect::<serde_json::Map<_, _>>();
     common::atomic_json(
-        &Path::new(string(cfg, "data_mount")?)
+        &data
             .join("compose")
             .join(name)
             .join("maintenance-images.json"),
         &json!({"services":services}),
     )
+}
+/// Before the first download: each app not pinned yet (no update has gone in for it) is
+/// pinned to the images it runs now. A download moves the app's tag (jellyfin:latest)
+/// to the new image; without the pin, the next `sudo bash install.sh` would start that
+/// image, untested and with no snapshot to go back to, when this run stops before its
+/// update (the night ran out, another download failed). Returns the apps pinned now.
+fn pin_unpinned(data: &Path, names: &[String], models: &Value) -> Result<Vec<String>> {
+    let mut pinned = vec![];
+    for name in names {
+        let pins = data
+            .join("compose")
+            .join(name)
+            .join("maintenance-images.json");
+        if fs::symlink_metadata(&pins).is_err() {
+            write_pins(data, name, &models[name.as_str()])?;
+            pinned.push(name.clone());
+        }
+    }
+    Ok(pinned)
 }
 fn source_model(folder: &Path, name: &str) -> Result<Value> {
     let manifest = folder.join("compose.yaml");
@@ -1562,7 +1651,7 @@ fn source_model(folder: &Path, name: &str) -> Result<Value> {
     }
     let hardware = folder.join(HARDWARE);
     let hardware_name = hardware.to_string_lossy();
-    if hardware.exists() {
+    if hardware.exists() && graphics_present() {
         private(&hardware)?;
         args.extend(["-f", &hardware_name]);
     }
@@ -2283,6 +2372,8 @@ fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>
 /// size and dates). Damage stops the run here, with nothing changed. The USB drive is
 /// checked when it is plugged in.
 fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
+    // Each HDD archive file is read once in this check, not by each step again.
+    let _once = backup::read_once();
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
     let (archive, usb) = copies_to_check(cfg, cfgpath);
@@ -2318,13 +2409,27 @@ fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
 fn usb_damage(e: &Error) -> bool {
     e.to_string().starts_with(backup::INTEGRITY)
 }
+/// Said when the night ended before the apps were stopped even with the checksum check
+/// postponed: no monthly snapshot can be taken until the night is longer.
+const NIGHT_TOO_SHORT: &str = "The monthly run cannot fit into the night: it ended before the apps could be stopped, even with the checksum check left for another month, so no monthly snapshot was taken. Start it earlier (maintenance.time) or let it run longer (maintenance.night_end_hour, up to 7)";
+/// Kept on the SSD when a month's night ran out before the apps were stopped.
+const NIGHT_MARKER: &str = "reports/jobs/maintenance-night-ran-out.json";
+fn night_ran_out(data: &Path) -> bool {
+    data.join(NIGHT_MARKER).is_file()
+}
+fn mark_night_ran_out(data: &Path) {
+    let _ = common::atomic_json(&data.join(NIGHT_MARKER), &json!({"at": common::now()}));
+}
+fn clear_night_ran_out(data: &Path) {
+    let _ = fs::remove_file(data.join(NIGHT_MARKER));
+}
 /// Said when the night ended before the apps were stopped: nothing was changed.
-const NIGHT_BEFORE_STOP: &str = "Night window ended before the apps were stopped (checking every copy took the night); nothing was changed, and the next monthly run tries again";
+const NIGHT_BEFORE_STOP: &str = "Night window ended before the apps were stopped (checking every copy took the night), so no monthly snapshot was taken and nothing was updated this month. Next month the snapshot and updates go first and the check waits a month";
 /// Waits between tries of a download refused for now (a busy registry, GitHub's hourly
 /// limit, a dropped connection), in seconds.
 const PULL_WAITS: &[u64] = &[30, 90, 240];
 /// What a download refused for now says (Docker's and curl's own words, lower case).
-const TRANSIENT: [&str; 15] = [
+const TRANSIENT: [&str; 13] = [
     "toomanyrequests",
     "too many requests",
     "tls handshake timeout",
@@ -2333,14 +2438,29 @@ const TRANSIENT: [&str; 15] = [
     "connection reset",
     "temporary failure",
     "service unavailable",
-    "503",
-    "502",
-    "504",
-    "429",
+    "bad gateway",
+    "gateway timeout",
     "timed out",
     "could not resolve",
     "rate limit",
 ];
+/// What a download that can never work says (no such image or release, no access):
+/// trying it again only wastes the night, whatever else the message holds.
+const PERMANENT: [&str; 4] = ["manifest unknown", "not found", "unauthorized", "denied"];
+/// A download refused for now. An HTTP status (429, 502, 503, 504) counts only where it
+/// is said as one ("error: 503", "status 429"): the same digits occur in image digests,
+/// which the message quotes.
+fn transient(said: &str) -> bool {
+    let said = said.to_lowercase();
+    if PERMANENT.iter().any(|mark| said.contains(mark)) {
+        return false;
+    }
+    let status = regex::Regex::new(
+        r"(?:error|status(?: code)?|http(?:/[0-9.]+)?|response)[: ]+(?:429|50[234])\b",
+    )
+    .unwrap();
+    TRANSIENT.iter().any(|mark| said.contains(mark)) || status.is_match(&said)
+}
 fn sleep_seconds(seconds: u64) {
     std::thread::sleep(std::time::Duration::from_secs(seconds));
 }
@@ -2355,16 +2475,13 @@ fn retry_transient<T>(
     loop {
         match attempt() {
             Ok(value) => return Ok(value),
-            Err(e) => {
-                let said = e.to_string().to_lowercase();
-                match left.next() {
-                    Some(&wait) if TRANSIENT.iter().any(|mark| said.contains(mark)) => {
-                        println!("Monthly update: a download was refused for now ({e}); trying again in {wait} seconds");
-                        sleep(wait);
-                    }
-                    _ => return Err(e),
+            Err(e) => match left.next() {
+                Some(&wait) if transient(&e.to_string()) => {
+                    println!("Monthly update: a download was refused for now ({e}); trying again in {wait} seconds");
+                    sleep(wait);
                 }
-            }
+                _ => return Err(e),
+            },
         }
     }
 }
@@ -2401,8 +2518,24 @@ fn download_updates(
         } else {
             data.join("compose").join(name)
         };
-        let mut candidate = source_model(&source, name)?;
-        valid_model(&candidate, name, data, media)?;
+        let checked =
+            source_model(&source, name).and_then(|m| valid_model(&m, name, data, media).map(|_| m));
+        let mut candidate = match checked {
+            Ok(model) => model,
+            // A new Immich release whose files don't pass the checks (another service, a
+            // new folder) waits too, like one that can't be looked up: Immich stays on its
+            // release, and the other apps update.
+            Err(e) if name == "immich" && immich_files.is_some() => {
+                println!("Immich: the new release's files did not pass the checks ({e}); it waits for next month's run");
+                deferred.push(format!("Immich release: {e}"));
+                immich_files = None;
+                let current = data.join("compose/immich");
+                let model = source_model(&current, name)?;
+                valid_model(&model, name, data, media)?;
+                model
+            }
+            Err(e) => return Err(e),
+        };
         if name == "nextcloud" {
             let step = nextcloud_major_step(cfg, &source)?;
             // Only report a newer major when none is being installed this month;
@@ -2434,8 +2567,17 @@ fn download_updates(
 }
 fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     mounts(cfgpath, cfg, false)?;
-    // First the checksum check, then the backup, then the updates.
-    let mut notes = check_copies(cfgpath, cfg)?;
+    // First the checksum check, then the backup, then the updates. When last month's
+    // night ran out before the apps could be stopped (checking every copy of a big
+    // library takes long), the check waits a month so the snapshot is taken this time.
+    let data_root = Path::new(string(cfg, "data_mount")?);
+    let postponed = night_ran_out(data_root);
+    let mut notes = if postponed {
+        println!("Monthly update: last month's night ran out during the checksum check, so this month the snapshot and updates go first; the check runs next month");
+        vec!["checksum check of every copy: postponed to next month (last month's night ran out during it)".to_string()]
+    } else {
+        check_copies(cfgpath, cfg)?
+    };
     mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
@@ -2516,12 +2658,22 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     // the snapshot's restore test and a rollback use the current images by their IDs,
     // which a download does not change. A GitHub or registry failure then stops the run
     // before any app is stopped, instead of after hours of downtime.
+    pin_unpinned(data, &names, &models)?;
     let (updated, immich_files, nextcloud_step, deferred) =
         download_updates(cfg, &names, data, media, &snapshot, &work)?;
     notes.extend(deferred);
     if !night(cfg) {
+        if postponed {
+            // Even without the check the night is too short: a failure, so it is seen.
+            return Err(Error::new(&format!(
+                "{NIGHT_TOO_SHORT} (maintenance.night_end_hour is {})",
+                cfg["maintenance"]["night_end_hour"].as_i64().unwrap_or(6)
+            )));
+        }
+        mark_night_ran_out(data_root);
         return Err(Error::new(NIGHT_BEFORE_STOP));
     }
+    clear_night_ran_out(data_root);
     common::directory(Path::new("/etc/nekoserver-backups"), 0o700)?;
     save_journal(
         &json!({"format":"neko-maintenance-resume-v1","version":VERSION,"run":run,"phase":"snapshot","snapshot":snapshot,"storage":cfg["storage"],"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"models":models,"containers":rows,"rehearsals":[]}),
@@ -2648,6 +2800,9 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     // Done while the journal still says "committed": checking the snapshots kept can
     // take long, and a run cut off here (a restart, the time limit) is then finished as
     // the installed update it is, not reported as a failure rolled back.
+    // Read before the old snapshots are tidied: with keep_snapshots 1 the run that names
+    // them is among those removed.
+    let older = previous_images(media, &run);
     retention["after_update"] = match mounts(cfgpath, cfg, false)
         .and_then(|_| prune_monthly(data, media, keep, Some(&run)))
     {
@@ -2655,8 +2810,10 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
         Err(e) => json!({"status":"skipped","reason":e.to_string()}),
     };
     let _ = common::atomic_json(&snapshot.join("retention.json"), &retention);
-    let removed = prune_images(media, &run, &updated, &models, &|id| {
-        docker(&["image", "rm", id]).is_ok()
+    let own = own_repositories(&updated, &image_tags);
+    let removed = prune_images(&older, &updated, &models, &|id| {
+        image_tags(id).is_some_and(|tags| only_ours(&tags, &own))
+            && docker(&["image", "rm", id]).is_ok()
     });
     if !removed.is_empty() {
         println!("Monthly update: removed {} app image(s) from two updates ago that nothing uses (each kept snapshot still has its own in images.tar)", removed.len());
@@ -2679,10 +2836,20 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         return Ok(());
     }
     mounts(&cfgpath, &cfg, false)?;
-    let _lock = common::lock_wait(
-        &data.join("installer/recovery.lock"),
-        std::time::Duration::from_secs(3 * 3600),
-    )?;
+    let lock = data.join("installer/recovery.lock");
+    let _lock = if recover && hourly_retry() {
+        // The hourly retry of an unfinished update: when another job holds the lock (the
+        // monthly run itself, a backup), it simply tries again next hour.
+        match common::lock(&lock) {
+            Ok(held) => held,
+            Err(_) => {
+                println!("Monthly update: another NekoServer job is working; the unfinished update is tried again in an hour");
+                return Ok(());
+            }
+        }
+    } else {
+        common::lock_wait(&lock, std::time::Duration::from_secs(3 * 3600))?
+    };
     let installed = committed();
     // Read before resume() finishes the run and removes the journal.
     let cut_in = load(Path::new(JOURNAL))
@@ -2739,10 +2906,17 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
             return Ok(backup::Outcome::default());
         }
         if failure.to_string().starts_with("Night window ended") {
-            // The backups and their restore tests are complete; only the update waited
-            // for a night that ran out. Done in part, not failed: the next run updates.
+            // The night ran out: after the snapshot and its restore test (only the update
+            // waits), or before the apps were stopped (no snapshot either, said as it is).
+            // Done in part, not failed: the next run goes on from there.
+            let said = failure.to_string();
+            let said = if said == NIGHT_BEFORE_STOP {
+                said
+            } else {
+                format!("app updates: {said}")
+            };
             return Ok(backup::Outcome {
-                partial: Some(json!([format!("app updates: {failure}")])),
+                partial: Some(json!([said])),
             });
         }
         Err(failure)
@@ -2768,50 +2942,105 @@ fn model_images(models: &Value) -> std::collections::BTreeSet<String> {
         })
         .collect()
 }
-/// NekoServer's own images from two updates ago, removed once nothing uses them: the
-/// images the update before this one replaced (named in that run's *-old.json). The
-/// images in use now and the ones this update replaced stay. Docker refuses to remove
-/// one a container still uses, which is fine. Images of your own are never touched:
-/// only IDs a NekoServer snapshot names. Each pulled update otherwise stays on the SSD
-/// for good, a few GB a month. Returns the IDs removed.
+/// The images the update before this one replaced (named in that run's *-old.json):
+/// NekoServer's own images from two updates ago, once this update is in. And the ones
+/// an update that was rolled back had downloaded (its *-new.json, in a run without a
+/// result): nothing will use those again either.
+fn previous_images(media: &Path, current: &str) -> std::collections::BTreeSet<String> {
+    let mut older = std::collections::BTreeSet::new();
+    let Ok(runs) = monthly_runs(media) else {
+        return older;
+    };
+    let folder = media.join("backups/monthly");
+    let named = |run: &str, suffix: &str, into: &mut std::collections::BTreeSet<String>| {
+        for entry in fs::read_dir(folder.join(run))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if entry.file_name().to_string_lossy().ends_with(suffix) {
+                if let Ok(model) = load(&entry.path()) {
+                    into.extend(model_images(&json!({ "app": model })));
+                }
+            }
+        }
+    };
+    let earlier: Vec<&String> = runs.iter().filter(|r| r.as_str() != current).collect();
+    // The newest complete run before this one.
+    if let Some(previous) = earlier
+        .iter()
+        .rev()
+        .find(|r| folder.join(r).join("result.json").is_file())
+    {
+        named(previous, "-old.json", &mut older);
+    }
+    for run in earlier
+        .iter()
+        .filter(|r| !folder.join(r).join("result.json").exists())
+    {
+        named(run, "-new.json", &mut older);
+    }
+    older
+}
+/// The repositories NekoServer's apps use ("jellyfin/jellyfin"), from the tags of the
+/// images this update installed (each was just downloaded under its app's tag).
+fn own_repositories(
+    updated: &Value,
+    tags: &dyn Fn(&str) -> Option<Vec<String>>,
+) -> std::collections::BTreeSet<String> {
+    model_images(updated)
+        .iter()
+        .filter_map(|id| tags(id))
+        .flatten()
+        .map(|tag| repository(&tag).to_string())
+        .collect()
+}
+/// "ghcr.io/immich-app/immich-server" from "ghcr.io/immich-app/immich-server:v2.1.0"
+/// (a port in the registry's name, "host:5000/app:1", is kept).
+fn repository(tag: &str) -> &str {
+    let tag = tag.split('@').next().unwrap_or(tag);
+    match tag.rfind(':') {
+        Some(at) if !tag[at..].contains('/') => &tag[..at],
+        _ => tag,
+    }
+}
+/// An old image may be removed only when every name it still has is one of
+/// NekoServer's own repositories: a name of your own on it (your stack's
+/// "postgres:16") keeps it, even when no container uses it right now.
+fn only_ours(tags: &[String], own: &std::collections::BTreeSet<String>) -> bool {
+    tags.iter().all(|tag| own.contains(repository(tag)))
+}
+/// The names (RepoTags) an image has, or None when Docker can't say (it is gone).
+fn image_tags(id: &str) -> Option<Vec<String>> {
+    let said = docker(&["image", "inspect", "--format", "{{json .RepoTags}}", id]).ok()?;
+    let tags: Option<Vec<String>> = serde_json::from_str(said.trim()).ok()?;
+    Some(tags.unwrap_or_default())
+}
+/// Those of `older` that nothing uses any more, removed from Docker: the images in use
+/// now and the ones this update replaced stay. Docker refuses to remove one a container
+/// still uses, which is fine. Images of your own are never touched: only IDs a
+/// NekoServer snapshot names. Each pulled update otherwise stays on the SSD for good, a
+/// few GB a month. Returns the IDs removed.
 fn prune_images(
-    media: &Path,
-    current: &str,
+    older: &std::collections::BTreeSet<String>,
     updated: &Value,
     replaced: &Value,
     remove: &dyn Fn(&str) -> bool,
 ) -> Vec<String> {
     let mut keep = model_images(updated);
     keep.extend(model_images(replaced));
-    let Ok(runs) = monthly_runs(media) else {
-        return vec![];
-    };
-    let folder = media.join("backups/monthly");
-    // The newest complete run before this one.
-    let Some(previous) = runs
-        .iter()
-        .rev()
-        .filter(|r| r.as_str() != current)
-        .find(|r| folder.join(r).join("result.json").is_file())
-    else {
-        return vec![];
-    };
-    let mut older = std::collections::BTreeSet::new();
-    if let Ok(entries) = fs::read_dir(folder.join(previous)) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with("-old.json") {
-                if let Ok(model) = load(&entry.path()) {
-                    older.extend(model_images(&json!({ "app": model })));
-                }
-            }
-        }
-    }
     older
-        .into_iter()
-        .filter(|id| !keep.contains(id))
+        .iter()
+        .filter(|id| !keep.contains(*id))
         .filter(|id| remove(id))
+        .cloned()
         .collect()
+}
+/// Set by nekoserver-maintenance-retry.service, the hourly retry of an unfinished update
+/// (modules/maintenance.py): it never waits for the lock.
+const RETRY_ENV: &str = "NEKOSERVER_MAINTENANCE_RETRY";
+fn hourly_retry() -> bool {
+    std::env::var_os(RETRY_ENV).is_some_and(|v| v == "1")
 }
 /// No unfinished monthly run: no journal, and the last run's report doesn't still say
 /// "running" (a run cut off before it wrote its journal is marked failed by recovery).
@@ -4271,8 +4500,17 @@ mod tests {
     fn a_later_release_may_finish_an_earlier_releases_run() {
         let cfg = json!({"storage":{"data_ssd":{"uuid":"a"}},"data_mount":"/srv/n","media_mount":"/mnt/m"});
         let journal = json!({"format":"neko-maintenance-resume-v1","version":"0.0.1","storage":{"data_ssd":{"uuid":"a"}},
-            "data_mount":"/srv/n","media_mount":"/mnt/m"});
+            "data_mount":"/srv/n","media_mount":"/mnt/m","phase":"updating"});
         assert!(resumable(&journal, &cfg));
+        // Written by a newer release (a downgrade since), or a phase this one doesn't know.
+        let mut newer = journal.clone();
+        newer["version"] = json!("999.0.0");
+        assert!(!resumable(&newer, &cfg));
+        let mut strange = journal.clone();
+        strange["phase"] = json!("migrating");
+        assert!(!resumable(&strange, &cfg));
+        assert_eq!(release("0.39.5"), Some((0, 39, 5)));
+        assert_eq!(release("0.39"), None);
         let mut other = journal.clone();
         other["storage"]["data_ssd"]["uuid"] = json!("b");
         assert!(!resumable(&other, &cfg));
@@ -4328,7 +4566,10 @@ mod tests {
         let updated =
             json!({"jellyfin":{"services":{"jellyfin":{"image":id('c')},"db":{"image":id('e')}}}});
         let asked = std::cell::RefCell::new(vec![]);
-        let removed = prune_images(&media, "200-1", &updated, &replaced, &|i| {
+        let older = previous_images(&media, "200-1");
+        // Read before the old snapshots are tidied: still known once that run is gone.
+        fs::remove_dir_all(&earlier).unwrap();
+        let removed = prune_images(&older, &updated, &replaced, &|i| {
             asked.borrow_mut().push(i.to_string());
             true
         });
@@ -4336,14 +4577,7 @@ mod tests {
         assert_eq!(*asked.borrow(), vec![id('d')]);
         // The first update ever (no earlier run): nothing removed.
         let fresh = scratch("images-fresh");
-        assert!(prune_images(
-            &fresh.join("hdd"),
-            "200-1",
-            &updated,
-            &replaced,
-            &|_| panic!("removed")
-        )
-        .is_empty());
+        assert!(previous_images(&fresh.join("hdd"), "200-1").is_empty());
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&fresh);
     }
@@ -4360,5 +4594,190 @@ mod tests {
         assert!(!usb_damage(&Error::new(
             "Nonempty mount destination refused"
         )));
+    }
+
+    #[test]
+    fn a_night_that_ran_out_lets_the_next_month_take_its_snapshot() {
+        // On a big library the checksum check could use up every night, so no monthly
+        // snapshot was ever taken. The next month postpones the check; if even that
+        // night is too short, the run fails instead of passing "in part".
+        let data = scratch("night").join("ssd");
+        fs::create_dir_all(data.join("reports/jobs")).unwrap();
+        assert!(!night_ran_out(&data));
+        mark_night_ran_out(&data);
+        assert!(night_ran_out(&data));
+        clear_night_ran_out(&data);
+        assert!(!night_ran_out(&data));
+        assert!(!NIGHT_TOO_SHORT.starts_with("Night window ended")); // a failure, not "done in part"
+        let source = include_str!("maintenance.rs");
+        let body = &source[source.find("fn transaction(").unwrap()..];
+        let at = |s: &str| body.find(s).unwrap_or_else(|| panic!("{s}"));
+        assert!(at("night_ran_out(data_root)") < at("check_copies(cfgpath, cfg)"));
+        assert!(at("NIGHT_TOO_SHORT") < at("stop(&rows)"));
+        assert!(at("clear_night_ran_out(data_root)") < at("stop(&rows)"));
+    }
+
+    // ---- fixes after the 0.39.5 review
+    #[test]
+    fn only_a_download_refused_for_now_is_tried_again() {
+        // The digits of an HTTP status occur in image digests, which Docker quotes.
+        let digest = "Error response from daemon: manifest for ghcr.io/immich-app/postgres@sha256:41eacbe83eca995561fe43814fd4891e16e39632806253848efaf04d3c8a5034 not found: manifest unknown";
+        assert!(!transient(digest));
+        let tries = std::cell::Cell::new(0);
+        let r: Result<()> = retry_transient(
+            &[30, 90],
+            |_| panic!("waited"),
+            || {
+                tries.set(tries.get() + 1);
+                Err(Error::new(digest))
+            },
+        );
+        assert!(r.is_err());
+        assert_eq!(tries.get(), 1);
+        for permanent in [
+            "unauthorized: authentication required (status 503 nowhere near)",
+            "pull access denied for neko/none, repository does not exist",
+            "curl: (22) The requested URL returned error: 404",
+        ] {
+            assert!(!transient(permanent), "{permanent}");
+        }
+        for passing in [
+            "curl: (22) The requested URL returned error: 503",
+            "received unexpected HTTP status: 502 Bad Gateway",
+            "toomanyrequests: You have reached your pull rate limit",
+            "Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout",
+            "status code 429",
+            "http/1.1 504",
+        ] {
+            assert!(transient(passing), "{passing}");
+        }
+    }
+    #[test]
+    fn apps_are_pinned_to_the_images_they_run_before_any_download() {
+        let data = scratch("pins").join("ssd");
+        let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        for app in ["jellyfin", "sonarr"] {
+            fs::create_dir_all(data.join("compose").join(app)).unwrap();
+        }
+        // Sonarr was updated before: its pins are the update's and stay as they are.
+        let earlier = data.join("compose/sonarr/maintenance-images.json");
+        fs::write(&earlier, b"{\"services\":{}}").unwrap();
+        let models = json!({"jellyfin":{"services":{"jellyfin":{"image":id('a')}}},
+                            "sonarr":{"services":{"sonarr":{"image":id('b')}}}});
+        let names = vec!["jellyfin".to_string(), "sonarr".to_string()];
+        assert_eq!(pin_unpinned(&data, &names, &models).unwrap(), ["jellyfin"]);
+        let pins = load(&data.join("compose/jellyfin/maintenance-images.json")).unwrap();
+        assert_eq!(pins, json!({"services":{"jellyfin":{"image":id('a')}}}));
+        assert_eq!(fs::read(&earlier).unwrap(), b"{\"services\":{}}");
+        // Before the first pull, in the run itself.
+        let source = include_str!("maintenance.rs");
+        let body = &source[source.find("fn transaction(").unwrap()..];
+        let at = |s: &str| body.find(s).unwrap_or_else(|| panic!("{s}"));
+        assert!(at("pin_unpinned(data, &names, &models)") < at("download_updates(cfg"));
+        let _ = fs::remove_dir_all(data.parent().unwrap());
+    }
+    #[test]
+    fn an_image_with_a_name_of_your_own_is_never_removed() {
+        let own: std::collections::BTreeSet<String> = ["jellyfin/jellyfin", "host:5000/app"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            repository("ghcr.io/immich-app/immich-server:v2.1.0"),
+            "ghcr.io/immich-app/immich-server"
+        );
+        assert_eq!(repository("host:5000/app"), "host:5000/app");
+        assert_eq!(repository("host:5000/app:1@sha256:abc"), "host:5000/app");
+        assert!(only_ours(&[], &own)); // untagged: an old image nothing names
+        assert!(only_ours(&["jellyfin/jellyfin:10.10.6".to_string()], &own));
+        assert!(!only_ours(
+            &[
+                "jellyfin/jellyfin:10.10.6".to_string(),
+                "postgres:16".to_string()
+            ],
+            &own
+        ));
+        let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        let updated = json!({"jellyfin":{"services":{"jellyfin":{"image":id('c')}}}});
+        let found = own_repositories(&updated, &|_| {
+            Some(vec!["jellyfin/jellyfin:latest".to_string()])
+        });
+        assert!(found.contains("jellyfin/jellyfin"));
+    }
+    #[test]
+    fn images_a_rolled_back_update_downloaded_are_cleaned_up_too() {
+        let media = scratch("rolled").join("hdd");
+        let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+        let failed = media.join("backups/monthly/150-1");
+        fs::create_dir_all(&failed).unwrap();
+        common::atomic_json(
+            &failed.join("jellyfin-new.json"),
+            &json!({"services":{"jellyfin":{"image":id('e')}}}),
+        )
+        .unwrap();
+        // This run's own candidates are never counted.
+        let current = media.join("backups/monthly/200-1");
+        fs::create_dir_all(&current).unwrap();
+        common::atomic_json(
+            &current.join("jellyfin-new.json"),
+            &json!({"services":{"jellyfin":{"image":id('f')}}}),
+        )
+        .unwrap();
+        let older = previous_images(&media, "200-1");
+        assert!(older.contains(&id('e')));
+        assert!(!older.contains(&id('f')));
+        let _ = fs::remove_dir_all(media.parent().unwrap());
+    }
+    #[test]
+    fn a_run_folder_with_nothing_archived_is_removed_after_a_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let media = scratch("unarchived").join("hdd");
+        let folder = media.join("backups/monthly");
+        let make = |run: &str, mode: u32| {
+            let dir = folder.join(run);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("jellyfin-old.json"), b"{}").unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            dir
+        };
+        let empty = make("100-1", 0o700);
+        let archived = make("200-1", 0o700);
+        fs::write(archived.join("data.tar"), b"x").unwrap();
+        let not_ours = make("300-1", 0o755);
+        remove_unarchived(&media);
+        assert!(!empty.exists());
+        assert!(archived.exists());
+        assert!(not_ours.exists());
+        let source = include_str!("maintenance.rs");
+        let tidy = &source[source.find("fn tidy_after_failure(").unwrap()..];
+        assert!(tidy[..400].contains("remove_unarchived("));
+        let _ = fs::remove_dir_all(media.parent().unwrap());
+    }
+    #[test]
+    fn the_hourly_retry_never_waits_for_the_lock() {
+        let source = include_str!("maintenance.rs");
+        let run = &source[source.find("pub fn run(").unwrap()..];
+        let at = |s: &str| run.find(s).unwrap_or_else(|| panic!("{s}"));
+        assert!(at("hourly_retry()") < at("common::lock_wait(&lock"));
+        assert!(at("common::lock(&lock)") < at("common::lock_wait(&lock"));
+        assert_eq!(RETRY_ENV, "NEKOSERVER_MAINTENANCE_RETRY");
+        // A night that ran out before the stop is said as it is (no snapshot either).
+        assert!(NIGHT_BEFORE_STOP.contains("no monthly snapshot was taken"));
+        assert!(run.contains("if said == NIGHT_BEFORE_STOP"));
+    }
+    #[test]
+    fn the_monthly_check_reads_each_archive_file_once() {
+        let source = include_str!("maintenance.rs");
+        let check = &source[source.find("fn check_copies(").unwrap()..];
+        assert!(check[..300].contains("backup::read_once()"));
+    }
+
+    #[test]
+    fn immich_starts_without_its_graphics_file_when_the_device_is_gone() {
+        let source = include_str!("maintenance.rs");
+        // Built from parts, so this test's own text is not counted.
+        let guarded = format!("if hardware.exists() && {}() {{", "graphics_present");
+        assert_eq!(source.matches(guarded.as_str()).count(), 2);
+        assert_eq!(graphics_present(), Path::new("/dev/dri").exists());
     }
 }

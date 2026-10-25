@@ -18,7 +18,8 @@ DESCRIPTION = 'Desktop shortcuts for the dashboard, the web browser, Steam and y
 MANAGED = 'X-NekoServer-Managed=true'
 # Before 0.28.7 the TV step could start Steam Big Picture at every login.
 OLD_AUTOSTART = '.config/autostart/nekoserver-steam.desktop'
-BROWSERS = ('firefox', 'chromium', 'google-chrome-stable', 'google-chrome', 'brave', 'microsoft-edge-stable')
+# Debian's own Firefox is called firefox-esr there.
+BROWSERS = ('firefox', 'firefox-esr', 'chromium', 'google-chrome-stable', 'google-chrome', 'brave', 'microsoft-edge-stable')
 
 
 def entry(name, exec_line, icon, comment=''):
@@ -79,7 +80,9 @@ def place(path, text, user, home, log):
     if path.exists():
         if path.is_file() and path.read_text(errors='replace') == text:
             return
-        if not path.is_file() or not ours(path) or path.stat().st_uid != user.pw_uid:
+        # NekoServer's own shortcut still owned by root (a run cut off between writing it
+        # and handing it over) is written again; one of yours is never touched.
+        if not path.is_file() or not ours(path) or path.stat().st_uid not in (user.pw_uid, 0):
             log(f'Desktop: kept your own {path.name}')
             return
     tv.ensure_user_dir(path.parent, home, user)

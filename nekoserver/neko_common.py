@@ -181,7 +181,9 @@ def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was change
             'Let it finish (or roll back) before running setup:\n'
             '  sudo systemctl start nekoserver-maintenance-resume.service\n'
             'When that has finished (sudo systemctl status nekoserver-maintenance-resume.service shows it '
-            f'exited successfully), run  sudo bash install.sh  again. {outcome}')
+            f'exited successfully), run  sudo bash install.sh  again. {outcome}\n'
+            'If it keeps failing, this release can finish it instead (it changes nothing else):\n'
+            '  sudo bash install.sh --finish-update')
 
 
 def pick_drive(options, label, input_fn=input, out_fn=print, skippable=False, attempts=3):
@@ -576,7 +578,11 @@ def copy_checked(source, target, expected=None):
             out.write(chunk)
         out.flush()
         os.fsync(out.fileno())
+        # Written to the drive: dropped from memory, so the read below comes from the
+        # drive itself (from memory, damage on the drive would never be seen).
+        os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
     with open(target, 'rb') as back:
+        os.posix_fadvise(back.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
         landed = hashlib.file_digest(back, 'sha256').hexdigest()
     if landed != stream.hexdigest():
         raise RuntimeError(f'Restoring {source} failed: the copy written to disk does not match what was read')
@@ -595,6 +601,39 @@ def settings_path(value):
     if path.suffix != '.json':
         raise RuntimeError('Settings file must be a .json file: ' + str(path))
     return safe_path(path)
+
+
+# The settings a command uses when no --config is given (default_settings).
+MY_SETTINGS = 'my-config.json'      # made by the wizard; git does not track it
+SETTINGS_TEMPLATE = 'config.json'   # the template in the release folder (no drives in it)
+BUNDLE_MANIFEST = 'release-manifest.json'   # beside the copy kept on the SSD (modules/recovery.MANIFEST)
+NO_SETTINGS = '<no settings file found>'
+NO_SETTINGS_HELP = ('config.json in this folder is the settings template (no drives in it), not your settings. '
+                    'Run  sudo bash install.sh  first (it makes my-config.json), or name your settings file with '
+                    '--config (for example --config my-config.json)')
+
+
+def default_settings(folder):
+    """The settings file a command in `folder` uses without --config: my-config.json when
+    the wizard made it; config.json in the copy kept on the SSD (installer/releases/v...,
+    where it is your settings, with release-manifest.json beside it); otherwise
+    NO_SETTINGS, which checked_settings refuses, because there config.json is only the
+    template. An argparse default: it is only checked when --config is not given."""
+    folder = Path(folder)
+    if (folder / MY_SETTINGS).is_file():
+        return str(folder / MY_SETTINGS)
+    if (folder / BUNDLE_MANIFEST).is_file() and (folder / SETTINGS_TEMPLATE).is_file():
+        return str(folder / SETTINGS_TEMPLATE)
+    return NO_SETTINGS
+
+
+def checked_settings(value):
+    """argparse type for --config: the value as given, but never the template stand-in
+    (no settings found next to the command)."""
+    import argparse
+    if value == NO_SETTINGS:
+        raise argparse.ArgumentTypeError(NO_SETTINGS_HELP)
+    return value
 
 
 # NekoServer's services run with systemd's ProtectHome, which hides these from them, so
@@ -634,7 +673,13 @@ def fetch(url, what, limit, timeout=30, opener=None, headers=None):
                                'wait an hour and run setup again') from None
         raise RuntimeError(f'{what}: {url} answered HTTP {exc.code}; try again later') from None
     except OSError as exc:
-        raise RuntimeError(f'{what}: could not download {url} ({getattr(exc, "reason", exc)}). Check that this PC '
+        reason = str(getattr(exc, 'reason', exc))
+        # A clock set wrong makes every certificate look not valid yet, or expired.
+        if re.search(r'not yet valid|certificate has expired', reason, re.IGNORECASE):
+            raise RuntimeError(f'{what}: could not download {url} ({reason}). This PC\'s clock looks wrong (check '
+                               'the date and time with  timedatectl): let the network set it (sudo timedatectl '
+                               'set-ntp true), wait a minute, then run setup again') from None
+        raise RuntimeError(f'{what}: could not download {url} ({reason}). Check that this PC '
                            'is connected to the internet, then run setup again') from None
 
 
@@ -883,6 +928,21 @@ def refresh_settings(target, wanted, log, label):
     return True
 
 
+def rename_no_replace(source, target):
+    """Move `source` (a file or a folder) to `target` on the same drive, never over
+    something already there (FileExistsError): unlike os.rename, which replaces an empty
+    folder or a file at `target` if one appeared since it was checked."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = getattr(libc, 'renameat2', None)
+    if rename is None:
+        raise RuntimeError('Linux renameat2 is needed to move folders safely')
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1) != 0:   # RENAME_NOREPLACE
+        code = ctypes.get_errno()
+        raise (FileExistsError if code == errno.EEXIST else OSError)(code, os.strerror(code), str(target))
+
+
 def publish_no_replace(temp, target):
     """Atomic publication; hard link on Linux FS, no-replace rename on exFAT.
 
@@ -913,6 +973,34 @@ def publish_no_replace(temp, target):
         os.close(directory)
 
 
+def made_whole(directory, mode, uid, gid):
+    """Make one folder that appears with its owner and mode already set: made under a
+    temporary name beside it, then moved into place. Cut off between making and
+    chowning it (Ctrl+C, a power cut), a folder made in place would stay root's for
+    good, and the app or desktop user it was meant for could never write to it."""
+    temp = directory.with_name('.' + directory.name + '.neko-new')
+    if temp.is_dir() and not temp.is_symlink():
+        try:
+            temp.rmdir()          # left by a run cut off here; empty, as it was made
+        except OSError:
+            pass
+    temp.mkdir(mode=mode)
+    if uid is not None:
+        os.chown(temp, uid, gid)
+    temp.chmod(mode)  # Apply after ownership changes, independent of umask.
+    try:
+        rename_no_replace(temp, directory)
+    except FileExistsError:
+        temp.rmdir()              # made meanwhile by something else: that one stays
+    except (OSError, RuntimeError):
+        # A filesystem without no-replace renames (FAT, say): made in place as before.
+        temp.rmdir()
+        directory.mkdir(mode=mode)
+        if uid is not None:
+            os.chown(directory, uid, gid)
+        directory.chmod(mode)
+
+
 def ensure_directory(path, mode=0o755, uid=None, gid=None):
     """Create parents with explicit access, preserving existing ownership/modes.
 
@@ -928,13 +1016,31 @@ def ensure_directory(path, mode=0o755, uid=None, gid=None):
     if not parent.is_dir():
         raise RuntimeError('Directory parent is not a directory')
     for directory in reversed(missing):
-        directory.mkdir(mode=mode)
-        if uid is not None:
-            os.chown(directory, uid, gid)
-        directory.chmod(mode)  # Apply after ownership changes, independent of umask.
+        made_whole(directory, mode, uid, gid)
     if not path.is_dir():
         raise RuntimeError('Expected directory')
     return path
+
+
+def mounted_identity(path):
+    """(UUID, filesystem type, tree) of the mount in effect at path, or None. The tree is
+    the Btrfs subvolume ("/@data"), or the folder of a drive mounted from a folder, as
+    findmnt shows it in brackets (/dev/sdb1[/@data]); '' for the whole filesystem. The
+    same reading as the runtime's drive check (backup.rs guard)."""
+    fields = (findmnt('UUID,FSTYPE,SOURCE', path) or '').split()
+    if len(fields) < 3:
+        return None
+    tree = fields[2].split('[', 1)[1].rstrip(']').rstrip('/') if '[' in fields[2] else ''
+    return fields[0], fields[1], tree
+
+
+def identity_matches(path, expected):
+    """The drive mounted at path is the one `expected` (a storage.<drive> record) names:
+    its UUID and filesystem, and the Btrfs subvolume it is used with. The same filesystem
+    mounted with another subvolume holds another tree."""
+    found = mounted_identity(path)
+    wanted = str(expected.get('subvolume') or '').rstrip('/')
+    return found is not None and found == (expected.get('uuid'), expected.get('fstype'), wanted)
 
 
 def verify_storage(config, keys=('data_ssd', 'media_hdd')):
@@ -946,7 +1052,7 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd')):
         expected = config['storage'][key]
         if not expected.get('uuid') or not expected.get('fstype'):
             raise RuntimeError('Storage identity is not configured')
-        if (findmnt('UUID,FSTYPE', path) or '').split() != [expected['uuid'], expected['fstype']]:
+        if not identity_matches(path, expected):
             raise RuntimeError('Storage identity mismatch; refusing private data access')
         identities.append(expected['uuid'])
     if len(set(identities)) != len(identities):

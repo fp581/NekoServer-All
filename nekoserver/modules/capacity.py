@@ -1,7 +1,9 @@
 """Check drive space right after the drives are chosen, before anything is installed."""
 import datetime as dt
+import fcntl
 import glob
 import hashlib
+import os
 import re
 from pathlib import Path
 import shutil
@@ -209,13 +211,36 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def usb_room(uuid, pairs, fstype='ext4'):
-    """(free bytes, bytes still to copy) on the USB drive, or None if it is not attached.
-    A drive that is not open anywhere is opened read-only, measured and closed again;
-    nothing on it is changed."""
+# Held by the weekly USB copy (backup.rs) and the recovery menu while they use the drive.
+USB_LOCK = Path('/run/nekoserver-photo-backup.lock')
+
+
+def usb_room(uuid, pairs, fstype='ext4', lock=USB_LOCK):
+    """(free bytes, bytes still to copy) on the USB drive, or None if it is not attached
+    or busy. A drive that is not open anywhere is opened read-only, measured and closed
+    again; nothing on it is changed. While the weekly copy (or a restore from the drive)
+    uses it, it is left alone: a read-only mount of it would make the weekly copy's own
+    mount fail, and its numbers are changing anyway. The next setup run measures it."""
     device = Path('/dev/disk/by-uuid') / uuid
     if not uuid or not device.exists():
         return None
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None
+    try:
+        return measure_usb(uuid, pairs, fstype)
+    finally:
+        os.close(fd)
+
+
+def measure_usb(uuid, pairs, fstype):
+    """usb_room's measurement, with the USB lock held."""
     try:
         found = subprocess.run(['findmnt', '-n', '-o', 'TARGET', '--source', 'UUID=' + uuid],
                                capture_output=True, text=True, timeout=20, check=False)

@@ -8,12 +8,12 @@ from pathlib import Path
 import sys
 
 import music_client
-from neko_common import atomic_json, verify_storage
+from neko_common import atomic_json, verify_storage, checked_settings, default_settings
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, default=Path(__file__).with_name('config.json'))
+    parser.add_argument('--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent))
     parser.add_argument('--configure', action='store_true')
     args = parser.parse_args(argv)
     if os.geteuid() != 0:

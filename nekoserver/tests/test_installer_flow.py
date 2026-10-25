@@ -220,7 +220,7 @@ class FstabTests(unittest.TestCase):
                 return None
             return target if column == 'TARGET' else sources[target]
 
-        def call(argv):
+        def call(argv, timeout=30):
             if argv[0] == 'mount':
                 mounted[argv[1]] = True
             return ''
