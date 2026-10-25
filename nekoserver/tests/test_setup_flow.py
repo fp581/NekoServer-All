@@ -260,6 +260,26 @@ class DriveLayoutTests(unittest.TestCase):
             self.assertIsNone(storage.boot_unlock_problem(device, crypttab))
             self.assertIsNone(storage.boot_unlock_problem({'name': 'sdb1', 'kind': 'part'}, crypttab))
 
+    def test_a_drive_unlocked_only_by_hand_or_under_an_lvm_volume_is_named(self):
+        from modules import storage
+        with tempfile.TemporaryDirectory() as d:
+            crypttab = Path(d) / 'crypttab'
+            # `noauto`: listed, but Linux does not open it at start-up.
+            crypttab.write_text('secret UUID=2 /root/key luks,noauto\n')
+            self.assertIn('/dev/mapper/secret', storage.boot_unlock_problem({'name': 'secret', 'kind': 'crypt'}, crypttab))
+            # An LVM volume on an encrypted drive opened by hand: the drive under it is named.
+            lv = self.fs('vg-data', 'lv', kind='lvm')
+            inventory = {'blockdevices': [
+                self.disk('sda', self.fs('sda1', 'os', mountpoint='/')),
+                self.disk('sdb', self.fs('sdb1', None, fstype='crypto_LUKS', children=[
+                    self.fs('cryptdata', None, kind='crypt', fstype='LVM2_member', children=[lv])]))]}
+            [volume] = storage.discover_filesystems(inventory)
+            self.assertEqual(volume['unlocks'], ['cryptdata'])
+            crypttab.write_text('other UUID=1 none\n')
+            self.assertIn('/dev/mapper/cryptdata', storage.boot_unlock_problem(volume, crypttab))
+            crypttab.write_text('cryptdata UUID=3 none luks\n')
+            self.assertIsNone(storage.boot_unlock_problem(volume, crypttab))
+
 
 class SharedLockTests(unittest.TestCase):
     def test_the_lock_never_makes_folders_on_the_system_disk(self):

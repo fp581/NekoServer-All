@@ -89,7 +89,9 @@ class FanSliderTests(unittest.TestCase):
                       functions=('firstOf', 'draftFrom'))
         result = run(code + "\nconsole.log(JSON.stringify(draftFrom({mode: 'fixed', fixed: 5}, []).fixed));")
         self.assertEqual(result, 20)
-        self.assertIn("rangeField('Speed', 20, 100,", APP)
+        # The slider starts at 20 % or "Never slower than", whichever is higher
+        # (test_dashboard_page checks fixedFloor and raiseFixed themselves).
+        self.assertIn("rangeField('Speed', fixedFloor(card.draft), 100,", APP)
 
 
 if __name__ == '__main__':

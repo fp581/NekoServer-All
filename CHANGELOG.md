@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.39.6 — 2026-10-25
+
+The improvements left out of 0.39.5, plus a fresh review of the drive checks, each with a regression test.
+
+### New: restore only the files you had
+- **Restoring photos or Nextcloud files can leave out what you deleted or renamed.** Each weekly copy now writes down which files you had at that moment. The recovery menu asks **Which files?**: as of the last backup (recommended), as of an earlier backup you pick, or everything ever kept. A backup made before 0.39.6 has no list yet; then it restores everything, as before (RECOVERY.md).
+- **Nextcloud's database is copied every week.** The weekly USB backup now also saves Nextcloud's database (users, shares, calendars, contacts) on the HDD and the USB drive, the newest 4 in each place. Without a USB backup, only the monthly snapshot has it (STORAGE.md).
+
+### Fixed: drives
+- **A working Btrfs drive is no longer unmounted at every start.** The start-up check took a mounted Btrfs SSD or HDD for an unplugged one, unmounted it, mounted it again and restarted Docker.
+- **Encrypted drives Linux won't unlock by itself are named.** Setup now refuses a drive that `/etc/crypttab` marks `noauto`, or an LVM volume or RAID array on an encrypted drive that is not unlocked at start, and says which one to add. Otherwise the apps would stay stopped after a restart.
+
+### Fixed: apps
+- **Taking an app out cleans up after it.** Removing Sonarr, Radarr, Lidarr or qBittorrent from `media.services` also removes the connections setup made to it in Prowlarr, the other apps and Seerr. Connections you made or changed yourself stay.
+- **A new qBittorrent password reaches Sonarr, Radarr and Lidarr.** A password changed with `account-setup.py` is saved in their download clients too, and each setup run checks that they can still sign in.
+- **qBittorrent's manual mode is kept when Lidarr is not used.** Automatic mode is now set only when Lidarr is selected (music needs it), and setup says when it switches it back on.
+- **Imports can't be redirected while copying.** A file or folder swapped for a link during an import can no longer make it read outside the source or write outside the library. An imported copy is also never more open than its original: other accounts on the server can read it only when they could read the original.
+
+### Fixed: dashboard
+- **Wrong PINs lock out only the device that typed them.** One phone typing wrong PINs no longer locks out other devices or the server itself. Many devices guessing together are still slowed down. If you still use a 4-digit PIN from before 0.28.7, set a 6-digit one (`sudo bash install.sh`).
+- **Only the control service can reach the lighting service (OpenRGB).** Before, any program on the server could change the lighting without the PIN. Network lighting devices (smart bulbs, light strips on the network) are not reachable from it any more.
+- **The fixed fan speed slider starts at "Never slower than".** It showed speeds the fan would never really run at.
+- The README says that apps can be restarted or closed from the dashboard (with the PIN), and the "busy" answer (E47) uses the standard reason "Conflict".
+
+### Fixed: monthly update
+- **Old app images are always cleaned up.** Also with `keep_snapshots` 1, after a rolled-back update, and after a run that stopped once it had downloaded updates. Each run's `retention.json` lists the images it removed.
+
+### Fixed: uninstalling
+- **Samba is switched off again when NekoServer switched it on.** It stays on when it was on before NekoServer, or when your own `smb.conf` uses it.
+- **Nothing left behind goes unsaid.** The uninstaller names every file and step it could not remove or switch off, lists them at the end, and no longer says "Done." when something is left.
+- **Run from a fresh download, it finds your drives** from setup's records in `/etc`, and says which settings it used.
+- **Your own journal size limits are kept.** The server OS step keeps stricter limits you set yourself and says when it replaces a looser one.
+
+### Upgrade notes
+- Run `sudo bash install.sh` once after `git pull`, as usual. The "as of" restore works from the first weekly copy after the upgrade.
+
 ## v0.39.5 — 2026-10-25
 
 A review round of the parts everyone meets first (installing and setting up, setting up the apps, the monthly update), then a strict review for edge cases, races and system failures, and a full independent review of the whole project, each finding checked against the code and fixed with a regression test.

@@ -79,19 +79,38 @@ const RESUMES: [&str; 4] = [
     "nekoserver-immich-snapshot-resume.service",
 ];
 
-/// The device of the mount in effect at `path`: with mounts stacked on one folder
+/// The device (MAJ:MIN) and source (/dev/sdb1, or /dev/sdb1[/@data] for a Btrfs
+/// subvolume) of the mount in effect at `path`: with mounts stacked on one folder
 /// findmnt lists them oldest first, and the last one is in use.
-fn mounted(path: &Path) -> Result<Option<String>> {
+fn mounted(path: &Path) -> Result<Option<(String, String)>> {
     let p = path.to_string_lossy();
-    let (code, out) = common::command(&["findmnt", "-n", "-o", "MAJ:MIN", "--mountpoint", &p], 10)?;
+    let (code, out) = common::command(
+        &["findmnt", "-n", "-o", "MAJ:MIN,SOURCE", "--mountpoint", &p],
+        10,
+    )?;
     Ok(if code == 0 {
-        out.lines()
-            .map(str::trim)
-            .rfind(|l| !l.is_empty())
-            .map(str::to_string)
+        out.lines().rev().find_map(|l| {
+            let mut fields = l.split_whitespace();
+            let device = fields.next()?.to_string();
+            Some((device, fields.next().unwrap_or("").to_string()))
+        })
     } else {
         None
     })
+}
+
+/// Is the drive behind a mount still there? Most filesystems show the drive's own
+/// device number, listed under /sys/dev/block while the drive is connected. Btrfs shows
+/// a made-up one (major 0) that is never listed there, so a live Btrfs drive would look
+/// dead and be unmounted at every start; for it the device in the source (/dev/sdb1,
+/// which goes away when the drive does) is looked at instead.
+fn alive(device: &str, source: &str, exists: impl Fn(&Path) -> bool) -> bool {
+    if device.starts_with("0:") {
+        let drive = source.split('[').next().unwrap_or("");
+        drive.starts_with("/dev/") && exists(Path::new(drive))
+    } else {
+        exists(&Path::new("/sys/dev/block").join(device))
+    }
 }
 
 fn run_ok(args: &[&str], timeout: u64) -> Result<String> {
@@ -130,12 +149,12 @@ pub fn run(a: &Args) -> Result<()> {
         let mut waiting = false;
         for (path, uuid) in &drives {
             let present = Path::new("/dev/disk/by-uuid").join(uuid).exists();
-            let device = mounted(path)?;
-            let alive = device
-                .as_deref()
-                .is_some_and(|d| Path::new("/sys/dev/block").join(d).exists());
+            let found = mounted(path)?;
+            let alive = found
+                .as_ref()
+                .is_some_and(|(device, source)| alive(device, source, Path::exists));
             let shown = path.to_string_lossy().into_owned();
-            match decide(device.as_deref(), alive, present) {
+            match decide(found.as_ref().map(|(d, _)| d.as_str()), alive, present) {
                 Step::Nothing => {}
                 Step::Wait => {
                     if !told {
@@ -278,6 +297,19 @@ mod tests {
         // Policy "unchanged" (the unit is switched off): no HDD command.
         let without = refresh_commands(|_| false);
         assert!(without.iter().all(|c| c[1] == "try-restart"));
+    }
+    #[test]
+    fn a_live_btrfs_drive_is_not_taken_for_a_dead_one() {
+        let here = |p: &Path| p == Path::new("/dev/sdb1") || p == Path::new("/sys/dev/block/8:17");
+        // Btrfs: a made-up device number; the drive in the source decides.
+        assert!(alive("0:47", "/dev/sdb1[/@data]", here));
+        assert!(alive("0:47", "/dev/sdb1", here));
+        assert!(!alive("0:47", "/dev/sdc1[/@data]", here));
+        // Something else mounted there (no drive at all) still counts as dead.
+        assert!(!alive("0:47", "tmpfs", here));
+        // ext4 and XFS: the drive's own device number, as before.
+        assert!(alive("8:17", "/dev/sdb1", here));
+        assert!(!alive("8:33", "/dev/sdb1", here));
     }
     #[test]
     fn a_dead_mount_is_released_only_once_the_drive_is_back() {

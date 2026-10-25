@@ -39,6 +39,7 @@ class FakeSystem:
         self.serve = {'TCP': {**MINE['TCP'], '443': {'HTTPS': True}},
                       'Web': {**MINE['Web'], HOST + ':443': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:3000'}}}}}
         self.networks = ['neko-jellyfin_default', 'bridge']
+        self.units_on = {'smbd.service'}   # Samba: switched on (by NekoServer's setup)
 
     def write(self, path, text='x\n'):
         full = self.root / path.lstrip('/')
@@ -112,6 +113,10 @@ class FakeSystem:
             return self.drives.get(mountpoint, '') + '\n'
         if argv[0] == 'pdbedit':
             return 'neko:1000:\n'
+        if argv[:2] == ['systemctl', 'show']:
+            on = argv[2] in self.units_on
+            return ('LoadState=loaded\nUnitFileState=' + ('enabled' if on else 'disabled') + '\nActiveState='
+                    + ('active' if on else 'inactive') + '\n')
         return ''
 
     def call(self, argv, timeout=0):
@@ -583,7 +588,7 @@ class ReviewFixTests(unittest.TestCase):
 
     def test_what_could_not_be_removed_is_listed(self):
         stubborn = self.system.root / 'etc/nekoserver-gateway'
-        left = self.remove_with(lambda path, ignore_errors=False: None, {'server'})
+        left = self.remove_with(lambda path, **handlers: None, {'server'})
         self.assertIn(str(stubborn), left)
 
     def remove_with(self, rmtree, chosen):
@@ -642,7 +647,8 @@ class EntryTests(unittest.TestCase):
             self.assertIn('packages of your Linux: they stay installed', text)
             self.assertTrue((system.root / 'etc/systemd/system/nekoserver-dashboard.service').exists())
             # Only looking: Docker was asked what runs, nothing was stopped or removed.
-            self.assertFalse(any(c[0] in ('systemctl', 'umount') or c[:2] == ['docker', 'rm'] or c[:3] == ['docker', 'network', 'rm'] for c in system.calls))
+            self.assertFalse(any(c[:2] not in (['systemctl', 'show'],) and c[0] in ('systemctl', 'umount') or c[:2] == ['docker', 'rm']
+                                 or c[:3] == ['docker', 'network', 'rm'] for c in system.calls))
 
     def test_the_shell_entry_point_hands_over_to_the_python(self):
         script = (ROOT / 'uninstall.sh').read_text()
@@ -660,7 +666,150 @@ class EntryTests(unittest.TestCase):
                     mock.patch('builtins.print'):
                 self.assertEqual(uninstaller.main([]), 2)
             self.assertTrue((system.root / 'etc/systemd/system/nekoserver-dashboard.service').exists())
-            self.assertFalse(any(c[0] == 'systemctl' for c in system.calls))
+            self.assertFalse(any(c[0] == 'systemctl' and c[1] != 'show' for c in system.calls))   # only looked
+
+
+class FollowUpTests(unittest.TestCase):
+    """0.39.6: Samba is left as it was before NekoServer, failures are said and listed, and
+    a fresh download finds the drives setup recorded."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.system = FakeSystem(self.tmp.name).populate()
+        self.shown = []
+
+    def remove(self, chosen, rmtree=uninstaller.shutil.rmtree):
+        self.plan = self.system.plan()
+        with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+            return uninstaller.remove(self.plan, chosen, run=self.system.run, out=self.shown.append, root=self.system.root,
+                                      call=self.system.call, sleep=lambda seconds: None, rmtree=rmtree)
+
+    def samba_before(self, record):
+        self.system.write(uninstaller.SAMBA_BEFORE, record if isinstance(record, str) else json.dumps(record))
+
+    def notes(self):
+        return '\n'.join(self.system.plan().groups['server']['notes'])
+
+    # ---- C2: Samba
+    def test_samba_that_nekoserver_switched_on_is_switched_off(self):
+        """The reported case: Samba stayed on after the uninstall, on Debian with the package's
+        example smb.conf back, which shares on every network."""
+        self.assertIn('Samba (smbd.service) is switched off: NekoServer switched it on', self.notes())
+        self.remove({'server'})
+        self.assertIn(['systemctl', 'disable', '--now', 'smbd.service'], self.system.calls)
+        self.assertFalse(any(c[0] == 'smbcontrol' for c in self.system.calls))   # nothing left to reload
+
+    def test_samba_that_was_on_before_stays_on(self):
+        self.samba_before({'format': 'neko-samba-before-v1', 'unit': 'smbd.service', 'enabled': True, 'active': True})
+        self.assertIn('Samba (smbd.service) stays on: it was on before NekoServer', self.notes())
+        self.remove({'server'})
+        self.assertNotIn(['systemctl', 'disable', '--now', 'smbd.service'], self.system.calls)
+        self.assertFalse(self.exists(uninstaller.SAMBA_BEFORE))   # the record goes with NekoServer
+
+    def test_the_record_decides_over_smb_conf(self):
+        self.system.write('/etc/samba/smb.conf', '[global]\n   include = /etc/samba/nekoserver.conf\n   workgroup = HOME\n')
+        self.assertIn('stays on: your own smb.conf uses it', self.notes())
+        self.samba_before({'format': 'neko-samba-before-v1', 'unit': 'smb.service', 'enabled': False, 'active': False})
+        self.system.units_on = {'smb.service'}
+        self.assertIn('Samba (smb.service) is switched off: NekoServer switched it on (it was off before)', self.notes())
+
+    def test_a_broken_samba_record_counts_as_none(self):
+        for broken in ('{not json', json.dumps(['x']), json.dumps({'format': 'neko-samba-before-v1', 'unit': 'sshd.service', 'enabled': False})):
+            self.samba_before(broken)
+            self.assertIn('is switched off: NekoServer switched it on (smb.conf is only its own include)', self.notes())
+
+    def test_samba_already_off_needs_nothing(self):
+        self.system.units_on = set()
+        self.assertNotIn('Samba (', self.notes())
+        self.remove({'server'})
+        self.assertFalse(any(c[:3] == ['systemctl', 'disable', '--now'] and 'smb' in c[-1] for c in self.system.calls))
+
+    # ---- C3: failures said and listed
+    def exists(self, path):
+        return (self.system.root / path.lstrip('/')).exists()
+
+    def test_files_that_could_not_be_deleted_are_named(self):
+        def stubborn(path, onexc=None, onerror=None):
+            handler = onexc or onerror
+            for name in ('a', 'b'):
+                error = OSError(16, 'Device or resource busy')
+                handler(os.unlink, str(path / name), error if onexc else (OSError, error, None))
+        left = self.remove({'server'}, rmtree=stubborn)
+        self.assertTrue(any(line.startswith('  could not delete ') and 'Device or resource busy' in line for line in self.shown), self.shown)
+        self.assertIn(str(self.system.root / 'etc/nekoserver-gateway'), left)
+
+    def test_commands_that_failed_are_listed_at_the_end(self):
+        self.system.failing[('systemctl', 'unmask')] = (1, 'Access denied')
+        self.system.failing[('systemctl', 'disable', '--now', 'smbd.service')] = (1, 'Failed to disable')
+        self.system.failing[('smbpasswd',)] = (1, 'Failed to delete entry')
+        left = self.remove({'server'})
+        text = '\n'.join(left)
+        self.assertIn('the masks on sleep.target', text)
+        self.assertIn('Samba is still on (sudo systemctl disable --now smbd.service)', text)
+        self.assertIn('the Samba account neko', text)
+
+    def test_a_mount_folder_that_cannot_go_says_why(self):
+        busy = OSError(16, 'Device or resource busy')
+        busy.strerror = 'Device or resource busy'
+        with mock.patch.object(uninstaller.Path, 'rmdir', side_effect=busy):
+            left = self.remove({key for key, *_ in uninstaller.CHOICES})
+        self.assertTrue(any('could not remove the folder /srv/nekoserver (Device or resource busy)' in line for line in self.shown), self.shown)
+        self.assertIn('/srv/nekoserver (the mount folder: Device or resource busy)', left)
+        self.assertFalse(any('is not empty' in line for line in self.shown))
+
+    def test_main_does_not_say_done_when_something_is_left(self):
+        shown = []
+        with mock.patch.object(uninstaller, 'Plan', return_value=self.system.plan()), \
+                mock.patch.object(uninstaller.os, 'geteuid', return_value=0), \
+                mock.patch.object(uninstaller, 'busy', return_value=(None, [])), \
+                mock.patch.object(uninstaller, 'remove', return_value=['/etc/nekoserver-gateway']), \
+                mock.patch('builtins.input', side_effect=['', 'yes', 'remove NekoServer']), \
+                mock.patch('builtins.print', side_effect=lambda *a, **k: shown.append(' '.join(map(str, a)))):
+            self.assertEqual(uninstaller.main([]), 0)
+        text = '\n'.join(shown)
+        self.assertIn('could not be removed or switched off', text)
+        self.assertIn('Finished, but not everything went', text)
+        self.assertNotIn('Done.', text)
+
+    # ---- C4: settings from a fresh download
+    def test_a_fresh_download_uses_the_drives_setup_recorded(self):
+        template = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media',
+                    'storage': {'data_ssd': {'uuid': ''}, 'media_hdd': {'uuid': ''}}, 'profiles': {}}
+        folder = Path(tempfile.mkdtemp(dir=self.tmp.name))
+        (folder / 'config.json').write_text(json.dumps(template))
+        record = {'data_mount': '/data/neko', 'media_mount': '/mnt/hdd', 'storage': SETTINGS['storage']}
+        older = self.system.write('/etc/nekoserver-backups/storage.json', json.dumps({**record, 'data_mount': '/srv/old'}))
+        os.utime(older, (1, 1))
+        self.system.write('/etc/nekoserver-os/drives.json', json.dumps(record))
+        settings, source = uninstaller.find_settings(folder, self.system.root)
+        self.assertEqual((settings['data_mount'], settings['media_mount']), ('/data/neko', '/mnt/hdd'))   # the newer one
+        self.assertEqual(settings['storage']['data_ssd']['uuid'], 'aaaa-1111')
+        self.assertIn('profiles', settings)
+        self.assertIn('/etc/nekoserver-os/drives.json (the drives setup recorded', source)
+        # my-config.json in the folder always comes first.
+        (folder / 'my-config.json').write_text(json.dumps(SETTINGS))
+        settings, source = uninstaller.find_settings(folder, self.system.root)
+        self.assertEqual((settings['data_mount'], source), ('/srv/nekoserver', str(folder / 'my-config.json')))
+
+    def test_a_broken_record_of_the_drives_is_not_used(self):
+        folder = Path(tempfile.mkdtemp(dir=self.tmp.name))
+        (folder / 'config.json').write_text(json.dumps({'data_mount': '/srv/nekoserver'}))
+        for broken in ('{"data_mount": 5', '[]', json.dumps({'data_mount': '/x', 'media_mount': '/y', 'storage': {'data_ssd': {'uuid': ''}}})):
+            self.system.write('/etc/nekoserver-os/drives.json', broken)
+            self.system.write('/etc/nekoserver-backups/storage.json', '{}')
+            settings, source = uninstaller.find_settings(folder, self.system.root)
+            self.assertEqual(settings, {'data_mount': '/srv/nekoserver'})
+            self.assertIn('the template', source)
+            self.assertIn('nothing on the drives is removed', source)
+
+    def test_main_says_which_settings_it_used(self):
+        shown = []
+        with mock.patch.object(uninstaller, 'Plan', return_value=self.system.plan()), \
+                mock.patch.object(uninstaller, 'find_settings', return_value=({}, '/etc/nekoserver-os/drives.json (...)')), \
+                mock.patch('builtins.print', side_effect=lambda *a, **k: shown.append(' '.join(map(str, a)))):
+            self.assertEqual(uninstaller.main(['--dry-run']), 0)
+        self.assertIn('Settings: /etc/nekoserver-os/drives.json (...)', shown)
 
 
 if __name__ == '__main__':

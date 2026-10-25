@@ -173,6 +173,21 @@ class FanAndLightControlTests(unittest.TestCase):
         restarts = {c.args[1]: c.kwargs.get('timeout') for c in systemctl.call_args_list if c.args[0] == 'restart'}
         self.assertEqual(restarts[dashboard.CONTROL], dashboard.CONTROL_WAIT)
 
+    def test_only_the_control_service_can_reach_openrgb(self):
+        """OpenRGB runs as root and drives the hardware: it shares a private network with
+        the control service alone, so no other program can skip the PIN through it."""
+        def section(text, name):
+            return text.split('[' + name + ']\n', 1)[1].split('\n[', 1)[0].split('\n')
+        units = dashboard.control_units(self.code, True)
+        control, openrgb = units[dashboard.CONTROL], units[dashboard.OPENRGB]
+        for text, other in ((control, dashboard.OPENRGB), (openrgb, dashboard.CONTROL)):
+            self.assertIn('PrivateNetwork=yes', section(text, 'Service'))
+            self.assertIn('JoinsNamespaceOf=' + other, section(text, 'Unit'))
+            self.assertIn('IPAddressDeny=any', section(text, 'Service'))  # still kept
+        alone = dashboard.control_units(self.code, False)[dashboard.CONTROL]
+        self.assertIn('PrivateNetwork=yes', section(alone, 'Service'))
+        self.assertNotIn('JoinsNamespaceOf', alone)
+
     def test_only_the_control_service_runs_as_root_and_it_always_gives_fans_back(self):
         units = dashboard.control_units(self.code, True, data=Path('/srv/n'))
         control = units[dashboard.CONTROL]
