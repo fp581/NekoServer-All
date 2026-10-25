@@ -43,6 +43,7 @@ def run(ctx):
     else:
         cmd.append('--report-only')
         result=subprocess.run(cmd,check=False).returncode
+    remove_stale(ctx,release,config)
     if result:
         # Something to fix, said with its reason (on the finishing screen too), not a
         # failed step: what is left is finished in the apps, then setup runs again.
@@ -59,6 +60,28 @@ def run(ctx):
         return {'status':'needs_setup','reason':'Connecting the media apps is not finished: '+why+'. Fix that, then run  sudo bash install.sh  again'}
     ctx.log('Onboarding configuration checks complete')
     witness_playback(ctx)
+
+
+# The apps that other apps connect to. Taken out of media.services, their containers
+# are stopped (modules/media.py), and the connections setup made to them are taken away.
+CONNECTED=('sonarr','radarr','lidarr','qbittorrent')
+
+
+def remove_stale(ctx,release,config):
+    """Take away the connections setup made to an app taken out of media.services (one
+    whose Compose file is still on the SSD): Prowlarr's link to it, the qBittorrent
+    client in Sonarr, Radarr and Lidarr, Seerr's request provider. Left in place, the apps
+    would show errors about it for good. Only connections setup made are removed (by
+    their name and where they point); never a problem for this step, only said."""
+    services=ctx.config.get('media',{}).get('services',[])
+    compose=Path(ctx.config['data_mount'])/'compose'
+    removed=[a for a in CONNECTED if a not in services and (compose/a/'compose.yaml').is_file()]
+    if not removed:return
+    ctx.log('Taking away the connections setup made to apps no longer in media.services: '+', '.join(removed))
+    cmd=[sys.executable,str(release/'media-connect.py'),'--config',str(config),'--remove-stale','--apply']
+    if subprocess.run(cmd,check=False).returncode:
+        ctx.log('Some connections to the removed apps could not be checked (the messages above say which). '
+                'They only cause warnings in the other apps; remove them there, or run  sudo bash install.sh  again')
 
 
 # Said for the connector's row, which has no reason of its own: its messages are above.

@@ -1,5 +1,6 @@
 """Install OS-wide no-sleep policy, bounded journal and guarded HDD boot policy."""
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -65,16 +66,132 @@ def remember_masks(definitions, record=MASKS_BEFORE, units=SYSTEMD_UNITS):
     atomic_json(record, {'format': 'neko-sleep-masks-v1', 'masked_before': before})
 
 
-def files(config):
+JOURNALD = Path('/etc/systemd/journald.conf')
+JOURNAL_DROPIN = '/etc/systemd/journald.conf.d/90-nekoserver.conf'
+
+
+def files(config, journald=JOURNALD):
     _, values = settings(config)
+    wanted, _ = journal_limits(values, journald)
     return {
         '/etc/systemd/sleep.conf.d/90-nekoserver.conf': MARKER + '[Sleep]\nAllowSuspend=no\nAllowHibernation=no\nAllowHybridSleep=no\nAllowSuspendThenHibernate=no\n',
         '/etc/systemd/logind.conf.d/90-nekoserver.conf': MARKER + '[Login]\nIdleAction=ignore\n',
-        '/etc/systemd/journald.conf.d/90-nekoserver.conf': MARKER + (
-            f'[Journal]\nSystemMaxUse={values["journal_disk_mb"]}M\nRuntimeMaxUse={values["journal_ram_mb"]}M\n'
-            f'MaxRetentionSec={values["journal_retention_days"]}day\nSystemKeepFree=1G\n'
-        ),
+        JOURNAL_DROPIN: MARKER + '[Journal]\n' + ''.join(key + '=' + value + '\n' for key, value in wanted.items()),
     }
+
+
+# The journal limits NekoServer sets, and which way is stricter: a smaller disk or RAM
+# limit or a shorter keeping time, but more disk kept free.
+SIZE_UNITS = {'': 1, 'K': 1024, 'M': 1024 ** 2, 'G': 1024 ** 3, 'T': 1024 ** 4, 'P': 1024 ** 5, 'E': 1024 ** 6}
+TIME_UNITS = {'us': 1e-6, 'usec': 1e-6, 'ms': 1e-3, 'msec': 1e-3, 's': 1, 'sec': 1, 'second': 1, 'seconds': 1,
+              'm': 60, 'min': 60, 'minute': 60, 'minutes': 60, 'h': 3600, 'hr': 3600, 'hour': 3600, 'hours': 3600,
+              'd': 86400, 'day': 86400, 'days': 86400, 'w': 604800, 'week': 604800, 'weeks': 604800,
+              'M': 2629800, 'month': 2629800, 'months': 2629800, 'y': 31557600, 'year': 31557600, 'years': 31557600}
+
+
+def size_bytes(text):
+    """journald's size ("512M", "1G", "1048576") in bytes, or None when it is not one."""
+    found = re.fullmatch(r'(\d+(?:\.\d+)?)\s*([KMGTPE]?)i?B?', text.strip(), re.IGNORECASE)
+    return float(found.group(1)) * SIZE_UNITS[found.group(2).upper()] if found else None
+
+
+def time_seconds(text):
+    """journald's time span ("14day", "2 weeks", "1h 30min", "3600") in seconds, or None."""
+    parts = re.findall(r'(\d+(?:\.\d+)?)\s*([A-Za-z]*)', text)
+    if not parts or re.sub(r'(\d+(?:\.\d+)?)\s*([A-Za-z]*)', '', text).strip():
+        return None
+    total = 0.0
+    for number, unit in parts:
+        if (unit or 's') not in TIME_UNITS:
+            return None
+        total += float(number) * TIME_UNITS[unit or 's']
+    return total
+
+
+def stricter(key, theirs, ours):
+    """True when the administrator's value limits the journal at least as much as ours.
+    0 (or a value that cannot be read) is never stricter: for keeping time it means no limit."""
+    measure = time_seconds if key == 'MaxRetentionSec' else size_bytes
+    mine, other = measure(ours), measure(theirs)
+    if not other or mine is None:
+        return False
+    return other >= mine if key == 'SystemKeepFree' else other <= mine
+
+
+def journald_files(journald=JOURNALD):
+    """journald.conf and the administrator's drop-ins beside it (never NekoServer's own),
+    in the order journald reads them: the main file first, then the drop-ins by name."""
+    folder = Path(str(journald) + '.d')
+    try:
+        dropins = sorted((p for p in folder.glob('*.conf') if p.name != Path(JOURNAL_DROPIN).name), key=lambda p: p.name)
+    except OSError:
+        dropins = []
+    return [Path(journald)] + dropins
+
+
+def journal_settings(path):
+    """{key: value} of the [Journal] section of one journald file ({} when unreadable)."""
+    try:
+        lines = Path(path).read_text(errors='replace').splitlines()
+    except OSError:
+        return {}
+    found, section = {}, ''
+    for line in (line.strip() for line in lines):
+        if line.startswith('['):
+            section = line
+        elif section == '[Journal]' and '=' in line and not line.startswith(('#', ';')):
+            key, _, value = line.partition('=')
+            found[key.strip()] = value.strip()
+    return found
+
+
+# The my-config.json setting (under "server_os") for each limit you can choose.
+JOURNAL_OPTIONS = {'SystemMaxUse': 'journal_disk_mb', 'RuntimeMaxUse': 'journal_ram_mb', 'MaxRetentionSec': 'journal_retention_days'}
+
+
+def admin_journal(ours, journald=JOURNALD):
+    """The administrator's own journal limits: ({key: (value, file)} that NekoServer's
+    drop-in would override, {key: (value, file)} read after it, which win anyway). The
+    last file journald reads a key from is the one that counts."""
+    before, after = {}, {}
+    for path in journald_files(journald):
+        later = path.parent.name.endswith('.d') and path.name > Path(JOURNAL_DROPIN).name
+        for key, theirs in journal_settings(path).items():
+            if key in ours:
+                (after if later else before)[key] = (theirs, path)
+    return before, after
+
+
+def journal_limits(values, journald=JOURNALD):
+    """(the limits NekoServer's drop-in sets, what to say about the administrator's own).
+    A drop-in wins over journald.conf, so a limit set there would be overridden silently:
+    a stricter one is kept (NekoServer leaves that key out), a looser one is replaced and
+    said. A drop-in of yours named after 90-nekoserver.conf wins anyway, and is said too."""
+    ours = {'SystemMaxUse': f'{values["journal_disk_mb"]}M', 'RuntimeMaxUse': f'{values["journal_ram_mb"]}M',
+            'MaxRetentionSec': f'{values["journal_retention_days"]}day', 'SystemKeepFree': '1G'}
+    wanted, notes = dict(ours), []
+    before, after = admin_journal(ours, journald)
+    for key, (theirs, path) in before.items():
+        setting = 'your ' + key + '=' + theirs + ' (' + str(path) + ')'
+        if theirs == ours[key]:
+            continue
+        if stricter(key, theirs, ours[key]):
+            del wanted[key]
+            notes.append('Journal: ' + setting + " is stricter than NekoServer's " + ours[key] + ', so yours is kept')
+        else:
+            hint = ('; to keep yours, set "' + JOURNAL_OPTIONS[key] + '" under "server_os" in my-config.json') if key in JOURNAL_OPTIONS else ''
+            notes.append('Journal: ' + setting + " is replaced by NekoServer's " + ours[key]
+                         + ' (its drop-in wins over journald.conf)' + hint)
+    for key, (theirs, path) in after.items():
+        if theirs != ours[key]:
+            notes.append('Journal: your ' + key + '=' + theirs + ' (' + str(path) + ") is read after NekoServer's drop-in, so it wins over "
+                         + ours[key])
+    return wanted, notes
+
+
+def log_journal_limits(config, log, journald=JOURNALD):
+    for note in journal_limits(settings(config)[1], journald)[1]:
+        log(note)
 
 
 def drive_devices(config, run=subprocess.run):
@@ -146,6 +263,7 @@ def run(context):
         elif path.exists():
             raise RuntimeError('Custom sleep target unit preserved')
     remember_masks(definitions)
+    log_journal_limits(context.config, context.log)
     for name, content in definitions.items():
         atomic_write(Path(name), content, 0o644)
     subprocess.run(['systemctl', 'mask', *TARGETS], check=True, capture_output=True, timeout=30)

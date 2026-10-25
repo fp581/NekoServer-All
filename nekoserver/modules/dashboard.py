@@ -116,9 +116,12 @@ def control_units(code,lighting,fans=True,data=None):
     """The root control service (fans, lights, and restarting or closing apps from the
     dashboard) and, with lighting, OpenRGB's server. It runs whenever the dashboard is
     installed: with fan control switched off it leaves every fan to the motherboard.
-    OpenRGB answers this computer only: systemd drops any other network traffic."""
+    OpenRGB runs as root and changes hardware, so only the control service may reach it:
+    the two share a private network of their own (PrivateNetwork= plus JoinsNamespaceOf=),
+    which no other program on the computer can connect to. The control service needs
+    no other network: it talks to Docker and the dashboard over local files (Unix sockets)."""
     binary=str(code/"nekoserver-runtime")
-    after='After=systemd-modules-load.service docker.service'+(' '+OPENRGB+'\nWants='+OPENRGB if lighting else '')
+    after='After=systemd-modules-load.service docker.service'+(' '+OPENRGB+'\nWants='+OPENRGB+'\nJoinsNamespaceOf='+OPENRGB if lighting else '')
     found={CONTROL:'[Unit]\nDescription=NekoServer fan, light and app control\n'+after+'\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
         # Lighting off: the service never reads, asks or changes any lighting. Fan control
         # off: it never takes a fan over. The settings say which apps may be restarted.
@@ -135,13 +138,13 @@ def control_units(code,lighting,fans=True,data=None):
         # The shared lock that backups and monthly updates hold (an app restart waits for none).
         'NoNewPrivileges=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths='+str(CONTROL_CONFIG)+(' -'+str(Path(data)/'installer') if data else '')+'\nPrivateTmp=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n'
         # CAP_KILL: closing an app someone opened on the desktop (their own user's process).
-        'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_KILL\nRestrictAddressFamilies=AF_UNIX AF_INET\nIPAddressDeny=any\nIPAddressAllow=localhost\n'
+        'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_KILL\nRestrictAddressFamilies=AF_UNIX AF_INET\nIPAddressDeny=any\nIPAddressAllow=localhost\nPrivateNetwork=yes\n'
         '[Install]\nWantedBy=multi-user.target\n'}
     if lighting:
-        found[OPENRGB]=('[Unit]\nDescription=NekoServer lighting (OpenRGB server)\nAfter=systemd-modules-load.service\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
+        found[OPENRGB]=('[Unit]\nDescription=NekoServer lighting (OpenRGB server)\nAfter=systemd-modules-load.service\nJoinsNamespaceOf='+CONTROL+'\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
             f'ExecStart={OPENRGB_BINARY} --server --server-port 6742\n'
             'Environment=QT_QPA_PLATFORM=offscreen HOME=/var/lib/nekoserver-openrgb XDG_CONFIG_HOME=/var/lib/nekoserver-openrgb\nStateDirectory=nekoserver-openrgb\n'
-            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\nPrivateTmp=yes\nIPAddressDeny=any\nIPAddressAllow=localhost\n'
+            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\nPrivateTmp=yes\nIPAddressDeny=any\nIPAddressAllow=localhost\nPrivateNetwork=yes\n'
             '[Install]\nWantedBy=multi-user.target\n')
     return found
 

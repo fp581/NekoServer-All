@@ -1,6 +1,6 @@
 # Your personal music service
 
-The server player is **Navidrome**, already included with the media containers. This release finishes guided listener setup and authenticated monitoring. Lidarr is the music acquisition/import manager; it is not the player. Prowlarr and qBittorrent remain connected to Lidarr through the existing guided source/indexer/category setup.
+The server player is **Navidrome**, already included with the media containers. This release finishes guided listener setup and authenticated monitoring. Lidarr is the music acquisition/import manager; it is not the player. Prowlarr and qBittorrent remain connected to Lidarr through the existing guided source/indexer/category setup. With Lidarr in your list, setup sets qBittorrent to start new torrents in automatic mode, so music downloads land on the SSD where Lidarr finds them (see TV-SETUP.md, "Taking an app out, or changing the qBittorrent password").
 
 Use Navidrome's browser player on the TV/Linux PC, **Amperfy on iPhone**, and optionally **Feishin on Windows/Linux/macOS** for a polished desktop player. This provides an Apple Music-style personal-library experience (album artwork, artists, playlists, favourites and phone offline listening), not Apple's subscription catalogue or its proprietary recommendations. The native Apple Music app is not the Navidrome client. Install Amperfy from its App Store page and Feishin from its official project/Flathub; these client devices have not been remotely modified by this release.
 

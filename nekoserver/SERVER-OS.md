@@ -40,7 +40,13 @@ Set `hdd_policy` to `unchanged` if you want manual/vendor power management. Reap
 
 ## System log bounds
 
-Defaults are `SystemMaxUse=512M`, `RuntimeMaxUse=64M`, `MaxRetentionSec=14day` and `SystemKeepFree=1G`. Configure `journal_disk_mb`, `journal_ram_mb` and `journal_retention_days` under `server_os` to change them. Existing records are not explicitly vacuumed by the installer; normal journald rotation/retention enforces the new policy with journald's active-file granularity.
+Defaults are `SystemMaxUse=512M`, `RuntimeMaxUse=64M`, `MaxRetentionSec=14day` and `SystemKeepFree=1G`. Configure `journal_disk_mb`, `journal_ram_mb` and `journal_retention_days` under `server_os` to change them.
+
+Limits you set yourself are respected. NekoServer's file (`/etc/systemd/journald.conf.d/90-nekoserver.conf`) would win over `/etc/systemd/journald.conf`, so setup first reads your values there and in your own files in `journald.conf.d`:
+
+- Your limit is stricter (less disk or RAM, a shorter time, more disk kept free): NekoServer leaves that line out, and yours stays in force.
+- Your limit is looser: NekoServer's replaces it, and the setup log says so (`Journal: your SystemMaxUse=8G (…) is replaced by NekoServer's 512M`). To keep yours, set the matching `journal_…` value under `server_os`.
+- Your file in `journald.conf.d` is named after `90-nekoserver.conf` (for example `95-mine.conf`): it is read last and wins. The log says that too. Existing records are not explicitly vacuumed by the installer; normal journald rotation/retention enforces the new policy with journald's active-file granularity.
 
 `RuntimeMaxUse` bounds journal files stored in the RAM-backed `/run` filesystem, not every byte of the journald process's memory. These limits cover the OS systemd journal. Docker/app logs, media downloads and application caches have separate policies; this release does not impose a new Docker logging driver on existing containers.
 

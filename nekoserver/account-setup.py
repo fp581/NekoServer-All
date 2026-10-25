@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 import account_store
@@ -34,12 +35,35 @@ def main():
             apps.append(app)
     if not apps:
         parser.error('No selected deployed app manifests found; run the installer first')
+    before = account_store.get(config, 'qbittorrent')
     with lock(config):
         account_store.collect(config, apps)
         pending = account_setup.provision(config, apps)
     pending = finish_pending(SimpleNamespace(config=config, apply=True, log=print), pending)
+    passed_on = pass_on_qbittorrent(args.config, config, apps, before)
     print('Private credential inventory: ' + str(account_store.folder(config) / 'APP-CREDENTIALS.txt'))
-    return 1 if pending else 0
+    return 1 if pending or not passed_on else 0
+
+
+def pass_on_qbittorrent(settings, config, apps, before, run=subprocess.run):
+    """A qBittorrent login changed here (c: enter the current login) is passed on to the
+    download clients setup made in Sonarr, Radarr and Lidarr. They keep their own copy of
+    it and would go on using the old one: downloads would stop without a word. True when
+    nothing was left to do or it was passed on."""
+    now = account_store.get(config, 'qbittorrent', verified=True)
+    if 'qbittorrent' not in apps or not before or not now or \
+            (now['username'], now['password']) == (before['username'], before['password']):
+        return True
+    managers = [app for app in ('sonarr', 'radarr', 'lidarr') if app in config.get('media', {}).get('services', [])]
+    if not managers:
+        return True
+    print('qBittorrent: its login changed; passing it on to the download client in ' + ', '.join(managers))
+    script = Path(__file__).with_name('media-connect.py')
+    if run([sys.executable, str(script), '--config', str(settings), '--pass-on-login', '--apply'], check=False).returncode:
+        print('qBittorrent: the new login is not in every app yet (see above). Enter it in each app '
+              '(Settings, Download Clients, Neko-qBittorrent), or run  sudo bash install.sh  again')
+        return False
+    return True
 
 
 if __name__ == '__main__':

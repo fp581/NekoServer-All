@@ -165,3 +165,48 @@ def configure(root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Cli
         return results
     finally:
         client.close()
+
+
+def made_here(value, app):
+    """True for the request provider `provider` above makes (its name, and pointing at
+    the app's own container): a provider someone renamed or pointed elsewhere is theirs."""
+    port = SPECS[app][0]
+    return (value.get('name') == 'NekoServer ' + app.capitalize() and value.get('hostname') == app
+            and value.get('port') == port and type(value.get('id')) is int and value['id'] >= 0)
+
+
+def remove_stale(root, apps, apply=False, factory=Client):
+    """Take away the request providers NekoServer made for Sonarr or Radarr once that app
+    is out of media.services (its container is stopped, so Seerr would show errors and
+    requests would fail). Only the providers `provider` made are removed; any other is
+    kept and named. Rows for the report; [] when there is nothing to look at."""
+    gone = [app for app in SPECS if app not in apps]
+    if 'seerr' not in apps or not gone:
+        return []
+    client = factory('seerr')
+    try:
+        try:
+            open_seerr(client, root, 'Seerr is not set up yet')
+        except SetupRequired:
+            return []   # never set up, so it has no providers of ours
+        return [stale_provider(client, app, apply) for app in gone]
+    except (RuntimeError, ValueError, TypeError, KeyError):
+        return [row('seerr:removed_apps', 'fail', 'Could not read Seerr\'s request providers; check them in Seerr (Settings, Services)')]
+    finally:
+        client.close()
+
+
+def stale_provider(client, app, apply):
+    name = app.capitalize()
+    providers = records(client.call('/settings/' + app))
+    ours = [p for p in providers if made_here(p, app)]
+    others = len(providers) - len(ours)
+    for value in ours:
+        if apply:
+            client.call('/settings/' + app + '/' + str(value['id']), 'DELETE')
+    kept = (f'; {others} other {name} provider(s) not made by NekoServer kept, remove them in Seerr '
+            '(Settings, Services) if you no longer use them') if others else ''
+    if not ours:
+        return row('seerr:removed:' + app, 'pass', f'{name} is not set up; Seerr has no request provider of NekoServer\'s for it' + kept)
+    done = 'taken away' if apply else 'would be taken away (preview)'
+    return row('seerr:removed:' + app, 'pass', f'{name} is not set up; NekoServer\'s request provider for it was {done}' + kept)

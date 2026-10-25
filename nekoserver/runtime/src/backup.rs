@@ -1,6 +1,7 @@
 use crate::ledger::{self, Ledger, Recorded, LEDGER};
 use crate::{
     common::{self, Error, Result},
+    inventory::{self, Inventory},
     Args,
 };
 use serde_json::{json, Value};
@@ -874,6 +875,7 @@ fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if !(key == QUARANTINE
             || key.starts_with(&format!("{QUARANTINE}/"))
+            || key.starts_with(&format!("{}/", inventory::FOLDER))
             || ledger_file(&key)
             || metadata_name(&name))
         {
@@ -909,6 +911,18 @@ fn audit(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<()> {
         }
     }
     Ok(())
+}
+/// Write the run's inventory of live files. Best effort: without it a restore offers
+/// every file ever kept, as before 0.39.6, so a failure is said but stops nothing.
+fn save_inventory(root: &Path, live: &Inventory, what: &str) {
+    match inventory::write(root, live) {
+        Ok(path) => println!(
+            "{what}: noted the {} files you have now ({})",
+            live.len(),
+            path.display()
+        ),
+        Err(e) => println!("{what}: the list of the files you have now could not be written ({e}); a restore then offers every file ever kept"),
+    }
 }
 fn quarantine_folder(root: &Path) -> PathBuf {
     root.join(QUARANTINE).join(
@@ -949,6 +963,8 @@ pub fn archive_checked(
     };
     let mut report = Integrity::default();
     let quarantine = quarantine_folder(&archive);
+    // The live originals, each with the archive copy that holds it (see inventory.rs).
+    let mut live = Inventory::default();
     for section in ["upload", "library"] {
         let root = source.join(section);
         common::safe(&root)?;
@@ -972,14 +988,16 @@ pub fn archive_checked(
             // A photo dated ahead of the clock (a camera set wrong) is archived now: the
             // copy is verified anyway, and its date may not come for years.
             let modified = meta.mtime() as f64 + meta.mtime_nsec() as f64 / 1e9;
-            if common::settling(modified, age as f64) {
-                waiting += 1;
-                return Ok(());
-            }
             let target = archive.join(
                 path.strip_prefix(&source)
                     .map_err(|_| Error::new("Invalid archive relative path"))?,
             );
+            if common::settling(modified, age as f64) {
+                waiting += 1;
+                // Still live: its earlier copy (if any) stays in the inventory.
+                live.add(&target, &archive);
+                return Ok(());
+            }
             let key = ledger_key(&target, &archive)?;
             let expected = ledger.get(&key).map(|e| e.sha256.clone());
             // Deleted, renamed or changed while it was copied (Immich at work, someone
@@ -988,10 +1006,14 @@ pub fn archive_checked(
                 Ok(kept) => kept,
                 Err(e) if e.to_string().contains("changed") || !path.exists() => {
                     in_use += 1;
+                    if path.exists() {
+                        live.add(&target, &archive);
+                    }
                     return Ok(());
                 }
                 Err(e) => return Err(e),
             };
+            live.add(&target, &archive);
             match kept.added {
                 Added::New => copied += 1,
                 Added::Version => versions += 1,
@@ -1022,6 +1044,7 @@ pub fn archive_checked(
         }
         // Published after every file it lists.
         ledger.save()?;
+        save_inventory(&archive, &live, "Archive");
     }
     report.print("Archive");
     if versions > 0 {
@@ -1209,6 +1232,10 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
                 }
                 common::atomic(&target, &text, 0o644)?;
             }
+        }
+        // The inventories of live files, after the files they name.
+        if let Err(e) = inventory::mirror(&source, &dest) {
+            println!("Backup: the lists of the files you have now could not be copied ({e}); a restore from the USB drive then offers every file ever kept");
         }
         // Ledgers last: the HDD one with this run's agreements, then its USB copy, which
         // keeps every record it already had.
@@ -1402,6 +1429,8 @@ pub fn copy_cloud(
     let quarantine = quarantine_folder(&root);
     let when = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let mut replaced = 0;
+    // Each user's live files, with the saved copy that holds each (see inventory.rs).
+    let mut live = Inventory::default();
     for user_dir in list(&cloud)? {
         let user = user_dir
             .file_name()
@@ -1467,7 +1496,11 @@ pub fn copy_cloud(
             }
             let key = ledger_key(&target, &root)?;
             let expected = ledger.get(&key).map(|e| e.sha256.clone());
-            match kept_copy(path, &target, apply, 0o600, check, expected.as_deref()) {
+            let result = kept_copy(path, &target, apply, 0o600, check, expected.as_deref());
+            if result.is_ok() || path.exists() {
+                live.add(&target, &root);
+            }
+            match result {
                 Ok(kept) => {
                     match kept.added {
                         Added::New => copied += 1,
@@ -1500,6 +1533,7 @@ pub fn copy_cloud(
             missing_from(&root, &ledger, &mut report)?;
         }
         ledger.save()?;
+        save_inventory(&root, &live, "Nextcloud");
     }
     report.print("Nextcloud");
     println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
@@ -1539,6 +1573,39 @@ pub fn copy_cloud(
 }
 /// Weekly Immich database copies kept on the USB drive (newest first; older ones go).
 const USB_DUMPS: u64 = 4;
+/// Weekly Nextcloud database copies kept on the HDD and on the USB drive.
+const CLOUD_DUMPS: u64 = 4;
+/// An app whose database the weekly jobs copy: Immich (its own weekly job) and
+/// Nextcloud (the weekly USB job, before it copies).
+struct DumpKind {
+    /// The file name prefix, the Compose project (neko-<app>) and the note's version key.
+    app: &'static str,
+    label: &'static str,
+    /// What the database brings back.
+    holds: &'static str,
+    /// The folder on the HDD (under backups/) and on the USB drive.
+    folder: &'static str,
+    /// What a copy without a note lacks.
+    no_note: &'static str,
+    /// The RECOVERY.md section that says how to use it.
+    guide: &'static str,
+}
+const IMMICH_DUMPS: DumpKind = DumpKind {
+    app: "immich",
+    label: "Immich",
+    holds: "albums, faces and users",
+    folder: "immich-database",
+    no_note: "has no record of its Immich version (made before v0.24.3)",
+    guide: "To rebuild Immich from this USB drive, see RECOVERY.md, \"Rebuild Immich from the USB drive\".",
+};
+const NEXTCLOUD_DUMPS: DumpKind = DumpKind {
+    app: "nextcloud",
+    label: "Nextcloud",
+    holds: "users, shares, calendars and contacts",
+    folder: "nextcloud-database",
+    no_note: "has no note with its checksum",
+    guide: "To bring back Nextcloud's database, see RECOVERY.md, \"Nextcloud's database\".",
+};
 /// A database copy older than this is reported as stale (copies are made daily or weekly).
 const DUMP_STALE_DAYS: f64 = 8.0;
 /// `immich-<stamp>.sql.json` beside each database copy: the Immich version that made it,
@@ -1573,26 +1640,76 @@ pub(crate) fn describe_dump(dump: &Path, immich_env: &Path) -> Result<()> {
 fn wants_database(photos_selected: bool, data: &Path) -> bool {
     photos_selected && data.join("compose/immich/compose.yaml").is_file()
 }
+/// Nextcloud's database is copied only with its files (the weekly job is given them
+/// only while Nextcloud is switched on) and only once Nextcloud is installed.
+fn wants_cloud_database(cloud_selected: bool, data: &Path) -> bool {
+    cloud_selected && data.join("compose/nextcloud/compose.yaml").is_file()
+}
+/// The Nextcloud version installed, from its own version.php ("31.0.5"), if readable.
+fn nextcloud_version(data: &Path) -> Option<String> {
+    let text = common::bytes(&data.join("appdata/nextcloud/html/version.php"), 64000).ok()?;
+    let found = regex::Regex::new(r"\$OC_VersionString\s*=\s*'([0-9]+\.[0-9]+\.[0-9]+)'")
+        .unwrap()
+        .captures(&String::from_utf8_lossy(&text))?
+        .get(1)?
+        .as_str()
+        .to_string();
+    Some(found)
+}
+/// The weekly copy of Nextcloud's database (users, shares, calendars, contacts), on the
+/// HDD in backups/nextcloud-database with a note of the version that made it and its
+/// checksum; the newest CLOUD_DUMPS stay. Until 0.39.6 only the monthly snapshot held it.
+fn nextcloud_dump(cfg: &Path, data: &Path, media: &Path) -> Result<String> {
+    guard(cfg, data, media)?;
+    let _drives = (common::expect_drive(media)?, common::expect_drive(data)?);
+    common::stage("making the Nextcloud database copy");
+    let folder = data.join("compose/nextcloud");
+    let dest = media.join("backups").join(NEXTCLOUD_DUMPS.folder);
+    let created = database_of(
+        NEXTCLOUD_DUMPS.app,
+        &folder.join("compose.yaml"),
+        &folder.join(".env"),
+        &dest,
+        true,
+    )?
+    .ok_or_else(|| Error::new("Database dump missing"))?;
+    common::atomic_json(
+        &dump_note(&created),
+        &json!({"format":"neko-nextcloud-dump-v1","nextcloud_version":nextcloud_version(data),"created_at":common::now(),"sha256":common::digest(&created)?}),
+    )?;
+    let name = created
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    prune_dumps_of(NEXTCLOUD_DUMPS.app, &dest, CLOUD_DUMPS, Some(&name))?;
+    println!("Nextcloud: database copy {name} made on the HDD");
+    Ok(name)
+}
 /// Put the newest Immich database copy on the USB drive with its note, so the USB alone
 /// can rebuild albums, faces and users as well as the photos. Returns what makes the
 /// USB copy incomplete (no copy, a stale one, one without a note), or None. A copy
 /// whose checksum does not match its note is never copied. Only the version is
 /// recorded, never the database password.
 pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> {
+    copy_newest_of(&IMMICH_DUMPS, hdd_dumps, usb)
+}
+fn copy_newest_of(kind: &DumpKind, hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> {
     let now = common::now();
+    let label = kind.label;
     let dumps: Vec<String> = fs::read_dir(hdd_dumps)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| immich_dump(n))
+        .filter(|n| is_dump(kind.app, n))
         .collect();
     let (newest, future) = newest_believable(dumps, now);
     let Some(name) = newest else {
-        return Ok(Some(
-            "no Immich database copy was found, so the USB drive cannot rebuild albums, faces and users"
-                .into(),
-        ));
+        return Ok(Some(format!(
+            "no {label} database copy was found, so the USB drive cannot rebuild {}",
+            kind.holds
+        )));
     };
     let source = hdd_dumps.join(&name);
     let note = common::json(&dump_note(&source), 64000);
@@ -1602,7 +1719,7 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> 
         // Kept on the HDD (and never pruned): made while the clock was wrong, so their
         // names cannot say when. The newest copy with a believable date goes to the USB.
         problems.push(format!(
-            "{} Immich database copies are dated in the future ({}); they were made while the server's clock was wrong (check it with timedatectl) and are kept, but the newest copy with a believable date was used",
+            "{} {label} database copies are dated in the future ({}); they were made while the server's clock was wrong (check it with timedatectl) and are kept, but the newest copy with a believable date was used",
             future.len(),
             future.join(", ")
         ));
@@ -1610,26 +1727,27 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> 
     match &expected {
         Some(sum) if common::digest(&source)? != *sum => {
             return Ok(Some(format!(
-                "the newest Immich database copy ({name}) is damaged (checksum mismatch) and was not copied"
+                "the newest {label} database copy ({name}) is damaged (checksum mismatch) and was not copied"
             )));
         }
         Some(_) => {}
         None => problems.push(format!(
-            "the newest Immich database copy ({name}) has no record of its Immich version (made before v0.24.3)"
+            "the newest {label} database copy ({name}) {}",
+            kind.no_note
         )),
     }
     let age_days = (now - dump_time(&name)) / 86400.0;
     if age_days < -1.0 {
         problems.push(format!(
-            "the newest Immich database copy ({name}) is dated in the future; check the server's clock (timedatectl)"
+            "the newest {label} database copy ({name}) is dated in the future; check the server's clock (timedatectl)"
         ));
     } else if age_days > DUMP_STALE_DAYS {
         problems.push(format!(
-            "the newest Immich database copy is {} days old; the database backup has not run",
+            "the newest {label} database copy is {} days old; the database backup has not run",
             age_days as u64
         ));
     }
-    let folder = usb.join("immich-database");
+    let folder = usb.join(kind.folder);
     common::directory(&folder, 0o700)?;
     let target = folder.join(&name);
     let damaged = |path: &Path| match &expected {
@@ -1649,19 +1767,22 @@ pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> 
             0o600,
         )?;
     }
-    let version = note["immich_version"].as_str().unwrap_or("unknown");
+    let version = note[format!("{}_version", kind.app)]
+        .as_str()
+        .unwrap_or("unknown");
     common::atomic(
-        &folder.join("IMMICH-VERSION.txt"),
-        format!("Immich version that made the newest database copy ({name}): {version}\nEach copy's own version and checksum are in the .json file next to it.\nTo rebuild Immich from this USB drive, see RECOVERY.md, \"Rebuild Immich from the USB drive\".\n").as_bytes(),
+        &folder.join(format!("{}-VERSION.txt", kind.app.to_uppercase())),
+        format!("{label} version that made the newest database copy ({name}): {version}\nEach copy's own version and checksum are in the .json file next to it.\n{}\n", kind.guide).as_bytes(),
         0o600,
     )?;
-    prune_dumps(&folder, USB_DUMPS, Some(&name))?;
-    println!("USB: Immich database copy {name} (Immich {version})");
+    prune_dumps_of(kind.app, &folder, USB_DUMPS, Some(&name))?;
+    println!("USB: {label} database copy {name} ({label} {version})");
     Ok((!problems.is_empty()).then(|| problems.join("; ")))
 }
 /// When a database copy was made, from its name (0 when the name cannot say).
 fn dump_time(name: &str) -> f64 {
-    chrono::NaiveDateTime::parse_from_str(name.get(7..22).unwrap_or(""), "%Y%m%dT%H%M%S")
+    let stamp = name.split_once('-').map_or("", |(_, rest)| rest);
+    chrono::NaiveDateTime::parse_from_str(stamp.get(..15).unwrap_or(""), "%Y%m%dT%H%M%S")
         .map(|t| t.and_utc().timestamp() as f64)
         .unwrap_or(0.0)
 }
@@ -1680,11 +1801,16 @@ fn newest_believable(mut dumps: Vec<String>, now: f64) -> (Option<String>, Vec<S
         None => (future.last().cloned(), vec![]),
     }
 }
-/// `immich-<UTC stamp>.sql`: a weekly Immich database copy (the stamp sorts by time).
-fn immich_dump(name: &str) -> bool {
-    regex::Regex::new(r"^immich-[0-9]{8}T[0-9]{6}Z\.sql$")
-        .unwrap()
-        .is_match(name)
+/// `<app>-<UTC stamp>.sql`: a weekly database copy of that app (Immich, Nextcloud; the
+/// stamp sorts by time).
+fn is_dump(app: &str, name: &str) -> bool {
+    name.strip_prefix(app)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|rest| {
+            regex::Regex::new(r"^[0-9]{8}T[0-9]{6}Z\.sql$")
+                .unwrap()
+                .is_match(rest)
+        })
 }
 /// Full monthly snapshots that releases before v0.21.1 wrote to the USB drive. They are
 /// never removed automatically: a file deleted from the server long ago may exist only
@@ -2124,6 +2250,17 @@ pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
 /// `timeout` run it as before).
 const DUMP_SCRIPT: &str = "if command -v timeout >/dev/null 2>&1; then exec timeout 1780 pg_dump -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" --no-owner --no-acl; else exec pg_dump -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" --no-owner --no-acl; fi";
 pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<Option<PathBuf>> {
+    database_of("immich", compose, env, dest, apply)
+}
+/// A logical copy (pg_dump) of `app`'s database, from the `database` service of its
+/// Compose project neko-<app>, as `<dest>/<app>-<UTC stamp>.sql`.
+fn database_of(
+    app: &str,
+    compose: &Path,
+    env: &Path,
+    dest: &Path,
+    apply: bool,
+) -> Result<Option<PathBuf>> {
     common::file(compose)?;
     common::file(env)?;
     common::safe(dest)?;
@@ -2132,9 +2269,9 @@ pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<
         return Ok(None);
     }
     common::directory(dest, 0o700)?;
-    clear_stale_dumps(dest, common::now())?;
+    clear_stale_dumps(app, dest, common::now())?;
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let target = dest.join(format!("immich-{stamp}.sql"));
+    let target = dest.join(format!("{app}-{stamp}.sql"));
     let temp = target.with_extension("sql.part");
     if target.exists() || temp.exists() {
         return Err(Error::new("Backup filename exists"));
@@ -2151,7 +2288,7 @@ pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<
         cmd.args([
             "compose",
             "-p",
-            "neko-immich",
+            &format!("neko-{app}"),
             "-f",
             &compose.to_string_lossy(),
             "--env-file",
@@ -2215,12 +2352,14 @@ pub fn database(compose: &Path, env: &Path, dest: &Path, apply: bool) -> Result<
 /// Remove `immich-<stamp>.sql.part` files a cut-off dump left (a power cut, or the job
 /// stopped): each can be as big as the database. One written to in the last hour may be
 /// a dump still running (they stop after 30 minutes), so it stays.
-fn clear_stale_dumps(dest: &Path, now: f64) -> Result<()> {
-    let pattern = regex::Regex::new(r"^immich-[0-9]{8}T[0-9]{6}Z\.sql\.part$").unwrap();
+fn clear_stale_dumps(app: &str, dest: &Path, now: f64) -> Result<()> {
     for entry in fs::read_dir(common::safe(dest)?)? {
         let entry = entry?;
         let meta = fs::symlink_metadata(entry.path())?;
-        if pattern.is_match(&entry.file_name().to_string_lossy())
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name
+            .strip_suffix(".part")
+            .is_some_and(|whole| is_dump(app, whole))
             && meta.is_file()
             && now - meta.mtime() as f64 > 3600.0
         {
@@ -2249,6 +2388,14 @@ pub(crate) fn dump_complete(path: &Path) -> Result<bool> {
 /// sort before older copies; copies dated in the future are kept aside (never removed,
 /// not counted), so they cannot push out the real ones.
 pub fn prune_dumps(folder: &Path, keep: u64, newest: Option<&str>) -> Result<Vec<String>> {
+    prune_dumps_of("immich", folder, keep, newest)
+}
+fn prune_dumps_of(
+    app: &str,
+    folder: &Path,
+    keep: u64,
+    newest: Option<&str>,
+) -> Result<Vec<String>> {
     if keep == 0 || !folder.is_dir() {
         return Ok(vec![]);
     }
@@ -2259,7 +2406,7 @@ pub fn prune_dumps(folder: &Path, keep: u64, newest: Option<&str>) -> Result<Vec
         let name = entry.file_name().to_string_lossy().to_string();
         // A copy dated in the future (made while the clock was wrong) would sort as the
         // newest and push out the real ones: it is kept aside, never removed here.
-        if immich_dump(&name)
+        if is_dump(app, &name)
             && !dated_in_future(&name, now)
             && Some(name.as_str()) != newest
             && fs::symlink_metadata(entry.path())?.is_file()
@@ -2397,6 +2544,11 @@ pub fn preservation(a: &Args) -> Result<()> {
         },
     )
 }
+/// The problems said together ("; "), or None when there are none.
+fn joined(problems: impl Iterator<Item = String>) -> Option<String> {
+    let all: Vec<String> = problems.collect();
+    (!all.is_empty()).then(|| all.join("; "))
+}
 /// One "incomplete" report for the weekly USB copy: Nextcloud files left out and/or a
 /// database copy problem.
 fn incomplete(
@@ -2448,10 +2600,28 @@ pub fn weekly(a: &Args) -> Result<()> {
     let cfg = a.path("config")?;
     let data = common::mount_path(a.get("data")?)?;
     let media = common::mount_path(a.get("media-root")?)?;
-    if let Err(e) = no_monthly_run(&cfg, &data, &media) {
-        return execute(Some(&data), "external", &cfg, move || Err(e));
+    let cloud = wants_cloud_database(!a.value("cloud", "").is_empty(), &data);
+    // Nextcloud's weekly database copy is made while the shared lock is held, so no
+    // monthly run can stop or update Nextcloud during it. A copy that fails (Nextcloud
+    // not running, say) makes the week's backup "incomplete"; its files are copied anyway.
+    let made = no_monthly_run(&cfg, &data, &media, || {
+        if !cloud {
+            return None;
+        }
+        match nextcloud_dump(&cfg, &data, &media) {
+            Ok(_) => None,
+            Err(e) => {
+                println!("Nextcloud: the database copy could not be made ({e})");
+                Some(format!(
+                    "the Nextcloud database copy could not be made ({e})"
+                ))
+            }
+        }
+    });
+    match made {
+        Ok(problem) => usb_copy(a, Check::Quick, problem),
+        Err(e) => execute(Some(&data), "external", &cfg, move || Err(e)),
     }
-    usb_copy(a, Check::Quick)
 }
 /// A one-shot service at work is "activating" (never "active": that is only after it
 /// stays up); stopping, its clean-up steps still run.
@@ -2459,8 +2629,14 @@ fn service_busy(state: &str) -> bool {
     ["active", "activating", "deactivating", "reloading"].contains(&state.trim())
 }
 /// Wait for the shared lock, then check (holding it) that no monthly run is under way:
-/// none cut off half-way and its service not running. The lock is let go on return.
-fn no_monthly_run(cfg: &Path, data: &Path, media: &Path) -> Result<()> {
+/// none cut off half-way and its service not running, and do `then` (the Nextcloud
+/// database copy). The lock is let go on return.
+fn no_monthly_run<F: FnOnce() -> Option<String>>(
+    cfg: &Path,
+    data: &Path,
+    media: &Path,
+    then: F,
+) -> Result<Option<String>> {
     let _recovery = coordinate(cfg, data, media)?;
     no_unfinished_update()?;
     for unit in [
@@ -2483,7 +2659,7 @@ fn no_monthly_run(cfg: &Path, data: &Path, media: &Path) -> Result<()> {
             ));
         }
     }
-    Ok(())
+    Ok(then())
 }
 /// How a USB copy failure that is damage (a copy no longer matching its checksum, a
 /// verified file gone) begins, unlike a drive that is full or would not mount: the
@@ -2492,9 +2668,10 @@ pub(crate) const INTEGRITY: &str = "Backup copies failed their checksum check: "
 /// The monthly run's first step for the USB drive: the weekly copy, with every copy on
 /// the drive compared with its checksum (the weekly runs compare size and date only).
 pub fn monthly_usb_check(a: &Args) -> Result<()> {
-    usb_copy(a, Check::Full)
+    usb_copy(a, Check::Full, None)
 }
-fn usb_copy(a: &Args, check: Check) -> Result<()> {
+/// `dump_problem`: why this week's Nextcloud database copy could not be made, if so.
+fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> {
     common::require_root()?;
     let uuid = a.get("uuid")?;
     let fstype = a.get("fstype")?;
@@ -2606,7 +2783,7 @@ fn usb_copy(a: &Args, check: Check) -> Result<()> {
                 validate_external(&dest, uuid)?;
                 guard(&cfg, &data, &media)?;
             }
-            let mut database_problem = None;
+            let mut database_problem: Option<String> = None;
             if wants_database(source.is_some(), &data) {
                 common::stage("copying the Immich database to the USB drive");
                 database_problem = copy_newest_dump(&media.join("backups/immich-database"), &dest)?;
@@ -2631,6 +2808,20 @@ fn usb_copy(a: &Args, check: Check) -> Result<()> {
                     if cloud_encrypted(cloud) {
                         println!("Nextcloud: {CLOUD_ENCRYPTED}; this backup is incomplete");
                         cloud_problem = Some(CLOUD_ENCRYPTED.to_string());
+                    }
+                    if wants_cloud_database(true, &data) {
+                        common::stage("copying the Nextcloud database to the USB drive");
+                        let copied = copy_newest_of(
+                            &NEXTCLOUD_DUMPS,
+                            &media.join("backups").join(NEXTCLOUD_DUMPS.folder),
+                            &dest,
+                        )?;
+                        database_problem = joined(
+                            [database_problem.take(), dump_problem.clone(), copied]
+                                .into_iter()
+                                .flatten(),
+                        );
+                        validate_external(&dest, uuid)?;
                     }
                 } else {
                     println!("Nextcloud: {CLOUD_MISSING}; this backup is incomplete");
@@ -3639,6 +3830,169 @@ mod tests {
         );
     }
     #[test]
+    fn the_nextcloud_database_copy_goes_to_the_usb_drive_with_its_note() {
+        let root = scratch("cloud-dump");
+        let (hdd, usb, data) = (root.join("hdd"), root.join("usb"), root.join("ssd"));
+        fs::create_dir_all(&usb).unwrap();
+        assert!(is_dump("nextcloud", "nextcloud-20261025T030000Z.sql"));
+        assert!(!is_dump("nextcloud", "immich-20261025T030000Z.sql"));
+        assert!(!is_dump("immich", "nextcloud-20261025T030000Z.sql"));
+        assert_eq!(
+            dump_time("nextcloud-20261025T030000Z.sql"),
+            dump_time("immich-20261025T030000Z.sql")
+        );
+        assert!(dump_time("nextcloud-20261025T030000Z.sql") > 0.0);
+        // None made yet: said, with what is missing.
+        let said = copy_newest_of(&NEXTCLOUD_DUMPS, &hdd, &usb)
+            .unwrap()
+            .unwrap();
+        assert!(said.contains("no Nextcloud database copy"), "{said}");
+        assert!(said.contains("calendars and contacts"), "{said}");
+        let name = chrono::Utc::now()
+            .format("nextcloud-%Y%m%dT%H%M%SZ.sql")
+            .to_string();
+        write(&hdd.join(&name), b"-- PostgreSQL database dump complete\n");
+        write(
+            &data.join("appdata/nextcloud/html/version.php"),
+            b"<?php\n$OC_Version = array(31,0,5,1);\n$OC_VersionString = '31.0.5';\n",
+        );
+        assert_eq!(nextcloud_version(&data).as_deref(), Some("31.0.5"));
+        common::atomic_json(
+            &dump_note(&hdd.join(&name)),
+            &json!({"format":"neko-nextcloud-dump-v1","nextcloud_version":"31.0.5","sha256":common::digest(&hdd.join(&name)).unwrap()}),
+        )
+        .unwrap();
+        assert_eq!(copy_newest_of(&NEXTCLOUD_DUMPS, &hdd, &usb).unwrap(), None);
+        let folder = usb.join("nextcloud-database");
+        assert!(folder.join(&name).is_file());
+        assert!(dump_note(&folder.join(&name)).is_file());
+        let version = fs::read_to_string(folder.join("NEXTCLOUD-VERSION.txt")).unwrap();
+        assert!(version.contains("31.0.5") && version.contains("Nextcloud's database"));
+        // Only with Nextcloud on and installed.
+        assert!(!wants_cloud_database(true, &data));
+        write(&data.join("compose/nextcloud/compose.yaml"), b"{}");
+        assert!(wants_cloud_database(true, &data));
+        assert!(!wants_cloud_database(false, &data));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_weekly_job_copies_nextcloud_s_database_while_it_holds_the_shared_lock() {
+        let source = include_str!("backup.rs");
+        let weekly = &source[source.find("pub fn weekly(").unwrap()..];
+        let weekly = &weekly[..weekly.find("\n}\n").unwrap()];
+        // Inside the closure no_monthly_run runs while it holds the lock and after it
+        // checked that no monthly update is unfinished or running.
+        let gate = weekly
+            .find("no_monthly_run(&cfg, &data, &media, ||")
+            .unwrap();
+        assert!(gate < weekly.find("nextcloud_dump(&cfg, &data, &media)").unwrap());
+        let check = &source[source.find("fn no_monthly_run<").unwrap()..];
+        let at = |s: &str| check.find(s).unwrap();
+        assert!(at("coordinate(cfg, data, media)?") < at("no_unfinished_update()?"));
+        assert!(at("no_unfinished_update()?") < at("Ok(then())"));
+        assert!(at("service_busy(&state)") < at("Ok(then())"));
+        let copy = &source[source.find("fn usb_copy(").unwrap()..];
+        assert!(copy.contains("copy_newest_of(\n                            &NEXTCLOUD_DUMPS"));
+    }
+    /// The newest inventory of a tree, unpacked.
+    fn newest_inventory(root: &Path) -> Value {
+        let mut names: Vec<String> = fs::read_dir(root.join(inventory::FOLDER))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        let newest = names.last().unwrap();
+        let out = Command::new("gzip")
+            .args(["-dc"])
+            .arg(root.join(inventory::FOLDER).join(newest))
+            .output()
+            .unwrap();
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+    #[test]
+    fn the_nextcloud_inventory_lists_only_the_files_you_have_now() {
+        let root = scratch("cloud-inventory");
+        let cloud = root.join("cloud");
+        let usb = root.join("usb");
+        fs::create_dir_all(&usb).unwrap();
+        for name in ["keep.txt", "gone.txt", "old-name.txt"] {
+            write(&cloud.join("alice/files").join(name), name.as_bytes());
+        }
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let first = newest_inventory(&usb.join("nextcloud"));
+        assert_eq!(first["format"], "neko-inventory-v1");
+        assert_eq!(first["files"].as_object().unwrap().len(), 3);
+        // Next week: one deleted, one renamed, one edited.
+        fs::remove_file(cloud.join("alice/files/gone.txt")).unwrap();
+        fs::rename(
+            cloud.join("alice/files/old-name.txt"),
+            cloud.join("alice/files/new-name.txt"),
+        )
+        .unwrap();
+        write(&cloud.join("alice/files/keep.txt"), b"edited");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let made = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert!(made.complete());
+        let files = newest_inventory(&usb.join("nextcloud"))["files"].clone();
+        let keys: Vec<&String> = files.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["alice/files/keep.txt", "alice/files/new-name.txt"]);
+        // The edit's saved copy holds the content you have now.
+        let copy = files["alice/files/keep.txt"].as_str().unwrap();
+        assert!(copy.starts_with("keep.neko-"), "{copy}");
+        assert_eq!(
+            fs::read(usb.join("nextcloud/alice/files").join(copy)).unwrap(),
+            b"edited"
+        );
+        assert_eq!(files["alice/files/new-name.txt"], "new-name.txt");
+        // Everything is still kept, and the inventories are not counted as data.
+        assert!(usb.join("nextcloud/alice/files/gone.txt").is_file());
+        let keys: Vec<String> = tree_files(&usb.join("nextcloud"))
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert!(keys.iter().all(|k| !k.starts_with(".neko-inventory")));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_photo_inventory_travels_to_the_usb_drive_and_old_ones_go() {
+        let root = scratch("photo-inventory");
+        let (library, hdd, usb) = (root.join("lib"), root.join("hdd"), root.join("usb"));
+        fs::create_dir_all(&usb).unwrap();
+        let old = |path: &Path| {
+            let then = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(then)
+                .unwrap();
+        };
+        for name in ["a.jpg", "b.jpg"] {
+            write(&library.join("upload/u").join(name), name.as_bytes());
+            old(&library.join("upload/u").join(name));
+        }
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        fs::remove_file(library.join("upload/u/b.jpg")).unwrap();
+        // A photo still being written is not backed up yet: not listed.
+        write(&library.join("upload/u/new.jpg"), b"new");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        let files = newest_inventory(&hdd)["files"].clone();
+        assert_eq!(files, json!({"upload/u/a.jpg": "a.jpg"}));
+        mirror(&hdd, &usb, true, Check::Quick).unwrap();
+        assert_eq!(newest_inventory(&usb)["files"], files);
+        // Only the newest KEPT stay.
+        let folder = hdd.join(inventory::FOLDER);
+        for day in 10..40 {
+            fs::write(folder.join(format!("200001{day:02}T000000Z.json.gz")), b"x").unwrap();
+        }
+        inventory::prune(&folder, inventory::KEPT, "none").unwrap();
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), inventory::KEPT);
+        assert!(!folder.join("20000110T000000Z.json.gz").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn a_file_that_became_a_folder_and_back_never_blocks_the_copy() {
         let root = scratch("cloud-shape");
         let cloud = root.join("cloud");
@@ -3807,7 +4161,13 @@ mod tests {
         assert!(first.complete());
         assert_eq!(
             names(&usb.join("nextcloud")),
-            [".neko-ledger.json", ".neko-ledger.lock", "alice", "bob"]
+            [
+                ".neko-inventory",
+                ".neko-ledger.json",
+                ".neko-ledger.lock",
+                "alice",
+                "bob"
+            ]
         );
         assert_eq!(names(&usb.join("nextcloud/alice")), ["files"]);
         assert_eq!(
@@ -4519,7 +4879,7 @@ mod tests {
             &old,
             std::time::SystemTime::now() - Duration::from_secs(7200),
         );
-        clear_stale_dumps(&root, common::now()).unwrap();
+        clear_stale_dumps("immich", &root, common::now()).unwrap();
         assert_eq!(
             names(&root),
             [

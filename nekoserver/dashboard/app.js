@@ -139,7 +139,7 @@ const ERRORS = {
   E42: ['Request not supported', 'Reload the page.'],
   E43: ['Enter your PIN to change this', 'Fans and lights need it on other devices; restarting or closing apps on all of them.'],
   E44: ['Wrong PIN', 'Check the PIN and try again.'],
-  E45: ['Too many tries; wait a while', 'Five wrong PINs lock changes for 5 minutes; each further five, twice as long.'],
+  E45: ['Too many tries; wait a while', 'Five wrong PINs lock out this device for 5 minutes, then twice as long each time. Other devices count apart.'],
   E46: ['The change could not be saved', 'Nothing was changed. The server’s system drive may be full or failing: Help → “Fans don’t change”.'],
   E47: ['Not now: something else is using it', 'A backup, the monthly update or another restart is running. Try again when it has finished.'],
   E48: ['Protected: can’t be stopped from here', 'Databases, backups and the system are never stopped here: whole apps restart, desktop apps close.']
@@ -1146,6 +1146,21 @@ function rangeField(label, min, max, value, onInput) {
   wrap.append(head, input);
   return wrap;
 }
+// The lowest fixed speed the control service would actually run: 20 % or "Never slower than".
+function fixedFloor(draft) {
+  return Math.max(20, Number(draft.min) || 20);
+}
+// "Never slower than" raised: the Speed slider starts there too, and a fixed speed below it
+// moves up with it (the control service would run the fan that fast anyway).
+function raiseFixed(field, draft) {
+  const floor = fixedFloor(draft), input = field.querySelector('input'), shown = field.querySelector('output');
+  input.min = floor;
+  if (draft.fixed < floor) {
+    draft.fixed = floor;
+    input.value = floor;
+    shown.textContent = floor + '%';
+  }
+}
 function modeChips(card) {
   const chips = el('div', 'chips');
   chips.setAttribute('role', 'group');
@@ -1228,12 +1243,17 @@ function outputCard(out, c) {
   const head = el('div', 'card-heading');
   head.append(title, badgeNode);
   const chips = modeChips(card);
-  // The control service never runs a fan below 20 % (fans.rs MIN_FLOOR), so neither does the slider.
-  const fixed = rangeField('Speed', 20, 100, card.draft.fixed, v => { card.draft.fixed = v; card.touch(); });
+  // The control service never runs a fan below 20 % (fans.rs MIN_FLOOR) or below "Never
+  // slower than", so neither does the Speed slider: it shows the speed the fan really gets.
+  const fixed = rangeField('Speed', fixedFloor(card.draft), 100, Math.max(card.draft.fixed, fixedFloor(card.draft)), v => { card.draft.fixed = v; card.touch(); });
   const curve = el('div', 'curve-box');
   const editor = curveEditor(() => card.draft.points, canChange, () => card.touch());
   curve.append(sensorSelect(card, temps), editor.svg, presetRow(card));
-  const minimum = rangeField('Never slower than', 20, 100, card.draft.min, v => { card.draft.min = v; card.touch(); });
+  const minimum = rangeField('Never slower than', 20, 100, card.draft.min, v => {
+    card.draft.min = v;
+    raiseFixed(fixed, card.draft);
+    card.touch();
+  });
   const save = button('Save', () => saveOutput(card), 'button small');
   const undo = button('Undo changes', () => { card.draft = draftFrom(card.acknowledged, temps); card.dirty = false; card.rebuild(); });
   const actions = el('div', 'fan-actions');
