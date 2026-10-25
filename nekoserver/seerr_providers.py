@@ -54,13 +54,18 @@ def current_standard(values):
     return [x for x in values if not x['is4k']]
 
 
+
+def settings_of(app):
+    """Seerr's settings page for one media manager (its list of providers for that app)."""
+    return '/settings/' + app
+
 def connection_matches(value, connection):
     return all(value.get(k, '' if k == 'baseUrl' else None) == v for k, v in connection.items())
 
 
 def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
     port, directory = SPECS[app]
-    endpoint = '/settings/' + app
+    endpoint = settings_of(app)
     initial = records(seerr.call(endpoint))
     standard = current_standard(initial)
     if verify_only and not standard:
@@ -198,12 +203,12 @@ def remove_stale(root, apps, apply=False, factory=Client):
 
 def stale_provider(client, app, apply):
     name = app.capitalize()
-    providers = records(client.call('/settings/' + app))
+    providers = records(client.call(settings_of(app)))
     ours = [p for p in providers if made_here(p, app)]
     others = len(providers) - len(ours)
     for value in ours:
         if apply:
-            client.call('/settings/' + app + '/' + str(value['id']), 'DELETE')
+            client.call(settings_of(app) + '/' + str(value['id']), 'DELETE')
     kept = (f'; {others} other {name} provider(s) not made by NekoServer kept, remove them in Seerr '
             '(Settings, Services) if you no longer use them') if others else ''
     if not ours:

@@ -111,7 +111,7 @@ class SambaBeforeTests(unittest.TestCase):
 
     def test_samba_not_installed_counts_as_off(self):
         self.remember('LoadState=not-found\nUnitFileState=\nActiveState=inactive\n')
-        self.assertEqual(json.loads(self.record.read_text())['enabled'], False)
+        self.assertFalse(json.loads(self.record.read_text())['enabled'])
 
     def test_shares_set_up_by_an_earlier_release_get_no_record(self):
         # Samba is on now because NekoServer switched it on: that is not "on before".

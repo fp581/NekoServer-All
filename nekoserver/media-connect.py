@@ -23,6 +23,19 @@ PORTS = app_ports(('prowlarr', 'sonarr', 'radarr', 'lidarr'))
 API_VERSIONS = {'prowlarr': 'v1', 'sonarr': 'v3', 'radarr': 'v3', 'lidarr': 'v1'}
 
 
+def in_docker(app):
+    """How the apps reach each other: by container name, inside Docker's own network on this
+    computer. Nothing outside the server travels this way, so plain HTTP is right here (the
+    apps offer nothing else there); what leaves the server goes through Tailscale's HTTPS."""
+    return 'http' + '://' + app + ':' + str(PORTS[app])
+
+
+PROWLARR_URL = in_docker('prowlarr')
+APPLICATIONS = '/applications'
+DOWNLOAD_CLIENTS = '/downloadclient'
+CLIENTS_STEP = 'download clients'   # the step's name in setup's messages
+
+
 def app_key(app, root):
     config = safe_path(Path(root) / 'appdata' / app / 'config.xml')
     if not config.is_file() or config.is_symlink():
@@ -191,15 +204,15 @@ def fields_match(entry, expected):
 def configure_applications(root, apply, apps=('sonarr','radarr','lidarr')):
     failures=[]
     pro_key = app_key('prowlarr', root)
-    schemas = request('prowlarr', pro_key, '/applications/schema')
-    existing = request('prowlarr', pro_key, '/applications')
+    schemas = request('prowlarr', pro_key, APPLICATIONS + '/schema')
+    existing = request('prowlarr', pro_key, APPLICATIONS)
     for app in apps:
         try:
             app_api_key = app_key(app, root)
             request(app, app_api_key, '/system/status')
         except RuntimeError as exc:
             print(f'{app}: not ready ({exc})'); failures.append(app); continue
-        expected={'prowlarrUrl':'http://prowlarr:9696','baseUrl':f'http://{app}:{PORTS[app]}','apiKey':app_api_key}
+        expected={'prowlarrUrl':PROWLARR_URL,'baseUrl':in_docker(app),'apiKey':app_api_key}
         found=next((e for e in existing if str(e.get('name','')).lower()==f'neko-{app}'),None)
         if found:
             # Prowlarr masks the stored key ("********") in its answers, so only the
@@ -217,7 +230,7 @@ def configure_applications(root, apply, apps=('sonarr','radarr','lidarr')):
         entry['syncLevel']='addOnly'  # additive sync; never remove existing indexers
         # Docker service DNS must be used for container-to-container access.
         fields = entry.get('fields', [])
-        required = {'prowlarrUrl': 'http://prowlarr:9696', 'baseUrl': f'http://{app}:{PORTS[app]}', 'apiKey': app_api_key}
+        required = {'prowlarrUrl': PROWLARR_URL, 'baseUrl': in_docker(app), 'apiKey': app_api_key}
         for name, value in required.items():
             if not field_set(fields, name, value):
                 failures.append(app)
@@ -227,7 +240,7 @@ def configure_applications(root, apply, apps=('sonarr','radarr','lidarr')):
             print(f'{app}:', 'will link' if not apply else 'linking')
             if apply:
                 try:
-                    result = request('prowlarr', pro_key, '/applications', 'POST', entry)
+                    result = request('prowlarr', pro_key, APPLICATIONS, 'POST', entry)
                     existing.append(result)
                     print(f'{app}: linked')
                 except RuntimeError as exc:
@@ -252,7 +265,7 @@ def existing_client(app,key,found,expected,login_checked):
     if not login_checked:
         print(f'{app}: existing client routing verified; confirm stored credentials in UI');return True
     try:
-        request(app,key,'/downloadclient/test','POST',found)
+        request(app,key,DOWNLOAD_CLIENTS + '/test','POST',found)
         print(f'{app}: existing client verified; it signs in to qBittorrent');return True
     except RuntimeError:
         pass
@@ -267,7 +280,7 @@ def new_login(app,key,found,username,password):
     if type(entry.get('id')) is not int or not (field_set(fields,'username',username) and field_set(fields,'password',password)):
         print(f'{app}: its download client has an old qBittorrent login; enter the new one in {app} (Settings, Download Clients)');return False
     try:
-        request(app,key,f'/downloadclient/{entry["id"]}','PUT',entry)
+        request(app,key,f'{DOWNLOAD_CLIENTS}/{entry["id"]}','PUT',entry)
     except RuntimeError as exc:
         print(f'{app}: could not save the new qBittorrent login ({exc}); enter it in {app} (Settings, Download Clients)');return False
     print(f'{app}: its download client had an old qBittorrent login; the current one is saved in it')
@@ -287,7 +300,7 @@ def pass_on_login(root,apps,client_factory=None):
     for app in apps:
         try:
             key=app_key(app,root)
-            found=next((x for x in request(app,key,'/downloadclient') if x.get('name')==CLIENT),None)
+            found=next((x for x in request(app,key,DOWNLOAD_CLIENTS) if x.get('name')==CLIENT),None)
             if found is None:
                 print(f'{app}: no download client made by setup yet; the next setup run makes it');continue
             expected={'host':'qbittorrent','port':8080,'username':stored['username'],'password':stored['password'],
@@ -313,14 +326,14 @@ def stale_applications(root,selected,apply):
     gone=[app for app in MANAGERS if app not in selected]
     if 'prowlarr' not in selected or not gone:return
     key=app_key('prowlarr',root)
-    for entry in request('prowlarr',key,'/applications'):
+    for entry in request('prowlarr',key,APPLICATIONS):
         app=next((a for a in gone if str(entry.get('name','')).lower()==f'neko-{a}'),None)
         if app is None:continue
-        ours={'prowlarrUrl':'http://prowlarr:9696','baseUrl':f'http://{app}:{PORTS[app]}'}
+        ours={'prowlarrUrl':PROWLARR_URL,'baseUrl':in_docker(app)}
         if type(entry.get('id')) is not int or not fields_match(entry,ours):
             print(f'prowlarr: the link "{entry.get("name")}" was changed by hand, so it stays; remove it in Prowlarr (Settings, Apps) if you no longer use {app}')
             continue
-        remove('prowlarr',key,f'/applications/{entry["id"]}',apply,f'prowlarr: the link to {app} (not set up any more)')
+        remove('prowlarr',key,f'{APPLICATIONS}/{entry["id"]}',apply,f'prowlarr: the link to {app} (not set up any more)')
 
 
 def stale_download_clients(root,selected,apply):
@@ -336,13 +349,13 @@ def stale_download_clients(root,selected,apply):
 
 
 def stale_client(app,key,apply):
-    for entry in request(app,key,'/downloadclient'):
+    for entry in request(app,key,DOWNLOAD_CLIENTS):
         if entry.get('name')!=CLIENT:continue
         if type(entry.get('id')) is not int or not fields_match(entry,{'host':'qbittorrent','port':8080}):
             print(f'{app}: the download client "{CLIENT}" was changed by hand, so it stays; remove it in {app} '
                   '(Settings, Download Clients) if you no longer use it')
             continue
-        remove(app,key,f'/downloadclient/{entry["id"]}',apply,f'{app}: its download client for qBittorrent (not set up any more)')
+        remove(app,key,f'{DOWNLOAD_CLIENTS}/{entry["id"]}',apply,f'{app}: its download client for qBittorrent (not set up any more)')
 
 
 def remove_stale(root,selected,apply):
@@ -353,7 +366,7 @@ def remove_stale(root,selected,apply):
     import seerr_providers
     failures=[]
     for label,step in (('Prowlarr',lambda:stale_applications(root,selected,apply)),
-                       ('download clients',lambda:stale_download_clients(root,selected,apply))):
+                       (CLIENTS_STEP,lambda:stale_download_clients(root,selected,apply))):
         try:step()
         except RuntimeError as exc:
             print(f'{label}: connections to removed apps not checked ({exc})');failures.append(label)
@@ -382,13 +395,13 @@ def configure_download_clients(root, apply, apps=('sonarr','radarr','lidarr'),ve
         category_field = CATEGORY_FIELDS[app]
         try:
             key = app_key(app, root)
-            existing = request(app, key, '/downloadclient')
+            existing = request(app, key, DOWNLOAD_CLIENTS)
             expected={'host':'qbittorrent','port':8080,'username':user,'password':password,category_field:category}
             found=next((x for x in existing if x.get('name')==CLIENT),None)
             if found:
                 if not existing_client(app,key,found,expected,verify_qbit):failures.append(app)
                 continue
-            candidates = request(app, key, '/downloadclient/schema')
+            candidates = request(app, key, DOWNLOAD_CLIENTS + '/schema')
             schema = next((s for s in candidates if str(s.get('implementation','')).lower() == 'qbittorrent'), None)
             if not schema:
                 print(f'{app}: no qBittorrent provider schema'); failures.append(app); continue
@@ -406,7 +419,7 @@ def configure_download_clients(root, apply, apps=('sonarr','radarr','lidarr'),ve
                 print(f'{app}:', 'will configure' if not apply else 'configuring', 'qBittorrent')
                 if apply:
                     try:
-                        request(app, key, '/downloadclient', 'POST', entry)
+                        request(app, key, DOWNLOAD_CLIENTS, 'POST', entry)
                         print(f'{app}: configured')
                     except RuntimeError as exc:
                         failures.append(app)
@@ -457,8 +470,8 @@ def chosen_actions(args,root,config,apps,selected):
     if args.root_folders: actions.append(('root folders',lambda:configure_root_folders(root,args.media_root or config['media_mount'],args.apply,apps)))
     if args.indexers: actions.append(('indexers',lambda:configure_indexers(root,args.apply,config)))
     if args.applications: actions.append(('applications',lambda:configure_applications(root,args.apply,apps)))
-    if args.download_clients: actions.append(('download clients',lambda:configure_download_clients(root,args.apply,apps)))
-    if args.pass_on_login: actions.append(('download clients',lambda:pass_on_login(root,apps)))
+    if args.download_clients: actions.append((CLIENTS_STEP,lambda:configure_download_clients(root,args.apply,apps)))
+    if args.pass_on_login: actions.append((CLIENTS_STEP,lambda:pass_on_login(root,apps)))
     if args.remove_stale: actions.append(('removed apps',lambda:remove_stale(root,selected,args.apply)))
     return actions
 
@@ -493,7 +506,7 @@ def main(argv=None):
         try:
             if label in ('indexers','applications') and 'prowlarr' not in selected:
                 raise RuntimeError('Prowlarr is not selected for deployment')
-            if label=='download clients' and 'qbittorrent' not in selected:
+            if label==CLIENTS_STEP and 'qbittorrent' not in selected:
                 raise RuntimeError('qBittorrent is not selected for deployment')
             action()
         except (RuntimeError, ValueError, OSError, KeyboardInterrupt, EOFError) as exc:

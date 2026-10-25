@@ -116,9 +116,9 @@ class SymlinkSafeImportTests(unittest.TestCase):
         (self.media / 'library/music').mkdir(parents=True)
         (self.media / 'library/music/Album').symlink_to(self.outside)
         current = self.source / 'Album/track.flac'
+        target, checked = self.media / 'library/music/Album/track.flac', current.lstat()
         with self.assertRaises((RuntimeError, OSError)):
-            source_import.import_file(current, self.media / 'library/music/Album/track.flac',
-                                      current.lstat(), None, None)
+            source_import.import_file(current, target, checked, None, None)
         self.assertEqual(sorted(p.name for p in self.outside.iterdir()), ['secret.txt'])
 
     def test_a_plain_import_still_copies_and_keeps_the_date(self):
