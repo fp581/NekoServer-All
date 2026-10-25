@@ -61,7 +61,10 @@ def digest(path):
 
 
 def relative(kind, value):
-    if not isinstance(value, str) or not value or '\\' in value or '\x00' in value:
+    """A snapshot entry's path inside its tree. Linux allows any character in a name but
+    "/" and NUL, so a backslash (notes\\2026.txt) is part of a name like any other, as
+    the nightly snapshots record it; only "..", ".", absolute paths and NUL are refused."""
+    if not isinstance(value, str) or not value or '\x00' in value:
         raise RuntimeError('Invalid snapshot path')
     path = PurePosixPath(value)
     if not path.parts or value == '.' or path.is_absolute() or '..' in path.parts or '.' in path.parts or str(path) != value:

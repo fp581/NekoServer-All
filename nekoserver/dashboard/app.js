@@ -651,7 +651,8 @@ function protectionItem(label, [st, title], detail) {
   box.append(el('small', '', label), badge(st, title), el('p', '', detail));
   return box;
 }
-function recentCopies(jobs) {
+function recentCopies(all) {
+  const jobs = all.filter(j => j.status !== 'disabled');   // an app switched off: its backup is retired
   const bad = jobs.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
   const unchecked = !jobs.length || jobs.some(j => !numeric(j.last_success) || !j.timer?.installed || !j.timer?.active);
   return firstOf([[bad, ['warning', bad + ' need a look']], [unchecked, ['unknown', 'Not all checked']]], ['pass', 'All OK']);
@@ -671,16 +672,17 @@ function filesIntact(checks) {
     [checks.length, ['pass', 'Checksums match']]
   ], ['unknown', 'No check yet']);
 }
-/* Which witnessed restore test covers each kind of backup (acceptance.py manual tests). */
-const RESTORE_TESTS = {
-  database: 'independent_restore', archive: 'independent_restore', external: 'independent_restore',
-  applications: 'app_restore', host: 'host_restore'
+/* Each backup row names the witnessed restore tests of what it holds (collect.rs
+ * restore_tests): photos, Nextcloud files, music, app state, host settings. */
+const RESTORE_NAMES = {
+  independent_restore: 'photos', cloud_restore: 'Nextcloud files', music_restore: 'music',
+  app_restore: 'apps', host_restore: 'host & user files'
 };
-const RESTORE_NAMES = {independent_restore: 'photos', app_restore: 'apps', host_restore: 'host & user files'};
-/* Restore confidence for the backups this server actually makes: each needs its own
- * witnessed restore test. A completed checklist that doesn't include them proves nothing. */
+/* Restore confidence for the backups this server actually makes: each kind of data
+ * needs its own witnessed restore test, and "Yes" only once every one has passed. */
 function restoreTried(s) {
-  const needed = [...new Set(s.backups.map(j => RESTORE_TESTS[j.id]).filter(Boolean))];
+  const needed = [...new Set(s.backups.filter(j => j.status !== 'disabled')
+    .flatMap(j => values(j.restore)).filter(id => id in RESTORE_NAMES))];
   if (!needed.length) { return {result: ['unknown', 'Nothing to test'], words: 'No backup that can be restore-tested is set up yet.'}; }
   const trusted = !['unknown', 'outdated'].includes(s.acceptance.status);
   const passed = new Set(trusted ? list(s.acceptance.manual_checks).filter(c => c.status === 'pass').map(c => c.id) : []);
@@ -701,6 +703,7 @@ function renderProtection(s, fresh) {
 function backupBadge(job, fresh) {
   if (!fresh) { return badge('unknown', 'Old reading'); }
   const notSetUp = !job.timer?.installed && !numeric(job.last_success);
+  if (job.status === 'disabled') { return badge('disabled', 'Switched off'); }
   return badge(job.status, notSetUp ? 'Not set up' : LABELS[job.status]);
 }
 function nextRun(timer) {
@@ -709,7 +712,7 @@ function nextRun(timer) {
 function backupCard(job, fresh) {
   const card = el('article', 'card'), timer = object(job.timer);
   card.append(cardHeading(text(job.name, 'Backup'), backupBadge(job, fresh)), el('p', '', 'Last good copy: ' + ago(job.last_success)), el('p', '', nextRun(timer)));
-  if (timer.installed && !timer.active) { card.append(el('p', 'reason', 'The schedule is turned off.')); }
+  if (timer.installed && !timer.active && job.status !== 'disabled') { card.append(el('p', 'reason', 'The schedule is turned off.')); }
   if (job.reason) { card.append(el('p', 'reason', text(job.reason))); }
   card.append(keyed(button('Help & logs', () => showGuide('backup', JOB_UNITS[job.id]), 'text-button'), 'backup-' + job.id));
   return card;

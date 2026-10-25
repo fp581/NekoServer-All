@@ -117,11 +117,52 @@ def applications(config):
     return out
 
 
-def timer_status(unit):
+def timer_and_known(unit):
+    """(the timer as shown, whether systemd could be asked about it)."""
     code, text = run(['systemctl', 'show', unit + '.timer', '--property=LoadState,ActiveState,NextElapseUSecRealtime'])
     fields = {k: v for k, _, v in (line.partition('=') for line in text.splitlines()) if _}
-    return {'installed': code == 0 and fields.get('LoadState') == 'loaded', 'active': fields.get('ActiveState') == 'active',
-            'next_run': fields.get('NextElapseUSecRealtime', '')[:80] or None}
+    return ({'installed': code == 0 and fields.get('LoadState') == 'loaded', 'active': fields.get('ActiveState') == 'active',
+             'next_run': fields.get('NextElapseUSecRealtime', '')[:80] or None}, code == 0 and 'LoadState' in fields)
+
+
+def timer_status(unit):
+    return timer_and_known(unit)[0]
+
+
+def retired(config, key):
+    """Why a job is intentionally not part of this server now (its app or backup switched
+    off), or None when its schedule is expected (collect.rs retired says the same)."""
+    immich = config.get('photos', {}).get('deploy_immich') is True
+    if key == 'music' and config.get('music', {}).get('backup_enabled', True) is False:
+        return 'Switched off: the music backup is turned off in the settings'
+    if key in ('archive', 'database') and not immich:
+        return 'Switched off: Immich is not set up'
+    if key == 'external' and not immich and config.get('nextcloud', {}).get('enabled') is not True:
+        return 'Switched off: neither Immich nor Nextcloud is set up'
+    return None
+
+
+def restore_tests(config, key):
+    """The witnessed restore tests (acceptance.py manual tests) that show this backup can
+    be restored: one per kind of data it holds (collect.rs restore_tests says the same)."""
+    immich = config.get('photos', {}).get('deploy_immich') is True
+    cloud = config.get('nextcloud', {}).get('enabled') is True
+    if key == 'external':
+        return [test for on, test in ((immich, 'independent_restore'), (cloud, 'cloud_restore')) if on]
+    return {'archive': ['independent_restore'], 'database': ['independent_restore'], 'music': ['music_restore'],
+            'applications': ['app_restore'], 'host': ['host_restore']}.get(key, [])
+
+
+def schedule_stopped(timer, known, ever_ran):
+    """A schedule that stopped while its job is still wanted: switched off, or gone after
+    it had run. None while it is in place (or systemd could not be asked)."""
+    if not known:
+        return None
+    if timer['installed'] and not timer['active']:
+        return 'Run setup again to switch its schedule back on.'
+    if not timer['installed'] and ever_ran:
+        return 'Its schedule is gone, so it no longer runs: run setup again to put it back.'
+    return None
 
 
 def job_plan(config, key, unit, maximum):
@@ -155,14 +196,20 @@ def job_row(config, now, data_ok, key, name, unit, maximum):
     # Running too long, or not succeeding for too long: overdue.
     since = started if status == 'running' else success
     state = 'stale' if since is not None and now - since > maximum else status
-    return {'id': key, 'name': name, 'status': state, 'last_success': success, 'last_attempt': started,
-            'timer': timer_status(unit), 'reason': job_reason(status, state, success)}
+    timer, known = timer_and_known(unit)
+    row = {'id': key, 'name': name, 'status': state, 'last_success': success, 'last_attempt': started, 'timer': timer,
+           'restore': restore_tests(config, key)}
+    why = retired(config, key)
+    if why:
+        return {**row, 'status': 'disabled', 'reason': why, 'restore': []}
+    stopped = None if state in ('fail', 'running') else schedule_stopped(timer, known, success is not None)
+    if stopped:
+        return {**row, 'status': 'stale', 'reason': stopped}
+    return {**row, 'reason': job_reason(status, state, success)}
 
 
 def backups(config, now, data_ok):
-    music_off = config.get('music', {}).get('backup_enabled', True) is False
-    return [job_row(config, now, data_ok, key, name, unit, maximum)
-            for key, (name, unit, maximum) in JOBS.items() if not (key == 'music' and music_off)]
+    return [job_row(config, now, data_ok, key, name, unit, maximum) for key, (name, unit, maximum) in JOBS.items()]
 
 
 def heartbeat_status(config, now):
@@ -174,7 +221,8 @@ def heartbeat_status(config, now):
     interval = config.get('heartbeat', {}).get('interval_seconds', 300)
     if type(interval) is not int or not 60 <= interval <= 3600:
         interval = 300
-    if timer['installed'] and (stamp is None or now - stamp > interval + 90):
+    # A timer switched off by choice ("wanted": false) is not a missed check-in.
+    if timer['active'] and (stamp is None or now - stamp > interval + 90):
         state = 'stale'
     return {'status': state, 'timer': timer, 'last_attempt': stamp,
             'last_success': number(saved.get('last_success'), 0, now + 30), 'provider_notifications_verified': False}
@@ -186,7 +234,7 @@ def notification_status(now):
     stamp = number(saved.get('generated_at'), 0, now + 30)
     valid = saved.get('format') == 'neko-delivery-v1' and saved.get('status') in ('pass', 'fail', 'unknown')
     state = saved.get('status') if valid else 'unknown'
-    if timer['installed'] and (stamp is None or now - stamp > 180):
+    if timer['active'] and (stamp is None or now - stamp > 180):
         state = 'stale'
     return {'status': state, 'timer': timer, 'last_success': number(saved.get('last_success'), 0, now + 30),
             'last_attempt': number(saved.get('last_attempt'), 0, now + 30), 'pending': number(saved.get('pending'), 0, 100)}

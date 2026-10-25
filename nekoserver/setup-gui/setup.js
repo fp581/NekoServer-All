@@ -169,7 +169,8 @@
 
   function renderRunning(state) {
     progress(state);
-    badge(state.question ? 'Waiting for you' : 'Working…', state.question ? 'waiting' : '');
+    const waiting = state.question || state.terminal;
+    badge(waiting ? 'Waiting for you' : 'Working…', waiting ? 'waiting' : '');
     const current = state.steps.find((s) => s.id === state.current);
     showQuestion(state.question, current);
     $('now').hidden = !!state.question;
@@ -196,6 +197,9 @@
     if (phase === 'running') renderRunning(state);
     if (phase === 'finished') renderFinished(state);
     $('question').hidden = !state.question || phase !== 'running';
+    // A program of its own asks in the terminal only (its questions cannot come here).
+    $('terminal').hidden = !state.terminal || !!state.question || phase !== 'running';
+    $('terminal-what').textContent = state.terminal ? state.terminal + ': its questions are asked there only.' : '';
     if (phase !== 'running') showQuestion(null);
   }
 
@@ -203,6 +207,7 @@
     for (const id of ['choose', 'running', 'finished']) $(id).hidden = true;
     $('gone').hidden = false;
     $('question').hidden = true;
+    $('terminal').hidden = true;
     badge('Setup ended', 'off');
   }
 

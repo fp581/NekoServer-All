@@ -1,8 +1,9 @@
 """Use the graphics chip for video in Jellyfin and Immich.
 
-Finds the graphics chip, installs its video drivers on the server, checks from inside
-Jellyfin that the chip really decodes video, then turns on hardware transcoding in
-Jellyfin and Immich with their saved administrator logins. A setting you already chose
+Finds the graphics chip, installs its video drivers on the server, asks the chip from
+inside each app which formats it decodes and whether it can encode (with a short test
+encode), then turns on hardware transcoding in Jellyfin and Immich with their saved
+administrator logins, for what the chip can do. A setting you already chose
 in either app is left alone. Without a usable chip both apps keep converting video in
 software, which works, just more slowly.
 """
@@ -17,8 +18,9 @@ from neko_common import atomic_json, atomic_write, compose_image_override
 DEPENDENCIES = ['media', 'photos', 'accounts']
 DESCRIPTION = 'Use the graphics chip for video in Jellyfin and Immich'
 
-# Codecs practically every Intel (2015+) and AMD chip decodes; others fall back to software.
-JELLYFIN_CODECS = ['h264', 'hevc', 'mpeg2video', 'vc1']
+# The decoding formats Jellyfin can hand to the chip, by the VA-API profile that offers it.
+VA_CODECS = (('VAProfileH264', 'h264'), ('VAProfileHEVC', 'hevc'), ('VAProfileMPEG2', 'mpeg2video'),
+             ('VAProfileVC1', 'vc1'), ('VAProfileVP8', 'vp8'), ('VAProfileVP9', 'vp9'), ('VAProfileAV1', 'av1'))
 HARDWARE = 'hardware.yaml'
 
 
@@ -52,18 +54,45 @@ def selected_apps(config):
     return apps
 
 
-def decodes(app, node, run=subprocess.run):
-    """Ask the chip, from inside this app's container, whether it decodes video."""
+FFMPEG = '/usr/lib/jellyfin-ffmpeg/ffmpeg'
+
+
+def video_support(vainfo):
+    """{'codecs': formats the chip decodes, 'encoder': whether it lists an encoder} from
+    vainfo's profile lines ("VAProfileH264Main : VAEntrypointVLD")."""
+    codecs, encoder = [], False
+    for line in vainfo.splitlines():
+        profile, _, entry = (part.strip() for part in line.partition(':'))
+        if entry == 'VAEntrypointVLD':
+            codecs += [name for prefix, name in VA_CODECS if profile.startswith(prefix) and name not in codecs]
+        elif entry.startswith('VAEntrypointEncSlice') and profile.startswith('VAProfileH264'):
+            encoder = True
+    return {'codecs': [name for _, name in VA_CODECS if name in codecs], 'encoder': encoder}
+
+
+def test_encode(cid, node, run):
+    """One second of test video encoded on the chip (H.264), inside the app's container:
+    a chip that lists an encoder but cannot use it does not pass."""
+    result = run(['docker', 'exec', cid, FFMPEG, '-hide_banner', '-loglevel', 'error', '-init_hw_device', 'vaapi=va:' + node,
+                  '-filter_hw_device', 'va', '-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x240:rate=10',
+                  '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-f', 'null', '-'],
+                 capture_output=True, text=True, timeout=120)
+    return result.returncode == 0
+
+
+def probe(app, node, run=subprocess.run):
+    """What the chip does for video, asked from inside this app's container:
+    {'codecs': [...], 'encode': bool}, or None when it decodes nothing there. Some chips
+    decode without an encoder (AMD's RX 6400 and 6500): then only decoding is used."""
     cid = container(*CONTAINERS[app], run)
     if not cid:
-        return False
+        return None
     result = run(['docker', 'exec', cid, VAINFO, '--display', 'drm', '--device', node],
                  capture_output=True, text=True, timeout=60)
-    return result.returncode == 0 and 'VAEntrypointVLD' in result.stdout
-
-
-def jellyfin_decodes(node, run=subprocess.run):
-    return decodes('jellyfin', node, run)
+    support = video_support(result.stdout) if result.returncode == 0 else {'codecs': []}
+    if not support['codecs']:
+        return None
+    return {'codecs': support['codecs'], 'encode': support['encoder'] and test_encode(cid, node, run)}
 
 
 def login_jellyfin(client, entry):
@@ -96,8 +125,9 @@ def ask_for(app, method, node):
 JELLYFIN_DEVICE = {'qsv': 'QsvDevice', 'vaapi': 'VaapiDevice'}
 
 
-def configure_jellyfin(entry, method, node, client, ours=False, several=False):
-    """Turn on hardware transcoding unless you already picked a setting yourself."""
+def configure_jellyfin(entry, method, node, client, video, ours=False, several=False):
+    """Turn on hardware transcoding unless you already picked a setting yourself: decoding
+    of the formats the chip decodes, and encoding only when the chip passed the test encode."""
     login_jellyfin(client, entry)
     device = JELLYFIN_DEVICE[method]
     try:
@@ -109,18 +139,21 @@ def configure_jellyfin(entry, method, node, client, ours=False, several=False):
                 return ask_for('Jellyfin', method, node)
             if action == 'keep':
                 return 'kept your setting (' + current + ')'
-        encoding.update({'HardwareAccelerationType': method, device: node, 'EnableHardwareEncoding': True,
-                         'HardwareDecodingCodecs': JELLYFIN_CODECS})
+        encoding.update({'HardwareAccelerationType': method, device: node, 'EnableHardwareEncoding': video['encode'],
+                         'HardwareDecodingCodecs': video['codecs']})
         client.call('/System/Configuration/encoding', 'POST', encoding)
-        return 'on (' + method + ')'
+        return 'on (' + method + ')' + ('' if video['encode'] else ', decoding only: the chip has no working video encoder')
     finally:
         client.call('/Sessions/Logout', 'POST')
 
 
-def configure_immich(entry, method, node, client, ours=False, several=False):
+def configure_immich(entry, method, node, client, video, ours=False, several=False):
     """Turn on hardware transcoding unless you already picked a setting yourself, on the
     chip that passed the check. Immich otherwise picks a device by itself, and on a
-    computer with two chips that can be the other one (an AMD chip with Intel's qsv)."""
+    computer with two chips that can be the other one (an AMD chip with Intel's qsv).
+    Immich's hardware setting encodes too, so a chip without a working encoder stays off."""
+    if not video['encode']:
+        return NO_ENCODER
     session = client.call('/api/auth/login', 'POST', {'email': entry['username'], 'password': entry['password']})
     if session.get('isAdmin') is not True or not session.get('accessToken'):
         raise RuntimeError('Saved Immich login is not an administrator')
@@ -161,20 +194,22 @@ def give_immich_the_chip(config, log, run=subprocess.run):
     return True
 
 
-def configure_app(app, chip, entry, client, before=None, several=False):
-    """Turn hardware transcoding on in one app, with this chip's method. `before`: what
-    the last run recorded for this app ("on (qsv)" when NekoServer turned it on)."""
+def configure_app(app, chip, entry, client, video, before=None, several=False):
+    """Turn hardware transcoding on in one app, with this chip's method, for what the
+    chip does (`video`, from probe). `before`: what the last run recorded for this app
+    ("on (qsv)" when NekoServer turned it on)."""
     _, node, jellyfin_method, immich_method = chip
     method = jellyfin_method if app == 'jellyfin' else immich_method
     ours = str(before or '').startswith('on (' + method)
     configure = configure_jellyfin if app == 'jellyfin' else configure_immich
-    return configure(entry, method, node, client, ours, several)
+    return configure(entry, method, node, client, video, ours, several)
 
 
 SOFTWARE = 'converts video in software: the chip did not pass the video check inside it'
+NO_ENCODER = 'converts video in software: the chip decodes video but has no working encoder, which Immich needs'
 
 
-def apps_on(config, choices, log, client_factory=None, apps=None, check=decodes, before=None):
+def apps_on(config, choices, log, client_factory=None, apps=None, check=probe, before=None):
     """Switch the selected apps over, each to the first chip (preferred first) that passes
     the video check inside that app's own container; returns {app: what happened}."""
     import account_setup
@@ -182,8 +217,8 @@ def apps_on(config, choices, log, client_factory=None, apps=None, check=decodes,
     client_factory = client_factory or account_setup.Client
     done = {}
     for app in selected_apps(config) if apps is None else apps:
-        chip = next((choice for choice in choices if check(app, choice[1])), None)
-        if chip is None:
+        found = next(((choice, video) for choice in choices if (video := check(app, choice[1]))), None)
+        if found is None:
             done[app] = SOFTWARE
             log(app.capitalize() + ' hardware video: ' + done[app])
             continue
@@ -194,7 +229,7 @@ def apps_on(config, choices, log, client_factory=None, apps=None, check=decodes,
         client = client_factory(app)
         try:
             account_setup.wait(app, client, 180)
-            done[app] = configure_app(app, chip, entry, client, (before or {}).get(app), len(choices) > 1)
+            done[app] = configure_app(app, found[0], entry, client, found[1], (before or {}).get(app), len(choices) > 1)
         except (RuntimeError, OSError, KeyError, ValueError) as exc:
             done[app] = 'not changed (' + str(exc) + ')'
         finally:

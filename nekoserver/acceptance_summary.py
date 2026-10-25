@@ -1,15 +1,24 @@
 """Restricted dashboard view of a private deployment acceptance report."""
 import hashlib,json
 from neko_common import VERSION
-MANUAL={'cloud_client':'Personal cloud clients','outage_delivery':'Independent outage alert','host_restore':'Host and user restore rehearsal','server_idle':'Server idle and drive policy','notification_delivery':'Phone notification delivery','app_restore':'Media application restore rehearsal','missing_drive':'Missing-drive protection','media_workflow':'Media workflow','music_playback':'Music streaming','photo_preservation':'Photo deletion safety','independent_restore':'Independent full restore','external_backup':'External copy/reconnect','remote_permissions':'Remote permissions','tv_session':'TV and controller','os_recovery':'OS recovery','gateway_clients':'Application gateway clients'}
+MANUAL={'cloud_client':'Personal cloud clients','outage_delivery':'Independent outage alert','host_restore':'Host and user restore rehearsal','server_idle':'Server idle and drive policy','notification_delivery':'Phone notification delivery','app_restore':'Media application restore rehearsal','missing_drive':'Missing-drive protection','media_workflow':'Media workflow','music_playback':'Music streaming','photo_preservation':'Photo deletion safety','independent_restore':'Independent full restore','external_backup':'External copy/reconnect','remote_permissions':'Remote permissions','tv_session':'TV and controller','os_recovery':'OS recovery','gateway_clients':'Application gateway clients','cloud_restore':'Nextcloud files restore','music_restore':'Music library restore'}
 STATES=('pass','fail','needs_setup','warning','blocked')
 PROFILES=('music','cloud','heartbeat','host_backup','server_os','notifications','app_backup','foundation','media','photos','full','network','networking','tv','dashboard','media_monitor','lan_access','remote_access')
+
+# The photo and USB-copy settings whose change makes an earlier acceptance run outdated:
+# a different USB drive or archive folder was never checked by it.
+PHOTO_SCOPE=('external_backup_uuid','external_backup_fstype','archive_dir','backup_weekday','backup_time')
+
+def photo_scope(config):
+    photos=config.get('photos')
+    photos=photos if isinstance(photos,dict) else {}
+    return {'deploy_immich':photos.get('deploy_immich') is True,**{k:photos.get(k) for k in PHOTO_SCOPE}}
 
 def scope_digest(config):
     supplied=config.get('acceptance_scope')
     if isinstance(supplied,str) and len(supplied)==64 and all(c in '0123456789abcdef' for c in supplied):return supplied
     values={k:config.get(k) for k in ('data_mount','media_mount','external_backup_mount','storage')}
-    values['review_settings']={k:config.get(k) for k in ('server_os','heartbeat','host_backup','tv','networking','dashboard','monitoring','app_backup','nextcloud','maintenance')};values['runtime']={'backend':config.get('runtime',{}).get('backend')};values['gateway']={k:config.get('gateway',{}).get(k) for k in ('services','lan_ip','lan_cidr')};values['services']=config.get('media',{}).get('services',[]);values['photos']=config.get('photos',{}).get('deploy_immich',False)
+    values['review_settings']={k:config.get(k) for k in ('server_os','heartbeat','host_backup','tv','networking','dashboard','monitoring','app_backup','nextcloud','maintenance')};values['runtime']={'backend':config.get('runtime',{}).get('backend')};values['gateway']={k:config.get('gateway',{}).get(k) for k in ('services','lan_ip','lan_cidr')};values['services']=config.get('media',{}).get('services',[]);values['photos']=photo_scope(config)
     return hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 def summarize(saved,config,now):

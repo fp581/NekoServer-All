@@ -1,5 +1,7 @@
 """Retire only recognized NekoServer units, preserving custom administrator units."""
-from neko_common import safe_path
+import subprocess
+
+from neko_common import SYSTEMD_UNITS, safe_path
 
 
 def retire(paths, run):
@@ -34,3 +36,18 @@ def remove(paths, run, log=print):
         run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=60)
         log('Removed schedules: ' + ', '.join(p.name for p in removed))
     return [p.name for p in removed]
+
+
+def switched_off(config, section, name, log, run=None):
+    """An optional extra switched off by choice ("wanted": false under `section`): its
+    installed schedule `name` (.timer and .service) is stopped and switched off, before
+    any saved destination is read or used again. The unit files and the saved destination
+    stay, so switching it back on needs no new setup. True when it is switched off."""
+    if config.get(section, {}).get('wanted') is not False:
+        return False
+    units = [SYSTEMD_UNITS / (name + '.timer'), SYSTEMD_UNITS / (name + '.service')]
+    if any(safe_path(u).exists() for u in units):
+        retire(units, run or subprocess.run)
+        log(name + ': switched off by choice; its schedule no longer runs')
+    return True
+

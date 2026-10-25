@@ -65,6 +65,16 @@ class SnapshotRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Unmanaged'):
             sr.relative(sr.APPS, 'source0/x')
 
+    def test_a_backslash_in_a_name_is_restored_like_any_other_character(self):
+        # Linux allows it, and the nightly snapshots record such names as they are.
+        snap = self.root / 'snap'
+        make(snap, sr.HOST, {'source0/notes\\2026.txt': b'notes'})
+        out = sr.restore(sr.HOST, snap, self.root / 'new')
+        self.assertEqual((out / 'source0' / 'notes\\2026.txt').read_bytes(), b'notes')
+        for unsafe in ('source0/../x', '/source0/x', 'source0/./x', 'source0/x\x00'):
+            with self.assertRaises(RuntimeError, msg=unsafe):
+                sr.relative(sr.HOST, unsafe)
+
     def test_the_report_says_owners_were_restored_only_when_they_were(self):
         from unittest import mock
         snap = self.root / 'snap'

@@ -73,7 +73,8 @@ test was added: nothing survived.
 backup.rs (11):
 - `a_full_check_is_recorded_and_due_again_after_four_weeks` — `FULL_CHECK_EVERY` is
   28 days not one (49), `full_check_due` / `record_full_check` read and write the per-job
-  record (52, 69).
+  record (52, 69). (Removed in 0.39.3 with the code it tested: the full checksum check
+  is now the monthly run's first step, not a 4-weekly part of the weekly jobs.)
 - `a_backup_never_copies_into_itself_or_a_parent` — `separate`: destination inside the
   source, source inside the destination, a file as destination, a missing source (86).
 - `a_dry_run_says_which_copies_it_would_make` — `verified_copy`'s dry-run answer and the

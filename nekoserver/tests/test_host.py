@@ -1028,7 +1028,10 @@ class UnavailableTvTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(installer, 'load_modules', return_value={'tv': {'object': step, 'deps': []}}), \
                 mock.patch('builtins.print') as printed:
-            args = argparse.Namespace(config=str(root / 'config.json'), state_dir=tmp, profile=None, module='tv',
+            # A copy: a run with --apply writes its settings file back (never the template).
+            settings = Path(tmp) / 'my-config.json'
+            settings.write_text((root / 'config.json').read_text())
+            args = argparse.Namespace(config=str(settings), state_dir=tmp, profile=None, module='tv',
                                       retry_failed=False, apply=True, check=False, dry_run=False)
             self.assertEqual(installer._execute(args), 0)
             state = json.loads((Path(tmp) / 'state.json').read_text())
@@ -1058,6 +1061,24 @@ class UnavailableTvTest(unittest.TestCase):
         with mock.patch.object(acceptance.tv, 'available', return_value=True):
             self.assertEqual(acceptance.accepted_modules({}, ['storage', 'tv']), ['storage', 'tv'])
             self.assertEqual(acceptance.accepted_modules({'tv': {'wanted': False}}, ['tv']), [])
+
+    def test_acceptance_uses_the_steps_own_decision_and_its_record(self):
+        import acceptance
+        # A server without a desktop: the step skips TV, and acceptance asks nothing of it.
+        tv = acceptance.tv
+        with mock.patch.object(tv.host, "detect", return_value=object()), \
+                mock.patch.object(tv.host, 'current', return_value=mock.Mock(name='debian')), \
+                mock.patch.object(tv, 'unavailable_reason', return_value=None), \
+                mock.patch.object(tv, 'has_desktop', return_value=False):
+            self.assertFalse(tv.available())
+            self.assertEqual(acceptance.accepted_modules({}, ['storage', 'tv']), ['storage'])
+        # What setup recorded as not available is left out too.
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / 'installer/state'
+            state.mkdir(parents=True)
+            (state / 'state.json').write_text(json.dumps({'photo_backup': {'status': 'unavailable'}, 'storage': {'status': 'success'}}))
+            with mock.patch.object(acceptance.tv, 'available', return_value=True):
+                self.assertEqual(acceptance.accepted_modules({'data_mount': tmp}, ['storage', 'photo_backup']), ['storage'])
 
 
 class NoDirectPackageManagerTest(unittest.TestCase):
