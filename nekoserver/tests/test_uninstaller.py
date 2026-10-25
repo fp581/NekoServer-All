@@ -239,6 +239,16 @@ class PlanTests(unittest.TestCase):
         self.assertTrue(any('Could not look in' in w and 'run with sudo' in w for w in plan.warnings), plan.warnings)
         self.assertIn('!! Could not look in', plan.describe({'server'}))
 
+    def test_permission_denied_is_not_taken_for_no_folder(self):
+        # Since Python 3.14 Path.is_dir() says False for "permission denied" too; the plan
+        # must still notice the folder it could not look into (this runs as root as well).
+        folder = mock.Mock()
+        folder.stat.side_effect = PermissionError(13, 'Permission denied')
+        with self.assertRaises(PermissionError):
+            uninstaller.Plan.folder_here(folder)
+        self.assertFalse(uninstaller.Plan.folder_here(self.system.root / 'not-there'))
+        self.assertTrue(uninstaller.Plan.folder_here(self.system.root))
+
     def test_every_path_stays_under_the_plans_root(self):
         self.assertEqual(self.plan.at('/etc/fstab'), self.system.root / 'etc/fstab')
         self.assertEqual(self.plan.at('/'), Path(os.path.normpath(str(self.system.root))))

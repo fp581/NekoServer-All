@@ -28,6 +28,7 @@ def bundle_files(project):
 
 MANIFEST='release-manifest.json'   # in the kept copy: the checksum of every file as NekoServer wrote it
 SET_ASIDE='.replaced-'             # v<VERSION>.replaced-<time>: the kept copy another build of the version replaced
+SETTINGS_FILE='config.json'        # in the kept copy: the settings this installation runs with
 
 def own_untouched(dest):
     """True when every file of the kept copy is what its manifest recorded: NekoServer
@@ -114,8 +115,8 @@ def preserve(data,project,config,log=print):
         target=safe_path(dest/rel)
         if not target.exists():atomic_write(target,payload,0o750 if target.suffix in ('.py','.sh') or target.name=='nekoserver-runtime' else 0o640)
     atomic_json(dest/MANIFEST,{'version':VERSION,'sha256':{rel:hashlib.sha256(payload).hexdigest() for rel,payload in payloads.items()}})
-    keep_previous(dest/'config.json',config,log)
-    atomic_json(dest/'config.json',config)
+    keep_previous(dest/SETTINGS_FILE,config,log)
+    atomic_json(dest/SETTINGS_FILE,config)
     return dest
 
 
@@ -131,7 +132,7 @@ def keep_previous(saved,config,log=print,now=None):
     # The release folder on the SSD, checked (absolute, no links, not a system folder).
     folder=plain_folder(Path(saved).parent)
     try:
-        earlier=json.loads((folder/'config.json').read_text())
+        earlier=json.loads((folder/SETTINGS_FILE).read_text())
     except (OSError,ValueError):
         return
     if earlier==config:return
@@ -141,7 +142,7 @@ def keep_previous(saved,config,log=print,now=None):
     # The copy keeps the date of the settings it holds, so "the oldest" stays the oldest
     # settings, also for ones carried over from a set-aside copy.
     with contextlib.suppress(OSError):
-        os.utime(previous,ns=(time.time_ns(),(folder/'config.json').stat().st_mtime_ns))
+        os.utime(previous,ns=(time.time_ns(),(folder/SETTINGS_FILE).stat().st_mtime_ns))
     kept=sorted(folder.glob('config.previous-*.json'),key=lambda p:p.stat().st_mtime_ns)
     for old in kept[1:-(PREVIOUS_KEPT-1)] if len(kept)>PREVIOUS_KEPT else []:
         old.unlink()
@@ -154,4 +155,4 @@ def run(ctx):
     dest=preserve(Path(ctx.config['data_mount']),Path(__file__).resolve().parents[1],ctx.config,ctx.log)
     ctx.log(f'Installer preserved: {dest}/install.sh; config: {dest}/config.json')
     # Future modules and retries use the persistent configuration copy.
-    ctx.config_path=dest/'config.json'
+    ctx.config_path=dest/SETTINGS_FILE

@@ -1962,8 +1962,9 @@ class PackageReviewTest(unittest.TestCase):
         self.keys.clear()
         other = rejected.replace('download.docker.com', 'ppa.example.org')
         apt = Answers(FakeApt(), is_update, [(100, other)])
+        family = self.quiet(self.family(apt))
         with self.assertRaisesRegex(RuntimeError, 'Refreshing the package lists failed'):
-            self.quiet(self.family(apt)).refresh()
+            family.refresh()
         self.assertEqual(self.keys, [])
 
     def test_steams_licence_question_is_answered_before_it_installs(self):
@@ -1996,16 +1997,18 @@ class PackageReviewTest(unittest.TestCase):
         apt.configure_fails = True
         self.file(host.Debian.journal, json.dumps({'format': 'neko-package-install-v1', 'packages': ['steam'],
                                                     'before': {}}))
+        family = self.quiet(self.family(apt))
         with self.assertRaisesRegex(RuntimeError, r'could not finish setting up steam-installer \(left unfinished by '
                                                   r'an earlier installation\).*sudo apt-get remove steam-installer'):
-            self.quiet(self.family(apt)).install(['caddy'])
+            family.install(['caddy'])
 
     def test_a_wrong_clock_is_named(self):
         not_yet = ('E: Release file for http://deb.debian.org/debian/dists/trixie/InRelease is not valid yet '
                    '(invalid for another 5h 2min).')
         apt = Answers(FakeApt(), is_update, [(100, not_yet)])
+        family = self.quiet(self.family(apt))
         with self.assertRaisesRegex(RuntimeError, r"clock looks wrong.*sudo timedatectl set-ntp true"):
-            self.quiet(self.family(apt)).refresh()
+            family.refresh()
         family = self.family()
         family.fetch = mock.Mock(side_effect=OSError('[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: '
                                                      'certificate is not yet valid'))

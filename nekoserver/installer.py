@@ -20,6 +20,7 @@ from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_pa
 MARKERS = ('START ', 'PASS ', 'FAILED ', 'NEEDS SETUP ', 'UNAVAILABLE ', 'BLOCKED ', 'Finished:')
 
 ROOT = Path(__file__).resolve().parent
+SETTINGS_FILE = 'config.json'   # the example settings that come with NekoServer
 DEFAULT_STATE = Path.home() / '.local' / 'state' / 'nekoserver'
 
 class InstallerError(Exception):
@@ -240,7 +241,7 @@ def template_steps(config):
 def template_settings(root=ROOT):
     """The template next to the installer (config.json), or {} when it can't be read."""
     try:
-        value = read_json(Path(root) / 'config.json')
+        value = read_json(Path(root) / SETTINGS_FILE)
     except (OSError, ValueError, InstallerError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -467,10 +468,10 @@ def settings_for(args, parser):
     found = default_settings(ROOT)
     # In the copy kept on the SSD (release-manifest.json beside it) config.json is your
     # settings, so it is used as they are; anywhere else it is only the template.
-    chosen = args.config or (found if found != NO_SETTINGS else str(ROOT / 'config.json'))
+    chosen = args.config or (found if found != NO_SETTINGS else str(ROOT / SETTINGS_FILE))
     kept_copy = (ROOT / BUNDLE_MANIFEST).is_file()
-    if args.apply and not kept_copy and Path(chosen).resolve() == (ROOT / 'config.json').resolve():
-        if has_drives(ROOT / 'config.json'):
+    if args.apply and not kept_copy and Path(chosen).resolve() == (ROOT / SETTINGS_FILE).resolve():
+        if has_drives(ROOT / SETTINGS_FILE):
             # Older docs had people edit the template itself.
             parser.error('config.json holds your drives, but it is the template that git updates. Keep your settings '
                          'as my-config.json instead: in this folder run  cp config.json my-config.json  and then '

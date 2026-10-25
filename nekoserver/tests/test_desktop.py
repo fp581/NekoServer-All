@@ -160,8 +160,9 @@ class TvLauncherUpdateTests(unittest.TestCase):
     def test_a_launcher_someone_changed_is_kept(self):
         self.path.write_text('[Desktop Entry]\nName=My own YouTube\nExec=/usr/bin/chromium\n')
         self.path.chmod(0o755)
+        browser = self.place('/usr/bin/firefox')
         with self.assertRaisesRegex(RuntimeError, 'custom shortcut preserved'):
-            tv.check_launchers(self.place('/usr/bin/firefox'), self.user, self.home, {})
+            tv.check_launchers(browser, self.user, self.home, {})
 
     def test_the_recorded_checksum_also_makes_it_ours(self):
         import hashlib

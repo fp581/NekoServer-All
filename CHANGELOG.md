@@ -85,6 +85,7 @@ A review round of the parts everyone meets first (installing and setting up, set
 
 ### Fixed: uninstalling
 - **The uninstaller waits** while a monthly update or setup is running. **If it stops part-way**, NekoServer's services are switched back on. It replaces `/etc/fstab` and Docker's `daemon.json` in one step and keeps the old ones beside them, keeps Docker's start guard while Docker's data stays on the SSD, finishes or safely undoes a package install setup left half-done, and lists drives it couldn't unmount and anything it couldn't remove.
+- **A preview of the uninstall without sudo** still says which folders it couldn't look into. On Python 3.14 those folders were quietly skipped instead.
 
 ### Upgrade notes
 - `git pull` in `nekoserver`, then `sudo bash install.sh` there (the runtime is built again for this release).

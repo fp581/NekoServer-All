@@ -98,12 +98,15 @@ def lock(config,changes_apps=True):
     apps checks for an unfinished update again once the lock is held, right before it
     begins. Docker re-attachment and backup repair (changes_apps=False) stay allowed:
     they may be what lets a stuck update finish."""
-    path=safe_path(Path(config['data_mount'])/'installer/recovery.lock')
+    # The SSD folder comes from the settings file, so it is checked first (a plain absolute
+    # path, no symlinks, not a system folder) and only the checked path is looked at.
+    mount=neko_common.plain_folder(config['data_mount'])
+    path=safe_path(mount/'installer/recovery.lock')
     # The installer folder is made only on the mounted SSD: with the SSD missing it would
     # be made on the system disk underneath (a lock the backups never see, and a folder
     # that later stops the SSD's own mount there).
-    if not path.parent.is_dir() and not os.path.ismount(config['data_mount']):
-        raise RuntimeError(f"The data SSD is not mounted at {config['data_mount']}; connect it (or restart) and try again")
+    if not path.parent.is_dir() and not os.path.ismount(mount):
+        raise RuntimeError(f'The data SSD is not mounted at {mount}; connect it (or restart) and try again')
     path.parent.mkdir(parents=True,exist_ok=True)
     with path.open('a') as stream:
         os.fchmod(stream.fileno(),0o600)
@@ -193,6 +196,9 @@ def runtime_problem(bundle,runs=None):
             'builds the program for this Linux and puts it in place of the kept copy (it stops at the Docker step, '
             'which is expected). Then run reattach again. Nothing was changed.')
 
+# Docker's two systemd units: the service, and the socket that would start it again on demand.
+DOCKER_UNITS=('docker.service','docker.socket')
+
 def install_docker(config,apply=False,family=None):
     """Docker's packages for this Linux, installed the way setup installs them (Docker's
     own repository on Debian, Ubuntu, Fedora and RHEL; the system's on Arch and openSUSE),
@@ -205,11 +211,11 @@ def install_docker(config,apply=False,family=None):
                 'stopped. Run again with --apply to install them'}
     require_root()
     installed=family.install(['docker','docker-compose'])
-    still=[unit for unit in ('docker.service','docker.socket')
+    still=[unit for unit in DOCKER_UNITS
            if subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False).returncode==0]
     if still:
         raise RuntimeError('Docker is running ('+', '.join(still)+'). Stop it before reattaching:  sudo systemctl stop '
-                           'docker.service docker.socket')
+                           +' '.join(DOCKER_UNITS))
     return {'status':'needs_setup','installed':installed,
             'reason':'Docker is installed and stopped. Next:  sudo python3 '+tool_path(config)+' reattach'}
 
@@ -231,9 +237,9 @@ def docker_ready(config,wanted):
                                'A Docker from the system\'s own packages (docker.io on Debian) is often older: remove it '
                                '(sudo apt remove docker.io) and install Docker\'s own with  sudo python3 '
                                +tool_path(config)+' install-docker --apply')
-    for unit in ('docker.service','docker.socket'):
+    for unit in DOCKER_UNITS:
         result=subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False)
-        if result.returncode==0:raise RuntimeError('Stop Docker service and socket before reattachment:  sudo systemctl stop docker.service docker.socket')
+        if result.returncode==0:raise RuntimeError('Stop Docker service and socket before reattachment:  sudo systemctl stop '+' '.join(DOCKER_UNITS))
 
 def reattach(config,bundle,apply=False,confirm=''):
     mounts(config);verify_bundle(bundle,config)
@@ -266,7 +272,7 @@ def reattach(config,bundle,apply=False,confirm=''):
         try:
             # A start tried by hand earlier (and refused) leaves systemd's "started too
             # often" count behind, which would refuse this start too.
-            subprocess.run(['systemctl','reset-failed','docker.service','docker.socket'],capture_output=True,timeout=30,check=False)
+            subprocess.run(['systemctl','reset-failed',*DOCKER_UNITS],capture_output=True,timeout=30,check=False)
             command(['systemctl','enable','--now','docker'],90)
             actual=checkpoint(config)
             if not docker_new_enough(actual['docker_version'],saved['docker_version']):raise RuntimeError('Running Docker is older than the checkpoint')
@@ -274,7 +280,7 @@ def reattach(config,bundle,apply=False,confirm=''):
             checkpoint(config,apply=True)
         except BaseException:
             # A failed adoption must not keep a mismatched daemon running.
-            stopped=subprocess.run(['systemctl','stop','docker.service','docker.socket'],capture_output=True,timeout=30,check=False)
+            stopped=subprocess.run(['systemctl','stop',*DOCKER_UNITS],capture_output=True,timeout=30,check=False)
             if stopped.returncode:raise RuntimeError('Post-start verification failed and Docker could not be stopped; inspect service/socket locally') from None
             raise
     return {'status':'needs_setup','reason':'Docker store reattached; rerun deployment profiles and verify applications/reboots before acceptance'}
@@ -429,12 +435,14 @@ def resume(config):
 def restarted_after(config,base,resume):
     """Whatever was running runs again afterwards, also when stopping failed half-way. If
     that fails too, the snapshot's own reason stays the one reported, with this beside it."""
+    failed=False
     try:
         yield
     except BaseException:
-        if resume:restart_again(config,base,True)
+        failed=True
         raise
-    if resume:restart_again(config,base,False)
+    finally:
+        if resume:restart_again(config,base,failed)
 
 def restart_again(config,base,failed):
     """Immich started again after a snapshot. When the snapshot itself failed, a failed

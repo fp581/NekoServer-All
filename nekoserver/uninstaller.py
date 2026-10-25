@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -221,11 +222,22 @@ class Plan:
         for home in homes:
             for folder in (home / '.local/share/applications', home / 'Desktop', self.xdg_desktop(home)):
                 try:
-                    if folder is not None and folder.is_dir():
+                    if folder is not None and self.folder_here(folder):
                         found.extend(p for p in folder.glob('nekoserver-*.desktop') if self.ours(p))
                 except OSError:   # not readable by this account (a dry run without sudo)
                     self.warnings.append('Could not look in ' + str(folder) + ' (run with sudo for the whole plan)')
         return sorted(set(found))
+
+    @staticmethod
+    def folder_here(folder):
+        """True for a folder, False when there is none; a folder this account may not look into raises.
+
+        Path.is_dir() cannot be used: since Python 3.14 it answers False for "permission denied"
+        too, and the plan would then quietly miss what it could not see."""
+        try:
+            return stat.S_ISDIR(folder.stat().st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            return False
 
     @staticmethod
     def xdg_desktop(home):
@@ -661,7 +673,7 @@ def _finish_packages(plan, call, out, reconcile=None):
     try:
         (reconcile or _reconcile_here)()
         return
-    except (host.Unsupported, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:   # host.Unsupported is a RuntimeError
         out('  could not finish it (' + str(exc) + '); lifting the protection it kept instead')
     record = plan.at(host.Debian.journal)
     # A mask the package set itself (Debian's record of those) stays.

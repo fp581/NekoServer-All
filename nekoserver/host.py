@@ -108,6 +108,11 @@ def _output(result):
     return (result.stdout or '') + '\n' + (result.stderr or '')
 
 
+def _up_to(seconds):
+    """The end of a "waiting for it to finish" line: how long it waits at most."""
+    return '(up to ' + str(seconds // 60) + ' minutes)...'
+
+
 def _reason(result):
     """The last line a package manager printed, for error messages (with a word on the
     clock when that is what went wrong)."""
@@ -278,7 +283,7 @@ class Family:
         """One pause while another program uses the package manager (said once)."""
         if not waited:
             self.say('Another program is installing or updating packages (' + _reason(result) + '); waiting for it '
-                     'to finish (up to ' + str(LOCK_WAIT // 60) + ' minutes)...')
+                     'to finish ' + _up_to(LOCK_WAIT))
         self.sleep(RETRY_PAUSE)
         return waited + RETRY_PAUSE
 
@@ -516,8 +521,7 @@ class Arch(Family):
                                    'nothing is installing, the lock is left from one that was cut off: remove it '
                                    f'(sudo rm {PACMAN_LOCK}), run  sudo pacman -Syu, then setup again.')
             if not waited:
-                self.say('Another package installation is running (pacman is locked); waiting for it to finish (up to '
-                         + str(self.wait // 60) + ' minutes)...')
+                self.say('Another package installation is running (pacman is locked); waiting for it to finish ' + _up_to(self.wait))
             self.sleep(5)
             waited += 5
 
@@ -726,8 +730,7 @@ class PackageLock:
                     raise RuntimeError('Another NekoServer setup is installing packages; let it finish, '
                                        'then run setup again') from None
                 if not waited:
-                    self.say('Another NekoServer setup is installing packages; waiting for it to finish (up to '
-                             + str(self.wait // 60) + ' minutes)...')
+                    self.say('Another NekoServer setup is installing packages; waiting for it to finish ' + _up_to(self.wait))
                 self.sleep(5)
                 waited += 5
 
@@ -825,8 +828,7 @@ class Debian(PackageLock, Family):
         waited = 0
         while waited < self.wait and not _free(self.path(APT_LISTS_LOCK)):
             if not waited:
-                self.say('The system is refreshing its package lists itself; waiting for it to finish (up to '
-                         + str(self.wait // 60) + ' minutes)...')
+                self.say('The system is refreshing its package lists itself; waiting for it to finish ' + _up_to(self.wait))
             self.sleep(5)
             waited += 5
 
@@ -959,7 +961,7 @@ class Debian(PackageLock, Family):
                                    'off). New services stay switched off; run setup again once it has finished.')
             if not waited:
                 self.say('apt or dpkg is still working (another installation, or one that was cut off); waiting for '
-                         'it to finish (up to ' + str(self.wait // 60) + ' minutes)...')
+                         'it to finish ' + _up_to(self.wait))
             self.sleep(5)
             waited += 5
 

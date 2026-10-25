@@ -49,7 +49,9 @@ const waits = [];
 globalThis.setTimeout = (fn) => { waits.push(fn); };
 
 await import('../setup-gui/setup.js');
-for (let i = 0; i < states.length; i++) {
+// One poll after another, in order: each step waits for the page to settle, may press
+// Start, then lets the page's next poll timer fire.
+async function step(i) {
   await settle();
   await settle();
   if (states[i].phase === 'choose' && pressStart) elements.start.fire('click');
@@ -57,5 +59,6 @@ for (let i = 0; i < states.length; i++) {
   const next = waits.shift();
   if (next && i < states.length - 1) next();
 }
+await states.reduce((done, _state, i) => done.then(() => step(i)), Promise.resolve());
 await settle();
 console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent ?? '' }));
