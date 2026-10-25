@@ -5,7 +5,7 @@ import shutil
 import subprocess
 
 import native_runtime
-from neko_common import VERSION, atomic_json, safe_path, check_units, write_units, SYSTEMD_UNITS
+from neko_common import VERSION, atomic_json, refresh_settings, safe_path, check_units, write_units, SYSTEMD_UNITS
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Install scheduled media connection checks (Rust runtime)'
@@ -14,6 +14,12 @@ DESCRIPTION = 'Install scheduled media connection checks (Rust runtime)'
 def command_line(binary, config, report):
     """The runtime command the timer runs (tests check it against the real program)."""
     return f'{binary} media-health --config {config} --output {report}'
+
+
+def refresh(config, log, target=None):
+    """After every setup run: the installed monitor checks the apps set up now (an app
+    added or taken out of media.services, say). Nothing happens when it is not installed."""
+    return refresh_settings(target or Path(config['data_mount']) / 'scripts' / 'config.json', config, log, 'Media monitor')
 
 
 def run(context):

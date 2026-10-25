@@ -51,19 +51,7 @@ fn lan(cfg: &Value, rows: &Value) -> Result<()> {
             || !name
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
-            || [
-                "lo",
-                "docker",
-                "br",
-                "veth",
-                "virbr",
-                "tailscale",
-                "tun",
-                "tap",
-                "wg",
-            ]
-            .iter()
-            .any(|s| name.starts_with(s))
+            || internal_interface(name)
         {
             continue;
         }
@@ -81,6 +69,33 @@ fn lan(cfg: &Value, rows: &Value) -> Result<()> {
         }
     }
     Err(Error::new("Configured LAN interface is not active"))
+}
+/// Interfaces that are never the home network: the loopback, Docker's (docker0, and
+/// br-<12 hex> for each Docker network), Podman's, libvirt's virtual networks, container
+/// veths, Tailscale and VPN tunnels. A bridge of your own that carries the home network
+/// (br0, bridge0, br-lan) is not one of them (network_access.internal_interface agrees).
+fn internal_interface(name: &str) -> bool {
+    let docker_network = name.strip_prefix("br-").is_some_and(|id| {
+        id.len() == 12
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    });
+    docker_network
+        || [
+            "lo",
+            "docker",
+            "veth",
+            "virbr",
+            "podman",
+            "cni-",
+            "tailscale",
+            "tun",
+            "tap",
+            "wg",
+        ]
+        .iter()
+        .any(|s| name.starts_with(s))
 }
 pub fn run(a: &Args, gateway: bool) -> Result<()> {
     let cfg = backup::open_job(a, 64000)?.cfg;
@@ -100,9 +115,20 @@ mod tests {
     #[test]
     fn physical_lan_only() {
         let cfg = json!({"gateway":{"lan_ip":"192.168.1.20","lan_cidr":"192.168.1.0/24"}});
-        for name in ["enp3s0", "tailscale0", "docker0"] {
+        for name in [
+            "enp3s0",
+            "br0",
+            "bridge0",
+            "br-lan",
+            "tailscale0",
+            "docker0",
+            "br-0123456789ab",
+            "virbr0",
+            "veth12ab",
+        ] {
             let rows = json!([{"ifname":name,"addr_info":[{"family":"inet","scope":"global","local":"192.168.1.20","prefixlen":24}]}]);
-            assert_eq!(lan(&cfg, &rows).is_ok(), name == "enp3s0");
+            let home = ["enp3s0", "br0", "bridge0", "br-lan"].contains(&name);
+            assert_eq!(lan(&cfg, &rows).is_ok(), home, "{name}");
         }
     }
     #[test]

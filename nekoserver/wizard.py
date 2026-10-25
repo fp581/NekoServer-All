@@ -159,7 +159,8 @@ def setup_window(path, output):
     except (OSError, RuntimeError, ValueError):
         return None
     if setup_gui.open_window(config, window.url):
-        output('\nA setup window opened in your browser: it explains each step as it happens. Put it where you like.')
+        output('\nA setup window opened in your browser: it explains each step as it happens. Put it where you like.'
+               '\nClosed it by mistake? Open  ' + window.url + '  again in a browser on this PC.')
     else:
         output('\nTo follow along in a window, open  ' + window.url + '  in a browser on this PC.')
     return window
@@ -395,6 +396,8 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     window = setup_window(path, output) if prompt is builtins.input else None
     try:
         if wait_to_start(prompt, output, window):
+            if window is not None:
+                window.freeze()
             default_state = checked_path(default_state)
             args = argparse.Namespace(all=False, profile='full', module=None, retry_failed=False,
                                       apply=True, check=False, dry_run=False, config=str(path),

@@ -226,9 +226,12 @@ def existing_line(lines, uuid, mountpoint, entry):
     if not matches:
         return None
     index, found = matches[0]
-    # Older options are upgraded; with a subvolume the line must carry the same one.
+    # Older options are upgraded; with a subvolume the line must carry the same one. A
+    # line of NekoServer's without one mounted the filesystem's default tree: once that
+    # tree is known (and saved as the subvolume), the line is pinned to it.
     older = tuple(o + wanted[3][len(MOUNT_OPTIONS):] for o in OLDER_OPTIONS)
-    if len(matches) != 1 or found[:3] != wanted[:3] or len(found) < 4 or found[3] not in (wanted[3], *older):
+    default = (MOUNT_OPTIONS, *OLDER_OPTIONS) if wanted[3] != MOUNT_OPTIONS else ()
+    if len(matches) != 1 or found[:3] != wanted[:3] or len(found) < 4 or found[3] not in (wanted[3], *older, *default):
         theirs = '\n'.join('    ' + lines[i].strip() for i, _ in matches)
         raise RuntimeError(f'/etc/fstab already has a line for this drive (UUID {uuid}) or for {mountpoint}, '
                            f'which NekoServer did not write:\n{theirs}\nNekoServer mounts the drive itself at '
@@ -282,14 +285,7 @@ def run(context):
     resolve_storage_identity(context.config, inventory, apply=True, interactive=sys.stdin.isatty(), out_fn=context.log)
     remember_subvolumes(context.config)
     # Persist selected identities in a root-owned config for unattended reruns.
-    config_path = context.config_path
-    # The controller may supply a working config without a writable config file.
-    if hasattr(context,'persist_config'):
-        context.persist_config()
-    elif config_path is not None and config_path.is_file():
-        payload=json.loads(config_path.read_text())
-        payload['storage']=context.config['storage']
-        atomic_json(config_path,payload)
+    save_storage(context)
     specs = mount_specs(context.config)
     for _, uuid, fstype, target, _ in specs:
         validate_device(uuid, fstype)  # raises if the drive identity is wrong
@@ -300,17 +296,48 @@ def run(context):
                 raise RuntimeError(f'Wrong filesystem already mounted at {target}: {mounted}')
         elif Path(target).exists() and any(Path(target).iterdir()):
             raise RuntimeError(f'Refusing mount over nonempty directory {target}')
-    install_fstab(specs)
-    call(['systemctl', 'daemon-reload'])
-    for _, uuid, _, target, subvolume in specs:
-        mount_and_check(uuid, target, subvolume)
-        context.log(f'Mounted UUID={uuid} on {target}; fstab configured for reboot')
+    mount_all(context, specs)
     choose_usb(context)
+
+
+def save_storage(context):
+    """The drives' saved identities written to the settings file (unattended reruns)."""
+    config_path = context.config_path
+    # The controller may supply a working config without a writable config file.
+    if hasattr(context, 'persist_config'):
+        context.persist_config()
+    elif config_path is not None and config_path.is_file():
+        payload = json.loads(config_path.read_text())
+        payload['storage'] = context.config['storage']
+        atomic_json(config_path, payload)
+
+
+def mount_all(context, specs, fstab=Path('/etc/fstab')):
+    """fstab written, the drives mounted and checked. A Btrfs drive mounted for the first
+    time without a saved subvolume mounts the filesystem's default tree, which can be a
+    subvolume (`btrfs subvolume set-default`, `/@data` say): that tree is saved as the
+    drive's subvolume and its fstab line pinned to it, so a restart (or a later change of
+    the default) mounts the same files, and the next run finds the line its own."""
+    install_fstab(specs, fstab)
+    call(['systemctl', 'daemon-reload'])
+    pinned = []
+    for key, uuid, fstype, target, subvolume in specs:
+        found = mount_and_check(uuid, target, subvolume)
+        if found != subvolume:
+            context.config['storage'][key]['subvolume'] = found
+            pinned.append((key, uuid, fstype, target, found))
+            context.log(f'{target}: the drive\'s default Btrfs subvolume is {found}; saved, so it is always mounted')
+        context.log(f'Mounted UUID={uuid} on {target}; fstab configured for reboot')
+    if pinned:
+        save_storage(context)
+        install_fstab(mount_specs(context.config), fstab)
+        call(['systemctl', 'daemon-reload'])
 
 
 def mount_and_check(uuid, target, subvolume):
     """Mount the drive (unless it is) and make sure what is mounted is the drive, and the
-    Btrfs subvolume, the settings name."""
+    Btrfs subvolume, the settings name. Returns the subvolume mounted: with none saved
+    (the fstab line names none) that is the filesystem's default tree, whatever it is."""
     Path(target).mkdir(parents=True, exist_ok=True)
     if findmnt('TARGET', target) is None:
         call(['mount', target])
@@ -318,9 +345,10 @@ def mount_and_check(uuid, target, subvolume):
     if not Path(current).exists() or Path(current).resolve() != source_path(uuid):
         raise RuntimeError(f'Post-mount validation failed for {target}')
     found = mounted_subvolume(target)
-    if found != subvolume:
+    if subvolume is not None and found != subvolume:
         raise RuntimeError(f'{target} is mounted with Btrfs subvolume {found or "(default)"}, but the settings say '
-                           f'{subvolume or "(default)"}; a restart would mount a different tree')
+                           f'{subvolume}; a restart would mount a different tree')
+    return found
 
 
 def choose_usb(context):

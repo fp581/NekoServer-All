@@ -1,4 +1,4 @@
-# NekoServer v0.39.2
+# NekoServer v0.39.3
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -32,6 +32,7 @@ Also included: shared folders on your home network (Samba) and, if you want them
 - **Linux, 64-bit (x86_64)**, already installed, up to date, and connected to the internet. One of:
   - **Arch Linux** or **Nyarch**
   - **Debian 12** or newer, or **Ubuntu 24.04** or newer (also Linux Mint and other Ubuntu-based systems built on those)
+    - On Debian 12, setup builds NekoServer's program with Debian's newer Rust (`rustc-web`), since Debian 12's own `rustc` is too old. If you installed Debian's `rustc` yourself before, setup asks you to run `sudo apt install rustc-web cargo-web` once (it replaces the older one) and then `sudo bash install.sh` again.
   - **Fedora 42** or newer (new: tried only in a test setup so far; see *Fedora* below)
   - **RHEL 10**, **Rocky Linux 10**, **AlmaLinux 10** or **CentOS Stream 10**, or newer (new: tried only on AlmaLinux in a test setup so far; see *RHEL* below). Version 9 is not enough: its Python is too old.
   - **openSUSE Leap 16** or newer, **Tumbleweed** or **Slowroll** (tried on Leap 16 and Tumbleweed in a test setup; see *openSUSE* below). Leap 15 is not enough: its Python is too old.
@@ -93,7 +94,31 @@ Then the setup wizard explains what will happen and asks `Ready to start? [yes/n
 
 Whenever it needs you, it shows numbered instructions, opens the right page, and asks `Have you completed this step successfully? [yes/no]`. Answer `no` to see the step again.
 
-**The setup window.** Beside the terminal, setup opens a small window in your browser (put it at the bottom of the screen). Before it starts, the window explains the optional extras and lets you switch any of them off, and its **Start setup** button answers "Ready to start?". While setup runs it shows the step under way, the packages that step installs and what each one is for, and every question setup asks, which you can answer there or in the terminal; at the end it shows the finishing screen. It is served by setup itself, on this PC only. Without a desktop, setup prints the window's address instead and goes on in the terminal. See [GUIDED-SETUP.md](GUIDED-SETUP.md#the-setup-window).
+### Two ways to follow the installation: the terminal and the setup window
+
+It is one installation, which you can follow and answer in two places at the same time. Use whichever you like; you can switch between them at any moment.
+
+**1. The terminal** (always there). This is where the installation runs.
+
+1. Open a terminal: on most desktops press **Ctrl+Alt+T**, or open the apps menu and search for **Terminal** (it may be called Konsole, GNOME Terminal or Console).
+2. Go to the folder and start setup:
+
+   ```bash
+   cd NekoServer-All/nekoserver
+   sudo bash install.sh
+   ```
+
+3. Type your own login password when `sudo` asks for it (nothing appears while you type; that is normal) and press Enter.
+4. Answer the questions by typing and pressing Enter: `yes` or `no`, a number from a list, or a password. Keep this terminal open until the finishing screen: closing it stops the installation (running the command again continues where it stopped).
+
+**2. The setup window** (on a PC with a desktop). A few seconds after you start `sudo bash install.sh`, a small window opens in your web browser by itself. The terminal says so and shows the window's address, for example `http://127.0.0.1:40123/t/AbC.../`.
+
+- **Before setup starts** it explains the optional extras (a TV, phone alerts, outage alerts, Nextcloud) and has a switch for each. Leave on what you want, then press **Start setup** (the same as typing `yes` at "Ready to start?" in the terminal). From then on the choices are fixed; to change one later, edit `my-config.json` and run setup again.
+- **While setup runs** it shows the step under way, what that step installs and why, and every question setup asks, with buttons and boxes to answer it. Answer it there or in the terminal: whichever comes first counts.
+- **"Answer this step in the terminal"**: a few steps run a program of their own (connecting the media apps, music setup, the shared-folder password) whose questions can only be answered in the terminal. The window says so while they run; switch to the terminal for them.
+- **Closed the window, or it did not open?** Copy the address the terminal showed into a browser **on this PC** and it opens again. It works only on this PC (it is not reachable from another computer or a phone) and only while setup runs. Without a desktop, use the terminal alone; nothing is missing.
+
+More detail: [GUIDED-SETUP.md](GUIDED-SETUP.md#the-setup-window).
 
 **Stopped, or something not finished?** Run `sudo bash install.sh` again. It keeps everything already done and continues with the rest. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again.
 
@@ -158,7 +183,7 @@ What is copied, where, and when (times are in your `timezone`):
 - **Photos, videos and Nextcloud files are only ever added to the backup.** Nothing on it is overwritten or deleted. If you edit a file, the new version is saved next to the old one with a date in its name.
 - **Old snapshots are cleaned up automatically:** the newest 7 nightly (apps and settings), 4 weekly Immich database copies and 3 monthly snapshots are kept. Change `keep_snapshots` and `database_keep` in `my-config.json` to keep more, or set them to `0` to keep everything.
 - **On the 1st of each month**, at night, the server takes a snapshot, tests that it can be restored, then updates the apps. If an update fails, it goes back to the snapshot automatically. New major versions are only shown on the dashboard until you approve them (see [Optional settings](#optional-settings)).
-- **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content, and every 4 weeks every copy is compared by checksum.
+- **Weekly copies only add what is new.** Photos already backed up are recognised without being read again, so a weekly run takes minutes, not hours, even for a big library. Any file rewritten or replaced since its copy is compared by content. Once a month, as the first step of the monthly run (before its backup and updates), every copy is compared by checksum.
 - **An incomplete weekly copy is shown as one.** If some Nextcloud files could not be copied (open while copying, or names an exFAT USB drive cannot store, including two names that differ only in upper/lower case, such as `Documents` and `documents`, which exFAT treats as one), the dashboard and phone alerts say *Incomplete* and list them, instead of reporting success.
 
 **Getting something back.** Run `sudo bash install.sh --recover`. A menu asks what you want back (photos, Nextcloud files, the password list, app settings, or a whole monthly snapshot), lists the backups by date, and restores into a **new** folder, so nothing you have now is overwritten. It checks there is enough free space first, and waits if the weekly backup is using the USB drive. It ends by telling you how to put things back. More detail: [RECOVERY.md](RECOVERY.md).
@@ -204,11 +229,21 @@ A shortcut you changed or made yourself with the same name is never replaced. To
 
 ## Uninstalling
 
-```bash
-sudo bash uninstall.sh
-```
-
 It removes NekoServer from this PC: what you choose, after two confirmations, and it never formats a drive.
+
+1. Open a terminal (**Ctrl+Alt+T**, or search the apps menu for **Terminal**) and go to the folder you installed from:
+
+   ```bash
+   cd NekoServer-All/nekoserver
+   ```
+
+2. **Look first** (optional, changes nothing, no password needed): `bash uninstall.sh --dry-run` shows what each choice would remove, with sizes.
+3. **Start it:** `sudo bash uninstall.sh`, then type your login password.
+4. **Choose what goes.** A numbered checklist appears; `[x]` means it will be removed. Type a number and press Enter to switch that line on or off (several at once work too: `3 4`), `all` to take everything, or just press Enter when the list is the way you want it. Only NekoServer itself and the app containers are switched on to begin with: your photos, movies, Nextcloud files and backups stay unless you switch them on.
+5. **Check the plan.** It lists every folder that would go, with its size, and what stays. Type `yes` to go on (anything else stops, with nothing changed).
+6. **Type the phrase** it shows, exactly, for example `remove NekoServer and delete my photos, backups`. Then it removes what you chose and says what it did. Nothing removed can be brought back.
+
+What each choice means:
 
 - **NekoServer itself always goes:** its services and timers, programs, settings, the Samba shares and account it made, the Docker and Samba storage guards, the pages it served on your tailnet, its group, the desktop shortcuts.
 - **Everything else is a checklist** you switch on or off: the apps' containers and networks; the apps' data on the SSD (databases, settings, passwords, downloads, NekoServer's own files; Docker's data-root setting is put back); your photos and videos; your movies, shows and music; your Nextcloud files; the backups on the HDD and the USB drive; the drive mounts (the lines NekoServer wrote in `/etc/fstab`, the empty mount folders).

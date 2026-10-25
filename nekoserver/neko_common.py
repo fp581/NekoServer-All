@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.39.2'
+VERSION = '0.39.3'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -120,6 +120,10 @@ def local_opener(*handlers):
 # Where NekoServer's systemd units live; every one it writes starts with this.
 SYSTEMD_UNITS = Path('/etc/systemd/system')
 MANAGED_UNIT = '[Unit]\nDescription=NekoServer '
+# How long a snapshot's recovery (its resume service, and its ExecStopPost) may take: the
+# 3-hour wait for the shared recovery lock while another job holds it (backup.rs
+# coordinate), plus the recovery itself. Without a journal to process it returns at once.
+RESUME_TIMEOUT = '3h30min'
 # Docker waits for both drives (written by the docker step, checked by recovery).
 DOCKER_STORAGE_DROPIN = SYSTEMD_UNITS / 'docker.service.d/10-nekoserver-storage.conf'
 
@@ -502,10 +506,20 @@ def strict_files(root, skip=None, skip_dirs=()):
     return out
 
 
+LEDGER_LOCK = '.neko-ledger.lock'
+ATOMIC_TEMP = re.compile(r'\.neko-\d+-\d+-\d+')   # the backup program's atomic-write temporaries
+
+
 def not_backup_data(here, root, name):
-    """The tree's own ledger, notes and partial files: kept next to the data, not data."""
-    return (name.startswith('.neko-') or name.endswith((LATEST_SUFFIX, '.neko-part'))
-            or (here == root and name.startswith(LEDGER_NAME)))
+    """The tree's own ledger (with its lock, temporaries and an unreadable one set aside)
+    at the root, and in any folder the version names, current-version notes, partial
+    copies and atomic-write temporaries: kept next to the data, not data. Only these
+    exact names and patterns: a user's own `.neko-notes.txt` is data (backup.rs
+    metadata_name and ledger_file say the same)."""
+    if here == root and (name in (LEDGER_NAME, LEDGER_LOCK) or name.startswith(LEDGER_NAME + '.')):
+        return True
+    return (name == NAMES_FILE or name.endswith((LATEST_SUFFIX, '.neko-part'))
+            or ATOMIC_TEMP.fullmatch(name) is not None)
 
 
 def backup_files(root):

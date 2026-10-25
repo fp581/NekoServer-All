@@ -8,7 +8,7 @@ This is an installed server timer, not a ChatGPT reminder. It operates without t
 
 ## What the monthly snapshot holds
 
-The monthly snapshot is the software side of the server, taken just before updates so a failed update can be rolled back. It is written to the **HDD only**; the USB drive is not used by monthly maintenance and does not need to be connected. Each snapshot contains:
+The monthly snapshot is the software side of the server, taken just before updates so a failed update can be rolled back. It is written to the **HDD only**; the USB drive does not need to be connected (when it is, the checksum check below also covers it). Each snapshot contains:
 
 - Selected media app configuration/state and Compose definitions (no movies, shows, music or downloads).
 - Immich's and Nextcloud's cleanly stopped PostgreSQL data, application configuration and deployment files.
@@ -22,6 +22,9 @@ Before v0.21.1 each snapshot also held the full photo library and Nextcloud file
 
 ## Transaction and live tests
 
+The monthly run does three things, always in this order: **check, back up, update**.
+
+0. **Checksum check of your photo and file copies.** Every copy in the HDD photo archive is read and compared with its recorded checksum, and so is every copy on the USB drive when it is plugged in (the weekly copy runs then, reading everything). This finds damage that leaves a file's size and date unchanged. If anything is damaged, the run stops here: nothing is backed up or updated, the job shows as failed on the dashboard, and the file names are in its log (`journalctl -u nekoserver-maintenance`). Repair with `sudo bash install.sh --recover`. A USB drive that is not plugged in is checked in the next monthly run it is plugged in for. The hourly and weekly copies compare size and dates only, so they stay quick.
 1. Verify disks, free capacity, the running selected containers, persistent mounts and local application health. The existing native media audit must also show that selected app connections are configured and passing; incomplete onboarding blocks updates.
 2. Commit a private resume journal on the OS disk **before stopping writers**. Stop application/cron workers before databases and reject forced/OOM shutdowns. Refuse other containers writing into the covered state.
 3. Keep production apps stopped while making consistent uncompressed archives and saving old images. Verify the HDD snapshot. This avoids accepting uploads between a backup and a potentially failed migration.

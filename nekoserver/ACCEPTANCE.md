@@ -29,12 +29,12 @@ The recovery module preserves the current scripts/configuration under the config
 ## Collect a baseline, then check after reboot
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.39.2/acceptance.py --profile full
+sudo python3 /srv/nekoserver/installer/releases/v0.39.3/acceptance.py --profile full
 # Inspection only: no report write.
-sudo python3 /srv/nekoserver/installer/releases/v0.39.2/acceptance.py --profile full --save
+sudo python3 /srv/nekoserver/installer/releases/v0.39.3/acceptance.py --profile full --save
 # Now reboot normally through the desktop or your normal system administration flow.
 # After reboot, return to the same directory and run:
-sudo python3 /srv/nekoserver/installer/releases/v0.39.2/acceptance.py --profile full --save
+sudo python3 /srv/nekoserver/installer/releases/v0.39.3/acceptance.py --profile full --save
 ```
 
 --config can select another actual configuration file. --profile defaults to full and uses that profile's dependency closure. Standard scopes are foundation, media, photos, network, networking, lan_access, remote_access, media_monitor, dashboard, tv and full. Custom configured profiles can be inspected in the CLI, but the dashboard summary only displays the standard scopes. The dashboard-only profile does not inspect absent media applications, Docker or backup jobs.
@@ -70,7 +70,7 @@ A passing automatic check describes that evidence, not every possible behavior o
 The runner prints the tests required by the chosen profile. Perform each applicable test on the server, then use:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.39.2/acceptance.py --profile full --save --manual
+sudo python3 /srv/nekoserver/installer/releases/v0.39.3/acceptance.py --profile full --save --manual
 ```
 
 The command reruns automatic checks and, by default, opens relevant pages/apps and asks yes/no for each witnessed test. Yes records that specific test as user-reported; no repeats its instructions and reopens its targets. Ctrl+C leaves that test pending. Confirmation timestamps and user_reported labels are retained. Do not confirm a planned/unperformed test. These answers never override an automatic failure. With guided_setup.enabled=false, the legacy explicit PASS exact_test_id / FAIL exact_test_id / Enter prompt remains available.
@@ -82,6 +82,8 @@ The command reruns automatic checks and, by default, opens relevant pages/apps a
 | music_playback | Verify the configured music import and actual client streaming. |
 | photo_preservation | Upload disposable originals, verify their preservation/checksums, and test phone/Immich deletion behavior without risking real originals. |
 | independent_restore | Independently copy a matched snapshot, restore it to a fresh isolated workspace and open originals/videos/albums. Verify database and deletion behavior; see RECOVERY.md. |
+| cloud_restore | (Nextcloud with the USB copy) Restore one user's Nextcloud files with `sudo bash install.sh --recover` into a new folder and open a few of them. |
+| music_restore | (The music backup) Restore the newest music backup with `music-recovery.py` into a new folder and play a few songs. |
 | external_backup | Verify additive copies/checksums, safe disconnect/reconnect and interrupted-copy recovery; confirm deleted source files remain in backups. |
 | remote_permissions | Use actual intended clients, including an away-from-home test as applicable. Verify guest denial and protected-share write denial. Localhost application gateway remains deferred. |
 | tv_session | Test HDMI/audio, Xbox controller, Steam login/Remote Play, app shortcuts and AC idle behavior while jobs remain running. |

@@ -94,33 +94,45 @@ class InstallerFlowTests(unittest.TestCase):
         self.assertEqual(log.count('START storage'), 2, log)
         self.assertFalse((default / 'install.log').exists())
 
-    def test_backup_counts_left_at_the_old_defaults_move_to_the_new_ones(self):
+    def test_backup_counts_at_an_earlier_default_are_never_lowered_without_asking(self):
         # v0.30.0 keeps 7 nightly backups and 4 weekly database copies (3 monthly, as
-        # before). A settings file from an earlier template holds 14 and 8 without anyone
-        # having chosen them; a number someone did choose stays.
+        # before). An earlier settings file holds 14 and 8, which may be someone's choice:
+        # without anyone at the keyboard they stay, run after run.
         template = json.loads((ROOT / 'config.json').read_text())
         self.assertEqual((template['app_backup']['keep_snapshots'], template['host_backup']['keep_snapshots'],
                           template['photos']['database_keep'], template['maintenance']['keep_snapshots']), (7, 7, 4, 3))
-        self.assertEqual(installer.retire_old_defaults(template), [])
         config = json.loads(self.config.read_text())
         config['app_backup']['keep_snapshots'] = 14
-        config['host_backup']['keep_snapshots'] = 30
+        config['host_backup']['keep_snapshots'] = 14
         config['photos']['database_keep'] = 8
         self.config.write_text(json.dumps(config))
         (self.root / 'modules' / 'storage.py').write_text('DEPENDENCIES = []\ndef run(ctx):\n    pass\n')
         logged = []
-        with mock.patch('config_checks.validate'), mock.patch.object(installer.os.path, 'ismount', return_value=False), \
-                mock.patch('builtins.print', side_effect=lambda *a, **k: logged.append(' '.join(map(str, a)))):
-            installer._execute(self.args(module='storage'), self.root)
-        saved = json.loads(self.config.read_text())
-        self.assertEqual((saved['app_backup']['keep_snapshots'], saved['host_backup']['keep_snapshots'],
-                          saved['photos']['database_keep']), (7, 30, 4))
-        moved = [line for line in logged if 'Backups: the newest' in line]
-        self.assertEqual(len(moved), 2, logged)
-        self.assertIn('the newest 7 nightly app backups are kept now, not 14', moved[0])
-        self.assertIn('"database_keep" under "photos"', moved[1])
-        # Nothing moves twice.
-        self.assertEqual(installer.retire_old_defaults(saved), [])
+        for _ in range(2):
+            with mock.patch('config_checks.validate'), mock.patch.object(installer.os.path, 'ismount', return_value=False), \
+                    mock.patch('builtins.print', side_effect=lambda *a, **k: logged.append(' '.join(map(str, a)))):
+                installer._execute(self.args(module='storage'), self.root)
+            saved = json.loads(self.config.read_text())
+            self.assertEqual((saved['app_backup']['keep_snapshots'], saved['host_backup']['keep_snapshots'],
+                              saved['photos']['database_keep']), (14, 14, 8))
+        self.assertIn('the newest 14 nightly app backups stay kept', '\n'.join(logged))
+
+    def test_the_earlier_defaults_are_asked_about_once_and_the_answer_kept(self):
+        config = {'app_backup': {'keep_snapshots': 14}, 'host_backup': {'keep_snapshots': 14}, 'photos': {'database_keep': 8}}
+        answers = iter([True, False, True])      # fewer app backups and copies, keep 14 host backups
+        _, changed = installer.retire_old_defaults(config, ask=lambda question: next(answers))
+        self.assertTrue(changed)
+        self.assertEqual((config['app_backup']['keep_snapshots'], config['host_backup']['keep_snapshots'],
+                          config['photos']['database_keep']), (7, 14, 4))
+        self.assertTrue(config[installer.RETENTION_REVIEWED])
+        # Reviewed: a 14 seen later is a choice, never asked about or changed again.
+        config['app_backup']['keep_snapshots'] = 14
+        self.assertEqual(installer.retire_old_defaults(config, ask=lambda q: self.fail('asked again')), ([], False))
+        self.assertEqual(config['app_backup']['keep_snapshots'], 14)
+        # Nothing at an earlier default: marked as reviewed without a question.
+        fresh = {'app_backup': {'keep_snapshots': 7}}
+        self.assertEqual(installer.retire_old_defaults(fresh, ask=lambda q: self.fail('asked')), ([], True))
+        self.assertTrue(fresh[installer.RETENTION_REVIEWED])
 
 
 SPECS = [('data_ssd', 'aaa', 'ext4', '/srv/nekoserver', None), ('media_hdd', 'bbb', 'ext4', '/srv/media', None)]
@@ -193,6 +205,48 @@ class FstabTests(unittest.TestCase):
         config['storage']['data_ssd']['subvolume'] = 'bad name'
         with self.assertRaisesRegex(RuntimeError, 'subvolume'):
             storage.mount_specs(config)
+
+    def test_a_btrfs_default_subvolume_is_saved_on_the_first_mount_and_kept_on_a_retry(self):
+        # The drive's default subvolume is /@data (btrfs subvolume set-default); nothing saved.
+        self.fstab.write_text('UUID=root / ext4 defaults 0 1\n')
+        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/srv/media',
+                  'storage': {'data_ssd': {'uuid': 'ssd-uuid-0001', 'fstype': 'btrfs'},
+                              'media_hdd': {'uuid': 'hdd-uuid-0001', 'fstype': 'ext4'}}}
+        mounted, logged, saved = {}, [], []
+        sources = {'/srv/nekoserver': '/dev/sdb1[/@data]', '/srv/media': '/dev/sdc1'}
+
+        def findmnt(column, target, *more, run=None):
+            if target not in mounted:
+                return None
+            return target if column == 'TARGET' else sources[target]
+
+        def call(argv):
+            if argv[0] == 'mount':
+                mounted[argv[1]] = True
+            return ''
+        context = mock.Mock(config=config, log=logged.append, persist_config=lambda: saved.append(json.dumps(config)))
+        devices = {'ssd-uuid-0001': Path('/dev/sdb1'), 'hdd-uuid-0001': Path('/dev/sdc1')}
+        with mock.patch.object(storage, 'findmnt', side_effect=findmnt), \
+                mock.patch.object(storage, 'call', side_effect=call), \
+                mock.patch.object(storage, 'source_path', side_effect=devices.get), \
+                mock.patch.object(storage.Path, 'mkdir'), \
+                mock.patch.object(storage.Path, 'exists', return_value=True), \
+                mock.patch.object(storage.Path, 'resolve', lambda self: self):
+            storage.mount_all(context, storage.mount_specs(config), self.fstab)
+            self.assertEqual(config['storage']['data_ssd']['subvolume'], '/@data')
+            self.assertIn('/@data', saved[-1])
+            self.assertIn('default Btrfs subvolume is /@data', '\n'.join(logged))
+            lines = self.fstab.read_text().splitlines()
+            self.assertTrue(lines[1].endswith('device-timeout=90s,subvol=/@data 0 2'), lines)
+            self.assertNotIn('subvol', lines[2])
+            # A retry from scratch: the drive mounted from the earlier run's line without
+            # subvol= (as a run cut off before pinning it would leave it) is still ours.
+            self.fstab.write_text('UUID=root / ext4 defaults 0 1\n'
+                                  'UUID=ssd-uuid-0001 /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=90s 0 2\n')
+            storage.remember_subvolumes(config, run=lambda argv, **_: mock.Mock(returncode=0, stdout=sources[argv[-1]] + '\n'))
+            storage.mount_all(context, storage.mount_specs(config), self.fstab)
+            self.assertIn('device-timeout=90s,subvol=/@data 0 2', self.fstab.read_text())
+            self.assertEqual(self.fstab.read_text().count('ssd-uuid-0001'), 1)
 
     def test_a_line_someone_else_wrote_still_stops_setup(self):
         original = 'UUID=aaa /srv/nekoserver ext4 defaults,noatime 0 2\n'

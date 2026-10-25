@@ -388,16 +388,6 @@ class CapacityTests(unittest.TestCase):
         _, warn = self.assess(500, 4000, usb=30, photos=100, pending=5, dump=20)
         self.assertTrue(any('still has to add 25 GB' in w for w in warn))
 
-    def test_a_rerun_never_reads_every_photo_for_the_four_weekly_check(self):
-        seen = []
-        usb = lambda uuid, pairs, full=False, **_: seen.append(full) or (500 * GIB, 0)
-        common = {'free': lambda p: 900 * GIB, 'used': lambda p: 0, 'usb_space': usb, 'dump': lambda c: 0,
-                  'unarchived': lambda c: 0}
-        with mock.patch.object(capacity, 'full_check_due', return_value=True):
-            capacity.assess(self.CONFIG, **common)
-            capacity.assess(self.CONFIG, thorough=False, **common)
-        self.assertEqual(seen, [True, False])
-
     def test_pending_counts_only_new_and_changed_files(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -407,7 +397,7 @@ class CapacityTests(unittest.TestCase):
                 hdd / 'photos/archive/upload/u/new.jpg': (b'b' * 20, None),
                 hdd / 'photos/archive/library/changed.xmp': (b'c' * 30, b'c' * 5),
                 hdd / 'cloud/files/alice/files/doc.txt': (b'd' * 40, None),
-                hdd / 'cloud/files/appdata_x/files/skip.bin': (b'e' * 50, None),
+                hdd / 'cloud/files/appdata_oc1a2b3c4d5e/files/skip.bin': (b'e' * 50, None),
                 hdd / 'photos/archive/upload/u/live.jpg.part': (b'f' * 60, None),
             }
             for path, (source, copy) in files.items():
@@ -442,11 +432,32 @@ class CapacityTests(unittest.TestCase):
         _, warn = self.assess(500, 4000, usb=30, pending=20, unarchived=15)
         self.assertTrue(any('still has to add 35 GB' in w for w in warn), warn)
 
+    def test_a_future_dated_database_copy_is_not_the_newest(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / 'backups/immich-database'
+            folder.mkdir(parents=True)
+            (folder / 'immich-20261025T021500Z.sql').write_bytes(b'x' * 10)
+            (folder / 'immich-20300101T021500Z.sql').write_bytes(b'x' * 99)
+            self.assertEqual(capacity.newest_dump_bytes({'media_mount': d}, now=1_792_900_000.0), 10)
+
+    def test_a_user_named_appdata_something_is_counted(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config = {'data_mount': root / 'ssd', 'media_mount': root / 'hdd'}
+            for user in ('appdata_alice', 'appdata_ocq1w2e3r4t5', 'appdata_ocabcdefghij'):
+                (root / 'hdd/cloud/files' / user / 'files').mkdir(parents=True)
+            users = lambda: sorted(n for _, n in capacity.usb_sources(config) if n.startswith('nextcloud/'))  # noqa: E731
+            # Without config.php: Nextcloud's own name form only.
+            self.assertEqual(users(), ['nextcloud/appdata_alice/files'])
+            # With it: exactly its instance's folder.
+            php = root / 'ssd/appdata/nextcloud/html/config/config.php'
+            php.parent.mkdir(parents=True)
+            php.write_text("<?php\n$CONFIG = array (\n  'instanceid' => 'ocq1w2e3r4t5',\n);\n")
+            self.assertEqual(users(), ['nextcloud/appdata_alice/files', 'nextcloud/appdata_ocabcdefghij/files'])
+
     def test_a_damaged_usb_photo_counts_its_full_replacement(self):
         # The weekly mirror keeps a damaged USB copy aside and writes the archive file
         # again; the estimate must count that, following the mirror's own checks.
-        import json as json_module
-        import time
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             archive, usb = root / 'hdd/photos/archive', root / 'usb'
@@ -459,16 +470,9 @@ class CapacityTests(unittest.TestCase):
             (usb / 'upload/current.mp4').write_bytes(b'Z' * 40)  # damaged, same size, newer
             (usb / 'upload/other.mp4').write_bytes(b'Y' * 30)    # damaged, same size, newer
             pairs = [(archive / 'upload', 'upload')]
-            # Weekly: the noted file is checked by checksum, the other one is not (yet).
+            # Weekly: the noted file is checked by checksum, the other one is not (the
+            # monthly checksum check compares everything).
             self.assertEqual(capacity.pending_bytes(usb, pairs, mirror=('upload',)), 40)
-            # The 4-weekly full check compares everything.
-            self.assertEqual(capacity.pending_bytes(usb, pairs, mirror=('upload',), full=True), 70)
-            config = {'data_mount': root / 'ssd'}
-            self.assertTrue(capacity.full_check_due(config))
-            report = root / 'ssd/reports/jobs/external-full-check.json'
-            report.parent.mkdir(parents=True)
-            report.write_text(json_module.dumps({'at': time.time()}))
-            self.assertFalse(capacity.full_check_due(config))
 
     def test_a_same_size_edit_needs_room_again(self):
         with tempfile.TemporaryDirectory() as d:
@@ -603,6 +607,20 @@ class RecoveryWizardTests(unittest.TestCase):
         restored = next((self.media / 'restored').iterdir())
         self.assertIn('nextcloud-bob', restored.name)
         self.assertEqual((restored / 'files/todo.txt').read_bytes(), b'todo')
+
+    def test_what_a_change_of_shape_set_aside_is_restored_too(self):
+        # A file "Projects" that became a folder: the backup kept the file aside, dated.
+        usb = self.root / 'usb'
+        self.write('usb/nextcloud/alice/files/Projects/notes.txt', b'notes')
+        self.write('usb/nextcloud/alice/neko-replaced/20261025T010000Z/Projects', b'the old file')
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+            out = []
+            recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'yes'), out.append)
+        restored = next((self.media / 'restored').iterdir())
+        self.assertEqual((restored / 'files/Projects/notes.txt').read_bytes(), b'notes')
+        self.assertEqual((restored / 'replaced earlier/20261025T010000Z/Projects').read_bytes(), b'the old file')
+        self.assertIn('replaced earlier', '\n'.join(out))
 
     def test_files_encrypted_by_nextcloud_are_not_called_ready_to_upload(self):
         usb = self.root / 'usb'

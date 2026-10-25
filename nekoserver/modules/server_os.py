@@ -45,6 +45,26 @@ def hdd_guard(config):
     return {**native_runtime.storage_config(config), 'server_os': {'hdd_policy':policy, 'hdd_idle_minutes':config.get('server_os',{}).get('hdd_idle_minutes',60)}}
 
 
+# The sleep targets that were masked before NekoServer masked them: the uninstaller
+# unmasks only the others, so a PC that was kept awake on purpose stays that way.
+MASKS_BEFORE = Path('/etc/nekoserver-os/sleep-masks-before.json')
+
+
+def masked(name, units=SYSTEMD_UNITS):
+    path = Path(units) / name
+    return path.is_symlink() and os.readlink(path) == '/dev/null'
+
+
+def remember_masks(definitions, record=MASKS_BEFORE, units=SYSTEMD_UNITS):
+    """Written once, the first time: which targets were already masked. An install from
+    before this record (its own drop-ins are there already) masked them itself: none."""
+    if record.exists():
+        return
+    ours = any(Path(name).is_file() and Path(name).read_text().startswith(MARKER) for name in definitions)
+    before = [] if ours else [name for name in TARGETS if masked(name, units)]
+    atomic_json(record, {'format': 'neko-sleep-masks-v1', 'masked_before': before})
+
+
 def files(config):
     _, values = settings(config)
     return {
@@ -70,13 +90,16 @@ def drive_devices(config, run=subprocess.run):
 
 def drive_unit(binary, devices):
     """Run whenever either drive appears (at boot too, when there is nothing to do), after
-    the drives have been mounted at boot."""
+    the drives have been mounted at boot: the drives mounted again, Docker and the shares
+    started, then each job a missing drive cut off finished (drive_return.rs)."""
     return (
         '[Unit]\nDescription=NekoServer bring the apps back when a drive returns\n'
         'After=local-fs.target\n'
         '[Service]\nType=oneshot\n'
         f'ExecStart={binary} drive-return --config {DRIVE_SETTINGS}\n'
-        'TimeoutStartSec=900\n'
+        # It waits up to 10 minutes for a drive, then finishes any job the drive cut off
+        # (a monthly update's rollback included), which must never be cut off itself.
+        'TimeoutStartSec=infinity\n'
         '[Install]\nWantedBy=' + ' '.join(devices) + '\n'
     )
 
@@ -122,6 +145,7 @@ def run(context):
                 raise RuntimeError('Custom sleep target link preserved')
         elif path.exists():
             raise RuntimeError('Custom sleep target unit preserved')
+    remember_masks(definitions)
     for name, content in definitions.items():
         atomic_write(Path(name), content, 0o644)
     subprocess.run(['systemctl', 'mask', *TARGETS], check=True, capture_output=True, timeout=30)

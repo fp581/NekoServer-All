@@ -51,7 +51,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 A missing reading shows "—" or "No load reading", never a made-up 0. If a sensor you expect is missing, see Help → *A sensor is missing*. Most motherboard chips need `lm_sensors` (`sudo pacman -S lm_sensors` on Arch, `sudo apt-get install lm-sensors` on Debian/Ubuntu, then `sudo sensors-detect` and a restart). To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.39.2/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.39.3/nekoserver-runtime hardware
 ```
 
 ## Fans & lights
@@ -123,7 +123,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.39.2` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.39.3` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ## What runs, and what it can see
 
@@ -151,7 +151,7 @@ sudo journalctl -u nekoserver-dashboard-collect.service -n 50
 | Temperature on Home | Hottest processor sensor. Warnings at 80 °C, critical at 95 °C (monitoring limits, not chip limits). |
 | Drives | Space from the mounted, identity-checked SSD and HDD; health from read-only SMART every 30 minutes. A sleeping drive is not woken, so its health can show "Not checked yet". |
 | Apps | Docker containers by their NekoServer project. "Running" doesn't prove an app works; the app checks and the acceptance checklist do. |
-| Backups | Each job's last attempt, last success and schedule. Checksums show whether copied files matched at the **last recorded check**; a check with no valid date, or older than two weeks, is not shown as passed. *Restore tried* counts only the witnessed restore tests for the backups this server makes (photos, apps, host and user files), and says which were tested. |
+| Backups | Each job's last attempt, last success and schedule. Checksums show whether copied files matched at the **last recorded check**; a check with no valid date, or older than two weeks, is not shown as passed. *Restore tried* counts the witnessed restore tests for each kind of data this server backs up (photos, Nextcloud files, music, app settings, host and user files), says which were tested, and shows **Yes** only once every one of them has passed. A USB copy that holds both photos and Nextcloud files needs both tests. A backup that is switched off (its app is not set up) shows as *Switched off* and needs no test. |
 
 Warnings appear for missing drives, drives 90% full (critical at 97%), SMART problems, stopped apps, failed or overdue backups, damaged backup files, and anything that won't start after a restart.
 

@@ -53,6 +53,15 @@ def definitions(config, binary, private):
     }
 
 
+def saved_endpoint(private):
+    """The ping URL set up before ('' when none), from its root-only file."""
+    if not private.exists():
+        return ''
+    if private.stat().st_uid != 0 or private.stat().st_mode & 0o077:
+        raise RuntimeError('Existing heartbeat configuration must be root-owned and private')
+    return json.loads(private.read_text()).get('endpoint', '')
+
+
 def run(context):
     interval(context.config)
     if not context.apply:
@@ -60,11 +69,13 @@ def run(context):
         return
     if os.geteuid() != 0:
         raise RuntimeError('Heartbeat requires root')
+    from modules._schedules import switched_off
+    if switched_off(context.config, 'heartbeat', 'nekoserver-heartbeat', context.log):
+        context.log('Outage monitor: off by choice. This server no longer checks in, so pause (or delete) the '
+                    'check at your outside monitor too, or it will report an outage it is expecting.')
+        return
     private = safe_path(PRIVATE)
-    if private.exists() and (private.stat().st_uid != 0 or private.stat().st_mode & 0o077):
-        raise RuntimeError('Existing heartbeat configuration must be root-owned and private')
-    saved = json.loads(private.read_text()) if private.exists() else {}
-    address = saved.get('endpoint', '')
+    address = saved_endpoint(private)
     if not address and guided_setup.wanted(context, 'heartbeat', 'Outage alerts if the server goes offline', [
             'An outside service (such as Healthchecks.io) can email you when this server stops',
             'checking in, for example after a power cut. It needs a free account there.',

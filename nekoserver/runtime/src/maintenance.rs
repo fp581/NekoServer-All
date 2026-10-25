@@ -1695,11 +1695,78 @@ fn nextcloud_major_step(cfg: &Value, folder: &Path) -> Result<Option<(u64, u64)>
         _ => Ok(None),
     }
 }
+/// The major of a Nextcloud image tag setup accepts: `nextcloud:33-apache`,
+/// `nextcloud:33.0-apache` or `nextcloud:33.0.10-apache` (nextcloud.py checks the same).
+fn nextcloud_tag_major(image: &str) -> Option<u64> {
+    regex::Regex::new(r"^nextcloud:(\d+)(?:\.\d+){0,2}-apache$")
+        .unwrap()
+        .captures(image)?[1]
+        .parse()
+        .ok()
+}
+/// Every saved Nextcloud tag of major `from`, in any accepted form, moved to the
+/// approved major's own stream (`nextcloud:{to}-apache`).
 fn retag_nextcloud(text: &str, from: u64, to: u64) -> String {
-    text.replace(
-        &format!("\"nextcloud:{from}-apache\""),
-        &format!("\"nextcloud:{to}-apache\""),
-    )
+    regex::Regex::new(&format!(r#""nextcloud:{from}(?:\.\d+){{0,2}}-apache""#))
+        .unwrap()
+        .replace_all(text, format!("\"nextcloud:{to}-apache\"").as_str())
+        .into_owned()
+}
+/// The candidate's Nextcloud and its cron worker moved to the approved major; an error
+/// when either would stay on another one (the upgrade would silently not happen).
+fn step_nextcloud_images(candidate: &mut Value, from: u64, to: u64) -> Result<()> {
+    for service in ["nextcloud", "cron"] {
+        let image = &mut candidate["services"][service]["image"];
+        if image.as_str().and_then(nextcloud_tag_major) == Some(from) {
+            *image = json!(format!("nextcloud:{to}-apache"));
+        }
+        if image.as_str().and_then(nextcloud_tag_major) != Some(to) {
+            return Err(Error::new(&format!(
+                "Nextcloud: the approved major {to} could not be selected for its {service} \
+                 service (image {}); nothing was changed",
+                image.as_str().unwrap_or("missing")
+            )));
+        }
+    }
+    Ok(())
+}
+/// Nextcloud's own `occ status` reports the approved major.
+fn reached_major(status: &str, to: u64) -> bool {
+    serde_json::from_str::<Value>(status.trim())
+        .ok()
+        .is_some_and(|v| {
+            v["versionstring"]
+                .as_str()
+                .and_then(|s| s.split('.').next())
+                .and_then(|s| s.parse::<u64>().ok())
+                == Some(to)
+        })
+}
+/// After the approved major started: Nextcloud really runs it, or the update fails
+/// (and is rolled back) instead of reporting a success it did not have.
+fn nextcloud_reached(snapshot: &Path, to: u64) -> Result<()> {
+    let said = compose(
+        &candidate_file(snapshot, "nextcloud", false),
+        "neko-nextcloud",
+        &[
+            "exec",
+            "-T",
+            "-u",
+            "www-data",
+            "nextcloud",
+            "php",
+            "occ",
+            "status",
+            "--output=json",
+        ],
+    )?;
+    if reached_major(&said, to) {
+        Ok(())
+    } else {
+        Err(Error::new(&format!(
+            "Nextcloud did not reach the approved major {to}; the update is rolled back"
+        )))
+    }
 }
 
 fn automated_media_ready(report: &Value) -> bool {
@@ -2081,7 +2148,90 @@ fn open_up(
     }
     Ok(())
 }
+/// What the monthly checksum check covers: (the HDD photo archive folder, when Immich
+/// is set up; the USB copy's options, when its drive is named and something is copied).
+fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>) {
+    let photos = &cfg["photos"];
+    let immich = photos["deploy_immich"] == true;
+    let media = Path::new(cfg["media_mount"].as_str().unwrap_or(""));
+    let archive_dir = photos["archive_dir"]
+        .as_str()
+        .unwrap_or("photos/archive")
+        .to_string();
+    let uuid = photos["external_backup_uuid"].as_str().unwrap_or("").trim();
+    let cloud = cfg["nextcloud"]["enabled"] == true;
+    let usb = (!uuid.is_empty() && (immich || cloud)).then(|| {
+        let mut options = std::collections::BTreeMap::new();
+        for (key, value) in [
+            ("uuid", uuid.to_string()),
+            (
+                "fstype",
+                photos["external_backup_fstype"]
+                    .as_str()
+                    .unwrap_or("ext4")
+                    .to_string(),
+            ),
+            (
+                "dest",
+                cfg["external_backup_mount"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+            ("media-root", media.to_string_lossy().into_owned()),
+            ("data", cfg["data_mount"].as_str().unwrap_or("").to_string()),
+            ("config", cfgpath.to_string_lossy().into_owned()),
+        ] {
+            options.insert(key.to_string(), value);
+        }
+        if immich {
+            options.insert(
+                "source".into(),
+                media.join(&archive_dir).to_string_lossy().into_owned(),
+            );
+        }
+        if cloud {
+            options.insert(
+                "cloud".into(),
+                media.join("cloud/files").to_string_lossy().into_owned(),
+            );
+        }
+        Args(options)
+    });
+    (immich.then_some(archive_dir), usb)
+}
+/// The monthly run's first step, before anything is backed up or updated: every backup
+/// copy compared with its recorded checksum (the hourly and weekly copies compare only
+/// size and dates). Damage stops the run here, with nothing changed. The USB drive is
+/// checked when it is plugged in.
+fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<()> {
+    let data = Path::new(string(cfg, "data_mount")?);
+    let media = Path::new(string(cfg, "media_mount")?);
+    let (archive, usb) = copies_to_check(cfg, cfgpath);
+    if let Some(archive_dir) = archive {
+        if media.join(&archive_dir).is_dir() {
+            common::stage("checking every photo copy on the HDD by checksum");
+            let age = cfg["photos"]["archive_min_age_seconds"]
+                .as_u64()
+                .unwrap_or(600);
+            backup::monthly_archive_check(cfgpath, data, media, &archive_dir, age)?;
+        }
+    }
+    if let Some(options) = usb {
+        let uuid = options.get("uuid")?;
+        if Path::new("/dev/disk/by-uuid").join(uuid).exists() {
+            common::stage("checking every copy on the USB drive by checksum");
+            backup::monthly_usb_check(&options)?;
+        } else {
+            println!("USB drive not plugged in: its copies are checked by checksum in a monthly run it is plugged in for");
+        }
+    }
+    Ok(())
+}
 fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
+    mounts(cfgpath, cfg, false)?;
+    // First the checksum check, then the backup, then the updates.
+    check_copies(cfgpath, cfg)?;
     mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
@@ -2247,14 +2397,7 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
             }
             if let Some((from, to)) = step {
                 println!("Nextcloud: installing approved major {to} (from {from})");
-                for service in ["nextcloud", "cron"] {
-                    if candidate["services"][service]["image"]
-                        == json!(format!("nextcloud:{from}-apache"))
-                    {
-                        candidate["services"][service]["image"] =
-                            json!(format!("nextcloud:{to}-apache"));
-                    }
-                }
+                step_nextcloud_images(&mut candidate, from, to)?;
                 nextcloud_step = Some((from, to));
             }
         }
@@ -2314,7 +2457,12 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<()> {
         &snapshot,
         &start,
         &check,
-        || integrations(cfgpath, cfg, true).and_then(|_| mounts(cfgpath, cfg, false)),
+        || {
+            if let Some((_, to)) = nextcloud_step {
+                nextcloud_reached(&snapshot, to)?;
+            }
+            integrations(cfgpath, cfg, true).and_then(|_| mounts(cfgpath, cfg, false))
+        },
         || {
             // Persist successful image identities for installer reruns and reboot reproducibility.
             for name in &names {
@@ -2433,6 +2581,32 @@ fn committed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_monthly_check_covers_the_copies_that_are_set_up() {
+        let cfgpath = Path::new("/etc/nekoserver-backups/maintenance.json");
+        let both = json!({"data_mount":"/srv/nekoserver","media_mount":"/mnt/m","external_backup_mount":"/mnt/usb",
+            "photos":{"deploy_immich":true,"external_backup_uuid":"cccc-3333","external_backup_fstype":"exfat"},
+            "nextcloud":{"enabled":true}});
+        let (archive, usb) = copies_to_check(&both, cfgpath);
+        assert_eq!(archive.as_deref(), Some("photos/archive"));
+        let usb = usb.unwrap();
+        assert_eq!(usb.get("source").unwrap(), "/mnt/m/photos/archive");
+        assert_eq!(usb.get("cloud").unwrap(), "/mnt/m/cloud/files");
+        assert_eq!(usb.get("fstype").unwrap(), "exfat");
+        assert_eq!(usb.get("config").unwrap(), cfgpath.to_str().unwrap());
+        // Nextcloud only: no archive, and the USB copy without photos.
+        let cloud = json!({"media_mount":"/mnt/m","photos":{"deploy_immich":false,"external_backup_uuid":"cccc-3333"},
+            "nextcloud":{"enabled":true}});
+        let (archive, usb) = copies_to_check(&cloud, cfgpath);
+        assert!(archive.is_none());
+        assert!(!usb.unwrap().flag("source"));
+        // No USB drive named, or nothing to copy to it.
+        let none = json!({"media_mount":"/mnt/m","photos":{"deploy_immich":true}});
+        assert!(copies_to_check(&none, cfgpath).1.is_none());
+        let off = json!({"media_mount":"/mnt/m","photos":{"external_backup_uuid":"cccc-3333"}});
+        let (archive, usb) = copies_to_check(&off, cfgpath);
+        assert!(archive.is_none() && usb.is_none());
+    }
     use std::os::unix::fs::DirBuilderExt;
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("neko-prune-{name}-{}", std::process::id()));
@@ -3266,6 +3440,35 @@ mod tests {
             ),
             "{\"image\": \"nextcloud:32-apache\", \"x\": \"postgres:17\"}"
         );
+        // Exact tags setup accepts move too; another major's tag stays.
+        assert_eq!(
+            retag_nextcloud(
+                "\"nextcloud:33.0.10-apache\" \"nextcloud:33.1-apache\" \"nextcloud:330-apache\"",
+                33,
+                34
+            ),
+            "\"nextcloud:34-apache\" \"nextcloud:34-apache\" \"nextcloud:330-apache\""
+        );
+        assert_eq!(nextcloud_tag_major("nextcloud:33.0.10-apache"), Some(33));
+        assert_eq!(nextcloud_tag_major("nextcloud:33-apache"), Some(33));
+        assert_eq!(nextcloud_tag_major("nextcloud:33.0.10"), None);
+        let mut exact = json!({"services":{"nextcloud":{"image":"nextcloud:33.0.10-apache"},
+            "cron":{"image":"nextcloud:33.0.10-apache"}}});
+        step_nextcloud_images(&mut exact, 33, 34).unwrap();
+        assert_eq!(
+            exact["services"]["nextcloud"]["image"],
+            "nextcloud:34-apache"
+        );
+        assert_eq!(exact["services"]["cron"]["image"], "nextcloud:34-apache");
+        let mut odd = json!({"services":{"nextcloud":{"image":"nextcloud:33-apache"},
+            "cron":{"image":"example/nextcloud-cron:1"}}});
+        assert!(step_nextcloud_images(&mut odd, 33, 34).is_err());
+        assert!(reached_major(
+            "{\"installed\":true,\"versionstring\":\"34.0.1\"}\n",
+            34
+        ));
+        assert!(!reached_major("{\"versionstring\":\"33.0.10\"}", 34));
+        assert!(!reached_major("not json", 34));
         let root = std::env::temp_dir().join(format!("neko-ncstep-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         fs::write(

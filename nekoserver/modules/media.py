@@ -288,6 +288,7 @@ def _run(context):
         except Exception as exc:
             context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')
             failed.append(str(exc) if str(exc).startswith(name) else f'{name}: {exc}')
+    stop_unselected(compose_dir, selected, context.log)
     if failed:
         # The reason belongs on the finishing screen too, not only in the log.
         reasons = ' | '.join(failed)
@@ -295,6 +296,22 @@ def _run(context):
             reasons += '. Fix that, then run setup again'
         raise RuntimeError(f'Some apps did not start. {reasons} (the apps that started are kept)')
     context.log('Media stack deployed. Run the onboarding module to connect accounts, libraries and API keys; verify actual playback.')
+
+
+def stop_unselected(compose_dir, selected, log, run=None):
+    """A media app taken out of media.services is stopped: its containers are removed
+    (`docker compose down`, never with its volumes), its settings, data and Compose file
+    stay. Otherwise it would go on running, and changing files, without the dashboard,
+    the nightly backup or the monthly update looking after it. Putting it back in the
+    list starts it again with everything as it was."""
+    run = run or run_cmd
+    for name in SERVICES:
+        dest = compose_dir / name / 'compose.yaml'
+        if name in selected or not dest.is_file() or dest.is_symlink():
+            continue
+        run(['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest), 'down'], timeout=300)
+        log(f'{name}: not in media.services any more, so it is stopped; its settings and data stay '
+            f'(add it back to start it again)')
 
 
 def adopt_seerr_folder(folder, uid, gid, log=print):

@@ -477,6 +477,21 @@ def restore_photos(config, prompt, output):
         f'Your current Immich library ({data / "photos/immich-library"}) was not touched.')
 
 
+# Beside a user's backed-up files: what a later change of shape replaced (a file that
+# became a folder, or a folder that became a file), under the date it was set aside and
+# its own path (backup.rs REPLACED).
+REPLACED = 'neko-replaced'
+
+
+def cloud_sources(usb, user):
+    """The user's files, and what was set aside when a file became a folder (or back)."""
+    sources = [('files', usb / 'nextcloud' / user / 'files')]
+    replaced = usb / 'nextcloud' / user / REPLACED
+    if replaced.is_dir() and not replaced.is_symlink():
+        sources.append(('replaced earlier', replaced))
+    return sources
+
+
 def restore_cloud(config, prompt, output):
     with Usb(config) as usb:
         users = cloud_users(usb) if usb else []
@@ -490,8 +505,8 @@ def restore_cloud(config, prompt, output):
         if target is None:
             return
         output('Copying...')
-        count, latest = copy_choice([('files', usb / 'nextcloud' / user / 'files')], target, prompt, output,
-                                    ledger_root=usb / 'nextcloud')
+        sources = cloud_sources(usb, user)
+        count, latest = copy_choice(sources, target, prompt, output, ledger_root=usb / 'nextcloud')
     if encrypted_by_nextcloud(target):
         say(output, f'\nDone: {count} files copied to {target}, but they are ENCRYPTED by Nextcloud\'s',
             'server-side encryption, and the keys to read them are not in this backup.',
@@ -501,6 +516,9 @@ def restore_cloud(config, prompt, output):
         return
     say(output, f'\nDone: {count} files copied to {target}',
         *(() if latest else (VERSIONS_EXPLAINED,)),
+        *(() if len(sources) == 1 else (
+            '"replaced earlier" holds what was in the way when a file became a folder (or a folder',
+            'a file), in a folder named after the date it was set aside.',)),
         'To put them back: open Nextcloud in a browser (or the desktop app) and upload the',
         'files you need. Your current Nextcloud files were not touched.')
 

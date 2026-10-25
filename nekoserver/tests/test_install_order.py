@@ -313,9 +313,9 @@ class HardwareVideoTests(unittest.TestCase):
 
         def check(app, node):
             probed.append((app, node))
-            return node == amd[1]          # Intel fails the check, AMD passes
+            return {'codecs': ['h264'], 'encode': True} if node == amd[1] else None   # Intel fails, AMD passes
 
-        def jellyfin(entry, method, node, client, ours=False, several=False):
+        def jellyfin(entry, method, node, client, video, ours=False, several=False):
             set_to['jellyfin'] = (method, node)
             return 'on (' + method + ')'
         client = mock.Mock()
@@ -330,7 +330,7 @@ class HardwareVideoTests(unittest.TestCase):
         self.assertEqual(done, {'jellyfin': 'on (vaapi)'})
         # No chip passes: software, without trying to log in.
         done = hv.apps_on({}, [intel], lambda line: None, client_factory=None, apps=['jellyfin'],
-                          check=lambda app, node: False)
+                          check=lambda app, node: None)
         self.assertEqual(done, {'jellyfin': hv.SOFTWARE})
 
     def test_render_nodes_read_the_chip_vendor(self):
@@ -370,22 +370,22 @@ class HardwareVideoTests(unittest.TestCase):
                 return {}
         entry = {'username': 'admin', 'password': 'pw'}
         fake = Fake({'HardwareAccelerationType': 'none'}, {'accel': 'disabled'})
-        self.assertEqual(hv.configure_jellyfin(entry, 'qsv', '/dev/dri/renderD129', fake), 'on (qsv)')
+        self.assertEqual(hv.configure_jellyfin(entry, 'qsv', '/dev/dri/renderD129', fake, {'codecs': ['h264', 'hevc'], 'encode': True}), 'on (qsv)')
         # Quick Sync's own device setting, not VA-API's.
         self.assertEqual(fake.saved['jellyfin']['QsvDevice'], '/dev/dri/renderD129')
         self.assertNotIn('VaapiDevice', fake.saved['jellyfin'])
-        hv.configure_jellyfin(entry, 'vaapi', '/dev/dri/renderD128', fake)
+        hv.configure_jellyfin(entry, 'vaapi', '/dev/dri/renderD128', fake, {'codecs': ['h264', 'hevc'], 'encode': True})
         self.assertEqual(fake.saved['jellyfin']['VaapiDevice'], '/dev/dri/renderD128')
         self.assertTrue(fake.saved['jellyfin']['EnableHardwareEncoding'])
         # The chip that passed the check, not whichever Immich would pick by itself.
-        self.assertEqual(hv.configure_immich(entry, 'vaapi', '/dev/dri/renderD129', fake), 'on (vaapi)')
+        self.assertEqual(hv.configure_immich(entry, 'vaapi', '/dev/dri/renderD129', fake, {'codecs': ['h264', 'hevc'], 'encode': True}), 'on (vaapi)')
         self.assertEqual(fake.saved['immich']['ffmpeg'], {'accel': 'vaapi', 'accelDecode': True, 'preferredHwDevice': '/dev/dri/renderD129'})
         second = Fake({'HardwareAccelerationType': 'none'}, {'accel': 'disabled', 'preferredHwDevice': 'auto'})
-        hv.configure_app('immich', ('AMD', '/dev/dri/renderD129', 'vaapi', 'vaapi'), entry, second)
+        hv.configure_app('immich', ('AMD', '/dev/dri/renderD129', 'vaapi', 'vaapi'), entry, second, {'codecs': ['h264', 'hevc'], 'encode': True})
         self.assertEqual(second.saved['immich']['ffmpeg']['preferredHwDevice'], '/dev/dri/renderD129')
         mine = Fake({'HardwareAccelerationType': 'vaapi'}, {'accel': 'vaapi'})
-        self.assertIn('kept your setting', hv.configure_jellyfin(entry, 'qsv', '/dev/dri/renderD128', mine))
-        self.assertIn('kept your setting', hv.configure_immich(entry, 'qsv', '/dev/dri/renderD128', mine))
+        self.assertIn('kept your setting', hv.configure_jellyfin(entry, 'qsv', '/dev/dri/renderD128', mine, {'codecs': ['h264', 'hevc'], 'encode': True}))
+        self.assertIn('kept your setting', hv.configure_immich(entry, 'qsv', '/dev/dri/renderD128', mine, {'codecs': ['h264', 'hevc'], 'encode': True}))
         self.assertEqual(mine.saved, {})
 
     def test_a_setting_an_older_release_made_gets_its_device(self):
@@ -406,16 +406,16 @@ class HardwareVideoTests(unittest.TestCase):
         entry = {'username': 'admin', 'password': 'pw'}
         chip = ('intel', '/dev/dri/renderD129', 'qsv', 'qsv')
         # NekoServer turned it on before ("on (qsv)" in its last report): finished now.
-        self.assertEqual(hv.configure_app('immich', chip, entry, fake, before='on (qsv)', several=True), 'on (qsv)')
+        self.assertEqual(hv.configure_app('immich', chip, entry, fake, {'codecs': ['h264', 'hevc'], 'encode': True}, before='on (qsv)', several=True), 'on (qsv)')
         self.assertEqual(saved['immich']['ffmpeg']['preferredHwDevice'], '/dev/dri/renderD129')
         saved.clear()
         # Set by someone else, several chips: not reported as done, nothing changed.
-        result = hv.configure_app('immich', chip, entry, fake, before=None, several=True)
+        result = hv.configure_app('immich', chip, entry, fake, {'codecs': ['h264', 'hevc'], 'encode': True}, before=None, several=True)
         self.assertIn('choose /dev/dri/renderD129', result)
         self.assertFalse(result.startswith(('on', 'kept')))
         self.assertEqual(saved, {})
         # One chip only: their setting can't pick a wrong one.
-        self.assertIn('kept your setting', hv.configure_app('immich', chip, entry, fake, before=None, several=False))
+        self.assertIn('kept your setting', hv.configure_app('immich', chip, entry, fake, {'codecs': ['h264', 'hevc'], 'encode': True}, before=None, several=False))
 
     def test_decode_check_runs_inside_jellyfin(self):
         from unittest import mock
@@ -426,9 +426,57 @@ class HardwareVideoTests(unittest.TestCase):
             calls.append(argv)
             if argv[:2] == ['docker', 'ps']:
                 return mock.Mock(stdout='abc123\n', returncode=0)
-            return mock.Mock(stdout='VAProfileH264Main : VAEntrypointVLD\n', returncode=0)
-        self.assertTrue(hv.jellyfin_decodes('/dev/dri/renderD128', run))
-        self.assertIn('/usr/lib/jellyfin-ffmpeg/vainfo', calls[-1])
+            if VAINFO in argv:
+                return mock.Mock(stdout='VAProfileH264Main : VAEntrypointVLD\nVAProfileH264Main : VAEntrypointEncSlice\n', returncode=0)
+            return mock.Mock(stdout='', returncode=0)     # the test encode
+        VAINFO = '/usr/lib/jellyfin-ffmpeg/vainfo'
+        self.assertEqual(hv.probe('jellyfin', '/dev/dri/renderD128', run), {'codecs': ['h264'], 'encode': True})
+        self.assertIn(VAINFO, calls[1])
+        self.assertIn('h264_vaapi', calls[2])
+
+    def test_a_chip_that_only_decodes_gets_decoding_only(self):
+        from modules import hardware_video as hv
+        # The RX 6400 / 6500 kind: decoders, no encoder.
+        decode_only = ('VAProfileH264High : VAEntrypointVLD\nVAProfileHEVCMain : VAEntrypointVLD\n'
+                       'VAProfileVP9Profile0 : VAEntrypointVLD\nVAProfileAV1Profile0 : VAEntrypointVLD\n')
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            if argv[:2] == ['docker', 'ps']:
+                return mock.Mock(stdout='abc123\n', returncode=0)
+            return mock.Mock(stdout=decode_only, returncode=0)
+        video = hv.probe('jellyfin', '/dev/dri/renderD128', run)
+        self.assertEqual(video, {'codecs': ['h264', 'hevc', 'vp9', 'av1'], 'encode': False})
+        self.assertFalse(any('h264_vaapi' in c for c in calls), 'no test encode without an encoder')
+        saved = {}
+
+        class Fake:
+            def __init__(self):
+                self.headers = {'Authorization': 'MediaBrowser Client="x"'}
+
+            def call(self, endpoint, method='GET', payload=None):
+                if endpoint == '/Users/AuthenticateByName':
+                    return {'AccessToken': 't', 'User': {'Policy': {'IsAdministrator': True}}}
+                if endpoint == '/System/Configuration/encoding':
+                    if method == 'POST':
+                        saved.update(payload)
+                    return {'HardwareAccelerationType': 'none'}
+                return {}
+        entry = {'username': 'admin', 'password': 'pw'}
+        said = hv.configure_jellyfin(entry, 'vaapi', '/dev/dri/renderD128', Fake(), video)
+        self.assertIn('decoding only', said)
+        self.assertFalse(saved['EnableHardwareEncoding'])
+        self.assertEqual(saved['HardwareDecodingCodecs'], ['h264', 'hevc', 'vp9', 'av1'])
+        self.assertEqual(hv.configure_immich(entry, 'vaapi', '/dev/dri/renderD128', Fake(), video), hv.NO_ENCODER)
+        # An encoder listed that fails its test encode counts as none.
+        def failing(argv, **kw):
+            if argv[:2] == ['docker', 'ps']:
+                return mock.Mock(stdout='abc123\n', returncode=0)
+            if 'h264_vaapi' in argv:
+                return mock.Mock(stdout='', returncode=1)
+            return mock.Mock(stdout='VAProfileH264Main : VAEntrypointVLD\nVAProfileH264Main : VAEntrypointEncSliceLP\n', returncode=0)
+        self.assertEqual(hv.probe('immich', '/dev/dri/renderD128', failing), {'codecs': ['h264'], 'encode': False})
 
 
 class HardwareVideoAppsTests(unittest.TestCase):
@@ -511,7 +559,7 @@ class HardwareVideoAppsTests(unittest.TestCase):
             if argv[:2] == ['docker', 'ps']:
                 return mock.Mock(stdout='abc123\n', returncode=0)
             return mock.Mock(stdout='VAProfileH264Main : VAEntrypointVLD\n', returncode=0)
-        self.assertTrue(hv.decodes('immich', '/dev/dri/renderD128', run))
+        self.assertEqual(hv.probe('immich', '/dev/dri/renderD128', run), {'codecs': ['h264'], 'encode': False})
         self.assertIn('label=com.docker.compose.service=immich-server', calls[0])
 
 
