@@ -423,24 +423,8 @@ class Plan:
         if units:
             notes.append('Stop and remove ' + str(len(units)) + ' services and timers: ' + ', '.join(units))
         paths = self.system_paths() + self.shortcuts() + self.os_dropins()
-        self.unmask = self.sleep_masks()
-        if self.os_dropins() or self.unmask:
-            notes.append('The PC may sleep again: NekoServer\'s no-sleep and log-size settings go'
-                         + (' and these are unmasked: ' + ', '.join(self.unmask) if self.unmask else '')
-                         + ' (sleep settings you had before NekoServer stay)')
-        shares, own, accounts = self.samba()
-        if shares:
-            paths.append(shares)
-            if self.at(SAMBA_CREATED).is_file():
-                paths.append(self.at(SAMBA_CREATED))
-            reused = self.reused_accounts()
-            notes.append('Samba: the shares NekoServer defined go' + (', with the account ' + ', '.join(accounts) + ' it created' if accounts else '')
-                         + ('; the account ' + ', '.join(reused) + ' was there before NekoServer and stays' if reused else '')
-                         + ('; smb.conf (only the include NekoServer wrote) goes too' if own else
-                            '; your own smb.conf stays (take out its "include = ' + SAMBA_SHARES + '" line yourself)')
-                         + ("; the package's example smb.conf, set aside by setup, comes back" if own and self.at(PACKAGED_SMB_CONF).is_file() else ''))
-            if own:
-                paths.append(own)
+        self._sleep_part(notes)
+        self._samba_part(paths, notes)
         self.served = self.tailnet_routes()
         if self.served:
             notes.append('Tailscale: the addresses NekoServer made on your tailnet are switched off (ports ' + ', '.join(self.served)
@@ -450,6 +434,31 @@ class Plan:
         if self.docker_root():
             notes.append('Docker keeps its data-root on the SSD (' + self.docker_root() + ') unless the SSD data or the mounts go')
         return {'paths': paths, 'notes': notes}
+
+    def _sleep_part(self, notes):
+        """The sleep targets to unmask (self.unmask) and what the plan says about them."""
+        self.unmask = self.sleep_masks()
+        if self.os_dropins() or self.unmask:
+            notes.append('The PC may sleep again: NekoServer\'s no-sleep and log-size settings go'
+                         + (' and these are unmasked: ' + ', '.join(self.unmask) if self.unmask else '')
+                         + ' (sleep settings you had before NekoServer stay)')
+
+    def _samba_part(self, paths, notes):
+        """The Samba files NekoServer wrote (added to `paths`) and what the plan says."""
+        shares, own, accounts = self.samba()
+        if not shares:
+            return
+        paths.append(shares)
+        if self.at(SAMBA_CREATED).is_file():
+            paths.append(self.at(SAMBA_CREATED))
+        reused = self.reused_accounts()
+        notes.append('Samba: the shares NekoServer defined go' + (', with the account ' + ', '.join(accounts) + ' it created' if accounts else '')
+                     + ('; the account ' + ', '.join(reused) + ' was there before NekoServer and stays' if reused else '')
+                     + ('; smb.conf (only the include NekoServer wrote) goes too' if own else
+                        '; your own smb.conf stays (take out its "include = ' + SAMBA_SHARES + '" line yourself)')
+                     + ("; the package's example smb.conf, set aside by setup, comes back" if own and self.at(PACKAGED_SMB_CONF).is_file() else ''))
+        if own:
+            paths.append(own)
 
     def _apps_group(self):
         projects, networks = self.compose_projects(), self.docker_networks()
@@ -608,9 +617,10 @@ def _tried(call, out, argv):
     """Run one change; when it fails, say so with the command to run by hand."""
     code, said = call(argv, 60)
     if code != 0:
-        out('  could not (' + (said or 'exit status ' + str(code)) + '): sudo ' + ' '.join(argv))
+        out('  could not (' + (said or EXIT_STATUS + str(code)) + '): sudo ' + ' '.join(argv))
 
 
+EXIT_STATUS = 'exit status '   # what a failed command said when it said nothing
 STILL_RUNNING = ('active', 'activating', 'deactivating', 'reloading', 'refreshing')
 NOTHING_DELETED = ' Nothing has been deleted yet. Fix that (or restart the computer), then run  sudo bash uninstall.sh  again.'
 
@@ -626,7 +636,7 @@ def _stop_units(plan, units, call, out, sleep=None):
     for unit in timers + [u for u in units if u not in timers]:
         code, said = call(['systemctl', 'disable', '--now', unit], CONTROL_STOP_SECONDS if unit == CONTROL_UNIT else 120)
         if code != 0:
-            failed.append(unit + ' (' + (said or 'exit status ' + str(code)) + ')')
+            failed.append(unit + ' (' + (said or EXIT_STATUS + str(code)) + ')')
     for unit in units:
         code, said = call(['systemctl', 'is-active', unit], 30)
         if said.split()[:1] and said.split()[0] in STILL_RUNNING:
@@ -684,7 +694,7 @@ def _remove_samba_accounts(plan, accounts, call, out):
             out('Removing the Samba account ' + account + ' (NekoServer created it)')
             code, said = call(['smbpasswd', '-x', account], 30)
             if code != 0:
-                out('  could not remove it (' + (said or 'exit status ' + str(code)) + '): sudo smbpasswd -x ' + account)
+                out('  could not remove it (' + (said or EXIT_STATUS + str(code)) + '): sudo smbpasswd -x ' + account)
 
 
 def _remove_files(plan, chosen, out, rmtree):

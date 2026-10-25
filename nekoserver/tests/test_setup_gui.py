@@ -249,9 +249,12 @@ class WindowTests(unittest.TestCase):
         samba.samba_password('neko', run=lambda argv, **_: seen.append(self.state()['terminal']) or mock.Mock(returncode=0))
         self.assertIn('account neko', seen[0])
         self.assertIsNone(self.state()['terminal'])     # over once the program ended
-        with self.assertRaises(RuntimeError), setup_progress.in_terminal('Music listener setup'):
-            self.assertEqual(self.state()['terminal'], 'Music listener setup')
-            raise RuntimeError('it failed')
+        def failing_program():
+            with setup_progress.in_terminal('Music listener setup'):
+                seen.append(self.state()['terminal'])
+                raise RuntimeError('it failed')
+        self.assertRaises(RuntimeError, failing_program)
+        self.assertEqual(seen[-1], 'Music listener setup')
         self.assertIsNone(self.state()['terminal'])
 
     def test_onboarding_asks_in_the_terminal_with_the_window_told(self):

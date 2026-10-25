@@ -3,6 +3,8 @@ import subprocess
 
 from neko_common import SYSTEMD_UNITS, safe_path
 
+TIMER = '.timer'
+
 
 def retire(paths, run):
     existing = []
@@ -17,8 +19,8 @@ def retire(paths, run):
             raise RuntimeError('Unmanaged schedule preserved: '+path.name)
         existing.append(path)
     # Validate every file before stopping any service or timer.
-    for path in sorted(existing, key=lambda p: p.suffix != '.timer'):
-        action = 'disable' if path.suffix == '.timer' else 'stop'
+    for path in sorted(existing, key=lambda p: p.suffix != TIMER):
+        action = 'disable' if path.suffix == TIMER else 'stop'
         args = ['systemctl', action]
         if action == 'disable':
             args.append('--now')
@@ -45,7 +47,7 @@ def switched_off(config, section, name, log, run=None):
     stay, so switching it back on needs no new setup. True when it is switched off."""
     if config.get(section, {}).get('wanted') is not False:
         return False
-    units = [SYSTEMD_UNITS / (name + '.timer'), SYSTEMD_UNITS / (name + '.service')]
+    units = [SYSTEMD_UNITS / (name + TIMER), SYSTEMD_UNITS / (name + '.service')]
     if any(safe_path(u).exists() for u in units):
         retire(units, run or subprocess.run)
         log(name + ': switched off by choice; its schedule no longer runs')
