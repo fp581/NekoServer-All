@@ -1,6 +1,7 @@
 """The install and first-setup flow (review of 0.39.5): which settings file the commands
 in the docs use, and the questions and screens on the way."""
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -185,7 +186,10 @@ class DockerOrderTests(unittest.TestCase):
         written = []
         config = {'data_mount': '/srv/nekoserver', 'docker': {'install_engine': True}}
         context = mock.Mock(config=config, apply=True, log=lambda *_: None)
-        with mock.patch.object(docker, 'mounted_data_root', return_value=('/srv/nekoserver', '/dev/sdb1')), \
+        # Not this PC's own daemon.json: on a PC running NekoServer it names the SSD already.
+        daemon = Path(tempfile.mkdtemp()) / 'daemon.json'
+        self.addCleanup(shutil.rmtree, daemon.parent, True)
+        with mock.patch.object(docker, 'DAEMON_FILE', daemon),                 mock.patch.object(docker, 'mounted_data_root', return_value=('/srv/nekoserver', '/dev/sdb1')), \
                 mock.patch.object(docker.os, 'geteuid', return_value=0), \
                 mock.patch.object(docker.shutil, 'which', return_value='/usr/bin/x'), \
                 mock.patch.object(docker.host, 'snap_docker', return_value=False), \
@@ -199,7 +203,7 @@ class DockerOrderTests(unittest.TestCase):
                                   side_effect=lambda argv, **kw: mock.Mock(returncode=3 if 'is-active' in argv else 0)), \
                 self.assertRaisesRegex(RuntimeError, 'runtime build failed'):
             docker.run(context)
-        self.assertNotIn('/etc/docker/daemon.json', written)
+        self.assertNotIn(str(daemon), written)
 
 
 class DriveLayoutTests(unittest.TestCase):
@@ -219,8 +223,20 @@ class DriveLayoutTests(unittest.TestCase):
             self.disk('sda', self.fs('sda1', 'os', mountpoint='/')),
             self.disk('sdb', self.fs('sdb1', 'pool', fstype='btrfs')),
             self.disk('sdc', self.fs('sdc1', 'pool', fstype='btrfs'))]}
-        [pool] = storage.discover_filesystems(inventory)
+        devices = {'sdb1': 'dev-1', 'sdc1': 'dev-2'}   # each pool member has a UUID_SUB of its own
+        [pool] = storage.discover_filesystems(inventory, devices.get)
         self.assertEqual((pool['uuid'], pool['physical_disks']), ('pool', ['sdb', 'sdc']))
+
+    def test_a_cloned_btrfs_drive_is_not_taken_for_a_pool(self):
+        # dd or a disk cloner copies the device's own UUID_SUB too: mounted by UUID, the
+        # kernel could write to either drive.
+        from modules import storage
+        inventory = {'blockdevices': [
+            self.disk('sdb', self.fs('sdb1', 'pool', fstype='btrfs')),
+            self.disk('sdc', self.fs('sdc1', 'pool', fstype='btrfs'))]}
+        for devices in ({'sdb1': 'dev-1', 'sdc1': 'dev-1'}, {'sdb1': 'dev-1'}):
+            with self.assertRaisesRegex(RuntimeError, 'cloned drives'):
+                storage.discover_filesystems(inventory, devices.get)
 
     def test_lvm_raid_and_encrypted_volumes_are_offered(self):
         from modules import storage
@@ -247,7 +263,8 @@ class DriveLayoutTests(unittest.TestCase):
             self.disk('sda', self.fs('sda1', 'root', fstype='btrfs', mountpoint='/')),
             self.disk('sdb', self.fs('sdb1', 'root', fstype='btrfs')),
             self.disk('sdc', self.fs('sdc1', 'ssd'))]}
-        self.assertEqual([v['uuid'] for v in storage.discover_filesystems(inventory)], ['ssd'])
+        # Never offered, so never checked for clones either (even where blkid can't say).
+        self.assertEqual([v['uuid'] for v in storage.discover_filesystems(inventory, lambda name: None)], ['ssd'])
 
     def test_an_encrypted_drive_must_be_unlocked_at_every_start(self):
         from modules import storage

@@ -6,6 +6,8 @@ Bug fixes only, each tried on every Linux family of the test rig.
 
 ### Fixed
 - **"As of the last backup" restores the newest list, also after the clock was set back.** Each weekly copy's list of the files you had is named by the time it was made, and the restore takes the newest name. A clock that went back (a flat clock battery corrected later, a virtual machine catching up) gave the new list an older name than last week's, so the restore would have used last week's files. A new list now always takes a name after the newest one there. Found by the unit tests on the test rig, where WSL's clock stepped back two seconds.
+- **A copy of a Btrfs drive is no longer taken for a pool.** Since 0.39.5 setup accepts a Btrfs pool over several drives (one filesystem UUID, a device on each drive). A drive copied with `dd` or a disk cloner has the same UUID too, and was offered as such a pool; mounted by UUID, the kernel could then write to either drive. Each device of a real pool has its own device UUID (`UUID_SUB`), so setup now checks that, and two drives with the same one stop setup as cloned drives, as before 0.39.5. The system's own drives are never checked (they are never offered).
+- **The unit tests no longer depend on this PC's Docker settings.** One test read the real `/etc/docker/daemon.json`, and failed on a PC running NekoServer whose SSD was mounted.
 - **The unit tests no longer stop at a question when run from a terminal.** One test let setup ask about the backup counts of releases before 0.30.0, and waited for an answer for ever; it now runs as without a keyboard, as in CI.
 
 ### Upgrade notes

@@ -45,20 +45,42 @@ def holds_system(dev):
     return bool(mount_points(dev)&set(SYSTEM_MOUNTS)) or any(holds_system(c) for c in dev.get('children',[]))
 
 
-def merged(rows):
+def device_sub_uuid(name):
+    """A Btrfs device's own UUID (UUID_SUB): each device of a pool has its own, a cloned
+    drive the same as its original. None when it can't be read."""
+    for path in ('/dev/' + name, '/dev/mapper/' + name):
+        if os.path.exists(path):
+            try:
+                return call(['blkid', '-s', 'UUID_SUB', '-o', 'value', path]) or None
+            except (RuntimeError, OSError, subprocess.SubprocessError):
+                return None
+    return None
+
+
+def merged(rows, sub_uuid=device_sub_uuid):
     """One candidate per filesystem. A filesystem lsblk lists more than once is still one:
     an LVM volume or RAID array under each disk it spans (same name), or a Btrfs pool
-    over several drives (one UUID, a device each). Two other devices with one UUID are
-    clones, which mounting by UUID can't tell apart."""
+    over several drives (one UUID, a device each, each device with its own UUID_SUB). Two
+    other devices with one UUID are clones, which mounting by UUID can't tell apart."""
     by_uuid={}
     for row in rows:by_uuid.setdefault(row['uuid'],[]).append(row)
-    return [one_filesystem(group) for group in by_uuid.values()]
+    return [one_filesystem(group, sub_uuid) for group in by_uuid.values()]
 
 
-def one_filesystem(group):
-    """The lsblk rows of one UUID as one candidate, on every disk they span."""
-    if len({r['name'] for r in group})>1 and not all(r['fstype']=='btrfs' for r in group):
-        raise RuntimeError('Duplicate filesystem UUID detected; identify cloned drives before continuing')
+CLONED='Duplicate filesystem UUID detected; identify cloned drives before continuing'
+
+
+def one_filesystem(group, sub_uuid=device_sub_uuid):
+    """The lsblk rows of one UUID as one candidate, on every disk they span. Btrfs rows are
+    one pool only when each device has a UUID_SUB of its own: a copy of a Btrfs drive (dd,
+    a disk cloner) has the same one, and the kernel could then write to either drive."""
+    names=sorted({r['name'] for r in group})
+    if len(names)>1:
+        if not all(r['fstype']=='btrfs' for r in group):
+            raise RuntimeError(CLONED)
+        subs=[sub_uuid(n) for n in names]
+        if None in subs or len(set(subs))!=len(subs):
+            raise RuntimeError(CLONED)
     disks=sorted({d for r in group for d in r['physical_disks'] if d})
     return {**group[0],'physical_disks':disks,'physical_disk':disks[0] if disks else None,
             'mountpoint':next((r['mountpoint'] for r in group if r['mountpoint']),None),
@@ -110,7 +132,7 @@ def unlocked(device):
     return device
 
 
-def discover_filesystems(inventory):
+def discover_filesystems(inventory, sub_uuid=device_sub_uuid):
     """Return candidates, never auto-select a device on model/size alone."""
     rows=[]
     os_disks,system_ids=set(),set()
@@ -125,7 +147,8 @@ def discover_filesystems(inventory):
         for child in dev.get('children',[]): walk(child,dev.get('model') or parent,physical,below)
     for device in inventory.get('blockdevices',[]): walk(device)
     # The system's own filesystems (and anything sharing a disk with them) are never offered.
-    return [v for v in merged(rows) if v['uuid'] not in system_ids and not set(v['physical_disks'])&os_disks]
+    mine=[r for r in rows if r['uuid'] not in system_ids]
+    return [v for v in merged(mine, sub_uuid) if not set(v['physical_disks'])&os_disks]
 
 
 NOT_LINUX = {'ntfs': 'NTFS (Windows)', 'exfat': 'exFAT', 'vfat': 'FAT'}
