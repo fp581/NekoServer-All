@@ -3896,18 +3896,7 @@ mod tests {
     }
     /// The newest inventory of a tree, unpacked.
     fn newest_inventory(root: &Path) -> Value {
-        let mut names: Vec<String> = fs::read_dir(root.join(inventory::FOLDER))
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-            .collect();
-        names.sort();
-        let newest = names.last().unwrap();
-        let out = Command::new("gzip")
-            .args(["-dc"])
-            .arg(root.join(inventory::FOLDER).join(newest))
-            .output()
-            .unwrap();
-        serde_json::from_slice(&out.stdout).unwrap()
+        all_inventories(root).pop().unwrap()
     }
     #[test]
     fn the_nextcloud_inventory_lists_only_the_files_you_have_now() {
@@ -4089,19 +4078,25 @@ mod tests {
         // copies. The first file's copy is moved into neko-replaced and a new copy takes
         // its place, so only the checksum still says which content the first list meant.
         let root = scratch("cloud-inventory-history");
-        let cloud = root.join("cloud");
-        let usb = root.join("usb");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
         fs::create_dir_all(&usb).unwrap();
-        write(&cloud.join("alice/files/Projects"), b"OLD CONTENT");
-        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
-        fs::remove_file(cloud.join("alice/files/Projects")).unwrap();
-        write(&cloud.join("alice/files/Projects/notes.txt"), b"notes");
-        std::thread::sleep(std::time::Duration::from_millis(1100)); // a new run's time
-        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
-        fs::remove_dir_all(cloud.join("alice/files/Projects")).unwrap();
-        write(&cloud.join("alice/files/Projects"), b"NEW CONTENT");
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let projects = cloud.join("alice/files/Projects");
+        let weeks: [&dyn Fn(); 3] = [
+            &|| write(&projects, b"OLD CONTENT"),
+            &|| {
+                fs::remove_file(&projects).unwrap();
+                write(&projects.join("notes.txt"), b"notes");
+            },
+            &|| {
+                fs::remove_dir_all(&projects).unwrap();
+                write(&projects, b"NEW CONTENT");
+            },
+        ];
+        for change in weeks {
+            change();
+            copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1100)); // the next run's time
+        }
         let tree = usb.join("nextcloud");
         let lists = all_inventories(&tree);
         assert_eq!(lists.len(), 3);

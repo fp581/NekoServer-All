@@ -22,7 +22,8 @@ def answers(*values):
     return lambda question='': next(it)
 
 
-class RestoreAsOfTests(unittest.TestCase):
+class Restoring(unittest.TestCase):
+    """A server whose USB drive holds a Nextcloud backup tree (filled by each test class)."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -33,6 +34,27 @@ class RestoreAsOfTests(unittest.TestCase):
         self.config = {'media_mount': str(self.media), 'data_mount': str(self.root / 'ssd'),
                        'photos': {'archive_dir': 'photos/archive'}}
         self.tree = self.root / 'usb/nextcloud'
+
+    def write(self, path, body):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+
+    def restore(self, *choices):
+        """Every restored file (its path under files/) with its content, and what was said."""
+        # An earlier restore in the same second would get the same folder name.
+        shutil.rmtree(self.media / 'restored', ignore_errors=True)
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+            out = []
+            recovery_wizard.restore_cloud(self.config, answers(*choices), out.append)
+        restored = next((self.media / 'restored').iterdir()) / 'files'
+        got = {p.relative_to(restored).as_posix(): p.read_bytes() for p in restored.rglob('*') if p.is_file()}
+        return got, '\n'.join(out)
+
+
+class RestoreAsOfTests(Restoring):
+    def setUp(self):
+        super().setUp()
         # What the USB drive holds after two weekly runs. Run 1: keep.txt, gone.txt and
         # old-name.txt. Run 2: gone.txt deleted, old-name.txt renamed to new-name.txt,
         # keep.txt edited (its new content is kept as a dated version, as the copy does).
@@ -47,22 +69,10 @@ class RestoreAsOfTests(unittest.TestCase):
                                             'alice/files/old-name.txt': 'old-name.txt'})
         self.inventory('20261101T030000Z', {'alice/files/keep.txt': EDIT, 'alice/files/new-name.txt': 'new-name.txt'})
 
-    def write(self, path, body):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(body)
-
     def inventory(self, stamp, files):
         """The same format the runtime writes (inventory.rs)."""
         self.write(self.tree / '.neko-inventory' / f'{stamp}.json.gz', gzip.compress(json.dumps(
             {'format': 'neko-inventory-v1', 'made_at': stamp, 'files': files}).encode()))
-
-    def restore(self, *choices):
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
-            out = []
-            recovery_wizard.restore_cloud(self.config, answers(*choices), out.append)
-        restored = next((self.media / 'restored').iterdir()) / 'files'
-        return {p.name: p.read_bytes() for p in restored.iterdir()}, '\n'.join(out)
 
     def test_as_of_the_last_backup_restores_only_the_live_set(self):
         got, out = self.restore('1', 'yes', '1')
@@ -125,22 +135,14 @@ def sha(body):
     return hashlib.sha256(body).hexdigest()
 
 
-class FileFolderFileTests(unittest.TestCase):
+class FileFolderFileTests(Restoring):
     """A file `Projects`, then a folder `Projects`, then a file `Projects` again, across
     three weekly copies, laid out as the backup's move logic leaves it (backup.rs
     move_aside): what stood in the way is moved into alice/neko-replaced/<when>/ with its
     checksum, and the new one takes the old name. An older date must restore the content
     it had then, never today's file under the same name."""
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        self.media = self.root / 'hdd'
-        self.media.mkdir()
-        (self.root / 'ssd/installer').mkdir(parents=True)
-        self.config = {'media_mount': str(self.media), 'data_mount': str(self.root / 'ssd'),
-                       'photos': {'archive_dir': 'photos/archive'}}
-        self.tree = self.root / 'usb/nextcloud'
+        super().setUp()
         self.saved = {
             'alice/neko-replaced/20261101T030000Z/Projects': b'OLD CONTENT',            # run 1's file
             'alice/neko-replaced/20261108T030000Z/Projects/notes.txt': b'notes',        # run 2's folder
@@ -149,10 +151,6 @@ class FileFolderFileTests(unittest.TestCase):
         for key, body in self.saved.items():
             self.write(self.tree / key, body)
         self.ledger({key: sha(body) for key, body in self.saved.items()})
-
-    def write(self, path, body):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(body)
 
     def ledger(self, sums):
         entries = {k: {'sha256': v, 'size': 1, 'verified_at': 1.0, 'how': 'copied'} for k, v in sums.items()}
@@ -167,16 +165,6 @@ class FileFolderFileTests(unittest.TestCase):
             listed = {k: ({'copy': c, 'sha256': sha(b)} if version == 2 else c) for k, (c, b) in files.items()}
             self.write(self.tree / '.neko-inventory' / f'{stamp}.json.gz', gzip.compress(json.dumps(
                 {'format': f'neko-inventory-v{version}', 'made_at': stamp, 'files': listed}).encode()))
-
-    def restore(self, *choices):
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
-            out = []
-            recovery_wizard.restore_cloud(self.config, answers(*choices), out.append)
-        restored = next((self.media / 'restored').iterdir()) / 'files'
-        got = {p.relative_to(restored).as_posix(): p.read_bytes() for p in restored.rglob('*') if p.is_file()}
-        shutil.rmtree(self.media / 'restored')   # the next restore in the same second gets the same name
-        return got, '\n'.join(out)
 
     def test_each_date_restores_the_content_it_had_then(self):
         self.lists(2)
@@ -211,7 +199,7 @@ class FileFolderFileTests(unittest.TestCase):
         first, out = self.restore('1', 'yes', '2', '2', 'yes')
         self.assertEqual(first, {})
         self.assertIn('can\'t be told', out)
-        self.assertIn('left out because the list from that backup', out)
+        self.assertIn('1 files were left out: they became a folder', out)
         # A file that was never replaced still restores from such a list.
         self.write(self.tree / 'alice/files/plain.txt', b'plain')
         stamp = self.tree / '.neko-inventory/20261025T030000Z.json.gz'
