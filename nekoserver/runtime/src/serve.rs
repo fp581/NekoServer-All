@@ -861,4 +861,125 @@ mod tests {
         assert_eq!(seen(&status)["op"], "status");
         let _ = fs::remove_dir_all(&root);
     }
+    #[test]
+    fn the_snapshot_is_checked_to_be_the_collectors() {
+        let root = std::env::temp_dir().join(format!("neko-snapshot-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let server = Server {
+            assets: root.clone(),
+            status: root.join("status.json"),
+            control: root.join("control.sock"),
+            port: 1,
+            public: None,
+            live: Mutex::new(Live::default()),
+        };
+        assert_eq!(server.snapshot().unwrap_err(), "E10", "no snapshot yet");
+        for wrong in [
+            "not json",
+            "[1, 2]",
+            r#"{"format": "neko-dashboard-v0"}"#,
+            r#"{"cpu": 1}"#,
+        ] {
+            fs::write(&server.status, wrong).unwrap();
+            assert_eq!(server.snapshot().unwrap_err(), "E11", "{wrong}");
+        }
+        fs::write(
+            &server.status,
+            r#"{"format": "neko-dashboard-v1", "cpu": 1}"#,
+        )
+        .unwrap();
+        let (bytes, value) = server.snapshot().unwrap();
+        assert_eq!(value["cpu"], 1);
+        assert_eq!(bytes, fs::read(&server.status).unwrap());
+        fs::remove_file(&server.status).unwrap();
+        fs::create_dir(&server.status).unwrap();
+        assert_eq!(
+            server.snapshot().unwrap_err(),
+            "E11",
+            "there, but unreadable"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn containers_come_from_the_snapshot_with_their_services() {
+        let status = json!({
+            "containers": {"abc123def456": "jellyfin", "0123456789ab": "immich", "bad": 7},
+            "container_services": {"abc123def456": "jellyfin", "0123456789ab": "immich-server"}
+        });
+        let found = containers(&status);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(
+            found["abc123def456"],
+            ("jellyfin".to_string(), "jellyfin".to_string())
+        );
+        assert_eq!(
+            found["0123456789ab"],
+            ("immich".to_string(), "immich-server".to_string())
+        );
+        let unnamed = containers(&json!({"containers": {"abc123def456": "jellyfin"}}));
+        assert_eq!(
+            unnamed["abc123def456"],
+            ("jellyfin".to_string(), String::new())
+        );
+        assert!(containers(&json!({})).is_empty());
+    }
+    #[test]
+    fn nvidia_figures_expire_at_two_intervals_plus_thirty_seconds() {
+        let telemetry = json!([{"bus":"00000000:01:00.0","percent":23.0}]);
+        let percent = |interval: Option<u64>, now: f64| {
+            let mut value = json!({"gpus":[{"id":"0000:01:00.0","percent":null}]});
+            let mut status = json!({"generated_at":1000.0,"gpu_telemetry":telemetry});
+            if let Some(seconds) = interval {
+                status["collect_interval"] = json!(seconds);
+            }
+            merge_nvidia(&mut value, &status, now);
+            value["gpus"][0]["percent"].clone()
+        };
+        assert_eq!(
+            percent(None, 1149.0),
+            23.0,
+            "within two minutes and thirty seconds"
+        );
+        assert!(percent(None, 1151.0).is_null(), "a second too late");
+        assert_eq!(percent(Some(30), 1089.0), 23.0);
+        assert!(percent(Some(30), 1091.0).is_null());
+        assert_eq!(
+            percent(None, 941.0),
+            23.0,
+            "a clock a minute behind the collector"
+        );
+        assert!(
+            percent(None, 939.0).is_null(),
+            "a snapshot from the future is not live"
+        );
+        // Cards are matched by the last twelve characters of their bus address.
+        let mut value =
+            json!({"gpus":[{"id":"0000:02:00.0","percent":null},{"id":"short","percent":null}]});
+        merge_nvidia(
+            &mut value,
+            &json!({"generated_at":1000.0,"gpu_telemetry":[{"bus":"00000000:01:00.0","percent":23.0},{"bus":"short","percent":9.0}]}),
+            1000.0,
+        );
+        assert!(value["gpus"][0]["percent"].is_null());
+        assert!(value["gpus"][1]["percent"].is_null());
+    }
+    #[test]
+    fn tailscale_names_and_error_sentences_have_limits() {
+        let name = |n: usize| {
+            format!(
+                "{}.{}.{}.{}.ts.net",
+                "a".repeat(63),
+                "b".repeat(63),
+                "c".repeat(63),
+                "d".repeat(n)
+            )
+        };
+        assert_eq!(name(54).len(), 253);
+        assert!(valid_public(&name(54)));
+        assert!(!valid_public(&name(55)), "longer than a host name may be");
+        assert_eq!(error_message("E10"), error_entry("E10").2);
+        assert!(error_message("E10").len() > 10);
+        assert_eq!(error_message("no such code"), ERRORS[0].2);
+    }
 }
