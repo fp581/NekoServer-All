@@ -88,8 +88,9 @@ class FolderMountTests(unittest.TestCase):
                 mock.patch.object(storage.Path, 'mkdir'), mock.patch.object(storage.Path, 'exists', return_value=True), \
                 mock.patch.object(storage.Path, 'resolve', lambda self, strict=False: self):
             (Path(d) / 'fstab').write_text('UUID=root / ext4 defaults 0 1\n')
+            specs, fstab = storage.mount_specs(config), Path(d) / 'fstab'
             with self.assertRaisesRegex(RuntimeError, 'not the whole drive'):
-                storage.mount_all(context, storage.mount_specs(config), Path(d) / 'fstab')
+                storage.mount_all(context, specs, fstab)
         self.assertNotIn('subvolume', config['storage']['data_ssd'])
         context.persist_config.assert_not_called()
 

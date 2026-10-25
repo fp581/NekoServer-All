@@ -23,6 +23,7 @@ from neko_common import VERSION, atomic_json, find_program, settings_path
 
 ROOT = Path(__file__).resolve().parent
 FILES = ROOT / 'setup-gui'
+INDEX = 'index.html'
 PLAIN = 'text/plain'
 JSON = 'application/json'
 HTML = 'text/html; charset=utf-8'
@@ -88,7 +89,7 @@ class Window:
         if secrets.compare_digest(sent.get(COOKIE, ''), self.session):
             return True, None
         with self.lock:
-            if route in ('', 'index.html') and not self.opened:
+            if route in ('', INDEX) and not self.opened:
                 self.opened = True
                 return True, self.session
         return False, None
@@ -192,8 +193,8 @@ class Window:
 
     def get(self, route):
         """(status, body, content type) for a GET inside the token's path."""
-        if route in ('', 'index.html'):
-            return 200, (FILES / 'index.html').read_bytes(), HTML
+        if route in ('', INDEX):
+            return 200, (FILES / INDEX).read_bytes(), HTML
         if route.startswith('static/') and route[7:] in STATIC:
             name, kind = STATIC[route[7:]]
             return 200, (FILES / name).read_bytes(), kind

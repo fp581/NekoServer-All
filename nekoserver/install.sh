@@ -21,10 +21,11 @@ stale_pattern='^W: (Failed to fetch|Some index files failed to download)'
 clock_pattern='not yet valid|not valid yet|certificate has expired|seconds? in the future|time warp|clock problem'
 # The command failed (or apt only warned) because a source did not answer: worth another try.
 worth_retrying() {
-    if (( $1 != 0 )); then
-        grep -qiE "$transient_pattern" "$2"
+    local code=$1 log=$2
+    if (( code != 0 )); then
+        grep -qiE "$transient_pattern" "$log"
     else
-        grep -qE "$stale_pattern" "$2"
+        grep -qE "$stale_pattern" "$log"
     fi
 }
 retrying() {

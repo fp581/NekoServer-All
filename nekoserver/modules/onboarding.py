@@ -76,11 +76,15 @@ def first_problem(config):
         rows=[]
     rows=[r for r in rows if isinstance(r,dict) and r.get('status')!='pass' and r.get('check') not in WITNESSED]
     for wanted in ('fail','needs_setup'):
-        for row in rows:
-            if row.get('status')==wanted:
-                if row.get('check')=='connector':return CONNECTOR
-                return str(row.get('check'))+(': '+str(row['reason']) if row.get('reason') else '')
+        row=next((r for r in rows if r.get('status')==wanted),None)
+        if row is not None:return problem_line(row)
     return 'see the messages above'
+
+
+def problem_line(row):
+    """One report row said as "check: reason"."""
+    if row.get('check')=='connector':return CONNECTOR
+    return str(row.get('check'))+(': '+str(row['reason']) if row.get('reason') else '')
 
 
 def playback_record(config):

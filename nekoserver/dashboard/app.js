@@ -1878,10 +1878,10 @@ function guideCommands(guide, unit) {
   if (guide.acceptance) {
     const script = installedScript('acceptance.py'), config = installedScript('config.json');
     const run = script && config ? 'sudo python3 ' + shellQuote(script) + ' --config ' + shellQuote(config) + ' --profile full --save' : null;
-    nodes.push(run ? commandBox(run) : note('In the saved NekoServer folder, run: sudo python3 acceptance.py --profile full --save'));
     // The tests you watch yourself (a test restore, say) are recorded with --manual; a
     // test recorded before is kept by later checks.
-    nodes.push(note('To record a test you did yourself (such as a test restore), add --manual: it asks about each one.'));
+    nodes.push(run ? commandBox(run) : note('In the saved NekoServer folder, run: sudo python3 acceptance.py --profile full --save'),
+      note('To record a test you did yourself (such as a test restore), add --manual: it asks about each one.'));
     if (run) { nodes.push(commandBox(run + ' --manual')); }
   }
   const setup = guide.setup ? installer() : null;

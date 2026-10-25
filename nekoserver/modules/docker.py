@@ -59,6 +59,10 @@ def prepare_daemon_config(path, target):
     return content
 
 
+# Docker's systemd units: the service, and the socket that starts it again on demand.
+DOCKER_SERVICE = 'docker.service'
+DOCKER_SOCKET = 'docker.socket'
+
 # Settings that daemon.json and a flag on Docker's service command line can both set:
 # set in both, Docker refuses to start ("specified both as a flag and in the
 # configuration file").
@@ -70,7 +74,7 @@ FLAG_KEYS = {'--data-root': 'data-root', '-g': 'data-root', '--graph': 'data-roo
 def service_flags(run=subprocess.run):
     """The command line Docker's service starts it with (its ExecStart, drop-ins included)."""
     try:
-        shown = run(['systemctl', 'show', 'docker.service', '-p', 'ExecStart', '--value'],
+        shown = run(['systemctl', 'show', DOCKER_SERVICE, '-p', 'ExecStart', '--value'],
                     capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return ''
@@ -253,7 +257,7 @@ def run(context):
             raise already_used(actual, target)
         # Nothing in it (just installed, or NekoServer uninstalled): it runs from the SSD from now on.
         context.log(f'Docker runs from {actual} with nothing in it (no container, image or volume): stopped, to run from the SSD')
-        subprocess.run(['systemctl', 'stop', 'docker.socket', 'docker.service'], check=True, timeout=300)
+        subprocess.run(['systemctl', 'stop', DOCKER_SOCKET, DOCKER_SERVICE], check=True, timeout=300)
         active = False
     if active:
         if not daemon_file.exists() or json.loads(daemon_file.read_text()).get('data-root') != str(target):
@@ -293,7 +297,7 @@ def run(context):
     if settings.get('enable_service', True):
         # Earlier failed starts (the guard missing after a drive problem, say) make systemd
         # refuse a start with "attempted too often"; that count is cleared first.
-        subprocess.run(['systemctl', 'reset-failed', 'docker.service', 'docker.socket'], capture_output=True, timeout=30, check=False)
+        subprocess.run(['systemctl', 'reset-failed', DOCKER_SERVICE, DOCKER_SOCKET], capture_output=True, timeout=30, check=False)
         call(['systemctl', 'enable', '--now', 'docker'], timeout=90)
         actual = call(['docker', 'info', '--format', '{{.DockerRootDir}}'])
         if actual != str(target):
