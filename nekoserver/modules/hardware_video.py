@@ -58,36 +58,58 @@ FFMPEG = '/usr/lib/jellyfin-ffmpeg/ffmpeg'
 
 
 def video_support(vainfo):
-    """{'codecs': formats the chip decodes, 'encoder': whether it lists an encoder} from
-    vainfo's profile lines ("VAProfileH264Main : VAEntrypointVLD")."""
-    codecs, encoder = [], False
+    """{'codecs': formats the chip decodes, 'encoder': whether it lists an encoder,
+    'low_power_only': whether its only H.264 encoder is the low-power one} from vainfo's
+    profile lines ("VAProfileH264Main : VAEntrypointVLD")."""
+    codecs, entries = [], set()
     for line in vainfo.splitlines():
         profile, _, entry = (part.strip() for part in line.partition(':'))
         if entry == 'VAEntrypointVLD':
             codecs += [name for prefix, name in VA_CODECS if profile.startswith(prefix) and name not in codecs]
         elif entry.startswith('VAEntrypointEncSlice') and profile.startswith('VAProfileH264'):
-            encoder = True
-    return {'codecs': [name for _, name in VA_CODECS if name in codecs], 'encoder': encoder}
+            entries.add(entry)
+    return {'codecs': [name for _, name in VA_CODECS if name in codecs], 'encoder': bool(entries),
+            'low_power_only': entries == {'VAEntrypointEncSliceLP'}}
 
 
-def test_encode(cid, node, run):
+# Asks the encoder for its low-power mode (Intel's only H.264 encoder on some chips,
+# Jasper Lake and Elkhart Lake for example): without it such a chip fails the test.
+LOW_POWER = ['-low_power', '1']
+
+
+def test_encode(cid, node, run, low_power=False):
     """One second of test video encoded on the chip (H.264), inside the app's container:
     a chip that lists an encoder but cannot use it does not pass."""
     result = run(['docker', 'exec', cid, FFMPEG, '-hide_banner', '-loglevel', 'error', '-init_hw_device', 'vaapi=va:' + node,
                   '-filter_hw_device', 'va', '-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x240:rate=10',
-                  '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-f', 'null', '-'],
+                  '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', *(LOW_POWER if low_power else []), '-f', 'null', '-'],
                  capture_output=True, text=True, timeout=120)
     return result.returncode == 0
 
 
-def test_qsv(cid, node, run):
+def test_qsv(cid, node, run, low_power=False):
     """The same test encode through Quick Sync. Intel chips before Broadwell (2014)
     pass the VA-API test but cannot do Quick Sync on Linux; those use VA-API."""
     result = run(['docker', 'exec', cid, FFMPEG, '-hide_banner', '-loglevel', 'error', '-init_hw_device', 'vaapi=va:' + node,
                   '-init_hw_device', 'qsv=qs@va', '-filter_hw_device', 'qs', '-f', 'lavfi',
                   '-i', 'testsrc=duration=1:size=320x240:rate=10', '-vf', 'format=nv12,hwupload=extra_hw_frames=64',
-                  '-c:v', 'h264_qsv', '-f', 'null', '-'], capture_output=True, text=True, timeout=120)
+                  '-c:v', 'h264_qsv', *(LOW_POWER if low_power else []), '-f', 'null', '-'],
+                 capture_output=True, text=True, timeout=120)
     return result.returncode == 0
+
+
+def encode_check(cid, node, run, support):
+    """{'encode': bool} from the test encodes, with 'low_power': True when only the
+    low-power encoder worked (tried only when it is the chip's only H.264 encoder) and
+    'qsv' (the Quick Sync test) whenever an encode passed."""
+    if not support['encoder']:
+        return {'encode': False}
+    found = {'encode': test_encode(cid, node, run)}
+    if not found['encode'] and support.get('low_power_only') and test_encode(cid, node, run, low_power=True):
+        found = {'encode': True, 'low_power': True}
+    if found['encode']:
+        found['qsv'] = test_qsv(cid, node, run, low_power=found.get('low_power', False))
+    return found
 
 
 def probe(app, node, run=subprocess.run):
@@ -102,10 +124,7 @@ def probe(app, node, run=subprocess.run):
     support = video_support(result.stdout) if result.returncode == 0 else {'codecs': []}
     if not support['codecs']:
         return None
-    video = {'codecs': support['codecs'], 'encode': support['encoder'] and test_encode(cid, node, run)}
-    if video['encode']:
-        video['qsv'] = test_qsv(cid, node, run)
-    return video
+    return {'codecs': support['codecs'], **encode_check(cid, node, run, support)}
 
 
 def login_jellyfin(client, entry):
@@ -157,10 +176,24 @@ def configure_jellyfin(entry, method, node, client, video, ours=False, several=F
                 return 'kept your setting (' + current + ')'
         encoding.update({'HardwareAccelerationType': method, device: node, 'EnableHardwareEncoding': video['encode'],
                          'HardwareDecodingCodecs': video['codecs']})
+        if video.get('low_power'):
+            # The chip encodes H.264 only in its low-power mode, which Jellyfin uses only when told.
+            encoding['EnableIntelLowPowerH264HwEncoder'] = True
         client.call('/System/Configuration/encoding', 'POST', encoding)
         return 'on (' + method + ')' + ('' if video['encode'] else ', decoding only: the chip has no working video encoder')
     finally:
         client.call('/Sessions/Logout', 'POST')
+
+
+def immich_cannot(video, method):
+    """Why Immich stays in software with this chip, or None: its hardware setting
+    encodes too, so it needs a working encoder, and it has no low-power setting for
+    VA-API (its Quick Sync picks that mode by itself)."""
+    if not video['encode']:
+        return NO_ENCODER
+    if video.get('low_power') and method == 'vaapi':
+        return LOW_POWER_ONLY
+    return None
 
 
 def configure_immich(entry, method, node, client, video, ours=False, several=False, was_on=False, replace=False):
@@ -168,8 +201,9 @@ def configure_immich(entry, method, node, client, video, ours=False, several=Fal
     chip that passed the check. Immich otherwise picks a device by itself, and on a
     computer with two chips that can be the other one (an AMD chip with Intel's qsv).
     Immich's hardware setting encodes too, so a chip without a working encoder stays off."""
-    if not video['encode']:
-        return NO_ENCODER
+    unusable = immich_cannot(video, method)
+    if unusable:
+        return unusable
     session = client.call('/api/auth/login', 'POST', {'email': entry['username'], 'password': entry['password']})
     if session.get('isAdmin') is not True or not session.get('accessToken'):
         raise RuntimeError('Saved Immich login is not an administrator')
@@ -212,6 +246,24 @@ def give_immich_the_chip(config, log, run=subprocess.run):
     return True
 
 
+GPU_DEVICE = Path('/dev/dri')
+
+
+def drop_immich_chip(config, log):
+    """The graphics device is gone from this PC (the chip removed or switched off, its
+    driver not loading, the drives moved to another PC): Docker refuses to start a
+    container whose device is missing, so Immich's addition is taken out, also for the
+    monthly update. Immich itself was already started without it by the photos step;
+    the next run with the chip back adds it again."""
+    target = Path(config['data_mount']) / 'compose/immich' / HARDWARE
+    if target.is_file() and not target.is_symlink():
+        target.unlink()
+        log('Immich: the graphics device is not on this PC any more, so it was taken out of Immich '
+            '(it converts video in software until the chip is back)')
+        return True
+    return False
+
+
 def configure_app(app, chip, entry, client, video, before=None, several=False):
     """Turn hardware transcoding on in one app, with this chip's method, for what the
     chip does (`video`, from probe). `before`: what the last run recorded for this app
@@ -233,6 +285,17 @@ def configure_app(app, chip, entry, client, video, before=None, several=False):
 SOFTWARE = 'converts video in software: the chip did not pass the video check inside it'
 SWITCHED_OFF = 'off: you switched hardware video off in the app, so it is left off'
 NO_ENCODER = 'converts video in software: the chip decodes video but has no working encoder, which Immich needs'
+LOW_POWER_ONLY = ('converts video in software: the chip encodes only in its low-power mode, which Immich '
+                  'does not use with VA-API')
+# Results that are an answer (nothing left for you to do), not a step still to finish.
+ANSWERS = (SOFTWARE, SWITCHED_OFF, LOW_POWER_ONLY)
+
+
+def decisive(state):
+    """What NekoServer last knew for sure about an app's hardware video: turned on (by it
+    or by you), or switched off by you. A run that couldn't tell (the app wasn't running,
+    didn't answer, or the chip check failed this time) is not."""
+    return isinstance(state, str) and (state.startswith(('on', 'kept')) or state == SWITCHED_OFF)
 
 
 def apps_on(config, choices, log, client_factory=None, apps=None, check=probe, before=None):
@@ -292,36 +355,58 @@ def run(ctx):
     choices = gpu.video_choices(gpu.render_nodes())
     report = Path(ctx.config['data_mount']) / 'reports/hardware-video.json'
     report.parent.mkdir(parents=True, exist_ok=True)
+    if not GPU_DEVICE.is_dir():
+        drop_immich_chip(ctx.config, ctx.log)
     if not choices:
         why = ('NVIDIA graphics need their own driver and container toolkit, which NekoServer does not install'
                if 'nvidia' in vendors else 'no Intel or AMD graphics chip with a video device was found')
         ctx.log('Hardware video: ' + why + '; Jellyfin and Immich convert video in software (works, just slower)')
-        atomic_json(report, {'status': 'software', 'reason': why, 'vendors': vendors})
+        # What you chose in the apps is remembered for when the chip is back.
+        memory = {k: v for k, v in previous(report).items() if decisive(v)}
+        atomic_json(report, {'status': 'software', 'reason': why, 'vendors': vendors, 'memory': memory})
         return
     for vendor in dict.fromkeys(c[0] for c in choices):
         install_drivers(vendor, ctx.log)
-    return outcome(ctx, report, choices, switch_apps(ctx, choices, apps=apps, before=previous(report)))
+    before = previous(report)
+    return outcome(ctx, report, choices, switch_apps(ctx, choices, apps=apps, before=before), before)
 
 
 def previous(report):
-    """What the last run did in each app ({app: "on (qsv)"}), or {}."""
+    """What the last run did in each app ({app: "on (qsv)"}), or {}. Where that run
+    couldn't tell (the app wasn't running, say), the last state it knew for sure is used
+    (`memory`): one such run must not forget that you switched hardware video off."""
     try:
         value = json.loads(Path(report).read_text())
     except (OSError, ValueError):
         return {}
-    apps = value.get('apps') if isinstance(value, dict) else None
-    return {k: v for k, v in apps.items() if isinstance(v, str)} if isinstance(apps, dict) else {}
+    value = value if isinstance(value, dict) else {}
+    found = {}
+    for key in ('apps', 'memory'):
+        part = value.get(key)
+        if isinstance(part, dict):
+            found.update({k: v for k, v in part.items() if isinstance(v, str) and (key == 'apps' or decisive(v))})
+    return found
 
 
-def outcome(ctx, report, choices, done):
-    """Record what each app now uses; the step waits only for an app the chip works with
-    but that couldn't be switched over."""
+def remembered(done, before):
+    """{app: the last decisive state}: this run's where it is one, else the earlier one."""
+    memory = {}
+    for app, state in done.items():
+        known = state if decisive(state) else (before or {}).get(app)
+        if decisive(known):
+            memory[app] = known
+    return memory
+
+
+def outcome(ctx, report, choices, done, before=None):
+    """Record what each app now uses (and the last state known for sure, see previous());
+    the step waits only for an app the chip works with but that couldn't be switched over."""
     using = [a for a, s in done.items() if s.startswith(('on', 'kept'))]
     atomic_json(report, {'status': 'hardware' if using else 'software', 'chips': [c[0] for c in choices],
-                         'devices': [c[1] for c in choices], 'apps': done})
+                         'devices': [c[1] for c in choices], 'apps': done, 'memory': remembered(done, before)})
     # Waiting for you: an app the chip works with but that couldn't be switched over.
     # A chip that fails an app's own check is an answer, not a step left to do.
-    waiting = [a for a, s in done.items() if not s.startswith(('on', 'kept')) and s not in (SOFTWARE, SWITCHED_OFF)]
+    waiting = [a for a, s in done.items() if not s.startswith(('on', 'kept')) and s not in ANSWERS]
     if waiting:
         return {'status': 'needs_setup', 'reason': 'Graphics chip works; turn on hardware transcoding in: ' +
                 ', '.join(waiting) + ' (see HARDWARE-VIDEO.md)'}

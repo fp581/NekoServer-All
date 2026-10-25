@@ -1,5 +1,5 @@
 """Explicit LAN or tailnet Samba shares, no guest access or destructive configuration replacement."""
-import os,pwd,shutil,subprocess,sys
+import os,pwd,re,shutil,subprocess,sys
 import network_access
 from pathlib import Path
 import host
@@ -12,6 +12,10 @@ def validate_share(name,relative):
     if not name or not name.replace('_','').isalnum():raise RuntimeError('Invalid SMB share name')
     p=Path(relative)
     if p.is_absolute() or '..' in p.parts or not p.parts or str(p)=='.':raise RuntimeError('SMB share path must be a relative safe path')
+    # Written into smb.conf, which root's smbd reads: a line break would add settings
+    # of its own (a command to run, say) and % starts a Samba variable.
+    if not re.fullmatch(r'[A-Za-z0-9_./ -]+',str(relative)):
+        raise RuntimeError(f'SMB share path {relative!r} may use only letters, digits, spaces and . _ - /')
     return p
 
 def share_config(settings,media,user):
@@ -25,6 +29,25 @@ def share_config(settings,media,user):
         p=validate_share(name,rel)
         out += [f'[{name}]',f'   path = {media/p}', '   browseable = yes', '   guest ok = no', f'   valid users = {user}', f'   read only = {"no" if name=="Media" and settings.get("samba_media_write",False) else "yes"}', '   follow symlinks = no','']
     return '\n'.join(out)
+
+# With "bind interfaces only", smbd listens only on the addresses tailscale0 has when it
+# starts; Tailscale gives it one only once it has reached its servers, a little after
+# tailscaled itself has started. Waited for up to a minute; the wait always ends well,
+# so Samba still starts (for this PC itself) when Tailscale is down or signed out.
+TAILNET_WAIT = 60
+TAILNET_ADDRESS = ("ExecStartPre=-/bin/sh -c 'i=0; while [ $$i -lt {seconds} ] && "
+                   "! ip -4 -o addr show dev tailscale0 2>/dev/null | grep -q inet; do sleep 1; i=$$((i+1)); done; exit 0'\n")
+
+
+def storage_guard(media,unit,mode,tailscale):
+    """Samba's drop-in: it runs only with the media HDD mounted, stops when the HDD goes,
+    and in tailnet mode starts once the Tailscale address is there (or a minute passed)."""
+    text=(f'# Managed by NekoServer\n[Unit]\nRequiresMountsFor={media}\nBindsTo={unit}\n'
+          f'After={unit} {tailscale if mode=="tailnet" else "network-online.target"}\n')
+    if mode=='tailnet':
+        text+='[Service]\n'+TAILNET_ADDRESS.format(seconds=TAILNET_WAIT)
+    return text
+
 
 def wanted_shares(config):
     """The shares to set up: the settings' list, without the default Photos share when
@@ -178,7 +201,7 @@ def run(context):
     call(['testparm','-s',str(main)],timeout=30)
     unit=call(['systemd-escape','--path','--suffix=mount',str(media)])
     override=SYSTEMD_UNITS/(service+'.d')/'10-nekoserver-storage.conf'
-    content=f'# Managed by NekoServer\n[Unit]\nRequiresMountsFor={media}\nBindsTo={unit}\nAfter={unit} {family.service("tailscale") if mode=="tailnet" else "network-online.target"}\n'
+    content=storage_guard(media,unit,mode,family.service('tailscale'))
     if override.exists() and not safe_path(override).read_text().startswith('# Managed by NekoServer\n'):
         raise RuntimeError('Unmanaged Samba storage guard')
     atomic_write(override,content,0o644)

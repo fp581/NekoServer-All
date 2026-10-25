@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from neko_common import app_ports, safe_path, local_opener
+from neko_common import app_ports, safe_path, local_opener, checked_settings, default_settings
 import qbit_setup
 import account_store
 
@@ -37,8 +37,9 @@ def app_key(app, root):
 
 
 RESPONSE_LIMIT = 64_000_000
-# The qBittorrent download-client field that holds the category, per app.
-CATEGORY_FIELDS = {'sonarr': 'tvCategory', 'radarr': 'movieCategory', 'lidarr': 'musicCategory'}
+# The qBittorrent download-client field that holds the category, per app (one list,
+# shared with the health audit).
+CATEGORY_FIELDS = qbit_setup.CATEGORY_FIELDS
 
 
 def request(app, key, endpoint, method='GET', payload=None, timeout=12):
@@ -330,7 +331,7 @@ def configure_root_folders(root,media,apply,apps=('sonarr','radarr','lidarr')):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='NekoServer Prowlarr source and application connector')
-    parser.add_argument('--config', default=str(Path(__file__).with_name('config.json')))
+    parser.add_argument('--config', type=checked_settings, default=default_settings(Path(__file__).parent))
     parser.add_argument('--data-root', default=None, help='SSD mount with appdata')
     parser.add_argument('--apply', action='store_true', help='Write configurations through application APIs')
     parser.add_argument('--indexers', action='store_true', help='Choose from Prowlarr live catalog')

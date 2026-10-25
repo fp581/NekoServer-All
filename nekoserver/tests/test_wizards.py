@@ -201,8 +201,9 @@ class WizardFlowTests(unittest.TestCase):
 
         def stopped(question=''):
             raise KeyboardInterrupt
+        execute, state = mock.Mock(), self.root / 'state'
         with self.assertRaises(KeyboardInterrupt):
-            wizard.run(mock.Mock(), self.root / 'state', prompt=stopped, output=lambda *_: None, root=self.root)
+            wizard.run(execute, state, prompt=stopped, output=print, root=self.root)
         self.assertFalse((self.root / 'my-config.json').exists())
         self.setup_until_ready('yes')
         self.assertEqual(self.settings_uuid(), 'kept')
@@ -545,6 +546,7 @@ class RecoveryWizardTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.media = self.root / 'hdd'
         self.media.mkdir()
+        (self.root / 'ssd/installer').mkdir(parents=True)     # as on a set-up SSD
         self.config = {'media_mount': str(self.media), 'data_mount': str(self.root / 'ssd'),
                        'photos': {'archive_dir': 'photos/archive'}}
 

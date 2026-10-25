@@ -21,6 +21,10 @@ def scope_digest(config):
     values['review_settings']={k:config.get(k) for k in ('server_os','heartbeat','host_backup','tv','networking','dashboard','monitoring','app_backup','nextcloud','maintenance')};values['runtime']={'backend':config.get('runtime',{}).get('backend')};values['gateway']={k:config.get('gateway',{}).get(k) for k in ('services','lan_ip','lan_cidr')};values['services']=config.get('media',{}).get('services',[]);values['photos']=photo_scope(config)
     return hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
+def complete_status(stamp,now):
+    """A complete check: 'complete', or 'stale' once it is over a day old (still complete)."""
+    return 'stale' if now-stamp>86400 else 'complete'
+
 def summarize(saved,config,now):
     result={'status':'unknown','profile':None,'generated_at':None,'automatic':{},'manual':{},'manual_checks':[]}
     stamp=saved.get('generated_at')
@@ -41,9 +45,10 @@ def summarize(saved,config,now):
                 if row['status']=='pass' and (row.get('evidence')!='user_reported' or type(row.get('confirmed_at')) not in (int,float) or not 0<=row['confirmed_at']<=now+60):valid=False
                 result['manual_checks'].append({'name':MANUAL[key],'status':row['status']})
         result[group]=counts
+    # "stale": complete, but over a day old (collect.rs acceptance says the same). A failed
+    # or unfinished check stays failed or pending however old it is.
     if not valid:result['status']='unknown'
-    elif now-stamp>86400:result['status']='stale'
     elif any(result[g].get('fail',0) for g in ('automatic','manual')):result['status']='failed'
-    elif saved.get('acceptance_complete') is True and all(sum(result[g].values())==result[g].get('pass',0) for g in ('automatic','manual')):result['status']='complete'
+    elif saved.get('acceptance_complete') is True and all(sum(result[g].values())==result[g].get('pass',0) for g in ('automatic','manual')):result['status']=complete_status(stamp,now)
     else:result['status']='pending'
     return result

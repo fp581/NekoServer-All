@@ -19,7 +19,12 @@ use std::{
 };
 
 pub const MIN_FLOOR: f64 = 20.0;
+/// Above this for HOT_FOR, or at EMERGENCY_NOW_C at once, everything goes to full speed.
+/// Current processors run at 95 °C (AMD) or 100 °C (Intel) under full load by design and
+/// many report no critical limit, so one reading at 95 °C is not an emergency.
 const EMERGENCY_C: f64 = 95.0;
+const EMERGENCY_NOW_C: f64 = 105.0;
+const HOT_FOR: std::time::Duration = std::time::Duration::from_secs(300);
 /// What a probe input with nothing connected reads on many boards (nct67xx AUXTIN): no
 /// working part of a PC reaches it, so it is never taken for a temperature.
 const UNCONNECTED_C: f64 = 127.0;
@@ -305,6 +310,11 @@ pub struct Controller {
     journal: Option<PathBuf>,
     /// An output moved or vanished: look for the outputs again soon.
     pub rediscover: bool,
+    /// Outputs whose linked fans stopped while being driven: (steps seen stopped, the
+    /// setting full speed was latched for). See `watch_stall`.
+    stalls: BTreeMap<String, (u32, Option<Setting>)>,
+    /// When each sensor went above EMERGENCY_C (kept by every step), for HOT_FOR.
+    pub hot_since: BTreeMap<String, std::time::Instant>,
 }
 /// The journal's form: {output id: {"enable": …, "pwm": …}}.
 pub fn originals_json(originals: &BTreeMap<String, Original>) -> Value {
@@ -340,6 +350,8 @@ impl Controller {
             status: BTreeMap::new(),
             journal: None,
             rediscover: false,
+            stalls: BTreeMap::new(),
+            hot_since: BTreeMap::new(),
         }
     }
     pub fn with_journal(mut self, path: PathBuf) -> Self {
@@ -365,7 +377,8 @@ impl Controller {
             .map(|v| v / 1000.0)
             .filter(|v| (-40.0..UNCONNECTED_C).contains(v))
     }
-    /// Any sensor at its critical temperature (less 3 °C), or at 95 °C: everything to full.
+    /// Any sensor near its own critical limit (less 3 °C) or at 105 °C, or above 95 °C for
+    /// five minutes: everything to full speed.
     pub fn emergency(&self) -> Option<String> {
         // Without a single temperature, overheating can't be noticed: full speed.
         if !self
@@ -381,9 +394,30 @@ impl Controller {
             let crit = number(&t.path("_crit"))
                 .map(|c| c / 1000.0)
                 .filter(|c| *c > 40.0);
-            let hot = crit.map_or(v >= EMERGENCY_C, |c| v >= c - 3.0) || v >= EMERGENCY_C;
+            let held = v > EMERGENCY_C
+                && self
+                    .hot_since
+                    .get(&t.id)
+                    .is_some_and(|since| since.elapsed() >= HOT_FOR);
+            let hot = crit.is_some_and(|c| v >= c - 3.0) || v >= EMERGENCY_NOW_C || held;
             hot.then(|| format!("{} {} at {v:.0} °C", t.chip, t.label))
         })
+    }
+    /// Note which sensors are above EMERGENCY_C now, and since when.
+    fn track_heat(&mut self) {
+        let hot: Vec<String> = self
+            .inventory
+            .temps
+            .iter()
+            .filter(|t| self.temperature(&t.id).is_some_and(|v| v > EMERGENCY_C))
+            .map(|t| t.id.clone())
+            .collect();
+        self.hot_since.retain(|id, _| hot.contains(id));
+        for id in hot {
+            self.hot_since
+                .entry(id)
+                .or_insert_with(std::time::Instant::now);
+        }
     }
     fn take_over(&mut self, out: &Channel) -> std::io::Result<()> {
         if !out.intact() {
@@ -473,6 +507,7 @@ impl Controller {
     }
     /// One control step: every output to its target speed (or back to the firmware).
     pub fn step(&mut self) {
+        self.track_heat();
         let emergency = self.emergency();
         for out in self.inventory.outputs.clone() {
             let setting = self.settings.get(&out.id).cloned();
@@ -488,10 +523,13 @@ impl Controller {
                     .map(|t| curve_duty(points, t))
                     .ok_or("The curve's temperature can't be read"),
             };
-            let min = setting.map_or(MIN_FLOOR, |s| s.min.max(MIN_FLOOR));
+            let min = setting.as_ref().map_or(MIN_FLOOR, |s| s.min.max(MIN_FLOOR));
             let (wanted, why) = match (&emergency, target) {
                 (Some(hot), _) => (100.0, Some(format!("Full speed: {hot}"))),
                 (None, Err(e)) => (100.0, Some(format!("Full speed: {e}"))),
+                (None, Ok(_)) if self.stall_latched(&out.id, setting.as_ref()) => {
+                    (100.0, Some(STALLED.to_string()))
+                }
                 (None, Ok(pct)) => (pct.clamp(min, 100.0), None),
             };
             // Speed up at once; slow down gently so fans don't hunt up and down.
@@ -506,6 +544,7 @@ impl Controller {
                 .and_then(|_| write(&out.path(""), &pwm_value(duty)));
             match result {
                 Ok(()) => {
+                    self.watch_stall(&out.id, setting.as_ref(), duty);
                     self.last.insert(out.id.clone(), duty);
                     self.status.insert(out.id.clone(), json!({"mode": "controlled", "percent": (duty * 10.0).round() / 10.0, "note": why}));
                 }
@@ -518,6 +557,48 @@ impl Controller {
                     self.status.insert(out.id.clone(), state);
                 }
             }
+        }
+    }
+}
+/// Below this a fan counts as stopped (a spinning fan reads several hundred RPM).
+const STALL_RPM: f64 = 150.0;
+/// Control steps (2 s each) a linked fan must read stopped before full speed is set.
+const STALL_STEPS: u32 = 3;
+const STALLED: &str = "Full speed: a fan on this output stopped at the speed it was given. Raise \"Never slower than\" for it, then Save";
+impl Controller {
+    /// Full speed latched for this output after its fans stopped, until its setting is
+    /// changed (a higher minimum, say) or the service starts again.
+    fn stall_latched(&mut self, id: &str, setting: Option<&Setting>) -> bool {
+        match self.stalls.get(id) {
+            Some((_, Some(latched))) if Some(latched) == setting => true,
+            Some((_, Some(_))) => {
+                self.stalls.remove(id); // the setting changed: try it
+                false
+            }
+            _ => false,
+        }
+    }
+    /// Count the steps in which every fan linked to this output (by Detect fans) reads
+    /// stopped while it is driven; after STALL_STEPS, full speed until the setting
+    /// changes. Only ever raises a speed. A speed that can't be read never counts.
+    fn watch_stall(&mut self, id: &str, setting: Option<&Setting>, duty: f64) {
+        let linked = setting.map(|s| s.fans.as_slice()).unwrap_or_default();
+        let speeds: Vec<Option<f64>> = linked
+            .iter()
+            .filter_map(|f| self.inventory.fans.iter().find(|c| &c.id == f))
+            .map(|f| number(&f.path("_input")))
+            .collect();
+        let stopped = duty > 0.0
+            && duty < 100.0
+            && !speeds.is_empty()
+            && speeds.iter().all(|v| v.is_some_and(|rpm| rpm < STALL_RPM));
+        let entry = self.stalls.entry(id.to_string()).or_insert((0, None));
+        if entry.1.is_some() {
+            return;
+        }
+        entry.0 = if stopped { entry.0 + 1 } else { 0 };
+        if entry.0 >= STALL_STEPS {
+            entry.1 = setting.cloned();
         }
     }
 }
@@ -811,7 +892,21 @@ pub mod tests {
                 },
             )]),
         );
+        // 96 °C once is how current processors run under load: not yet an emergency...
         b.set("temp1_input", "96000");
+        c.step();
+        assert_eq!(b.get("pwm1"), "77");
+        // ...but five minutes above 95 °C is.
+        for since in c.hot_since.values_mut() {
+            *since = std::time::Instant::now() - HOT_FOR;
+        }
+        c.step();
+        assert_eq!(b.get("pwm1"), "255");
+        // Cooling below 95 °C starts the five minutes over; 105 °C is full speed at once.
+        b.set("temp1_input", "90000");
+        c.step();
+        assert!(c.hot_since.is_empty());
+        b.set("temp1_input", "106000");
         c.step();
         assert_eq!(b.get("pwm1"), "255");
         b.set("temp1_crit", "80000");
@@ -1008,7 +1103,7 @@ mod review_fault_tests {
             assert_eq!(c.temperature(&id), None);
         }
         // A real one that overheats still sends everything to full speed.
-        b.set("temp1_input", "99000");
+        b.set("temp1_input", "106000");
         assert!(c.emergency().is_some());
         // A sensor that says it has a fault is not read either; with no other reading
         // left, that is "no temperature can be read": full speed, as before.
@@ -1056,5 +1151,69 @@ mod review_fault_tests {
             "full speed claimed despite refused PWM write: {}",
             c.status[&output]
         );
+    }
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::*;
+    fn setting(fixed: f64, fans: &[String]) -> Setting {
+        let mut s = setting_from(&json!({"mode":"fixed","fixed":fixed})).unwrap();
+        s.fans = fans.to_vec();
+        s
+    }
+    /// A fan that stops at the speed it was given (common for 3-pin fans at 20 %) is
+    /// noticed after a few steps: full speed, with a note, until the setting changes.
+    #[test]
+    fn a_fan_that_stops_at_its_speed_gets_full_speed() {
+        let b = tests::Board::new("stall");
+        let inv = discover(&b.hwmon());
+        let (out, fan) = (inv.outputs[0].id.clone(), inv.fans[0].id.clone());
+        let mut c = Controller::new(
+            inv,
+            BTreeMap::from([(out.clone(), setting(20.0, std::slice::from_ref(&fan)))]),
+        );
+        b.set("fan1_input", "0");
+        for _ in 0..STALL_STEPS {
+            c.step();
+        }
+        assert_eq!(
+            b.get("pwm1"),
+            "51",
+            "not before {STALL_STEPS} stopped readings"
+        );
+        c.step();
+        assert_eq!(b.get("pwm1"), "255");
+        assert!(c.status[&out]["note"].as_str().unwrap().contains("stopped"));
+        // Spinning again at full speed: it stays at full speed (no hunting).
+        b.set("fan1_input", "2000");
+        c.step();
+        assert_eq!(b.get("pwm1"), "255");
+        // A new setting (a higher minimum) is tried again, slowing down gently.
+        c.settings.insert(out.clone(), setting(40.0, &[fan]));
+        c.step();
+        assert_eq!(b.get("pwm1"), "242");
+        assert!(c.status[&out]["note"].is_null());
+    }
+    /// Never for a fan that spins, can't be read, or isn't linked to the output.
+    #[test]
+    fn spinning_unreadable_or_unlinked_fans_change_nothing() {
+        let b = tests::Board::new("no-stall");
+        let inv = discover(&b.hwmon());
+        let (out, fan) = (inv.outputs[0].id.clone(), inv.fans[0].id.clone());
+        drop(inv);
+        for (reading, linked) in [("900", true), ("read error", true), ("0", false)] {
+            b.set("fan1_input", reading);
+            let fans = if linked { vec![fan.clone()] } else { vec![] };
+            let mut c = Controller::new(
+                discover(&b.hwmon()),
+                BTreeMap::from([(out.clone(), setting(20.0, &fans))]),
+            );
+            for _ in 0..6 {
+                c.step();
+            }
+            assert_eq!(b.get("pwm1"), "51", "{reading} linked={linked}");
+            assert!(c.status[&out]["note"].is_null());
+        }
     }
 }

@@ -17,7 +17,15 @@ from pathlib import Path
 import media_libraries
 import media_readiness
 import seerr_providers
-from neko_common import MEDIA_APPS, app_ports, atomic_json, local_opener, safe_path
+from neko_common import (
+    MEDIA_APPS,
+    app_ports,
+    atomic_json,
+    checked_settings,
+    default_settings,
+    local_opener,
+    safe_path,
+)
 
 # The apps on this computer: no proxy (sudo can keep http_proxy), no redirects.
 OPENER = local_opener()
@@ -90,7 +98,7 @@ def wait_ready(apps,seconds,probe=None,clock=time.monotonic,sleep=time.sleep):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description='NekoServer interactive media onboarding and status')
-    p.add_argument('--config',default=str(Path(__file__).with_name('config.json')))
+    p.add_argument('--config',type=checked_settings,default=default_settings(Path(__file__).parent))
     p.add_argument('--data-root')
     p.add_argument('--media-root')
     p.add_argument('--apply',action='store_true',help='Allow the selected setup/import steps to save changes')

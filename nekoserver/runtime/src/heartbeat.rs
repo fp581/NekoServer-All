@@ -44,19 +44,35 @@ pub fn run(a: &Args) -> Result<()> {
     let _lock = common::lock(&runtime.join("worker.lock"))?;
     let previous = common::json(&runtime.join("status.json"), 64000);
     let result = send(&cfg, runtime);
-    let now = common::now();
     common::atomic(
         &runtime.join("status.json"),
-        &serde_json::to_vec(
-            &json!({"format":"neko-heartbeat-v1","status":if result.is_ok(){"pass"}else{"fail"},"last_attempt":now,"last_success":if result.is_ok(){json!(now)}else{common::num(&previous["last_success"],0.0,now)},"provider_notifications_verified":false}),
-        )?,
+        &serde_json::to_vec(&status(result.is_ok(), common::now(), &previous))?,
         0o644,
     )?;
     result
 }
+/// The status after one check-in. A failed one keeps the last success as it was saved,
+/// also one from a clock that was ahead (the dashboard shows that one as now).
+fn status(sent: bool, now: f64, previous: &Value) -> Value {
+    json!({"format":"neko-heartbeat-v1","status":if sent{"pass"}else{"fail"},"last_attempt":now,"last_success":if sent{json!(now)}else{common::kept_time(&previous["last_success"])},"provider_notifications_verified":false})
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_clock_put_back_never_erases_the_last_check_in() {
+        // Saved while the clock was a day ahead; now the clock is right and a check-in fails.
+        let now = 1_800_000_000.0;
+        let previous = json!({"last_success": now + 86400.0});
+        assert_eq!(status(false, now, &previous)["last_success"], now + 86400.0);
+        assert_eq!(status(true, now, &previous)["last_success"], now);
+        assert!(status(false, now, &json!({"last_success": "x"}))["last_success"].is_null());
+        // Shown, it reads as now rather than in the future or as never.
+        assert_eq!(
+            common::shown_time(&previous["last_success"], now),
+            json!(now)
+        );
+    }
     #[test]
     fn urls_are_narrow() {
         assert!(endpoint("https://hc-ping.com/abc-123"));

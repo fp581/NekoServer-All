@@ -59,6 +59,52 @@ def prepare_daemon_config(path, target):
     return content
 
 
+# Settings that daemon.json and a flag on Docker's service command line can both set:
+# set in both, Docker refuses to start ("specified both as a flag and in the
+# configuration file").
+FLAG_KEYS = {'--data-root': 'data-root', '-g': 'data-root', '--graph': 'data-root',
+             '--log-driver': 'log-driver', '--log-opt': 'log-opts', '--storage-driver': 'storage-driver',
+             '-s': 'storage-driver'}
+
+
+def service_flags(run=subprocess.run):
+    """The command line Docker's service starts it with (its ExecStart, drop-ins included)."""
+    try:
+        shown = run(['systemctl', 'show', 'docker.service', '-p', 'ExecStart', '--value'],
+                    capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    return shown.stdout if shown.returncode == 0 else ''
+
+
+def flag_conflicts(content, command):
+    """The daemon.json settings this Docker's service already sets as flags."""
+    words = [w.split('=', 1)[0] for w in command.replace(';', ' ').split()]
+    return sorted({FLAG_KEYS[w] for w in words if w in FLAG_KEYS and FLAG_KEYS[w] in content})
+
+
+def validate_daemon(content, run=subprocess.run):
+    """Docker's own check of the new daemon.json, before it replaces the old one: a file
+    Docker refuses would leave it unable to start. Docker before 23 has no such check."""
+    conflicts = flag_conflicts(content, service_flags(run))
+    if conflicts:
+        raise RuntimeError('Docker\'s service already sets ' + ', '.join(conflicts) + ' on its command line (a drop-in '
+                           'in /etc/systemd/system/docker.service.d, say), and NekoServer sets it in /etc/docker/daemon.json: '
+                           'Docker refuses to start with both. Take the flag out of the service, then run setup again')
+    dockerd = shutil.which('dockerd')
+    if not dockerd:
+        return
+    import tempfile
+    with tempfile.NamedTemporaryFile('w', suffix='.json') as draft:   # no secrets in it
+        json.dump(content, draft)
+        draft.flush()
+        checked = run([dockerd, '--validate', '--config-file', draft.name], capture_output=True, text=True,
+                      timeout=60, check=False)
+    said = (checked.stdout + checked.stderr).strip()
+    if checked.returncode and 'unknown flag' not in said:
+        raise RuntimeError(f'Docker refuses the new /etc/docker/daemon.json ({said[-300:]}); nothing was changed')
+
+
 # Docker keeps container logs forever by default (json-file without rotation), which
 # can fill the SSD. Applies to containers created after Docker next starts.
 LOG_LIMITS = {'max-size': '10m', 'max-file': '3'}
@@ -149,7 +195,14 @@ def install_storage_guard(config):
     runtime.mkdir(parents=True,exist_ok=True)
     project = Path(__file__).resolve().parents[1]
     atomic_json(runtime/'storage.json',{k:config[k] for k in ('data_mount','media_mount','storage')})
-    native_runtime.deploy(project,config,runtime)
+    guard = native_runtime.deploy(project,config,runtime)
+    # Docker's start guard must run on this Linux, or Docker never starts: a copy built on
+    # a newer Linux (kept on the SSD through a reinstall) may not. Checked before Docker's
+    # settings are touched.
+    if not native_runtime.runs_here(guard):
+        raise RuntimeError(f'The NekoServer program at {guard} does not start on this Linux (it was built on another '
+                           'one), so Docker could not start with it. Run  sudo bash install.sh  first: it builds the '
+                           'program for this Linux. Docker\'s settings were not changed.')
     override = DOCKER_STORAGE_DROPIN
     desired = guard_contents(config,runtime)
     if override.exists():
@@ -163,7 +216,7 @@ def install_storage_guard(config):
 
 def ensure_active_compose(settings):
     """An already running managed engine may still lack its Compose plugin."""
-    result = subprocess.run(['docker', 'compose', 'version'], capture_output=True, check=False)
+    result = subprocess.run(['docker', 'compose', 'version'], capture_output=True, check=False, timeout=60)
     if result.returncode == 0:
         return
     if not settings.get('install_engine', False):
@@ -193,7 +246,7 @@ def run(context):
     daemon_file = Path('/etc/docker/daemon.json')
     daemon = prepare_daemon_config(daemon_file, target)
     # Do not mutate a running daemon or silently relocate existing images/volumes.
-    active = subprocess.run(['systemctl', 'is-active', '--quiet', 'docker'], check=False).returncode == 0
+    active = subprocess.run(['systemctl', 'is-active', '--quiet', 'docker'], check=False, timeout=30).returncode == 0
     if active and call(['docker', 'info', '--format', '{{.DockerRootDir}}']) != str(target):
         actual = call(['docker', 'info', '--format', '{{.DockerRootDir}}'])
         if active_store_in_use():
@@ -212,6 +265,7 @@ def run(context):
         context.log('Docker already running with expected data-root and existing SSD guard')
         verify_classic_store()
         install_storage_guard(context.config)
+        validate_daemon(daemon)
         write_atomic(daemon_file,json.dumps(daemon,indent=2)+'\n')
         context.log('Verified SSD/HDD startup guard installed; running containers were not restarted')
         return
@@ -221,18 +275,21 @@ def run(context):
     elif target.exists() and any(target.iterdir()) and json.loads(daemon_file.read_text()).get('features',{}).get('containerd-snapshotter') is not False:
         raise RuntimeError('Stopped existing Docker backend is unverified; start and inspect it before changing storage settings')
     has_docker = shutil.which('docker') is not None
-    has_compose = has_docker and subprocess.run(['docker', 'compose', 'version'], capture_output=True, check=False).returncode == 0
+    has_compose = has_docker and subprocess.run(['docker', 'compose', 'version'], capture_output=True, check=False,
+                                                timeout=60).returncode == 0
     if not (has_docker and has_compose):
         if not settings.get('install_engine', False):
             raise RuntimeError('Docker missing; set docker.install_engine=true before --apply')
         host.current().install(['docker', 'docker-compose'])
     for sub in ('compose', 'appdata', 'vm', 'installer', 'secrets', 'docker-engine'):
         (Path(root) / sub).mkdir(parents=True, exist_ok=True, mode=0o750)
-    write_atomic(daemon_file, json.dumps(daemon, indent=2) + '\n')
-    # A service-level mount requirement ensures Docker fails rather than writing to OS disk.
-    override = DOCKER_STORAGE_DROPIN
-    # RequiresMountsFor works for UUID-backed fstab or native systemd mounts.
+    # The mount requirement first, then the SSD data-root: a run that stops in between
+    # (Ctrl+C, a failed runtime build) never leaves Docker set to the SSD folder without
+    # the guard, which would let it start at boot before the SSD and fill that folder
+    # on the system disk. RequiresMountsFor works for UUID-backed fstab or native mounts.
     install_storage_guard(context.config)
+    validate_daemon(daemon)
+    write_atomic(daemon_file, json.dumps(daemon, indent=2) + '\n')
     if settings.get('enable_service', True):
         # Earlier failed starts (the guard missing after a drive problem, say) make systemd
         # refuse a start with "attempted too often"; that count is cleared first.

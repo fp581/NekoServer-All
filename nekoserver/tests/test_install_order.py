@@ -1381,6 +1381,59 @@ class KeptCopyTests(unittest.TestCase):
         self.assertEqual((dest / 'install.sh').read_text(), 'edited by hand\n')
         self.assertEqual([p.name for p in dest.parent.iterdir()], [dest.name])
 
+    def rebuild(self, build):
+        (self.project / 'runtime/bin/nekoserver-runtime').write_text(build + '\n')
+        (self.project / 'runtime/build.json').write_text(build + ' record\n')
+
+    def test_the_settings_kept_before_a_reinstall_survive_the_rebuilt_runtime(self):
+        """The reported case: Linux reinstalled, the runtime built again (other bytes), the
+        wizard's new settings from the template. The earlier settings were set aside with
+        the copy, and no config.previous-*.json was kept where RECOVERY.md says."""
+        real, fresh = {'storage': 'the settings from before'}, {'storage': 'made from the template'}
+        dest = self.recovery.preserve(self.data, self.project, real, self.logged.append)
+        self.rebuild('built on the reinstalled PC')
+        self.recovery.preserve(self.data, self.project, fresh, self.logged.append)
+        self.assertEqual(json.loads((dest / 'config.json').read_text()), fresh)
+        kept = [json.loads(p.read_text()) for p in dest.glob('config.previous-*.json')]
+        self.assertEqual(kept, [real])
+        # A second rebuild of the version (the earlier set-aside copy is removed) keeps it too.
+        self.rebuild('built once more')
+        self.recovery.preserve(self.data, self.project, {'storage': 'changed again'}, self.logged.append)
+        kept = [json.loads(p.read_text()) for p in dest.glob('config.previous-*.json')]
+        self.assertIn(real, kept)
+        self.assertIn(fresh, kept)
+        self.assertEqual(len(self.set_aside(dest)), 1)
+
+    def test_a_set_aside_copy_with_settings_found_nowhere_else_is_not_retired(self):
+        import native_runtime
+        self.preserve()
+        lonely = self.data / 'installer/releases/v0.1.0.replaced-20260101-000000'
+        lonely.mkdir(parents=True)
+        (lonely / 'config.json').write_text('{"storage": "only here"}\n')
+        empty = self.data / 'installer/releases/v0.1.0.replaced-20260102-000000'
+        empty.mkdir()
+        lib, units = Path(self.tmp.name) / 'lib', Path(self.tmp.name) / 'units'
+        lib.mkdir()
+        units.mkdir()
+        removed = native_runtime.retire_old(self.data, self.logged.append, lib=lib, units=units)
+        self.assertIn(empty, removed)
+        self.assertNotIn(lonely, removed)
+        self.assertTrue((lonely / 'config.json').exists())
+
+    def test_a_release_bundle_a_service_still_runs_from_is_not_retired(self):
+        import native_runtime
+        releases = self.data / 'installer/releases'
+        for version in ('v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.4.0'):
+            (releases / version).mkdir(parents=True)
+        lib, units = Path(self.tmp.name) / 'lib', Path(self.tmp.name) / 'units'
+        lib.mkdir()
+        units.mkdir()
+        (units / 'nekoserver-immich-snapshot-resume.service').write_text(
+            '[Unit]\n[Service]\nExecStart=/usr/bin/python3 ' + str(releases / 'v0.1.0') + '/recover.py resume\n')
+        removed = native_runtime.retire_old(self.data, self.logged.append, lib=lib, units=units)
+        self.assertNotIn(releases / 'v0.1.0', removed)
+        self.assertIn(releases / 'v0.2.0', removed)
+
     def test_one_set_aside_copy_per_version_and_it_goes_with_its_version(self):
         import native_runtime
         dest = self.preserve()

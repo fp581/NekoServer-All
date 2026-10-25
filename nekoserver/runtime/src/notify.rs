@@ -17,6 +17,17 @@ fn label(id: &str) -> Option<String> {
         "temperature" => return Some("CPU temperature is high".into()),
         "media-stale" => return Some("Media connection checks are stale".into()),
         "media-failure" => return Some("Media connection checks failed".into()),
+        "backup-key" => return Some("Monthly backups keep the app passwords unencrypted".into()),
+        "tailscale:login" => return Some("Phone access is signed out of Tailscale".into()),
+        "tailscale:expiry" => {
+            return Some("Phone access stops soon: Tailscale sign-in runs out".into())
+        }
+        "heartbeat:delivery" => {
+            return Some("Outage alerts: the outside monitor is not reached".into())
+        }
+        "notifications:delivery" => {
+            return Some("Phone alerts could not be delivered for a while".into())
+        }
         _ => {}
     }
     let (kind, key) = id.split_once(':')?;
@@ -112,11 +123,23 @@ fn settings(cfg: &Value, key: &str, default: u64, low: u64, high: u64) -> Result
     }
     Ok(n)
 }
+/// How old the collector's snapshot may be: two collection intervals plus 30 s, the
+/// page's and acceptance's rule (a 5-minute interval is allowed, so a fixed 3 minutes
+/// would call every slower reading "monitoring unavailable" and ignore its alerts).
+/// Never less than the 3 minutes used before.
+fn max_age(s: &Value) -> f64 {
+    let interval = s["collect_interval"]
+        .as_u64()
+        .filter(|v| (30..=300).contains(v))
+        .unwrap_or(60) as f64;
+    2.0 * interval + 30.0
+}
 fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<String>, bool) {
+    let oldest = now - max_age(s).max(180.0);
     let fresh = s["format"] == "neko-dashboard-v1"
         && s["generated_at"]
             .as_f64()
-            .is_some_and(|t| t.is_finite() && t >= now - 180.0 && t <= now + 30.0)
+            .is_some_and(|t| t.is_finite() && t >= oldest && t <= now + 30.0)
         && s["alerts"].is_array()
         && s["applications"].is_array()
         && s["storage"].is_array()
@@ -189,11 +212,13 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.remove(&format!("startup:{unit}:failed"));
         }
     }
-    // A check is good again only when its latest results list no damaged files.
+    // A check is good again only when its latest results list no damaged files, and a
+    // full check (every copy read) has run: a quick run alone proves nothing.
     for row in s["integrity"].as_array().cloned().unwrap_or_default() {
-        if ["damaged", "both_damaged", "disagree", "missing"]
-            .iter()
-            .all(|k| row[k].as_u64() == Some(0))
+        if row["full_at"].as_f64().is_some_and(|t| t > 0.0)
+            && ["damaged", "both_damaged", "disagree", "missing"]
+                .iter()
+                .all(|k| row[k].as_u64() == Some(0))
         {
             unknown.remove(&format!("integrity:{}", row["id"].as_str().unwrap_or("")));
         }
@@ -345,6 +370,14 @@ fn report(runtime: &Path, state: &Value, now: f64, pending: usize) -> Result<()>
         0o644,
     )
 }
+/// Is a message due now? A retry is never set more than an hour ahead, so one further
+/// ahead was set while the clock was ahead: it is ignored, or alerts would wait until the
+/// clock reached it again (days, after a clock put back by days).
+fn delivery_due(next_attempt: &Value, now: f64) -> bool {
+    next_attempt
+        .as_f64()
+        .is_none_or(|t| t <= now || t > now + 3600.0)
+}
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let config_path = a.path("config")?;
@@ -409,7 +442,7 @@ pub fn run(a: &Args) -> Result<()> {
     let (mut state, events) = plan(&snapshot, &old, now, debounce, repeat);
     state["destination"] = json!(destination);
     let mut pending = events.len();
-    let due = state["next_attempt"].as_f64().is_none_or(|t| t <= now);
+    let due = delivery_due(&state["next_attempt"], now);
     let mut failed = false;
     if !events.is_empty() && due {
         let mut message = String::from("NekoServer health update\n");
@@ -469,6 +502,17 @@ pub fn run(a: &Args) -> Result<()> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_retry_time_from_a_clock_that_was_ahead_never_holds_alerts_back() {
+        let now = 1_800_000_000.0;
+        assert!(delivery_due(&serde_json::json!(null), now));
+        assert!(delivery_due(&serde_json::json!(now - 1.0), now));
+        // A retry or the minimum interval still waits (both are at most an hour).
+        assert!(!delivery_due(&serde_json::json!(now + 300.0), now));
+        assert!(!delivery_due(&serde_json::json!(now + 3600.0), now));
+        // Set a day ahead, before the clock was put back: due now.
+        assert!(delivery_due(&serde_json::json!(now + 86400.0), now));
+    }
     #[test]
     fn every_monitored_app_and_job_can_notify() {
         // Alerts without a label are dropped, so every id the dashboard can raise needs one.
@@ -681,8 +725,11 @@ mod tests {
         // No results yet: not a recovery.
         let (_, e) = plan(&s, &previous, 2000., 0, 43200);
         assert!(e.is_empty(), "{e:?}");
-        s["integrity"] =
-            json!([{"id":"usb_photos","damaged":0,"both_damaged":0,"disagree":0,"missing":0}]);
+        // Clean lists from quick runs only (no full check yet): still not a recovery.
+        s["integrity"] = json!([{"id":"usb_photos","damaged":0,"both_damaged":0,"disagree":0,"missing":0,"full_at":null}]);
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        s["integrity"] = json!([{"id":"usb_photos","damaged":0,"both_damaged":0,"disagree":0,"missing":0,"full_at":1500.0}]);
         let (_, e) = plan(&s, &previous, 2000., 0, 43200);
         assert_eq!(e.len(), 1);
         assert!(label("integrity:usb_photos")
@@ -703,5 +750,79 @@ mod tests {
         );
         assert_eq!(e.len(), 1);
         assert!(!label(&e[0].0).unwrap().contains("PRIVATE"));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    /// Every alert the collector can raise, all at once: each one must have a label, or
+    /// the phone never hears about it (Tailscale signed out was dropped this way).
+    #[test]
+    fn every_collector_alert_can_reach_the_phone() {
+        let mut both = vec![];
+        for days_left in [Value::Null, json!(3.0)] {
+            let drives: Vec<Value> = ["os", "data_ssd", "media_hdd"]
+                .iter()
+                .flat_map(|id| {
+                    [
+                        json!({"id": id, "name": id, "status": "missing", "smart": {"status": "fail"}}),
+                        json!({"id": id, "name": id, "status": "mounted", "used_percent": 99.0, "smart": {"status": "warning"}}),
+                    ]
+                })
+                .collect();
+            let s = json!({
+                "notifications": {"status": "fail"},
+                "heartbeat": {"status": "stale"},
+                "tailscale": {"state": if days_left.is_null() { "NeedsLogin" } else { "Running" }, "days_left": days_left},
+                "startup": crate::collect::STARTUP.iter().map(|(u, n)| json!({"unit": u, "name": n, "active": "failed", "enabled": false})).collect::<Vec<_>>(),
+                "storage": drives,
+                "metrics": {"memory_percent": 99.0, "temperature": 99.0},
+                "applications": crate::collect::APPS.iter().map(|(id, name, ..)| json!({"id": id, "name": name, "state": "exited"})).collect::<Vec<_>>(),
+                "backups": crate::collect::JOBS.iter().map(|(id, name, ..)| json!({"id": id, "name": name, "status": "fail", "timer": {"installed": true}})).collect::<Vec<_>>(),
+                "backup_key": false,
+                "integrity": crate::collect::CHECKS.iter().map(|(id, name)| json!({"id": id, "name": name, "damaged": 1})).collect::<Vec<_>>(),
+                "updates": [{"app": "immich", "name": "Immich"}, {"app": "nextcloud", "name": "Nextcloud"}],
+                "media": {"status": "stale", "counts": {"fail": 1}},
+            });
+            both.extend(crate::collect::alerts(&s).as_array().unwrap().clone());
+        }
+        let ids: BTreeSet<&str> = both.iter().filter_map(|a| a["id"].as_str()).collect();
+        for id in [
+            "tailscale:login",
+            "tailscale:expiry",
+            "backup-key",
+            "heartbeat:delivery",
+        ] {
+            assert!(ids.contains(id), "{id} not raised: {ids:?}");
+        }
+        for id in &ids {
+            assert!(label(id).is_some(), "no label for {id}");
+        }
+    }
+    /// A 5-minute collection interval is allowed: a reading 200 s old is current, and its
+    /// alerts are acted on.
+    #[test]
+    fn a_slower_collector_is_not_monitoring_unavailable() {
+        let now = 10_000.0;
+        let s = json!({"format":"neko-dashboard-v1","generated_at":now-200.0,"collect_interval":300,
+            "alerts":[{"id":"mount:media_hdd","level":"critical"}],"applications":[],"storage":[],"backups":[]});
+        let (_, events) = plan(&s, &json!({}), now, 0, 43200);
+        assert!(
+            events.iter().any(|e| e.0 == "mount:media_hdd"),
+            "{events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| e.0 == "monitoring-stale"),
+            "{events:?}"
+        );
+        // At the default interval a reading 200 s old is late (never stricter than 3 minutes).
+        let mut late = s.clone();
+        late["collect_interval"] = json!(60);
+        let (_, events) = plan(&late, &json!({}), now, 0, 43200);
+        assert!(
+            events.iter().any(|e| e.0 == "monitoring-stale"),
+            "{events:?}"
+        );
     }
 }

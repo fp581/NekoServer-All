@@ -466,7 +466,12 @@ impl Live {
                     "value": round1(value), "unit": unit,
                 });
                 if kind == "temperature" {
-                    if !(-40.0..=200.0).contains(&value) {
+                    // As fan control reads them (fans.rs temperature): a probe input with
+                    // nothing connected reads 127 °C on many boards, or says so in its
+                    // _fault file. Shown, it would be a red "127 °C" that is not real.
+                    if !(-40.0..127.0).contains(&value)
+                        || read(&chip.join(format!("{channel}_fault"))) == "1"
+                    {
                         continue;
                     }
                     for limit in ["max", "crit"] {
@@ -992,6 +997,24 @@ mod tests {
         assert!(v["cpu"]["percent"].is_null());
     }
 
+    /// An unconnected probe (127 °C, or one that says it has a fault) is not shown.
+    #[test]
+    fn unconnected_probes_are_not_shown_as_temperatures() {
+        let t = Tree::new("probes");
+        t.put("sys/class/hwmon/hwmon1/name", "nct6798");
+        t.put("sys/class/hwmon/hwmon1/temp1_input", "41000");
+        t.put("sys/class/hwmon/hwmon1/temp2_input", "127000");
+        t.put("sys/class/hwmon/hwmon1/temp3_input", "45000");
+        t.put("sys/class/hwmon/hwmon1/temp3_fault", "1");
+        let live = Live::new(&t.0.join("proc"), &t.0.join("sys"));
+        let temps: Vec<f64> = live
+            .sensors()
+            .iter()
+            .filter(|r| r["kind"] == "temperature")
+            .filter_map(|r| r["value"].as_f64())
+            .collect();
+        assert_eq!(temps, [41.0]);
+    }
     #[test]
     fn every_sensor_kind_is_found_and_grouped() {
         let t = Tree::new("sensors");

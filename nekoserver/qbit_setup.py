@@ -9,6 +9,10 @@ from neko_common import app_port, local_opener
 
 
 QBITTORRENT_PORT=app_port('qbittorrent')
+# The qBittorrent download-client field that holds the category, per app: each app
+# names it after its own media (there is no field called "category"). Shared by the
+# connector (media-connect.py) and the health audit (media-health.py).
+CATEGORY_FIELDS={'sonarr':'tvCategory','radarr':'movieCategory','lidarr':'musicCategory'}
 
 
 class Client:
@@ -61,6 +65,14 @@ def retained(verified,actual,changes,categories,desired):
             and verified.get('auto_tmm_enabled') is True
             and all(c in actual and category_ok(c,path(actual[c].get('savePath','')),desired) for c in categories))
 
+def save_preferences(client,changes,output):
+    """Save the preference changes (if any). Switching automatic mode on is said, once:
+    only the run that switches it says so (later runs find it on)."""
+    if changes.get('auto_tmm_enabled'):
+        output('qBittorrent: new torrents now start in automatic mode, so each one is saved in its '
+               "category's folder (music on the SSD, where Lidarr finds it). Torrents you already have keep their mode")
+    if changes:client.call('/app/setPreferences',{'json':json.dumps(changes)})
+
 def configure(username,password,apply=False,categories=('tv','movies','music'),client=None,output=print):
     client=client or Client()
     try:
@@ -103,7 +115,7 @@ def configure(username,password,apply=False,categories=('tv','movies','music'),c
                                'change it in qBittorrent (right-click the category, Edit) and run setup again')
         output('qBittorrent: login verified; download paths/categories '+('APPLY' if apply else 'PREVIEW'))
         if apply:
-            if changes:client.call('/app/setPreferences',{'json':json.dumps(changes)})
+            save_preferences(client,changes,output)
             for category in categories:
                 if category not in existing:client.call('/torrents/createCategory',{'category':category,'savePath':desired+'/'+category})
             for category,path in fix.items():client.call('/torrents/editCategory',{'category':category,'savePath':path})

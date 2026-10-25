@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from neko_common import safe_path, atomic_write, atomic_json, find_program
+from neko_common import safe_path, atomic_write, atomic_json, ensure_directory, find_program
 import host
 
 DEPENDENCIES=['system','recovery']
@@ -105,9 +105,73 @@ def ensure_user_dir(path,home,user):
     if path!=home and home not in path.parents:raise RuntimeError('User directory outside the selected home')
     for item in reversed((path,*path.parents)):
         if item==home or home in item.parents:
-            if item.exists():
-                if not item.is_dir() or item.stat().st_uid!=user.pw_uid:raise RuntimeError('Existing TV user directory has incompatible ownership/type')
-            else:item.mkdir(mode=0o755);os.chown(item,user.pw_uid,user.pw_gid)
+            user_folder(item,user)
+
+
+def user_folder(item,user):
+    """One folder of the user's home, theirs: made theirs, handed over when a cut-off run
+    left it root's and empty, refused when it is someone else's or not a folder."""
+    if not item.exists():
+        ensure_directory(item,0o755,user.pw_uid,user.pw_gid)
+        return
+    if left_by_a_cut_off_run(item):os.chown(item,user.pw_uid,user.pw_gid)
+    if not item.is_dir() or item.stat().st_uid!=user.pw_uid:raise RuntimeError('Existing TV user directory has incompatible ownership/type')
+
+
+def left_by_a_cut_off_run(item):
+    """An empty folder of root's in the user's home: what a run cut off between making
+    a folder and handing it to the user left behind (before 0.39.5). Handed over."""
+    return item.is_dir() and not item.is_symlink() and item.stat().st_uid==0 and not any(item.iterdir())
+
+
+def recorded_launchers(root):
+    """{path inside the home: sha256} of the launchers the TV step wrote last time (its report)."""
+    try:
+        import json
+        value=json.loads((Path(root)/REPORT).read_text()).get('launchers_sha256')
+    except (OSError,ValueError,AttributeError):
+        return {}
+    return value if isinstance(value,dict) else {}
+
+
+def own_launcher(path,home,user,recorded):
+    """A launcher NekoServer wrote and nobody changed since: exactly what the last run
+    recorded, or marked as NekoServer's and owned by the desktop user. It is brought up to
+    date when the browser or Steam it opens moved (another browser installed, say)."""
+    if not path.is_file() or path.is_symlink() or path.stat().st_uid!=user.pw_uid:
+        return False
+    payload=path.read_bytes()
+    try:
+        rel=str(path.relative_to(home))
+    except ValueError:
+        return False
+    return recorded.get(rel)==hashlib.sha256(payload).hexdigest() or b'\nX-NekoServer-Managed=true\n' in payload
+
+
+def check_launchers(destinations,user,home,recorded):
+    """Stop before anything changes when a launcher or a folder on the way is someone's own."""
+    for given,text in destinations.items():
+        path=safe_path(given)
+        current=path.exists() and path.is_file() and path.read_text(errors='replace')==text
+        if path.exists() and not current and not own_launcher(path,home,user,recorded):
+            raise RuntimeError('Existing TV launcher differs; custom shortcut preserved')
+        if path.exists() and (path.stat().st_uid!=user.pw_uid or not path.stat().st_mode & 0o100):raise RuntimeError('Existing TV launcher ownership/executable mode needs review; file preserved')
+        check_folders_on_the_way(path,user,home)
+
+
+def check_folders_on_the_way(path,user,home):
+    for ancestor in (path.parent,*path.parent.parents):
+        if (ancestor==home or home in ancestor.parents) and ancestor.exists() and (not ancestor.is_dir() or ancestor.stat().st_uid!=user.pw_uid):
+            raise RuntimeError('TV shortcut directory is not owned by the desktop user')
+
+
+def write_launchers(destinations,user,home,recorded):
+    """The launchers written: new ones, and NekoServer's own ones that are out of date."""
+    for path,text in destinations.items():
+        ensure_user_dir(path.parent,home,user)
+        if path.exists() and (path.read_text(errors='replace')==text or not own_launcher(path,home,user,recorded)):
+            continue
+        atomic_write(path,text,0o755);os.chown(path,user.pw_uid,user.pw_gid)
 
 
 def sleep_blocked(run=command):
@@ -224,13 +288,8 @@ def run(ctx):
     files=launchers(steam_program,browser_program);destinations={home/'.local/share/applications'/name:text for name,text in files.items()}
     if desktop:destinations.update({desktop/name:text for name,text in files.items()})
     # Inspect every launcher/ancestor before any packages, power settings or files change.
-    for given,text in destinations.items():
-        path=safe_path(given)
-        if path.exists() and (not path.is_file() or path.read_text()!=text):raise RuntimeError('Existing TV launcher differs; custom shortcut preserved')
-        if path.exists() and (path.stat().st_uid!=user.pw_uid or not path.stat().st_mode & 0o100):raise RuntimeError('Existing TV launcher ownership/executable mode needs review; file preserved')
-        for ancestor in (path.parent,*path.parent.parents):
-            if ancestor==home or home in ancestor.parents:
-                if ancestor.exists() and (not ancestor.is_dir() or ancestor.stat().st_uid!=user.pw_uid):raise RuntimeError('TV shortcut directory is not owned by the desktop user')
+    recorded=recorded_launchers(root)
+    check_launchers(destinations,user,home,recorded)
     if opts.get('keep_awake',True):
         power_dir=safe_path(home/'.config')
         if power_dir.exists() and (not power_dir.is_dir() or power_dir.stat().st_uid!=user.pw_uid):raise RuntimeError('Desktop power configuration directory must be owned by the selected user')
@@ -261,9 +320,7 @@ def run(ctx):
         enabled=command(['systemctl','enable','--now','bluetooth.service'])
         active=command(['systemctl','is-active','--quiet','bluetooth.service'])
         results.append({'check':'tv:bluetooth_service','status':'pass' if not enabled.returncode and not active.returncode else 'needs_setup'})
-    for path,text in destinations.items():
-        ensure_user_dir(path.parent,home,user)
-        if not path.exists():atomic_write(path,text,0o755);os.chown(path,user.pw_uid,user.pw_gid)
+    write_launchers(destinations,user,home,recorded)
     if opts.get('keep_awake',True):
         ensure_user_dir(home/'.config',home,user)
         results.append(keep_awake(user,home,ctx.log))

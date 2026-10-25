@@ -12,20 +12,54 @@ apt_lists_busy() {
 # still coming up): the same command is run again a little later, three times in all.
 # Any other failure is reported at once. (host.py does the same for the apps' packages.)
 transient_pattern='failed to fetch|failed retrieving file|failed to download|cannot download|download(ing)? (\(curl\) )?(error|failed)|curl error|could not resolve|temporary failure|name resolution|connection (failed|timed out|refused|reset)|timeout (was reached|exceeded)|timed out|network is unreachable|all mirrors were tried|hash sum mismatch|operation too slow|not found on medium|http (response|error)[: ]+(404|5[0-9][0-9])|service unavailable|bad gateway'
+# Another program holds the package manager's lock (automatic updates, PackageKit, a
+# software centre): waited out, up to 10 minutes, without counting as an attempt.
+busy_pattern='could not get lock|is held by process|failed to obtain rpm transaction lock|unable to lock database|system management is locked'
+# apt-get update says these and still succeeds when a source did not answer.
+stale_pattern='^W: (Failed to fetch|Some index files failed to download)'
+# What a clock set wrong makes package managers and downloads say.
+clock_pattern='not yet valid|not valid yet|certificate has expired|seconds? in the future|time warp|clock problem'
+# The command failed (or apt only warned) because a source did not answer: worth another try.
+worth_retrying() {
+    if (( $1 != 0 )); then
+        grep -qiE "$transient_pattern" "$2"
+    else
+        grep -qE "$stale_pattern" "$2"
+    fi
+}
 retrying() {
-    local attempt code output
+    local attempt=1 waited=0 code output
     output=$(mktemp)
-    for attempt in 1 2 3; do
+    while :; do
         # (In a || list, so a failure here is judged below instead of ending the script.)
         { "$@" 2>&1 | tee "$output"; code=${PIPESTATUS[0]}; } || true
-        if (( code == 0 || attempt == 3 )) || ! grep -qiE "$transient_pattern" "$output"; then
+        if (( code != 0 && waited < 600 )) && grep -qiE "$busy_pattern" "$output"; then
+            (( waited )) || echo 'Another program is installing or updating packages; waiting for it to finish (up to 10 minutes)...'
+            sleep 20
+            waited=$(( waited + 20 ))
+            continue
+        fi
+        if (( attempt == 3 )) || ! worth_retrying "$code" "$output"; then
             break
         fi
         echo "The package source did not answer; trying again in 20 seconds ($(( attempt + 1 )) of 3)..."
         sleep 20
+        attempt=$(( attempt + 1 ))
     done
+    if (( code == 0 )) && grep -qE "$stale_pattern" "$output"; then
+        echo 'Some package sources could not be reached (the lines above say which); going on with their lists from before.'
+    fi
+    if grep -qiE "$clock_pattern" "$output"; then
+        echo "This PC's clock looks wrong (check the date and time with  timedatectl): let the network set it (sudo timedatectl set-ntp true), wait a minute, then run  sudo bash install.sh  again." >&2
+    fi
     rm -f -- "$output"
     return "$code"
+}
+# Nothing has pacman's lock open: libalpm, which pacman and the graphical updaters use,
+# keeps it open while it works, so a lock no program has open was left by a pacman that
+# was cut off (killed, or the PC lost power) and nothing would ever remove it.
+pacman_lock_abandoned() {
+    command -v find >/dev/null && [[ -z "$(find /proc/[0-9]*/fd -lname "$pacman_lock" -print -quit 2>/dev/null)" ]]
 }
 # Where the system update downloads packages; its disk is checked before updating.
 system_path=/var/cache/pacman
@@ -37,6 +71,7 @@ fi
 apply=false
 readonly_mode=false
 recover=false
+finish=false
 full=false
 previous=''
 for arg in "$@"; do
@@ -44,6 +79,7 @@ for arg in "$@"; do
         --apply) apply=true ;;
         --wizard) apply=true; full=true ;;
         --recover) apply=true; recover=true ;;
+        --finish-update) apply=true; finish=true ;;
         --check|--dry-run|--help|-h) readonly_mode=true ;;
     esac
     [[ "$previous" == --profile && "$arg" == full ]] && full=true
@@ -169,9 +205,26 @@ if "$apply"; then
         # Recovery skips it: it must open from local backups, also without a network.
         python3 "$ROOT/host.py" repair
     fi
+    if "$finish"; then
+        # Only an unfinished monthly update, finished by this release: its runtime is built
+        # (when needed) and its resume run; no system update, package or other step.
+        if [[ ! -e /etc/nekoserver-backups/maintenance-resume.json ]]; then
+            echo 'No monthly update is waiting to be finished. Run  sudo bash install.sh  as usual.'
+            exit 0
+        fi
+        if python3 "$ROOT/native_runtime.py" needs-build; then
+            echo "Building this release's background program to finish the monthly update (needs the internet)."
+            python3 "$ROOT/host.py" toolchain
+            NEKOSERVER_BUILD_AS_ROOT=1 python3 "$ROOT/runtime/build.py"
+        fi
+        # (set -e ends the script with its failure; the one setup start stays at the end.)
+        python3 "$ROOT/installer.py" --finish-update
+        exit 0
+    fi
     if ! "$recover" && [[ -e /etc/nekoserver-backups/maintenance-resume.json ]]; then
-        # An unfinished monthly update can only be finished by the version that started
-        # it; stop before the system update or any NekoServer file is replaced.
+        # An unfinished monthly update is finished first (by the release that started it,
+        # or by this one with --finish-update); stop before the system update or any
+        # NekoServer file is replaced.
         if ! command -v python3 >/dev/null; then
             echo 'A monthly update did not finish. Run  sudo systemctl start nekoserver-maintenance-resume.service  first, then run  sudo bash install.sh  again.' >&2
             exit 1
@@ -201,6 +254,12 @@ if "$apply"; then
             exit 1
         fi
         # Recovery skips this so restoring never depends on the network.
+        if ! "$recover" && command -v python3 >/dev/null && python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+            # What setup cannot run without (SELinux enforcing, an older systemd, a pending
+            # restart), said before the system update when Python is already here; with
+            # no Python yet, it is said as soon as it is installed (below).
+            python3 "$ROOT/capabilities.py" preflight || exit 1
+        fi
         if [[ "$family" == debian ]]; then
             # Debian and Ubuntu: refresh the package lists only and install just what is
             # needed. Upgrading the rest of the system stays your own routine.
@@ -242,6 +301,11 @@ if "$apply"; then
             fi
             waited=0
             while [[ -e "$pacman_lock" ]] && (( waited < 600 )); do
+                if pacman_lock_abandoned; then
+                    rm -f -- "$pacman_lock"
+                    echo "pacman's lock was left by a pacman that was cut off (no program has it open): removed. The update below finishes that one."
+                    break
+                fi
                 (( waited )) || echo 'Another package installation is running; waiting for it to finish (up to 10 minutes)...'
                 sleep 5
                 waited=$(( waited + 5 ))

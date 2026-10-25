@@ -71,7 +71,9 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
     if not isinstance(status, dict) or not isinstance(status.get('version'), str):
         raise RuntimeError('Media manager version missing')
     major = status['version'].split('.')[0]
-    if not major.isdecimal() or (app == 'sonarr' and int(major) not in (3, 4)) or int(major) < 3:
+    # Any release from 3 on (Sonarr 5 too): only Sonarr 3 has the separate language
+    # profiles handled below; later releases keep the same provider settings.
+    if not major.isdecimal() or int(major) < 3:
         raise SetupRequired('Unsupported media manager version; configure its provider manually')
     base = status.get('urlBase', '')
     if not isinstance(base, str) or (base and (not base.startswith('/') or base.startswith('//') or any(c in base for c in ('?', '#', ':', '\\')) or '..' in base.split('/'))):

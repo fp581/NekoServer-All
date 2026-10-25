@@ -100,13 +100,20 @@ class CloudOriginTests(unittest.TestCase):
     def test_trusts_the_docker_gateway_hop(self):
         fake = FakeNextcloud(gateways=('172.19.0.1', '172.20.0.1'))
         self.run_gateways(fake, '192.168.1.20')
-        self.assertEqual(fake.system['trusted_proxies'], ['172.19.0.1', '172.20.0.1'])
+        # Docker's whole default range: a network made again with another number still works.
+        self.assertEqual(fake.system['trusted_proxies'], ['172.16.0.0/12'])
+
+    def test_a_gateway_outside_dockers_default_range_is_trusted_by_itself(self):
+        # Never the whole 192.168.0.0/16: that is the usual home network range too.
+        fake = FakeNextcloud(gateways=('192.168.48.1',))
+        self.run_gateways(fake, '192.168.1.20')
+        self.assertEqual(fake.system['trusted_proxies'], ['172.16.0.0/12', '192.168.48.1'])
 
     def test_rerun_is_idempotent(self):
         fake = FakeNextcloud()
         self.run_gateways(fake, '192.168.1.20', '192.168.1.20')
         self.assertEqual(fake.system['trusted_domains'].count('192.168.1.20'), 1)
-        self.assertEqual(fake.system['trusted_proxies'], ['172.19.0.1'])
+        self.assertEqual(fake.system['trusted_proxies'], ['172.16.0.0/12'])
 
     def test_refuses_public_or_missing_gateway(self):
         fake = FakeNextcloud(gateways=('8.8.8.8',))

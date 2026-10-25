@@ -1,6 +1,6 @@
 # Private app gateways
 
-User services: Jellyfin (8443), Seerr (8444), Immich (8445), Navidrome (8446), Nextcloud (8447), and the read-only dashboard (8448, Tailscale only; `"remote": false` under `"dashboard"` turns it off). Backends stay on localhost; management UIs (Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent) are not in the private remote Serve routes. On the home network, a port that another program on the server already uses is replaced by a free one from 8450-8499; the choice is kept in `"lan_ports"` under `"gateway"` in your settings and the app menu page links each app with its port.
+User services: Jellyfin (8443), Seerr (8444), Immich (8445), Navidrome (8446), Nextcloud (8447), and the dashboard (8448, Tailscale only: it shows everything, and changes fans, lights and apps only with your PIN; `"remote": false` under `"dashboard"` turns it off). Backends stay on localhost; management UIs (Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent) are not in the private remote Serve routes. On the home network, a port that another program on the server already uses is replaced by a free one from 8450-8499; the choice is kept in `"lan_ports"` under `"gateway"` in your settings and the app menu page links each app with its port.
 
 ## Home LAN
 

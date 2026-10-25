@@ -404,8 +404,23 @@ function otherIssues(s, add) {
   for (const check of s.integrity.filter(c => integrityBad(c))) {
     add('integrity:' + check.id, text(check.name, 'Backup copy') + ' has damaged or missing files', integrityBad(check) + ' files need a look. Keep every copy and use the repair guide.', 'integrity', 'critical');
   }
-  if (s.acceptance?.status !== 'complete') { add('acceptance', 'Finish checking your server', 'A backup is only proven once a restore has been tried. The checklist walks you through it.', 'acceptance'); }
+  acceptanceIssue(s.acceptance, add);
   if (s.media?.status === 'stale') { add('media-report', 'App checks are out of date', 'The last detailed app check is overdue.', 'apps'); }
+}
+/* The server check: "stale" is a complete check over a day old, which still holds. Only
+ * after a month is a recheck suggested (apps and settings change); anything not complete
+ * still needs finishing. */
+const ACCEPTANCE_RECHECK = 30 * 86400;
+function acceptanceIssue(acceptance, add) {
+  const status = acceptance?.status;
+  if (status === 'complete') { return; }
+  if (status === 'stale') {
+    if (nowSeconds() - acceptance.generated_at > ACCEPTANCE_RECHECK) {
+      add('acceptance', 'Time to recheck your server', 'The server check passed ' + ago(acceptance.generated_at) + '. Run it again now and then: apps and settings change.', 'acceptance');
+    }
+    return;
+  }
+  add('acceptance', 'Finish checking your server', 'A backup is only proven once a restore has been tried. The checklist walks you through it.', 'acceptance');
 }
 /* Everything to look at, most urgent first: the server's own alerts plus what this
  * page can see in the readings (never dismissing a server alert). */
@@ -658,16 +673,19 @@ function recentCopies(all) {
   const unchecked = !jobs.length || jobs.some(j => !numeric(j.last_success) || !j.timer?.installed || !j.timer?.active);
   return firstOf([[bad, ['warning', bad + ' need a look']], [unchecked, ['unknown', 'Not all checked']]], ['pass', 'All OK']);
 }
-/* A checksum result counts only with a believable date, and only while it is recent:
- * the checks run with the backups, at least every two weeks. */
-const INTEGRITY_MAX_AGE = 14 * 86400;
-function checkDated(check) { return numeric(check.at) && check.at > 0 && check.at <= nowSeconds() + 60; }
-function checkOverdue(check) { return nowSeconds() - check.at > INTEGRITY_MAX_AGE; }
+/* A checksum result counts only with a believable date, and only while it is recent.
+ * Only the monthly full check reads every copy (the hourly and weekly copies compare
+ * size and dates), so "matches" rests on its date (full_at), never on a quick run's.
+ * 35 days: one monthly run plus a few days. A USB drive is checked in the monthly run
+ * only when it is plugged in then. */
+const INTEGRITY_MAX_AGE = 35 * 86400;
+function checkDated(check) { return numeric(check.full_at) && check.full_at > 0 && check.full_at <= nowSeconds() + 60; }
+function checkOverdue(check) { return nowSeconds() - check.full_at > INTEGRITY_MAX_AGE; }
 function filesIntact(checks) {
   const damaged = checks.reduce((n, c) => n + integrityBad(c), 0), unverified = checks.reduce((n, c) => n + count(c.unverified), 0);
   return firstOf([
     [damaged, ['fail', damaged + ' files']],
-    [checks.some(c => !checkDated(c)), ['unknown', 'Check not dated']],
+    [checks.some(c => !checkDated(c)), ['unknown', 'No full check yet']],
     [checks.some(checkOverdue), ['stale', 'Check overdue']],
     [unverified, ['unknown', unverified + ' not yet checked']],
     [checks.length, ['pass', 'Checksums match']]
@@ -697,7 +715,7 @@ function renderProtection(s, fresh) {
   const old = ['unknown', 'Old reading'], restore = restoreTried(s);
   put('protection', [
     protectionItem('RECENT COPIES', fresh ? recentCopies(s.backups) : old, 'Each scheduled backup and whether its last run worked.'),
-    protectionItem('FILES INTACT', fresh ? filesIntact(s.integrity) : old, 'Every copied file is compared with its SHA-256 checksum.'),
+    protectionItem('FILES INTACT', fresh ? filesIntact(s.integrity) : old, 'Once a month every copy is compared with its SHA-256 checksum.'),
     protectionItem('RESTORE TRIED', fresh ? restore.result : old, restore.words)
   ]);
 }
@@ -722,22 +740,23 @@ function integrityResult(check) {
   const damaged = integrityBad(check), unverified = count(check.unverified);
   return firstOf([
     [damaged, {state: 'fail', label: 'Needs repair', words: damaged + ' damaged or missing files.'}],
-    [!checkDated(check), {state: 'unknown', label: 'Not dated', words: 'This check has no valid date, so its result can’t be relied on.'}],
-    [checkOverdue(check), {state: 'stale', label: 'Overdue', words: 'A newer check is overdue; this result may no longer hold.'}],
+    [!checkDated(check), {state: 'unknown', label: 'Not fully checked', words: 'Every copy is compared with its checksum in the monthly update (a USB drive only when it is plugged in then). That hasn’t happened yet.'}],
+    [checkOverdue(check), {state: 'stale', label: 'Overdue', words: 'The last full check is more than a month old; this result may no longer hold. For the USB copy, leave the drive plugged in on the night of the 1st.'}],
     [unverified, {state: 'warning', label: 'Partly checked', words: unverified + ' files not checked yet.'}]
   ], {state: 'pass', label: 'Matches', words: 'Every recorded file matched.'});
 }
 function integrityRow(check, fresh) {
   const row = el('div', 'row'), body = el('div'), result = integrityResult(check);
   const repaired = count(check.repaired) ? ' · ' + count(check.repaired) + ' repaired' : '';
-  body.append(el('h3', '', text(check.name, 'Checksum check')), el('p', '', result.words + ' Last recorded check: ' + ago(check.at) + repaired + '.'));
+  body.append(el('h3', '', text(check.name, 'Checksum check')), el('p', '', result.words + ' Last full check: ' + ago(check.full_at) + ' · last copy: ' + ago(check.at) + repaired + '.'));
   if (integrityBad(check)) { body.append(keyed(button('Repair guide', () => showGuide('integrity'), 'text-button'), 'repair-' + check.id)); }
   row.append(body, fresh ? badge(result.state, result.label) : badge('unknown', 'Old reading'));
   return row;
 }
 function restoreBox(s) {
   const box = el('div', 'callout');
-  box.append(el('strong', '', 'Server check: ' + (LABELS[s.acceptance.status] || 'not run yet')),
+  const shown = s.acceptance.status === 'stale' ? 'All checked' : LABELS[s.acceptance.status];
+  box.append(el('strong', '', 'Server check: ' + (shown || 'not run yet')),
     el('p', '', s.acceptance.profile ? 'Last run ' + ago(s.acceptance.generated_at) + '.' : 'The checklist confirms apps, backups and a restore really work.'));
   if (s.recovery?.latest_rehearsal) { box.append(el('p', '', 'Last test restore: ' + ago(s.recovery.latest_rehearsal.at) + '.')); }
   box.append(button('Open the checklist guide', () => showGuide('acceptance'), 'text-button'));
@@ -1104,7 +1123,7 @@ function draftFrom(setting, temps) {
   const s = object(setting);
   return {
     mode: firstOf([[s.mode === 'curve', 'curve'], [s.mode === 'fixed', 'fixed']], 'auto'),
-    fixed: numeric(s.fixed) ? s.fixed : 60,
+    fixed: numeric(s.fixed) ? Math.max(20, s.fixed) : 60, // never below the 20 % floor
     sensor: text(s.sensor, temps[0]?.id || ''),
     points: list(s.points).length ? s.points.map(p => [...p]) : PRESETS.Balanced.map(p => [...p]),
     min: numeric(s.min) ? s.min : 20,
@@ -1209,7 +1228,8 @@ function outputCard(out, c) {
   const head = el('div', 'card-heading');
   head.append(title, badgeNode);
   const chips = modeChips(card);
-  const fixed = rangeField('Speed', 0, 100, card.draft.fixed, v => { card.draft.fixed = v; card.touch(); });
+  // The control service never runs a fan below 20 % (fans.rs MIN_FLOOR), so neither does the slider.
+  const fixed = rangeField('Speed', 20, 100, card.draft.fixed, v => { card.draft.fixed = v; card.touch(); });
   const curve = el('div', 'curve-box');
   const editor = curveEditor(() => card.draft.points, canChange, () => card.touch());
   curve.append(sensorSelect(card, temps), editor.svg, presetRow(card));
@@ -1286,7 +1306,7 @@ function updateOutput(card, c, parts) {
 /* ---------- detect ---------- */
 function startDetect() {
   openDialog('FANS', 'Detect fans', [
-    el('p', '', 'NekoServer sets every fan to full speed, then slows one output at a time to see which fan follows. It takes about a minute per output and the computer will be loud.'),
+    el('p', '', 'NekoServer sets every fan to full speed, then slows one output at a time to see which fan follows. It takes about 10 seconds per output and the computer will be loud.'),
     el('p', '', 'It stops by itself if anything gets hot, and you can stop it at any time. The motherboard takes over again afterwards.'),
     button('Start detecting', async () => { $('dialog').close(); await change('detect', {}); }, 'button')
   ]);
@@ -1821,7 +1841,7 @@ const GUIDES = {
   recovery: {title: 'Get your files back', intro: 'The recovery helper restores into a separate folder first, so nothing is overwritten.', steps: ['Connect the backup drive you want to use.', 'On the server, open a terminal window and start the recovery helper below.', 'Pick the backup and a new folder. Check the files before replacing anything.'], recover: true},
   integrity: {title: 'Repair a damaged or missing copy', intro: 'A checksum warning needs a copy that still matches. Never delete the other copies.', steps: ['Connect the USB backup drive if you have one, so both copies are checked.', 'Start the recovery helper below and choose “Repair damaged backup copies”.', 'If no copy matches, keep everything and ask for help rather than guessing.'], recover: true},
   storage: {title: 'Check a drive or free up space', intro: 'Make sure the right drive is connected. A folder at the old place doesn’t mean the drive is there.', steps: ['On the server, list the drives with the commands below.', 'Compare sizes with the drives chosen during setup. Never format a drive to fix this.', 'For low space, remove large files you don’t need. Never delete your only backup.'], extra: 'lsblk -f\nfindmnt\ndf -h'},
-  acceptance: {title: 'Check that everything really works', intro: '“Running”, “backed up” and “restore tested” are three different things.', steps: ['Play something in each app, and try your phone if you use one.', 'Run the checker below; it saves a report.', 'Try a test restore with the recovery helper, then record it.'], acceptance: true},
+  acceptance: {title: 'Check that everything really works', intro: '“Running”, “backed up” and “restore tested” are three different things.', steps: ['Play something in each app, and try your phone if you use one.', 'Run the checker below; it saves a report.', 'Try a test restore with the recovery helper, then record it with the second command (--manual).'], acceptance: true},
   remote: {title: 'Open your apps on a phone or tablet', intro: 'A phone’s “localhost” is the phone itself, so apps open through Tailscale instead.', steps: ['Install Tailscale on your phone or tablet and sign in to the same account as the server.', 'Open this dashboard at its Tailscale address (setup showed it), then use the app links here.', 'Management apps only open on the server itself.']},
   heartbeat: {title: 'Outside heartbeat', intro: 'An outside service notices when the whole server goes quiet. Optional.', steps: ['Make sure the monitor runs somewhere other than this server.', 'Check the heartbeat service below.', 'Test it once: you should get an alert when it stops, and another when it’s back.'], unit: 'nekoserver-heartbeat.service'},
   notifications: {title: 'Phone notifications', intro: 'Background notifications and this page’s browser alerts are different things.', steps: ['Set up background notifications with setup.', 'Check the service below. Keep private addresses out of screenshots.', 'Browser alerts only work while this page is open.'], unit: 'nekoserver-notifications.service'},
@@ -1857,7 +1877,12 @@ function guideCommands(guide, unit) {
   }
   if (guide.acceptance) {
     const script = installedScript('acceptance.py'), config = installedScript('config.json');
-    nodes.push(script && config ? commandBox('sudo python3 ' + shellQuote(script) + ' --config ' + shellQuote(config) + ' --profile full --save') : note('In the saved NekoServer folder, run: sudo python3 acceptance.py --profile full --save'));
+    const run = script && config ? 'sudo python3 ' + shellQuote(script) + ' --config ' + shellQuote(config) + ' --profile full --save' : null;
+    nodes.push(run ? commandBox(run) : note('In the saved NekoServer folder, run: sudo python3 acceptance.py --profile full --save'));
+    // The tests you watch yourself (a test restore, say) are recorded with --manual; a
+    // test recorded before is kept by later checks.
+    nodes.push(note('To record a test you did yourself (such as a test restore), add --manual: it asks about each one.'));
+    if (run) { nodes.push(commandBox(run + ' --manual')); }
   }
   const setup = guide.setup ? installer() : null;
   if (setup) { nodes.push(note('Run setup again (it may restart apps):'), commandBox(setup)); }

@@ -31,7 +31,7 @@ The public runtime status contains only attempt/success times and pass/fail stat
 
 ## Acceptance and maintenance
 
-Run `sudo python3 acceptance.py --profile full --save` after applying current recovery/runtime modules and receiving a check-in. Its native/config check and current timer/check-in check are automatic. `outage_delivery` remains a witnessed check:
+In the NekoServer folder, run `sudo python3 acceptance.py --profile full --save` (it reads your `my-config.json`) after applying current recovery/runtime modules and receiving a check-in. Its native/config check and current timer/check-in check are automatic. `outage_delivery` remains a witnessed check; once you have done the steps below, record it with `sudo python3 acceptance.py --profile full --save --manual` (a test recorded before is kept by later checks):
 
 - Verify the provider has received a ping and the intended recipient/integration is enabled.
 - Stop **only** the heartbeat timer using `sudo systemctl stop nekoserver-heartbeat.timer`.

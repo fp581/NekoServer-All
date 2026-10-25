@@ -34,8 +34,10 @@ impl fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 impl From<std::io::Error> for Error {
-    fn from(_: std::io::Error) -> Self {
-        Self::new("Filesystem or process operation failed")
+    // The system's own reason ("No space left on device") is kept: without it a full or
+    // failing drive read as an unexplained failure.
+    fn from(e: std::io::Error) -> Self {
+        Self(format!("Filesystem or process operation failed: {e}"))
     }
 }
 impl From<serde_json::Error> for Error {
@@ -44,6 +46,82 @@ impl From<serde_json::Error> for Error {
     }
 }
 pub type Result<T> = std::result::Result<T, Error>;
+/// `result`, with a later failure (unmounting, writing the report) added after its own
+/// error instead of replacing it: the first error is the one that explains the run.
+pub fn first_error<T>(result: Result<T>, later: Result<()>) -> Result<T> {
+    match (result, later) {
+        (Err(first), Err(also)) => Err(Error(format!("{first} (also: {also})"))),
+        (result, Ok(())) => result,
+        (Ok(_), Err(also)) => Err(also),
+    }
+}
+/// A time (seconds since 1970) as saved, for showing: a value from a clock that was
+/// ahead is shown as now instead of being hidden; anything that is not a time is null.
+/// Saved values are never changed this way, so a clock put back loses nothing.
+pub fn shown_time(v: &Value, now: f64) -> Value {
+    v.as_f64()
+        .filter(|t| t.is_finite() && *t >= 0.0)
+        .map(|t| serde_json::json!(t.min(now)))
+        .unwrap_or(Value::Null)
+}
+/// A time kept as it was saved (any finite, non-negative number), or null.
+pub fn kept_time(v: &Value) -> Value {
+    num(v, 0.0, f64::MAX)
+}
+/// Changed so recently (or written a moment ahead of the clock) that it may still be
+/// written to: less than `age` seconds from now either way. A file dated further ahead
+/// was dated by a wrong clock; it is copied (every copy is verified), never left for a
+/// time that may never come.
+pub fn settling(modified: f64, age: f64) -> bool {
+    (now() - modified).abs() < age
+}
+/// Drives a running job writes its backups to: (where it is mounted, its device number
+/// when the job checked it). See `expect_drive`.
+static DRIVES: Mutex<Vec<(PathBuf, u64)>> = Mutex::new(Vec::new());
+/// Held while a job writes to the drive mounted at `root`: until it is dropped, every
+/// folder, file and publish below `root` first checks the drive is still the one that
+/// was mounted there. A drive that drops out mid-job leaves an empty folder on the
+/// system disk; without this check the backup would carry on writing into it.
+pub struct DriveHold(PathBuf, u64);
+impl Drop for DriveHold {
+    fn drop(&mut self) {
+        if let Ok(mut drives) = DRIVES.lock() {
+            if let Some(i) = drives.iter().position(|d| d.0 == self.0 && d.1 == self.1) {
+                drives.remove(i);
+            }
+        }
+    }
+}
+/// Remember the drive now mounted at `root` (checked by the caller) for `on_drive`.
+pub fn expect_drive(root: &Path) -> Result<DriveHold> {
+    use std::os::unix::fs::MetadataExt;
+    expect_device(root, fs::metadata(root)?.dev())
+}
+fn expect_device(root: &Path, dev: u64) -> Result<DriveHold> {
+    DRIVES
+        .lock()
+        .map_err(|_| Error::new("Drive check unavailable"))?
+        .push((root.to_path_buf(), dev));
+    Ok(DriveHold(root.to_path_buf(), dev))
+}
+/// Is `path` (to be written) still on the drive the job started with? Only paths below a
+/// drive held with `expect_drive` are checked.
+pub fn on_drive(path: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let drives = DRIVES
+        .lock()
+        .map(|d| d.clone())
+        .map_err(|_| Error::new("Drive check unavailable"))?;
+    for (root, dev) in drives {
+        if path.starts_with(&root) && !fs::metadata(&root).is_ok_and(|m| m.dev() == dev) {
+            return Err(Error(format!(
+                "The drive mounted at {} is gone (disconnected, or it failed) partway through the backup, so the backup stopped; nothing was written onto the system disk instead. Reconnect the drive and run the backup again",
+                root.display()
+            )));
+        }
+    }
+    Ok(())
+}
 pub fn now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -117,23 +195,21 @@ pub fn relative(s: &str) -> Result<PathBuf> {
 /// One dated more than a day ahead was made while the clock was wrong, so before it was
 /// put right: older than anything made since. It sorts first and goes first, instead of
 /// looking newest and outliving every backup made with the right time.
-pub fn age_key(micros: u128, pid: u128) -> (bool, u128, u128) {
+pub type AgeKey = (bool, u128, u128);
+pub fn age_key(micros: u128, pid: u128) -> AgeKey {
     let ahead = (now() * 1e6) as u128 + 86_400_000_000;
     (micros <= ahead, micros, pid)
 }
-pub fn prune_snapshots(
-    root: &Path,
-    keep: u64,
-    newest: Option<&str>,
-    protected: Option<&str>,
-) -> Result<Vec<String>> {
+/// The complete snapshots in `root` (a manifest, owned privately by this user), oldest
+/// first by `age_key`, with that key.
+pub fn complete_snapshots(root: &Path) -> Result<Vec<(AgeKey, String)>> {
     use std::os::unix::fs::MetadataExt;
-    if keep == 0 || !root.is_dir() {
-        return Ok(vec![]);
-    }
     let pattern = regex::Regex::new(r"^snapshot-([0-9]+)-([0-9]+)$").unwrap();
     let owner = unsafe { libc::geteuid() };
     let mut found = vec![];
+    if !root.is_dir() {
+        return Ok(found);
+    }
     for entry in fs::read_dir(safe(root)?)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
@@ -144,10 +220,7 @@ pub fn prune_snapshots(
         if !meta.is_dir() || meta.uid() != owner || meta.mode() & 0o077 != 0 {
             continue;
         }
-        if !entry.path().join("manifest.json").is_file()
-            || Some(name.as_str()) == newest
-            || Some(name.as_str()) == protected
-        {
+        if !entry.path().join("manifest.json").is_file() {
             continue;
         }
         let order = age_key(
@@ -157,6 +230,21 @@ pub fn prune_snapshots(
         found.push((order, name));
     }
     found.sort();
+    Ok(found)
+}
+pub fn prune_snapshots(
+    root: &Path,
+    keep: u64,
+    newest: Option<&str>,
+    protected: Option<&str>,
+) -> Result<Vec<String>> {
+    if keep == 0 || !root.is_dir() {
+        return Ok(vec![]);
+    }
+    let found: Vec<(AgeKey, String)> = complete_snapshots(root)?
+        .into_iter()
+        .filter(|(_, name)| Some(name.as_str()) != newest && Some(name.as_str()) != protected)
+        .collect();
     let ahead: Vec<&str> = found
         .iter()
         .filter(|(order, _)| !order.0)
@@ -168,14 +256,73 @@ pub fn prune_snapshots(
     let kept_aside = usize::from(newest.is_some_and(|n| root.join(n).is_dir()));
     let excess = (found.len() + kept_aside).saturating_sub(keep as usize);
     let mut removed = vec![];
+    clear_leftovers(root, false)?;
     for (_, name) in found.into_iter().take(excess) {
-        fs::remove_dir_all(safe(&root.join(&name))?)?;
+        remove_snapshot(root, &name)?;
+        removed.push(name);
+    }
+    Ok(removed)
+}
+/// Delete one published snapshot: renamed to `.<name>.deleting` first (never over
+/// anything), then removed. A power cut part-way leaves only that hidden name, which
+/// nothing counts or restores as a snapshot; removed in place, a half-deleted one would
+/// still have its manifest and count as complete.
+pub fn remove_snapshot(root: &Path, name: &str) -> Result<()> {
+    let doomed = root.join(format!(".{name}.deleting"));
+    rename_noreplace(&safe(&root.join(name))?, &safe(&doomed)?)?;
+    File::open(root)?.sync_all()?;
+    fs::remove_dir_all(&doomed)?;
+    File::open(root)?.sync_all()?;
+    Ok(())
+}
+/// Remove what cut-off runs left in a snapshot folder: `.snapshot-*.deleting` (a delete
+/// that was cut off) and, with `partial`, `.snapshot-*.partial` (a snapshot never
+/// finished; call it only with the job's lock held, when no snapshot is being built).
+/// Only this user's private folders are touched. Returns the removed names.
+pub fn clear_leftovers(root: &Path, partial: bool) -> Result<Vec<String>> {
+    use std::os::unix::fs::MetadataExt;
+    let pattern = regex::Regex::new(r"^\.snapshot-[0-9]+-[0-9]+\.(partial|deleting)$").unwrap();
+    let owner = unsafe { libc::geteuid() };
+    let mut removed = vec![];
+    if !root.is_dir() {
+        return Ok(removed);
+    }
+    for entry in fs::read_dir(safe(root)?)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(kind) = pattern.captures(&name) else {
+            continue;
+        };
+        let meta = fs::symlink_metadata(entry.path())?;
+        if (&kind[1] == "partial" && !partial)
+            || !meta.is_dir()
+            || meta.uid() != owner
+            || meta.mode() & 0o077 != 0
+        {
+            continue;
+        }
+        fs::remove_dir_all(safe(&entry.path())?)?;
         removed.push(name);
     }
     if !removed.is_empty() {
         File::open(root)?.sync_all()?;
+        println!(
+            "Backup: removed what an earlier run that was cut off or failed left behind ({})",
+            removed.join(", ")
+        );
     }
     Ok(removed)
+}
+/// Bytes free for this program on the filesystem holding `path`.
+pub fn free_bytes(path: &Path) -> Result<u128> {
+    let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::new("Invalid path"))?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: a NUL-terminated path and a buffer statvfs fills on success.
+    if unsafe { libc::statvfs(c.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok(stat.f_bavail as u128 * stat.f_frsize as u128)
 }
 pub fn file(path: &Path) -> Result<File> {
     safe(path)?;
@@ -213,6 +360,7 @@ pub fn json(path: &Path, limit: usize) -> Value {
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 pub fn atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
     safe(path)?;
+    on_drive(path)?;
     let parent = path.parent().ok_or_else(|| Error::new("Missing parent"))?;
     fs::create_dir_all(parent)?;
     safe(parent)?;
@@ -284,6 +432,7 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> Result<()> {
 pub fn publish(temp: &Path, target: &Path) -> Result<()> {
     safe(temp)?;
     safe(target)?;
+    on_drive(target)?;
     match fs::hard_link(temp, target) {
         Ok(()) => fs::remove_file(temp)?,
         Err(e)
@@ -349,6 +498,7 @@ pub fn deliver(runtime: &Path, name: &str, config: &str, failure: &str) -> Resul
 }
 pub fn lock(path: &Path) -> Result<File> {
     safe(path)?;
+    on_drive(path)?;
     if let Some(p) = path.parent() {
         fs::create_dir_all(p)?;
     }
@@ -501,8 +651,12 @@ pub fn command(args: &[&str], timeout: u64) -> Result<(i32, String)> {
             unsafe {
                 libc::kill(-pid, libc::SIGKILL);
             }
-            let _ = child.wait();
-            let _ = read.join();
+            // A program stuck on a hung drive cannot die until the drive answers: a
+            // thread of its own reaps it, so the caller (the dashboard's collector, say)
+            // never waits on it.
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
             return Err(Error::new("Command timeout or oversized output"));
         }
         if let Some(s) = child.try_wait()? {
@@ -513,10 +667,11 @@ pub fn command(args: &[&str], timeout: u64) -> Result<(i32, String)> {
     unsafe {
         libc::kill(-pid, libc::SIGKILL);
     }
-    let output = read
-        .join()
-        .map_err(|_| Error::new("Command output failed"))??;
-    let tail = errors.join().unwrap_or_default();
+    // A helper it started that is stuck on a hung drive keeps the output open: waited
+    // for briefly, never for good.
+    let output = joined(read, Duration::from_secs(5))
+        .ok_or_else(|| Error::new("Command output did not finish"))??;
+    let tail = joined(errors, Duration::from_secs(5)).unwrap_or_default();
     if let Ok(mut last) = LAST_STDERR.lock() {
         *last = sanitize(&String::from_utf8_lossy(&tail));
     }
@@ -527,6 +682,17 @@ pub fn command(args: &[&str], timeout: u64) -> Result<(i32, String)> {
         status.code().unwrap_or(-1),
         String::from_utf8_lossy(&output).into_owned(),
     ))
+}
+/// A thread's result if it ends within `max`; None (it is left to finish alone) if not.
+pub fn joined<T>(handle: thread::JoinHandle<T>, max: Duration) -> Option<T> {
+    let start = Instant::now();
+    while !handle.is_finished() {
+        if start.elapsed() >= max {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    handle.join().ok()
 }
 pub fn probe(args: &[&str], timeout: u64) -> (i32, String) {
     command(args, timeout).unwrap_or((-1, String::new()))
@@ -571,8 +737,11 @@ pub fn round(x: f64) -> f64 {
 
 /// Set explicit permissions only on directories we create, independent of umask.
 /// Existing populated directories retain the administrator's ownership and mode.
+/// Below a drive a job holds (`expect_drive`), nothing is made once that drive is gone,
+/// and the folder it is mounted on is never made again.
 pub fn directory(path: &Path, mode: u32) -> Result<()> {
     safe(path)?;
+    on_drive(path)?;
     if path.exists() {
         if !path.is_dir() {
             return Err(Error::new("Directory required"));
@@ -619,6 +788,145 @@ mod lock_tests {
         );
     }
     use super::*;
+    fn private(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("neko-common-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        private(&root);
+        root
+    }
+    #[test]
+    fn a_drive_that_drops_out_is_never_written_through() {
+        use std::os::unix::fs::MetadataExt;
+        let root = scratch("drive-gone");
+        let mount = root.join("usb");
+        fs::create_dir_all(&mount).unwrap();
+        let dev = fs::metadata(&mount).unwrap().dev();
+        {
+            // Still the drive the job started with: folders and files are made.
+            let _held = expect_device(&mount, dev).unwrap();
+            directory(&mount.join("backups/photos"), 0o755).unwrap();
+            atomic(&mount.join("backups/note.txt"), b"x", 0o600).unwrap();
+        }
+        {
+            // Another filesystem is there now (the drive was unmounted, leaving the empty
+            // folder on the system disk): nothing is made or published below it.
+            let _held = expect_device(&mount, dev + 1).unwrap();
+            let error = directory(&mount.join("backups/more"), 0o755).unwrap_err();
+            assert!(error.to_string().contains("is gone"), "{error}");
+            assert!(atomic(&mount.join("backups/note2.txt"), b"x", 0o600).is_err());
+            fs::write(mount.join("backups/temp"), b"x").unwrap();
+            assert!(publish(&mount.join("backups/temp"), &mount.join("backups/done")).is_err());
+            assert!(!mount.join("backups/more").exists() && !mount.join("backups/done").exists());
+        }
+        {
+            // The folder it was mounted on is gone: it is never made again.
+            let gone = root.join("gone");
+            let _held = expect_device(&gone, dev).unwrap();
+            assert!(directory(&gone.join("backups/photos"), 0o755).is_err());
+            assert!(!gone.exists());
+        }
+        // Released: paths are no longer checked.
+        directory(&root.join("gone/backups"), 0o755).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_first_error_stays_first() {
+        let first: Result<()> = Err(Error::new("Copy failed: No space left on device"));
+        let both = first_error(first, Err(Error::new("umount failed"))).unwrap_err();
+        assert_eq!(
+            both.to_string(),
+            "Copy failed: No space left on device (also: umount failed)"
+        );
+        assert_eq!(
+            first_error(Ok(1), Err(Error::new("umount failed")))
+                .unwrap_err()
+                .to_string(),
+            "umount failed"
+        );
+        assert_eq!(first_error(Ok(1), Ok(())).unwrap(), 1);
+    }
+    #[test]
+    fn a_system_error_keeps_its_reason() {
+        let error = Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC)).to_string();
+        assert!(error.contains("No space left on device"), "{error}");
+        assert!(error.starts_with("Filesystem or process operation failed"));
+    }
+    #[test]
+    fn a_time_from_a_clock_that_was_ahead_is_shown_not_hidden() {
+        let now = 1_800_000_000.0;
+        assert_eq!(shown_time(&secs(now + 86400.0), now), secs(now));
+        assert_eq!(shown_time(&secs(now - 5.0), now), secs(now - 5.0));
+        assert!(shown_time(&Value::String("x".into()), now).is_null());
+        assert_eq!(kept_time(&secs(now + 86400.0)), secs(now + 86400.0));
+        assert!(kept_time(&secs(-1.0)).is_null());
+    }
+    fn secs(v: f64) -> Value {
+        serde_json::json!(v)
+    }
+    #[test]
+    fn a_delete_cut_off_never_leaves_a_snapshot_that_counts() {
+        let root = scratch("deleting");
+        for name in ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"] {
+            private(&root.join(name));
+            fs::write(root.join(name).join("manifest.json"), b"{}").unwrap();
+        }
+        // What a power cut during an earlier delete leaves: the manifest may still be there.
+        private(&root.join(".snapshot-50-1.deleting"));
+        fs::write(root.join(".snapshot-50-1.deleting/manifest.json"), b"{}").unwrap();
+        private(&root.join(".snapshot-60-1.partial"));
+        let listed: Vec<String> = complete_snapshots(&root)
+            .unwrap()
+            .into_iter()
+            .map(|(_, n)| n)
+            .collect();
+        assert_eq!(
+            listed,
+            ["snapshot-100-1", "snapshot-200-1", "snapshot-300-1"]
+        );
+        assert_eq!(
+            prune_snapshots(&root, 2, Some("snapshot-300-1"), None).unwrap(),
+            ["snapshot-100-1"]
+        );
+        let mut left: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        // The leftover delete is finished; a snapshot being built is not touched by pruning.
+        assert_eq!(
+            left,
+            [".snapshot-60-1.partial", "snapshot-200-1", "snapshot-300-1"]
+        );
+        assert_eq!(
+            clear_leftovers(&root, true).unwrap(),
+            [".snapshot-60-1.partial"]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_helper_that_keeps_the_output_open_never_holds_the_caller() {
+        // A program that ends but leaves a helper (in a session of its own, so it is not
+        // killed with it) holding its output, as one stuck on a hung drive would.
+        let start = Instant::now();
+        let result = command(
+            &["sh", "-c", "setsid sleep 30 & sleep 0.5; echo started"],
+            10,
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(result.is_err());
+        // A program that times out returns at its time limit.
+        let start = Instant::now();
+        assert!(command(&["sleep", "30"], 1).is_err());
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
     #[test]
     fn stacked_mounts_give_the_one_in_effect() {
         use super::mount_in_effect;

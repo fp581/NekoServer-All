@@ -37,7 +37,7 @@ Set `host_backup.extra_paths` to explicit absolute save/share directories inside
 }
 ```
 
-Use actual existing paths; these are examples. Files changed during enumeration/copy, special files, hardlinks, privileged file modes and nested filesystems are refused. Other actively written applications need their own coordinated backup method; arbitrary extras are file snapshots, not transactional application/database backups. A partial failed copy is retained as a hidden `.partial` directory, never published as a completed snapshot.
+Use actual existing paths; these are examples. Files changed during enumeration/copy, special files, hardlinks, privileged file modes and nested filesystems are refused. Other actively written applications need their own coordinated backup method; arbitrary extras are file snapshots, not transactional application/database backups. A partial failed copy is left as a hidden `.partial` directory, never published as a completed snapshot; the next run removes it before it checks the free space. An unfinished monthly update does not hold this backup back (the monthly update never rolls these settings back).
 
 ## Storage, links and availability
 
@@ -60,6 +60,6 @@ The destination must be a new absolute directory with an existing parent. The to
 
 No live `/etc`, home directory, Samba database or Docker data is overwritten, and no service/container is started. Inspect staged configuration before adopting it. Do not replace `/etc/passwd` or `/etc/group` wholesale on a new OS: reconcile usernames and numeric IDs. Host settings belong to the Linux family they came from (Arch/Nyarch or Debian/Ubuntu); don't adopt one family's package-manager settings on the other. Samba restore requires the matching standalone Samba version/configuration, stopped services, reconciled users/IDs, restored database permissions and a real client login test. Steam restore requires the selected user, reviewed links, game/save compatibility and an actual game-load test. Rehearse those on an independent installation before relying on the backup.
 
-Run `sudo python3 acceptance.py --profile full --save` after a successful job/reboot and complete `host_restore`. Fixture results establish checksum/staging and restart behavior, not a live restored OS, Steam game or Samba login.
+In the NekoServer folder, run `sudo python3 acceptance.py --profile full --save` (it reads your `my-config.json`) after a successful job/reboot, and record `host_restore` with `--save --manual` once you have done it. Fixture results establish checksum/staging and restart behavior, not a live restored OS, Steam game or Samba login.
 
 References: [Steam Cloud/data locations](https://help.steampowered.com/en/faqs/view/68D2-35AB-09A9-7678), [Samba database handling](https://www.samba.org/samba/docs/old/Samba3-HOWTO/tdb.html).

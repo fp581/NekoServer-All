@@ -1,8 +1,8 @@
 """Regression tests for the compose-path, Seerr UID and timezone fixes."""
-import os
-import sys
 import http.cookiejar
 import json
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +15,7 @@ import neko_common  # noqa: E402
 from modules import media  # noqa: E402
 
 try:
-    import yaml   # only these tests read YAML; CI installs it (.github/ci-requirements.txt)
+    import yaml  # only these tests read YAML; CI installs it (.github/ci-requirements.txt)
 except ImportError:
     yaml = None
 NO_YAML = 'PyYAML is not installed (CI installs it from .github/ci-requirements.txt)'
@@ -1009,8 +1009,8 @@ class OnboardingCompletionTests(unittest.TestCase):
                 self.assertNotIn('connector', json.dumps(saved))
 
     def test_a_confirmed_playback_is_recorded_and_a_skipped_one_is_only_noted(self):
-        from modules import onboarding
         import wizard
+        from modules import onboarding
         with tempfile.TemporaryDirectory() as d:
             logs = []
             ctx = mock.Mock(config={'data_mount': d, 'media': {'services': ['jellyfin']}}, log=logs.append)
@@ -1035,8 +1035,8 @@ class OnboardingCompletionTests(unittest.TestCase):
 
 class DashboardFingerprintTests(unittest.TestCase):
     def test_settings_chosen_after_the_dashboard_step_reach_its_collector(self):
-        from modules import dashboard
         from acceptance_summary import scope_digest
+        from modules import dashboard
         with tempfile.TemporaryDirectory() as d:
             cfg = {'data_mount': d, 'media_mount': d, 'external_backup_mount': d, 'storage': {},
                    'media': {'services': ['jellyfin']}, 'tv': {'wanted': False}}
@@ -1053,8 +1053,8 @@ class DashboardFingerprintTests(unittest.TestCase):
 
 class JellyfinOnlyReadinessTests(unittest.TestCase):
     def test_jellyfin_without_seerr_uses_its_own_key(self):
-        import media_readiness
         import media_libraries
+        import media_readiness
 
         class Fake:
             def __init__(self, app):
@@ -1086,8 +1086,9 @@ class JellyfinOnlyReadinessTests(unittest.TestCase):
     def test_jellyfin_key_matches_the_shared_fixture(self):
         """The Rust runtime runs the same cases (media.rs jellyfin_key_matches_the_shared_fixture)."""
         import json
-        import media_readiness
+
         import media_libraries
+        import media_readiness
         cases = json.loads((Path(__file__).parent / 'fixtures/jellyfin_key_cases.json').read_text())
         for case in cases:
             with self.subTest(case['name']), tempfile.TemporaryDirectory() as d:
@@ -1153,8 +1154,8 @@ class JellyfinOnlyReadinessTests(unittest.TestCase):
             self.assertIn('revoked or replaced', logs[0])
 
     def test_a_rejected_key_is_reported_not_changed_by_checks(self):
-        import media_readiness
         import media_libraries
+        import media_readiness
 
         class Jellyfin:
             def __init__(self, app):
@@ -1403,9 +1404,57 @@ class ImportLayoutTests(unittest.TestCase):
         import source_import
         (self.media / 'library/tv/Show B').mkdir(parents=True)
         (self.media / 'library/tv/Show B/e1.mkv').write_bytes(b'someone else')
-        with self.assertRaisesRegex(RuntimeError, 'refusing overwrite'):
-            source_import.copy_source(self.entry, self.media, apply=True)
+        # Kept as it is and named; the rest of the source is still copied.
+        result = source_import.copy_source(self.entry, self.media, apply=True)
         self.assertEqual((self.media / 'library/tv/Show B/e1.mkv').read_bytes(), b'someone else')
+        self.assertEqual((self.media / 'library/tv/Show A/Season 01/e1.mkv').read_bytes(), b'episode one')
+        self.assertEqual(result['kept_library_version'], 1)
+        self.assertIn('Show B/e1.mkv', result['reason'])
+
+    def test_a_copy_from_before_takes_its_originals_date_once_it_matches(self):
+        import source_import
+        copy = self.media / 'library/tv/Show B/e1.mkv'
+        copy.parent.mkdir(parents=True)
+        copy.write_bytes(b'b one')                    # made by an earlier release, its own date
+        source_import.copy_source(self.entry, self.media, apply=True)
+        self.assertEqual(copy.stat().st_mtime_ns, (self.source / 'Show B/e1.mkv').stat().st_mtime_ns)
+        with mock.patch.object(source_import, 'digest', side_effect=AssertionError('read again')):
+            source_import.copy_source(self.entry, self.media, apply=True)
+
+    def test_an_earlier_import_moves_up_with_its_drive_unplugged(self):
+        import shutil
+
+        import source_import
+        legacy = source_import.legacy_target(self.source, self.media, 'tv')
+        (legacy / 'Show A').mkdir(parents=True)
+        (legacy / 'Show A/e1.mkv').write_bytes(b'x')
+        shutil.rmtree(self.source)
+        finished = {}
+        row = source_import.import_one(self.entry, self.media, True, (None, None), None, finished)
+        self.assertEqual(row['status'], 'imported_earlier')        # copied before, not "not found"
+        self.assertIn(source_import.source_key(self.entry), finished)
+        self.assertTrue((self.media / 'library/tv/Show A/e1.mkv').is_file())
+        self.assertFalse(legacy.exists())
+
+    def test_a_finished_import_is_not_copied_again_unless_asked(self):
+        # Sonarr may have renamed those files since; a second copy brings originals back.
+        import source_import
+        finished = {source_import.source_key(self.entry): 'tv'}
+        row = source_import.import_one(self.entry, self.media, True, (None, None), None, dict(finished))
+        self.assertEqual(row['status'], 'imported_earlier')
+        self.assertFalse((self.media / 'library/tv').exists())
+        row = source_import.import_one(self.entry, self.media, True, (None, None), None, dict(finished), again=True)
+        self.assertEqual(row['status'], 'copied')
+
+    def test_moving_up_never_replaces_what_appeared_meanwhile(self):
+        import neko_common
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'a').mkdir()
+            (Path(d) / 'b').mkdir()          # an empty folder os.rename would replace
+            with self.assertRaises(FileExistsError):
+                neko_common.rename_no_replace(Path(d) / 'a', Path(d) / 'b')
+            neko_common.rename_no_replace(Path(d) / 'a', Path(d) / 'c')
+            self.assertTrue((Path(d) / 'c').is_dir())
 
     def test_a_source_unplugged_after_its_import_is_not_a_step_left(self):
         import source_import
@@ -1901,7 +1950,8 @@ class OnboardingProbeTests(unittest.TestCase):
     """The onboarding probes follow no redirects: an app that sends its front page to
     its sign-in page (302) or asks for a login (401) is up, not "unavailable"."""
     def answers(self, code):
-        import io, urllib.error
+        import io
+        import urllib.error
         def opener(url, timeout=0):
             raise urllib.error.HTTPError(url, code, 'x', {}, io.BytesIO(b''))
         return opener

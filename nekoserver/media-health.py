@@ -3,8 +3,9 @@
 import argparse, json, re, subprocess, sys, urllib.request, urllib.error, xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
-from neko_common import MEDIA_APPS, app_ports, atomic_json, local_opener, safe_path, verify_storage
+from neko_common import MEDIA_APPS, app_ports, atomic_json, local_opener, safe_path, verify_storage, checked_settings, default_settings
 import media_readiness
+from qbit_setup import CATEGORY_FIELDS   # tvCategory, movieCategory, musicCategory: as media-connect writes them
 
 OPENER=local_opener()
 
@@ -69,7 +70,7 @@ def configured(name,endpoint,items,selected):
         category={'sonarr':'tv','radarr':'movies','lidarr':'music'}[name]
         return any(i.get('enable') and str(i.get('implementation','')).lower()=='qbittorrent'
                    and fields(i).get('host')=='qbittorrent' and str(fields(i).get('port'))=='8080'
-                   and fields(i).get('category')==category for i in items)
+                   and fields(i).get(CATEGORY_FIELDS[name])==category for i in items)
     if endpoint=='applications':
         expected=[a for a in ('sonarr','radarr','lidarr') if a in selected]
         return all(any(i.get('syncLevel') in ('addOnly','fullSync')
@@ -133,7 +134,7 @@ def audit(config, probe=http_check):
 
 def main(argv=None):
     ap=argparse.ArgumentParser()
-    ap.add_argument('--config',default=str(ROOT/'config.json'))
+    ap.add_argument('--config',type=checked_settings,default=default_settings(ROOT))
     ap.add_argument('--json-out',type=Path)
     args=ap.parse_args(argv)
     try:

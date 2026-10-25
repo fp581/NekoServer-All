@@ -600,12 +600,18 @@ impl Service {
         }
         shown.clone()
     }
+    /// The fans, also after a request thread panicked while holding them: a poisoned lock
+    /// would otherwise stop every fan step for good, with no restart to hand them back.
+    pub fn fans(&self) -> std::sync::MutexGuard<'_, Fans> {
+        self.fans.lock().unwrap_or_else(|e| e.into_inner())
+    }
     /// Stop a running detection and wait until it has handed every fan back.
     pub fn stop_detection(&self) {
-        let worker = self.fans.lock().ok().and_then(|mut f| {
+        let worker = {
+            let mut f = self.fans();
             f.cancel.store(true, Ordering::SeqCst);
             f.worker.take()
-        });
+        };
         if let Some(w) = worker {
             let _ = w.join();
         }
@@ -625,9 +631,7 @@ pub fn answer(service: &Arc<Service>, request: &Value) -> Value {
             let access = json!({"local": request["local"] == true, "pin_set": gate.pin_set(),
                 "unlocked": gate.allowed(request), "signed_in": gate.signed_in(request)});
             drop(gate);
-            let Ok(mut fans) = service.fans.lock().map(|f| f.status()) else {
-                return unavailable();
-            };
+            let mut fans = service.fans().status();
             fans["enabled"] = json!(service.fans_on);
             return json!({"ok": true, "format": "neko-control-v1", "fans": fans,
                 "lights": service.lights_status(), "access": access,
@@ -663,15 +667,10 @@ pub fn answer(service: &Arc<Service>, request: &Value) -> Value {
         );
     }
     match op {
-        "fan" => service
-            .fans
-            .lock()
-            .map_or_else(|_| unavailable(), |mut f| f.change(request)),
+        "fan" => service.fans().change(request),
         "detect" => start_detect(service),
         "detect_cancel" => {
-            if let Ok(f) = service.fans.lock() {
-                f.cancel.store(true, Ordering::SeqCst);
-            }
+            service.fans().cancel.store(true, Ordering::SeqCst);
             json!({"ok": true})
         }
         "light" if !service.lighting => {
@@ -797,9 +796,7 @@ fn detect_finished(
     }
 }
 fn start_detect(service: &Arc<Service>) -> Value {
-    let Ok(mut f) = service.fans.lock() else {
-        return coded("E21");
-    };
+    let mut f = service.fans();
     if f.detecting.swap(true, Ordering::SeqCst) {
         return refuse("E42", "Fan detection is already running");
     }
@@ -835,10 +832,9 @@ fn start_detect(service: &Arc<Service>) -> Value {
         let mut why = None;
         let result = fans::detect(&mut probe, |c, seconds| {
             if seconds == 7 {
-                if let Ok(mut f) = service.fans.lock() {
-                    let step = format!("Testing output {} of {total}", done + 1);
-                    f.detect = json!({"running": true, "done": done, "total": total, "step": step});
-                }
+                let step = format!("Testing output {} of {total}", done + 1);
+                service.fans().detect =
+                    json!({"running": true, "done": done, "total": total, "step": step});
                 done += 1;
             }
             why = detect_wait(c, seconds, &cancel, &watched);
@@ -848,7 +844,8 @@ fn start_detect(service: &Arc<Service>) -> Value {
             ("Stopped", Some(reason)) => reason.to_string(),
             _ => e,
         });
-        if let Ok(mut f) = service.fans.lock() {
+        {
+            let mut f = service.fans();
             detect_finished(&mut f, result);
             // Outputs that refused to go back: the fan loop keeps trying them.
             // Detection's journal is removed only once the main one holds them.
@@ -1024,6 +1021,29 @@ fn retry_lights(service: Arc<Service>) {
     });
 }
 
+/// One step of fan control (outputs found again every minute, or when one moved).
+fn fan_step(service: &Service, hwmon: &Path, rediscovered: &mut Instant) {
+    let mut f = service.fans();
+    if f.detecting.load(Ordering::SeqCst) {
+        return;
+    }
+    if rediscovered.elapsed() > Duration::from_secs(60) || f.controller.rediscover {
+        f.controller.rediscover = false;
+        // A driver loaded late (or a card added): pick up its outputs.
+        f.controller.inventory = fans::discover(hwmon);
+        *rediscovered = Instant::now();
+    }
+    f.controller.step();
+}
+/// While `busy` (up to `limit`), call `step` every `every`.
+fn wait_while(busy: impl Fn() -> bool, limit: Duration, every: Duration, mut step: impl FnMut()) {
+    let waiting = Instant::now();
+    while busy() && waiting.elapsed() < limit {
+        step();
+        thread::sleep(every);
+    }
+}
+
 fn set_pin(config: &Path) -> Result<()> {
     let mut pin = String::new();
     std::io::stdin().read_line(&mut pin)?;
@@ -1131,17 +1151,7 @@ pub fn run(a: &Args) -> Result<()> {
     }
     let mut rediscovered = Instant::now();
     while !STOP.load(Ordering::SeqCst) {
-        if let Ok(mut f) = service.fans.lock() {
-            if !f.detecting.load(Ordering::SeqCst) {
-                if rediscovered.elapsed() > Duration::from_secs(60) || f.controller.rediscover {
-                    f.controller.rediscover = false;
-                    // A driver loaded late (or a card added): pick up its outputs.
-                    f.controller.inventory = fans::discover(&hwmon);
-                    rediscovered = Instant::now();
-                }
-                f.controller.step();
-            }
-        }
+        fan_step(&service, &hwmon, &mut rediscovered);
         for _ in 0..20 {
             if STOP.load(Ordering::SeqCst) {
                 break;
@@ -1151,17 +1161,16 @@ pub fn run(a: &Args) -> Result<()> {
     }
     // An app being restarted is never left half stopped: its parts are stopped and
     // started again before this service ends (setup restarts it; the unit allows longer).
-    let waiting = Instant::now();
-    while service.actions.changing_apps()
-        && waiting.elapsed() < Duration::from_secs(apps::LONGEST_CHANGE_SECS)
-    {
-        thread::sleep(Duration::from_millis(250));
-    }
+    // The fans keep following their curves meanwhile (and go to full speed when hot).
+    wait_while(
+        || service.actions.changing_apps(),
+        Duration::from_secs(apps::LONGEST_CHANGE_SECS),
+        Duration::from_secs(2),
+        || fan_step(&service, &hwmon, &mut rediscovered),
+    );
     // Detection first (it hands its fans back itself), then the curves.
     service.stop_detection();
-    if let Ok(mut f) = service.fans.lock() {
-        f.controller.release_all();
-    }
+    service.fans().controller.release_all();
     let (_, left) = restore_journals(&hwmon, &run_dir);
     let _ = fs::remove_file(SOCKET);
     if !left.is_empty() {
@@ -2233,5 +2242,52 @@ mod review_rgb_extra_tests {
             "fresh server's actual colour is #ff0080, but no retry is scheduled; packets={:?}",
             seen.lock().unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    /// While the service waits at stop for an app restart to finish, fan control goes on.
+    #[test]
+    fn fans_keep_being_controlled_while_an_app_restart_finishes() {
+        let left = std::cell::Cell::new(3);
+        let mut steps = 0;
+        wait_while(
+            || {
+                left.set(left.get() - 1);
+                left.get() >= 0
+            },
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            || steps += 1,
+        );
+        assert_eq!(steps, 3);
+    }
+    /// A panic while holding the fans must not stop fan control for good.
+    #[test]
+    fn a_poisoned_fan_lock_is_recovered() {
+        let board = fans::tests::Board::new("poisoned");
+        let config = board.0.join("config");
+        let run_dir = board.0.join("run");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&run_dir).unwrap();
+        let controller = Controller::new(fans::discover(&board.hwmon()), BTreeMap::new());
+        let s = Service::new(
+            Fans::new(controller, config.clone(), run_dir),
+            Lighting::new(json!({}), 1, config),
+            Gate::new(None),
+            false,
+        );
+        let poisoner = s.clone();
+        let _ = thread::spawn(move || {
+            let _held = poisoner.fans.lock().unwrap();
+            panic!("a request thread fails");
+        })
+        .join();
+        assert!(s.fans.is_poisoned());
+        let mut rediscovered = Instant::now();
+        fan_step(&s, &board.hwmon(), &mut rediscovered);
+        assert!(answer(&s, &json!({"op": "status", "local": true}))["ok"] == true);
     }
 }

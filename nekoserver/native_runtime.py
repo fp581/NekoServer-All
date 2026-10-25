@@ -22,12 +22,14 @@ def runs_here(binary,run=subprocess.run):
 
 def build_needed(project,run=subprocess.run):
     """True when the release folder has no runtime yet, one built from other sources than
-    these, or one that does not run here (install.sh then builds it)."""
+    these, one its record does not describe (a build cut off before its record was
+    written), or one that does not run here (install.sh then builds it)."""
     root=Path(project)/'runtime'
     try:
         manifest=json.loads((root/'build.json').read_text())
         hashes=manifest.get('source_sha256',{})
         if not (root/'bin'/NAME).is_file() or set(hashes)!=expected_sources(root):return True
+        if hashlib.sha256((root/'bin'/NAME).read_bytes()).hexdigest()!=manifest.get('binary_sha256'):return True
         if any(hashlib.sha256((root/rel).read_bytes()).hexdigest()!=hashes[rel] for rel in hashes):return True
         return not runs_here(root/'bin'/NAME,run)
     except (OSError,ValueError,AttributeError):
@@ -121,6 +123,10 @@ def release_folders(home):
     found=[p for p in home.glob('v*') if p.is_dir() and not p.is_symlink() and release_number(p.name)]
     return sorted(found,key=lambda p:release_number(p.name))
 
+def settings_files(folder):
+    """The settings files a kept release folder holds (config.json and its earlier copies)."""
+    return [f for f in Path(folder).glob('config*.json') if f.is_file() and not f.is_symlink()]
+
 def retire_old(data,log=print,lib=Path('/usr/local/lib'),units=SYSTEMD_UNITS):
     """After a setup run finished: remove the runtime copies of earlier releases that no
     installed service uses any more (each release deploys its own copies, which otherwise
@@ -132,13 +138,22 @@ def retire_old(data,log=print,lib=Path('/usr/local/lib'),units=SYSTEMD_UNITS):
     # Docker's start guard (modules/docker.py) has its own per-release folder on the SSD.
     for home in [Path(lib)/name for name in SYSTEM_HOMES]+[data/'installer/runtime',data/'installer/guards']:
         old+=[p for p in release_folders(home) if p.name!=current and not in_use(p,units)]
-    releases=data/'installer/releases'
-    old+=[p for p in release_folders(releases)[:-KEEP_BUNDLES] if p.name!=current]
-    # A kept copy set aside by another build of its version (modules/recovery.set_aside) goes with that version.
-    old+=[p for p in (releases.glob('v*.replaced-*') if releases.is_dir() else []) if p.is_dir() and p.name.split('.replaced-')[0]!=current]
+    old+=retired_bundles(data/'installer/releases',current,units)
     for folder in old:shutil.rmtree(folder,ignore_errors=True)
     if old:log('Removed the files of earlier releases no longer in use: '+', '.join(str(p) for p in old))
     return old
+
+def retired_bundles(releases,current,units=SYSTEMD_UNITS):
+    """The release bundles kept on the SSD that retire_old removes."""
+    # A bundle a service still runs from (the Immich snapshot's boot hook runs recover.py
+    # from it while a restart is owed) stays, as the runtime copies above do.
+    bundles=[p for p in release_folders(releases)[:-KEEP_BUNDLES] if p.name!=current and not in_use(p,units)]
+    # A kept copy set aside by another build of its version (modules/recovery.set_aside) goes with that version,
+    # unless it holds settings no remaining folder has (an earlier release set copies aside with them inside).
+    aside=[p for p in (releases.glob('v*.replaced-*') if releases.is_dir() else []) if p.is_dir() and p.name.split('.replaced-')[0]!=current]
+    kept=[p for p in (releases.iterdir() if releases.is_dir() else []) if p.is_dir() and p not in bundles+aside]
+    held={f.read_bytes() for folder in kept for f in settings_files(folder)}
+    return bundles+[p for p in aside if not any(f.read_bytes() not in held for f in settings_files(p))]
 
 def storage_config(config):return {k:config[k] for k in ('data_mount','media_mount','storage')}
 def backup_guard(config):
