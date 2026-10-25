@@ -67,6 +67,8 @@ class FakeSystem:
         w('/home/neko/Desktop/nekoserver-steam.desktop', '[Desktop Entry]\nName=Steam Big Picture\nComment=NekoServer\n')
         w('/home/neko/Desktop/nekoserver-mine.desktop', '[Desktop Entry]\nName=Something of my own\n')
         w('/run/nekoserver-control/originals.json', '{}')
+        w('/var/lib/systemd/timers/stamp-nekoserver-maintenance.timer', '')
+        w('/var/lib/systemd/timers/stamp-other.timer', '')
         w('/var/lib/nekoserver-openrgb/OpenRGB/OpenRGB.json', '{}')
         w('/etc/modules-load.d/nekoserver-i2c.conf', '# Managed by NekoServer\ni2c-dev\n')
         for dropin in uninstaller.OS_DROPINS:
@@ -158,6 +160,9 @@ class PlanTests(unittest.TestCase):
         self.assertIn('etc/samba/nekoserver.conf', names)
         self.assertIn('etc/samba/smb.conf', names)          # the include NekoServer wrote, nothing else in it
         self.assertIn('run/nekoserver-control', names)
+        # When each timer last ran: left behind, a later setup would run every backup at once.
+        self.assertIn('var/lib/systemd/timers/stamp-nekoserver-maintenance.timer', names)
+        self.assertNotIn('var/lib/systemd/timers/stamp-other.timer', names)
         self.assertNotIn('etc/systemd/system/other.service', names)
         self.assertNotIn('home/neko/Desktop/nekoserver-mine.desktop', names)   # not NekoServer's
         self.assertFalse(any(name.startswith(('srv/', 'mnt/')) for name in names))
@@ -389,8 +394,10 @@ class RemoveTests(unittest.TestCase):
         self.remove({'server'})
         for gone in ('/etc/systemd/system/nekoserver-dashboard.service', '/etc/systemd/system/smb.service.d/10-nekoserver-storage.conf',
                      '/usr/local/lib/nekoserver-dashboard', '/etc/nekoserver-gateway', '/home/neko/Desktop/nekoserver-steam.desktop',
-                     '/etc/samba/nekoserver.conf', '/etc/samba/smb.conf.packaged', '/var/lib/nekoserver-openrgb', '/run/nekoserver-control'):
+                     '/etc/samba/nekoserver.conf', '/etc/samba/smb.conf.packaged', '/var/lib/nekoserver-openrgb', '/run/nekoserver-control',
+                     '/var/lib/systemd/timers/stamp-nekoserver-maintenance.timer'):
             self.assertFalse(self.exists(gone), gone)
+        self.assertTrue(self.exists('/var/lib/systemd/timers/stamp-other.timer'))
         # The package's example smb.conf, which setup had set aside, is smb.conf again.
         self.assertTrue((self.system.root / 'etc/samba/smb.conf').read_text().startswith('# Sample configuration file'))
         for kept in ('/etc/systemd/system/other.service', '/home/neko/Desktop/nekoserver-mine.desktop', '/srv/nekoserver/appdata/jellyfin/config.xml',
