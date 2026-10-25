@@ -58,6 +58,12 @@ class RetiredJobTests(unittest.TestCase):
         self.assertIn('schedule is gone', rows['external']['reason'])
         self.assertEqual(rows['applications']['status'], 'unknown')   # never set up: no evidence
 
+    def test_a_backup_that_keeps_failing_stays_a_failure_when_overdue(self):
+        (self.data / 'reports/jobs/host.json').write_text(json.dumps({'status': 'fail', 'last_success': NOW - 30 * 86400}))
+        self.timers['nekoserver-host-backup.timer'] = 'active'
+        rows = self.rows({'photos': {'deploy_immich': True}})
+        self.assertEqual(rows['host']['status'], 'fail')
+
     def test_without_systemd_there_is_no_evidence(self):
         (self.data / 'reports/jobs/host.json').write_text(json.dumps({'status': 'pass', 'last_success': NOW - 3600}))
         with mock.patch.object(status_checks, 'run', return_value=(None, '')):

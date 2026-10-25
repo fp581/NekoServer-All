@@ -66,5 +66,27 @@ class RestoreTriedTests(unittest.TestCase):
         self.assertLessEqual(wanted, listed)
 
 
+@unittest.skipUnless(NODE, 'node is not installed')
+class BackupIssuesTests(unittest.TestCase):
+    def issues(self, backups):
+        app = (ROOT / 'dashboard/app.js').read_text()
+        pieces = [re.search(rf'^const {name} = .*$', app, re.MULTILINE).group(0)
+                  for name in ('numeric', 'list', 'values', 'object', 'text', 'severity')]
+        for name in ('JOB_UNITS', 'LABELS'):
+            pieces.append(re.search(rf'^const {name} = \{{.*?\}};', app, re.MULTILINE | re.DOTALL).group(0))
+        pieces.append(re.search(r'^function backupIssues\(s, add\) \{.*?^\}', app, re.MULTILINE | re.DOTALL).group(0))
+        script = '\n'.join(pieces) + f'''
+const rows = []; backupIssues({{backups: {json.dumps(backups)}}}, (id, title) => rows.push(id));
+console.log(JSON.stringify(rows));'''
+        return json.loads(subprocess.run([NODE, '-e', script], capture_output=True, text=True, check=True).stdout)
+
+    def test_a_switched_off_backup_is_not_an_issue(self):
+        rows = [{'id': 'archive', 'name': 'Photo archive', 'status': 'disabled', 'last_success': 1.0,
+                 'timer': {'installed': False, 'active': False}}]
+        self.assertEqual(self.issues(rows), [])
+        rows[0]['status'] = 'pass'
+        self.assertEqual(self.issues(rows), ['timer:archive'])
+
+
 if __name__ == '__main__':
     unittest.main()

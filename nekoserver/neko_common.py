@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.39.3'
+VERSION = '0.39.4'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -475,13 +475,32 @@ def file_entry(path, problems):
     return None
 
 
+# The system's own folders. A folder NekoServer walks (to restore, import, copy or size
+# it) comes from a settings file or a backup's own record, so a changed record must not
+# be able to point a restore or an import at them. Drives and folders anywhere else
+# (/srv, /mnt, /data, /home, a desktop drive under /media or /run/media) are fine.
+SYSTEM_FOLDERS = ('/bin', '/boot', '/dev', '/etc', '/lib', '/lib32', '/lib64', '/proc', '/root', '/run', '/sbin',
+                  '/sys', '/usr')
+DESKTOP_DRIVES = '/run/media'
+
+
+def inside(path, folder):
+    """True when `path` (already resolved) is `folder` or somewhere under it."""
+    return os.path.commonpath([path, folder]) == folder
+
+
 def plain_folder(value):
     """A folder about to be walked, checked first (folder paths come from settings
-    files): absolute, with no '..' and no symlinks along the way."""
+    files): absolute, with no '..', no symlinks along the way, and not one of the
+    system's own folders."""
     text = str(value)
     if '\x00' in text or '..' in Path(text).parts or not Path(text).is_absolute():
         raise RuntimeError('A folder to read must be a plain absolute path: ' + text)
-    return safe_path(Path(text))
+    real = os.path.realpath(text)
+    if real == '/' or (any(inside(real, system) for system in SYSTEM_FOLDERS) and not inside(real, DESKTOP_DRIVES)):
+        raise RuntimeError('NekoServer does not read the system\'s own folders: ' + text)
+    safe_path(Path(text))   # no symlinks along the way, so the resolved path is the same folder
+    return Path(real)
 
 
 def strict_files(root, skip=None, skip_dirs=()):
@@ -522,15 +541,25 @@ def not_backup_data(here, root, name):
             or ATOMIC_TEMP.fullmatch(name) is not None)
 
 
-def backup_files(root):
-    """Every data file of a backup tree, strictly (see strict_files). The tree's own
-    ledger, notes, partial files and its folder of damaged copies are not data."""
+def backup_files(root, tree_root=None):
+    """Every data file under `root`, a folder of a backup tree, strictly (see
+    strict_files). Notes, partial files and, at the tree's own root (`tree_root`, where
+    its ledger is), the ledger and the folder of damaged copies are not data. A restore
+    reads folders below the tree's root (a user's files, a photo section): there a
+    folder named neko-damaged or a file named like the ledger is someone's own (the
+    backup program draws the same line)."""
     root = Path(root)
+    at_root = tree_root is not None and Path(tree_root) == root
     try:
-        return strict_files(root, lambda here, name: not_backup_data(here, root, name), (QUARANTINE,))
+        return strict_files(root, lambda here, name: not_backup_data(here, root if at_root else None, name),
+                            (QUARANTINE,) if at_root else ())
     except UnreadableEntries as exc:
         raise RuntimeError('Some backup files could not be read; nothing was restored from a partial list: '
                            + str(exc).split(': ', 1)[1]) from None
+
+
+class BackupDamaged(RuntimeError):
+    """A backup copy no longer matches its recorded checksum (the copy is at fault)."""
 
 
 def copy_checked(source, target, expected=None):
@@ -552,8 +581,7 @@ def copy_checked(source, target, expected=None):
     if landed != stream.hexdigest():
         raise RuntimeError(f'Restoring {source} failed: the copy written to disk does not match what was read')
     if expected is not None and landed != expected:
-        raise RuntimeError(f'{source} is damaged on the backup (it no longer matches its recorded '
-                           'checksum); the restore was stopped. Try the other backup (HDD or USB).')
+        raise BackupDamaged(f'{source} is damaged on the backup (it no longer matches its recorded checksum)')
     return landed
 
 

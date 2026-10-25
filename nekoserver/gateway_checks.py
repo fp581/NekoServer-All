@@ -9,7 +9,7 @@ def check(config,kind):
     def row(key,status,detail):return {'id':'gateway:'+kind+':'+key,'name':kind+' gateway '+key,'status':status,'detail':detail}
     if kind=='tailnet':
         try:
-            node=g.tailnode();expected=g.tailnet_routes(config,node);saved=health.read_json(Path(config['data_mount'])/'gateway/tailnet-owned.json');valid=saved.get('format')=='neko-tailnet-owned-v1' and saved.get('host')==node and saved.get('status')=='configured' and saved.get('owned')==expected and g.serve_state()==expected
+            node=g.tailnode();expected=g.tailnet_routes(config,node);saved=health.read_json(Path(config['data_mount'])/'gateway/tailnet-owned.json');valid=saved.get('format')=='neko-tailnet-owned-v1' and saved.get('host')==node and saved.get('status')=='configured' and saved.get('owned')==expected and g.only(g.serve_state(),set(expected['TCP']))==expected
             return [row('routes','pass' if valid else 'fail','Private owned HTTPS routes must match selected apps; Funnel is forbidden.')]
         except (OSError,RuntimeError,ValueError,KeyError,TypeError):return [row('routes','needs_setup','Inspect Tailscale login, HTTPS permission and private route ownership locally.')]
     out=[]

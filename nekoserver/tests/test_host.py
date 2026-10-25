@@ -1158,6 +1158,14 @@ class CapabilitiesTest(unittest.TestCase):
         for call in hint.split('&&'):
             self.assertFalse('--add-service' in call and '--add-port' in call, call)
 
+
+    def test_each_firewall_gets_its_own_command(self):
+        self.assertIn('sudo ufw allow', capabilities.firewall_hint(['ufw']))
+        nft = capabilities.firewall_hint(['nftables'])
+        self.assertIn('sudo nft add rule inet filter input', nft)
+        self.assertNotIn('ufw', nft)
+        self.assertIn('/etc/nftables.conf', nft)
+        self.assertIn('from a phone on your home Wi-Fi', nft)
     def test_fixed_requirements_stop_setup(self):
         with tempfile.TemporaryDirectory() as tmp:
             rows = self.rows(tmp, text='ID=gentoo\n', machine='aarch64', python=(3, 10), systemd='systemd 245')

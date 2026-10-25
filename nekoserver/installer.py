@@ -382,7 +382,7 @@ def tidy_old_releases(config, states, log):
 UNAVAILABLE = 'unavailable'
 
 # Steps whose saved settings are brought up to date after every run.
-REFRESHED = ('dashboard', 'host_backup', 'app_backup', 'maintenance', 'photo_backup', 'media_monitor')
+REFRESHED = ('dashboard', 'host_backup', 'app_backup', 'maintenance', 'photo_backup', 'media_monitor', 'gateway_tailnet')
 
 def execute(args, root=ROOT):
     if not args.apply:

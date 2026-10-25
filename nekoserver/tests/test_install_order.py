@@ -267,12 +267,14 @@ class DashboardOverTailscaleTests(unittest.TestCase):
         host = 'neko.tail1234.ts.net'
         with_board = g.desired(host, ['jellyfin'], board)
         self.assertEqual(with_board['Web'][host + ':8448']['Handlers']['/']['Proxy'], board)
-        self.assertTrue(g.gateway_owned(host, with_board, board))
+        self.assertTrue(g.valid_owned(with_board))
         # A journal from before the dashboard route (apps only) is still ours.
-        self.assertTrue(g.gateway_owned(host, g.desired(host, ['jellyfin']), board))
-        # Anything else on 8448 is not.
-        odd = g.desired(host, ['jellyfin'], 'http://127.0.0.1:9999')
-        self.assertFalse(g.gateway_owned(host, odd, board))
+        self.assertTrue(g.valid_owned(g.desired(host, ['jellyfin'])))
+        # The dashboard on another port is still NekoServer's route...
+        self.assertTrue(g.valid_owned(g.desired(host, ['jellyfin'], 'http://127.0.0.1:9999')))
+        # ...but a route to another computer, or on a port NekoServer never uses, is not.
+        self.assertFalse(g.valid_owned(g.desired(host, ['jellyfin'], 'http://192.168.1.5:80')))
+        self.assertFalse(g.valid_owned({'TCP': {'22': {'HTTPS': True}}, 'Web': {}}))
 
     def test_phone_steps_are_not_repeated_for_the_new_dashboard_link(self):
         from modules import gateway_tailnet as t
@@ -617,6 +619,35 @@ class ManualSnapshotTests(unittest.TestCase):
                     continue
                 yield folder, dirs, files
         return mock.patch.object(neko_common.os, 'walk', walk)
+
+    def test_a_snapshot_copy_on_a_desktop_drive_with_spaces_is_read(self):
+        import recovery_tools as rt
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / 'My Passport (2)/first-test'
+            folder.mkdir(parents=True)
+            (folder / 'a.jpg').write_bytes(b'a')
+            self.assertEqual(len(rt.regular_files(folder)), 1)
+            for bad in (Path(d) / 'x/../y', Path(d + '/tab\there'), Path(d + '/a;b'), Path(d + '/$(x)')):
+                with self.assertRaisesRegex(RuntimeError, 'not a plain absolute path'):
+                    rt.regular_files(bad)
+
+    def test_a_record_pointing_at_the_systems_own_folders_is_refused_unread(self):
+        # Folders to walk come from settings files and backup records; a changed record
+        # must not turn a restore or an import into a copy of /etc or /root.
+        import neko_common
+        import recovery_tools as rt
+        for system in ('/', '/etc', '/root/.ssh', '/proc/1', '/usr/share', '/run/user/1000'):
+            with self.assertRaisesRegex(RuntimeError, "system's own folders"):
+                neko_common.plain_folder(system)
+            with self.assertRaises(RuntimeError):
+                rt.regular_files(Path(system))
+        for fine in ('/srv/nekoserver/media', '/data/photos', '/run/media/you/My Passport', '/media/you/USB', '/home/you/Music'):
+            self.assertEqual(neko_common.plain_folder(fine), Path(fine))
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'real').mkdir()
+            (Path(d) / 'link').symlink_to(Path(d) / 'real')
+            with self.assertRaisesRegex(RuntimeError, 'symlink'):
+                neko_common.plain_folder(Path(d) / 'link')
 
     def test_an_unreadable_album_stops_the_snapshot(self):
         import recovery_tools as rt
