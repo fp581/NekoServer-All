@@ -3,15 +3,17 @@
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
-  const MARKS = { success: '✓', running: '›', needs_setup: '!', unavailable: '–', failed: '✕', blocked: '✕', pending: '·' };
+  // A step waiting for another one has not failed: it runs once that one is done.
+  const MARKS = { success: '✓', running: '›', needs_setup: '!', unavailable: '–', failed: '✕', blocked: '…', pending: '·' };
   const WORDS = { success: 'done', running: 'running', needs_setup: 'needs you', unavailable: 'not on this PC',
-                  failed: 'did not finish', blocked: 'waiting on another step', pending: '' };
+                  failed: 'did not finish', blocked: 'waiting', pending: '' };
   const HEADERS = { 'Content-Type': 'application/json' };
   let chosen = {};          // only the switches the person pressed: one left alone is asked about by setup
   let built = false;
   let misses = 0;
   let shownCurrent = null;   // the running step the list was last scrolled to
   let askedSeq = null;       // the question the form shows (rebuilt only when it changes)
+  let finishedShown = false; // the finishing screen is up: it stays, also once setup has closed
 
   function el(tag, attrs, ...children) {
     const node = document.createElement(tag);
@@ -40,14 +42,22 @@
     for (const extra of extras) {
       const input = el('input', { type: 'checkbox', 'aria-label': extra.title });
       input.checked = extra.on;
-      input.addEventListener('change', () => { chosen[extra.id] = input.checked; void save({ [extra.id]: input.checked }); });
+      // A switch setup asks about later, as long as it is left alone: shown as undecided.
+      const caption = el('span', { class: 'caption', text: extra.asked ? 'asked later' : '' });
+      const card = el('div', { class: extra.asked ? 'extra undecided' : 'extra' },
+        el('h3', { text: extra.title }),
+        el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span'))),
+        el('p', { text: extra.explanation }));
+      input.addEventListener('change', () => {
+        chosen[extra.id] = input.checked;
+        card.className = 'extra';
+        caption.textContent = input.checked ? 'yes' : 'no';
+        void save({ [extra.id]: input.checked });
+      });
       const installs = el('div', { class: 'installs' });
       for (const p of extra.installs) installs.append(el('span', { class: 'chip', title: p.explanation }, el('b', { text: p.name }), p.explanation ? ' · ' + p.explanation : ''));
-      box.append(el('div', { class: 'extra' },
-        el('h3', { text: extra.title }),
-        el('label', { class: 'switch' }, input, el('span')),
-        el('p', { text: extra.explanation }),
-        extra.installs.length ? installs : null));
+      if (extra.installs.length) card.append(installs);
+      box.append(card);
     }
     built = true;
   }
@@ -181,18 +191,23 @@
     progress(state);
     // Setup's own verdict (the first checkup included), as the terminal shows it.
     const ready = state.complete === true;
-    $('finish-title').textContent = ready ? 'NekoServer is ready' : 'NekoServer is almost ready';
-    badge(ready ? 'Ready' : 'Almost ready', ready ? 'done' : 'waiting');
+    const title = state.title || (ready ? 'NekoServer is ready' : 'NekoServer is almost ready');
+    $('finish-title').textContent = title;
+    // Stopped before the steps began (a site that could not be reached, say): not "finished".
+    $('finish-label').textContent = state.stopped ? 'STOPPED' : 'FINISHED';
+    badge(ready ? 'Ready' : (state.stopped ? 'Stopped' : 'Needs you'), ready ? 'done' : 'waiting');
     // The terminal's ruled lines and its own title are the card's title here.
-    $('finish-lines').textContent = state.finish.filter((l) => !/^=+$/.test(l.trim()) && !/^\s*NekoServer is (ready|almost ready)!?$/.test(l)).join('\n').trim();
+    $('finish-lines').textContent = state.finish.filter((l) => !/^=+$/.test(l.trim()) && l.trim().replace(/!$/, '') !== title.replace(/!$/, '')).join('\n').trim();
+    $('steps-final').hidden = !state.steps.length;
     stepList($('steps-final'), state.steps, null);
+    finishedShown = true;
   }
 
   function render(state) {
     $('version').textContent = 'setup · v' + state.version;
     const phase = state.phase;
-    for (const id of ['choose', 'running', 'finished', 'gone']) $(id).hidden = id !== phase;
-    $('progress').hidden = phase === 'choose';
+    for (const id of ['choose', 'running', 'finished', 'gone', 'moved']) $(id).hidden = id !== phase;
+    $('progress').hidden = phase === 'choose' || !state.total;
     if (phase === 'choose') renderChoose(state);
     if (phase === 'running') renderRunning(state);
     if (phase === 'finished') renderFinished(state);
@@ -203,26 +218,39 @@
     if (phase !== 'running') showQuestion(null);
   }
 
-  function showGone() {   // setup has ended and its server with it
-    for (const id of ['choose', 'running', 'finished']) $(id).hidden = true;
-    $('gone').hidden = false;
+  function showGone(why) {   // setup has ended and its server with it, or this window was opened again elsewhere
     $('question').hidden = true;
     $('terminal').hidden = true;
-    badge('Setup ended', 'off');
+    if (finishedShown && why !== 'moved') {
+      // The finishing screen is what the person needs (addresses, what is left): it stays.
+      $('finish-closed').hidden = false;
+      badge('Setup closed', 'off');
+      return;
+    }
+    const shown = why === 'moved' ? 'moved' : 'gone';
+    for (const id of ['choose', 'running', 'finished', 'gone', 'moved']) $(id).hidden = id !== shown;
+    badge(why === 'moved' ? 'Opened elsewhere' : 'Setup ended', 'off');
   }
 
+  let stopped = false;
   async function poll() {
     try {
       const response = await fetch('api/state', { cache: 'no-store' });
+      if (response.status === 403) {
+        // The address was opened again in another window: that one works now.
+        stopped = true;
+        showGone('moved');
+        return;
+      }
       if (!response.ok) throw new Error(response.status);
       misses = 0;
       render(await response.json());
     } catch {
       // Setup's server answers until setup ends; a few misses in a row mean it is gone.
       misses += 1;
-      if (misses >= 4) showGone();
+      if (misses >= 4) showGone('ended');
     }
-    setTimeout(() => { void poll(); }, misses ? 2000 : 1000);
+    if (!stopped) setTimeout(() => { void poll(); }, misses ? 2000 : 1000);
   }
   void poll();
 })();

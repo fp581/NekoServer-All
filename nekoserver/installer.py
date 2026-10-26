@@ -324,11 +324,14 @@ def _execute(args, root=ROOT):
     ctx.plan = plan
     save_profiles(ctx, added, profiles_changed, args.apply)
     review_retention(ctx, args.apply)
+    # The steps this run goes through (with the ones they need), for the setup window and
+    # the finishing screen to count the same steps as the log.
+    setup_progress.event('plan', steps=list(plan))
     for name in plan:
-        bad_deps = [d for d in modules[name]['deps'] if states.get(d, {}).get('status') != complete_status]
-        if bad_deps:
-            states[name] = {'status': 'blocked', 'reason': f'Dependencies not successful: {bad_deps}'}
-            log(f'BLOCKED {name}: {bad_deps}')
+        held = waiting_for(name, modules, states, complete_status)
+        if held:
+            states[name] = blocked(held)
+            log(f'BLOCKED {name}: {states[name]["reason"]}')
             setup_progress.step(name, 'blocked', states[name]['reason'])
             failures.append(name)
             atomic_json_write(state_path, states)
@@ -351,7 +354,7 @@ def _execute(args, root=ROOT):
         else:
             states[name] = outcome(result, complete_status)
             if states[name]['status'] == 'needs_setup':
-                failures.append(name);log(f'NEEDS SETUP {name}')
+                failures.append(name);log(f'NEEDS SETUP {name}: {states[name]["reason"]}')
             elif states[name]['status'] == UNAVAILABLE:
                 unavailable.append(name);log(f'UNAVAILABLE {name}: {states[name]["reason"]}')
             else:
@@ -381,10 +384,34 @@ def _execute(args, root=ROOT):
         # earlier releases' files would pile up with every upgrade: only folders no service
         # or drop-in names any more go.
         tidy_old_releases(config, states, log)
-    log(f'Finished: {len(plan) - len(failures) - len(unavailable)} passed; '
+    # Counted as the finishing screen and the setup window count: steps done, out of the
+    # steps this PC can have.
+    here = len(plan) - len(unavailable)
+    log(f'Finished: {here - len(failures)} of {here} steps done; '
         + (f'{len(unavailable)} not available on this system; ' if unavailable else '')
-        + f'{len(failures)} failed/blocked/incomplete; log={log_path}')
+        + f'{len(failures)} failed, waiting or unfinished; log={log_path}')
     return 1 if failures else 0
+
+
+def waiting_for(name, modules, states, complete_status):
+    """The steps that hold this one up: for each step it needs that did not finish, the
+    first one up the chain that is not itself waiting (Docker, say, for the apps the
+    recovery checkpoint holds up). Empty when it can run."""
+    found = []
+    for dep in modules[name]['deps']:
+        record = states.get(dep, {})
+        if record.get('status') == complete_status:
+            continue
+        held = record.get('waiting_for') if record.get('status') == 'blocked' else None
+        found += held if isinstance(held, list) and held else [dep]
+    return list(dict.fromkeys(found))
+
+
+def blocked(held):
+    """A waiting step's record: what it waits for, in the steps' titles."""
+    from wizard import title
+    return {'status': 'blocked', 'waiting_for': held,
+            'reason': 'Waits for ' + ', '.join(title(n) for n in held) + ' to finish first'}
 
 def outcome(result, complete_status):
     """A step's recorded state from what its run() returned: a needs_setup or unavailable

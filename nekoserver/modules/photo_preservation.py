@@ -19,8 +19,11 @@ RESUME='nekoserver-immich-resume'
 def resume_command(binary,guard):
     return f'{binary} immich-resume --config {guard}'
 
-def resume_unit(binary,guard,data,media):
-    return (f'[Unit]\nDescription={RESUME}\nRequiresMountsFor={data} {media}\nAfter=docker.service\nRequires=docker.service\n'
+def resume_unit(binary,guard,data):
+    """Immich lives on the SSD only, so its resume needs only that drive (not the HDD):
+    a HDD that dropped out mid-run must not keep Immich stopped. The drive-return
+    service runs it again once a missing drive is back."""
+    return (f'[Unit]\nDescription={RESUME}\nRequiresMountsFor={data}\nAfter=docker.service\nRequires=docker.service\n'
             f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\nExecStart={resume_command(binary,guard)}\n'
             '[Install]\nWantedBy=multi-user.target\n')
 
@@ -35,8 +38,8 @@ def service_text(name,cmd,data,media,binary,guard):
         text+=f'ExecStopPost={resume_command(binary,guard)}\nTimeoutStopSec={RESUME_TIMEOUT}\n'
     return text
 
-def install_resume(binary,guard,data,media):
-    resume=SYSTEMD_UNITS/(RESUME+SERVICE);text=resume_unit(binary,guard,data,media)
+def install_resume(binary,guard,data):
+    resume=SYSTEMD_UNITS/(RESUME+SERVICE);text=resume_unit(binary,guard,data)
     if resume.exists() and f'Description={RESUME}' not in resume.read_text():raise RuntimeError(f'Unmanaged existing unit: {resume}')
     safe_path(resume);atomic_write(resume,text,0o644)
 
@@ -101,7 +104,7 @@ def run(ctx):
             safe_path(target)
             forget_last_run(target)   # a timer created again must not run every missed night at once
             atomic_write(target,content,0o644)
-    install_resume(binary,guard,data,media)
+    install_resume(binary,guard,data)
     subprocess.run(['systemctl','daemon-reload'],check=True,timeout=120)
     subprocess.run(['systemctl','enable',RESUME+SERVICE],check=True,capture_output=True,text=True,timeout=120)
     # Output captured: systemd's "Created symlink" notes stay off the screen; a failure's own

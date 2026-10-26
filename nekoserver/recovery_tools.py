@@ -31,11 +31,32 @@ DOCKER=['docker','--host','unix:///var/run/docker.sock']
 SERVICES={'database','redis','immich-server','immich-machine-learning'}
 FORMAT='neko-immich-snapshot-v1'
 
+# Where to look when a program a recovery step uses fails, named in its message.
+LOOK_AT={'docker':'sudo systemctl status docker  and  sudo journalctl -u docker -n 50',
+         'systemctl':'sudo systemctl --failed'}
+
+def command_problem(name,why,timeout=60):
+    """A failed recovery command said plainly: what happened and what to do next. Only
+    the program's name: its output is never shown (see command)."""
+    look=LOOK_AT.get(name,'sudo journalctl -n 50')
+    if why=='missing':
+        return (f'The program "{name}" is not installed on this PC, so this step cannot run yet. '
+                + ('Setup installs Docker:  sudo bash install.sh  (after replacing Linux, install it with '
+                   'recover.py install-docker --apply instead: RECOVERY.md, step 4). ' if name=='docker' else '')
+                +'Then run this command again.')
+    if why=='timeout':
+        return (f'"{name}" did not answer within {timeout} seconds. It may be busy (a backup or an update, say): '
+                f'wait a few minutes and run this command again. If it keeps happening, check it with  {look}')
+    return (f'"{name}" reported an error, so this step stopped. See what is wrong with  {look}  '
+            'then run this command again.')
+
 def command(argv, timeout=60, stdin=None, stdout=None):
     # Never print command output: Compose can render passwords, SQL can contain personal data.
     try:result=subprocess.run(argv,stdin=stdin,stdout=stdout if stdout is not None else subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout, check=False)
-    except (OSError,subprocess.TimeoutExpired):raise RuntimeError('Recovery command unavailable or timed out: '+argv[0]) from None
-    if result.returncode:raise RuntimeError('Recovery command failed: '+argv[0]+'; inspect the service locally')
+    except FileNotFoundError:raise RuntimeError(command_problem(argv[0],'missing')) from None
+    except subprocess.TimeoutExpired:raise RuntimeError(command_problem(argv[0],'timeout',timeout)) from None
+    except OSError:raise RuntimeError(command_problem(argv[0],'error')) from None
+    if result.returncode:raise RuntimeError(command_problem(argv[0],'error'))
     if stdout is not None:return ''
     value=result.stdout
     return value.decode() if isinstance(value,bytes) else value
@@ -133,7 +154,7 @@ def wait_for(stream,patient,limit=1800,sleep=None):
             sleep(5);waited+=5
 
 def require_root():
-    if os.geteuid()!=0:raise RuntimeError('Recovery changes require sudo')
+    if os.geteuid()!=0:raise RuntimeError('This change needs the administrator: run the same command again with  sudo  in front')
 
 def host_supported():
     import host
@@ -252,7 +273,7 @@ def reattach(config,bundle,apply=False,confirm=''):
     if saved.get('uid')!=config.get('media',{}).get('uid',1000) or saved.get('gid')!=config.get('media',{}).get('gid',1000):raise RuntimeError('Recovery media UID/GID differs; no automatic ownership changes')
     target=Path(config['data_mount'])/'docker-engine'
     if saved.get('docker_root')!=str(target) or not target.is_dir() or not any(target.iterdir()):raise RuntimeError('Expected persistent Docker store is missing or empty')
-    if not host_supported():import host;raise RuntimeError('Automatic reattachment supports x86_64 '+', '.join(f.label for f in host.FAMILIES)+'; Bazzite migration remains unvalidated')
+    if not host_supported():import host;raise RuntimeError('Automatic reattachment supports x86_64 '+', '.join(f.label for f in host.FAMILIES)+' (this PC runs something else, so the steps in RECOVERY.md cannot be done automatically here)')
     docker_ready(config,saved['docker_version'])
     daemon=safe_path(Path('/etc/docker/daemon.json'))
     desired=docker_module.prepare_daemon_config(daemon,target)
@@ -261,9 +282,12 @@ def reattach(config,bundle,apply=False,confirm=''):
     if default.exists() and docker_module.store_in_use(default):raise RuntimeError('Default Docker store contains data; manual migration required')
     override=safe_path(DOCKER_STORAGE_DROPIN)
     if override.exists() and not override.read_text().startswith('# Managed by NekoServer\n'):raise RuntimeError('Unmanaged Docker guard preserved; review it first')
-    if not apply:return {'status':'needs_setup','reason':'Verified reattachment preview; explicit SSD UUID confirmation required','docker_version':saved['docker_version']}
+    if not apply:return {'status':'needs_setup','reason':'Preview passed; nothing was changed. To reattach for real, run:  sudo python3 '
+                         +tool_path(config)+' reattach --apply --confirm '+config['storage']['data_ssd']['uuid'],'docker_version':saved['docker_version']}
     require_root()
-    if confirm!=config['storage']['data_ssd']['uuid']:raise RuntimeError('Confirm the application SSD UUID with --confirm')
+    if confirm!=config['storage']['data_ssd']['uuid']:raise RuntimeError('Nothing was changed: reattaching needs your SSD\'s UUID after --confirm, '
+                                                              'as a check that it is the right drive. Run:  sudo python3 '+tool_path(config)
+                                                              +' reattach --apply --confirm '+config['storage']['data_ssd']['uuid'])
     with lock(config,changes_apps=False):
         # Recheck disk identities immediately before writing OS configuration.
         mounts(config)
@@ -283,7 +307,8 @@ def reattach(config,bundle,apply=False,confirm=''):
             stopped=subprocess.run(['systemctl','stop',*DOCKER_UNITS],capture_output=True,timeout=30,check=False)
             if stopped.returncode:raise RuntimeError('Post-start verification failed and Docker could not be stopped; inspect service/socket locally') from None
             raise
-    return {'status':'needs_setup','reason':'Docker store reattached; rerun deployment profiles and verify applications/reboots before acceptance'}
+    return {'status':'needs_setup','reason':'Docker store reattached and running. Next: run  sudo bash install.sh  to set up the rest '
+            'of this Linux again (timers, network, TV), then open each app and check your photos, music and videos (RECOVERY.md, step 6)'}
 
 def compose_args(config):
     root=Path(config['data_mount'])/'compose/immich'
@@ -456,7 +481,9 @@ def restart_again(config,base,failed):
 def snapshot(config,destination,apply=False,config_path=None):
     if not apply:
         plan=snapshot_plan(config,destination);version,files=plan[4],plan[6]
-        return {'status':'needs_setup','reason':'Preview: pause running Immich services, copy full upload tree and dump its database; source services then resume','files':len(files),'immich_version':version}
+        return {'status':'needs_setup','reason':'Preview only; nothing was changed. With --apply it pauses Immich, copies every photo and '
+                'video and its database into the new folder, then starts Immich again. Run the same command with  --apply  added',
+                'files':len(files),'immich_version':version}
     require_root()
     with lock(config):
         restart_owed(config)   # one cut off earlier: Immich runs again before anything else
@@ -606,9 +633,11 @@ def restore_test(config,snapshot_path,workspace,port=2284,apply=False,confirm=''
         except OSError:raise RuntimeError(port_in_use(config,port)) from None
     enough_space(workspace,sum(p.stat().st_size for p in regular_files(snapshot_path))+2*meta['database_bytes'])
     isolated=isolated_model(model,meta,workspace,port)
-    if not apply:return {'status':'needs_setup','reason':'Verified snapshot preview; isolated DB/files restore only','immich_version':meta['immich_version'],'url':f'http://127.0.0.1:{port}/'}
+    if not apply:return {'status':'needs_setup','reason':'The snapshot checked out; nothing was changed. To build the separate test copy, run the same '
+                         'command again with  --apply --confirm RESTORE-ISOLATED  added','immich_version':meta['immich_version'],'url':f'http://127.0.0.1:{port}/'}
     require_root()
-    if confirm!='RESTORE-ISOLATED':raise RuntimeError('Use --confirm RESTORE-ISOLATED to create the rehearsal')
+    if confirm!='RESTORE-ISOLATED':raise RuntimeError('Nothing was changed: add  --confirm RESTORE-ISOLATED  to the command to build the separate test copy '
+                                                       '(it never touches your real Immich)')
     project='neko-restore-'+uuid.uuid4().hex[:12]
     for argv in (DOCKER+['ps','-a','--filter','label=com.docker.compose.project='+project,'-q'],DOCKER+['network','ls','--filter','label=com.docker.compose.project='+project,'-q']):
         if command(argv).strip():raise RuntimeError('Restore project identity already exists')

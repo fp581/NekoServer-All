@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from types import MappingProxyType
@@ -239,6 +240,44 @@ def _fetch(url, timeout=60):
         return response.read(65536)
 
 
+def _site(url):
+    """The site (host name) of an address: what a person checks in a browser or a filter."""
+    return urllib.parse.urlsplit(url).hostname or url
+
+
+def _why(exc):
+    """The words of a failed download (urllib keeps them in `reason`)."""
+    return str(getattr(exc, 'reason', exc))
+
+
+# What a proxy or firewall that refused the connection makes a download say (a filter
+# that answers in its place says 403 through the proxy's tunnel).
+REFUSED = re.compile(r'tunnel connection failed|proxy|403|forbidden', re.IGNORECASE)
+
+
+def unreachable(maker, url, what, reason, tries):
+    """The words for a site that could not be reached: which site, the likely causes and
+    what to do. Never "check your internet" alone: on a PC that has just downloaded its
+    packages, the internet works, and a filter or proxy blocking that one site is likelier."""
+    site = _site(url)
+    tried = f', after {tries} tries' if tries > 1 else ''
+    if REFUSED.search(reason):
+        causes = (' A proxy, firewall or filter on your network refused it (a router or parental filter, an ad-blocker '
+                  'such as Pi-hole, a VPN): allow that site there, or ask whoever runs your network.')
+    else:
+        causes = (' Likely causes: something on your network blocks that site (a proxy, a router or parental filter, '
+                  'an ad-blocker such as Pi-hole, a VPN), the site is down for a while, or this PC is offline right now.')
+    return (f'Could not reach {site} ({maker}\'s site) to download {what}{tried} ({reason}).{causes} Check that '
+            f'https://{site} opens in a browser on this PC, then run  sudo bash install.sh  again.' + clock_hint(reason))
+
+
+def answered_badly(maker, url, code, tries):
+    """The words for a site that answered with an error of its own (it is up but failing)."""
+    tried = f' {tries} times' if tries > 1 else ''
+    return (f'{_site(url)} ({maker}\'s site) answered with an error{tried} (HTTP {code} for {url}): the site has a '
+            'problem for now. Try again later with  sudo bash install.sh .')
+
+
 class Family:
     """One Linux family. Subclasses fill in the class attributes and the package-manager
     calls; everything else is shared."""
@@ -278,6 +317,33 @@ class Family:
                      + str(RETRY_PAUSE) + ' seconds (' + str(attempt + 1) + ' of ' + str(RETRIES) + ')...')
             self.sleep(RETRY_PAUSE)
             attempt += 1
+
+    # Attempts at a maker's site (a repository key, a release check): as many as for a
+    # package source. repair() asks only once: it goes on without the key when the
+    # repository still works, and must not hold up a PC that is offline.
+    download_tries = RETRIES
+
+    def download(self, url):
+        """self.fetch(url). A site that did not answer (no connection, a timeout, a proxy
+        that refused it, an error of the site's own) is asked again RETRY_PAUSE seconds
+        later, download_tries times in all, as a package source is; one that said "not
+        found" (404, a release it does not package) or that a wrong clock is refusing is
+        not. The last error is raised."""
+        for attempt in range(1, self.download_tries + 1):
+            try:
+                return self.fetch(url)
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500 or attempt == self.download_tries:
+                    raise
+                reason = 'HTTP ' + str(exc.code)
+            except (OSError, http.client.HTTPException) as exc:
+                reason = _why(exc)
+                if attempt == self.download_tries or clock_hint(reason):
+                    raise
+            self.say(_site(url) + ' did not answer (' + reason + '); trying again in ' + str(RETRY_PAUSE)
+                     + ' seconds (' + str(attempt + 1) + ' of ' + str(self.download_tries) + ')...')
+            self.sleep(RETRY_PAUSE)
+        raise RuntimeError('Nothing was downloaded from ' + url)   # (download_tries below 1)
 
     def _wait_for_other(self, result, waited):
         """One pause while another program uses the package manager (said once)."""
@@ -904,18 +970,16 @@ class Debian(PackageLock, Family):
         url = repository.key_url.format(os=system, codename=codename)
         name = repository.name.capitalize()
         try:
-            data = self.fetch(url)
+            data = self.download(url)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 raise RuntimeError(f'{name} does not offer packages for this release yet ({system} "{codename}": '
                                    f'{url} was not found). Wait for {name} to add it, or install a release it '
                                    f'supports, then run setup again') from None
-            raise RuntimeError(f'Downloading the {name} repository key failed (HTTP {exc.code} from {url}); '
-                               'try again later') from None
+            raise RuntimeError(answered_badly(name, url, exc.code, self.download_tries)) from None
         except (OSError, http.client.HTTPException) as exc:
-            reason = str(getattr(exc, 'reason', exc))
-            raise RuntimeError(f'Downloading the {name} repository key failed ({reason}). Check that this PC is '
-                               'connected to the internet, then run setup again' + clock_hint(reason)) from None
+            raise RuntimeError(unreachable(name, url, f'the key that checks {name}\'s packages', _why(exc),
+                                           self.download_tries)) from None
         if not data or len(data) >= 65536 or not valid_key(data):
             raise RuntimeError(f'The {name} repository key downloaded from {url} is not a key file (a Wi-Fi login '
                                'page or a proxy may have answered instead); try again later')
@@ -1055,13 +1119,20 @@ class Debian(PackageLock, Family):
                 listing = self.own_listing(repository, system, codename)
                 if not listing:
                     continue
+                # A definition that still works is kept when its site does not answer: asked
+                # once, so an offline PC is not held up. A missing key is needed: asked as often
+                # as any download.
+                usable = self._usable(listing)
+                self.download_tries = 1 if usable else RETRIES
                 try:
                     self.add_repository(repository)
                 except (OSError, RuntimeError, http.client.HTTPException) as exc:
-                    if not self._usable(listing):
+                    if not usable:
                         raise RuntimeError('The ' + repository.name + ' repository key is missing and could not '
                                            'be downloaded: ' + str(exc)) from None
                     log('Keeping the ' + repository.name + ' repository as it is for now (' + str(exc) + ')')
+                finally:
+                    self.download_tries = RETRIES
 
     def own_listing(self, repository, system, codename):
         """NekoServer's own definition of this repository, when apt uses it (else None)."""
@@ -1280,18 +1351,16 @@ class Fedora(PackageLock, Family):
         system = self.release.get('NAME') or self.label
         url = repository.release_url.format(release=release)
         try:
-            self.fetch(url)
+            self.download(url)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 raise RuntimeError(f'{repository.maker} does not offer packages for {system} {release} yet ({url} '
                                    f'was not found). Wait for {repository.maker} to add it, or use a release '
                                    'it supports, then run setup again') from None
-            raise RuntimeError(f'Checking the {repository.maker} repository failed (HTTP {exc.code} from {url}); '
-                               'try again later') from None
+            raise RuntimeError(answered_badly(repository.maker, url, exc.code, self.download_tries)) from None
         except (OSError, http.client.HTTPException) as exc:
-            reason = str(getattr(exc, 'reason', exc))
-            raise RuntimeError(f'Reaching the {repository.maker} repository failed ({reason}). Check that this PC is '
-                               'connected to the internet, then run setup again' + clock_hint(reason)) from None
+            raise RuntimeError(unreachable(repository.maker, url, f'the list of {repository.maker}\'s packages',
+                                           _why(exc), self.download_tries)) from None
 
     def add_repository(self, repository):
         """Make a maker's repository usable. Someone else's definition of it is used as it
@@ -1665,16 +1734,32 @@ def main(argv):
                   'again when you are ready.', file=sys.stderr)
         return 130
     except subprocess.TimeoutExpired as exc:
-        print('ERROR: ' + str(exc.cmd[0]) + ' did not finish within ' + str(int(exc.timeout) // 60)
-              + ' minutes; check the network and run  sudo bash install.sh  again', file=sys.stderr)
-        return 1
+        return stopped(str(exc.cmd[0]) + ' did not finish within ' + str(int(exc.timeout) // 60)
+                       + ' minutes; check the network and run  sudo bash install.sh  again')
     except (RuntimeError, OSError, http.client.HTTPException) as exc:
-        print('ERROR: ' + str(exc), file=sys.stderr)
-        return 1
+        return stopped(str(exc))
     finally:
         for number, handler in before.items():
             signal.signal(number, handler)
     return 0
+
+
+def stopped(message, note=None):
+    """Why setup stopped, on the terminal and (for install.sh to show in the setup window)
+    in the file NEKOSERVER_STOP_NOTE names: one install.sh made for it (mktemp), so it
+    is only ever written, never created, and never through a link. Returns 1."""
+    with contextlib.suppress(OSError, ValueError):
+        sys.stdout.flush()      # the retry lines before it, also when both go to one file
+    print('ERROR: ' + message, file=sys.stderr)
+    note = os.environ.get('NEKOSERVER_STOP_NOTE', '') if note is None else note
+    if note.startswith('/') and '..' not in note.split('/'):
+        try:
+            handle = os.open(note, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError:
+            return 1
+        with os.fdopen(handle, 'w', encoding='utf-8') as stream:
+            stream.write(message + '\n')
+    return 1
 
 
 HANGUPS = (signal.SIGHUP, signal.SIGTERM)

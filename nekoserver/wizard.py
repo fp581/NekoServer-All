@@ -24,7 +24,6 @@ ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
 TEMPLATE = 'config.json'   # the settings template; also the name of the copy on the SSD
 RELEASE = re.compile(r'v(\d{1,9})\.(\d{1,9})\.(\d{1,9})')
-CREDENTIALS = 'secrets/accounts/APP-CREDENTIALS.txt'
 
 STEPS = {
     'system': 'System check', 'storage': 'Drives', 'capacity': 'Drive space',
@@ -55,7 +54,8 @@ WELCOME = [
     '  5. Give each app a private Tailscale address and walk you through it on your phone.',
     '  6. Schedule backups and monthly updates, then run a first checkup and backup.',
     '',
-    'Have ready: your three data drives plugged in (already formatted), your phone,',
+    'Have ready: your three data drives plugged in (already formatted; the SSD at least 20 GB,',
+    'the HDD at least 50 GB, the USB drive at least 16 GB), your phone,',
     'a 6-digit PIN for the dashboard (you choose it during setup), and about an hour.',
     'It pauses whenever it needs you and explains what to do.',
     'Nothing is formatted or deleted. You can stop with Ctrl+C and run it again later;',
@@ -179,7 +179,7 @@ def setup_window(path, output):
         return None
     if setup_gui.open_window(config, window.url):
         output('\nA setup window opened in your browser: it explains each step as it happens. Put it where you like.'
-               '\nClosed it by mistake? Open  ' + window.url + '  again in a browser on this PC.')
+               '\nClosed it by mistake? Open  ' + window.url + '  again in a browser on this PC, from this account.')
     else:
         output('\nTo follow along in a window, open  ' + window.url + '  in a browser on this PC.')
     return window
@@ -260,11 +260,58 @@ def state_file(config, default_state):
     return persistent if persistent.exists() else checked_path(default_state) / 'state.json'
 
 
-def show_steps(title, names, states, fallback, output):
+def title(name):
+    """A step's title (a step another one needs but with no title of its own, such as
+    music_backup, in words: "Music backup")."""
+    return STEPS.get(name) or setup_gui.step_title(name)
+
+
+def show_steps(heading, names, states, fallback, output):
     if names:
-        output('\n' + title)
+        output('\n' + heading)
         for name in names:
-            output(f'  - {STEPS[name]}: {states[name].get("reason", fallback)}')
+            output(f'  - {title(name)}: {states[name].get("reason", fallback)}')
+
+
+# What a blocked step's record names as the steps it waits for: the installer's own list,
+# or (in a record from before 0.40.2) the step names in its reason.
+WAITED_FOR = re.compile(r"'([a-z0-9_]+)'")
+
+
+def causes(name, states, seen=()):
+    """The steps that stop a blocked step: the first ones up its chain that are not
+    blocked themselves (Docker, say, for the apps waiting on the recovery checkpoint)."""
+    record = states.get(name) or {}
+    if record.get('status') != 'blocked' or name in seen:
+        return [name]
+    named = record.get('waiting_for')
+    named = named if isinstance(named, list) else WAITED_FOR.findall(str(record.get('reason', '')))
+    # (A step finished since, in a later run, holds nothing up any more.)
+    found = [cause for dep in named if (states.get(dep) or {}).get('status') not in ('success', 'unavailable')
+             for cause in causes(dep, states, (*seen, name))]
+    return list(dict.fromkeys(found)) or [name]
+
+
+def show_waiting(names, states, output):
+    """The blocked steps, by what they wait for: one line for everything Docker holds up,
+    say, in the steps' own titles (never a list of step names)."""
+    groups = {}
+    for name in names:
+        groups.setdefault(tuple(causes(name, states)), []).append(title(name))
+    if groups:
+        output('\nWaiting for those (they run by themselves once those are done):')
+    for waited, titles in groups.items():
+        output('  - After ' + ' and '.join(title(n) for n in waited) + ': ' + ', '.join(titles))
+
+
+def headline(complete, done, total, problems):
+    """The finishing screen's title: ready, almost ready, or (fewer than half the steps
+    done) how many things stop it, so the screen does not call 1 of 30 "almost ready"."""
+    if complete:
+        return 'NekoServer is ready!'
+    if problems and done * 2 < total:
+        return f'Setup stopped: {problems} ' + ('thing needs you' if problems == 1 else 'things need you')
+    return 'NekoServer is almost ready'
 
 
 # Where the dashboard's PIN is kept (modules/dashboard.py CONTROL_CONFIG).
@@ -302,8 +349,8 @@ def show_addresses(data, output):
 
 NEXT_DONE = ['  Everything is set up. Backups and monthly updates run on their own;',
              '  the dashboard shows how they are doing.']
-NEXT_PENDING = ['  Fix the items above, then run  sudo bash install.sh  again.',
-                '  It continues where it stopped and keeps everything already done.']
+NEXT_PENDING = ['  1. Fix the first item under "What needs you" (its line says how).',
+                '  2. Then run  sudo bash install.sh  again: it continues where it stopped and keeps everything done.']
 
 
 def finished(plan, by_status, checkup):
@@ -317,8 +364,22 @@ def show_checkup(checkup, output):
         output('\nFirst checkup and backup: something needs a look (listed above, under "First checkup and backup").')
 
 
-def finishing_screen(config, states, page=None, output=print, checkup=None):
-    """The summary shown at the end. Returns True when nothing is left to do."""
+def sorted_steps(plan, states):
+    """The steps by how they ended: done, waiting for you, not available here, did not
+    finish (failed, stopped, or never ran), and waiting for another step."""
+    by_status = {status: [n for n in plan if states[n].get('status') in group]
+                 for status, group in (('done', ('success',)), ('waiting', ('needs_setup',)),
+                                       ('unavailable', ('unavailable',)), ('blocked', ('blocked',)),
+                                       ('broken', ('failed', 'running', 'missing')))}
+    sorted_out = {n for names in by_status.values() for n in names}
+    by_status['broken'] += [n for n in plan if n not in sorted_out]
+    return by_status
+
+
+def finishing_screen(config, states, page=None, output=print, checkup=None, ran=()):
+    """The summary shown at the end. Returns True when nothing is left to do. `ran`: the
+    steps the installer ran this time (its plan, with the steps the others need), so the
+    count is the one the log and the window give."""
     data = data_folder(config)
     # Judge against the steps the installation is meant to run, not only the ones that
     # left a state behind: missing or unreadable state must never read as "ready".
@@ -326,28 +387,37 @@ def finishing_screen(config, states, page=None, output=print, checkup=None):
     # added since), without the steps you took out, plus your own.
     from config_checks import expected_steps
     expected = [n for n in expected_steps(config, read_json(ROOT / TEMPLATE)) if n in STEPS]
-    plan = expected or [name for name in STEPS if name in states]
+    plan = list(dict.fromkeys([*ran, *expected])) or [name for name in STEPS if name in states]
     states = {n: states.get(n) if isinstance(states.get(n), dict) else
               {'status': 'missing', 'reason': 'did not run (no record of this step)'} for n in plan}
-    by_status = {status: [n for n in plan if states[n].get('status') in group]
-                 for status, group in (('done', ('success',)), ('waiting', ('needs_setup',)),
-                                       ('unavailable', ('unavailable',)),
-                                       ('broken', ('failed', 'blocked', 'running', 'missing')))}
-    sorted_out = {n for names in by_status.values() for n in names}
-    unknown = [n for n in plan if n not in sorted_out]
-    by_status['broken'] += unknown
-    complete = finished(plan, by_status, checkup)
+    by_status = sorted_steps(plan, states)
+    by_status['waiting'] += [n for n in by_status['blocked'] if causes(n, states) == [n]]   # waits for nothing known
+    blocked = [n for n in by_status['blocked'] if n not in by_status['waiting']]
+    complete = finished(plan, {'waiting': by_status['waiting'], 'broken': by_status['broken'] + blocked}, checkup)
+    total = len(plan) - len(by_status['unavailable'])
     line = '=' * 64
     output('\n' + line)
-    output('  NekoServer is ready!' if complete else '  NekoServer is almost ready')
+    output('  ' + headline(complete, len(by_status['done']), total, len(by_status['broken']) + len(by_status['waiting'])))
     output(line)
-    output(f'\nDone: {len(by_status["done"])} of {len(plan) - len(by_status["unavailable"])} steps.')
+    output(f'\nDone: {len(by_status["done"])} of {total} steps.')
+    show_steps('What needs you (fix these first; the steps after them then run by themselves):',
+               by_status['broken'] + by_status['waiting'], states, 'stopped before finishing', output)
+    show_waiting(blocked, states, output)
     show_steps('Not available on this system:', by_status['unavailable'], states, 'not available', output)
-    show_steps('Still needs you:', by_status['waiting'], states, 'unfinished', output)
-    show_steps('Did not finish:', by_status['broken'], states, 'stopped before finishing', output)
     show_checkup(checkup, output)
+    show_end(config, data, plan, states, page, output)
+    output('\nWhat next:')
+    for text in NEXT_DONE if complete else NEXT_PENDING:
+        output(text)
+    output('  If something goes wrong later:  sudo bash install.sh --recover')
+    output(line + '\n')
+    return complete
+
+
+def show_end(config, data, plan, states, page, output):
+    """Where everything is: the apps' addresses, the passwords, the phone page, the dashboard."""
     show_addresses(data, output)
-    output('\nPasswords:          sudo cat ' + str(data / CREDENTIALS))
+    output('\nPasswords:          ' + guided_setup.login_command({'data_mount': str(data)}) + '  (an app\'s login, with a QR code)')
     if page and Path(page).exists():
         output('Phone setup page:   ' + str(page) + '  (open it in a browser on this PC)')
     show_dashboard(config, output)
@@ -355,12 +425,6 @@ def finishing_screen(config, states, page=None, output=print, checkup=None):
             and not (data / 'reports/onboarding/playback.json').exists():
         output('\nPlayback verification pending: the apps are set up and their automatic checks')
         output('passed, but no real playback was tested yet. Play something once to be sure.')
-    output('\nWhat next:')
-    for text in NEXT_DONE if complete else NEXT_PENDING:
-        output(text)
-    output('  If something goes wrong later:  sudo bash install.sh --recover')
-    output(line + '\n')
-    return complete
 
 
 def settings_for_run(config, root, prompt, output):
@@ -397,10 +461,12 @@ def after_setup(code, path, default_state, output, window):
     def shown(line=''):
         lines.append(str(line))
         output(line)
-    complete = finishing_screen(config, states, page, shown, checkup)
+    ran = setup_progress.last('plan')
+    complete = finishing_screen(config, states, page, shown, checkup, ran['steps'] if ran else ())
     if window is not None:
         # The window shows the same summary; give it a moment to fetch it.
-        setup_progress.event('finished', lines=lines, complete=complete)
+        heading = next((text.strip() for text in lines[1:2]), '')   # under the first ruled line
+        setup_progress.event('finished', lines=lines, complete=complete, title=heading)
         window.delivered.wait(3)
     return 0 if complete and code == 0 else 1
 

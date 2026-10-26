@@ -234,7 +234,7 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
         return
     if not value['apps']:
         while True:
-            answer = prompt('Admin accounts: [1] generate random usernames/passwords for all [2] choose per app: ').strip()
+            answer = prompt('Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2: ').strip()
             if answer in ('1', '2'):
                 value['mode'] = 'generate' if answer == '1' else 'per-app'
                 break

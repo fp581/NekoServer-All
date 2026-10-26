@@ -129,6 +129,15 @@ class SnapshotRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'new absolute directory'):
             sr.restore(sr.APPS, snap, self.root / 'exists')
 
+    def test_a_missing_parent_folder_says_what_to_do(self):
+        # IT-16: it said only "No such file or directory".
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'compose/a.yaml': b'a'})
+        parent = self.root / 'not-there'
+        with self.assertRaisesRegex(RuntimeError, f'sudo mkdir -p "{parent}"'):
+            sr.restore(sr.APPS, snap, parent / 'restored')
+        self.assertFalse(parent.exists())
+
     def test_command_line_tools_still_work(self):
         snap = self.root / 'snap'
         make(snap, sr.APPS, {'installer/x.json': b'{}'})

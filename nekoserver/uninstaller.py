@@ -70,6 +70,13 @@ SYSTEM_PATHS = ('/etc/nekoserver-dashboard', '/etc/nekoserver-control', '/etc/ne
 # and runs the nightly snapshot at once, stopping the apps just as setup finishes.
 SYSTEM_GLOBS = ('usr/local/lib/nekoserver-*', 'etc/systemd/system/*.d/10-nekoserver-storage.conf',
                 'var/lib/systemd/timers/stamp-nekoserver-*.timer')
+# Setup's own record of its steps and its log, kept on the system disk while the SSD is not
+# mounted (installer.py DEFAULT_STATE, for setup run with sudo): moved to the SSD later,
+# with the record left beside it as state.json.moved-to-ssd. NekoServer's, so it goes.
+SETUP_STATE = '/root/.local/state/nekoserver'
+# /etc/fstab as it was before NekoServer first changed it (modules/storage.py). It stays:
+# it is your own file, and the only copy of the fstab you had before.
+FSTAB_BEFORE = '/etc/fstab.nekoserver.bak'
 PACKAGES_LEFT = ('Docker, Samba, Caddy, Tailscale, Rust and gcc, smartmontools, qrencode, OpenRGB, and Steam if the TV step '
                  'added it, are packages of your Linux: they stay installed, with the package repositories NekoServer added for '
                  "them (Docker's and Tailscale's own, on Debian and Ubuntu). Remove any you do not want with your package manager.")
@@ -95,6 +102,7 @@ DRIVE_PLACES = {'photos': (('data', 'photos'), ('media', 'photos')), 'media': ((
 # database copies, copies set aside as damaged, and its ledger files (.neko-...).
 USB_OWN = ('upload', 'library', 'nextcloud', 'immich-database', 'neko-damaged')
 FILESYSTEM_OWN = ('lost+found',)
+SIZE_UNKNOWN = 'size unknown without sudo'
 
 
 # What setup wrote about the drives outside this folder: the mount folders and the drives'
@@ -219,11 +227,14 @@ def unchanged_routes(owned, current):
     return ports
 
 
+NOT_MOUNTED = 'not mounted'
+
+
 def mismatch(found, record):
     """How the drive mounted at a folder (neko_common.mounted_identity) differs from the
     one its settings record names, in words."""
     if found is None:
-        return 'not mounted'
+        return NOT_MOUNTED
     uuid, fstype, tree = found
     if uuid != record.get('uuid'):
         return other_drive('UUID', uuid, record.get('uuid'))
@@ -250,6 +261,16 @@ def without_locks(path):
         return [path]
     return [entry for entry in inside if not entry.name.endswith(LOCK_SUFFIX)]
 
+
+
+def no_containers_why(which=shutil.which, euid=os.geteuid):
+    """Why no app container was listed, in words: only a guess can be given, but "run
+    with sudo" is said only when that could help (Docker installed, not run as root)."""
+    if not which('docker'):
+        return 'Docker is not installed'
+    if euid() != 0:
+        return 'Docker is not running, nothing was deployed, or this account may not ask it: run with sudo'
+    return 'Docker is not running, or nothing was deployed'
 
 class Plan:
     """Everything a run would remove, by choice, found on this PC (a test's root stands
@@ -335,6 +356,26 @@ class Plan:
                 except OSError:   # not readable by this account (a dry run without sudo)
                     self.warnings.append('Could not look in ' + str(folder) + ' (run with sudo for the whole plan)')
         return sorted(set(found))
+
+    def setup_state(self):
+        """Setup's records on the system disk (SETUP_STATE), when there are any."""
+        folder = self.at(SETUP_STATE)
+        try:
+            return [folder] if self.folder_here(folder) and not folder.is_symlink() else []
+        except OSError:   # not readable by this account (a dry run without sudo)
+            self.warnings.append('Could not look in ' + str(folder) + ' (run with sudo for the whole plan)')
+            return []
+
+    def kept(self):
+        """What NekoServer's setup left on the system disk that stays, and why, in words."""
+        try:
+            there = self.at(FSTAB_BEFORE).is_file()
+        except OSError:
+            there = False
+        if not there:
+            return []
+        return ['Kept: ' + FSTAB_BEFORE + ', your /etc/fstab as it was before NekoServer first changed it. It stays, as your '
+                'own copy of how this PC mounted its drives before; delete it yourself once you no longer need it']
 
     @staticmethod
     def folder_here(folder):
@@ -522,7 +563,7 @@ class Plan:
         found = lines[-1] if lines else ''   # stacked mounts: the last is the one in use
         if found.lower() == uuid.lower():
             return None
-        return 'not mounted' if not found else other_drive('UUID', found, uuid)
+        return NOT_MOUNTED if not found else other_drive('UUID', found, uuid)
 
     def owned(self, drive, names):
         """These top-level entries of a drive, when they exist and the drive is identified."""
@@ -596,7 +637,8 @@ class Plan:
         units = self.units()
         if units:
             notes.append('Stop and remove ' + str(len(units)) + ' services and timers: ' + ', '.join(units))
-        paths = self.system_paths() + self.shortcuts() + self.os_dropins()
+        paths = self.system_paths() + self.shortcuts() + self.os_dropins() + self.setup_state()
+        notes.extend(self.kept())
         if self.unfinished_packages():
             notes.append('A package installation setup left unfinished is finished first, as setup would, so no '
                          'service stays masked or kept from starting')
@@ -670,7 +712,7 @@ class Plan:
         if networks:
             notes.append('Remove the Docker networks ' + ', '.join(networks))
         if not projects and not networks:
-            notes.append('No app containers found (Docker not running, nothing deployed, or no permission to ask it: run with sudo)')
+            notes.append('No app containers found (' + no_containers_why() + ')')
         return {'paths': [], 'notes': notes}
 
     def _mounts_group(self):
@@ -695,8 +737,19 @@ class Plan:
         return {'paths': self.drive_paths(key), 'notes': notes}
 
     def size(self, path):
+        """How much is in a folder (du), or that it can't be known: without sudo, a folder
+        this account may not read in (setup's are private) would be counted too small."""
+        if os.geteuid() != 0 and self.unreadable_inside(path):
+            return SIZE_UNKNOWN
         out = self.run(['du', '-sh', str(path)], 600)
         return out.split()[0] if out.split() else '?'
+
+    def unreadable_inside(self, path):
+        """Whether something in the folder (or the folder itself) can't be read or entered
+        by this account: the first one found is enough."""
+        found = self.run(['find', str(path), '(', '!', '-readable', '-o', '-type', 'd', '!', '-executable', ')',
+                          '-print', '-quit'], 600)
+        return bool(found.strip())
 
     def describe(self, chosen):
         """The plan, in full, for the person to read before confirming."""
@@ -1136,20 +1189,23 @@ def _remove_files(plan, chosen, out, rmtree, drives=None, keep_inodes=()):
     right before (open_drives); a drive that is not the one the settings name any more
     loses nothing. Returns what could not be removed (said at the end)."""
     drives = drives or {}
-    left, lost = [], set()
+    left = []
     for path in _chosen_paths(plan, chosen):
         drive = _drive_of(plan, path)
         if drive is not None and drive not in drives:
-            lost.add(drive)
-            left.append(str(path))
+            left.append(Skipped(path))   # open_drives said why, once for the drive
             continue
         out('  removing ' + str(path))
         gone = _removed(path, rmtree, out) if drive is None else _removed_on(drives[drive], path, out, keep_inodes)
         if not gone:
             left.append(str(path))
-    for drive in sorted(lost):
-        out('  nothing was removed on ' + str(plan.folder_of(drive)) + ': it is not the drive the settings name any more')
     return left
+
+
+class Skipped(str):
+    """A planned path on a drive that was not the one the settings name when the files
+    went: nothing there was touched, and nothing there may be deleted by hand either (it
+    is the other drive's)."""
 
 
 SHOWN_FAILURES = 5   # of the files inside one folder that could not be deleted, this many are named
@@ -1216,8 +1272,13 @@ def open_drive(plan, drive):
         moved = True
     if problem or moved:
         os.close(fd)
-        return None, problem or 'it changed while it was being checked'
+        return None, _now_there(problem) if problem else 'it changed while it was being checked'
     return Drive(fd, os.fstat(fd).st_dev, folder), None
+
+
+def _now_there(problem):
+    """What is at a drive's folder now, from identity_problem's words."""
+    return 'no drive is mounted there now' if problem == NOT_MOUNTED else 'the drive there now is ' + problem
 
 
 def open_drives(plan, out):
@@ -1230,8 +1291,7 @@ def open_drives(plan, out):
             continue
         handle, why = open_drive(plan, drive)
         if handle is None:
-            out('The drive at ' + str(plan.folder_of(drive)) + ' is no longer the one the settings name (' + why
-                + '), so nothing on it is removed.')
+            out('Nothing on ' + str(plan.folder_of(drive)) + ' is removed: ' + why + '.')
         else:
             drives[drive] = handle
     return drives
@@ -1272,21 +1332,65 @@ def _delete_at(parent, name, dev, how):
     except OSError as exc:
         failed.append(where + ': ' + (exc.strerror or str(exc)))
         return
-    if found.st_dev != dev:
+    subvolume = found.st_dev != dev
+    if subvolume and not _nested_subvolume(parent, name, found):
         failed.append(where + ': ' + OTHER_DRIVE)
         return
     if (found.st_dev, found.st_ino) in keep:
         held.append(where)
         return
+    before = len(failed)
     try:
         if stat.S_ISDIR(found.st_mode):
-            _empty_at(parent, name, dev, how)
+            # A Btrfs subvolume in it is part of the same drive: emptied and removed with
+            # it (rmdir removes an empty subvolume), its files checked against its own device.
+            _empty_at(parent, name, found.st_dev, how)
             os.rmdir(name, dir_fd=parent)
         else:
             os.unlink(name, dir_fd=parent)
     except OSError as exc:
         if not (exc.errno == errno.ENOTEMPTY and (failed or held)):   # what stayed in it is said once, for itself
             failed.append(where + ': ' + (exc.strerror or str(exc)))
+    if subvolume and len(failed) > before:   # one line for it, with the first reason
+        first = failed[before]
+        del failed[before:]
+        failed.append(where + ': ' + SUBVOLUME_LEFT + where + '  (' + first + ')')
+
+
+# A subvolume that could not be emptied (a read-only snapshot, say) is said with what removes it.
+SUBVOLUME_LEFT = 'it is a Btrfs subvolume of this drive (a snapshot, perhaps read-only); remove it with  sudo btrfs subvolume delete '
+BTRFS_SUBVOLUME_ROOT = 256   # the inode number of the top folder of every Btrfs subvolume
+
+
+def _mount_id(fd):
+    """The mount an open folder is on (its mnt_id in /proc/self/fdinfo), or None."""
+    try:
+        with open('/proc/self/fdinfo/' + str(fd), encoding='ascii') as info:
+            for line in info:
+                key, _, value = line.partition(':')
+                if key == 'mnt_id':
+                    return value.strip()
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _nested_subvolume(parent, name, found):
+    """Whether name (in the folder open as `parent`), on another device number than its
+    folder, is a Btrfs subvolume inside the same drive rather than another drive mounted
+    there: the top folder of a subvolume, on the very same mount as its folder. Anything
+    that can't be told apart counts as another drive (it is left alone)."""
+    if found.st_ino != BTRFS_SUBVOLUME_ROOT or not stat.S_ISDIR(found.st_mode):
+        return False
+    try:
+        fd = os.open(name, FOLDER_FLAGS, dir_fd=parent)
+    except OSError:
+        return False
+    try:
+        mount = _mount_id(fd)
+        return os.fstat(fd).st_dev == found.st_dev and mount is not None and mount == _mount_id(parent)
+    finally:
+        os.close(fd)
 
 
 def _empty_at(parent, name, dev, how):
@@ -1424,10 +1528,20 @@ def _remove_mount_folder(plan, folder, out, left):
 
 def not_removed(left):
     """The lines naming what the uninstall could not remove ([] when nothing is left)."""
-    if not left:
-        return []
-    return (['These could not be removed or switched off (do it yourself, or run  sudo bash uninstall.sh  again):']
-            + ['   - ' + path for path in left])
+    skipped = [path for path in left if isinstance(path, Skipped)]
+    failed = [path for path in left if not isinstance(path, Skipped)]
+    lines = []
+    if failed:
+        lines += (['These could not be removed or switched off (do it yourself, or run  sudo bash uninstall.sh  again):']
+                  + ['   - ' + path for path in failed])
+    if skipped:
+        lines += [SKIPPED_HEADING] + ['   - ' + path for path in skipped]
+    return lines
+
+
+SKIPPED_HEADING = ("These were skipped, because their drive's folder no longer holds the drive the settings name (another "
+                   'drive, or none, is mounted there now). Do not delete them by hand: what is there now is not '
+                   "NekoServer's drive. Mount the right drive there, then run  sudo bash uninstall.sh  again:")
 
 
 LOCK_SUFFIX = '.lock'
@@ -1510,6 +1624,8 @@ def main(argv):
     print('')
     print(*not_removed(left), sep='\n', end='\n' if left else '')
     print(('Finished, but not everything went (see the list above). ' if left else 'Done. ') + PACKAGES_LEFT)
+    for line in plan.kept():
+        print(line + '.')
     if 'mounts' not in chosen:
         print('The drives stay mounted as before; take their lines out of /etc/fstab when you no longer want that.')
     print('This folder (' + str(ROOT) + ') is yours to delete.')

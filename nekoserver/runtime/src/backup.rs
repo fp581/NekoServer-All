@@ -702,8 +702,17 @@ fn walk_listed<F: FnMut(&Path) -> Result<()>>(paths: Vec<PathBuf>, f: &mut F) ->
 /// Folder (at the root of a backup tree) that keeps damaged copies aside; never data.
 const QUARANTINE: &str = "neko-damaged";
 /// How damage or a missing copy is settled, said with every such problem: until then
-/// the monthly check finds it again and the monthly snapshot and updates wait.
-pub(crate) const SETTLE: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\": it repairs each file from a copy that still matches, and when no good copy is left it offers \"accept that this saved copy is lost\" (the copy is kept in neko-damaged, never deleted). Until then the monthly check finds it again, and the monthly snapshot and updates wait";
+/// the monthly check finds it again and the monthly snapshot and updates wait. The
+/// action comes first, before the list of files: the reason is cut at 300 characters
+/// where it is shown (the job report, the dashboard, the alerts, the journal), and the
+/// advice used to come last and was cut off.
+pub(crate) const SETTLE: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\"";
+/// The rest of the advice, after the files.
+const SETTLE_MORE: &str = "The repair takes each file from a copy that still matches; when no good copy is left it offers \"accept that this saved copy is lost\" (the copy is kept in neko-damaged, never deleted). Until then the monthly check finds it again, and the monthly snapshot and updates wait";
+/// What was found, with how to settle it first.
+fn settle(found: &str) -> String {
+    format!("{SETTLE}. {found}. {SETTLE_MORE}")
+}
 /// What the checksum checks of one backup tree found.
 #[derive(Debug, Default, PartialEq)]
 pub struct Integrity {
@@ -732,8 +741,7 @@ impl Integrity {
     /// Text for a failed job when a copy is damaged, with how to settle it; None when
     /// everything checks out.
     pub fn problem(&self, what: &str) -> Option<String> {
-        self.findings(what)
-            .map(|found| format!("{found}. {SETTLE}"))
+        self.findings(what).map(|found| settle(&found))
     }
     /// What was found, without the advice (several trees' findings share one).
     fn findings(&self, what: &str) -> Option<String> {
@@ -747,8 +755,13 @@ impl Integrity {
         let mut parts = vec![];
         if !self.damaged.is_empty() {
             parts.push(format!(
-                "{} {what} files no longer match their recorded checksum (kept as they are): {}",
+                "{} {what} {}: {}",
                 self.damaged.len(),
+                if self.damaged.len() == 1 {
+                    "file no longer matches its recorded checksum (kept as it is)"
+                } else {
+                    "files no longer match their recorded checksum (kept as they are)"
+                },
                 list(&self.damaged)
             ));
         }
@@ -2282,6 +2295,24 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
     })();
     common::first_error(result, reported).map(|_| ())
 }
+/// Add `key` to the report of job `name` after it failed (the monthly update says that
+/// it was undone). The next run starts a new report, without it.
+pub(crate) fn note_failed_report(
+    cfg: &Path,
+    data: &Path,
+    name: &str,
+    key: &str,
+    value: Value,
+) -> Result<()> {
+    guard_data(cfg, data)?;
+    let path = data.join(format!("reports/jobs/{name}.json"));
+    let mut row = common::json(&path, 64000);
+    if row["status"] != "fail" {
+        return Ok(());
+    }
+    row[key] = value;
+    common::atomic_json(&path, &row)
+}
 /// A job's report as it starts. The last success is kept as saved: one saved while the
 /// clock was ahead is still the last success after the clock is put back (the dashboard
 /// shows it as now).
@@ -2295,11 +2326,10 @@ fn guard_data(cfgpath: &Path, data: &Path) -> Result<()> {
     if c["data_mount"].as_str() != data.to_str() || uuid.is_empty() || fstype.is_empty() {
         return Err(Error::new("Application SSD identity required"));
     }
-    let output = common::findmnt("UUID,FSTYPE", "--mountpoint", data, 10)?.unwrap_or_default();
-    if output.split_whitespace().collect::<Vec<_>>() != vec![uuid, fstype] {
-        return Err(Error::new("Application SSD identity changed before report"));
-    }
-    Ok(())
+    // The same check as the full one (UUID, filesystem type and Btrfs subvolume), for the
+    // SSD only: Immich's resume uses only this one, and must never start Immich (nor take
+    // the jobs' lock) on another tree of the same drive.
+    checked_drive(&c, "data_ssd", data).map(drop)
 }
 /// A snapshot job's settings and both drives, checked: root only, both drives
 /// mounted where the settings say, with the identities they name.
@@ -2461,9 +2491,21 @@ fn no_unfinished_update_at(journal: &Path) -> Result<()> {
 /// a job that is still waiting for setup after the 3 hours is postponed, not failed.
 pub fn coordinate(cfgpath: &Path, data: &Path, media: &Path) -> Result<fs::File> {
     guard(cfgpath, data, media)?;
-    let wait = std::time::Duration::from_secs(3 * 3600);
-    let held = common::shared_lock_wait(&data.join("installer/recovery.lock"), wait, wait)?;
+    let held = recovery_lock(data)?;
     guard(cfgpath, data, media)?;
+    Ok(held)
+}
+fn recovery_lock(data: &Path) -> Result<fs::File> {
+    let wait = std::time::Duration::from_secs(3 * 3600);
+    common::shared_lock_wait(&data.join("installer/recovery.lock"), wait, wait)
+}
+/// `coordinate` for what needs only the SSD: starting Immich again after its weekly
+/// pause. Immich and the lock live on the SSD, so a HDD that dropped out (the likeliest
+/// reason a weekly run failed part-way) must not keep Immich stopped until next week.
+fn coordinate_data(cfgpath: &Path, data: &Path) -> Result<fs::File> {
+    guard_data(cfgpath, data)?;
+    let held = recovery_lock(data)?;
+    guard_data(cfgpath, data)?;
     Ok(held)
 }
 /// The subvolume in findmnt's source ("/dev/sdb1[/@data]" -> "/@data"; "" for the
@@ -2476,7 +2518,8 @@ fn subvolume_of(source: &str) -> &str {
         .unwrap_or("")
 }
 /// What the drive check expected at `path` and what findmnt found there ("UUID FSTYPE
-/// SOURCE", empty when nothing is mounted), so a wrong or missing drive is named.
+/// SOURCE", empty when nothing is mounted), so a wrong or missing drive is named. Worded
+/// for every caller: the backups, Docker's start check and drive-return share it.
 fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &str) -> String {
     let drive = if key == "data_ssd" { "SSD" } else { "HDD" };
     let found = match found.trim() {
@@ -2484,9 +2527,42 @@ fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &s
         seen => format!("found {seen}"),
     };
     format!(
-        "Backup storage identity mismatch: {} should be the {drive} (UUID {uuid}, {fstype}); {found}",
+        "Drive check failed: {} should be the {drive} (UUID {uuid}, {fstype}); {found}",
         path.display()
     )
+}
+/// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
+/// filesystem type and Btrfs subvolume. Returns its UUID.
+fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
+    let found =
+        common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10)?.unwrap_or_default();
+    drive_check(c, key, path, &found)
+}
+/// `checked_drive` for what findmnt said at `path` ("UUID FSTYPE SOURCE", empty when
+/// nothing is mounted there).
+fn drive_check(c: &Value, key: &str, path: &Path, found: &str) -> Result<String> {
+    let uuid = c["storage"][key]["uuid"].as_str().unwrap_or("");
+    let fstype = c["storage"][key]["fstype"].as_str().unwrap_or("");
+    if uuid.is_empty() || fstype.is_empty() {
+        return Err(Error::new("Storage identities required"));
+    }
+    let fields = found.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 3 || fields[..2] != [uuid, fstype] {
+        return Err(Error::new(&identity_mismatch(
+            key, path, uuid, fstype, found,
+        )));
+    }
+    // A Btrfs drive used with a subvolume must be mounted with that one: the same
+    // filesystem mounted with another holds a different tree.
+    let wanted = c["storage"][key]["subvolume"].as_str().unwrap_or("");
+    if subvolume_of(fields[2]) != wanted.trim_end_matches('/') {
+        return Err(Error::new(&format!(
+            "Drive check failed: {} is mounted with another Btrfs subvolume than the settings name ({})",
+            path.display(),
+            if wanted.is_empty() { "the top level" } else { wanted }
+        )));
+    }
+    Ok(uuid.to_string())
 }
 pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
@@ -2495,24 +2571,7 @@ pub fn guard(cfgpath: &Path, data: &Path, media: &Path) -> Result<()> {
     }
     let mut ids = vec![];
     for (key, path) in [("data_ssd", data), ("media_hdd", media)] {
-        let uuid = c["storage"][key]["uuid"].as_str().unwrap_or("");
-        let fstype = c["storage"][key]["fstype"].as_str().unwrap_or("");
-        if uuid.is_empty() || fstype.is_empty() {
-            return Err(Error::new("Storage identities required"));
-        }
-        let s =
-            common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10)?.unwrap_or_default();
-        let fields = s.split_whitespace().collect::<Vec<_>>();
-        if fields.len() < 3 || fields[..2] != [uuid, fstype] {
-            return Err(Error::new(&identity_mismatch(key, path, uuid, fstype, &s)));
-        }
-        // A Btrfs drive used with a subvolume must be mounted with that one: the same
-        // filesystem mounted with another holds a different tree.
-        let wanted = c["storage"][key]["subvolume"].as_str().unwrap_or("");
-        if subvolume_of(fields[2]) != wanted.trim_end_matches('/') {
-            return Err(Error::new("Backup storage subvolume mismatch"));
-        }
-        ids.push(uuid);
+        ids.push(checked_drive(&c, key, path)?);
     }
     if ids[0] == ids[1] {
         return Err(Error::new("Distinct backup filesystems required"));
@@ -3007,12 +3066,17 @@ pub fn monthly_archive_check(
 }
 /// After the Immich pause, which also ran ExecStopPost: start what a cut-off weekly run
 /// left stopped. Nothing to do (no lock waited for) without a journal.
+/// Only the SSD is checked (Immich needs nothing else): this also runs when the HDD
+/// dropped out mid-run, and drive-return runs it again once the HDD is back.
 pub fn immich_resume(a: &Args) -> Result<()> {
     if !Path::new(IMMICH_JOURNAL).exists() {
         return Ok(());
     }
-    let job = open_job(a, 64000)?;
-    let _recovery = coordinate(&job.cfgpath, &job.data, &job.media)?;
+    common::require_root()?;
+    let cfgpath = a.path("config")?;
+    let cfg = common::json(&cfgpath, 64000);
+    let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
+    let _recovery = coordinate_data(&cfgpath, &data)?;
     resume_immich(&ImmichDocker, Path::new(IMMICH_JOURNAL))
 }
 /// The weekly database copy, made while Immich is paused: kept on the SSD and the HDD,
@@ -3055,13 +3119,15 @@ pub fn preservation(a: &Args) -> Result<()> {
     let data = common::mount_path(a.get("data")?)?;
     let media = common::mount_path(a.get("media")?)?;
     let cfg = a.path("config")?;
-    guard(&cfg, &data, &media)?;
+    guard_data(&cfg, &data)?;
     // The recovery lock first: the monthly run holds it while it checks the archive
     // (and then waits for this lock), so taking them the other way round could deadlock.
-    let _recovery = coordinate(&cfg, &data, &media)?;
+    let _recovery = coordinate_data(&cfg, &data)?;
     let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
-    // Immich left stopped by a weekly run that was cut off is started again first.
+    // Immich left stopped by a weekly run that was cut off is started again first; it
+    // needs only the SSD, so a HDD still missing fails the run after that, not before.
     resume_immich(&ImmichDocker, Path::new(IMMICH_JOURNAL))?;
+    guard(&cfg, &data, &media)?;
     execute_with(
         Some(&data),
         if a.flag("db-backup") {
@@ -3261,7 +3327,7 @@ fn no_weekly_copy_at(lock: &Path, max: std::time::Duration) -> Result<()> {
 /// How a USB copy failure that is damage (a copy no longer matching its checksum, a
 /// verified file gone) begins, unlike a drive that is full or would not mount: the
 /// monthly run stops only for damage.
-pub(crate) const INTEGRITY: &str = "Backup copies failed their checksum check: ";
+pub(crate) const INTEGRITY: &str = "Backup copies failed their checksum check. ";
 /// The monthly run's first step for the USB drive: the weekly copy, with every copy on
 /// the drive compared with its checksum (the weekly runs compare size and date only).
 pub fn monthly_usb_check(a: &Args) -> Result<()> {
@@ -3457,8 +3523,8 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
             .collect();
             if !damage.is_empty() {
                 return Err(Error::new(&format!(
-                    "{INTEGRITY}{}. {SETTLE}",
-                    damage.join(". ")
+                    "{INTEGRITY}{}",
+                    settle(&damage.join(". "))
                 )));
             }
             // A list of files that could not be written makes the backup incomplete too.
@@ -3680,7 +3746,7 @@ mod tests {
         );
         assert_eq!(
             wrong,
-            "Backup storage identity mismatch: /srv/nekoserver should be the SSD (UUID aaaa-1111, ext4); \
+            "Drive check failed: /srv/nekoserver should be the SSD (UUID aaaa-1111, ext4); \
              found bbbb-2222 ext4 /dev/sdc1"
         );
         let media = Path::new("/mnt/nekoserver-media");
@@ -3957,7 +4023,13 @@ mod tests {
             .as_bytes(),
         );
         let error = coordinate(&cfg, &data, &media).unwrap_err().to_string();
-        assert!(error.contains("mismatch"), "{error}");
+        assert!(error.starts_with("Drive check failed"), "{error}");
+        // Immich's resume checks only the SSD, but that one just as strictly.
+        let error = coordinate_data(&cfg, &data).unwrap_err().to_string();
+        assert!(
+            error.ends_with("should be the SSD (UUID aaaa-1111, ext4); nothing is mounted there"),
+            "{error}"
+        );
         assert!(!data.join("installer/recovery.lock").exists());
         let _ = fs::remove_dir_all(root);
     }
@@ -5388,9 +5460,38 @@ mod tests {
         report.missing = vec!["alice/files/gone.txt".into()];
         let text = report.problem("USB Nextcloud").unwrap();
         assert!(
-            text.contains("are missing") && text.ends_with(SETTLE),
+            text.contains("are missing") && text.starts_with(SETTLE) && text.ends_with(SETTLE_MORE),
             "{text}"
         );
+    }
+    /// QA-04: the reason is cut at 300 characters wherever it is shown; the action
+    /// (the command and the menu choice) survives the cut, however long the file list.
+    #[test]
+    fn the_way_to_settle_damage_survives_the_300_character_cut() {
+        let report = Integrity {
+            damaged: (1..=3)
+                .map(|n| {
+                    format!("library/admin/2024/Family-Holiday-Album-{n}/IMG_2024010{n}_120000.JPG")
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let archive = common::sanitize(&report.problem("HDD archive").unwrap());
+        let usb = common::sanitize(&format!(
+            "{INTEGRITY}{}",
+            settle(&report.findings("USB photo").unwrap())
+        ));
+        for shown in [archive, usb] {
+            assert!(shown.chars().count() <= 300, "{shown}");
+            assert!(
+                shown.contains(
+                    "sudo bash install.sh --recover  and choose \"Repair damaged backup copies\""
+                ),
+                "{shown}"
+            );
+        }
+        // The dashboard prefixes the stage ("Failed while …: "); still well inside.
+        assert!(INTEGRITY.len() + SETTLE.len() < 160);
     }
     #[test]
     fn backup_bookkeeping_is_not_part_of_the_tree() {
@@ -6276,5 +6377,108 @@ mod tests {
             );
         }
         let _ = fs::remove_dir_all(root);
+    }
+    /// A mounted filesystem with a UUID on this machine (TARGET, UUID, FSTYPE, its Btrfs
+    /// subvolume or ""): the one at NEKO_SSD when that is set (the lab: a Btrfs
+    /// subvolume, say), else any (none in some containers: the test is then skipped).
+    fn some_mounted_drive() -> Option<(PathBuf, String, String, String)> {
+        let (_, out) =
+            common::command(&["findmnt", "-rn", "-o", "TARGET,UUID,FSTYPE,SOURCE"], 10).ok()?;
+        let wanted = std::env::var("NEKO_SSD").ok();
+        out.lines().find_map(|l| {
+            let f: Vec<&str> = l.split(' ').collect();
+            (f.len() == 4 && !f[1].is_empty() && wanted.as_deref().is_none_or(|w| w == f[0])).then(
+                || {
+                    (
+                        PathBuf::from(f[0]),
+                        f[1].to_string(),
+                        f[2].to_string(),
+                        subvolume_of(f[3]).to_string(),
+                    )
+                },
+            )
+        })
+    }
+    /// QA-01: Immich lives on the SSD only. Its resume after the weekly pause (the job's
+    /// ExecStopPost, the boot service, drive-return) checks only the SSD, so a HDD that
+    /// dropped out mid-run no longer keeps Immich stopped for days. NP-1: that SSD check
+    /// is as strict as the full one, Btrfs subvolume included.
+    #[test]
+    fn immich_is_started_again_while_the_hdd_is_missing() {
+        let source = include_str!("backup.rs");
+        let body = &source[source.find("pub fn immich_resume(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("coordinate_data(&cfgpath, &data)"), "{body}");
+        assert!(
+            !body.contains("open_job(") && !body.contains("coordinate(&"),
+            "{body}"
+        );
+        // The next weekly run starts Immich again before it checks the HDD.
+        let run = &source[source.find("pub fn preservation(").unwrap()..];
+        let resumed = run.find("resume_immich(").unwrap();
+        assert!(run.find("coordinate_data(").unwrap() < resumed);
+        assert!(resumed < run.find("guard(&cfg, &data, &media)").unwrap());
+        // For real, where this machine has a mounted drive: the SSD check passes with
+        // nothing at the HDD's folder, where the check of both drives refuses; and it
+        // refuses the same drive named with another subvolume.
+        let Some((ssd, uuid, fstype, subvolume)) = some_mounted_drive() else {
+            println!("skipped: no mounted filesystem with a UUID here");
+            return;
+        };
+        let root = scratch("resume-hdd-missing");
+        let hdd = root.join("hdd");
+        fs::create_dir_all(&hdd).unwrap();
+        let cfg = root.join("guard.json");
+        let settings = |subvolume: &str| {
+            json!({"data_mount": ssd, "media_mount": hdd,
+                "storage": {"data_ssd": {"uuid": uuid, "fstype": fstype, "subvolume": subvolume},
+                            "media_hdd": {"uuid": "5fa5-0000", "fstype": "btrfs"}}})
+            .to_string()
+        };
+        fs::write(&cfg, settings(&subvolume)).unwrap();
+        guard_data(&cfg, &ssd).unwrap();
+        let both = guard(&cfg, &ssd, &hdd).unwrap_err().to_string();
+        assert!(both.contains("nothing is mounted there"), "{both}");
+        let other = if subvolume.is_empty() { "/@data" } else { "" };
+        fs::write(&cfg, settings(other)).unwrap();
+        let wrong = guard_data(&cfg, &ssd).unwrap_err().to_string();
+        assert!(wrong.contains("another Btrfs subvolume"), "{wrong}");
+        let _ = fs::remove_dir_all(root);
+    }
+    /// NP-1: the SSD-only check (Immich's resume, the job reports) checks the Btrfs
+    /// subvolume as the full check does: the drive's top level, or another subvolume,
+    /// mounted in place of the one the settings name is refused.
+    #[test]
+    fn the_ssd_check_refuses_the_right_drive_with_the_wrong_subvolume() {
+        let c = json!({"storage": {"data_ssd": {"uuid": "aaaa", "fstype": "btrfs", "subvolume": "/@data"}}});
+        let ssd = Path::new("/srv/nekoserver");
+        // Right subvolume: passes.
+        assert_eq!(
+            drive_check(&c, "data_ssd", ssd, "aaaa btrfs /dev/sdb1[/@data]\n").unwrap(),
+            "aaaa"
+        );
+        // Its top level, or another subvolume: refused (Immich is not started, no lock).
+        for found in ["aaaa btrfs /dev/sdb1", "aaaa btrfs /dev/sdb1[/@home]"] {
+            let said = drive_check(&c, "data_ssd", ssd, found)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                said.contains("another Btrfs subvolume than the settings name (/@data)"),
+                "{said}"
+            );
+        }
+        // Another drive, or nothing mounted: refused as before.
+        assert!(drive_check(&c, "data_ssd", ssd, "bbbb btrfs /dev/sdc1[/@data]").is_err());
+        assert!(drive_check(&c, "data_ssd", ssd, "").is_err());
+        // Both checks are this one function; the SSD-only one never looks at the HDD.
+        let source = include_str!("backup.rs");
+        let only = &source[source.find("fn guard_data(").unwrap()..];
+        let only = &only[..only.find("\n}\n").unwrap()];
+        assert!(
+            only.contains("checked_drive(&c, \"data_ssd\", data)") && !only.contains("media"),
+            "{only}"
+        );
+        let full = &source[source.find("pub fn guard(").unwrap()..];
+        assert!(full[..full.find("\n}\n").unwrap()].contains("checked_drive(&c, key, path)"));
     }
 }

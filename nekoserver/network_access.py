@@ -62,7 +62,7 @@ def choose_lan(ctx,ask=input,interactive=None,output=print):
     if keep_saved(ctx.config,opts,interactive,output):return True
     if not interactive:return False
     rows=candidates()
-    if not rows:raise RuntimeError('No usable LAN address found; configure gateway.lan_ip and lan_cidr')
+    if not rows:raise RuntimeError('This PC has no home-network address setup can use (it is not connected to a router by cable or Wi-Fi, or only to a VPN). Connect it to your home network and run setup again; to name the address yourself, set "lan_ip" and "lan_cidr" under "gateway" in my-config.json')
     output('Which network connects this server to your home network (your router)?')
     for i,row in enumerate(rows,1):output(str(i)+'. '+row['interface']+' · '+row['ip']+' · '+row['cidr'])
     row=pick(rows,ask,output=output)

@@ -28,8 +28,10 @@ pub(crate) const CHECKS: [(&str, &str); 3] = [
     ("usb_photos", "USB photo copy"),
     ("usb_nextcloud", "USB Nextcloud copy"),
 ];
-/// What the last checksum checks of each backup tree found.
-fn integrity(data: &Path, ok: bool) -> Value {
+/// What the last checksum checks of each backup tree found. `away` names the drive that
+/// is missing (None while both are there): the HDD archive can't be checked or kept up to
+/// date without the HDD, so its row says so instead of an old "matches".
+fn integrity(data: &Path, ok: bool, away: Option<&str>) -> Value {
     let all = if ok {
         common::json(&data.join("reports/integrity.json"), 20_000_000)
     } else {
@@ -58,6 +60,13 @@ fn integrity(data: &Path, ok: bool) -> Value {
             "damaged": count("damaged"), "both_damaged": count("both_damaged"), "disagree": count("disagree"),
             "missing": count("missing"),
             "files": files}));
+        if id == "archive" {
+            if let (Some(row), Some(drive)) = (rows.last_mut(), away) {
+                row["blocked"] = json!(format!(
+                    "The {drive} is missing, so this copy can't be checked or kept up to date until it is back."
+                ));
+            }
+        }
     }
     json!(rows)
 }
@@ -520,7 +529,13 @@ fn app_of(labels: &std::collections::BTreeMap<String, String>) -> Option<&str> {
 }
 /// The apps with their state and health, and each container's app and Compose service
 /// (the dashboard names processes by them, and keeps databases out of reach).
-fn applications(cfg: &Value, report: Option<&MediaReport>) -> (Value, Value, Value) {
+/// `data` is the app SSD while it is mounted: an app setup never got to (no Compose file
+/// there, and no container) is "not_set_up", not an app that stopped working.
+fn applications(
+    cfg: &Value,
+    report: Option<&MediaReport>,
+    data: Option<&Path>,
+) -> (Value, Value, Value) {
     let (code, s) = probe(
         &[
             "docker",
@@ -671,6 +686,8 @@ fn applications(cfg: &Value, report: Option<&MediaReport>) -> (Value, Value, Val
             };
         } else if found.len() > 1 {
             state = "ambiguous";
+        } else if data.is_some_and(|d| !set_up(d, app)) {
+            state = "not_set_up";
         }
         let mine = containers
             .iter()
@@ -692,6 +709,28 @@ fn applications(cfg: &Value, report: Option<&MediaReport>) -> (Value, Value, Val
         Value::Object(containers),
         Value::Object(services),
     )
+}
+/// Whether the TV step (Steam Big Picture) is set up: its report is on the app SSD
+/// (modules/tv.py writes it once the TV shortcuts are in place) and the TV was not
+/// switched off since ("wanted": false under "tv", which the collector's settings carry,
+/// modules/dashboard.py collector_settings). Not said while the SSD is missing, so the
+/// page keeps what it showed.
+fn tv(cfg: &Value, data: Option<&Path>) -> Value {
+    let on = cfg["tv"]["wanted"] != false;
+    match data {
+        Some(d) => json!({"set_up": on && d.join("reports/tv-setup.json").is_file()}),
+        None if !on => json!({"set_up": false}),
+        None => json!({"set_up": null}),
+    }
+}
+/// "1 file", "3 files".
+fn plural(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+/// Setup writes an app's Compose file last, once its settings are in place (media.py,
+/// photos.py, nextcloud.py): without one, setup has not set the app up yet.
+fn set_up(data: &Path, app: &str) -> bool {
+    data.join("compose").join(app).join("compose.yaml").exists()
 }
 /// NVIDIA cards: only root can ask the driver, so the collector does it for the
 /// dashboard (which matches each row to its card by PCI address).
@@ -854,10 +893,24 @@ fn timer_of(unit: &str) -> (Value, bool) {
         .get("NextElapseUSecRealtime")
         .filter(|s| !s.is_empty())
         .map(|s| chars(s, 80));
+    let at = next.as_deref().and_then(utc_seconds);
     (
-        json!({"installed":code==0&&fields.get("LoadState")==Some(&"loaded"),"active":fields.get("ActiveState")==Some(&"active"),"next_run":next}),
+        json!({"installed":code==0&&fields.get("LoadState")==Some(&"loaded"),"active":fields.get("ActiveState")==Some(&"active"),"next_run":next,"next_run_at":at}),
         code == 0 && fields.contains_key("LoadState"),
     )
+}
+/// The time systemd prints ("Sun 2026-11-01 03:00:00 UTC"; programs run with TZ=UTC, see
+/// common::command) as seconds since 1970, so the page can show it in the household's own
+/// time. None for anything else.
+fn utc_seconds(shown: &str) -> Option<f64> {
+    let mut parts = shown.split_whitespace();
+    let (_day, date, time, zone) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if zone != "UTC" || parts.next().is_some() {
+        return None;
+    }
+    chrono::NaiveDateTime::parse_from_str(&format!("{date} {time}"), "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|t| t.and_utc().timestamp() as f64)
 }
 /// A schedule that stopped while its job is still wanted: switched off, or gone after it
 /// had run. None while it is in place (or systemd could not be asked).
@@ -875,7 +928,10 @@ fn schedule_stopped(timer: &Value, known: bool, ever_ran: bool) -> Option<String
         None
     }
 }
-fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
+/// Every backup job works with both the app SSD and the media HDD (backup::guard), so
+/// while one of them is missing (`away`, its name) none can run: each job says so rather
+/// than "Passed", and gets no alert of its own (the drive's alert is the one to act on).
+fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
     let mut out = vec![];
     for (key, name, unit, base_max) in JOBS {
         let weekly =
@@ -907,7 +963,12 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
             empty()
         };
         let raw = text(&saved["status"]);
-        let status = if ["running", "pass", "fail", "partial"].contains(&raw) {
+        // An update undone after the apps did not start well: the backup was made and the
+        // apps are back as they were, so only the update is still to come (done in part).
+        let undone = key == "maintenance" && rolled_back(&saved);
+        let status = if undone {
+            "partial"
+        } else if ["running", "pass", "fail", "partial"].contains(&raw) {
             raw
         } else {
             "unknown"
@@ -945,7 +1006,7 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
             ],
             8,
         );
-        let unrun = if status == "fail" {
+        let unrun = if status == "fail" || undone {
             None
         } else if status == "running" && cut_off(&service, start.as_f64(), now) {
             Some("Stopped part-way: the PC restarted or the job was stopped. The next run starts it again.".to_string())
@@ -965,6 +1026,8 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
             Some(why)
         } else if status == "fail" {
             Some(failure_reason(&saved))
+        } else if undone {
+            Some(undone_reason(&saved))
         } else if status == "partial" {
             Some(partial_reason(&saved["missing"]))
         } else if success.is_null() && stale {
@@ -976,7 +1039,16 @@ fn backups(cfg: &Value, now: f64, ok: bool) -> Value {
         } else {
             None
         };
-        out.push(json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key)}));
+        let mut row = json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key)});
+        if undone {
+            row["rolled_back"] = json!(true);
+        }
+        if let Some(drive) = away {
+            row["blocked"] = json!(format!(
+                "The {drive} is missing, so this backup can't run until it is back."
+            ));
+        }
+        out.push(row);
     }
     json!(out)
 }
@@ -1040,10 +1112,83 @@ fn service_failure(unit: &str, show: &str) -> Option<String> {
         }
     ))
 }
+/// The stage of the monthly run that starts the updated apps (maintenance.rs). A failure
+/// there is rolled back: the apps get their previous version and data again, and are
+/// checked to answer. When putting them back failed too, the reason goes on with "; then: ".
+const UPDATED_APPS_STAGE: &str = "starting the updated apps";
+fn rolled_back(saved: &Value) -> bool {
+    // The monthly run says so itself since 0.40.2 ("rolled_back": true in its report);
+    // a report from before that is read by its stage and reason.
+    saved["status"] == "fail"
+        && (saved["rolled_back"] == true
+            || (saved["stage"] == UPDATED_APPS_STAGE
+                && !text(&saved["reason"]).contains("; then: ")))
+}
+/// "The update was undone: …", in plain words, with why in short (the first sentence of
+/// the reason; the advice for engineers after it is left to the guide).
+fn undone_reason(saved: &Value) -> String {
+    let said = text(&saved["reason"]);
+    let why = said.split(". ").next().unwrap_or("").trim_end_matches('.');
+    let mut out = "The update was undone: your apps are back on their previous version and work as before. It is tried again next month.".to_string();
+    if !why.trim().is_empty() {
+        out += &format!(" Why: {}.", capitalised(&whole(why, 200)));
+    }
+    out
+}
+/// A reason the report cut at its length limit (common::sanitize keeps 300 characters)
+/// ends at its last whole sentence, or else its last whole word and "…", never mid-word.
+fn whole(said: &str, limit: usize) -> String {
+    if said.chars().count() < limit {
+        return said.to_string();
+    }
+    let cut: String = said.chars().take(limit - 1).collect();
+    if let Some(at) = cut.rfind(". ").filter(|at| *at >= cut.len() / 2) {
+        return cut[..=at].to_string();
+    }
+    match cut.rfind(' ') {
+        Some(at) => format!("{}…", cut[..at].trim_end_matches([',', ';', ':'])),
+        None => format!("{cut}…"),
+    }
+}
+/// A reason that ends a whole sentence ends with its full stop: common::sanitize takes
+/// one off (so "{reason}." never reads ".."), and a cut after a whole sentence reads
+/// "sentence.…". A reason cut mid-sentence keeps its "…"; a command or file name at the
+/// end gets nothing added, so it can be copied as it is.
+fn full_stop(said: &str) -> String {
+    let said = said.trim_end();
+    if let Some(sentence) = said.strip_suffix(".…") {
+        return format!("{sentence}.");
+    }
+    let last_word = said.rsplit(' ').next().unwrap_or("");
+    let ends_plainly = said
+        .chars()
+        .last()
+        .is_some_and(|c| c.is_alphanumeric() || c == ')');
+    if ends_plainly && !last_word.contains(['/', '.', '_', '=']) {
+        format!("{said}.")
+    } else {
+        said.to_string()
+    }
+}
+/// How the repair advice (backup::SETTLE) begins, and the part of it to keep whole when
+/// the reason it ends was cut: what to run, and that the monthly run waits until then.
+const SETTLE_START: &str = "To settle it, run";
+const SETTLE_SHORT: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\". Until then the monthly snapshot and updates wait.";
+/// A saved reason as the page shows it: cut only at a whole sentence or word, with the
+/// repair advice kept (in short) however long the rest is.
+fn readable(said: &str) -> String {
+    match said.find(SETTLE_START) {
+        Some(at) => {
+            let before = full_stop(&whole(said[..at].trim_end(), 300));
+            format!("{before} {SETTLE_SHORT}").trim_start().to_string()
+        }
+        None => full_stop(&whole(said, 300)),
+    }
+}
 /// "Failed while copying photos to the USB drive: cp exited with 1 (No space left on device)".
 fn failure_reason(saved: &Value) -> String {
     let stage = chars(text(&saved["stage"]), 120);
-    let reason = chars(text(&saved["reason"]), 300);
+    let reason = readable(&chars(text(&saved["reason"]), 300));
     match (stage.is_empty(), reason.is_empty()) {
         (true, true) => "Last run failed; inspect its service logs".to_string(),
         (false, true) => format!("Failed while {stage}"),
@@ -1085,8 +1230,8 @@ fn partial_reason(missing: &Value) -> String {
     let mut parts = vec![];
     if in_use + names > 0 || !files.is_empty() {
         let mut text = format!(
-            "{} files were not copied ({in_use} in use, {names} with names the USB drive cannot store)",
-            in_use + names
+            "{} not copied ({in_use} in use, {names} with names the USB drive cannot store)",
+            plural(in_use + names, "file was", "files were")
         );
         if !files.is_empty() {
             text += &format!(": {}", files.join(", "));
@@ -1551,6 +1696,27 @@ fn held(history: &Value, now: f64, hot: impl Fn(f64) -> bool) -> bool {
         .collect();
     recent.iter().any(|(age, _)| *age >= 290.0) && recent.iter().all(|(_, t)| t.is_some_and(&hot))
 }
+/// The apps that are stopped (exited, never started or dead) while the app SSD or the
+/// media HDD is missing: storage-guard stops them on purpose, and they start again by
+/// themselves once the drive is back.
+fn held_apps(s: &Value) -> Vec<&str> {
+    let away = s["storage"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|d| d["id"] != "os" && d["status"] != "mounted");
+    if !away {
+        return vec![];
+    }
+    s["applications"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| ["exited", "created", "dead"].contains(&text(&a["state"])))
+        .map(|a| text(&a["name"]))
+        .filter(|n| !n.is_empty())
+        .collect()
+}
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
@@ -1624,12 +1790,27 @@ pub(crate) fn alerts(s: &Value) -> Value {
             );
         }
     }
+    // Apps stopped on purpose while a drive is missing are named in that drive's alert,
+    // not raised one by one (each with advice that can't help): one alert to act on.
+    let held = held_apps(s);
+    let mut named = false;
     if let Some(disks) = s["storage"].as_array() {
         for d in disks {
             let id = text(&d["id"]);
             let name = text(&d["name"]);
             if d["status"] != "mounted" {
-                add(format!("mount:{id}"),"critical",format!("{name} unavailable"),"The drive is not connected, or is not the one chosen at setup; the apps on it are stopped so nothing is written in its place. Reconnect it: once it is back, the apps start again by themselves within a minute. If they do not, restart the PC.");
+                let mut detail = "The drive is not connected, or is not the one chosen at setup; the apps on it are stopped so nothing is written in its place. Reconnect it: once it is back, the apps start again by themselves within a minute. If they do not, restart the PC.".to_string();
+                if id != "os" && !named && !held.is_empty() {
+                    // Said first, so the page shows it before "Show more".
+                    named = true;
+                    detail = format!("Not connected, or not the drive chosen at setup. Stopped until it is back, so nothing is written in its place: {}. Reconnect it: the apps then start again by themselves within a minute. If they do not, restart the PC.", held.join(", "));
+                }
+                add(
+                    format!("mount:{id}"),
+                    "critical",
+                    format!("{name} unavailable"),
+                    &detail,
+                );
             } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
                 let full = d["used_percent"].as_f64().unwrap_or(0.0) >= 97.0;
                 add(
@@ -1677,6 +1858,9 @@ pub(crate) fn alerts(s: &Value) -> Value {
     }
     if let Some(apps) = s["applications"].as_array() {
         for a in apps {
+            if held.contains(&text(&a["name"])) {
+                continue;
+            }
             if [
                 "exited",
                 "restarting",
@@ -1700,13 +1884,17 @@ pub(crate) fn alerts(s: &Value) -> Value {
                         "warning"
                     },
                     format!("{} needs attention", text(&a["name"])),
-                    "Check its container and local application logs.",
+                    "On the dashboard's Your apps page, choose Restart app on it (on a phone, tap ⋯ on the app). If it keeps happening, the guide shows what else to try.",
                 );
             }
         }
     }
     if let Some(jobs) = s["backups"].as_array() {
         for j in jobs {
+            // Waiting for a missing drive: its alert says what to do.
+            if j["blocked"].is_string() {
+                continue;
+            }
             if ["fail", "stale", "partial"].contains(&text(&j["status"])) {
                 add(
                     format!("backup:{}", text(&j["id"])),
@@ -1715,7 +1903,14 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     } else {
                         "warning"
                     },
-                    format!("{} needs attention", text(&j["name"])),
+                    if j["rolled_back"] == true {
+                        format!(
+                            "{}: the update was undone, your apps work",
+                            text(&j["name"])
+                        )
+                    } else {
+                        format!("{} needs attention", text(&j["name"]))
+                    },
                     j["reason"]
                         .as_str()
                         .unwrap_or("Review the backup schedule."),
@@ -1755,7 +1950,11 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 add(
                     format!("integrity:{}", text(&c["id"])),
                     if count("both_damaged") + count("damaged") + count("missing") > 0 { "critical" } else { "warning" },
-                    format!("{}: {bad} files are damaged or missing", text(&c["name"])),
+                    format!(
+                        "{}: {} damaged or missing",
+                        text(&c["name"]),
+                        plural(bad, "file is", "files are")
+                    ),
                     &format!("Run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\". Files: {files}"),
                 );
             }
@@ -1876,8 +2075,16 @@ pub fn run(a: &Args) -> Result<()> {
     history.reverse();
     history.push(json!({"at":now,"cpu":host["cpu_percent"],"memory":host["memory_percent"],"temperature":host["temperature"]}));
     let report = media_report(&cfg, now, ok);
-    let (apps, containers, services) = applications(&cfg, report.as_ref());
-    let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":apps,"backups":backups(&cfg,now,ok),"media":media(report.as_ref()),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
+    // The drive the backups wait for, when one is missing.
+    let away = if !ok {
+        Some("Application SSD")
+    } else if !media_ok {
+        Some("Media HDD")
+    } else {
+        None
+    };
+    let (apps, containers, services) = applications(&cfg, report.as_ref(), ok.then_some(data));
+    let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":apps,"backups":backups(&cfg,now,ok,away),"media":media(report.as_ref()),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
     result["notifications"] = notification_status(now);
     result["containers"] = containers;
     result["container_services"] = services;
@@ -1890,7 +2097,8 @@ pub fn run(a: &Args) -> Result<()> {
         .filter(|s| (30..=300).contains(s))
         .unwrap_or(60));
     result["updates"] = updates(&cfg, media_ok);
-    result["integrity"] = integrity(data, ok);
+    result["tv"] = tv(&cfg, ok.then_some(data));
+    result["integrity"] = integrity(data, ok, away);
     result["backup_key"] = json!(backup_key_ready());
     result["tailscale"] = tailscale_login(now);
     result["alerts"] = alerts(&result);
@@ -2305,7 +2513,7 @@ mod os_tests {
             crate::backup::Check::Full,
         )
         .unwrap();
-        let rows = integrity(&data, true);
+        let rows = integrity(&data, true, None);
         assert_eq!(rows.as_array().unwrap().len(), 2);
         let usb = rows
             .as_array()
@@ -2361,7 +2569,7 @@ mod os_tests {
     fn failed_job_says_why_and_where() {
         assert_eq!(
             failure_reason(&json!({"stage":"copying photos and videos to the USB drive","reason":"Storage operation failed: mount exited with 32 (wrong fs type)"})),
-            "Failed while copying photos and videos to the USB drive: Storage operation failed: mount exited with 32 (wrong fs type)"
+            "Failed while copying photos and videos to the USB drive: Storage operation failed: mount exited with 32 (wrong fs type)."
         );
         assert_eq!(
             failure_reason(&json!({})),
@@ -2476,7 +2684,7 @@ mod integrity_tests {
         write_old(&library.join("upload/u/b.jpg"), b"photo b");
         let (_, quick) = archive_checked(&library, &hdd, true, 60, Check::Quick).unwrap();
         save_integrity(&data, "archive", &quick, Check::Quick).unwrap();
-        let row = &integrity(&data, true)[0];
+        let row = &integrity(&data, true, None)[0];
         assert!(
             row["full_at"].is_null(),
             "a quick run is not a full check: {row}"
@@ -2486,12 +2694,12 @@ mod integrity_tests {
         fs::write(hdd.join("upload/u/b.jpg"), b"photo ?").unwrap();
         let (_, full) = archive_checked(&library, &hdd, true, 60, Check::Full).unwrap();
         save_integrity(&data, "archive", &full, Check::Full).unwrap();
-        let found = integrity(&data, true)[0].clone();
+        let found = integrity(&data, true, None)[0].clone();
         assert_eq!(found["damaged"], 1, "{found}");
         let full_at = found["full_at"].as_f64().unwrap();
         let (_, quick) = archive_checked(&library, &hdd, true, 60, Check::Quick).unwrap();
         save_integrity(&data, "archive", &quick, Check::Quick).unwrap();
-        let after = integrity(&data, true)[0].clone();
+        let after = integrity(&data, true, None)[0].clone();
         assert_eq!(after["damaged"], 1, "{after}");
         assert_eq!(after["files"], json!(["upload/u/b.jpg"]));
         assert_eq!(
@@ -2509,7 +2717,7 @@ mod integrity_tests {
         fs::write(hdd.join("upload/u/b.jpg"), b"photo b").unwrap();
         let (_, full) = archive_checked(&library, &hdd, true, 60, Check::Full).unwrap();
         save_integrity(&data, "archive", &full, Check::Full).unwrap();
-        assert_eq!(integrity(&data, true)[0]["damaged"], 0);
+        assert_eq!(integrity(&data, true, None)[0]["damaged"], 0);
         let _ = fs::remove_dir_all(root);
     }
 }
@@ -2605,5 +2813,257 @@ mod acceptance_tests {
             acceptance(&report("needs_setup", false), &cfg, later)["status"],
             "pending"
         );
+    }
+}
+
+#[cfg(test)]
+mod user_panel_tests {
+    use super::*;
+    /// The HDD missing (user panel UP-03/UP-04): one drive alert naming the apps it
+    /// stopped, no "check its container logs" for each, and no backup alerts of their own.
+    #[test]
+    fn a_missing_drive_is_one_alert_naming_the_apps_it_stopped() {
+        let apps: Vec<Value> = ["Jellyfin", "Immich", "Nextcloud"]
+            .iter()
+            .map(|n| json!({"id": n.to_lowercase(), "name": n, "state": "exited"}))
+            .chain([
+                json!({"id": "seerr", "name": "Seerr", "state": "running", "health": "unhealthy"}),
+            ])
+            .collect();
+        let s = json!({
+            "storage": [{"id": "os", "name": "OS SSD", "status": "mounted"},
+                        {"id": "media_hdd", "name": "Media HDD", "status": "missing"}],
+            "applications": apps,
+            "backups": [{"id": "archive", "name": "Photo archive", "status": "stale",
+                         "blocked": "The Media HDD is missing, so this backup can't run until it is back."}]});
+        let shown = alerts(&s);
+        let ids: Vec<&str> = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| text(&a["id"]))
+            .collect();
+        assert_eq!(ids, ["mount:media_hdd", "app:seerr"], "{shown}");
+        assert!(text(&shown[0]["detail"]).starts_with("Not connected, or not the drive chosen at setup. Stopped until it is back, so nothing is written in its place: Jellyfin, Immich, Nextcloud. Reconnect it"));
+        // An app that is not stopped by the drive still has its own alert, with advice
+        // a household can follow.
+        assert!(text(&shown[1]["detail"]).contains("Restart app"));
+        assert!(!shown.to_string().contains("container"));
+        // With the drive back, stopped apps are alerts again.
+        let mut back = s.clone();
+        back["storage"][1]["status"] = json!("mounted");
+        back["backups"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("blocked");
+        let ids: Vec<String> = alerts(&back)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| text(&a["id"]).to_string())
+            .collect();
+        assert!(ids.contains(&"app:jellyfin".to_string()), "{ids:?}");
+        assert!(ids.contains(&"backup:archive".to_string()), "{ids:?}");
+    }
+    /// UP-03: with the HDD missing its archive's old "matches" is not shown as current.
+    #[test]
+    fn the_hdd_archive_check_waits_for_the_hdd() {
+        let data = std::env::temp_dir().join(format!("neko-collect-away-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        for section in ["archive", "usb_photos"] {
+            crate::backup::save_integrity(
+                &data,
+                section,
+                &Default::default(),
+                crate::backup::Check::Full,
+            )
+            .unwrap();
+        }
+        let rows = integrity(&data, true, Some("Media HDD"));
+        let blocked = |id: &str| {
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == id)
+                .unwrap()["blocked"]
+                .clone()
+        };
+        assert_eq!(
+            blocked("archive"),
+            "The Media HDD is missing, so this copy can't be checked or kept up to date until it is back."
+        );
+        assert!(
+            blocked("usb_photos").is_null(),
+            "the USB copy is on its own drive"
+        );
+        assert!(integrity(&data, true, None)[0]["blocked"].is_null());
+        let _ = fs::remove_dir_all(data);
+    }
+    /// UP-05: a monthly update undone after the updated apps did not start is said in
+    /// plain words (apps back on their previous version, working), not as a failure; one
+    /// whose undoing failed too stays a failure.
+    #[test]
+    fn a_rolled_back_update_says_the_apps_are_back_and_working() {
+        let saved = json!({"status": "fail", "stage": "starting the updated apps",
+            "reason": "jellyfin was not ready after 5 minutes (Container not healthy). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer"});
+        assert!(rolled_back(&saved));
+        // The monthly run's own flag decides at any stage (0.40.2 reports).
+        assert!(rolled_back(
+            &json!({"status": "fail", "stage": "restoring the previous version", "rolled_back": true})
+        ));
+        assert!(!rolled_back(
+            &json!({"status": "pass", "rolled_back": true})
+        ));
+        let said = undone_reason(&saved);
+        assert_eq!(said, "The update was undone: your apps are back on their previous version and work as before. It is tried again next month. Why: Jellyfin was not ready after 5 minutes (Container not healthy).");
+        assert!(!said.contains("health_wait_seconds"));
+        let mut worse = saved.clone();
+        worse["reason"] = json!("jellyfin was not ready; then: Rollback state incomplete");
+        assert!(!rolled_back(&worse));
+        let mut earlier = saved.clone();
+        earlier["stage"] = json!("writing the snapshot");
+        assert!(
+            !rolled_back(&earlier),
+            "no update was installed: the backup failed"
+        );
+        assert!(!rolled_back(
+            &json!({"status": "pass", "stage": UPDATED_APPS_STAGE})
+        ));
+        // Its alert is a warning that says so, not an urgent failure.
+        let shown = alerts(
+            &json!({"backups": [{"id": "maintenance", "name": "Monthly backup and updates",
+            "status": "partial", "rolled_back": true, "reason": said}]}),
+        );
+        assert_eq!(shown[0]["level"], "warning");
+        assert_eq!(
+            shown[0]["title"],
+            "Monthly backup and updates: the update was undone, your apps work"
+        );
+    }
+    /// UP-06: a reason the report cut at 300 characters ends at a whole sentence or word,
+    /// and the repair advice that was cut off is kept, in short.
+    #[test]
+    fn long_reasons_are_cut_at_a_sentence_and_keep_the_repair_advice() {
+        let full = format!("Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {}", crate::backup::SETTLE);
+        let saved = json!({"stage": "checking every copy on the USB drive by checksum",
+            "reason": common::sanitize(&full)});
+        // The report keeps at most 300 characters, cut at a sentence or word since 0.40.2.
+        assert!(text(&saved["reason"]).chars().count() <= 300);
+        let shown = failure_reason(&saved);
+        assert_eq!(shown, format!("Failed while checking every copy on the USB drive by checksum: Backup copies failed their checksum check: 1 Nextcloud file no longer matches its recorded checksum (kept as it is): rivka/files/Clients/2024/Contract-Levi.pdf. {SETTLE_SHORT}"));
+        assert!(crate::backup::SETTLE.starts_with(SETTLE_START));
+        // Without the advice: the last whole sentence, or the last whole word and "…".
+        let words = "word ".repeat(70);
+        assert_eq!(whole(&words, 300).chars().last(), Some('…'));
+        assert!(whole(&words, 300).ends_with("word…"));
+        let sentences = format!("{}. {}", "a".repeat(200), "b ".repeat(60));
+        assert_eq!(whole(&sentences, 300), format!("{}.", "a".repeat(200)));
+        assert_eq!(whole("short.", 300), "short.");
+    }
+    /// UP-11: the next run is also sent as a time the page shows in local time.
+    #[test]
+    fn next_runs_are_sent_as_seconds() {
+        assert_eq!(
+            utc_seconds("Sun 2026-11-01 03:00:00 UTC"),
+            Some(1_793_502_000.0)
+        );
+        assert_eq!(utc_seconds("Sun 2026-11-01 05:00:00 IST"), None);
+        assert_eq!(utc_seconds(""), None);
+        assert_eq!(utc_seconds("n/a"), None);
+    }
+    /// D10: an app setup never got to (no Compose file on the app SSD) is "not set up".
+    #[test]
+    fn apps_setup_never_reached_are_not_set_up() {
+        let data = std::env::temp_dir().join(format!("neko-collect-setup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("compose/jellyfin")).unwrap();
+        assert!(!set_up(&data, "jellyfin"));
+        fs::write(data.join("compose/jellyfin/compose.yaml"), "services: {}\n").unwrap();
+        assert!(set_up(&data, "jellyfin"));
+        assert!(!set_up(&data, "immich"));
+        let _ = fs::remove_dir_all(data);
+    }
+}
+
+#[cfg(test)]
+mod round_two_tests {
+    use super::*;
+    /// QA after 0.40.2: a whole sentence keeps its full stop (common::sanitize takes the
+    /// last one off, and a cut after a sentence reads "sentence.…"); a reason cut mid-
+    /// sentence keeps "…", and a command or file name at the end gets nothing added.
+    #[test]
+    fn whole_sentences_keep_their_full_stop() {
+        let said = |reason: &str| failure_reason(&json!({ "reason": reason }));
+        assert_eq!(said("Free up space there"), "Failed: Free up space there.");
+        assert_eq!(said("Free up space there."), "Failed: Free up space there.");
+        assert_eq!(
+            said("One thing went wrong.…"),
+            "Failed: One thing went wrong."
+        );
+        assert_eq!(
+            said("It stopped while copying…"),
+            "Failed: It stopped while copying…"
+        );
+        assert_eq!(
+            said("check  systemctl status nekoserver-app-backup.service"),
+            "Failed: check  systemctl status nekoserver-app-backup.service"
+        );
+        assert_eq!(
+            said("missing /mnt/nekoserver-media/photos"),
+            "Failed: missing /mnt/nekoserver-media/photos"
+        );
+        // What the runtime's own sanitize leaves of a long reason.
+        let long = format!("{}. {}", "First part".repeat(20), "more words ".repeat(30));
+        let shown = said(&common::sanitize(&long));
+        assert!(!shown.contains(".…") && !shown.ends_with(".."), "{shown}");
+        assert!(shown.ends_with('.') || shown.ends_with('…'), "{shown}");
+    }
+    /// QA after 0.40.2: "1 file", never "1 files".
+    #[test]
+    fn counts_agree_with_their_noun() {
+        let row = |bad: u64| json!({"integrity": [{"id": "usb_photos", "name": "USB photo copy", "damaged": bad, "files": ["a.jpg"]}]});
+        assert_eq!(
+            alerts(&row(1))[0]["title"],
+            "USB photo copy: 1 file is damaged or missing"
+        );
+        assert_eq!(
+            alerts(&row(2))[0]["title"],
+            "USB photo copy: 2 files are damaged or missing"
+        );
+        assert!(partial_reason(&json!({"in_use": 1, "files": ["a.docx"]}))
+            .starts_with("1 file was not copied"));
+    }
+    /// D10: the Steam Big Picture card only where the TV step set it up.
+    #[test]
+    fn the_tv_is_set_up_only_with_its_report() {
+        let data = std::env::temp_dir().join(format!("neko-collect-tv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(data.join("reports")).unwrap();
+        // As the collector's settings carry it (modules/dashboard.py collector_settings):
+        // "tv": {"wanted": ...}; null when setup never asked (the report then decides).
+        let on = json!({"tv": {"wanted": true}});
+        let off = json!({"tv": {"wanted": false}});
+        let never_asked = json!({"tv": {"wanted": null}});
+        assert_eq!(tv(&never_asked, Some(&data)), json!({"set_up": false}));
+        assert_eq!(
+            tv(&on, Some(&data)),
+            json!({"set_up": false}),
+            "setup stopped before it"
+        );
+        fs::write(data.join("reports/tv-setup.json"), "{}").unwrap();
+        assert_eq!(tv(&on, Some(&data)), json!({"set_up": true}));
+        assert_eq!(tv(&never_asked, Some(&data)), json!({"set_up": true}));
+        assert_eq!(
+            tv(&off, Some(&data)),
+            json!({"set_up": false}),
+            "switched off later"
+        );
+        assert_eq!(
+            tv(&on, None),
+            json!({"set_up": null}),
+            "SSD missing: not known"
+        );
+        assert_eq!(tv(&off, None), json!({"set_up": false}));
+        let _ = fs::remove_dir_all(data);
     }
 }

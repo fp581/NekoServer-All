@@ -1,10 +1,12 @@
 """Setup wizard, capacity check and recovery wizard."""
+import gzip
 import json
 import os
 import pwd
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -109,7 +111,7 @@ class WizardFlowTests(unittest.TestCase):
             wizard.run(execute, self.root / 'state', prompt=answers('yes'), output=out.append, root=self.root)
         args = execute.call_args[0][0]
         self.assertEqual((args.profile, args.apply, args.config), ('full', True, str(self.root / 'my-config.json')))
-        self.assertTrue(any('NekoServer is' in line for line in out))
+        self.assertTrue(any(line.strip().startswith(('NekoServer is', 'Setup stopped:')) for line in out))
         # Every step finished: the first checkup and backup run straight away.
         checkup.assert_called_once()
 
@@ -345,7 +347,7 @@ class FinishingScreenTests(unittest.TestCase):
         self.assertIn('NekoServer is ready!', text)
         self.assertIn('https://192.168.1.20:8442/', text)
         self.assertIn('https://neko.tail1.ts.net:8443/', text)
-        self.assertIn('sudo cat', text)
+        self.assertIn('account-setup.py show', text)
         self.assertIn('--recover', text)
 
     def test_the_dashboard_address_uses_its_configured_port(self):
@@ -386,7 +388,7 @@ class FinishingScreenTests(unittest.TestCase):
             'gateway_tailnet': {'status': 'blocked', 'reason': "Dependencies not successful: ['tailscale']"},
         })
         self.assertFalse(complete)
-        self.assertIn('almost ready', text)
+        self.assertIn('Setup stopped: 1 thing needs you', text)     # 1 of 3 steps done is not "almost ready"
         self.assertIn('Tailscale: Tailscale authorization pending', text)
         self.assertIn('Access from anywhere and phone setup', text)
         self.assertIn('run  sudo bash install.sh  again', text)
@@ -555,6 +557,18 @@ class CapacityTests(unittest.TestCase):
             self.assertEqual(result['status'], 'needs_setup')
 
 
+def then_stopped(*values):
+    """These answers, then Ctrl+D."""
+    it = iter(values)
+
+    def prompt(question=''):
+        try:
+            return next(it)
+        except StopIteration:
+            raise EOFError from None
+    return prompt
+
+
 class RecoveryWizardTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -569,6 +583,12 @@ class RecoveryWizardTests(unittest.TestCase):
         ready = mock.patch.object(recovery_wizard, 'hdd_ready', return_value=True)
         ready.start()
         self.addCleanup(ready.stop)
+        # Dates are said in this computer's own time: UTC for these tests.
+        utc = mock.patch.dict(os.environ, {'TZ': 'UTC'})
+        utc.start()
+        time.tzset()
+        self.addCleanup(time.tzset)
+        self.addCleanup(utc.stop)
 
     def write(self, rel, body=b'x'):
         path = self.root / rel
@@ -611,7 +631,8 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((restored / 'library/b.heic').read_bytes(), b'photo2')
         self.assertEqual((self.root / 'ssd/photos/immich-library/upload/live.jpg').read_bytes(), b'live')
         self.assertTrue(any('2 files copied' in line for line in out))
-        self.assertEqual((self.media / 'restored').stat().st_mode & 0o777, 0o700)
+        # Other accounts never get in (the restore itself is given to the person's own).
+        self.assertEqual((self.media / 'restored').stat().st_mode & 0o007, 0)
 
     def test_a_restore_never_goes_inside_a_backup(self):
         self.write('hdd/photos/archive/upload/u1/a.jpg', b'photo')
@@ -786,7 +807,7 @@ class RecoveryWizardTests(unittest.TestCase):
         out = self.restore_cloud('1', 'yes', 'yes')
         restored = next((self.media / 'restored').iterdir()) / 'files'
         self.assertEqual((restored / 'a.txt').read_bytes(), b'kept safe')
-        self.assertIn('1 files matched their recorded checksums; 1 had no recorded checksum yet', '\n'.join(out))
+        self.assertIn('Checksums matched for 1 file; 1 file had no recorded checksum yet', '\n'.join(out))
 
     def test_a_damaged_backup_file_is_left_out_and_named_and_the_rest_restored(self):
         self.write('usb/nextcloud/alice/files/a.txt', b'kept safe')
@@ -797,8 +818,8 @@ class RecoveryWizardTests(unittest.TestCase):
         restored = next((self.media / 'restored').iterdir())
         self.assertEqual((restored / 'files/b.txt').read_bytes(), b'also safe')
         self.assertFalse((restored / 'files/a.txt').exists(), 'a damaged copy is never left in the restore')
-        self.assertIn('1 files were NOT restored', out)
-        self.assertIn('Done: 1 files copied', out)
+        self.assertIn('NOT restored (1 file)', out)
+        self.assertIn('Done: 1 file copied', out)
         self.assertIn('damaged: alice/files/a.txt', (restored / 'NOT-RESTORED.txt').read_text())
 
     def test_a_file_missing_from_the_backup_is_asked_about_then_named(self):
@@ -812,7 +833,7 @@ class RecoveryWizardTests(unittest.TestCase):
         restored = next(p for p in (self.media / 'restored').iterdir() if (p / 'files').is_dir())
         self.assertEqual((restored / 'files/b.txt').read_bytes(), b'also safe')
         self.assertIn('missing: alice/files/gone.txt', (restored / 'NOT-RESTORED.txt').read_text())
-        self.assertIn('1 files were NOT restored', out)
+        self.assertIn('NOT restored (1 file)', out)
 
     def test_an_unreadable_checksum_list_does_not_stop_the_restore(self):
         self.write('usb/nextcloud/alice/files/b.txt', b'also safe')
@@ -965,6 +986,20 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('--preserve-owners', calls[0])
         self.assertIn('choose another night for those', said)
         self.assertIn('sudo cp -a', said)
+        # IT-16: what the sourceN folders are, and where that is written down.
+        self.assertIn('named source0, source1 and so on', said)
+        self.assertIn('restore-report.json says which original folder each one is', said)
+
+    def test_the_top_menu_quits_and_keeps_the_old_usb_review_last_as_advanced(self):
+        out = []
+        with mock.patch.object(os, 'geteuid', return_value=0), \
+                mock.patch.object(recovery_wizard, 'settings', return_value=self.config):
+            self.assertEqual(recovery_wizard.run(answers('0'), out.append), 0)
+        said = '\n'.join(out)
+        self.assertIn('  0. Quit', said)
+        self.assertNotIn('0. Back', said)
+        self.assertEqual(recovery_wizard.MENU[-1][0], 'old-usb')
+        self.assertTrue(recovery_wizard.MENU[-1][1].startswith('Advanced: '))
 
     def test_the_monthly_restore_says_where_the_password_files_are(self):
         import json as json_module
@@ -994,7 +1029,7 @@ class RecoveryWizardTests(unittest.TestCase):
         with restore, done, self.assertRaisesRegex(RuntimeError, 'Nothing was restored'):
             recovery_wizard.restore_cloud(self.config, replies, shown.append)
         said = '\n'.join(shown)
-        self.assertIn('1 files that were backed up and checked are missing', said)   # bob's file is not counted
+        self.assertIn('Missing from this backup, though backed up and checked before: 1 file', said)   # bob's file is not counted
         self.assertIn('alice/files/gone.txt', said)
         restored = self.media / 'restored'
         self.assertEqual(list(restored.iterdir()) if restored.exists() else [], [])
@@ -1090,6 +1125,120 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertFalse((self.media / 'restored').exists())
         self.assertFalse((self.media / 'restored-here').exists())
         self.assertEqual((elsewhere / 'files-back/files/a.txt').read_bytes(), b'kept')
+
+    def damaged_on_the_usb(self):
+        """Nextcloud's USB copy (its only copy) of a.txt rotted; b.txt is fine."""
+        self.write('usb/nextcloud/alice/files/a.txt', b'kept safe')
+        self.write('usb/nextcloud/alice/files/b.txt', b'also safe')
+        self.ledger('usb/nextcloud', {'alice/files/a.txt': b'kept safe', 'alice/files/b.txt': b'also safe'})
+        self.write('usb/nextcloud/alice/files/a.txt', b'kept s?fe')
+
+    def test_damage_a_restore_finds_is_what_the_repair_option_then_works_on(self):
+        # UP-08: the restore said "try the repair option", and repair found nothing.
+        self.damaged_on_the_usb()
+        (self.root / 'ssd/reports').mkdir()
+        with mock.patch.object(recovery_wizard, 'ssd_ready', return_value=True):
+            out = '\n'.join(self.restore_cloud('1', 'yes', 'yes'))
+        self.assertIn('now listed for this menu\'s "Repair damaged backup copies"', out)
+        # Nextcloud's USB copy is its only backup: no "other backup" is promised.
+        self.assertNotIn('other backup', out)
+        sections = recovery_wizard.integrity_sections(self.config)
+        self.assertEqual(recovery_wizard.listed(sections['usb_nextcloud']), ['alice/files/a.txt'])
+        self.assertEqual(sections['usb_nextcloud']['counts']['damaged'], 1)
+        repaired, _ = self.repair(self.root / 'usb', '1')
+        self.assertNotIn('nothing to repair', '\n'.join(repaired))
+        self.assertIn('alice/files/a.txt', '\n'.join(repaired))
+
+    def test_a_damaged_copy_is_kept_as_it_is_beside_the_restore(self):
+        # UP-09: a copy with a few bad bytes may still open in part; it is kept, apart.
+        self.damaged_on_the_usb()
+        out = '\n'.join(self.restore_cloud('1', 'yes', 'yes'))
+        restored = next((self.media / 'restored').iterdir())
+        self.assertFalse((restored / 'files/a.txt').exists())
+        self.assertEqual((restored / 'damaged-as-is/files/a.txt').read_bytes(), b'kept s?fe')
+        self.assertIn(f'kept as they are in {restored / "damaged-as-is"}', out)
+
+    def test_a_copy_accepted_as_lost_is_named_not_asked_about_at_every_restore(self):
+        # UP-09: after "accept that this saved copy is lost", a restore "as of" a backup
+        # that listed it asked a scary question every time, as if it were new damage.
+        tree = self.unrepairable_cloud_copy()
+        self.write('usb/nextcloud/alice/files/b.txt', b'b')
+        self.repair(self.root / 'usb', '2', '2')
+        self.write('usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz', gzip.compress(json.dumps(
+            {'format': 'neko-inventory-v1', 'files': {'alice/files/report.txt': 'report.txt',
+                                                      'alice/files/b.txt': 'b.txt'}}).encode()))
+        out = '\n'.join(self.restore_cloud('1', 'yes', '1'))   # no "Restore everything else?" asked
+        self.assertNotIn('Restore everything else', out)
+        aside = next((tree / 'neko-damaged').iterdir()).name
+        self.assertIn('Not restored, as you accepted them as lost in the repair menu: 1 file '
+                      '(for example alice/files/report.txt: damaged; kept in neko-damaged/', out)
+        self.assertIn(f'its damaged copy is still on the backup, as it is: {tree}/neko-damaged/{aside}/alice/files/report.txt',
+                      out)
+        restored = next((self.media / 'restored').iterdir())
+        self.assertEqual((restored / 'files/b.txt').read_bytes(), b'b')
+        self.assertIn('accepted as lost: alice/files/report.txt', (restored / 'NOT-RESTORED.txt').read_text())
+
+    def test_restored_files_belong_to_the_person_who_restores_them(self):
+        # UP-02: they were root's only, so "upload them in the browser" could not work.
+        self.write('hdd/photos/archive/upload/u1/a.jpg', b'photo')
+        out = []
+        with mock.patch.dict(os.environ, {'SUDO_UID': '4321', 'SUDO_GID': '4322'}), \
+                mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None), \
+                mock.patch.object(recovery_wizard, 'reachable', return_value=True):
+            recovery_wizard.restore_photos(self.config, answers('1', 'yes', 'yes'), out.append)
+        said = '\n'.join(out)
+        restored = next((self.media / 'restored').iterdir())
+        if os.geteuid() != 0:
+            # Not root (a test run as an ordinary account): it says how instead.
+            self.assertIn(f'sudo chown -R 4321: "{restored}"', said)
+            return
+        for path in (restored, restored / 'upload', restored / 'upload/u1/a.jpg'):
+            self.assertEqual((path.stat().st_uid, path.stat().st_gid), (4321, 4322), path)
+        self.assertEqual(restored.stat().st_mode & 0o777, 0o700)       # still private to that account
+        parent = (self.media / 'restored').stat()
+        self.assertEqual((parent.st_uid, parent.st_gid, parent.st_mode & 0o777), (0, 4322, 0o750))
+        self.assertIn('now belong to 4321, so you can open them from your desktop', said)
+        self.assertLess(said.index('belong to'), said.index('click "Upload"'))
+
+    def test_a_restored_folder_out_of_the_person_s_reach_is_said_with_how_to_move_it(self):
+        target = self.root / 'private/back'
+        target.mkdir(parents=True)
+        (self.root / 'private').chmod(0o700)
+        with mock.patch.object(recovery_wizard, 'give_to'), \
+                mock.patch.object(recovery_wizard, 'owner', return_value=(4321, 4322)):
+            lines = recovery_wizard.handed_over({'media_mount': str(self.media)}, target)
+        self.assertIn('can\'t get to where it is', lines[0])
+        self.assertEqual(lines[1], f'  sudo mv "{target}" "/home/"')
+
+    def test_restore_texts_say_what_happened(self):
+        # UP-10, UP-12: wording that did not fit what happened.
+        self.write('usb/nextcloud/alice/files/a.txt', b'a')
+        self.write('usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz', gzip.compress(json.dumps(
+            {'format': 'neko-inventory-v1', 'files': {'alice/files/a.txt': 'a.txt'}}).encode()))
+        out = '\n'.join(self.restore_cloud('1', 'yes', '1'))
+        self.assertIn('Checksums matched for 0 files; 1 file had no recorded checksum yet (the backup that '
+                      'copied it did not finish, or it was backed up before checksums were kept)', out)
+        self.assertIn('Done: 1 file copied', out)
+        self.assertNotIn('replaced earlier', out)        # there is no such folder in this restore
+        self.assertLess(out.index('Which files?'), out.index('Copying...'))
+        stopped = []
+        with mock.patch.object(os, 'geteuid', return_value=0), \
+                mock.patch.object(recovery_wizard, 'settings', return_value=self.config), \
+                mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+            recovery_wizard.run(then_stopped('2', '1', 'yes', '1'), stopped.append)
+        self.assertIn('Stopped. Nothing more was changed; what was already restored', stopped[-1])
+
+    def test_a_restore_made_again_at_once_gets_a_folder_of_its_own(self):
+        # UP-13: the suggested folder was named to the minute, so a second restore within
+        # that minute was refused ("That folder already exists").
+        self.assertRegex(recovery_wizard.stamp(), r'^\d{8}-\d{6}$')
+        first = self.media / 'restored/photos-20261026-0945'
+        first.mkdir(parents=True)
+        self.assertEqual(recovery_wizard.unused(first), first.with_name('photos-20261026-0945-2'))
+        first.with_name('photos-20261026-0945-2').mkdir()
+        self.assertEqual(recovery_wizard.unused(first), first.with_name('photos-20261026-0945-3'))
 
     def test_repair_with_nothing_reported(self):
         out = []

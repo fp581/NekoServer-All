@@ -85,6 +85,18 @@ zypper_run() {
 pacman_lock_abandoned() {
     command -v find >/dev/null && [[ -z "$(find /proc/[0-9]*/fd -lname "$pacman_lock" -print -quit 2>/dev/null)" ]]
 }
+# Why a step before the wizard stopped setup (the apps' packages: a site that could not
+# be reached, say). host.py writes it to this file; on the way out it is shown in the
+# setup window as well, on a PC with a desktop, since the window itself opens only once
+# these steps are done.
+stop_note=''
+show_stop_note() {
+    local code=$?
+    if (( code != 0 )) && [[ -s "$stop_note" ]]; then
+        python3 "$ROOT/setup_gui.py" stopped "$stop_note" || true
+    fi
+    rm -f -- "$stop_note"
+}
 # Where the system update downloads packages; its disk is checked before updating.
 system_path=/var/cache/pacman
 [[ -d "$system_path" ]] || system_path=/
@@ -131,6 +143,12 @@ if "$apply"; then
         # Started as root, not with sudo from someone's account: setup cannot tell whose
         # account the server is for (the apps' files, the shared folder, the build).
         echo 'Started as root, not with sudo from your own account. To set the server up for your account, stop now (Ctrl+C) and run  SUDO_USER=<your account name> bash install.sh  instead (or  sudo bash install.sh  from your account).'
+        if [[ -t 0 ]]; then
+            # A moment to read it and stop, before the package lists scroll it away.
+            # (Without a terminal nobody is there to read it: no wait.)
+            echo 'Going on in 10 seconds...'
+            sleep 10
+        fi
     fi
     # One setup at a time, held until setup ends (the installer inherits it). A second
     # one stops here, before it touches packages, their records or any service.
@@ -481,6 +499,9 @@ if "$apply" && "$full"; then
     # Every system package the apps need that is not inside their containers (host.py
     # APP_PACKAGES), installed up front so a missing one stops the setup before it
     # starts. Installing does not start Docker; its setup step does that on the SSD.
+    stop_note=$(mktemp)
+    export NEKOSERVER_STOP_NOTE="$stop_note"
+    trap show_stop_note EXIT
     python3 "$ROOT/host.py" bootstrap
 fi
 # Recovery needs no runtime: its menu and every restore in it are Python, so it opens
@@ -512,5 +533,11 @@ if "$apply" && ! "$recover"; then
     # automatic update (Ubuntu's unattended upgrades) may have installed a new kernel
     # in those minutes and be waiting for a restart.
     python3 "$ROOT/capabilities.py" preflight || exit 1
+fi
+if [[ -n "$stop_note" ]]; then
+    # Setup itself starts now: its own window says the rest.
+    trap - EXIT
+    rm -f -- "$stop_note"
+    unset NEKOSERVER_STOP_NOTE
 fi
 exec python3 "$ROOT/installer.py" "$@"

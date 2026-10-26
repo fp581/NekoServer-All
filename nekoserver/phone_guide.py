@@ -5,20 +5,26 @@ store; passwords are never printed or written to the page.
 """
 import html
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 
 from guided_setup import PAGE_ROOT
 import host
-from neko_common import atomic_write
+from neko_common import VERSION, atomic_write
 
 PAGE = PAGE_ROOT / 'phone-setup.html'
-CREDENTIALS = 'secrets/accounts/APP-CREDENTIALS.txt'
+SHOW_TOOL = 'account-setup.py'
 
 
-def credentials(config):
-    """Where the password list is, on this server's data SSD."""
-    return str(Path(config.get('data_mount', '/srv/nekoserver')) / CREDENTIALS)
+def show_command(config, app):
+    """The command that puts one app's login on the PC's screen (text and QR code), from
+    the copy of this release kept on the SSD, so it still works once the downloaded
+    folder is gone. Typing a 32-letter password read from a file is where phones fail."""
+    tool = Path(config.get('data_mount', '/srv/nekoserver')) / 'installer/releases' / ('v' + VERSION) / SHOW_TOOL
+    return 'sudo python3 ' + shlex.quote(str(tool)) + ' show ' + LOGIN[app]
+
+
 TAILSCALE_DOWNLOAD = 'https://tailscale.com/download'
 
 # Which login each app uses on the phone (account_store keys).
@@ -70,7 +76,8 @@ APPS = {
         'steps': [
             OPEN_APP,
             'Add a server: enter the server address below as the server URL.',
-            'Sign in with your Navidrome listener username and password.',
+            ('Sign in with your Navidrome music account: the "listener", made for playing music '
+             '(not the administrator).'),
             'Play a song to check it works.',
         ],
     },
@@ -109,19 +116,38 @@ def username(config, app):
         return None
 
 
+def login_lines(config, app, page=False):
+    """Where this app's login comes from: the username, and the command that shows the
+    password on the PC's screen. The password itself is never printed here or put on
+    the page (the page is readable by every account on this PC)."""
+    if app not in LOGIN:
+        return []
+    user = username(config, app)
+    command = show_command(config, app)
+    if page:
+        return [('Username: ' + user) if user else 'Username and password: shown by the command below.',
+                ('Password: on the PC, open a terminal (Ctrl+Alt+T) and run  ' + command +
+                 '  It shows the password on the PC\'s screen, with a QR code to scan.')]
+    who = ('Your login is ' + user + '. ') if user else ''
+    return [who + 'To see the password on the PC\'s screen (with a QR code you can scan), open a second '
+            'terminal on the PC (Ctrl+Alt+T) and run:  ' + command]
+
+
+def with_login(steps, login):
+    """The login lines go just before the step that signs in, so they are read first."""
+    at = next((n for n, step in enumerate(steps) if 'sign in' in step.lower()), len(steps))
+    return [*steps[:at], *login, *steps[at:]]
+
+
 def instructions(config, app, url):
     """Numbered console steps for one app on the phone."""
     info = APPS[app]
+    steps = [step.replace('the server address below', 'this server address: ' + url) for step in info['steps']]
     lines = [
         'Phone app: iPhone: ' + info['iphone'] + '. Android: ' + info['android'] + '.',
         'Make sure Tailscale is ON on the phone.',
-        *[step.replace('the server address below', 'this server address: ' + url) for step in info['steps']],
+        *with_login(steps, login_lines(config, app)),
     ]
-    if app in LOGIN:
-        user = username(config, app)
-        login = ('Username: ' + user) if user else 'Username: see the password list'
-        lines.append(login + '. Password: in the password list on the server '
-                     '(sudo cat ' + credentials(config) + ').')
     return lines + ['Return here and answer yes once it works on the phone.']
 
 
@@ -149,12 +175,13 @@ def ensure_qrencode():
         pass
 
 
-def card(title, url, lines, qr):
+def card(title, url, lines, qr, intro=''):
     items = ''.join('<li>' + html.escape(line) + '</li>' for line in lines)
     code = ('<div class="qr" aria-label="QR code for ' + html.escape(url) + '">' + qr + '</div>') if qr else ''
+    lead = ('<p>' + html.escape(intro) + '</p>') if intro else ''
     return ('<section><div class="text"><h2>' + html.escape(title) + '</h2>'
             '<p class="url"><a href="' + html.escape(url) + '">' + html.escape(url) + '</a></p>'
-            '<ol>' + items + '</ol></div>' + code + '</section>')
+            + lead + '<ol>' + items + '</ol></div>' + code + '</section>')
 
 
 def page_html(config, links, qr=qr_svg):
@@ -167,12 +194,9 @@ def page_html(config, links, qr=qr_svg):
     for number, (app, url) in enumerate(((a, links[a]) for a in APPS if a in links), 2):
         info = APPS[app]
         steps = [s.replace('the server address below', 'the address above') for s in info['steps']]
-        lines = ['iPhone: ' + info['iphone'], 'Android: ' + info['android'], *steps]
-        if app in LOGIN:
-            user = username(config, app)
-            lines += [('Username: ' + user) if user else 'Username: in the password list',
-                      'Password: in the password list on the server (not shown here).']
-        cards.append(card(str(number) + '. ' + info['title'], url, lines, qr(url)))
+        lines = with_login(steps, login_lines(config, app, page=True))
+        intro = 'Phone app: iPhone: ' + info['iphone'] + '. Android: ' + info['android'] + '.'
+        cards.append(card(str(number) + '. ' + info['title'], url, lines, qr(url), intro))
     style = ('body{margin:0;background:#11101b;color:#f3efff;font:17px/1.5 system-ui,sans-serif}'
              'main{max-width:900px;margin:0 auto;padding:24px 16px}h1{font-size:1.6em}'
              'section{display:flex;gap:20px;align-items:flex-start;background:#1d1b2d;'
@@ -185,8 +209,9 @@ def page_html(config, links, qr=qr_svg):
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>Phone setup</title><style>' + style + '</style></head><body><main>'
             '<h1>Set up your phone</h1><p>Do these in order. Scan each code with your '
-            'phone camera to open the address. Passwords are in the password list on the '
-            'server: <code>sudo cat ' + html.escape(credentials(config)) + '</code></p>'
+            'phone camera to open the address. Each app\'s card says how to see its password: '
+            'a command you run in a terminal on this PC shows it on the PC\'s screen, one app at '
+            'a time, with a QR code. Passwords are never on this page.</p>'
             + ''.join(cards) + '</main></body></html>\n')
 
 

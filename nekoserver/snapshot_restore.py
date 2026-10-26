@@ -139,6 +139,10 @@ def restore(kind, snapshot, destination, preserve_owners=False):
         raise RuntimeError('Restore needs a new absolute directory')
     if destination == snapshot or snapshot in destination.parents or destination in snapshot.parents:
         raise RuntimeError('Restore directory must be separate from snapshot')
+    if not destination.parent.is_dir():
+        # Said with what to do: a missing parent is never made here (see below).
+        raise RuntimeError(f'The folder {destination.parent} does not exist, so nothing was restored. Create it first '
+                           f'(sudo mkdir -p "{destination.parent}"), or choose a new folder inside one that exists')
     manifest = verify(kind, snapshot)
     ensure_room(destination.parent, sum(r['size'] for r in manifest['files'] if r['kind'] != 'directory'))
     if preserve_owners and os.geteuid() != 0:

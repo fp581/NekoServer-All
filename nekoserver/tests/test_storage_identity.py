@@ -324,16 +324,40 @@ class SavedEncryptedDriveTests(unittest.TestCase):
 
 
 def block_devices(rows, sub_ids, blkid_code=0, lsblk_code=0):
-    """A fake subprocess.run answering lsblk's device list and blkid's UUID_SUB."""
+    """subprocess.run replaced with fake_run while the checks run."""
+    return mock.patch.object(neko_common.subprocess, 'run', side_effect=fake_run(rows, sub_ids, blkid_code, lsblk_code))
+
+
+def fake_run(rows, sub_ids, blkid_code=0, lsblk_code=0):
+    """A subprocess.run answering lsblk's device list and blkid's UUID_SUB."""
     def run(argv, **_):
         if argv[0] == 'lsblk':
             return mock.Mock(returncode=lsblk_code, stdout=json.dumps({'blockdevices': rows}))
         return mock.Mock(returncode=blkid_code, stdout=sub_ids.get(argv[-1], '') + '\n')
-    return mock.patch.object(neko_common.subprocess, 'run', side_effect=run)
+    return run
 
 
 DEVICES = [{'path': '/dev/sda', 'uuid': None}, {'path': '/dev/sdb1', 'uuid': 'aaaa-1111'},
            {'path': '/dev/sdc1', 'uuid': 'bbbb-2222'}]
+
+
+def lvm_row(name, kname, parent, uuid=None):
+    """One row of  lsblk -J -l -o PATH,UUID,TYPE,NAME,KNAME,PKNAME  for an LVM device."""
+    return {'path': '/dev/mapper/' + name, 'uuid': uuid, 'type': 'lvm', 'name': name, 'kname': kname, 'pkname': parent}
+
+
+# The HDD as LVM volume vg0/media on /dev/sdc1, with a snapshot (lvcreate -s -n media-snap),
+# as lsblk lists it: the volume and the snapshot both sit on the hidden vg0-media-real, the
+# snapshot on its own vg0-media--snap-cow too, so it is listed once under each. LVM's udev
+# rules leave the hidden layers unprobed (no UUID); the snapshot carries the volume's UUID.
+HDD = 'bbbb-2222'
+LVM_SNAPSHOT = [
+    {'path': '/dev/sda', 'uuid': None, 'type': 'disk', 'name': 'sda', 'kname': 'sda', 'pkname': None},
+    {'path': '/dev/sdb1', 'uuid': 'aaaa-1111', 'type': 'part', 'name': 'sdb1', 'kname': 'sdb1', 'pkname': 'sdb'},
+    {'path': '/dev/sdc1', 'uuid': 'Xc4Qz1-pv01', 'type': 'part', 'name': 'sdc1', 'kname': 'sdc1', 'pkname': 'sdc'},
+    lvm_row('vg0-media-real', 'dm-1', 'sdc1'), lvm_row('vg0-media', 'dm-0', 'dm-1', HDD),
+    lvm_row('vg0-media--snap', 'dm-3', 'dm-1', HDD), lvm_row('vg0-media--snap-cow', 'dm-2', 'sdc1'),
+    lvm_row('vg0-media--snap', 'dm-3', 'dm-2', HDD)]
 
 
 class ConnectedCopyTests(unittest.TestCase):
@@ -343,9 +367,9 @@ class ConnectedCopyTests(unittest.TestCase):
     CONFIG, MOUNTED = SUBVOLUME_CONFIG, MOUNTED
     guard, checks = SubvolumeCheckTests.guard, SubvolumeCheckTests.checks
 
-    def run_checks(self, rows, sub_ids=None, blkid_code=0, lsblk_code=0):
+    def run_checks(self, rows, sub_ids=None, blkid_code=0, lsblk_code=0, devices=DEVICES):
         failures = []
-        with block_devices(DEVICES + rows, sub_ids or {}, blkid_code, lsblk_code):
+        with block_devices(devices + rows, sub_ids or {}, blkid_code, lsblk_code):
             for check in self.checks(self.MOUNTED):
                 try:
                     check(self.CONFIG)
@@ -363,6 +387,35 @@ class ConnectedCopyTests(unittest.TestCase):
     def test_a_copy_of_one_device_of_a_btrfs_pool_is_refused(self):
         rows = [{'path': '/dev/sde1', 'uuid': 'aaaa-1111'}]
         self.assertEqual(len(self.run_checks(rows, {'/dev/sdb1': 'dev-1', '/dev/sde1': 'dev-1'})), 2)
+
+    def test_an_lvm_snapshot_of_the_drive_is_not_a_copy(self):
+        """QA-06: a snapshot (lvcreate -s) of the HDD's volume carries its UUID; it is not a
+        copy left connected, so Docker and the apps still start."""
+        self.assertEqual(self.run_checks([], devices=LVM_SNAPSHOT), [])
+        # A Btrfs volume: the snapshot has the volume's device ID (UUID_SUB) too.
+        same_id = {'/dev/mapper/vg0-media': 'dev-1', '/dev/mapper/vg0-media--snap': 'dev-1'}
+        self.assertEqual(neko_common.look_alikes(HDD, 'btrfs', run=fake_run(LVM_SNAPSHOT, same_id)), [])
+        self.assertEqual(neko_common.devices_with_uuid(HDD, run=fake_run(LVM_SNAPSHOT, {})), ['/dev/mapper/vg0-media'])
+
+    def test_a_real_copy_beside_an_lvm_snapshot_is_still_refused(self):
+        failures = self.run_checks([{'path': '/dev/sdd1', 'uuid': HDD, 'type': 'part', 'name': 'sdd1', 'kname': 'sdd1',
+                                     'pkname': 'sdd'}], devices=LVM_SNAPSHOT)
+        self.assertEqual(len(failures), 2)
+        for text in failures:
+            self.assertIn('/dev/mapper/vg0-media and /dev/sdd1 carry', text)
+
+    def test_only_lvms_own_layers_and_snapshots_are_left_out(self):
+        self.assertEqual(neko_common.lvm_snapshots(LVM_SNAPSHOT), {'/dev/mapper/vg0-media-real', '/dev/mapper/vg0-media--snap',
+                                                                  '/dev/mapper/vg0-media--snap-cow'})
+        # LVM doubles a '-' inside a name: a volume named "media-real" is no hidden layer.
+        self.assertFalse(neko_common.lvm_layer('vg0-media--real', 'real'))
+        self.assertTrue(neko_common.lvm_layer('vg0-media---real', 'real'))   # the layer of a volume named "media-"
+        self.assertTrue(neko_common.lvm_layer('vg0-media--snap-cow', 'cow'))
+        # Two plain volumes with one UUID (a dd copy from one volume to another) stay a copy.
+        copied = [lvm_row('vg0-media', 'dm-0', 'sdc1', HDD), lvm_row('vg0-copy', 'dm-4', 'sdc1', HDD)]
+        self.assertEqual(neko_common.lvm_snapshots(copied), set())
+        self.assertEqual(neko_common.look_alikes(HDD, 'ext4', run=fake_run(copied, {})),
+                         ['/dev/mapper/vg0-copy', '/dev/mapper/vg0-media'])
 
     def test_a_pool_an_unreadable_device_id_or_no_lsblk_passes(self):
         pool = [{'path': '/dev/sde1', 'uuid': 'aaaa-1111'}]

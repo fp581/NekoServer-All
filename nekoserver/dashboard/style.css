@@ -97,7 +97,7 @@ h1 { font-size: 30px; margin: 2px 0 0; letter-spacing: -.8px; line-height: 1.2; 
   color: var(--muted); white-space: nowrap;
 }
 .badge.pass { color: var(--mint); background: color-mix(in srgb, var(--mint) 13%, var(--surface)); }
-.badge.warning, .badge.needs_setup, .badge.stale, .badge.partial, .badge.starting {
+.badge.warning, .badge.needs_setup, .badge.not_set_up, .badge.stale, .badge.partial, .badge.starting {
   color: var(--amber); background: color-mix(in srgb, var(--amber) 13%, var(--surface));
 }
 .badge.fail, .badge.critical, .badge.unhealthy, .badge.missing, .badge.exited, .badge.dead {
@@ -330,6 +330,9 @@ input[type=color] { width: 100%; height: 44px; border: 1px solid var(--line); bo
 .light-all .field { margin: 0; min-width: 160px; flex: 1; }
 .unlock { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
 .unlock .field { flex: 1; margin: 0; min-width: 180px; }
+dialog .dialog-error { color: var(--red); font-weight: 600; margin: 12px 0 0; }
+.more-text { border: 0; background: none; padding: 0 2px; color: var(--purple); font: inherit; font-weight: 600; cursor: pointer; }
+.more-text:hover { text-decoration: underline; }
 
 /* ---------- dialog ---------- */
 dialog {
@@ -473,9 +476,8 @@ body.tv { font-size: 19px; }
   .app-name { font-size: 16px; }
   .app-description { font-size: 13px; }
   .search { max-width: none; min-width: 0; flex-basis: 100%; }
-  .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -2px; padding: 0 2px; }
+  /* Chips wrap onto a second line: a side-scrolling row hid "Management" at the edge. */
   .chips button { flex-shrink: 0; }
-  .fan-control .chips { flex-wrap: wrap; overflow: visible; }
   .issue { gap: 10px; flex-wrap: wrap; }
   .issue-icon { display: none; }
   .issue > .badge { order: -1; }

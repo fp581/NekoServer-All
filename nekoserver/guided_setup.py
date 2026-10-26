@@ -10,7 +10,7 @@ import sys
 from urllib.parse import urlsplit
 
 import host
-from neko_common import find_program, safe_path
+from neko_common import VERSION, find_program, safe_path
 
 
 def yes_no(question, prompt=None, output=None):
@@ -238,6 +238,14 @@ def save_settings(ctx):
         ctx.persist_config()
 
 
+def login_command(config, app='<app>'):
+    """The command that shows an app's login with a QR code (account-setup.py show), from
+    the copy of this release kept on the SSD: it stays when this folder is updated or
+    removed."""
+    data = str(config.get('data_mount') or '/srv/nekoserver').rstrip('/')
+    return f'sudo python3 {data}/installer/releases/v{VERSION}/account-setup.py show {app}'
+
+
 def wanted(ctx, section, question, explain=(), prompt=None, output=None):
     """Ask once whether an optional extra is wanted and save the answer.
 
@@ -275,7 +283,7 @@ def app_security(ctx, apps, ports):
     verify = verify_accounts if account_store.enabled(ctx.config) else None
     return checkpoint(ctx, 'Check application logins and access permissions', [
         'Sign into each opened app using its own saved username/email and password.',
-        'Read the root-only APP-CREDENTIALS.txt on the server for those app logins. '
+        'See an app\'s login (with a QR code) in a terminal on the server:  ' + login_command(ctx.config) + '  '
         'Email-shaped local logins do not sign you into an external mail provider.',
         'If an app explicitly requests email verification, open your own email app, '
         'follow its verification link, then return. Enter external passwords only on the provider page.',

@@ -172,14 +172,15 @@ class CapacityRerunTests(unittest.TestCase):
 
 
 class PhoneGuidePathTests(unittest.TestCase):
-    def test_password_list_path_follows_the_data_drive(self):
+    def test_password_command_follows_the_data_drive(self):
         config = {'data_mount': '/mnt/fastssd'}
+        tool = '/mnt/fastssd/installer/releases/v' + phone_guide.VERSION + '/account-setup.py show jellyfin'
         with mock.patch.object(phone_guide, 'username', return_value=None):
             steps = phone_guide.instructions(config, 'jellyfin', 'https://neko.tail1.ts.net:8443/')
             page = phone_guide.page_html(config, {'jellyfin': 'https://neko.tail1.ts.net:8443/'},
                                          qr=lambda text: '')
-        self.assertTrue(any('/mnt/fastssd/secrets/accounts/APP-CREDENTIALS.txt' in s for s in steps))
-        self.assertIn('/mnt/fastssd/secrets/accounts/APP-CREDENTIALS.txt', page)
+        self.assertTrue(any(tool in s for s in steps))
+        self.assertIn(tool, page)
         self.assertNotIn('/srv/nekoserver', page)
 
 

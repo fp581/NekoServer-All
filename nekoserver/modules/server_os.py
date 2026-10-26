@@ -16,6 +16,18 @@ DRIVE_SETTINGS = Path('/etc/nekoserver-os/drives.json')
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Disable OS sleep, bound system logs and configure verified media HDD standby'
+# Sandboxing for these root services (systemd.exec(5)) that needs no mount namespace of
+# their own: drive return releases a dead mount itself (umount), which in a namespace of
+# its own would be released for that namespace only, and the drive never mounted again.
+# Left out, as each would break a service here: ProtectSystem (the jobs write to /etc),
+# ProtectClock and PrivateDevices (both close /dev: hdparm, and blkid reading a drive),
+# and a smaller capability set (umount, hdparm and reading the drives need root's).
+SANDBOX = ('NoNewPrivileges=yes\nRestrictRealtime=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n'
+           'SystemCallArchitectures=native\nUMask=0077\n')
+# The HDD power service only reads the mounts and drives (findmnt, lsblk, blkid) and sets
+# the drive's timer (hdparm): it also gets a /tmp of its own, no home folders, and the
+# kernel's settings and control groups read-only.
+SANDBOX_NAMESPACED = SANDBOX + 'PrivateTmp=yes\nProtectHome=yes\nProtectKernelTunables=yes\nProtectControlGroups=yes\n'
 TARGETS = ('sleep.target', 'suspend.target', 'hibernate.target', 'hybrid-sleep.target', 'suspend-then-hibernate.target')
 MARKER = '# Managed by NekoServer server_os\n'
 
@@ -216,7 +228,7 @@ def drive_unit(binary, devices):
         f'ExecStart={binary} drive-return --config {DRIVE_SETTINGS}\n'
         # It waits up to 10 minutes for a drive, then finishes any job the drive cut off
         # (a monthly update's rollback included), which must never be cut off itself.
-        'TimeoutStartSec=infinity\n'
+        'TimeoutStartSec=infinity\n' + SANDBOX +
         '[Install]\nWantedBy=' + ' '.join(devices) + '\n'
     )
 
@@ -236,7 +248,7 @@ def unit(binary, guard, config):
         '[Unit]\nDescription=NekoServer verified media HDD standby policy\n'
         f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\n'
         '[Service]\nType=oneshot\nRemainAfterExit=yes\n'
-        f'ExecStart={binary} hdd-policy --config {guard}\nTimeoutStartSec=180\n'
+        f'ExecStart={binary} hdd-policy --config {guard}\nTimeoutStartSec=180\n' + SANDBOX_NAMESPACED +
         '[Install]\nWantedBy=multi-user.target\n'
     )
 

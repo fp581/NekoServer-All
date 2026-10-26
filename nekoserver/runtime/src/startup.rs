@@ -98,25 +98,78 @@ fn internal_interface(name: &str) -> bool {
         .any(|s| name.starts_with(s))
 }
 /// The block devices that carry filesystem `uuid`, each once (lsblk lists an LVM volume
-/// under every disk it spans); None when lsblk can't say.
+/// under every disk it spans); None when lsblk can't say. LVM snapshots of the drive are
+/// left out (`lvm_snapshots`): they are not copies.
 pub fn devices_with_uuid(uuid: &str) -> Option<Vec<String>> {
-    let (code, text) = common::command(&["lsblk", "-J", "-l", "-o", "PATH,UUID"], 10).ok()?;
+    let (code, text) = common::command(
+        &[
+            "lsblk",
+            "-J",
+            "-l",
+            "-o",
+            "PATH,UUID,TYPE,NAME,KNAME,PKNAME",
+        ],
+        10,
+    )
+    .ok()?;
     if code != 0 {
         return None;
     }
     Some(with_uuid(&serde_json::from_str(&text).ok()?, uuid))
 }
 fn with_uuid(rows: &Value, uuid: &str) -> Vec<String> {
+    let snapshots = lvm_snapshots(rows);
     let mut found: Vec<String> = rows["blockdevices"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|row| !uuid.is_empty() && row["uuid"].as_str() == Some(uuid))
         .filter_map(|row| row["path"].as_str().map(str::to_string))
+        .filter(|path| !snapshots.contains(path))
         .collect();
     found.sort();
     found.dedup();
     found
+}
+/// Whether a device-mapper name is LVM's hidden layer `suffix` ("real" or "cow") of a
+/// volume: "<vg>-<lv>-real". LVM doubles every '-' inside the names, so the dash before
+/// the suffix is a separator only when the dashes there are odd in number.
+fn lvm_layer(name: &str, suffix: &str) -> bool {
+    name.strip_suffix(suffix).is_some_and(|stem| {
+        let dashes = stem.len() - stem.trim_end_matches('-').len();
+        dashes % 2 == 1
+    })
+}
+/// The paths of LVM snapshots (lvcreate -s) and their hidden layers, from lsblk's list
+/// (TYPE, NAME, KNAME, PKNAME). A volume with snapshots sits on "<origin>-real", and each
+/// snapshot on that "-real" and on its own "<snapshot>-cow"; lsblk lists such a volume
+/// once under each. A snapshot carries the volume's filesystem UUID, but it is not a copy
+/// left connected: Linux mounts the volume itself by that UUID (LVM gives the snapshot's
+/// link the lower priority), so it is left out of the copy check. The origin stays in.
+fn lvm_snapshots(rows: &Value) -> Vec<String> {
+    let rows: Vec<&Value> = rows["blockdevices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["type"] == "lvm")
+        .collect();
+    let name_of = |kname: &Value| {
+        rows.iter()
+            .find(|row| kname.is_string() && row["kname"] == *kname)
+            .and_then(|row| row["name"].as_str())
+            .unwrap_or("")
+    };
+    rows.iter()
+        .filter(|row| {
+            let name = row["name"].as_str().unwrap_or("");
+            let parent = name_of(&row["pkname"]);
+            let layer = lvm_layer(name, "real") || lvm_layer(name, "cow");
+            let snapshot = (lvm_layer(parent, "real") && parent != format!("{name}-real"))
+                || parent == format!("{name}-cow");
+            !name.is_empty() && (layer || snapshot)
+        })
+        .filter_map(|row| row["path"].as_str().map(str::to_string))
+        .collect()
 }
 /// A Btrfs device's own UUID (UUID_SUB), read from the device itself; None when it
 /// can't be read.
@@ -258,6 +311,59 @@ mod tests {
         let text = copy_message("HDD", "u-1", &two);
         assert!(text.contains("Two drives look the same (one is probably a copy); unplug the copy"));
         assert!(text.contains("/dev/sdb1 and /dev/sdc1"));
+    }
+    fn lvm_row(name: &str, kname: &str, parent: &str, uuid: Option<&str>) -> Value {
+        json!({"path":format!("/dev/mapper/{name}"),"uuid":uuid,"type":"lvm","name":name,"kname":kname,"pkname":parent})
+    }
+    /// The HDD as LVM volume vg0/media on /dev/sdc1 with a snapshot (lvcreate -s -n
+    /// media-snap), as `lsblk -J -l -o PATH,UUID,TYPE,NAME,KNAME,PKNAME` lists it: the
+    /// volume and the snapshot both on the hidden vg0-media-real, the snapshot on its own
+    /// vg0-media--snap-cow too, listed once under each; the hidden layers carry no UUID.
+    fn lvm_snapshot(extra: &[Value]) -> Value {
+        let hdd = Some("u-2");
+        let mut rows = vec![
+            json!({"path":"/dev/sdc","uuid":null,"type":"disk","name":"sdc","kname":"sdc","pkname":null}),
+            json!({"path":"/dev/sdc1","uuid":"Xc4Qz1-pv01","type":"part","name":"sdc1","kname":"sdc1","pkname":"sdc"}),
+            lvm_row("vg0-media-real", "dm-1", "sdc1", None),
+            lvm_row("vg0-media", "dm-0", "dm-1", hdd),
+            lvm_row("vg0-media--snap", "dm-3", "dm-1", hdd),
+            lvm_row("vg0-media--snap-cow", "dm-2", "sdc1", None),
+            lvm_row("vg0-media--snap", "dm-3", "dm-2", hdd),
+        ];
+        rows.extend_from_slice(extra);
+        json!({ "blockdevices": rows })
+    }
+    #[test]
+    fn an_lvm_snapshot_is_not_a_copy_but_a_real_copy_beside_it_is() {
+        let rows = lvm_snapshot(&[]);
+        assert_eq!(with_uuid(&rows, "u-2"), ["/dev/mapper/vg0-media"]);
+        let mut hidden = lvm_snapshots(&rows);
+        hidden.sort();
+        hidden.dedup();
+        assert_eq!(
+            hidden,
+            [
+                "/dev/mapper/vg0-media--snap",
+                "/dev/mapper/vg0-media--snap-cow",
+                "/dev/mapper/vg0-media-real"
+            ]
+        );
+        // A dd copy of the volume connected beside it is still found.
+        let copy = json!({"path":"/dev/sdd1","uuid":"u-2","type":"part","name":"sdd1","kname":"sdd1","pkname":"sdd"});
+        let two = with_uuid(&lvm_snapshot(&[copy]), "u-2");
+        assert_eq!(two, ["/dev/mapper/vg0-media", "/dev/sdd1"]);
+        assert_eq!(look_alikes("ext4", &two, |_: &str| None), two);
+        // Two plain volumes with one UUID (a copy from one to the other) stay a copy.
+        let copied = json!({"blockdevices":[lvm_row("vg0-media", "dm-0", "sdc1", Some("u-2")), lvm_row("vg0-copy", "dm-4", "sdc1", Some("u-2"))]});
+        assert_eq!(
+            with_uuid(&copied, "u-2"),
+            ["/dev/mapper/vg0-copy", "/dev/mapper/vg0-media"]
+        );
+        // LVM doubles a '-' inside a name: a volume named "media-real" is no hidden layer.
+        assert!(!lvm_layer("vg0-media--real", "real"));
+        assert!(lvm_layer("vg0-media---real", "real"));
+        assert!(lvm_layer("vg0-media--snap-cow", "cow"));
+        assert!(!lvm_layer("cow", "cow"));
     }
     #[test]
     fn guard_config_does_not_allow_root_mount() {

@@ -187,6 +187,10 @@ class RecloneNoteTests(unittest.TestCase):
     def test_both_readmes_say_to_clone_again_and_copy_the_settings(self):
         for path in (ROOT.parent / 'README.md', ROOT / 'README.md'):
             with self.subTest(readme=path):
+                if path.parent != ROOT and not path.is_file():
+                    # The suite run from a copy of this folder alone: the repository's
+                    # own README is not there to check.
+                    self.skipTest('the repository README is not next to this copy of the folder')
                 text = path.read_text()
                 self.assertIn('before 0.40.0', text)
                 self.assertIn('my-config.json', text)

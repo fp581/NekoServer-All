@@ -920,8 +920,10 @@ class DebianTest(unittest.TestCase):
         (self.root / 'etc/apt/keyrings/docker.asc').unlink()
         family = self.family()
         family.fetch = mock.Mock(side_effect=OSError('network unreachable'))
+        family.say, family.sleep = (lambda text: None), (lambda seconds: None)
         with self.assertRaisesRegex(RuntimeError, 'docker repository key is missing and could not be downloaded'):
             family.repair()
+        self.assertEqual(family.fetch.call_count, host.RETRIES)     # a needed key: asked as often as any download
 
     def test_switched_off_or_commented_definitions_do_not_count(self):
         self.file('etc/apt/sources.list.d/old.sources', 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\n'
@@ -1038,7 +1040,7 @@ class UnavailableTvTest(unittest.TestCase):
         self.assertEqual(state['tv'], {'status': 'unavailable', 'reason': 'Not on this Linux'})
         lines = ' '.join(str(call.args[0]) for call in printed.call_args_list)
         self.assertIn('UNAVAILABLE tv: Not on this Linux', lines)
-        self.assertIn('0 passed; 1 not available on this system; 0 failed', lines)
+        self.assertIn('Finished: 0 of 0 steps done; 1 not available on this system; 0 failed', lines)
         self.assertNotIn('PASS tv', lines)
 
     def test_finishing_screen_shows_it_without_blocking_ready(self):
@@ -1099,10 +1101,11 @@ class CapabilitiesTest(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0 if out else 1, out, '')
         return run
 
-    def rows(self, tmp, text='ID=arch\n', machine='x86_64', python=(3, 13), **kwargs):
+    def rows(self, tmp, text='ID=arch\n', machine='x86_64', python=(3, 13), programs=(), **kwargs):
         release(tmp, text)
+        found = ('systemctl', 'docker', 'nft', *programs)
         return capabilities.detect(self.fake(**kwargs), root=tmp, machine=machine, python=python,
-                                   which=lambda name: '/usr/bin/' + name if name in ('systemctl', 'docker', 'nft') else None)
+                                   which=lambda name: '/usr/bin/' + name if name in found else None)
 
     def test_little_memory_is_a_note_never_a_stop(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1188,7 +1191,7 @@ class CapabilitiesTest(unittest.TestCase):
             self.assertIn('sudo setenforce 0', problems)
             self.assertIn('ausearch -m AVC', problems)
             (Path(tmp) / 'sys/fs/selinux/enforce').write_text('0')
-            rows = self.rows(tmp, target='graphical.target', docker='')
+            rows = self.rows(tmp, target='graphical.target', docker='', programs=('gnome-shell',))
             self.assertEqual(capabilities.value(rows, 'selinux'), 'permissive')
             self.assertFalse(any('SELinux' in p for p in capabilities.missing(rows)))
             self.assertEqual(capabilities.value(rows, 'apparmor'), 'on')
@@ -1267,7 +1270,9 @@ class RepositoryKeyErrorTests(unittest.TestCase):
         def offline(url):
             raise urllib.error.URLError('Temporary failure in name resolution')
         family = self.family(offline)
-        with self.assertRaisesRegex(RuntimeError, 'Downloading the Docker repository key failed \\(Temporary failure in name resolution\\). Check that this PC is connected'):
+        family.say, family.sleep = (lambda text: None), (lambda seconds: None)
+        with self.assertRaisesRegex(RuntimeError, r'Could not reach download\.docker\.com \(Docker.s site\) .*after 3 tries '
+                                                  r'\(Temporary failure in name resolution\)\. Likely causes'):
             family.fetch_key(host.DOCKER, 'ubuntu', 'resolute')
 
 
