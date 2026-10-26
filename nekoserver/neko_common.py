@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.40.1'
+VERSION = '0.40.2'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -1081,15 +1081,47 @@ def identity_matches(path, expected):
 
 def devices_with_uuid(uuid, run=None):
     """The block devices that carry filesystem `uuid` (each once: lsblk lists an LVM
-    volume under every disk it spans), or None when lsblk can't say."""
+    volume under every disk it spans), or None when lsblk can't say. LVM snapshots of the
+    drive are left out (lvm_snapshots): they are not copies."""
     try:
-        result = (run or subprocess.run)(['lsblk', '-J', '-l', '-o', 'PATH,UUID'], capture_output=True,
+        result = (run or subprocess.run)(['lsblk', '-J', '-l', '-o', 'PATH,UUID,TYPE,NAME,KNAME,PKNAME'], capture_output=True,
                                          text=True, timeout=10, check=False)
         rows = json.loads(result.stdout or '')['blockdevices'] if result.returncode == 0 else None
-        found = [row['path'] for row in rows if row.get('uuid') == uuid and row.get('path')]
+        snapshots = lvm_snapshots(rows)
+        found = [row['path'] for row in rows if row.get('uuid') == uuid and row.get('path') and row['path'] not in snapshots]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
         return None
     return sorted(set(found))
+
+
+def lvm_layer(name, suffix):
+    """Whether a device-mapper name is LVM's hidden layer `suffix` ('real' or 'cow') of a
+    volume: '<vg>-<lv>-real'. LVM doubles every '-' inside the names, so the dash before
+    the suffix is a separator only when the dashes there are odd in number."""
+    if not name.endswith('-' + suffix):
+        return False
+    stem = name[:-len(suffix)]
+    return (len(stem) - len(stem.rstrip('-'))) % 2 == 1
+
+
+def lvm_snapshots(rows):
+    """The paths of LVM snapshots (lvcreate -s) and their hidden layers, from lsblk's list
+    (TYPE, NAME, KNAME, PKNAME). A volume with snapshots sits on '<origin>-real', and each
+    snapshot on that '-real' and on its own '<snapshot>-cow'; lsblk lists such a volume
+    once under each. A snapshot carries the volume's filesystem UUID, but it is not a copy
+    left connected: Linux mounts the volume itself by that UUID (LVM gives the snapshot's
+    link the lower priority), so it is left out of the copy check. The origin stays in."""
+    names = {row.get('kname'): str(row.get('name') or '') for row in rows if row.get('type') == 'lvm'}
+    found = set()
+    for row in rows:
+        name, parent = str(row.get('name') or ''), names.get(row.get('pkname'), '')
+        if row.get('type') != 'lvm':
+            continue
+        layer = lvm_layer(name, 'real') or lvm_layer(name, 'cow')
+        snapshot = (lvm_layer(parent, 'real') and parent != name + '-real') or parent == name + '-cow'
+        if layer or snapshot:
+            found.add(row.get('path'))
+    return found
 
 
 def btrfs_device_id(device, run=None):

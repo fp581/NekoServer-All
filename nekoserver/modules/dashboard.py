@@ -274,6 +274,9 @@ def collector_settings(cfg,smart,interval=60):
     acceptance report must match."""
     clean={k:cfg[k] for k in ('data_mount','media_mount','external_backup_mount','storage')};clean['media']={'services':cfg['media']['services']};clean['photos']={'deploy_immich':cfg.get('photos',{}).get('deploy_immich',False),'archive_interval_minutes':cfg.get('photos',{}).get('archive_interval_minutes',60),'backup_schedule':cfg.get('photos',{}).get('backup_schedule','legacy')};clean['music']={'backup_enabled':cfg.get('music',{}).get('backup_enabled',True)};clean['monitoring']={'enabled':cfg.get('monitoring',{}).get('enabled',True),'interval_minutes':cfg.get('monitoring',{}).get('interval_minutes',60)};clean['dashboard']={'smart_interval_seconds':smart,'interval_seconds':interval};clean['heartbeat']={'interval_seconds':cfg.get('heartbeat',{}).get('interval_seconds',300)};clean['runtime']={'backend':cfg.get('runtime',{}).get('backend')};clean['gateway']={k:cfg.get('gateway',{}).get(k) for k in ('services','lan_ip','lan_cidr')}
     clean['nextcloud']={'enabled':cfg.get('nextcloud',{}).get('enabled',False)}
+    # The TV step's choice (guided_setup.wanted saves it as tv.wanted): with its report on the
+    # SSD, it decides whether the page offers Steam Big Picture.
+    clean['tv']={'wanted':cfg.get('tv',{}).get('wanted')}
     clean['acceptance_scope']=scope_digest(cfg)
     return clean
 

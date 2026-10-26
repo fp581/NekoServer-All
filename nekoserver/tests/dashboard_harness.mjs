@@ -7,7 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const CALLS = new Set(['collectIssues', 'filesIntact', 'appState', 'validStatus', 'fixedFloor', 'raiseFixed']);
+const CALLS = new Set(['collectIssues', 'filesIntact', 'appState', 'validStatus', 'fixedFloor', 'raiseFixed',
+  'backupSummary', 'recentCopies', 'integrityResult', 'nextRun', 'shortText', 'pinRefusal', 'guideFor', 'appsSummary',
+  'shownApps']);
+/* Calls answered from another function's result, with more of it. */
+const DETAILED = new Set(['issueDetails']);
 const calls = JSON.parse(process.argv[2]);
 
 /* Anything the page touches: every property is another stand-in, every call returns one. */
@@ -50,10 +54,18 @@ try {
   rmSync(folder, { recursive: true, force: true });
 }
 const answers = calls.map(([name, argument]) => {
-  if (!CALLS.has(name)) throw new Error('Not a function the harness offers: ' + name);
+  if (!CALLS.has(name) && !DETAILED.has(name)) throw new Error('Not a function the harness offers: ' + name);
   if (name === 'collectIssues') {
     return app.collectIssues(app.validStatus(argument)).map(i => ({ id: i.id, level: i.level, title: i.title }));
   }
+  if (name === 'issueDetails') {
+    // The same list with what each item says and which guide it opens.
+    return app.collectIssues(app.validStatus(argument)).map(i => ({ id: i.id, level: i.level, title: i.title, detail: i.detail, guide: i.guide }));
+  }
+  if (['backupSummary', 'appsSummary'].includes(name)) { return app[name](app.validStatus(argument)); }
+  if (name === 'pinRefusal') { return app.pinRefusal(argument.answer, argument.now); }
+  // The apps Home offers (this stand-in page is the server's own, 127.0.0.1).
+  if (name === 'shownApps') { return app.shownApps(app.validStatus(argument), true).map(a => a.id); }
   if (name === 'raiseFixed') {
     // A stand-in Speed slider: what raiseFixed leaves in it and in the draft.
     const input = { min: 20, value: argument.fixed }, shown = { textContent: '' };

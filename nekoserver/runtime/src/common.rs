@@ -603,37 +603,61 @@ fn shared_lock_wait_with(
 /// Whether setup holds the lock at `path`: a process holding it (the kernel's list of
 /// locks) also has setup's own lock (`setup`) open. Read-only: nothing is locked to find
 /// out, so a setup starting meanwhile is never kept from taking its own lock.
+///
+/// /proc/locks names a file by its filesystem's device number and its inode, but on
+/// Btrfs that device is not the one stat() gives (each subvolume shows a device of its
+/// own), so they never matched and setup was never recognised there. So the device is
+/// not compared: a holder found by inode counts only when one of its open files is this
+/// lock file (compared through stat on both sides) and the kernel lists a lock on that
+/// very open file (its fdinfo "lock:" line).
 fn held_by(path: &Path, setup: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     let (Ok(lock), Ok(setup)) = (fs::metadata(path), fs::metadata(setup)) else {
         return false;
     };
     let locks = fs::read_to_string("/proc/locks").unwrap_or_default();
-    lock_holders(&locks, lock.dev(), lock.ino())
-        .into_iter()
-        .any(|pid| has_open(pid, setup.dev(), setup.ino()))
+    lock_holders(&locks, lock.ino()).into_iter().any(|pid| {
+        holds_lock_on(pid, lock.dev(), lock.ino()) && has_open(pid, setup.dev(), setup.ino())
+    })
 }
-/// The processes holding a lock on the file (`dev`, `ino`), from /proc/locks lines like
-/// "1: FLOCK  ADVISORY  WRITE 1234 08:02:5678 0 EOF" (a waiting one has "->").
-fn lock_holders(locks: &str, dev: u64, ino: u64) -> Vec<u32> {
-    let file = format!("{:02x}:{:02x}:{ino}", libc::major(dev), libc::minor(dev));
+/// The processes holding a lock on a file with inode `ino`, from /proc/locks lines like
+/// "1: FLOCK  ADVISORY  WRITE 1234 08:02:5678 0 EOF" (a waiting one has "->"). Any
+/// device: see held_by.
+fn lock_holders(locks: &str, ino: u64) -> Vec<u32> {
+    let ino = ino.to_string();
     locks
         .lines()
         .filter(|l| !l.contains("->"))
         .filter_map(|l| {
             let fields: Vec<&str> = l.split_whitespace().collect();
-            (fields.len() > 5 && fields[5] == file).then(|| fields[4].parse().ok())?
+            let file_ino = fields.get(5)?.rsplit(':').next()?;
+            (fields.len() > 5 && file_ino == ino).then(|| fields[4].parse().ok())?
         })
         .collect()
 }
-/// Whether process `pid` has the file (`dev`, `ino`) open.
-fn has_open(pid: u32, dev: u64, ino: u64) -> bool {
+/// The descriptors (their numbers) through which process `pid` has the file (`dev`,
+/// `ino`) open.
+fn open_as(pid: u32, dev: u64, ino: u64) -> Vec<String> {
     use std::os::unix::fs::MetadataExt;
     fs::read_dir(format!("/proc/{pid}/fd"))
         .into_iter()
         .flatten()
         .flatten()
-        .any(|fd| fs::metadata(fd.path()).is_ok_and(|m| m.dev() == dev && m.ino() == ino))
+        .filter(|fd| fs::metadata(fd.path()).is_ok_and(|m| m.dev() == dev && m.ino() == ino))
+        .map(|fd| fd.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+/// Whether process `pid` has the file (`dev`, `ino`) open.
+fn has_open(pid: u32, dev: u64, ino: u64) -> bool {
+    !open_as(pid, dev, ino).is_empty()
+}
+/// Whether process `pid` holds a lock through one of its open descriptors of the file
+/// (`dev`, `ino`): the kernel lists it in that descriptor's fdinfo.
+fn holds_lock_on(pid: u32, dev: u64, ino: u64) -> bool {
+    open_as(pid, dev, ino).iter().any(|fd| {
+        fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))
+            .is_ok_and(|info| info.lines().any(|l| l.starts_with("lock:")))
+    })
 }
 /// What the current job is doing, for its report if it fails ("copying photos").
 static STAGE: Mutex<String> = Mutex::new(String::new());
@@ -646,7 +670,9 @@ pub fn current_stage() -> String {
     STAGE.lock().map(|s| s.clone()).unwrap_or_default()
 }
 /// A short, safe reason for reports and the dashboard: one line, printable, at most
-/// 300 characters, with anything that looks like a password or key removed.
+/// 300 characters, with anything that looks like a password or key removed. A closing
+/// full stop is left off (an ellipsis is kept), as in every reason the runtime writes:
+/// the messages that add a sentence after it ("…. No success recorded.") showed two.
 pub fn sanitize(text: &str) -> String {
     let secret =
         regex::Regex::new(r"(?i)\b([a-z_]*(pass(word)?|secret|token|key)[a-z_]*)\s*[=:]\s*\S+")
@@ -659,11 +685,35 @@ pub fn sanitize(text: &str) -> String {
         .chars()
         .filter(|c| !c.is_control())
         .collect::<String>();
-    secret
-        .replace_all(&line, "$1=<removed>")
-        .chars()
-        .take(300)
-        .collect()
+    let short = shortened(&secret.replace_all(&line, "$1=<removed>"), 300);
+    match short.strip_suffix('.') {
+        Some(rest) if !rest.ends_with('.') => rest.to_string(),
+        _ => short,
+    }
+}
+/// `text` in at most `max` characters: when longer, cut after its last whole sentence
+/// that fits (if that keeps most of it; it then ends with that sentence, no "…" after
+/// its full stop), else after its last whole word with "…", never in the middle of a
+/// word. A quote the cut leaves open is closed.
+fn shortened(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    // Room for the "…" and a closing quote.
+    let room: String = text.chars().take(max - 2).collect();
+    let sentence = room.rfind(". ").map(|at| at + 1);
+    let mut kept = match (sentence, room.rfind(' ')) {
+        (Some(at), _) if at * 3 >= room.len() * 2 => room[..at].to_string(),
+        (_, Some(at)) if at > 0 => format!(
+            "{}…",
+            room[..at].trim_end_matches([' ', ',', ';', ':', '.'])
+        ),
+        _ => format!("{room}…"),
+    };
+    if kept.matches('"').count() % 2 == 1 {
+        kept.push('"');
+    }
+    kept
 }
 /// The last part of a command's error output (stderr), sanitized; kept so a failure
 /// can say why instead of only that it failed.
@@ -864,7 +914,56 @@ mod lock_tests {
             sanitize("first line\nERROR: password=hunter2 rejected for DB_PASSWORD: x9y8\n"),
             "ERROR: password=<removed> rejected for DB_PASSWORD=<removed>"
         );
-        assert!(sanitize(&"x".repeat(1000)).len() <= 300);
+        assert!(sanitize(&"x".repeat(1000)).chars().count() <= 300);
+        // A long reason is cut at a sentence or a word, never mid-word, and says so.
+        let long = format!(
+            "{}. {}",
+            "First sentence".repeat(12),
+            "next words ".repeat(30)
+        );
+        let cut = sanitize(&long);
+        assert!(cut.chars().count() <= 300 && cut.ends_with('…'), "{cut}");
+        let kept = cut.trim_end_matches('…');
+        assert!(
+            long.starts_with(kept) && long[kept.len()..].starts_with(' '),
+            "{cut}"
+        );
+        // Most of it fits after the last whole sentence: cut there.
+        let sentences = format!(
+            "{}. And a last one that is too long",
+            "A fairly long sentence here".repeat(10)
+        );
+        // Whole sentences: no "…" after the full stop (which is left off, as below).
+        assert_eq!(
+            sanitize(&sentences),
+            "A fairly long sentence here".repeat(10)
+        );
+        // Cut inside a quote: the quote is closed, and main.rs's ". No success recorded."
+        // then never follows "…" directly ("…." before).
+        let quoted = format!(
+            "{}; when no good copy is left it offers \"accept that this saved copy is lost\" (kept)",
+            "To settle it, run the repair".repeat(9)
+        );
+        let cut = sanitize(&quoted);
+        assert!(cut.chars().count() <= 300, "{cut}");
+        assert!(
+            cut.ends_with("…\"") && cut.matches('"').count() % 2 == 0,
+            "{cut}"
+        );
+        assert!(
+            !format!("{cut}. No success recorded.").contains("…."),
+            "{cut}"
+        );
+        assert!(!cut.contains(".…"), "{cut}");
+        let words = sanitize(&"word ".repeat(100));
+        assert!(words.ends_with("word…"), "{words}");
+        // A closing full stop is left off, so "{reason}. No success recorded." shows one
+        // (IT-10: "…could use either one.. No success recorded."); an ellipsis stays.
+        assert_eq!(
+            sanitize("Linux could use either one."),
+            "Linux could use either one"
+        );
+        assert_eq!(sanitize("still waiting..."), "still waiting...");
         let (code, _) = command(
             &[
                 "sh",
@@ -1073,13 +1172,18 @@ mod lock_tests {
         let waiting = format!("1: -> {}", &line(7, &shared)[3..]);
         let meta = fs::metadata(&shared).unwrap();
         assert_eq!(
-            lock_holders(
-                &format!("{}\n{waiting}", line(me, &shared)),
-                meta.dev(),
-                meta.ino()
-            ),
+            lock_holders(&format!("{}\n{waiting}", line(me, &shared)), meta.ino()),
             vec![me]
         );
+        // Btrfs: /proc/locks shows the filesystem's device (00:5b), stat() the
+        // subvolume's (00:64). The holder is still found (QA-02).
+        let btrfs = format!("1: FLOCK  ADVISORY  WRITE {me} 00:5b:{} 0 EOF", meta.ino());
+        assert_eq!(lock_holders(&btrfs, meta.ino()), vec![me]);
+        assert!(lock_holders(&btrfs, meta.ino() + 1).is_empty());
+        // ... and confirmed through this process's own open file and the kernel's list
+        // of locks on it, not through the device number.
+        assert!(holds_lock_on(me, meta.dev(), meta.ino()));
+        assert!(!holds_lock_on(me, meta.dev(), meta.ino() + 1));
         let short = Duration::from_millis(50);
         // Another job (no setup lock open) still holds it after the wait: a failure, as before.
         fs::write(&setup, b"").unwrap();
@@ -1097,5 +1201,23 @@ mod lock_tests {
         drop(held);
         assert!(shared_lock_wait_with(&shared, &setup, short, short).is_ok());
         let _ = fs::remove_dir_all(root);
+    }
+    /// QA-02 on a real filesystem: the folder in NEKO_LOCKDIR (a Btrfs subvolume, say;
+    /// skipped without it). This process holds the shared lock there and has setup's own
+    /// lock open, as setup does: a waiting job is postponed, not failed.
+    #[test]
+    fn setup_holding_the_lock_is_recognised_on_the_filesystem_in_neko_lockdir() {
+        let Some(dir) = std::env::var_os("NEKO_LOCKDIR") else {
+            return;
+        };
+        let shared = PathBuf::from(dir).join("recovery.lock");
+        let setup = scratch("lockdir-setup").join("setup.lock");
+        fs::write(&setup, b"").unwrap();
+        let _setup_open = File::open(&setup).unwrap();
+        let _held = lock(&shared).unwrap();
+        assert!(held_by(&shared, &setup), "{}", shared.display());
+        let short = Duration::from_millis(50);
+        let waited = shared_lock_wait_with(&shared, &setup, Duration::from_secs(60), short);
+        assert!(postponed(&waited.unwrap_err()));
     }
 }

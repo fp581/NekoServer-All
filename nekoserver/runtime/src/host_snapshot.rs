@@ -363,6 +363,24 @@ fn short_of_space(media: &Path, have: u128, needed: u128, reserve: u64) -> Strin
         reserve >> 30
     )
 }
+/// The journal's line for a snapshot that was written (a successful night said nothing
+/// of its own before: only systemd's "Finished").
+fn written(name: &str, files: &[Value], root: &Path, left_out: &[String]) -> String {
+    let copied = files.iter().filter(|r| r["kind"] != "directory");
+    let (count, bytes) = copied.fold((0u64, 0u64), |(n, b), r| {
+        (n + 1, b.saturating_add(r["size"].as_u64().unwrap_or(0)))
+    });
+    format!(
+        "Host snapshot {name} written to {}: {count} files, {:.1} MB, each copy's checksum recorded{}",
+        root.display(),
+        bytes as f64 / 1_000_000.0,
+        if left_out.is_empty() {
+            String::new()
+        } else {
+            format!("; left out while Steam was open: {}", left_out.join(", "))
+        }
+    )
+}
 pub fn run(a: &Args) -> Result<()> {
     let job = backup::open_job(a, 128000)?;
     let selected = sources(&job.cfg, &job.media)?;
@@ -536,7 +554,9 @@ fn snapshot(
             &manifest,
             keep,
             protected.as_deref(),
-        )
+        )?;
+        println!("{}", written(&stage.name, &files, &root, &left_out));
+        Ok(())
     })();
     let restarted = resume();
     result.and(restarted)?;
@@ -548,6 +568,25 @@ fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_written_snapshot_says_so_in_the_journal() {
+        let files = vec![
+            json!({"path": "etc", "kind": "directory"}),
+            json!({"path": "etc/fstab", "kind": "file", "size": 600_000}),
+            json!({"path": "etc/link", "kind": "symlink", "size": 500_000}),
+        ];
+        let root = Path::new("/mnt/nekoserver-media/backups/host-user");
+        let said = written("snapshot-1-2", &files, root, &[]);
+        assert_eq!(
+            said,
+            "Host snapshot snapshot-1-2 written to /mnt/nekoserver-media/backups/host-user: 2 files, 1.1 MB, each copy's checksum recorded"
+        );
+        let steam = written("snapshot-1-2", &files, root, &["steam".into()]);
+        assert!(
+            steam.ends_with("; left out while Steam was open: steam"),
+            "{steam}"
+        );
+    }
     #[test]
     fn a_full_hdd_names_the_drive_and_the_space() {
         let said = short_of_space(

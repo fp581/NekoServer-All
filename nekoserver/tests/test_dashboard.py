@@ -782,5 +782,18 @@ class DashboardPortTests(unittest.TestCase):
                 dashboard.run(ctx)
 
 
+
+class TvChoiceTests(unittest.TestCase):
+    """NP-2: the collector's own settings carry the TV choice, so a set-up TV keeps its
+    Steam Big Picture card (the collector reads these settings, not my-config.json)."""
+    def test_the_collector_settings_carry_the_tv_choice(self):
+        from modules import dashboard
+        cfg = {'data_mount': '/srv/n', 'media_mount': '/mnt/m', 'external_backup_mount': '/mnt/u', 'storage': {},
+               'media': {'services': []}}
+        self.assertEqual(dashboard.collector_settings(dict(cfg, tv={'wanted': True}), 1800)['tv'], {'wanted': True})
+        self.assertEqual(dashboard.collector_settings(dict(cfg, tv={'wanted': False}), 1800)['tv'], {'wanted': False})
+        self.assertEqual(dashboard.collector_settings(cfg, 1800)['tv'], {'wanted': None})
+
+
 if __name__ == '__main__':
     unittest.main()

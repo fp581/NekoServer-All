@@ -319,14 +319,41 @@ def nextcloud_occ(config, *args):
                    'exec', '-T', '--user', 'www-data', 'nextcloud', 'php', 'occ', *args])
 
 
-def nextcloud_two_factor(config, username):
+def nextcloud_two_factor(config, username, groups=()):
     """Whether Nextcloud asks this user for a second sign-in step: turned on for the
-    user, or required for everyone (or for a group) by the administrator."""
+    user, or required of them by the administrator. Required "for everyone" counts; one
+    required only for some groups, or for all but some, counts only when this user is
+    covered (`groups`: the user's groups, from user:info)."""
     state = nextcloud_occ(config, 'twofactorauth:state', username)
     if 'is enabled for user' in state:
         return True
     enforced = nextcloud_occ(config, 'twofactorauth:enforce')
-    return 'is enforced' in enforced and 'not enforced' not in enforced
+    if 'is enforced' not in enforced or 'not enforced' in enforced:
+        return False
+    if 'is enforced for all users' in enforced and 'except members of' not in enforced:
+        return True
+    try:
+        listed = nextcloud_occ(config, 'config:list', 'system', '--output=json')
+    except RuntimeError:   # can't be told: the refused password counts as wrong
+        return False
+    return two_factor_required_of(listed, groups)
+
+
+def two_factor_required_of(listed, groups):
+    """Nextcloud's own rule for enforced two-factor sign-in (MandatoryTwoFactor::isEnforcedFor),
+    from its settings (`occ config:list system --output=json`): with groups named, only
+    their members; otherwise everyone but the members of the excluded groups. False when
+    the settings can't be read: a refused password is then a wrong password."""
+    try:
+        system = json.loads(listed)['system']
+        named, excluded = system.get('twofactor_enforced_groups') or [], system.get('twofactor_enforced_excluded_groups') or []
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return False
+    if not isinstance(named, list) or not isinstance(excluded, list) or str(system.get('twofactor_enforced')) != 'true':
+        return False
+    if named:
+        return any(group in groups for group in named)
+    return not any(group in groups for group in excluded)
 
 
 NEXTCLOUD_TWO_FACTOR = ('verified: the administrator exists; two-factor sign-in is on, so Nextcloud does not accept '
@@ -349,7 +376,7 @@ def nextcloud(client, entry, config):
         client.call(path, 'PROPFIND', b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>',
                     raw=True, headers={'Authorization': 'Basic ' + basic, 'Content-Type': 'application/xml', 'Depth': '0'})
     except HTTPFailure as exc:
-        if exc.code != 401 or not nextcloud_two_factor(config, entry['username']):
+        if exc.code != 401 or not nextcloud_two_factor(config, entry['username'], info.get('groups', [])):
             raise
         return NEXTCLOUD_TWO_FACTOR
     return None

@@ -59,14 +59,20 @@ fn main() {
             return;
         }
         let stage = common::current_stage();
+        let reason = common::sanitize(&e.to_string());
+        // A reason that already ends a sentence (or was cut with "…") gets no second full stop.
+        let stop = if reason.ends_with(['.', '…', '!', '?']) {
+            ""
+        } else {
+            "."
+        };
         eprintln!(
-            "NekoServer runtime failed{}: {}. No success recorded.",
+            "NekoServer runtime failed{}: {reason}{stop} No success recorded.",
             if stage.is_empty() {
                 String::new()
             } else {
                 format!(" while {stage}")
             },
-            common::sanitize(&e.to_string())
         );
         std::process::exit(1)
     }

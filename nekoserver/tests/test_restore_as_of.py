@@ -2,9 +2,11 @@
 import gzip
 import hashlib
 import json
+import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,11 +24,21 @@ def answers(*values):
     return lambda question='': next(it)
 
 
+def zone(name):
+    """Show dates in the time zone `name` until the test ends (the menu shows local time)."""
+    patched = mock.patch.dict(os.environ, {'TZ': name})
+    patched.start()
+    time.tzset()
+    return lambda: (patched.stop(), time.tzset())
+
+
 class Restoring(unittest.TestCase):
     """A server whose USB drive holds a Nextcloud backup tree (filled by each test class)."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # The dates said below are this computer's own time: UTC here.
+        self.addCleanup(zone('UTC'))
         # The HDD counts as mounted here (the restore folder is suggested on it).
         ready = mock.patch.object(recovery_wizard, 'hdd_ready', return_value=True)
         ready.start()
@@ -143,7 +155,7 @@ class RestoreAsOfTests(Restoring):
         listed = next((self.media / 'restored').iterdir()) / 'NOT-RESTORED.txt'
         self.assertEqual(listed.read_bytes(), b'damaged: alice/files/' + EDIT.encode()
                          + b'\nmissing: alice/files/new-name.txt\n')
-        self.assertIn('2 files were NOT restored', out)
+        self.assertIn('NOT restored (2 files)', out)
 
     def test_a_list_that_cannot_be_read_offers_everything(self):
         for path in (self.tree / '.neko-inventory').iterdir():
@@ -167,6 +179,14 @@ class RestoreAsOfTests(Restoring):
         bad.write_bytes(gzip.compress(json.dumps({'format': 'other', 'files': {}}).encode()))
         self.assertIsNone(recovery_wizard.read_inventory(bad))
         self.assertIsNone(recovery_wizard.read_inventory(self.tree / 'missing.json.gz'))
+
+    def test_backup_dates_are_shown_in_this_computer_s_own_time(self):
+        # UP-11: a household in Israel was shown UTC (03:00 for its 05:00 backup).
+        self.addCleanup(zone('Asia/Jerusalem'))
+        self.assertEqual(recovery_wizard.readable('20261101T030000Z'), '2026-11-01 05:00 IST')
+        self.assertEqual(recovery_wizard.when(1793502000 * 10**6), '2026-11-01 05:00 IST')
+        _, out = self.restore('1', 'yes', '1')
+        self.assertIn('As of the last backup (2026-11-01 05:00 IST)', out)
 
     def test_lists_are_newest_first_also_two_in_one_second(self):
         self.inventory('20261101T030000Z-1', {})
@@ -219,7 +239,7 @@ class FileFolderFileTests(Restoring):
         self.assertEqual(second, {'Projects/notes.txt': b'notes'})
         first, out = self.restore('1', 'yes', '2', '2')
         self.assertEqual(first, {'Projects': b'OLD CONTENT'})
-        self.assertIn('1 files matched their recorded checksums', out)
+        self.assertIn('Checksums matched for 1 file', out)
         self.assertNotIn('NOT restored', out)
 
     def test_content_no_saved_copy_has_is_missing_never_another_file(self):
@@ -227,7 +247,7 @@ class FileFolderFileTests(Restoring):
         (self.tree / 'alice/neko-replaced/20261101T030000Z/Projects').unlink()
         first, out = self.restore('1', 'yes', '2', '2', 'yes')
         self.assertEqual(first, {})
-        self.assertIn('1 files were NOT restored', out)
+        self.assertIn('NOT restored (1 file)', out)
 
     def test_a_saved_copy_whose_content_changed_is_not_taken_for_the_listed_one(self):
         # The ledger and the copy agree with each other but not with the list: the list's
@@ -243,7 +263,7 @@ class FileFolderFileTests(Restoring):
         first, out = self.restore('1', 'yes', '2', '2', 'yes')
         self.assertEqual(first, {})
         self.assertIn('can\'t be told', out)
-        self.assertIn('1 files were left out: they became a folder', out)
+        self.assertIn('Left out (1 file): they became a folder', out)
         # A file that was never replaced still restores from such a list.
         self.write(self.tree / 'alice/files/plain.txt', b'plain')
         stamp = self.tree / '.neko-inventory/20261025T030000Z.json.gz'

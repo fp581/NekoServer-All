@@ -155,6 +155,12 @@ class WindowTests(unittest.TestCase):
         self.settings = Path(self.tmp.name) / 'my-config.json'
         self.config = {'profiles': {'full': ['system', 'docker', 'tv', 'maintenance']}, 'tv': {'user': 'auto'}}
         self.settings.write_text(json.dumps(self.config))
+        # NekoServer's own package names, whatever Linux runs the tests (WindowPackageTests
+        # checks the names of each family).
+        packages = mock.patch.object(setup_gui, 'family_packages', return_value={
+            'names': lambda name: [name], 'vulkan': ['vulkan-intel', 'lib32-vulkan-intel']})
+        packages.start()
+        self.addCleanup(packages.stop)
         self.window = setup_gui.Window(self.settings, self.config, wizard.STEPS, self.config['profiles']['full'])
         self.addCleanup(self.window.stop)
         self.addCleanup(setup_progress.disable)
@@ -205,8 +211,10 @@ class WindowTests(unittest.TestCase):
         browser = self.cookie_browser()
         with browser.open(fresh.url, timeout=5) as response:
             self.assertEqual(response.status, 200)
-        with self.assertRaises(urllib.error.HTTPError) as caught:     # the address works once
-            self.cookie_browser().open(fresh.url, timeout=5)
+        # A request of another kind still never claims it, also once it is open.
+        other = self.cookie_browser()
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            other.open(grab, timeout=5)
         self.assertEqual(caught.exception.code, 403)
 
     @staticmethod
@@ -247,7 +255,14 @@ class WindowTests(unittest.TestCase):
         status, cookie, _ = load_as(1000)
         self.assertEqual(status, 200)
         self.assertIn(setup_gui.COOKIE + '=' + fresh.session, cookie)
-        self.assertEqual(load_as(0)[0], 403)            # it still works once
+        status, cookie, body = load_as(2000)            # once it is open, still not another account
+        self.assertEqual((status, cookie), (403, ''))
+        self.assertIn(b'open somewhere else', body)
+        first = fresh.session
+        status, cookie, _ = load_as(0)                  # root (setup itself) may open it again
+        self.assertEqual(status, 200)
+        self.assertNotEqual(fresh.session, first)
+        self.assertIn(setup_gui.COOKIE + '=' + fresh.session, cookie)
         table.unlink()                                  # an owner that can't be told is refused too
         refused = setup_gui.Window(self.settings, self.config, wizard.STEPS, [], owners={0}, tables=(table,))
         self.addCleanup(refused.stop)
@@ -406,7 +421,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(state['phase'], 'finished')
         self.assertEqual(state['finish'][1], 'Done: 1 of 3 steps.')
         self.assertEqual(state['steps'][1]['reason'], 'Docker is installed as a snap')
-        self.assertEqual(state['done'], 2)    # unavailable counts as settled
+        # Counted as the terminal and the log count: done of the steps this PC can have.
+        self.assertEqual((state['done'], state['total']), (1, 3))
         self.assertTrue(self.window.delivered.is_set())
 
     def test_a_body_too_large_or_broken_is_refused(self):
@@ -417,11 +433,12 @@ class WindowTests(unittest.TestCase):
                 self.browser.open(request, timeout=5)
             self.assertEqual(caught.exception.code, code)
 
-    def test_the_address_works_once_and_then_only_for_that_browser(self):
+    def test_without_the_cookie_only_the_page_itself_opens_and_only_for_its_account(self):
         # Another account on this PC can read the address from the browser's command
-        # line; once the window has opened it, the address alone lets nobody in.
+        # line; once the window has opened it, the address alone lets nobody in but the
+        # same account (or root), and then only by loading the page itself.
         other = self.cookie_browser()
-        for route in ('', 'api/state', 'static/setup.js'):
+        for route in ('api/state', 'static/setup.js'):
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 self.get(route, browser=other)
             self.assertEqual(caught.exception.code, 403, route)
@@ -430,6 +447,21 @@ class WindowTests(unittest.TestCase):
             other.open(request, timeout=5)
         self.assertEqual(caught.exception.code, 403)
         self.assertEqual(self.get('')[0], 200)          # a reload in the window's own browser
+
+    def test_a_closed_window_opens_again_from_the_same_account(self):
+        """D2: the auto-opened window was closed (its browser lost the session cookie with
+        it); pasting the address again, as the terminal says, opens it again. The older
+        window's session ends and the page then says where the window is."""
+        reopened = self.cookie_browser()
+        status, kind, _ = self.get('', browser=reopened)
+        self.assertEqual((status, kind), (200, 'text/html; charset=utf-8'))
+        self.assertEqual(self.get('api/state', browser=reopened)[0], 200)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.get('api/state')                       # the first window's cookie
+        self.assertEqual(caught.exception.code, 403)
+        page = caught.exception.read()
+        self.assertTrue(page.startswith(b'<!doctype html>'))    # words that wrap, not a line of code
+        self.assertIn(b'open somewhere else', page)
 
     def test_only_this_pcs_own_name_is_answered(self):
         request = urllib.request.Request(self.window.url + 'api/state', headers={'Host': 'evil.example:80'})

@@ -171,12 +171,22 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
             problem=SELINUX_ENFORCING),
         row('apparmor', 'AppArmor', 'on' if apparmor.upper().startswith('Y') else 'off', True),
         row('firewall', 'Firewall', firewall_hint(firewalls) if firewalls else 'off', not firewalls),
-        row('desktop', 'Desktop', 'yes' if target == 'graphical.target' else 'no (server)', True),
+        row('desktop', 'Desktop', desktop_found(target, which), True),
         row('memory', 'Memory (8 GB or more recommended)', memory_note(memory),
             not memory or memory >= ENOUGH_MEMORY_GIB),
         row('clock', 'Clock set by the network', {'yes': 'yes', 'no': CLOCK_NOTE}.get(synchronised, 'unknown'),
             synchronised != 'no'),
     ]
+
+
+def desktop_found(target, which=shutil.which):
+    """Whether this PC has a desktop. Starting in graphical mode is not enough: Ubuntu does
+    that on a server too. A desktop also has its display server or session program (the
+    ones the TV step looks for)."""
+    if target != 'graphical.target':
+        return 'no (server)'
+    from modules.tv import DESKTOP_PROGRAMS
+    return 'yes' if any(which(name) for name in DESKTOP_PROGRAMS) else 'no (no desktop installed)'
 
 
 def value(rows, name):

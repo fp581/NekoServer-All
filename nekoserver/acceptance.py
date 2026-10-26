@@ -227,7 +227,7 @@ def manual_tests(modules,config):
     if 'tv' in modules:out += [('tv_session','HDMI, sound, controller and Remote Play','Verify TV picture/audio, controller input, Steam login/Remote Play and browser/media launchers. Confirm idle AC settings keep server jobs running.')]
     if 'heartbeat' in modules:out += [('outage_delivery','Independent outage alert','Confirm receipt at the outside monitor, stop only nekoserver-heartbeat.timer until period plus grace has elapsed, witness an alert, re-enable/start it and witness recovery. Keep the monitor outside this PC and its power/network failure domain.')]
     if 'notifications' in modules:out += [('notification_delivery','Phone notification delivery','Subscribe the intended phone to the protected ntfy topic; run the native test command and witness receipt with the dashboard closed. Rehearse problem/recovery delivery and network interruption without touching irreplaceable drives.')]
-    if 'recovery' in modules:out += [('os_recovery','OS replacement/recovery exercise','With independent verified backups, rehearse the documented supported OS recovery and confirm retained data/apps and reboot behaviour. Automatic Bazzite reattachment remains unsupported.')]
+    if 'recovery' in modules:out += [('os_recovery','OS replacement/recovery exercise','With independent verified backups, rehearse the documented supported OS recovery and confirm retained data/apps and reboot behaviour.')]
     out += restore_tests(modules,config)
     return [item(key,name,'needs_setup',detail) for key,name,detail in out]
 
@@ -235,7 +235,8 @@ def log_rotation():
     """Containers whose logs have no size limit, or None if Docker cannot be read."""
     from modules import docker as docker_module
     rc,ids=health.run(['docker','ps','-aq','--no-trunc'],20)
-    if rc:return None
+    # rc is None when Docker is not installed (or did not answer): nothing was checked.
+    if rc!=0:return None
     if not ids.split():return []
     rc,out=health.run(['docker','inspect',*ids.split()],30)
     try:return docker_module.unbounded_logs(json.loads(out)) if rc==0 else None
@@ -245,10 +246,18 @@ def log_rotation_finding(unbounded):
     """(status, detail) for the container log check; None means Docker could not be read."""
     if unbounded==[]:
         return 'pass','Every container log is size-limited.'
+    if unbounded is None:
+        return 'needs_setup','Docker could not be asked about its containers (is it installed and running?), so their log limits were not checked.'
     names=': '+', '.join(unbounded[:8]) if unbounded else ''
     return 'needs_setup',('Unlimited container logs can fill the SSD'+names+'. Containers made before the limit '
                           'keep unlimited logs until they are recreated after Docker restarts (a reboot, then the '
                           'monthly update or rerunning setup).')
+
+def host_finding(supported):
+    """(status, detail) for the recovery host check, naming every Linux family setup supports."""
+    families=', '.join(f.label for f in host.FAMILIES)
+    if supported:return 'pass',f'Supported x86_64 Linux detected (one of: {families}).'
+    return 'needs_setup',f'A supported x86_64 Linux is required: {families}.'
 
 def unavailable_steps(config):
     """The steps setup itself recorded as not available on this PC ("unavailable" in its
@@ -288,7 +297,7 @@ def inspect(config,profile='full',now=None):
     except (OSError,RuntimeError,ValueError,TypeError,KeyError,installer.InstallerError):
         add('configuration','Configuration and profile','fail','Configuration or selected dependency profile is invalid.');return summarize(run)
     add('configuration','Configuration and profile','pass','Selected profile and dependency plan are valid.')
-    supported=recovery_tools.host_supported();add('host','Supported recovery host','pass' if supported else 'needs_setup','Supported x86_64 Linux (Arch/Nyarch or Debian/Ubuntu) detected.' if supported else 'A supported x86_64 Linux is required: Arch/Nyarch or Debian/Ubuntu.')
+    add('host','Supported recovery host',*host_finding(recovery_tools.host_supported()))
     matched={}
     for role,name in (('data_ssd','Application SSD'),('media_hdd','Media HDD')):
         spec=config['storage'][role];path=config['data_mount' if role=='data_ssd' else 'media_mount'];value=health.mount_info(path,spec['uuid'],spec['fstype']);matched[role]=value['status']=='mounted';add('mount:'+role,name,'pass' if matched[role] else 'needs_setup' if value['status']=='not_configured' else 'fail','Configured UUID and filesystem verified.' if matched[role] else 'Configure and mount the intended drive; no private data is inspected on a mismatch.')

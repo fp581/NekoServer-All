@@ -6,7 +6,7 @@
 //!   hands it back to the firmware;
 //! - never below MIN_FLOOR %, whatever the curve says;
 //! - full speed when the curve's sensor can't be read, or any sensor nears its
-//!   critical temperature (or 95 °C);
+//!   critical temperature, reaches 105 °C, or stays above 95 °C for five minutes;
 //! - every output goes back to the firmware when control stops (and, after a crash,
 //!   through `control --restore`, which systemd runs whenever the service ends). For
 //!   that, the firmware's own setting is written to a journal file *before* an output

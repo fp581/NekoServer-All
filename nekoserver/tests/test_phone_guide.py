@@ -52,11 +52,40 @@ class PhoneGuideTests(unittest.TestCase):
         self.assertIn('me@example.org', text)
         self.assertIn('Immich (App Store)', text)
         self.assertNotIn('SECRET-PW', text)
-        self.assertIn('sudo cat', text)
-        # Navidrome uses the separate listener account on the phone.
-        self.assertIn('listener', '\n'.join(phone_guide.instructions({}, 'navidrome', LINKS['navidrome'])))
-        # Not provisioned yet: still tells you where to look.
-        self.assertIn('see the password list', '\n'.join(phone_guide.instructions({}, 'seerr', LINKS['seerr'])))
+        self.assertIn('account-setup.py show immich', text)
+        # Navidrome uses the separate listener account on the phone, and says what it is.
+        music = '\n'.join(phone_guide.instructions({}, 'navidrome', LINKS['navidrome']))
+        self.assertIn('show navidrome_listener', music)
+        self.assertIn('made for playing music', music)
+        # Not provisioned yet: still tells you how to see it.
+        self.assertIn('account-setup.py show seerr', '\n'.join(phone_guide.instructions({}, 'seerr', LINKS['seerr'])))
+
+    def test_the_login_comes_before_the_sign_in_step(self):
+        """D16: the username and how to see the password were the last lines, after
+        "Sign in with your ... password"; they now come just before it."""
+        for app in phone_guide.LOGIN:
+            with self.subTest(app=app):
+                steps = phone_guide.instructions({}, app, LINKS[app])
+                login = next(n for n, s in enumerate(steps) if 'account-setup.py show' in s)
+                sign_in = next(n for n, s in enumerate(steps) if 'sign in' in s.lower())
+                self.assertEqual(login + 1, sign_in)
+                self.assertFalse(any('sudo cat' in s for s in steps))
+
+    def test_the_show_command_is_the_copy_kept_on_the_ssd(self):
+        """It must still work after the downloaded folder is deleted, and a folder name
+        with a space must stay one argument when pasted."""
+        command = phone_guide.show_command({'data_mount': '/srv/my ssd'}, 'jellyfin')
+        self.assertEqual(command, "sudo python3 '/srv/my ssd/installer/releases/v" + phone_guide.VERSION +
+                         "/account-setup.py' show jellyfin")
+        self.assertTrue((ROOT / phone_guide.SHOW_TOOL).is_file())
+
+    def test_page_lists_phone_apps_apart_from_the_numbered_steps(self):
+        page = phone_guide.page_html({}, {'jellyfin': LINKS['jellyfin']}, qr=lambda text: '')
+        self.assertNotIn('<li>iPhone:', page)
+        self.assertIn('<p>Phone app: iPhone: Jellyfin (App Store)', page)
+        self.assertIn('Username: neko_ab12', page)
+        self.assertIn('account-setup.py show jellyfin', page)
+        self.assertNotIn('sudo cat', page)
 
     def test_page_has_tailscale_first_then_each_app_with_qr(self):
         page = phone_guide.page_html({}, LINKS, qr=lambda text: '<svg data-for="' + text + '"></svg>')

@@ -40,8 +40,8 @@ def run(code):
 @unittest.skipUnless(NODE, 'node is not installed')
 class ChecksumVerdictTests(unittest.TestCase):
     def verdicts(self, row):
-        code = pieces(consts=('numeric', 'count', 'INTEGRITY_MAX_AGE'), functions=(
-            'firstOf', 'integrityBad', 'checkDated', 'checkOverdue', 'filesIntact', 'integrityResult'))
+        code = pieces(consts=('numeric', 'count', 'text', 'INTEGRITY_MAX_AGE'), functions=(
+            'firstOf', 'plural', 'integrityBad', 'checkDated', 'checkOverdue', 'filesIntact', 'integrityResult'))
         return run(code + f'\nconst row = {json.dumps(row)};\nconsole.log(JSON.stringify([filesIntact([row]), integrityResult(row).label]));')
 
     def test_a_quick_run_alone_is_not_shown_as_matching(self):

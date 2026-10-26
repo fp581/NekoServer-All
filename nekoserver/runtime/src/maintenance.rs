@@ -1066,10 +1066,14 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
         .ok_or_else(|| Error::new("Invalid model"))?
         .remove("name");
     // An internal network: the restored apps (with production's settings, so their
-    // webhooks and links to other apps) reach nothing outside it, neither this PC, the
-    // home network nor the internet. No port is published; the health check asks the
-    // app from inside its own network (curl_inside).
-    model["networks"] = json!({"restore":{"internal":true}});
+    // webhooks and links to other apps) reach neither the home network nor the internet.
+    // An internal network alone still lets them reach this PC itself (every service
+    // listening on all its addresses, Samba or SSH, say) through the bridge's own
+    // address: the bridge gets no address of its own (inhibit_ipv4, known to Docker
+    // since 19.03), so there is nothing on this PC to reach either. No port is published; the
+    // health check asks the app from inside its own network (curl_inside), which needs
+    // no address on the bridge.
+    model["networks"] = json!({"restore":{"internal":true,"driver_opts":{"com.docker.network.bridge.inhibit_ipv4":"true"}}});
     model.as_object_mut().unwrap().remove("volumes");
     for (service, v) in model["services"].as_object_mut().unwrap() {
         let map = v.as_object_mut().unwrap();
@@ -3037,6 +3041,9 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
                     value["last_success"] = json!(now);
                 } else {
                     value["reason"] = json!(cut_off_reason(cut_in.as_deref()));
+                    if rolled_back(cut_in.as_deref()) {
+                        value["rolled_back"] = json!(true);
+                    }
                 }
                 common::atomic_json(&report, &value)?;
             }
@@ -3048,7 +3055,8 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
             "Maintenance runs only within the configured night window",
         ));
     }
-    backup::execute_with(Some(&data), "maintenance", &cfgpath, || {
+    let undone = std::cell::Cell::new(false);
+    let result = backup::execute_with(Some(&data), "maintenance", &cfgpath, || {
         let failure = match transaction(&cfgpath, &cfg) {
             Ok(deferred) if deferred.is_empty() => return Ok(backup::Outcome::default()),
             // Updated, with one part left for next month (a new Immich release that
@@ -3063,6 +3071,9 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         // Said first, so the reason survives whatever happens while putting things right.
         println!("Monthly update: {failure}");
         let installed = committed();
+        let phase = load(Path::new(JOURNAL))
+            .ok()
+            .and_then(|j| j["phase"].as_str().map(str::to_string));
         if let Err(e) = resume(&cfgpath, &cfg) {
             return Err(Error::new(&format!("{failure}; then: {e}")));
         }
@@ -3086,8 +3097,21 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
                 partial: Some(json!([said])),
             });
         }
+        undone.set(rolled_back(phase.as_deref()));
         Err(failure)
-    })
+    });
+    if result.is_err() && undone.get() {
+        // For the dashboard: the update was undone and the apps run as before.
+        let _ =
+            backup::note_failed_report(&cfgpath, &data, "maintenance", "rolled_back", json!(true));
+    }
+    result
+}
+/// Whether a failed run undid an update: its journal had got as far as installing it
+/// (or putting it back). Before that nothing was changed; the apps were only stopped
+/// and started again, as they were.
+fn rolled_back(phase: Option<&str>) -> bool {
+    matches!(phase, Some("updating" | "restoring"))
 }
 /// Every image ID the apps' models in `models` ({app: model}) name.
 fn model_images(models: &Value) -> std::collections::BTreeSet<String> {
@@ -4306,8 +4330,13 @@ mod tests {
             Path::new("/mnt/neko"),
         )
         .unwrap();
-        // Strictly isolated: an internal network only, and no port on this PC.
-        assert_eq!(clone["networks"], json!({"restore": {"internal": true}}));
+        // Strictly isolated: an internal network only, with no address of this PC on it
+        // (QA-03: the bridge's gateway address reached this PC's own services), and no
+        // port on this PC.
+        assert_eq!(
+            clone["networks"],
+            json!({"restore": {"internal": true, "driver_opts": {"com.docker.network.bridge.inhibit_ipv4": "true"}}})
+        );
         let app = &clone["services"]["jellyfin"];
         assert_eq!(app["networks"], json!(["restore"]));
         assert!(app.get("container_name").is_none() && app.get("ports").is_none());
@@ -4867,6 +4896,19 @@ mod tests {
         let _ = fs::remove_dir_all(&fresh);
     }
 
+    #[test]
+    fn a_failed_update_that_was_undone_says_so_in_its_report() {
+        // UP-05: the dashboard can tell "undone, your apps run as before" from a failure
+        // before anything was changed (the report's "rolled_back").
+        assert!(rolled_back(Some("updating")) && rolled_back(Some("restoring")));
+        for before in [None, Some("snapshot"), Some("backed_up"), Some("committed")] {
+            assert!(!rolled_back(before), "{before:?}");
+        }
+        let source = include_str!("maintenance.rs");
+        assert!(
+            source.contains("note_failed_report(&cfgpath, &data, \"maintenance\", \"rolled_back\"")
+        );
+    }
     #[test]
     fn only_damage_on_the_usb_drive_stops_the_monthly_run() {
         assert!(usb_damage(&Error::new(&format!(

@@ -59,7 +59,7 @@ def unit_texts():
     texts['docker'] = docker.guard_contents(cfg, BIN.parent)
     texts['photo_preservation'] = 'ExecStart=' + photo_preservation.command_line(
         BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8) + ' --db-backup'
-    texts['photo_preservation_resume'] = photo_preservation.resume_unit(BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media')
+    texts['photo_preservation_resume'] = photo_preservation.resume_unit(BIN, etc, '/srv/nekoserver')
     texts['photo_preservation_service'] = photo_preservation.service_text(
         'nekoserver-immich-db-backup', photo_preservation.command_line(
             BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8) + ' --db-backup',
@@ -134,6 +134,10 @@ class GeneratedCommandTests(unittest.TestCase):
         self.assertIn('ExecStopPost=' + str(BIN) + ' immich-resume --config', texts['photo_preservation_service'])
         self.assertIn('WantedBy=multi-user.target', texts['photo_preservation_resume'])
         self.assertIn('After=docker.service', texts['photo_preservation_resume'])
+        # It needs only the SSD (Immich's own drive): a HDD that dropped out mid-run does
+        # not keep Immich stopped (QA-01).
+        self.assertIn('RequiresMountsFor=/srv/nekoserver\n', texts['photo_preservation_resume'])
+        self.assertNotIn('/mnt/nekoserver-media', texts['photo_preservation_resume'])
 
     def test_every_generated_runtime_command_uses_known_options(self):
         table = option_table()
@@ -1183,3 +1187,45 @@ class AccountCorrectionTests(unittest.TestCase):
                                   password_prompt=lambda q='': '', output=lambda s: None)
         self.assertTrue(value['apps']['jellyfin']['allow_create'])
         self.assertEqual(value['apps']['jellyfin']['username'], 'neko_ab12')
+
+
+class RootUnitSandboxTests(unittest.TestCase):
+    """IT-14: the root services that had no sandboxing get what each can take. Drive
+    return unmounts a dead mount itself, so it gets nothing that makes a mount namespace
+    of its own (the unmount would then never reach the real mount); nothing closes /dev
+    (hdparm, blkid) or makes /etc read-only (the jobs' records)."""
+    BASE = ('NoNewPrivileges=yes', 'RestrictRealtime=yes', 'RestrictSUIDSGID=yes', 'LockPersonality=yes',
+            'SystemCallArchitectures=native')
+    NAMESPACED = ('PrivateTmp=', 'ProtectHome=', 'ProtectKernelTunables=', 'ProtectControlGroups=')
+    NEVER = ('ProtectSystem=', 'PrivateDevices=', 'ProtectClock=', 'DevicePolicy=', 'DeviceAllow=', 'CapabilityBoundingSet=',
+             'PrivateMounts=', 'ProtectKernelModules=', 'ReadOnlyPaths=', 'InaccessiblePaths=', 'TemporaryFileSystem=',
+             'BindPaths=', 'BindReadOnlyPaths=', 'RootDirectory=', 'MountFlags=', 'PrivateNetwork=')
+
+    def units(self):
+        texts = unit_texts()
+        return {'drive-return': server_os.drive_unit(BIN, ['dev-disk-by\\x2duuid-aaaa.device']), 'hdd-policy': texts['server_os'],
+                'host-backup': texts['host_backup:' + host_backup.BACKUP_UNIT],
+                'host-resume': texts['host_backup:' + host_backup.RESUME_UNIT]}
+
+    def service_lines(self, text):
+        return text.split('[Service]\n', 1)[1].split('[Install]', 1)[0].splitlines()
+
+    def test_each_gets_the_sandbox_it_can_take_and_nothing_that_breaks_it(self):
+        for name, text in self.units().items():
+            lines = self.service_lines(text)
+            with self.subTest(unit=name):
+                self.assertEqual(len(lines), len(set(lines)), lines)   # nothing set twice
+                for option in self.BASE:
+                    self.assertIn(option, lines)
+                for option in self.NEVER:
+                    self.assertFalse(any(line.startswith(option) for line in lines), option)
+                namespaced = [line for line in lines if line.startswith(self.NAMESPACED)]
+                self.assertEqual(namespaced, [] if name == 'drive-return' else
+                                 ['PrivateTmp=yes', 'ProtectHome=' + ('yes' if name == 'hdd-policy' else 'read-only'),
+                                  'ProtectKernelTunables=yes', 'ProtectControlGroups=yes'])
+
+    def test_the_snapshot_may_still_read_the_home_it_backs_up(self):
+        # Steam's files are in the chosen account's home: read-only, never hidden.
+        text = self.units()['host-backup']
+        self.assertIn('ProtectHome=read-only\n', text)
+        self.assertNotIn('ProtectHome=yes', text)

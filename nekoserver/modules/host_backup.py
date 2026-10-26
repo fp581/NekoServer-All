@@ -179,6 +179,17 @@ def refresh(config, log, target=None):
     return refresh_settings(target, wanted, log, 'Host snapshots')
 
 
+# Sandboxing for the snapshot and its resume service (systemd.exec(5)): they read the
+# settings, the chosen home's Steam files and Samba's, write the snapshot onto the HDD and
+# their record into /etc, and stop and start Samba through systemd. So: home folders
+# read-only, a /tmp of their own, the kernel's settings and control groups read-only, and
+# no new privileges. Not ProtectSystem (the record in /etc), nor ProtectClock or
+# PrivateDevices (the drive check reads the drives' own IDs with blkid).
+SANDBOX = ('NoNewPrivileges=yes\nRestrictRealtime=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n'
+           'SystemCallArchitectures=native\nPrivateTmp=yes\nProtectHome=read-only\nProtectKernelTunables=yes\n'
+           'ProtectControlGroups=yes\n')
+
+
 def definitions(config, binary, private):
     time = settings(config).get('time', '05:15')
     resume = f'{binary} host-resume --config {private}'
@@ -187,10 +198,10 @@ def definitions(config, binary, private):
     # runs too and holds the same job lock: the backup waits for it instead of failing.
     return {
         BACKUP_UNIT: '[Unit]\nDescription=NekoServer host and user snapshot\n'+mounts+f'After={RESUME_UNIT} nekoserver-maintenance-resume.service\n'+
-            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec={RESUME_TIMEOUT}\n',
+            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec={RESUME_TIMEOUT}\n'+SANDBOX,
         BACKUP_TIMER: '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'+f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
         RESUME_UNIT: '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'+mounts+
-            f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\n'+f'ExecStart={resume}\n[Install]\nWantedBy=multi-user.target\n',
+            f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\n'+f'ExecStart={resume}\n'+SANDBOX+'[Install]\nWantedBy=multi-user.target\n',
     }
 
 

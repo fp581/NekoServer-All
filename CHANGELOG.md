@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.40.2 — 2026-10-26
+
+A company-style release test of 0.40.1: an IT team installed it for real on a clean Ubuntu 24.04 machine with systemd and test drives, QA tested every 0.40.1 change, and three customers used it (a first-time installer, a teenager on the phone dashboard, a photographer restoring after a lost HDD). IT fixed everything they found; QA then verified every fix (three rounds) before release.
+
+### Fixed: backups and restores
+- **Immich starts again after its weekly pause even when the HDD dropped out**, and when a missing drive comes back. It checks the SSD's Btrfs subvolume too, so it never starts Immich on another tree of the same drive.
+- **Backups wait for setup on a Btrfs SSD too** (postponed, not failed).
+- **The monthly restore test can't reach this PC's own services** (its network blocks the host as well as the internet).
+- **Restored photos and Nextcloud files belong to you**, so you can open and upload them; restores get a folder of their own each time.
+- **Damage a restore finds goes to "Repair damaged backup copies"**, the damaged copy is kept beside the restore, and copies you accepted as lost are named instead of asked about every time. The way to fix a damaged copy comes first in the message, so it's never cut off; cut messages end at a whole sentence or word.
+- Drive return gives the real reason when something fails, and no longer reports services that aren't installed; each settings backup writes a line to the journal; the recovery menu shows local times, "0. Quit" and "1 file".
+
+### Fixed: dashboard
+- **Wrong-PIN messages appear inside the PIN box**, with the tries left and, when locked out, how long to wait and until when.
+- **With a drive missing, backups show "Can't run now" / "Drive missing"**, never "All OK" or "Checksums match", and there is one alert naming the apps it stopped.
+- **An undone monthly update says your apps are back on their previous version and work**, as a warning.
+- Times in your own time zone; long messages cut at a sentence with "Show more"; "1 file"; apps setup never got to show "Not set up yet" (no Open link or restart menu); the Steam card only once the TV is set up; the filter chips fit a phone; the Fans page states the real heat rule.
+
+### Fixed: setup
+- **A download from Docker's or Tailscale's site is tried three times**; then setup names the site, the likely causes (a proxy first) and what to do, and the setup window opens to show it ("Stopped").
+- **The setup window can be opened again** from the same account.
+- **Drive sizes are stated in the question and checked before anything is mounted or saved**; a too-small drive is refused and you pick again. The drive list shows each drive's size, name and model.
+- **The finishing screen and the log say in plain words what needs you and what waits for it**; waiting steps are no longer marked failed, and the step counts agree; the finishing screen stays in the window.
+- Plain messages for a loop device, no home-network address and the app-login question; "Desktop: no" without a desktop; a 10-second pause when setup runs as root without your account; the READMEs give drive sizes, how to get git, the real step order and when the window appears.
+
+### Fixed: docs and passwords
+- **`account-setup.py show APP`** shows one app's login on the PC's screen with a QR code and clears it; the phone guide uses it instead of reading a root-only file.
+- GUIDED-SETUP, RECOVERY ("Which situation are you in?") and DASHBOARD put the user first, with the technical detail under "For administrators". The recovery tools say what went wrong and what to do next.
+
+### Fixed: drives and the uninstaller
+- **An LVM snapshot is not taken for a copied drive** (a real copy still is). A hard drive that refuses the standby timer is left to its own settings instead of failing at every start.
+- **The uninstaller:** never tells you to delete a swapped drive's folders by hand; says "size unknown without sudo"; removes setup's records on the system disk and says your fstab backup stays; removes nested Btrfs subvolumes with their folders.
+- Nextcloud two-factor enforced only for other groups no longer lets a wrong saved admin password pass.
+- The drive-return, HDD power and host snapshot services run with systemd sandboxing.
+
+### Not in this release
+- RAID and pool health monitoring (a degraded mdadm array or Btrfs pool is not yet shown on the dashboard) — planned next.
+- Not tried on real hardware: LVM snapshots, LUKS, mdadm, and anything that needs the apps running.
+
 ## v0.40.1 — 2026-10-26
 
 A full independent review of 0.40.0 (installing and the host, drives and recovery, the apps, backups and the monthly update, the dashboard), plus the findings of the project owner's own review, each checked against the code and fixed with a regression test.
@@ -12,7 +51,7 @@ A full independent review of 0.40.0 (installing and the host, drives and recover
 - **Restores never land on the system disk.** With the HDD missing, the recovery menu wrote a restore into the empty `restored` folder on the disk Linux runs from. It now restores there only when the right HDD is mounted, and otherwise asks for a folder on another drive.
 - **A file that became a folder (or back) in the Immich library no longer stops the photo archive.** It is kept aside in `neko-replaced`, as the Nextcloud copy does.
 - **The weekly USB copy and the monthly update can no longer overlap**, also when the monthly run starts while the weekly copy waits for the USB drive.
-- **The monthly update's restore test is fully isolated**: restored apps run on an internal Docker network and can't reach this PC, the home network or the internet.
+- **The monthly update's restore test is isolated**: restored apps run on an internal Docker network with no port published, so they can't reach the home network or the internet. The network also gets no address on this PC, so they can't reach this PC either (an internal network alone still let them reach its services that listen on every address, such as Samba or SSH).
 - **Backups and the monthly update wait for setup instead of failing.** A setup left at a question overnight made them fail after their 3-hour wait; now they are postponed ("setup is running"), and the monthly update tries again the next night.
 - **Long database updates are not rolled back.** The monthly update now waits up to an hour while Immich, Nextcloud, Jellyfin or an Arr app is still updating its database.
 - Restore lists are no longer written twice by the monthly check (the history covers what RECOVERY.md says), and half-written copies left by a cut-off run are cleaned up.

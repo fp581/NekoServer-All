@@ -150,6 +150,56 @@ class FakeSystem:
             return RealPlan(settings, self.root, run=self.run, group_exists=group_exists, identity=self.identity)
 
 
+class FakeSubvolume:
+    """os as it answers for a Btrfs subvolume named `name`: its folder and everything in
+    it on a device number of its own, the folder's inode 256. Its mount is the one of the
+    folder around it (same_mount) or another (a drive mounted there). read_only: nothing
+    in it can be deleted (a read-only snapshot)."""
+    def __init__(self, name, same_mount=True, read_only=False):
+        self.name, self.same_mount, self.read_only = name, same_mount, read_only
+        self.inside = set()   # the folders opened in it
+        self.real = {key: getattr(os, key) for key in ('stat', 'fstat', 'open', 'unlink')}
+
+    def moved(self, found, inode=None):
+        values = list(found)
+        values[2] += 1
+        if inode is not None:
+            values[1] = inode
+        return os.stat_result(values)
+
+    def stat(self, path, *args, dir_fd=None, **kwargs):
+        found = self.real['stat'](path, *args, dir_fd=dir_fd, **kwargs)
+        if path == self.name:
+            return self.moved(found, uninstaller.BTRFS_SUBVOLUME_ROOT)
+        return self.moved(found) if dir_fd in self.inside else found
+
+    def fstat(self, fd):
+        found = self.real['fstat'](fd)
+        return self.moved(found) if fd in self.inside else found
+
+    def open(self, path, flags, *args, dir_fd=None, **kwargs):
+        fd = self.real['open'](path, flags, *args, dir_fd=dir_fd, **kwargs)
+        if path == self.name or dir_fd in self.inside:
+            self.inside.add(fd)
+        return fd
+
+    def unlink(self, path, *args, dir_fd=None, **kwargs):
+        if self.read_only and dir_fd in self.inside:
+            raise OSError(30, 'Read-only file system')
+        return self.real['unlink'](path, *args, dir_fd=dir_fd, **kwargs)
+
+    def mount_id(self, fd):
+        return 'other' if fd in self.inside and not self.same_mount else 'drive'
+
+    def patched(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for key in self.real:
+            stack.enter_context(mock.patch.object(uninstaller.os, key, side_effect=getattr(self, key)))
+        stack.enter_context(mock.patch.object(uninstaller, '_mount_id', side_effect=self.mount_id))
+        return stack
+
+
 class PlanTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -262,6 +312,33 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(self.plan.phrase({'server', 'apps'}), 'remove NekoServer')
         self.assertEqual(self.plan.phrase({'server', 'photos', 'backups', 'media'}),
                          'remove NekoServer and delete my photos, movies and music, backups')
+
+    def test_without_sudo_a_size_it_cannot_count_is_said_not_understated(self):
+        """IT-07: as the user, du counts only the private installer folder itself (4.0K)."""
+        installer = self.system.root / 'srv/nekoserver/installer'
+
+        def run(argv, timeout=0):
+            if argv[0] == 'find':   # find names the first thing it may not read
+                return str(installer) + '\n' if argv[1] == str(installer) else ''
+            return self.system.run(argv, timeout)
+        self.plan.run = run
+        with mock.patch.object(uninstaller.os, 'geteuid', return_value=1000):
+            text = self.plan.describe({'server', 'data'})
+        self.assertIn('remove ' + str(installer) + '  (size unknown without sudo)', text)
+        self.assertIn('remove ' + str(self.system.root / 'srv/nekoserver/appdata') + '  (12M)', text)
+        with mock.patch.object(uninstaller.os, 'geteuid', return_value=0):   # with sudo: du alone, nothing to look up
+            self.assertEqual(self.plan.size(installer), '12M')
+
+    @unittest.skipIf(os.name != 'posix' or os.geteuid() == 0, 'needs a folder this account may not read')
+    def test_the_real_lookup_finds_a_folder_it_may_not_read(self):
+        locked = self.system.root / 'srv/nekoserver/installer/state'
+        locked.mkdir(parents=True)
+        locked.chmod(0o000)
+        self.addCleanup(locked.chmod, 0o700)
+        plan = self.system.plan()
+        plan.run = uninstaller.run
+        self.assertEqual(plan.size(locked.parent), uninstaller.SIZE_UNKNOWN)
+        self.assertNotEqual(plan.size(self.system.root / 'srv/nekoserver/appdata'), uninstaller.SIZE_UNKNOWN)
 
     @unittest.skipIf(os.name != 'posix' or os.geteuid() == 0, 'needs a folder this account may not read')
     def test_a_folder_it_may_not_read_is_noted_not_fatal(self):
@@ -413,6 +490,21 @@ class RemoveTests(unittest.TestCase):
         self.remove({'server'})
         self.assertTrue(policy.exists())
         self.assertFalse(any('unfinished' in line for line in self.shown))
+
+    def test_setups_records_on_the_system_disk_go_and_the_fstab_copy_is_said_to_stay(self):
+        """IT-09: setup's state from a run without the SSD, and its first copy of /etc/fstab."""
+        for name in ('install.log', 'state.json', 'state.json.moved-to-ssd'):
+            self.system.write('/root/.local/state/nekoserver/' + name, '{}')
+        self.system.write('/etc/fstab.nekoserver.bak', '# static\n')
+        self.plan = self.system.plan()
+        state = self.system.root / 'root/.local/state/nekoserver'
+        text = self.plan.describe({'server'})
+        self.assertIn('remove ' + str(state) + '\n', text + '\n')
+        self.assertIn('Kept: /etc/fstab.nekoserver.bak, your /etc/fstab as it was before NekoServer first changed it', text)
+        self.remove({'server'})
+        self.assertFalse(state.exists())
+        self.assertTrue(self.exists('/root/.local'))   # only NekoServer's own folder goes
+        self.assertTrue(self.exists('/etc/fstab.nekoserver.bak'))
 
     def test_a_socket_unit_is_stopped_before_its_service_and_removed(self):
         # 0.40.1's OpenRGB proxy starts from a socket: left on, it would start the service again.
@@ -888,8 +980,26 @@ class ExclusionTests(unittest.TestCase):
         self.system.drives['/mnt/nekoserver-media'] = 'ffff-9999'      # someone else's HDD mounted there now
         self.remove()
         self.assertTrue(self.at(self.FILM).exists())
-        self.assertTrue(any('/mnt/nekoserver-media is no longer the one the settings name' in line for line in self.shown), self.shown)
+        self.assertIn('Nothing on ' + str(self.at('/mnt/nekoserver-media')) + ' is removed: the drive there now is not the one the '
+                      'settings name (UUID ffff-9999, not bbbb-2222).', self.shown)
         self.assertFalse(self.at('/srv/nekoserver/appdata').exists())   # the SSD is still the right one
+
+    def test_the_paths_of_a_replaced_drive_are_never_left_to_delete_by_hand(self):
+        """IT-06: the swapped drive's planned folders are listed apart, with a warning not to
+        delete them by hand (they would be the other drive's), and the reason is said once."""
+        self.system.drives['/mnt/nekoserver-media'] = 'ffff-9999'
+        left = self.remove({'server', 'media', 'backups'})
+        lines = uninstaller.not_removed(left)
+        text = '\n'.join(lines + self.shown)
+        self.assertEqual(text.count('not the one the settings name'), 1, text)   # no "not the one ... (not the one ...)"
+        self.assertNotIn('do it yourself', text)
+        self.assertIn('Do not delete them by hand', lines[0])
+        self.assertIn('   - ' + str(self.at(self.FILM).parents[1]), lines)
+        # A path that really failed is still listed to do by hand, apart from the skipped ones.
+        mixed = uninstaller.not_removed(['/etc/x', uninstaller.Skipped('/mnt/nekoserver-media/library')])
+        self.assertEqual(mixed[:2], [mixed[0], '   - /etc/x'])
+        self.assertIn('do it yourself', mixed[0])
+        self.assertIn('Do not delete them by hand', mixed[2])
 
     def test_a_drive_replaced_during_the_deletion_is_never_touched(self):
         real = uninstaller.open_drives
@@ -932,6 +1042,54 @@ class ExclusionTests(unittest.TestCase):
         self.assertTrue((tree / 'mounted/other.mkv').exists())
         self.assertFalse((tree / 'movies').exists())
         self.assertTrue(any(uninstaller.OTHER_DRIVE in line for line in failed), failed)
+
+    # ---- QA-05: a Btrfs subvolume inside a folder that goes is part of the same drive
+    def delete_with_subvolume(self, same_mount=True, read_only=False):
+        """docker/btrfs/subvolumes/abc123 made a Btrfs subvolume (its own device number, inode
+        256, on the folder's mount unless same_mount is False), then docker deleted."""
+        tree = self.at('/srv/nekoserver/docker')
+        (tree / 'btrfs/subvolumes/abc123/etc').mkdir(parents=True)
+        (tree / 'btrfs/subvolumes/abc123/etc/layer.txt').write_text('a layer')
+        (tree / 'appdata.txt').write_text('x')
+        fake = FakeSubvolume('abc123', same_mount, read_only)
+        failed, held = [], []
+        fd = os.open(tree.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with fake.patched():
+                uninstaller._delete_at(fd, 'docker', os.stat(tree).st_dev, (failed, str(tree), set(), held))
+        finally:
+            os.close(fd)
+        return tree, failed
+
+    @unittest.skipUnless(Path('/proc/self/fdinfo').is_dir(), 'needs Linux /proc')
+    def test_the_mount_of_an_open_folder_is_read_from_proc(self):
+        first, second = (os.open(path, os.O_RDONLY | os.O_DIRECTORY) for path in (self.at('/srv'), self.at('/etc')))
+        try:
+            self.assertIsNotNone(uninstaller._mount_id(first))
+            self.assertEqual(uninstaller._mount_id(first), uninstaller._mount_id(second))   # one temporary folder, one mount
+        finally:
+            os.close(first)
+            os.close(second)
+        self.assertIsNone(uninstaller._mount_id(10 ** 6))   # not an open file
+
+    def test_a_nested_btrfs_subvolume_goes_with_its_folder(self):
+        tree, failed = self.delete_with_subvolume()
+        self.assertEqual(failed, [])
+        self.assertFalse(tree.exists())
+
+    def test_a_drive_mounted_on_a_subvolume_shaped_folder_is_still_another_drive(self):
+        tree, failed = self.delete_with_subvolume(same_mount=False)
+        self.assertTrue((tree / 'btrfs/subvolumes/abc123/etc/layer.txt').exists())
+        self.assertEqual(failed, [str(tree / 'btrfs/subvolumes/abc123') + ': ' + uninstaller.OTHER_DRIVE])
+        self.assertFalse((tree / 'appdata.txt').exists())
+
+    def test_a_subvolume_that_cannot_be_emptied_is_named_once_with_the_command(self):
+        tree, failed = self.delete_with_subvolume(read_only=True)
+        where = str(tree / 'btrfs/subvolumes/abc123')
+        self.assertEqual(len(failed), 1, failed)
+        self.assertTrue(failed[0].startswith(where + ': it is a Btrfs subvolume of this drive'), failed)
+        self.assertIn('sudo btrfs subvolume delete ' + where + '  (' + where + '/etc/layer.txt: Read-only file system)', failed[0])
+        self.assertNotIn(uninstaller.OTHER_DRIVE, failed[0])
 
     # ---- 3: Samba must be off before its accounts, its shares or any file go
     def test_samba_that_does_not_switch_off_stops_everything(self):
@@ -1051,6 +1209,16 @@ class ExclusionTests(unittest.TestCase):
         self.assertFalse(self.at('/run/nekoserver-control').exists())
         with setup.open() as installer, self.assertRaises(BlockingIOError):   # install.sh started now: it must wait
             fcntl.flock(installer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+
+class NoContainersHintTests(unittest.TestCase):
+    """IT-08: "run with sudo" only when it could help."""
+    def test_the_hint_fits_why_no_container_was_listed(self):
+        why = uninstaller.no_containers_why
+        self.assertEqual(why(which=lambda _: None, euid=lambda: 1000), 'Docker is not installed')
+        self.assertIn('run with sudo', why(which=lambda _: '/usr/bin/docker', euid=lambda: 1000))
+        self.assertNotIn('sudo', why(which=lambda _: '/usr/bin/docker', euid=lambda: 0))
 
 
 if __name__ == '__main__':

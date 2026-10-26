@@ -194,28 +194,38 @@ pub fn run(a: &Args) -> Result<()> {
     }
     let timer = standby(&cfg)?;
     for disk in timed {
-        if common::command(
-            &["hdparm", "-S", &timer.to_string(), &disk.to_string_lossy()],
-            20,
-        )?
-        .0 != 0
-        {
-            return Err(Error::new("HDD standby command refused"));
-        }
-        println!(
-            "Drive power settings: {} {}",
-            disk.display(),
-            if timer == 0 {
-                "keeps spinning (its standby timer is off)".to_string()
-            } else {
-                format!(
-                    "spins down after {} minutes without use",
-                    (timer - 240) * 30
-                )
-            }
-        );
+        let shown = disk.to_string_lossy();
+        let code = common::command(&["hdparm", "-S", &timer.to_string(), &shown], 20)?.0;
+        println!("{}", applied(&shown, timer, code, &common::last_stderr()));
     }
     Ok(())
+}
+/// The line for one disk once hdparm has run: what was set, or, when the drive (or its
+/// controller) refused the standby timer, that it keeps its own power settings, with
+/// hdparm's reason. A refusal is the drive's answer, not a fault: failing for it would
+/// leave the service failed at every start, for a drive that works.
+fn applied(disk: &str, timer: u64, code: i32, said: &str) -> String {
+    if code != 0 {
+        let reason = if said.is_empty() {
+            format!("hdparm exited with {code}")
+        } else {
+            format!("hdparm said: {said}")
+        };
+        return left_to_drive(&format!(
+            "it refused the standby timer ({disk}; {reason}). It keeps its own power settings"
+        ));
+    }
+    format!(
+        "Drive power settings: {disk} {}",
+        if timer == 0 {
+            "keeps spinning (its standby timer is off)".to_string()
+        } else {
+            format!(
+                "spins down after {} minutes without use",
+                (timer - 240) * 30
+            )
+        }
+    )
 }
 #[cfg(test)]
 mod tests {
@@ -256,6 +266,26 @@ mod tests {
             left_to_drive("it is connected by USB"),
             "Drive power settings: left to the drive itself, as it is connected by USB"
         );
+    }
+    #[test]
+    fn a_drive_that_refuses_the_timer_is_left_to_itself_not_failed() {
+        // IT-12: what a disk that rejects the timer gives (exit 22) is a line, not an error.
+        let said = "HDIO_DRIVE_CMD(setidle) failed: Invalid argument";
+        assert_eq!(
+            applied("/dev/sdb", 242, 22, said),
+            "Drive power settings: left to the drive itself, as it refused the standby timer (/dev/sdb; hdparm said: HDIO_DRIVE_CMD(setidle) failed: Invalid argument). It keeps its own power settings"
+        );
+        assert!(applied("/dev/sdb", 242, 5, "").contains("(/dev/sdb; hdparm exited with 5)"));
+        assert_eq!(
+            applied("/dev/sdb", 242, 0, ""),
+            "Drive power settings: /dev/sdb spins down after 60 minutes without use"
+        );
+        assert_eq!(
+            applied("/dev/sdb", 0, 0, ""),
+            "Drive power settings: /dev/sdb keeps spinning (its standby timer is off)"
+        );
+        let source = include_str!("os_policy.rs");
+        assert!(!source.contains(&["HDD standby command ", "refused"].concat()));
     }
     #[test]
     fn device_paths_are_narrow() {

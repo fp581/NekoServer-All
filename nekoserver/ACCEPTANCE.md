@@ -7,11 +7,11 @@ With guided_setup.enabled=true (default), --manual --save now uses guided yes/no
 
 ## Prepare before installation
 
-Verify actual hardware compatibility and prices before ordering. The installer targets x86_64 Arch/Nyarch and Debian/Ubuntu, Docker classic overlay2, two distinct persistent filesystems and an optional external backup drive. Bazzite automatic recovery remains unsupported. The application SSD and media HDD must already have suitable filesystems: the installer discovers/confirms existing UUIDs and mounts them; it never formats them.
+Verify actual hardware compatibility and prices before ordering. The installer targets x86_64 Arch Linux / Nyarch, Debian / Ubuntu, Fedora, RHEL / Rocky Linux / AlmaLinux and openSUSE (see README.md for the versions), Docker classic overlay2, two distinct persistent filesystems and an optional external backup drive. The application SSD and media HDD must already have suitable filesystems: the installer discovers/confirms existing UUIDs and mounts them; it never formats them.
 
-Keep independent copies of important files. Use disposable photos/videos for deletion and interruption tests. The existing 512GB external drive may be too small for a complete snapshot of a larger library; check actual capacity. A matched recovery snapshot on the source HDD is not protection against that HDD failing. Establish independent backup space before deleting phone originals or testing storage loss.
+Keep independent copies of important files. Use disposable photos/videos for deletion and interruption tests. A USB drive may be too small for a complete snapshot of a larger library; check its actual free space. A matched recovery snapshot on the source HDD is not protection against that HDD failing. Establish independent backup space before deleting phone originals or testing storage loss.
 
-Use the actual config.json produced/confirmed during setup. A release ZIP contains blank UUIDs rather than machine-specific identities. Never replace your configured file with those defaults during an upgrade. The full profile also needs selected media sources/accounts, a pinned Immich deployment, external-backup identity, the intended desktop user and Samba credentials. Optional remote_access additionally requires Tailscale authentication.
+Use your actual settings file, `my-config.json`, which setup made and confirmed (the copy kept on the SSD is `installer/releases/v0.40.2/config.json`). The `config.json` in a download is only the template: it contains blank UUIDs rather than machine-specific identities. Never replace your configured file with those defaults during an upgrade. The full profile also needs selected media sources/accounts, a pinned Immich deployment, external-backup identity, the intended desktop user and Samba credentials. Optional remote_access additionally requires Tailscale authentication.
 
 ## Deploy and preserve the tools
 
@@ -29,12 +29,12 @@ The recovery module preserves the current scripts/configuration under the config
 ## Collect a baseline, then check after reboot
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.40.1/acceptance.py --profile full
+sudo python3 /srv/nekoserver/installer/releases/v0.40.2/acceptance.py --profile full
 # Inspection only: no report write.
-sudo python3 /srv/nekoserver/installer/releases/v0.40.1/acceptance.py --profile full --save
+sudo python3 /srv/nekoserver/installer/releases/v0.40.2/acceptance.py --profile full --save
 # Now reboot normally through the desktop or your normal system administration flow.
 # After reboot, return to the same directory and run:
-sudo python3 /srv/nekoserver/installer/releases/v0.40.1/acceptance.py --profile full --save
+sudo python3 /srv/nekoserver/installer/releases/v0.40.2/acceptance.py --profile full --save
 ```
 
 --config can select another actual configuration file. --profile defaults to full and uses that profile's dependency closure. Standard scopes are foundation, media, photos, network, networking, lan_access, remote_access, media_monitor, dashboard, tv and full. Custom configured profiles can be inspected in the CLI, but the dashboard summary only displays the standard scopes. The dashboard-only profile does not inspect absent media applications, Docker or backup jobs.
@@ -48,13 +48,14 @@ Default inspection only prints fixed results. --save replaces **reports/acceptan
 | Check | Evidence |
 | --- | --- |
 | Configuration | Selected profile and dependency plan validate. |
-| Host | Supported x86_64 Arch/Nyarch or Debian/Ubuntu recovery host. |
+| Host | Supported x86_64 recovery host: Arch Linux / Nyarch, Debian / Ubuntu, Fedora, RHEL / Rocky Linux / AlmaLinux or openSUSE. |
 | Data drives | Actual mount UUID/filesystem identity and distinct filesystems. Wrong drives block private/dependent inspection. |
 | Reboot | Current matching-drive inspection occurs after a saved verified baseline on an earlier boot. |
 | Preserved installer | Current release bundle files match its manifest and storage configuration. |
 | Docker store | Running local daemon uses the intended SSD/docker-engine and classic overlay2, plus active/enabled boot service. |
 | Startup guard | Managed unit definition, guard code/config and currently loaded non-ignored ExecStartPre/mount dependencies agree. |
 | Checkpoint | Engine version, architecture, storage and configured UID/GID match the recovery checkpoint. |
+| Container logs | Every container's log has a size limit. When Docker cannot be asked (not installed or not running), this is not checked and does not pass. |
 | Containers | Exactly one expected project/service, running/non-unhealthy state, correct persistent source and destination, media network and localhost-only published ports. Jellyfin/music libraries retain required read-only mounts. |
 | Media configuration | Current GET-only API/library/provider checks, distinct from actual transfer/playback tests. |
 | Backups | Recent successful updated archive/database/external-copy report with active timer. No stored success is still pending. |
@@ -70,7 +71,7 @@ A passing automatic check describes that evidence, not every possible behavior o
 The runner prints the tests required by the chosen profile. Perform each applicable test on the server, then use:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.40.1/acceptance.py --profile full --save --manual
+sudo python3 /srv/nekoserver/installer/releases/v0.40.2/acceptance.py --profile full --save --manual
 ```
 
 The command reruns automatic checks and, by default, opens relevant pages/apps and asks yes/no for each witnessed test. Yes records that specific test as user-reported; no repeats its instructions and reopens its targets. Ctrl+C leaves that test pending. Confirmation timestamps and user_reported labels are retained. Do not confirm a planned/unperformed test. These answers never override an automatic failure. With guided_setup.enabled=false, the legacy explicit PASS exact_test_id / FAIL exact_test_id / Enter prompt remains available.
@@ -87,7 +88,7 @@ The command reruns automatic checks and, by default, opens relevant pages/apps a
 | external_backup | Verify additive copies/checksums, safe disconnect/reconnect and interrupted-copy recovery; confirm deleted source files remain in backups. |
 | remote_permissions | Use actual intended clients, including an away-from-home test as applicable. Verify guest denial and protected-share write denial. Localhost application gateway remains deferred. |
 | tv_session | Test HDMI/audio, Xbox controller, Steam login/Remote Play, app shortcuts and AC idle behavior while jobs remain running. |
-| os_recovery | With independently verified backups, rehearse supported OS recovery, retained apps/data and subsequent reboot. See RECOVERY.md; automatic Bazzite reattachment is blocked. |
+| os_recovery | With independently verified backups, rehearse supported OS recovery, retained apps/data and subsequent reboot. See RECOVERY.md. |
 
 The runner uses only the tests relevant to your configured profile. Manual answers are not inherited from an older run. Recheck and reconfirm when you create a new report; prior confirmation is historical evidence, not proof of unchanged behavior. Test failures remain failures. Same-boot observed reboot evidence may be retained if scope/configuration still match.
 

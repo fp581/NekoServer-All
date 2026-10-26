@@ -45,17 +45,33 @@ class FakeNextcloud:
         pass
 
 
-def occ(two_factor, enforced=False):
-    """docker, as Nextcloud's occ answers it."""
+def occ(two_factor, enforced=False, named=(), excluded=()):
+    """docker, as Nextcloud's occ answers it (core/Command/TwoFactorAuth/Enforce.php and
+    config:list). Two-factor sign-in required for everyone (enforced), or for the groups
+    `named`, or for all but the groups `excluded`; the administrator is in the group admin."""
     def run(args, input_text=None):
         if 'user:info' in args:
             return json.dumps({'enabled': True, 'groups': ['admin']})
         if 'twofactorauth:state' in args:
             return 'Two-factor authentication is ' + ('' if two_factor else 'not ') + 'enabled for user admin\n'
         if 'twofactorauth:enforce' in args:
-            return 'Two-factor authentication is enforced for all users\n' if enforced else 'Two-factor authentication is not enforced\n'
+            return enforce_message(enforced or bool(named or excluded), named, excluded)
+        if args[-3:] == ['config:list', 'system', '--output=json']:
+            if named == 'unreadable':
+                raise RuntimeError('Local account setup command failed; private output was suppressed')
+            return json.dumps({'system': {'instanceid': 'oc1', 'twofactor_enforced': 'true' if enforced or named or excluded else 'false',
+                                          'twofactor_enforced_groups': list(named), 'twofactor_enforced_excluded_groups': list(excluded)}})
         raise AssertionError(args)
     return run
+
+
+def enforce_message(enforced, named, excluded):
+    """What occ twofactorauth:enforce prints."""
+    if not enforced:
+        return 'Two-factor authentication is not enforced\n'
+    text = ('Two-factor authentication is enforced for members of the group(s) ' + ', '.join(named) if named
+            else 'Two-factor authentication is enforced for all users')
+    return text + (', except members of ' + ', '.join(excluded) if excluded else '') + '\n'
 
 
 class NextcloudTwoFactorTests(unittest.TestCase):
@@ -76,6 +92,36 @@ class NextcloudTwoFactorTests(unittest.TestCase):
     def test_two_factor_required_for_everyone_counts_too(self):
         import account_setup
         self.assertEqual(self.check(occ(False, enforced=True)), account_setup.NEXTCLOUD_TWO_FACTOR)
+
+    def test_two_factor_required_only_of_others_does_not_excuse_a_wrong_password(self):
+        """QA-07: required for some groups only, or for everyone but the administrator's group:
+        Nextcloud takes a plain password from the administrator, so a 401 means a wrong one."""
+        import account_setup
+        for docker in (occ(False, named=['family']), occ(False, excluded=['admin']), occ(False, named=['family'], excluded=['admin']),
+                       occ(False, named='unreadable')):
+            with self.subTest(docker=docker), self.assertRaises(account_setup.HTTPFailure):
+                self.check(docker)
+
+    def test_two_factor_required_of_the_administrators_group_counts(self):
+        import account_setup
+        for docker in (occ(False, named=['family', 'admin']), occ(False, excluded=['kids'])):
+            with self.subTest(docker=docker):
+                self.assertEqual(self.check(docker), account_setup.NEXTCLOUD_TWO_FACTOR)
+
+    def test_the_rule_is_nextclouds_own(self):
+        import account_setup
+        rule = account_setup.two_factor_required_of
+
+        def listed(**system):
+            return json.dumps({'system': system})
+        self.assertTrue(rule(listed(twofactor_enforced='true'), ['admin']))
+        self.assertFalse(rule(listed(twofactor_enforced='false', twofactor_enforced_groups=['admin']), ['admin']))
+        # Named groups overrule the excluded ones, as in MandatoryTwoFactor::isEnforcedFor.
+        self.assertTrue(rule(listed(twofactor_enforced='true', twofactor_enforced_groups=['admin'],
+                                    twofactor_enforced_excluded_groups=['admin']), ['admin']))
+        for broken in ('', 'not json', '[]', json.dumps({'system': []}), listed(twofactor_enforced='true', twofactor_enforced_groups='admin')):
+            with self.subTest(broken=broken):
+                self.assertFalse(rule(broken, ['admin']))
 
     def test_a_wrong_password_without_two_factor_still_fails(self):
         import account_setup

@@ -40,13 +40,23 @@ Every recording below is a real run on the test rig (openSUSE Tumbleweed under W
 
 NekoServer runs on **Arch Linux, Nyarch, Debian 12+, Ubuntu 24.04+, Fedora 42+, RHEL 10+ and openSUSE Leap 16+ / Tumbleweed** (with Rocky Linux, AlmaLinux and CentOS Stream 10+; and systems built on Arch, Debian or Ubuntu, such as Linux Mint), with more to come. Fedora, RHEL and openSUSE support are new and were tried only in a test setup without SELinux: testers on those are very welcome. It hasn't been proven on a real install yet, so try it on a spare PC or a virtual machine first.
 
-You need a 64-bit PC with one of those installed, plus an SSD, an HDD and a USB drive, already formatted.
+You need a 64-bit PC with one of those installed, and **three drives besides the disk Linux is on**, each already formatted (ext4 is the safe choice). NekoServer never puts your files on the disk Linux runs from, so a mini PC with one internal disk needs the three as extra (USB) drives:
+
+| Drive | For | Size |
+| --- | --- | --- |
+| **SSD** | apps, photos, music | at least 20 GB free, 100 GB or more recommended |
+| **HDD** | movies, shows, Nextcloud files, backups | at least 50 GB free, 500 GB or more recommended |
+| **USB drive** | a weekly copy of your photos and Nextcloud files | at least 16 GB, and room for those files |
+
+In a terminal (Ctrl+Alt+T on most desktops):
 
 ```bash
 git clone https://github.com/fp581/NekoServer-All.git
 cd NekoServer-All/nekoserver
 sudo bash install.sh
 ```
+
+`git: command not found`? Ubuntu Desktop and some other systems don't come with git: install it first with `sudo apt install git` (Fedora and RHEL: `sudo dnf install git`; openSUSE: `sudo zypper install git`; Arch: `sudo pacman -S git`), then run the three lines again.
 
 Then follow the step-by-step guide: **[nekoserver/README.md](nekoserver/README.md)**.
 

@@ -51,8 +51,13 @@ const SERVICES: [&str; 4] = [
 /// - the dashboard's web and control services, when they run: started before the SSD was
 ///   mounted, their view of it (the folders systemd opened or hid for them) is stale.
 ///   Without `--no-block`, a restart of the control service would wait for an app
-///   restart it is in the middle of.
-fn refresh_commands(enabled: impl Fn(&str) -> bool) -> Vec<Vec<&'static str>> {
+///   restart it is in the middle of. Only those installed (`installed`): on a server
+///   without the dashboard, systemctl refused them ("not found") at every drive return,
+///   and the journal showed two failures that were none.
+fn refresh_commands(
+    enabled: impl Fn(&str) -> bool,
+    installed: impl Fn(&str) -> bool,
+) -> Vec<Vec<&'static str>> {
     let mut commands = vec![];
     if enabled("nekoserver-hdd-policy.service") {
         commands.push(vec![
@@ -62,20 +67,24 @@ fn refresh_commands(enabled: impl Fn(&str) -> bool) -> Vec<Vec<&'static str>> {
         ]);
     }
     for unit in ["nekoserver-dashboard.service", "nekoserver-control.service"] {
-        commands.push(vec!["systemctl", "try-restart", "--no-block", unit]);
+        if installed(unit) {
+            commands.push(vec!["systemctl", "try-restart", "--no-block", unit]);
+        }
     }
     commands
 }
 
 /// The recovery services of the jobs that stop apps (the monthly update, the nightly app
-/// and host snapshots, a photo snapshot), in the order they are finished: the monthly
-/// update's journal first (it decides whether apps roll back), then the snapshots'.
-/// Each finds its own journal and does nothing without one. Starting Docker alone does
-/// not do this: containers a job stopped stay stopped under `unless-stopped`.
-const RESUMES: [&str; 4] = [
+/// and host snapshots, the weekly Immich pause, a photo snapshot), in the order they are
+/// finished: the monthly update's journal first (it decides whether apps roll back),
+/// then the others'. Each finds its own journal and does nothing without one. Starting
+/// Docker alone does not do this: containers a job stopped stay stopped under
+/// `unless-stopped`.
+const RESUMES: [&str; 5] = [
     "nekoserver-maintenance-resume.service",
     "nekoserver-app-resume.service",
     "nekoserver-host-resume.service",
+    "nekoserver-immich-resume.service",
     "nekoserver-immich-snapshot-resume.service",
 ];
 
@@ -119,10 +128,22 @@ fn run_ok(args: &[&str], timeout: u64) -> Result<String> {
         return Err(Error::new(&format!(
             "{} failed: {}",
             args.join(" "),
-            out.lines().last().unwrap_or("no details")
+            failure_detail(code, &common::last_stderr(), &out)
         )));
     }
     Ok(out)
+}
+/// Why a command failed: what it said on stderr (systemctl says it there: "Unit … not
+/// found", "Job for … failed. See …"), else its last line of output, else its exit code.
+fn failure_detail(code: i32, stderr: &str, out: &str) -> String {
+    let said = stderr.trim();
+    if !said.is_empty() {
+        return said.to_string();
+    }
+    out.lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .map_or_else(|| format!("exit code {code}"), str::to_string)
 }
 
 pub fn run(a: &Args) -> Result<()> {
@@ -206,17 +227,19 @@ pub fn run(a: &Args) -> Result<()> {
         common::command(&["systemctl", "is-enabled", "--quiet", unit], 15)
             .is_ok_and(|(code, _)| code == 0)
     };
-    for args in refresh_commands(enabled) {
+    let installed = |unit: &str| {
+        common::command(&["systemctl", "cat", unit], 15).is_ok_and(|(code, _)| code == 0)
+    };
+    for args in refresh_commands(enabled, installed) {
         // Not being able to set the drive's power, say, never stops the apps coming back.
         match run_ok(&args, 240) {
             Ok(_) => println!("Drive return: {} {}", args[1], args[args.len() - 1]),
             Err(e) => println!("Drive return: {e}"),
         }
     }
-    finish_interrupted_jobs(
-        |unit| common::command(&["systemctl", "cat", unit], 15).is_ok_and(|(code, _)| code == 0),
-        |unit| run_ok(&["systemctl", "start", unit], 3 * 3600).map(|_| ()),
-    )
+    finish_interrupted_jobs(installed, |unit| {
+        run_ok(&["systemctl", "start", unit], 3 * 3600).map(|_| ())
+    })
 }
 
 /// A job a drive cut off part-way (the apps it stopped, its journal) is finished now that
@@ -257,7 +280,8 @@ mod tests {
             [
                 "nekoserver-maintenance-resume.service",
                 "nekoserver-app-resume.service",
-                "nekoserver-host-resume.service"
+                "nekoserver-host-resume.service",
+                "nekoserver-immich-resume.service"
             ]
         );
         started.borrow_mut().clear();
@@ -273,11 +297,11 @@ mod tests {
             },
         );
         assert!(failed.unwrap_err().to_string().contains("apps not back"));
-        assert_eq!(started.borrow().len(), 4, "the others are still tried");
+        assert_eq!(started.borrow().len(), 5, "the others are still tried");
     }
     #[test]
     fn the_hdd_power_settings_and_the_dashboard_are_renewed_after_a_remount() {
-        let with_policy = refresh_commands(|u| u == "nekoserver-hdd-policy.service");
+        let with_policy = refresh_commands(|u| u == "nekoserver-hdd-policy.service", |_| true);
         assert_eq!(
             with_policy[0],
             ["systemctl", "restart", "nekoserver-hdd-policy.service"]
@@ -295,8 +319,43 @@ mod tests {
             "nekoserver-dashboard.service"
         ]));
         // Policy "unchanged" (the unit is switched off): no HDD command.
-        let without = refresh_commands(|_| false);
+        let without = refresh_commands(|_| false, |_| true);
         assert!(without.iter().all(|c| c[1] == "try-restart"));
+    }
+    #[test]
+    fn services_that_are_not_installed_are_not_restarted_nor_reported_as_failed() {
+        // A server without the dashboard: its two services are not there at all.
+        let none = refresh_commands(
+            |_| true,
+            |u| !u.starts_with("nekoserver-dashboard") && !u.starts_with("nekoserver-control"),
+        );
+        assert_eq!(
+            none,
+            vec![vec![
+                "systemctl",
+                "restart",
+                "nekoserver-hdd-policy.service"
+            ]]
+        );
+    }
+    #[test]
+    fn a_failed_command_keeps_systemctl_s_own_reason() {
+        // systemctl says why on stderr, with nothing on stdout: that is what is shown.
+        assert_eq!(
+            failure_detail(5, "Unit srv-nekoserver.mount not found.", ""),
+            "Unit srv-nekoserver.mount not found."
+        );
+        assert_eq!(failure_detail(1, "", "first\nlast line\n\n"), "last line");
+        assert_eq!(failure_detail(4, "", ""), "exit code 4");
+        assert!(!failure_detail(5, "", "").contains("no details"));
+    }
+    #[test]
+    fn immich_is_started_again_once_a_drive_is_back() {
+        // The weekly Immich pause leaves a journal when the HDD dropped mid-run; the
+        // resume it names is run here with the others (QA-01).
+        assert!(RESUMES.contains(&"nekoserver-immich-resume.service"));
+        assert!(include_str!("../../modules/photo_preservation.py")
+            .contains("RESUME='nekoserver-immich-resume'"));
     }
     #[test]
     fn a_live_btrfs_drive_is_not_taken_for_a_dead_one() {

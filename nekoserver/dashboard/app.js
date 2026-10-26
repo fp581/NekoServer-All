@@ -57,6 +57,8 @@ function saveStore(key, value) {
   try { localStorage.setItem('neko-' + key, JSON.stringify(value)); return true; } catch { return false; }
 }
 function joined(parts) { return parts.filter(Boolean).join(' · '); }
+/* "1 file", "3 files". */
+function plural(n, one, many = one + 's') { return n + ' ' + (n === 1 ? one : many); }
 
 /* ---------- formatting ---------- */
 function bytes(v) {
@@ -116,7 +118,7 @@ const LABELS = {
   needs_setup: 'Setup needed', stale: 'Overdue', partial: 'Incomplete', running: 'Running', starting: 'Starting',
   unhealthy: 'Not responding', healthy: 'Healthy', missing: 'Not installed', exited: 'Stopped', paused: 'Paused', created: 'Not started',
   restarting: 'Restarting', dead: 'Stopped', ambiguous: 'Check setup', disabled: 'Checks off',
-  complete: 'All checked', pending: 'Not finished', outdated: 'Needs recheck'
+  complete: 'All checked', pending: 'Not finished', outdated: 'Needs recheck', not_set_up: 'Not set up yet'
 };
 const ROUTES = {
   home: 'Home', apps: 'Your apps', backups: 'Backups', hardware: 'Hardware', sensors: 'Sensors', cooling: 'Fans & lights',
@@ -193,7 +195,7 @@ function validStatus(raw) {
     alerts: rows(raw.alerts), integrity: rows(raw.integrity, 20), history: rows(raw.history, 120),
     startup: rows(raw.startup, 40), updates: rows(raw.updates, 20),
     media: {...object(raw.media), checks: rows(raw.media?.checks)}, acceptance: object(raw.acceptance),
-    heartbeat: object(raw.heartbeat), notifications: object(raw.notifications), recovery: object(raw.recovery)
+    heartbeat: object(raw.heartbeat), notifications: object(raw.notifications), recovery: object(raw.recovery), tv: object(raw.tv)
   };
 }
 const LOADERS = {
@@ -287,6 +289,29 @@ function stat(label, value, detail, extra) {
   return card;
 }
 function hint(message) { return el('p', 'hint', message); }
+/* A long message shortened at a sentence (or else a word), never mid-word, with "Show
+ * more" for the rest: the start, which says what happened, stays readable at a glance. */
+const SHORT_TEXT = 200;
+function shortText(words, limit = SHORT_TEXT) {
+  if (words.length <= limit + 40) { return words; }
+  const cut = words.slice(0, limit), sentence = cut.lastIndexOf('. ');
+  if (sentence >= limit / 3) { return cut.slice(0, sentence + 1); }
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).replace(/[,;:]$/, '') + '…';
+}
+function longText(className, words) {
+  const p = el('p', className), short = shortText(words);
+  if (short === words) { p.textContent = words; return p; }
+  const shown = el('span', '', short), more = button('Show more', () => {
+    const open = more.getAttribute('aria-expanded') !== 'true';
+    shown.textContent = open ? words : short;
+    more.textContent = open ? 'Show less' : 'Show more';
+    more.setAttribute('aria-expanded', String(open));
+  }, 'more-text');
+  more.setAttribute('aria-expanded', 'false');
+  p.append(shown, ' ', more);
+  return p;
+}
 /* A stable name for a control that is rebuilt on refresh, so keyboard and controller
  * focus can return to it (see withFocus). */
 function keyed(node, key) { node.dataset.focus = key; return node; }
@@ -331,6 +356,7 @@ function serverApps(s) { return list(s?.applications).filter(a => Object.hasOwn(
 const severity = urgent => urgent ? 'critical' : 'warning';
 /* Which guide explains an alert, by its id. */
 const ALERT_GUIDES = [
+  [id => id === 'job:maintenance', 'updates'], // the monthly run: backup, then updates
   [id => id.startsWith('integrity:'), 'integrity'],
   [id => /^(mount|space|smart):/.test(id), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
@@ -365,12 +391,23 @@ function alertIssues(s, add) {
     add(id || 'alert-' + s.alerts.indexOf(alert), text(alert.title, 'Server needs attention'), text(alert.detail, 'Open the guide to review it.') + note, guideFor(id), severity(alert.level === 'critical'), unit);
   }
 }
+/* A drive the apps need (app SSD or media HDD) is missing: the apps on it are stopped
+ * on purpose, and the drive's own alert names them (collect.rs held_apps). */
+function driveAway(s) { return s.storage.some(d => d.id !== 'os' && d.status !== 'mounted'); }
+const HELD_STATES = new Set(['exited', 'created', 'dead']);
+function heldByDrive(s, app) { return driveAway(s) && HELD_STATES.has(app.state); }
 function appIssues(s, add) {
-  for (const app of serverApps(s)) {
+  const apps = serverApps(s), notSetUp = apps.filter(a => appState(a) === 'not_set_up');
+  for (const app of apps) {
     const st = appState(app);
-    if (!APP_OK.has(st)) {
+    if (!APP_OK.has(st) && st !== 'not_set_up' && !heldByDrive(s, app)) {
       add('app:' + app.id, CATALOG[app.id].name + ' · ' + (LABELS[st] || 'Status unknown'), 'Check the app. Running is not the same as working: try opening it.', 'apps', severity(['unhealthy', 'exited', 'dead'].includes(st)));
     }
+  }
+  // Setup stopped before it got to these apps: one item saying so, not one per app.
+  if (notSetUp.length) {
+    const names = notSetUp.map(a => CATALOG[a.id].name).join(', ');
+    add('setup-unfinished', 'Setup isn’t finished yet', (notSetUp.length === 1 ? names + ' is' : names + ' are') + ' not set up yet. Run setup again on the server: it carries on where it stopped.', 'setup');
   }
 }
 function driveIssues(s, add) {
@@ -386,12 +423,16 @@ function driveIssues(s, add) {
     }
   }
 }
+/* A monthly update put back as it was (the apps work on their previous version) is "done
+ * in part", said as what happened. */
+function jobLabel(job) { return job.rolled_back === true ? 'Update undone' : LABELS[job.status]; }
 function backupIssues(s, add) {
   for (const job of s.backups) {
     if (job.status === 'disabled') { continue; }   // its app is switched off: nothing to do
+    if (job.blocked) { continue; }                  // waits for a missing drive: its alert says so
     const name = text(job.name, 'Backup'), unit = JOB_UNITS[job.id], timer = object(job.timer);
     if (['fail', 'partial', 'stale'].includes(job.status)) {
-      add('job:' + job.id, name + ' · ' + LABELS[job.status], text(job.reason, 'Review the last backup attempt.'), 'backup', severity(job.status === 'fail'), unit);
+      add('job:' + job.id, name + ' · ' + jobLabel(job), text(job.reason, 'Review the last backup attempt.'), guideFor('job:' + job.id), severity(job.status === 'fail'), unit);
     } else if (timer.installed && !numeric(job.last_success) && job.status !== 'running') {
       add('job:' + job.id, name + ' has not succeeded yet', 'Wait for (or start) its first run before relying on it.', 'backup', 'warning', unit);
     }
@@ -402,7 +443,7 @@ function backupIssues(s, add) {
 }
 function otherIssues(s, add) {
   for (const check of s.integrity.filter(c => integrityBad(c))) {
-    add('integrity:' + check.id, text(check.name, 'Backup copy') + ' has damaged or missing files', integrityBad(check) + ' files need a look. Keep every copy and use the repair guide.', 'integrity', 'critical');
+    add('integrity:' + check.id, text(check.name, 'Backup copy') + ' has damaged or missing files', plural(integrityBad(check), 'file needs', 'files need') + ' a look. Keep every copy and use the repair guide.', 'integrity', 'critical');
   }
   acceptanceIssue(s.acceptance, add);
   if (s.media?.status === 'stale') { add('media-report', 'App checks are out of date', 'The last detailed app check is overdue.', 'apps'); }
@@ -494,17 +535,24 @@ function heroStatus() {
 function backupSummary(s) {
   const bad = s.backups.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
   return firstOf([
+    [s.backups.some(j => j.blocked), 'Paused: a drive is missing'],
     [s.backups.some(j => j.status === 'running'), 'Backup running'],
-    [bad, bad + ' need a look'],
+    [bad, plural(bad, 'needs', 'need') + ' a look'],
     [s.backups.length && s.backups.every(j => j.status === 'pass'), 'All recent copies OK']
   ], 'Not all checked yet');
 }
 function freeSpace(disk) {
   return disk && numeric(disk.total) && numeric(disk.used) ? bytes(disk.total - disk.used) + ' free' : '—';
 }
-function renderSummaries(s) {
+/* "8 of 10 running", counting only the apps setup has set up. */
+function appsSummary(s) {
   const apps = serverApps(s), running = apps.filter(a => APP_OK.has(appState(a))).length;
-  $('summary-apps').textContent = running + ' of ' + apps.length + ' running';
+  const notSetUp = apps.filter(a => appState(a) === 'not_set_up').length;
+  if (apps.length && notSetUp === apps.length) { return 'Not set up yet'; }
+  return running + ' of ' + (apps.length - notSetUp) + ' running' + (notSetUp ? ' · ' + notSetUp + ' not set up yet' : '');
+}
+function renderSummaries(s) {
+  $('summary-apps').textContent = appsSummary(s);
   $('summary-backups').textContent = backupSummary(s);
   $('summary-storage').textContent = freeSpace(s.storage.find(d => d.id === 'media_hdd') || s.storage[0]);
   $('summary-uptime').textContent = duration(currentLive()?.cpu?.uptime_seconds ?? s.metrics.uptime_seconds);
@@ -556,7 +604,9 @@ function appAddress(id) {
   return null; // a phone's "localhost" is the phone itself: never guess an address
 }
 function shownApps(s, onHome) {
-  const extras = [{id: 'youtube'}, ...(LOCAL ? [{id: 'steam'}] : [])];
+  // Steam Big Picture only where the TV step set it up (collect.rs tv; older readings
+  // don't say, so it stays).
+  const extras = [{id: 'youtube'}, ...(LOCAL && s.tv?.set_up !== false ? [{id: 'steam'}] : [])];
   const filter = onHome ? 'all' : state.appFilter;
   const query = onHome ? '' : $('app-search').value.trim().toLowerCase();
   const wanted = a => {
@@ -597,8 +647,10 @@ function openControl(app, spec) {
 function appCard(app, old) {
   const spec = CATALOG[app.id], card = el('article', 'app-card'), top = el('div', 'app-top'), bottom = el('div', 'app-bottom');
   card.dataset.category = spec.category;
+  // An app setup has not set up yet has nothing to open or restart.
+  const notSetUp = appState(app) === 'not_set_up', controls = !spec.shortcut && !notSetUp;
   const corner = el('span', 'app-corner');
-  corner.append(...(spec.shortcut ? [] : [menuButton(spec.name, () => appMenu(app))]), favoriteButton(app.id, spec.name));
+  corner.append(...(controls ? [menuButton(spec.name, () => appMenu(app))] : []), favoriteButton(app.id, spec.name));
   top.append(el('span', 'app-icon', spec.icon), corner);
   card.append(top, el('div', 'app-name', spec.name), el('div', 'app-description', spec.description));
   if (numeric(app.cpu_percent) || numeric(app.memory_used)) {
@@ -612,10 +664,10 @@ function appCard(app, old) {
       [old, badge('unknown', 'Old reading')]
     ], badge(st, LABELS[st])));
   }
-  bottom.append(openControl(app, spec));
+  if (!notSetUp) { bottom.append(openControl(app, spec)); }
   card.append(bottom);
   if (action && action.state !== 'running') { card.append(actionNote(action)); }
-  if (!spec.shortcut) {
+  if (controls) {
     card.addEventListener('contextmenu', e => { e.preventDefault(); openMenu(appMenu(app), e); });
   }
   return card;
@@ -633,14 +685,15 @@ function renderApps() {
   $('app-access-note').textContent = (LOCAL
     ? 'Apps open on this computer. Favourites and settings are saved in this browser.'
     : 'Everyday apps open through Tailscale. Management apps open on the server itself.')
-    + ' ' + MENU_HOW + ' an app to restart it.';
+    // Only apps that are set up have the restart menu, so the hint is given only then.
+    + (shown.some(app => !CATALOG[app.id]?.shortcut && appState(app) !== 'not_set_up') ? ' ' + MENU_HOW + ' an app to restart it.' : '');
 }
 
 /* ---------- attention ---------- */
 function issueRow(issue) {
   const row = el('article', 'issue ' + issue.level), body = el('div', 'issue-body'), actions = el('div', 'issue-actions');
   actions.append(keyed(button('What should I do?', () => showGuide(issue.guide, issue.unit)), 'issue-' + issue.id));
-  body.append(el('h3', '', issue.title), el('p', '', issue.detail), actions);
+  body.append(el('h3', '', issue.title), longText('', issue.detail), actions);
   row.append(el('span', 'issue-icon', issue.level === 'critical' ? '!' : '◇'), body, badge(issue.level));
   return row;
 }
@@ -671,7 +724,7 @@ function recentCopies(all) {
   const jobs = all.filter(j => j.status !== 'disabled');   // an app switched off: its backup is retired
   const bad = jobs.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
   const unchecked = !jobs.length || jobs.some(j => !numeric(j.last_success) || !j.timer?.installed || !j.timer?.active);
-  return firstOf([[bad, ['warning', bad + ' need a look']], [unchecked, ['unknown', 'Not all checked']]], ['pass', 'All OK']);
+  return firstOf([[jobs.some(j => j.blocked), ['warning', 'Can’t run: drive missing']], [bad, ['warning', plural(bad, 'needs', 'need') + ' a look']], [unchecked, ['unknown', 'Not all checked']]], ['pass', 'All OK']);
 }
 /* A checksum result counts only with a believable date, and only while it is recent.
  * Only the monthly full check reads every copy (the hourly and weekly copies compare
@@ -684,7 +737,8 @@ function checkOverdue(check) { return nowSeconds() - check.full_at > INTEGRITY_M
 function filesIntact(checks) {
   const damaged = checks.reduce((n, c) => n + integrityBad(c), 0), unverified = checks.reduce((n, c) => n + count(c.unverified), 0);
   return firstOf([
-    [damaged, ['fail', damaged + ' files']],
+    [damaged, ['fail', plural(damaged, 'file')]],
+    [checks.some(c => c.blocked), ['warning', 'Can’t check: drive missing']],
     [checks.some(c => !checkDated(c)), ['unknown', 'No full check yet']],
     [checks.some(checkOverdue), ['stale', 'Check overdue']],
     [unverified, ['unknown', unverified + ' not yet checked']],
@@ -723,26 +777,37 @@ function backupBadge(job, fresh) {
   if (!fresh) { return badge('unknown', 'Old reading'); }
   const notSetUp = !job.timer?.installed && !numeric(job.last_success);
   if (job.status === 'disabled') { return badge('disabled', 'Switched off'); }
-  return badge(job.status, notSetUp ? 'Not set up' : LABELS[job.status]);
+  if (job.blocked) { return badge('warning', 'Can’t run now'); }
+  return badge(job.status, notSetUp ? 'Not set up' : jobLabel(job));
+}
+/* A time in this device's own time zone (the household's), e.g. "Sun 1 Nov, 05:00". */
+function localTime(at) {
+  return new Date(at * 1000).toLocaleString([], {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'});
 }
 function nextRun(timer) {
-  return firstOf([[timer.next_run, 'Next run: ' + text(timer.next_run)], [timer.installed, 'No next run scheduled']], 'No schedule');
+  return firstOf([
+    [numeric(timer.next_run_at) && timer.next_run_at > 0, 'Next run: ' + localTime(timer.next_run_at)],
+    [timer.next_run, 'Next run: ' + text(timer.next_run)], [timer.installed, 'No next run scheduled']
+  ], 'No schedule');
 }
 function backupCard(job, fresh) {
   const card = el('article', 'card'), timer = object(job.timer);
-  card.append(cardHeading(text(job.name, 'Backup'), backupBadge(job, fresh)), el('p', '', 'Last good copy: ' + ago(job.last_success)), el('p', '', nextRun(timer)));
+  card.append(cardHeading(text(job.name, 'Backup'), backupBadge(job, fresh)), el('p', '', 'Last good copy: ' + ago(job.last_success)),
+    el('p', '', job.blocked ? 'Runs again once the drive is back.' : nextRun(timer)));
+  if (job.blocked) { card.append(el('p', 'reason', text(job.blocked))); }
   if (timer.installed && !timer.active && job.status !== 'disabled') { card.append(el('p', 'reason', 'The schedule is turned off.')); }
-  if (job.reason) { card.append(el('p', 'reason', text(job.reason))); }
+  if (job.reason) { card.append(longText('reason', text(job.reason))); }
   card.append(keyed(button('Help & logs', () => showGuide('backup', JOB_UNITS[job.id]), 'text-button'), 'backup-' + job.id));
   return card;
 }
 function integrityResult(check) {
   const damaged = integrityBad(check), unverified = count(check.unverified);
   return firstOf([
-    [damaged, {state: 'fail', label: 'Needs repair', words: damaged + ' damaged or missing files.'}],
+    [damaged, {state: 'fail', label: 'Needs repair', words: plural(damaged, 'damaged or missing file') + '.'}],
+    [check.blocked, {state: 'warning', label: 'Drive missing', words: text(check.blocked)}],
     [!checkDated(check), {state: 'unknown', label: 'Not fully checked', words: 'Every copy is compared with its checksum in the monthly update (a USB drive only when it is plugged in then). That hasn’t happened yet.'}],
     [checkOverdue(check), {state: 'stale', label: 'Overdue', words: 'The last full check is more than a month old; this result may no longer hold. For the USB copy, leave the drive plugged in on the night of the 1st.'}],
-    [unverified, {state: 'warning', label: 'Partly checked', words: unverified + ' files not checked yet.'}]
+    [unverified, {state: 'warning', label: 'Partly checked', words: plural(unverified, 'file') + ' not checked yet.'}]
   ], {state: 'pass', label: 'Matches', words: 'Every recorded file matched.'});
 }
 function integrityRow(check, fresh) {
@@ -949,6 +1014,15 @@ async function postControl(op, body = {}) {
     return {ok: false, error: controller.signal.aborted ? 'E02' : 'E01'};
   } finally { clearTimeout(timer); }
 }
+/* A refused PIN: the server says how many tries are left, or how long to wait; the wait
+ * is also shown as a time on this device's clock ("at 12:41"). */
+function pinRefusal(answer, now = Date.now()) {
+  const code = text(answer.error, 'E01');
+  const said = text(answer.message, ERRORS[code]?.[0] || 'Something went wrong').replace(/\.$/, '');
+  const wait = numeric(answer.wait_seconds) && answer.wait_seconds > 0 && answer.wait_seconds <= 7 * 86400 ? answer.wait_seconds : null;
+  const at = wait ? ' (at ' + new Date(now + wait * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) + ')' : '';
+  return code + ' · ' + said + at + '.';
+}
 function controlMessage(answer) {
   const code = text(answer.error, 'E01');
   return code + ' · ' + text(answer.message, ERRORS[code]?.[0] || 'Something went wrong');
@@ -961,7 +1035,8 @@ async function change(op, body) {
     void load('control');
     return true;
   }
-  if (answer.error === 'E43' && state.control?.access?.pin_set) { unlockDialog(); }
+  // The PIN dialog asks for what is missing; a message under it would be hidden.
+  if (answer.error === 'E43' && state.control?.access?.pin_set) { unlockDialog(); return false; }
   toast(controlMessage(answer));
   return false;
 }
@@ -980,20 +1055,25 @@ function unlockDialog(then = null, eyebrow = 'FANS & LIGHTS', why = 'Enter the P
   label.append(input);
   const submit = el('button', 'button', 'Unlock');
   submit.type = 'submit';
+  // A refusal is said inside the dialog, next to the PIN: the page behind it is dimmed.
+  const said = el('p', 'dialog-error');
+  said.setAttribute('role', 'alert');
+  said.hidden = true;
   form.append(label, submit);
   form.addEventListener('submit', async e => {
     e.preventDefault();
     submit.disabled = true;
+    said.hidden = true;
     const answer = await postControl('unlock', {pin: input.value});
     submit.disabled = false;
-    if (!answer.ok) { toast(controlMessage(answer)); input.select(); return; }
+    if (!answer.ok) { said.textContent = pinRefusal(answer); said.hidden = false; input.select(); return; }
     setControlToken(text(answer.token));
     $('dialog').close();
     toast('Unlocked on this device until you close it or 12 hours pass.');
     await load('control');
     then?.();
   });
-  openDialog(eyebrow, 'Unlock changes', [el('p', '', why), form]);
+  openDialog(eyebrow, 'Unlock changes', [el('p', '', why), form, said]);
   requestAnimationFrame(() => input.focus());
 }
 function lockAgain() {
@@ -1608,7 +1688,8 @@ function restartItem(id) {
 }
 function appMenu(app) {
   const st = appState(app);
-  return {title: CATALOG[app.id].name, subtitle: LABELS[st] || 'Status unknown', items: [restartItem(app.id)]};
+  const restart = st === 'not_set_up' ? {label: 'Restart app', detail: 'Not set up yet: run setup again first', disabled: true} : restartItem(app.id);
+  return {title: CATALOG[app.id].name, subtitle: LABELS[st] || 'Status unknown', items: [restart]};
 }
 /* A program started from another app (Firefox from a terminal, say) belongs to that
  * app's group: closing goes to the whole group, so the menu says so. */
@@ -1865,7 +1946,8 @@ const GUIDES = {
   remote: {title: 'Open your apps on a phone or tablet', intro: 'A phone’s “localhost” is the phone itself, so apps open through Tailscale instead.', steps: ['Install Tailscale on your phone or tablet and sign in to the same account as the server.', 'Open this dashboard at its Tailscale address (setup showed it), then use the app links here.', 'Management apps only open on the server itself.']},
   heartbeat: {title: 'Outside heartbeat', intro: 'An outside service notices when the whole server goes quiet. Optional.', steps: ['Make sure the monitor runs somewhere other than this server.', 'Check the heartbeat service below.', 'Test it once: you should get an alert when it stops, and another when it’s back.'], unit: 'nekoserver-heartbeat.service'},
   notifications: {title: 'Phone notifications', intro: 'Background notifications and this page’s browser alerts are different things.', steps: ['Set up background notifications with setup.', 'Check the service below. Keep private addresses out of screenshots.', 'Browser alerts only work while this page is open.'], unit: 'nekoserver-notifications.service'},
-  updates: {title: 'Updates & monthly maintenance', intro: 'Once a month, NekoServer backs up the apps, tests a restore, then updates them.', steps: ['Check its last result below. Apps are briefly offline during the update.', 'If an update was interrupted, let it finish before changing anything else.', 'Big version jumps wait for you to approve them.'], unit: 'nekoserver-maintenance.service'},
+  updates: {title: 'Updates & monthly maintenance', intro: 'Once a month, NekoServer backs up the apps, tests a restore, then updates them.', steps: ['Check its last result below. Apps are briefly offline during the update.', 'If an update was interrupted, let it finish before changing anything else.', 'An update that was undone needs nothing from you: your apps run their previous version, and next month tries again. If the same app is undone every month (a big update can keep it busy for longer), setup can give apps more time to start: “health_wait_seconds” under “maintenance”, up to 1800.', 'Big version jumps wait for you to approve them.'], unit: 'nekoserver-maintenance.service'},
+  setup: {title: 'Finish setting up', intro: 'Setup stopped before it set up every app. The apps not set up yet are not broken: they simply aren’t there yet.', steps: ['On the server, open a terminal in the NekoServer folder you downloaded.', 'Run  sudo bash install.sh  again. It carries on where it stopped and says what still needs you.', 'Come back here: each app appears as it is set up.']},
   fans: {title: 'Fans not found or not changing', intro: 'NekoServer can only set fans that Linux can control. Laptops and some boards keep fans to themselves.', steps: ['Check the control service with the commands below.', 'No outputs listed? Install the “lm_sensors” package, run “sudo sensors-detect”, accept its suggestions, then restart.', 'Fans plugged into a hub or a case controller may only be visible to that device’s own app.'], unit: 'nekoserver-control.service'},
   lights: {title: 'Lights not found or not changing', intro: 'Lighting goes through OpenRGB, which setup installs and starts by itself.', steps: ['Check the OpenRGB service with the commands below.', 'Memory and motherboard lights need the i2c driver setup switches on: restart the computer once after setup.', 'Some devices aren’t supported by OpenRGB yet: its website lists the ones that are.'], unit: 'nekoserver-openrgb.service'},
   sensors: {title: 'Why a sensor is missing', intro: 'The dashboard finds every sensor Linux reports, automatically.', steps: ['Some motherboards need a driver: for many boards, install the “lm_sensors” package and run “sudo sensors-detect”, then restart.', 'Virtual machines usually have no sensors.', 'NVIDIA graphics need the NVIDIA driver; its readings update once a minute.'], extra: '/usr/local/lib/nekoserver-dashboard/v{version}/nekoserver-runtime hardware'}
@@ -2053,6 +2135,9 @@ function notify() {
 let toastTimer;
 function toast(message) {
   clearTimeout(toastTimer);
+  // An open dialog dims everything behind it, so the message goes inside it (top layer).
+  const host = $('dialog').open ? $('dialog') : document.body;
+  if ($('toast').parentElement !== host) { host.append($('toast')); }
   $('toast').hidden = false;
   $('toast').textContent = message;
   toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500);
@@ -2146,6 +2231,7 @@ $('preferences').addEventListener('click', preferences);
 $('more').addEventListener('click', moreMenu);
 $('export').addEventListener('click', diagnostics);
 $('close-dialog').addEventListener('click', () => $('dialog').close());
+$('dialog').addEventListener('close', () => { document.body.append($('toast')); });
 $('dialog').addEventListener('click', e => {
   if (e.target === $('dialog')) { $('dialog').close(); }
 });

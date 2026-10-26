@@ -8,9 +8,7 @@ If a supported API cannot finish an account, guided setup now opens its UI, repe
 The full installer now collects and applies local app credentials. It asks in the terminal before deploying applications:
 
 ```text
-Admin accounts:
-  1 - generate random usernames and passwords for all
-  2 - choose per app
+Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2:
 ```
 
 With option 2, each app asks whether to generate its login or enter it yourself. Custom passwords are typed with hidden input and confirmed a second time. New passwords must be 12-128 characters with no control characters. Usernames use letters, digits, underscores or hyphens and begin with a letter. Immich and Seerr require an email-shaped login instead of a conventional username.
@@ -43,7 +41,17 @@ The actual installer creates these on your server, not inside this downloadable 
 /srv/nekoserver/secrets/accounts/credentials.json
 ```
 
-The text file has a heading for each app/account, its local URL, setup status, username and password. JSON is the private resumable source of truth. Both files are root-owned mode 0600 inside a mode-0700 directory. Passwords are never echoed in the installer log or public dashboard. View the inventory locally with:
+The text file has a heading for each app/account, its local URL, setup status, username and password. JSON is the private resumable source of truth. Both files are root-owned mode 0600 inside a mode-0700 directory. Passwords are never echoed in the installer log or public dashboard.
+
+**To see one app's login** (to type it on a phone, say), show it on the screen, one app at a time, with a QR code of the password to scan:
+
+```bash
+sudo python3 /srv/nekoserver/installer/releases/v0.40.2/account-setup.py show
+```
+
+It lists the saved logins: type a number to show one, Enter to hide it again (the screen is cleared). `show jellyfin` (or `immich`, `seerr`, `nextcloud`, `navidrome_listener`…) goes straight to one. It runs only with sudo and only in a terminal: it refuses to print into a file or another program, so a password never lands in a log. The QR code is drawn by `qrencode`, which gets the password on its input, not its command line (other accounts can read command lines).
+
+The whole inventory, every app at once:
 
 ```bash
 sudo less /srv/nekoserver/secrets/accounts/APP-CREDENTIALS.txt

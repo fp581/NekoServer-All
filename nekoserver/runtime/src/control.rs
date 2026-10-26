@@ -132,6 +132,16 @@ impl Strikes {
             self.locked_until = Some(Instant::now() + length);
         }
     }
+    /// Wrong PINs this device may still type before it is locked out.
+    fn left(&self) -> usize {
+        MAX_TRIES.saturating_sub(self.failures)
+    }
+    /// How long this device must still wait (nothing when it is not locked out).
+    fn wait(&self) -> Option<Duration> {
+        self.locked_until
+            .and_then(|until| until.checked_duration_since(Instant::now()))
+            .filter(|d| !d.is_zero())
+    }
     /// Not locked, and no wrong PIN for a day: safe to forget when the list is full.
     fn quiet(&self) -> bool {
         !self.locked() && self.last.is_none_or(|t| t.elapsed() > LONGEST_LOCKOUT)
@@ -170,6 +180,65 @@ impl Allowance {
     fn used_up(&mut self) -> bool {
         self.refill();
         self.left < 1.0
+    }
+    /// Until the next shared try comes back (one every SHARED_REFILL).
+    fn wait(&self) -> Duration {
+        SHARED_REFILL.mul_f64((1.0 - self.left).clamp(0.0, 1.0))
+    }
+}
+
+/* A refusal says how many tries are left, or how long to wait: what the lockout rule
+ * already allows anyone to know (5 tries, then 5 minutes doubling up to a day), never
+ * anything about the PIN. The page shows "until 12:41" from wait_seconds in the
+ * viewer's own time. */
+/// "5 minutes", "1 minute", "about 3 hours" (rounded up: never shorter than the wait).
+fn wait_words(wait: Duration) -> String {
+    let minutes = wait.as_secs().div_ceil(60).max(1);
+    match minutes {
+        1 => "1 minute".to_string(),
+        m if m < 120 => format!("{m} minutes"),
+        m => format!("about {} hours", m.div_ceil(60)),
+    }
+}
+/// A refusal that asks the device to wait, with how long (also as wait_seconds).
+fn refuse_waiting(code: &str, message: &str, wait: Duration) -> Value {
+    let mut answer = refuse(code, message);
+    answer["wait_seconds"] = json!(wait.as_secs().max(1));
+    answer
+}
+/// This device is locked out: for how long.
+fn locked_out(wait: Duration) -> Value {
+    refuse_waiting(
+        "E45",
+        &format!(
+            "Too many wrong PINs: this device can try again in {}",
+            wait_words(wait)
+        ),
+        wait,
+    )
+}
+/// A wrong PIN: the tries still left, or (the last one) the lockout it starts.
+fn wrong_pin(left: usize, wait: Option<Duration>) -> Value {
+    match wait {
+        Some(wait) => refuse_waiting(
+            "E44",
+            &format!(
+                "Wrong PIN. That was too many: this device can try again in {}",
+                wait_words(wait)
+            ),
+            wait,
+        ),
+        None => {
+            let mut answer = refuse(
+                "E44",
+                &format!(
+                    "Wrong PIN. {left} {} left on this device",
+                    if left == 1 { "try" } else { "tries" }
+                ),
+            );
+            answer["tries_left"] = json!(left);
+            answer
+        }
     }
 }
 
@@ -227,11 +296,11 @@ impl Gate {
         let source = source_of(request);
         let local = source == LOCAL;
         let shares = !local && !source.starts_with(PROGRAM);
-        if self.strikes_for(&source).locked() {
-            return coded("E45");
+        if let Some(wait) = self.strikes_for(&source).wait() {
+            return locked_out(wait);
         }
         if shares && self.shared.used_up() {
-            return refuse("E45", SHARED_USED_UP);
+            return refuse_waiting("E45", SHARED_USED_UP, self.shared.wait());
         }
         let Some(record) = &self.pin else {
             return refuse(
@@ -240,11 +309,22 @@ impl Gate {
             );
         };
         if !valid_pin(pin) || !pin_matches(record, pin) {
-            self.strikes_for(&source).failed();
+            let strikes = self.strikes_for(&source);
+            strikes.failed();
+            let (mut left, wait) = (strikes.left(), strikes.wait());
             if shares {
                 self.shared.left -= 1.0;
+                // The tries all devices share can run out first.
+                if wait.is_none() && self.shared.left < 1.0 {
+                    return refuse_waiting(
+                        "E44",
+                        &format!("Wrong PIN. {SHARED_USED_UP}"),
+                        self.shared.wait(),
+                    );
+                }
+                left = left.min(self.shared.left as usize);
             }
-            return coded("E44");
+            return wrong_pin(left, wait);
         }
         // The right PIN starts this device over; the shared allowance only refills with time.
         self.strikes.remove(&source);
@@ -2228,7 +2308,10 @@ mod tests {
         }
         let refused = gate.unlock("4321", &program);
         assert_eq!(refused["error"], "E45");
-        assert_eq!(refused["message"], crate::serve::error_message("E45"));
+        assert_eq!(
+            refused["message"],
+            "Too many wrong PINs: this device can try again in 5 minutes"
+        );
         // The devices' allowance used up: the message names that cause.
         gate.shared.left = 0.0;
         let refused = gate.unlock("4321", &json!({"source": "ip:100.64.0.9"}));
@@ -2236,6 +2319,55 @@ mod tests {
             (refused["error"].as_str(), refused["message"].as_str()),
             (Some("E45"), Some(SHARED_USED_UP))
         );
+    }
+    /// Each refusal says how many tries are left, and the one that locks the device out
+    /// (and every one after it) how long to wait: in words and as wait_seconds, which the
+    /// page turns into "until 12:41" in the viewer's own time.
+    #[test]
+    fn wrong_pins_say_the_tries_left_and_how_long_to_wait() {
+        let mut gate = Gate::new(Some(quick_pin("4321")));
+        let phone = json!({"source": "ip:100.64.0.7"});
+        for left in (1..MAX_TRIES).rev() {
+            let refused = gate.unlock("0000", &phone);
+            assert_eq!(refused["error"], "E44");
+            assert_eq!(refused["tries_left"], left, "{refused}");
+            let plural = if left == 1 { "try" } else { "tries" };
+            assert_eq!(
+                refused["message"],
+                format!("Wrong PIN. {left} {plural} left on this device")
+            );
+        }
+        let last = gate.unlock("0000", &phone);
+        assert_eq!(last["error"], "E44");
+        assert_eq!(
+            last["message"],
+            "Wrong PIN. That was too many: this device can try again in 5 minutes"
+        );
+        let wait = last["wait_seconds"].as_u64().unwrap();
+        assert!((295..=300).contains(&wait), "{last}");
+        assert!(last.get("tries_left").is_none());
+        for pin in ["0000", "4321"] {
+            let refused = gate.unlock(pin, &phone);
+            assert_eq!(refused["error"], "E45");
+            assert!(refused["wait_seconds"].as_u64().is_some_and(|w| w <= 300));
+            assert!(text_of(&refused).contains("try again in 5 minutes"));
+        }
+        // Nothing in any answer says anything about the PIN itself.
+        assert!(!last.to_string().contains("4321"));
+        // Longer waits read in hours; never shorter than the wait itself.
+        assert_eq!(wait_words(Duration::from_secs(1)), "1 minute");
+        assert_eq!(wait_words(Duration::from_secs(61)), "2 minutes");
+        assert_eq!(wait_words(Duration::from_secs(40 * 60)), "40 minutes");
+        assert_eq!(wait_words(Duration::from_secs(80_000)), "about 23 hours");
+        // The devices' shared tries running out is said on the wrong PIN that uses the last.
+        let mut gate = Gate::new(Some(quick_pin("4321")));
+        gate.shared.left = 1.0;
+        let refused = gate.unlock("0000", &phone);
+        assert_eq!(refused["message"], format!("Wrong PIN. {SHARED_USED_UP}"));
+        assert!(refused["wait_seconds"].as_u64().is_some_and(|w| w > 3600));
+    }
+    fn text_of(answer: &Value) -> String {
+        answer["message"].as_str().unwrap_or("").to_string()
     }
     #[test]
     fn many_devices_guessing_side_by_side_are_still_stopped() {

@@ -35,7 +35,11 @@
     <div class="intro">
       <h1>Choose what to set up</h1>
       <p>Everything below is optional; the apps, backups, the dashboard and private access from anywhere are always set up.
-        You can change your mind later in <code>my-config.json</code>.</p>
+        A switch you leave alone that says <b>asked later</b> is asked about when setup gets there. You can change your mind
+        later in <code>my-config.json</code>.</p>
+      <p>The apps that find and download movies, shows and music (Seerr, Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent) are
+        set up too. You never have to use them: Jellyfin, Immich and Navidrome play
+        and show your own files without them.</p>
     </div>
     <div class="extras" id="extras"></div>
     <div class="actions">
@@ -73,10 +77,11 @@
   <!-- At the end -->
   <section id="finished" class="running" hidden>
     <div class="now">
-      <div class="eyebrow">FINISHED</div>
+      <div class="eyebrow" id="finish-label">FINISHED</div>
       <h1 id="finish-title">NekoServer is ready</h1>
       <pre class="finish" id="finish-lines"></pre>
-      <p class="muted">You can close this window.</p>
+      <p class="muted">This stays here until you close the window.</p>
+      <p class="muted" id="finish-closed" hidden>Setup has closed; the terminal shows the same summary.</p>
     </div>
     <ol class="steps" id="steps-final" aria-label="Setup steps"></ol>
   </section>
@@ -84,6 +89,12 @@
   <section id="gone" hidden>
     <h1>Setup has ended</h1>
     <p class="muted">The terminal has the summary. You can close this window.</p>
+  </section>
+
+  <section id="moved" hidden>
+    <h1>This window was opened again somewhere else</h1>
+    <p class="muted">The setup window works in one place at a time, and the address was just opened in another browser
+      window: use that one. To use this one instead, load the address here again.</p>
   </section>
 </main>
 </body>

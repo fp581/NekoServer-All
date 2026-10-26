@@ -15,6 +15,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,11 +35,26 @@ STATIC = {'setup.css': ('setup.css', 'text/css; charset=utf-8'),
           'setup.js': ('setup.js', 'text/javascript; charset=utf-8'),
           'logo.svg': ('../dashboard/logo.svg', 'image/svg+xml')}
 NOT_FOUND = (404, b'Not found', PLAIN)
-SPENT = (403, (b'This setup window was already opened. Use that window (or the same browser); to open it '
-               b'somewhere else, stop setup with Ctrl+C and run  sudo bash install.sh  again.'), PLAIN)
+
+
+def refusal(title, text):
+    """A short page that says why the window did not open (a page, so it wraps to the
+    browser's width and reads as words, not as code)."""
+    page = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
+            'content="width=device-width,initial-scale=1"><title>NekoServer setup</title></head><body>'
+            f'<h1>{title}</h1><p>{text}</p></body></html>')
+    return 403, page.encode(), HTML
+
+
+# A request that is not the page itself, without this browser's cookie (an older window
+# after the address was opened again elsewhere, say), or the page loaded from another
+# account than the one that opened the window first.
+SPENT = refusal('This setup window is open somewhere else',
+                'It was opened again in another browser window, which is the one that works now. Use that one, '
+                'or load this address again from the same account on this PC to use it here instead.')
 # Another account (or one that can't be told) asks for the page before the window does.
-OTHER_ACCOUNT = (403, (b'Only the account that runs setup (or root) can open this setup window. Open it from that '
-                       b'account\'s desktop on this PC.'), PLAIN)
+OTHER_ACCOUNT = refusal('Only the account that runs setup can open this window',
+                        'Open it from that account\'s desktop on this PC (or as root).')
 COOKIE = 'neko_setup'
 # The kernel's lists of TCP connections; each line names the account that owns it.
 TCP_TABLES = (Path('/proc/net/tcp'), Path('/proc/net/tcp6'))
@@ -48,7 +64,32 @@ APP_BROWSERS = ('chromium', 'chromium-browser', 'google-chrome-stable', 'google-
                 'microsoft-edge-stable', 'microsoft-edge')
 WINDOW = ('1180', '480')       # the small window's size; it is placed low on the screen
 LARGEST_BODY = 10_000
-SETTLED = ('success', 'unavailable')
+# The extras setup asks about when it gets to their step, as long as nothing was chosen
+# for them (Nextcloud is not asked: it is set up unless switched off).
+ASKED_LATER = ('tv', 'notifications', 'heartbeat')
+
+
+def step_title(name):
+    """A step's name in words when it has no title of its own (music_backup: Music backup)."""
+    return name.replace('_', ' ').capitalize()
+
+
+def family_packages():
+    """{'names': this Linux's package names for one of NekoServer's names, 'vulkan': the
+    graphics driver packages for this PC's chips}. NekoServer's own names (and Intel's
+    and AMD's drivers) when this Linux or the chips can't be told."""
+    try:
+        import host
+        names = host.current().names
+    except (OSError, RuntimeError, ValueError):
+        def names(wanted):
+            return [wanted]
+    try:
+        import gpu
+        vulkan = gpu.vulkan_packages(gpu.graphics()) or []
+    except (OSError, RuntimeError, ValueError):
+        vulkan = ['vulkan-intel', 'lib32-vulkan-intel']
+    return {'names': names, 'vulkan': vulkan}
 
 
 def _package_rows(names):
@@ -128,8 +169,13 @@ class Window:
         # tables) may load the page that first time.
         self.session = secrets.token_urlsafe(32)
         self.opened = False
+        # The account whose browser opened it: the same account (or root) may open the
+        # address again later, in a new browser window, and that one gets a new session;
+        # the old window's cookie stops working then (it says so).
+        self.claimant = None
         self.owners = expected_owners(config) if owners is None else set(owners)
         self.tables = tables
+        self.packages = None                 # this Linux's package names (family_packages), once asked
         self.started = threading.Event()     # Start was pressed in the window
         self.frozen = False                  # setup has started: the choices are fixed
         self.delivered = threading.Event()   # the page has shown the finishing screen
@@ -157,13 +203,19 @@ class Window:
             sent[name] = value
         if secrets.compare_digest(sent.get(COOKIE, ''), self.session):
             return True, None, None
-        if method != 'GET' or route not in ('', INDEX) or self.opened:
+        if method != 'GET' or route not in ('', INDEX):
             return False, None, SPENT
-        if owner() not in self.owners:
-            return False, None, OTHER_ACCOUNT
+        uid = owner()
+        if uid not in self.owners:
+            return False, None, (SPENT if self.opened else OTHER_ACCOUNT)
         with self.lock:
             if not self.opened:
-                self.opened = True
+                self.opened, self.claimant = True, uid
+                return True, self.session, None
+            if uid in (self.claimant, 0):
+                # Opened again (the window was closed, or a browser lost its cookie when it
+                # closed): a new session for this browser, the old one's ends.
+                self.session = secrets.token_urlsafe(32)
                 return True, self.session, None
         return False, None, SPENT
 
@@ -174,7 +226,10 @@ class Window:
     # ----- what the page shows
 
     def _steps(self):
-        """Every step of the plan with its latest state, packages and notes."""
+        """Every step of the plan with its latest state, packages and notes. Once the
+        installer has said which steps it runs (its plan, with the steps the others need,
+        such as the music backup), those are the list: the same steps the terminal and
+        the log count."""
         latest, packages, notes = {}, {}, {}
         for record in setup_progress.events():
             if record['kind'] == 'step':
@@ -183,18 +238,40 @@ class Window:
                 packages.setdefault(record['step'], []).extend(record['wanted'])
             elif record['kind'] == 'note' and record.get('step'):
                 notes.setdefault(record['step'], []).append(record['text'])
-        return [{'id': name, 'title': self.titles[name],
+        ran = setup_progress.last('plan')
+        plan = list(dict.fromkeys([*(ran['steps'] if ran else ()), *self.plan]))
+        return [{'id': name, 'title': self.titles.get(name) or step_title(name),
                  'explanation': explanations.STEP_EXPLANATIONS.get(name, ''),
                  'status': latest.get(name, {}).get('status', 'pending'),
                  'reason': latest.get(name, {}).get('reason', ''),
                  'packages': _package_rows(packages.get(name, [])),
-                 'notes': notes.get(name, [])[-6:]} for name in self.plan]
+                 'notes': notes.get(name, [])[-6:]} for name in plan]
 
     def _extras(self):
         with self.lock:
             return [{'id': e['id'], 'title': e['title'], 'explanation': e['explanation'],
-                     'installs': _package_rows(e['installs']),
-                     'on': explanations.extra_state(self.config, e)} for e in explanations.EXTRAS]
+                     'installs': self._installs(e),
+                     'on': explanations.extra_state(self.config, e),
+                     'asked': e['id'] in ASKED_LATER and not isinstance(self.config.get(e['section'], {}).get(e['key']), bool)}
+                    for e in explanations.EXTRAS]
+
+    def _installs(self, extra):
+        """What an extra installs, as this Linux names the packages (Ubuntu's
+        mesa-vulkan-drivers, not Arch's vulkan-intel), and for the TV the graphics driver
+        of this PC's own chip (as the TV step picks it), each with what it is for."""
+        if self.packages is None:
+            self.packages = family_packages()
+        names = list(extra['installs'])
+        if extra['id'] == 'tv':
+            names = [n for n in names if 'vulkan' not in n]
+            names[2:2] = self.packages['vulkan']
+        rows, seen = [], set()
+        for name in names:
+            for own in self.packages['names'](name):
+                if own not in seen:
+                    seen.add(own)
+                    rows.append({'name': own, 'explanation': explanations.PACKAGES.get(name, '')})
+        return rows
 
     def _phase(self, finished, steps):
         if finished:
@@ -214,11 +291,16 @@ class Window:
                         'kind': question.get('form', 'text'), 'context': question.get('context', [])}
         if phase == 'finished':
             self.delivered.set()
+        # Counted as the terminal's summary and the log count them: steps done, out of the
+        # steps this PC can have (one not available here counts in neither).
+        here = [s for s in steps if s['status'] != 'unavailable']
         return {'version': self.version, 'phase': phase, 'extras': self._extras(), 'steps': steps,
                 'current': current['id'] if current else None,
-                'done': sum(1 for s in steps if s['status'] in SETTLED), 'total': len(steps),
+                'done': sum(1 for s in here if s['status'] == 'success'), 'total': len(here),
                 'question': question, 'terminal': setup_progress.terminal_handoff(),
                 'finish': finished['lines'] if finished else [],
+                'title': (finished.get('title') or '') if finished else '',
+                'stopped': bool(finished and finished.get('stopped') is True),
                 'complete': bool(finished and finished.get('complete') is True)}
 
     def freeze(self):
@@ -428,3 +510,88 @@ def open_window(config, url):
             return True
     except (OSError, RuntimeError, KeyError, ValueError):
         return False
+
+
+# ----- setup stopped before the wizard
+
+STOPPED_TITLE = 'Setup stopped before it began'
+STOP_WAIT = 30      # seconds the window may take to open and show it
+NOTHING_TOUCHED = 'Nothing on your drives was touched.'
+AGAIN = 'Once that is fixed, run  sudo bash install.sh  again.'
+
+
+def stop_lines(reason):
+    """The stopped window's words: the reason once, and what to do once (the reason
+    usually says it already: "…then run  sudo bash install.sh  again")."""
+    return [reason, '', NOTHING_TOUCHED + ('' if 'install.sh' in reason else ' ' + AGAIN)]
+
+
+def _settings(path):
+    """The settings (who the desktop user is), or {} when there are none yet."""
+    try:
+        value = json.loads(settings_path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError, RuntimeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def stop_note(value):
+    """The file install.sh made for the reason (mktemp: /tmp/tmp.XXXXXXXXXX), checked
+    before it is read: only a file of that name, directly in the system's temporary
+    folder, and not a link. None for anything else."""
+    real = os.path.realpath(str(value))
+    if os.path.dirname(real) != os.path.realpath(tempfile.gettempdir()):
+        return None
+    if not re.fullmatch(r'tmp\.\w{6,32}', os.path.basename(real), re.ASCII) or os.path.islink(str(value)):
+        return None
+    return Path(real)
+
+
+def show_stopped(note, settings=ROOT / 'my-config.json', output=print, wait=STOP_WAIT, opener=None):
+    """Setup stopped before the wizard (install.sh's package step: a site that could not be
+    reached, say). Its reason, the file `note` host.py wrote, is shown in the setup window
+    too, on a PC with a desktop: the window otherwise opens only after the packages and
+    the build. Served until the window has shown it (its finishing screen then stays on
+    screen), at most `wait` seconds. True when the window showed it."""
+    note = stop_note(note)
+    if note is None:
+        return False
+    try:
+        text = note.read_text(encoding='utf-8').strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not text:
+        return False
+    config = _settings(settings)
+    setup_progress.enable()
+    try:
+        window = Window(settings, config, {}, [])
+    except OSError:
+        setup_progress.disable()
+        return False
+    try:
+        window.freeze()
+        setup_progress.event('finished', title=STOPPED_TITLE, lines=stop_lines(text), complete=False, stopped=True)
+        if not (opener or open_window)(config, window.url):
+            return False
+        output('The setup window shows this too.')
+        shown = window.delivered.wait(wait)
+        if shown:
+            window.delivered.clear()
+            window.delivered.wait(2)       # the page's own files (its style, the logo) are fetched too
+        return shown
+    finally:
+        window.stop()
+        setup_progress.disable()
+
+
+def main(argv):
+    if len(argv) != 2 or argv[0] != 'stopped':
+        print('usage: python3 setup_gui.py stopped <file with the reason>', file=sys.stderr)
+        return 2
+    show_stopped(argv[1])
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

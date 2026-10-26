@@ -23,7 +23,26 @@ def main(argv=None):
         print(json.dumps(result,indent=2));return 1 if result.get('status')=='needs_setup' else 0
     except (OSError,ValueError,KeyError,TypeError,RuntimeError,subprocess.SubprocessError,KeyboardInterrupt) as exc:
         # Exception details can contain paths or API data; never echo secrets or SQL.
-        print('Recovery failed:',str(exc) if isinstance(exc,RuntimeError) else type(exc).__name__,file=sys.stderr);return 2
+        print('Recovery failed: '+failure_text(exc),file=sys.stderr)
+        print(AFTER_FAILURE,file=sys.stderr);return 2
+
+AFTER_FAILURE=('Nothing was formatted, and no backup or snapshot was overwritten. Fix what it names and run the same '
+               'command again. The guided menu for getting files back is  sudo bash install.sh --recover ; '
+               'RECOVERY.md explains each command.')
+
+def failure_text(exc):
+    """What went wrong, in words, without the details that can hold secrets (a
+    Compose error can include passwords, SQL personal data): our own messages, a file's
+    name and the system's reason, or what kind of problem it was."""
+    if isinstance(exc,RuntimeError):return str(exc)
+    if isinstance(exc,KeyboardInterrupt):return 'stopped with Ctrl+C.'
+    if isinstance(exc,FileNotFoundError):
+        return f'a file or folder it needs does not exist: {exc.filename}. Check the path. A folder it is to put '\
+               'things in must exist already: make it first with  sudo mkdir -p  followed by the folder.'
+    if isinstance(exc,OSError):return f'{exc.strerror or "a file could not be read or written"}'+(f' ({exc.filename})' if exc.filename else '')+'.'
+    if isinstance(exc,KeyError):return f'the settings have no "{exc.args[0] if exc.args else ""}" entry. Use the settings setup made (--config /path/to/my-config.json).'
+    if isinstance(exc,(ValueError,TypeError)):return 'a settings or record file could not be read (it is damaged, or not the file this expects).'
+    return 'a program it ran did not finish.'
 
 def check(config,bundle):
     """The drives and the kept installer, and whether its program runs on this Linux
@@ -33,9 +52,16 @@ def check(config,bundle):
     if problem:return {'status':'needs_setup','reason':problem,'bundle_version':version}
     return {'status':'pass','reason':'Storage identities and preserved installer verified; this is not restore acceptance','bundle_version':version}
 
+def checkpoint(config,apply):
+    """The checkpoint, with what was done and what comes next."""
+    result=recovery.checkpoint(config,apply)
+    if apply:return {**result,'reason':'Saved on the SSD as installer/host-checkpoint.json. Keep a copy off this PC too '
+                     '(RECOVERY.md, "Prepare while the current server works").'}
+    return {**result,'reason':'Preview only: nothing was saved. To save it, run the same command with  --apply  added.'}
+
 def run(a,config):
     if a.action=='check':return check(config,a.bundle)
-    if a.action=='checkpoint':return recovery.checkpoint(config,a.apply)
+    if a.action=='checkpoint':return checkpoint(config,a.apply)
     if a.action=='reattach':return recovery.reattach(config,a.bundle,a.apply,a.confirm)
     if a.action=='snapshot':return recovery.snapshot(config,a.destination,a.apply,a.config)
     if a.action=='resume':return recovery.resume(config)

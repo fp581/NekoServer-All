@@ -82,7 +82,9 @@ def step(name, status, reason=''):
         _step = name if status == 'running' else None
     if status == 'running':
         _cut()   # a question in this step shows what this step said, not the one before
-    event('step', name=name, status=status, reason=str(reason or '')[:400])
+    # (Long enough for a whole reason: a site that could not be reached names the site,
+    # the likely causes and what to do.)
+    event('step', name=name, status=status, reason=str(reason or '')[:1000])
 
 
 def packages(wanted, names=()):
