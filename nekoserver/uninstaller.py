@@ -65,7 +65,11 @@ SYSTEM_PATHS = ('/etc/nekoserver-dashboard', '/etc/nekoserver-control', '/etc/ne
                 '/usr/share/applications/nekoserver-dashboard.desktop', '/usr/local/share/nekoserver-gateway',
                 '/usr/local/share/nekoserver-pages', '/var/lib/nekoserver-host', '/var/lib/nekoserver-openrgb',
                 '/var/lib/nekoserver-notifications', '/var/lib/nekoserver-dashboard', '/var/lib/nekoserver-control')
-SYSTEM_GLOBS = ('usr/local/lib/nekoserver-*', 'run/nekoserver-*', 'etc/systemd/system/*.d/10-nekoserver-storage.conf')
+# systemd's record of when each NekoServer timer last ran goes too: left behind, a setup run
+# on this PC later counts every night since as a missed backup (the timers are persistent),
+# and runs the nightly snapshot at once, stopping the apps just as setup finishes.
+SYSTEM_GLOBS = ('usr/local/lib/nekoserver-*', 'run/nekoserver-*', 'etc/systemd/system/*.d/10-nekoserver-storage.conf',
+                'var/lib/systemd/timers/stamp-nekoserver-*.timer')
 PACKAGES_LEFT = ('Docker, Samba, Caddy, Tailscale, Rust and gcc, smartmontools, qrencode, OpenRGB, and Steam if the TV step '
                  'added it, are packages of your Linux: they stay installed, with the package repositories NekoServer added for '
                  "them (Docker's and Tailscale's own, on Debian and Ubuntu). Remove any you do not want with your package manager.")

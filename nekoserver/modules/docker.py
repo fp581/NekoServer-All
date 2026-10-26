@@ -10,6 +10,7 @@ from neko_common import safe_path, mount_path, atomic_write, atomic_json, findmn
 
 DEPENDENCIES = ['storage','recovery']
 DESCRIPTION = 'Verify dedicated SSD and Docker data-root; --apply configures fresh daemon and mount guard'
+DAEMON_FILE = Path('/etc/docker/daemon.json')   # Docker's own settings (tests point it elsewhere)
 
 
 def call(args, timeout=120):
@@ -247,7 +248,7 @@ def run(context):
         raise RuntimeError('systemctl required')
     if host.snap_docker():
         raise RuntimeError(host.SNAP_DOCKER)
-    daemon_file = Path('/etc/docker/daemon.json')
+    daemon_file = DAEMON_FILE
     daemon = prepare_daemon_config(daemon_file, target)
     # Do not mutate a running daemon or silently relocate existing images/volumes.
     active = subprocess.run(['systemctl', 'is-active', '--quiet', 'docker'], check=False, timeout=30).returncode == 0

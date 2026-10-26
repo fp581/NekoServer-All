@@ -193,6 +193,22 @@ class WindowTests(unittest.TestCase):
                 self.get(route, token)
             self.assertEqual(caught.exception.code, 404, route)
 
+    def test_only_loading_the_page_claims_the_window(self):
+        # Another account that read the address must not take the session with a request
+        # of another kind before the window's browser loads the page.
+        fresh = setup_gui.Window(self.settings, self.config, wizard.STEPS, self.config['profiles']['full'])
+        self.addCleanup(fresh.stop)
+        grab = urllib.request.Request(fresh.url, data=b'{}', headers={'Content-Type': 'application/json'}, method='POST')
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.cookie_browser().open(grab, timeout=5)
+        self.assertEqual(caught.exception.code, 403)
+        browser = self.cookie_browser()
+        with browser.open(fresh.url, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        with self.assertRaises(urllib.error.HTTPError) as caught:     # the address works once
+            self.cookie_browser().open(fresh.url, timeout=5)
+        self.assertEqual(caught.exception.code, 403)
+
     def test_choosing_before_the_start_saves_the_settings_and_start_is_seen(self):
         state = self.state()
         self.assertEqual(state['phase'], 'choose')

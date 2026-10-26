@@ -79,9 +79,10 @@ class Window:
     def url(self):
         return 'http://127.0.0.1:' + str(self.server.server_address[1]) + '/t/' + self.token + '/'
 
-    def admit(self, route, cookie):
+    def admit(self, route, cookie, method='GET'):
         """(allowed, new session cookie to send or None) for a request with this cookie
-        header. The page itself, the first time, is let in and given the cookie."""
+        header. The page itself, the first time it is loaded (GET), is let in and given
+        the cookie; a request of any other kind never claims it."""
         sent = {}
         for part in (cookie or '').split(';'):
             name, _, value = part.strip().partition('=')
@@ -89,7 +90,7 @@ class Window:
         if secrets.compare_digest(sent.get(COOKIE, ''), self.session):
             return True, None
         with self.lock:
-            if route in ('', INDEX) and not self.opened:
+            if method == 'GET' and route in ('', INDEX) and not self.opened:
                 self.opened = True
                 return True, self.session
         return False, None
@@ -255,7 +256,7 @@ class Window:
                     self.close_connection = True
 
             def admitted(self, route):
-                allowed, given = window.admit(route, self.headers.get('Cookie'))
+                allowed, given = window.admit(route, self.headers.get('Cookie'), self.command)
                 self.given = given
                 return allowed
 

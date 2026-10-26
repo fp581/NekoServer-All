@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.40.0 — 2026-10-26
+
+Bug fixes only. A review of the code that changed since 0.39.2, and every supported Linux family installed for real.
+
+### Tried for real
+- **Every family, on this release:** an update from 0.39.1 on openSUSE Tumbleweed and Ubuntu 24.04, an upgrade from 0.35.1 on Fedora 44 (four releases in one step), and the update or a fresh installation on AlmaLinux 10, Arch and openSUSE Leap 16. On each: setup finished every step it can do there (26 of 28: the Tailscale sign-in waits for a person, and the TV and desktop steps need a screen), the feature check passed every check (45 to 47), with the monthly update run for real (checksum check, snapshot, restore test of every app, update), and the fault suite passed 30 of 30 (the monthly update cut off at three points, a backup cut off, the HDD and the USB drive unplugged, an app crash, a full HDD, a Docker restart).
+- The unit tests passed on all of them (939 Python tests on Python 3.12 to 3.14, 332 Rust tests).
+
+### Fixed
+- **"As of the last backup" restores the newest list, also after the clock was set back.** Each weekly copy's list of the files you had is named by the time it was made, and the restore takes the newest name. A clock that went back (a flat clock battery corrected later, a virtual machine catching up) gave the new list an older name than last week's, so the restore would have used last week's files. A new list now always takes a name after the newest one there. Found by the unit tests on the test rig, where WSL's clock stepped back two seconds.
+- **A copy of a Btrfs drive is no longer taken for a pool.** Since 0.39.5 setup accepts a Btrfs pool over several drives (one filesystem UUID, a device on each drive). A drive copied with `dd` or a disk cloner has the same UUID too, and was offered as such a pool; mounted by UUID, the kernel could then write to either drive. Each device of a real pool has its own device UUID (`UUID_SUB`), so setup now checks that, and two drives with the same one stop setup as cloned drives, as before 0.39.5. The system's own drives are never checked (they are never offered).
+- **Only the setup window itself can claim it.** The window's address works once: the first page load gets the session, and everything after needs it. A request of another kind (a POST) sent to the address first claimed it too; now only loading the page does.
+- **The unit tests no longer depend on this PC's own NekoServer.** One test read the real `/etc/docker/daemon.json`, and failed on a PC running NekoServer whose SSD was mounted; a runtime test of the dashboard's app restart read the PC's own unfinished-job records, and failed on one with a backup left to finish.
+- **The unit tests no longer stop at a question when run from a terminal.** One test let setup ask about the backup counts of releases before 0.30.0, and waited for an answer for ever; it now runs as without a keyboard, as in CI.
+- **Setting up again after the uninstaller no longer runs every backup at once.** The uninstaller left systemd's record of when each NekoServer timer last ran. A later setup on that PC switched the timers on again, systemd counted every night since as a missed run, and the nightly app snapshot, the settings snapshot and the weekly USB copy all started right away: the apps stopped for the snapshot just as setup said it was done. The uninstaller now removes those records with the timers. Found by a fresh installation on AlmaLinux 10 after the uninstaller.
+
+### Upgrade notes
+- `git pull` in `nekoserver`, then `sudo bash install.sh` there (the runtime is built again for this release).
+- **The repository's history was cleaned**: old built runtimes and large recordings were taken out, so a clone is about a fifth of the size. A clone made before this cannot simply `git pull`. Clone again, then copy your `my-config.json` into the new `nekoserver` folder.
+
 ## v0.39.7 — 2026-10-25
 
 ### Fixed: backups
