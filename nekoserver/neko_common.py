@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.40.0'
+VERSION = '0.40.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -137,8 +137,25 @@ def check_units(names, what):
             raise RuntimeError(f'Unmanaged {what} unit preserved')
 
 
+# systemd's record of when a persistent timer (Persistent=true) last ran. An uninstaller
+# before 0.40.0 left NekoServer's there; a timer created again later with the same name
+# then counted every night since as missed and ran its job as soon as it was switched on.
+TIMER_STAMPS = Path('/var/lib/systemd/timers')
+
+
+def forget_last_run(unit):
+    """Before a NekoServer timer's unit file is first written: systemd's left-over record
+    of its last run goes, so the new timer waits for its first scheduled time. A timer that
+    is already there keeps its record (a night the PC was off is still caught up)."""
+    unit = Path(unit)
+    if unit.suffix != '.timer' or not unit.name.startswith('nekoserver-') or unit.exists():
+        return
+    (TIMER_STAMPS / ('stamp-' + unit.name)).unlink(missing_ok=True)
+
+
 def write_units(units):
     for name, text in units.items():
+        forget_last_run(SYSTEMD_UNITS / name)
         atomic_write(SYSTEMD_UNITS / name, text, 0o644)
 
 
@@ -339,8 +356,10 @@ def latest_note(name):
 
 
 def partial_name(name):
-    """A short name of its own for a copy in progress, whatever the file's length."""
-    return '.neko-' + hashlib.sha256(name.encode()).hexdigest()[:16] + '.neko-part'
+    """A short name of its own for a copy in progress, whatever the file's length. The
+    name's bytes as the drive has them (os.fsencode): an old file name that is not UTF-8
+    (Latin-1 `Caf\\xe9.flac`, say) works too, and a UTF-8 name gives the same as before."""
+    return '.neko-' + hashlib.sha256(os.fsencode(name)).hexdigest()[:16] + '.neko-part'
 
 
 def saved_names(folder):
@@ -399,13 +418,16 @@ def read_ledger(root):
     return out
 
 
-def record_ledger(root, entries, how, replace=()):
+def record_ledger(root, entries, how, replace=(), retire=None):
     """Add {relative path: sha256} to a tree's checksum ledger, with the same rules as the
     backup program: one writer at a time (its lock), an existing entry is never
     replaced, and the new ledger is written to `.neko-ledger.json.<uuid>.tmp`,
     fsync'd, renamed and its folder fsync'd. Returns the paths actually added.
     `replace`: paths whose entry you settled yourself when two ledgers disagreed (the
-    recovery wizard asks first); only those are overwritten."""
+    recovery wizard asks first); only those are overwritten. `retire`: {path: why} for
+    saved copies you accepted as lost (the wizard asks first): each entry moves to
+    "retired" with when and why, so the checks stop expecting it (backup's ledger.rs
+    keeps that part as it is)."""
     import fcntl
     import time
     import uuid
@@ -427,6 +449,7 @@ def record_ledger(root, entries, how, replace=()):
             value['entries'][rel] = {'sha256': sha, 'size': (root / rel).stat().st_size,
                                      'verified_at': time.time(), 'how': how}
             added.append(rel)
+        added += retire_entries(value, retire or {})
         if added:
             temp = root / f'{LEDGER_NAME}.{uuid.uuid4()}.tmp'
             try:
@@ -445,6 +468,19 @@ def record_ledger(root, entries, how, replace=()):
                 if temp.exists():
                     temp.unlink()
         return added
+
+
+def retire_entries(value, retire):
+    """Move each of `retire`'s paths ({path: why}) from a ledger's entries to its
+    "retired" part, with when and why. Returns the paths moved."""
+    import time
+    moved = []
+    for rel, why in retire.items():
+        old = value['entries'].pop(rel, None) if valid_ledger_path(rel) else None
+        if old is not None:
+            value.setdefault('retired', {})[rel] = {**old, 'retired_at': time.time(), 'why': why}
+            moved.append(rel)
+    return moved
 
 
 def sha256_file(path):
@@ -1043,6 +1079,60 @@ def identity_matches(path, expected):
     return found is not None and found == (expected.get('uuid'), expected.get('fstype'), wanted)
 
 
+def devices_with_uuid(uuid, run=None):
+    """The block devices that carry filesystem `uuid` (each once: lsblk lists an LVM
+    volume under every disk it spans), or None when lsblk can't say."""
+    try:
+        result = (run or subprocess.run)(['lsblk', '-J', '-l', '-o', 'PATH,UUID'], capture_output=True,
+                                         text=True, timeout=10, check=False)
+        rows = json.loads(result.stdout or '')['blockdevices'] if result.returncode == 0 else None
+        found = [row['path'] for row in rows if row.get('uuid') == uuid and row.get('path')]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return sorted(set(found))
+
+
+def btrfs_device_id(device, run=None):
+    """A Btrfs device's own UUID (UUID_SUB), read from the device itself (blkid -p, which
+    needs root), or None when it can't be read."""
+    try:
+        result = (run or subprocess.run)(['blkid', '-p', '-s', 'UUID_SUB', '-o', 'value', '--', device],
+                                         capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode:
+        return None
+    return (result.stdout or '').strip() or None
+
+
+def look_alikes(uuid, fstype, run=None):
+    """The devices that look like copies of one another among those carrying the drive's
+    UUID (a dd or Clonezilla copy left connected): fstab mounts by UUID, so Linux could
+    mount either. The devices of one Btrfs pool share the UUID but each has a UUID_SUB of
+    its own; a copy of one has the same one. [] when nothing looks copied, or when this
+    can't be checked (lsblk or blkid can't say): a healthy drive is never refused then."""
+    devices = devices_with_uuid(uuid, run) or []
+    if len(devices) < 2:
+        return []
+    if fstype != 'btrfs':
+        return devices
+    ids = [btrfs_device_id(device, run) for device in devices]
+    if None in ids:
+        return []
+    return [device for device, sub in zip(devices, ids) if ids.count(sub) > 1]
+
+
+def copy_problem(record, drive, run=None):
+    """Why the drive `record` (a storage.<drive> record) can't be trusted because a copy
+    of it is connected, or None."""
+    copies = look_alikes(record.get('uuid'), record.get('fstype'), run)
+    if not copies:
+        return None
+    return (f'Two drives look the same (one is probably a copy); unplug the copy and try again. '
+            f'{" and ".join(copies)} carry the same filesystem as the {drive} (UUID {record.get("uuid")}), '
+            'so Linux could use either one.')
+
+
 def verify_storage(config, keys=('data_ssd', 'media_hdd')):
     """Fail closed unless dedicated mounts match saved UUID/filesystem identities."""
     identities = []
@@ -1054,6 +1144,9 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd')):
             raise RuntimeError('Storage identity is not configured')
         if not identity_matches(path, expected):
             raise RuntimeError('Storage identity mismatch; refusing private data access')
+        problem = copy_problem(expected, 'SSD' if key == 'data_ssd' else 'HDD')
+        if problem:
+            raise RuntimeError(problem)
         identities.append(expected['uuid'])
     if len(set(identities)) != len(identities):
         raise RuntimeError('Storage filesystems must be distinct')

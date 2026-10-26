@@ -541,6 +541,100 @@ pub fn lock_wait(path: &Path, max: Duration) -> Result<File> {
         }
     }
 }
+/// Setup (`sudo bash install.sh`) holds this lock for as long as it runs: install.sh
+/// opens it and every setup program inherits it.
+pub const SETUP_LOCK: &str = "/run/nekoserver-setup.lock";
+/// How a job begins its message when it gave way to setup. Not a failure: the job ends
+/// without an error (main.rs), so no alert is sent, and it runs at its next time.
+pub const POSTPONED: &str = "Postponed: setup is running";
+pub fn postponed(e: &Error) -> bool {
+    e.to_string().starts_with(POSTPONED)
+}
+/// `lock_wait` for the backups' shared lock (installer/recovery.lock), which setup holds
+/// too while it changes apps, also while it waits at a question for you. When setup is
+/// the one holding it after `while_setup` (at most `max`), the job is postponed
+/// (POSTPONED), not failed: a setup left open at a question must not page you.
+pub fn shared_lock_wait(path: &Path, max: Duration, while_setup: Duration) -> Result<File> {
+    shared_lock_wait_with(path, Path::new(SETUP_LOCK), max, while_setup)
+}
+fn shared_lock_wait_with(
+    path: &Path,
+    setup_lock: &Path,
+    max: Duration,
+    while_setup: Duration,
+) -> Result<File> {
+    let start = Instant::now();
+    let mut announced = false;
+    loop {
+        match lock(path) {
+            Ok(f) => return Ok(f),
+            Err(e) => {
+                let setup = held_by(path, setup_lock);
+                let limit = if setup { while_setup.min(max) } else { max };
+                if start.elapsed() >= limit {
+                    return Err(if setup {
+                        Error::new(&format!(
+                            "{POSTPONED} (sudo bash install.sh holds the backups' lock, perhaps waiting at a question); this run did not fail and runs again at its next time"
+                        ))
+                    } else {
+                        Error::new(&format!(
+                            "Another NekoServer job still held {} after {} minutes",
+                            path.display(),
+                            max.as_secs() / 60
+                        ))
+                    });
+                }
+                if !announced {
+                    println!(
+                        "Waiting for {} to finish ({e})",
+                        if setup {
+                            "setup (sudo bash install.sh)"
+                        } else {
+                            "another NekoServer job"
+                        }
+                    );
+                    announced = true;
+                }
+                thread::sleep(Duration::from_secs(5).min(limit));
+            }
+        }
+    }
+}
+/// Whether setup holds the lock at `path`: a process holding it (the kernel's list of
+/// locks) also has setup's own lock (`setup`) open. Read-only: nothing is locked to find
+/// out, so a setup starting meanwhile is never kept from taking its own lock.
+fn held_by(path: &Path, setup: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(lock), Ok(setup)) = (fs::metadata(path), fs::metadata(setup)) else {
+        return false;
+    };
+    let locks = fs::read_to_string("/proc/locks").unwrap_or_default();
+    lock_holders(&locks, lock.dev(), lock.ino())
+        .into_iter()
+        .any(|pid| has_open(pid, setup.dev(), setup.ino()))
+}
+/// The processes holding a lock on the file (`dev`, `ino`), from /proc/locks lines like
+/// "1: FLOCK  ADVISORY  WRITE 1234 08:02:5678 0 EOF" (a waiting one has "->").
+fn lock_holders(locks: &str, dev: u64, ino: u64) -> Vec<u32> {
+    let file = format!("{:02x}:{:02x}:{ino}", libc::major(dev), libc::minor(dev));
+    locks
+        .lines()
+        .filter(|l| !l.contains("->"))
+        .filter_map(|l| {
+            let fields: Vec<&str> = l.split_whitespace().collect();
+            (fields.len() > 5 && fields[5] == file).then(|| fields[4].parse().ok())?
+        })
+        .collect()
+}
+/// Whether process `pid` has the file (`dev`, `ino`) open.
+fn has_open(pid: u32, dev: u64, ino: u64) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    fs::read_dir(format!("/proc/{pid}/fd"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|fd| fs::metadata(fd.path()).is_ok_and(|m| m.dev() == dev && m.ino() == ino))
+}
 /// What the current job is doing, for its report if it fails ("copying photos").
 static STAGE: Mutex<String> = Mutex::new(String::new());
 pub fn stage(what: &str) {
@@ -958,5 +1052,50 @@ mod lock_tests {
         assert!(got.is_ok());
         drop(got);
         fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn a_job_that_finds_setup_holding_the_shared_lock_is_postponed_not_failed() {
+        use std::os::unix::fs::MetadataExt;
+        let root = scratch("setup-holds");
+        let (shared, setup) = (root.join("recovery.lock"), root.join("setup.lock"));
+        let line = |pid: u32, file: &Path| {
+            let m = fs::metadata(file).unwrap();
+            format!(
+                "1: FLOCK  ADVISORY  WRITE {pid} {:02x}:{:02x}:{} 0 EOF",
+                libc::major(m.dev()),
+                libc::minor(m.dev()),
+                m.ino()
+            )
+        };
+        let held = lock(&shared).unwrap();
+        // The kernel's list names this process as the holder; a waiter ("->") does not count.
+        let me = std::process::id();
+        let waiting = format!("1: -> {}", &line(7, &shared)[3..]);
+        let meta = fs::metadata(&shared).unwrap();
+        assert_eq!(
+            lock_holders(
+                &format!("{}\n{waiting}", line(me, &shared)),
+                meta.dev(),
+                meta.ino()
+            ),
+            vec![me]
+        );
+        let short = Duration::from_millis(50);
+        // Another job (no setup lock open) still holds it after the wait: a failure, as before.
+        fs::write(&setup, b"").unwrap();
+        let other = shared_lock_wait_with(&shared, &setup, short, short).unwrap_err();
+        assert!(
+            !postponed(&other) && other.to_string().contains("still held"),
+            "{other}"
+        );
+        // Setup holds it (the holder has setup's own lock open, as install.sh's programs do).
+        let setup_open = File::open(&setup).unwrap();
+        let waited =
+            shared_lock_wait_with(&shared, &setup, Duration::from_secs(60), short).unwrap_err();
+        assert!(postponed(&waited), "{waited}");
+        drop(setup_open);
+        drop(held);
+        assert!(shared_lock_wait_with(&shared, &setup, short, short).is_ok());
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -7,11 +7,14 @@ at the end it shows the finishing screen.
 
 It is served by setup itself on 127.0.0.1, on a port picked at random, behind a path
 nobody can guess (a token), and only for as long as setup runs."""
+import ipaddress
 import json
 import os
+import pwd
 import re
 import secrets
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,7 +36,12 @@ STATIC = {'setup.css': ('setup.css', 'text/css; charset=utf-8'),
 NOT_FOUND = (404, b'Not found', PLAIN)
 SPENT = (403, (b'This setup window was already opened. Use that window (or the same browser); to open it '
                b'somewhere else, stop setup with Ctrl+C and run  sudo bash install.sh  again.'), PLAIN)
+# Another account (or one that can't be told) asks for the page before the window does.
+OTHER_ACCOUNT = (403, (b'Only the account that runs setup (or root) can open this setup window. Open it from that '
+                       b'account\'s desktop on this PC.'), PLAIN)
 COOKIE = 'neko_setup'
+# The kernel's lists of TCP connections; each line names the account that owns it.
+TCP_TABLES = (Path('/proc/net/tcp'), Path('/proc/net/tcp6'))
 # The browsers that open a page as a small window of its own (Chromium's --app), in the
 # order tried; any other browser gets a normal window.
 APP_BROWSERS = ('chromium', 'chromium-browser', 'google-chrome-stable', 'google-chrome', 'brave', 'brave-browser',
@@ -47,10 +55,64 @@ def _package_rows(names):
     return [{'name': p, 'explanation': explanations.PACKAGES.get(p, '')} for p in dict.fromkeys(names)]
 
 
+def _plain(host):
+    """An address as text, with 127.0.0.1 written the IPv6 way (::ffff:127.0.0.1) as plain IPv4."""
+    ip = ipaddress.ip_address(host)
+    return str(ip.ipv4_mapped or ip) if ip.version == 6 else str(ip)
+
+
+def table_address(field):
+    """(address, port) from the connection tables' "0100007F:1F90" (IPv4) or 32 hex
+    digits and a port (IPv6). Each group of 8 digits is 4 bytes in this computer's order."""
+    host, _, port = field.partition(':')
+    if len(host) not in (8, 32):
+        raise ValueError('not an address')
+    raw = b''.join(int(host[i:i + 8], 16).to_bytes(4, sys.byteorder) for i in range(0, len(host), 8))
+    return _plain(str(ipaddress.ip_address(raw))), int(port, 16)
+
+
+def _owner_in(line, wanted):
+    """The uid column of a table line describing exactly `wanted` (client end, server end)."""
+    fields = line.split()
+    try:
+        return int(fields[7]) if (table_address(fields[1]), table_address(fields[2])) == wanted else None
+    except (IndexError, ValueError):
+        return None
+
+
+def peer_uid(client, server, tables=TCP_TABLES):
+    """The account that owns the client end of a connection made on this PC: the line of
+    the client's own socket (its address is `client`, connected to `server`) in the
+    connection tables. None when it is not listed."""
+    wanted = ((_plain(client[0]), client[1]), (_plain(server[0]), server[1]))
+    for table in tables:
+        try:
+            lines = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        found = next((uid for uid in (_owner_in(line, wanted) for line in lines) if uid is not None), None)
+        if found is not None:
+            return found
+    return None
+
+
+def expected_owners(config):
+    """The accounts whose browser may open the setup window: root (setup itself), the
+    account that ran sudo, and the desktop user the window is opened for."""
+    owners = {0, os.geteuid()}
+    if os.environ.get('SUDO_UID', '').isdigit():
+        owners.add(int(os.environ['SUDO_UID']))
+    try:
+        owners.add(pwd.getpwnam(guided_setup.desktop_command(config, ['true'])[2]).pw_uid)
+    except (OSError, RuntimeError, KeyError, ValueError, IndexError):
+        pass
+    return owners
+
+
 class Window:
     """The server behind the setup window, running in a thread of setup's own process."""
 
-    def __init__(self, config_path, config, titles, plan, version=VERSION):
+    def __init__(self, config_path, config, titles, plan, version=VERSION, owners=None, tables=TCP_TABLES):
         self.config_path = Path(config_path)
         self.config = config
         self.titles = dict(titles)
@@ -61,8 +123,13 @@ class Window:
         # on this PC can read. So it works once: the first page load gets this session's
         # cookie, and every request after it needs that cookie (a reload in the same
         # browser has it). Another account that reads the address later gets nothing.
+        # Another account that reads it first can't take it either: only a connection
+        # owned by root or the desktop user (looked up in the kernel's connection
+        # tables) may load the page that first time.
         self.session = secrets.token_urlsafe(32)
         self.opened = False
+        self.owners = expected_owners(config) if owners is None else set(owners)
+        self.tables = tables
         self.started = threading.Event()     # Start was pressed in the window
         self.frozen = False                  # setup has started: the choices are fixed
         self.delivered = threading.Event()   # the page has shown the finishing screen
@@ -79,21 +146,26 @@ class Window:
     def url(self):
         return 'http://127.0.0.1:' + str(self.server.server_address[1]) + '/t/' + self.token + '/'
 
-    def admit(self, route, cookie, method='GET'):
-        """(allowed, new session cookie to send or None) for a request with this cookie
-        header. The page itself, the first time it is loaded (GET), is let in and given
-        the cookie; a request of any other kind never claims it."""
+    def admit(self, route, cookie, method='GET', owner=lambda: None):
+        """(allowed, new session cookie to send or None, the refusal otherwise) for a
+        request with this cookie header. The page itself, the first time it is loaded
+        (GET) from a connection of an expected account (`owner` looks it up), is let in
+        and given the cookie; a request of any other kind never claims it."""
         sent = {}
         for part in (cookie or '').split(';'):
             name, _, value = part.strip().partition('=')
             sent[name] = value
         if secrets.compare_digest(sent.get(COOKIE, ''), self.session):
-            return True, None
+            return True, None, None
+        if method != 'GET' or route not in ('', INDEX) or self.opened:
+            return False, None, SPENT
+        if owner() not in self.owners:
+            return False, None, OTHER_ACCOUNT
         with self.lock:
-            if method == 'GET' and route in ('', INDEX) and not self.opened:
+            if not self.opened:
                 self.opened = True
-                return True, self.session
-        return False, None
+                return True, self.session, None
+        return False, None, SPENT
 
     def stop(self):
         self.server.shutdown()
@@ -256,7 +328,9 @@ class Window:
                     self.close_connection = True
 
             def admitted(self, route):
-                allowed, given = window.admit(route, self.headers.get('Cookie'), self.command)
+                def owner():
+                    return peer_uid(self.client_address, self.connection.getsockname(), window.tables)
+                allowed, given, self.refusal = window.admit(route, self.headers.get('Cookie'), self.command, owner)
                 self.given = given
                 return allowed
 
@@ -277,14 +351,14 @@ class Window:
                 route = self.route()
                 if route is None:
                     return self.reply(NOT_FOUND)
-                self.reply(window.get(route) if self.admitted(route) else SPENT)
+                self.reply(window.get(route) if self.admitted(route) else self.refusal)
 
             def do_POST(self):
                 route = self.route()
                 if route is None:
                     return self.reply(NOT_FOUND)
                 if not self.admitted(route):
-                    return self.reply(SPENT)
+                    return self.reply(self.refusal)
                 try:
                     length = int(self.headers.get('Content-Length') or 0)
                 except ValueError:

@@ -155,6 +155,53 @@ def dashboard_check(port,now):
         return value.get('format')=='neko-dashboard-v1' and stamp is not None and now-stamp<=reading_max_age(value.get('collect_interval'))
     except (OSError,ValueError,TypeError,AttributeError):return False
 
+CONTROL_UNIT='nekoserver-control.service'
+OPENRGB_UNIT='nekoserver-openrgb.service'
+
+def network_of(unit):
+    """The network namespace a running service's main process is in (None when it does
+    not run or that can't be read)."""
+    rc,out=health.run(['systemctl','show',unit,'--property=MainPID','--value'])
+    pid=out.strip()
+    if rc!=0 or not pid.isdigit() or pid=='0':return None
+    try:return os.readlink(f'/proc/{pid}/ns/net')
+    except OSError:return None
+
+def host_network():
+    try:return os.readlink('/proc/1/ns/net')
+    except OSError:return None
+
+def control_check():
+    """The control service (fans, lights, app controls) runs, on the computer's own
+    network: after restarting an app it checks that the app answers on 127.0.0.1, which
+    only works there (in a private network of its own, as 0.39.6 to 0.40.0 set it up,
+    every restart from the dashboard ended as a failure)."""
+    if not service(CONTROL_UNIT):return 'fail','The fan, light and app control service must be active and enabled.'
+    own,host_net=network_of(CONTROL_UNIT),host_network()
+    if own is None or host_net is None:return 'needs_setup','Run the acceptance check with sudo, so it can see which network the control service uses.'
+    if own!=host_net:return 'fail','The control service runs in a private network, where restarted apps never answer: run setup again (sudo bash install.sh).'
+    return 'pass','Active and enabled, on the computer\'s own network, where it checks that a restarted app answers.'
+
+def lighting_check():
+    """With lighting, OpenRGB (root, drives hardware) must be in a private network of its
+    own, never the computer's, where any program could reach it."""
+    if not service(OPENRGB_UNIT):return 'fail','OpenRGB (lighting) must be active and enabled; or set "rgb": false under "dashboard" and run setup again.'
+    own,host_net=network_of(OPENRGB_UNIT),host_network()
+    if own is None or host_net is None:return 'needs_setup','Run the acceptance check with sudo, so it can see which network OpenRGB uses.'
+    if own==host_net:return 'fail','OpenRGB is on the computer\'s own network, where any program could reach it: restart the computer, then run setup again.'
+    return 'pass','OpenRGB is in a private network of its own; only the control service reaches it.'
+
+def dashboard_checks(config,now):
+    port=dashboard_port(config)
+    good=port is not None and dashboard_check(port,now);out=[item('dashboard:status','Live dashboard status','pass' if good else 'fail','Local endpoint must return a current sanitized status snapshot.')]
+    for unit in ('nekoserver-dashboard.service','nekoserver-dashboard-collect.timer'):out.append(item(unit,unit,'pass' if service(unit) else 'fail','Dashboard web service and collection timer must be active and enabled.'))
+    out.append(item('dashboard:control','Fan, light and app control service',*control_check()))
+    # Lighting on, and OpenRGB set up (setup skips it where the system has none).
+    values=config.get('dashboard',{})
+    if values.get('fan_control',True) and values.get('rgb',True) and Path('/etc/systemd/system',OPENRGB_UNIT).is_file():
+        out.append(item('dashboard:lighting','Lighting kept private (OpenRGB)',*lighting_check()))
+    return out
+
 OPTIONAL=('tv','notifications','heartbeat')
 
 def restore_tests(modules,config):
@@ -303,10 +350,7 @@ def inspect(config,profile='full',now=None):
         ('music_backup',config.get('music',{}).get('backup_enabled',True),'nekoserver-music-backup.timer'),
     ):
         if module in modules and not enabled:add('retired:'+unit,'Disabled '+unit,'pass' if retired_timer(unit) else 'needs_setup','Old managed timer must be absent or inactive and disabled.')
-    if 'dashboard' in modules:
-        port=dashboard_port(config);valid=port is not None
-        good=valid and dashboard_check(port,now);add('dashboard:status','Live dashboard status','pass' if good else 'fail','Local endpoint must return a current sanitized status snapshot.')
-        for unit in ('nekoserver-dashboard.service','nekoserver-dashboard-collect.timer'):add(unit,unit,'pass' if service(unit) else 'fail','Dashboard web service and collection timer must be active and enabled.')
+    if 'dashboard' in modules:checks.extend(dashboard_checks(config,now))
     if 'heartbeat' in modules:
         heartbeat=health.heartbeat_status(config,now)
         good=heartbeat['status']=='pass' and heartbeat['last_success'] is not None and heartbeat['timer']['installed'] and heartbeat['timer']['active']

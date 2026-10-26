@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.40.1 — 2026-10-26
+
+A full independent review of 0.40.0 (installing and the host, drives and recovery, the apps, backups and the monthly update, the dashboard), plus the findings of the project owner's own review, each checked against the code and fixed with a regression test.
+
+### Fixed: backups and restores
+- **The weekly Immich backup is one consistent point in time.** It copied the photos first (leaving out the ones changed in the last 10 minutes) and then copied the database while Immich kept running, so the database copy could name photos the backup never got. Now the photos are copied, then Immich's server and machine-learning containers are paused (its database keeps running), the last photos are copied whatever their age, the database is copied, and Immich starts again. Before anything stops, a note of what to start again is written, so a failure, a cut-off job or a power cut always starts Immich again (when the job ends, at the next start, or at the next run). The job counts as done only when both copies are verified. Immich is paused for a minute or two each week; one that was not running is left stopped.
+- **One damaged copy that can't be repaired no longer stops every monthly update.** When no copy matches its checksum any more (an old version gone bad, a file deleted since), the repair menu can now accept that this saved copy is lost: it is moved to `neko-damaged`, its checksum is retired with the reason, and the monthly snapshot and updates go on. Until you decide, the monthly check says exactly how, and no longer claims "the other copy is kept" where there is none.
+- **Editing a file whose first saved copy is damaged still backs up the edit**, and damage in the photo copy no longer skips the week's Immich database copy.
+- **"As of the last backup" never quietly means an older backup.** Each copy notes when it starts and marks the run complete only once its files, checksums and list of files are saved. If a run was cut off or its list could not be written, the run shows as incomplete and the recovery menu says the newest backup did not finish, recommends "Everything ever kept", and labels the older list with its date.
+- **Restores never land on the system disk.** With the HDD missing, the recovery menu wrote a restore into the empty `restored` folder on the disk Linux runs from. It now restores there only when the right HDD is mounted, and otherwise asks for a folder on another drive.
+- **A file that became a folder (or back) in the Immich library no longer stops the photo archive.** It is kept aside in `neko-replaced`, as the Nextcloud copy does.
+- **The weekly USB copy and the monthly update can no longer overlap**, also when the monthly run starts while the weekly copy waits for the USB drive.
+- **The monthly update's restore test is fully isolated**: restored apps run on an internal Docker network and can't reach this PC, the home network or the internet.
+- **Backups and the monthly update wait for setup instead of failing.** A setup left at a question overnight made them fail after their 3-hour wait; now they are postponed ("setup is running"), and the monthly update tries again the next night.
+- **Long database updates are not rolled back.** The monthly update now waits up to an hour while Immich, Nextcloud, Jellyfin or an Arr app is still updating its database.
+- Restore lists are no longer written twice by the monthly check (the history covers what RECOVERY.md says), and half-written copies left by a cut-off run are cleaned up.
+
+### Fixed: drives
+- **Btrfs pools over several drives can be set up.** Setup compared the mounted drive with the one Linux names for the pool's UUID, which can be another drive of the same pool, and then refused it as "Wrong filesystem" on every run. It now compares the filesystem's UUID, type and subvolume.
+- **An encrypted drive already in your settings** (after reinstalling Linux, say) must also be unlocked at every start (listed in `/etc/crypttab` without `noauto`), as a newly picked one must; setup says which one to add.
+- **The HDD power service works on encrypted (LUKS) and LVM hard drives**, which keep their own power settings. It failed at every start before.
+- **A copy of the SSD or HDD left connected is caught**: Docker and setup stop with "Two drives look the same (one is probably a copy); unplug the copy", instead of perhaps using the copy.
+- Every drive of a Btrfs system pool counts as the system disk (never offered as the SSD, HDD or USB drive), every drive of a Btrfs HDD pool gets the standby timer, and setup without sudo no longer calls a pool "cloned drives".
+
+### Fixed: installing and updating
+- **Debian 12 can be updated again.** Every run after the first replaced Debian's newer Rust (rustc-web) with the old rustc 1.63, and the runtime build then failed every time.
+- **The runtime build downloads first, with its retries, then works offline**, and says so when crates.io doesn't answer (it blamed "cleaning" before).
+- **Setting up again after an older uninstaller no longer runs every backup at once.**
+- **openSUSE: one package source that doesn't answer (a Packman mirror, say) no longer stops setup**; setup names it and goes on.
+- **Debian without sudo:** install.sh says how to install sudo or run as root with your account named, and setup no longer assumes user ID 1000.
+- The READMEs explain how to update a clone made before 0.40.0.
+
+### Fixed: uninstalling
+- **The uninstaller checks each drive again right before deleting anything on it**, and deletes only through the drive it checked: a different drive mounted in its folder, before or during the uninstall, loses nothing. The SSD and HDD are checked with their Btrfs subvolume too.
+- **It never runs alongside NekoServer's jobs.** It stops if a monthly update or an interrupted backup is unfinished or starts while you confirm, never stops a running update, and holds the jobs' lock while files are deleted. Lock files in `/run` are no longer deleted.
+- **Samba must really have stopped** before Samba accounts, shares or files are removed; otherwise it stops and turns everything back on as it was.
+- NekoServer's socket units are removed too.
+
+### Fixed: dashboard
+- **"Restart app" works again.** Since 0.39.6 it always reported a failure after 4 minutes (and held the backups' lock meanwhile), because the control service could not see the app answer. OpenRGB now runs alone in a private network, reached through a socket only root can open (systemd's socket proxy); the control service is back on the computer's own network. Upgrades take effect without a restart, and setup and the feature check confirm OpenRGB is out of other programs' reach.
+- **Wrong PINs lock out only the device that typed them**, also when several devices share one Tailscale account, and programs on the server can't use up the tries the devices share.
+- **The setup window can only be opened by the account running setup (or root)**, even when another account sees its address first.
+
+### Fixed: apps
+- **A graphics chip that decodes but can't encode video** no longer leaves setup "needs setup" for ever (or suggests switching Immich to hardware conversion).
+- **Nextcloud with two-factor sign-in** no longer fails the account check on every run (or holds up hardware video).
+- **Imports:** a file whose name isn't UTF-8 no longer stops a whole import; `smb3` shares and shares that mount on first use are recognised; copying from FAT32/exFAT drives and some SMB shares no longer fails part-way with "changed".
+- Existing app logins with a dot, a space or a leading digit (or Immich's `admin@localhost`) can be entered; Seerr kept without Sonarr and Radarr no longer leaves connecting the apps unfinished; removing Prowlarr or Jellyfin says which connections to remove by hand.
+
+### Upgrade notes
+- `git pull` in `nekoserver` (a clone made before 0.40.0 must be cloned again), then `sudo bash install.sh`. With lighting on, setup sets up the new OpenRGB socket and checks it; no restart of the computer is needed.
+
 ## v0.40.0 — 2026-10-26
 
 Bug fixes only. A review of the code that changed since 0.39.2, and every supported Linux family installed for real.

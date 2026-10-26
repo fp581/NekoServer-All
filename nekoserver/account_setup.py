@@ -311,19 +311,48 @@ def seerr(client, entry, jellyfin_entry):
     client.call('/api/v1/auth/logout', 'POST')
 
 
-def nextcloud(client, entry, config):
-    status = client.call('/status.php')
-    check(status.get('installed') is True and status.get('maintenance') is False and not status.get('needsDbUpgrade'))
-    basic = base64.b64encode((entry['username'] + ':' + entry['password']).encode()).decode()
-    path = '/remote.php/dav/files/' + urllib.parse.quote(entry['username'], safe='') + '/'
-    client.call(path, 'PROPFIND', b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>',
-                raw=True, headers={'Authorization': 'Basic ' + basic, 'Content-Type': 'application/xml', 'Depth': '0'})
+def nextcloud_occ(config, *args):
+    """Nextcloud's own command line (occ) inside its container, as its web user."""
     manifest = safe_path(Path(config['data_mount']) / 'compose/nextcloud/compose.yaml')
     env = safe_path(manifest.parent / '.env')
-    info = json.loads(docker(['compose', '-p', 'neko-nextcloud', '-f', str(manifest), '--env-file', str(env),
-                            'exec', '-T', '--user', 'www-data', 'nextcloud', 'php', 'occ',
-                            'user:info', '--output=json', entry['username']]))
+    return docker(['compose', '-p', 'neko-nextcloud', '-f', str(manifest), '--env-file', str(env),
+                   'exec', '-T', '--user', 'www-data', 'nextcloud', 'php', 'occ', *args])
+
+
+def nextcloud_two_factor(config, username):
+    """Whether Nextcloud asks this user for a second sign-in step: turned on for the
+    user, or required for everyone (or for a group) by the administrator."""
+    state = nextcloud_occ(config, 'twofactorauth:state', username)
+    if 'is enabled for user' in state:
+        return True
+    enforced = nextcloud_occ(config, 'twofactorauth:enforce')
+    return 'is enforced' in enforced and 'not enforced' not in enforced
+
+
+NEXTCLOUD_TWO_FACTOR = ('verified: the administrator exists; two-factor sign-in is on, so Nextcloud does not accept '
+                        'a plain password from NekoServer and the saved password could not be tried (an app '
+                        'password from Nextcloud, Settings, Security, can be saved instead with account-setup.py c)')
+
+
+def nextcloud(client, entry, config):
+    """The administrator, from Nextcloud's own user list (occ), then the saved password
+    over WebDAV. With two-factor sign-in on, Nextcloud refuses every plain password
+    there (HTTP 401) and only takes an app password, so the occ check is the answer and
+    the step is not stuck for ever. Returns a note for the setup log, or None."""
+    status = client.call('/status.php')
+    check(status.get('installed') is True and status.get('maintenance') is False and not status.get('needsDbUpgrade'))
+    info = json.loads(nextcloud_occ(config, 'user:info', '--output=json', entry['username']))
     check(info.get('enabled') is True and 'admin' in info.get('groups', []))
+    basic = base64.b64encode((entry['username'] + ':' + entry['password']).encode()).decode()
+    path = '/remote.php/dav/files/' + urllib.parse.quote(entry['username'], safe='') + '/'
+    try:
+        client.call(path, 'PROPFIND', b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>',
+                    raw=True, headers={'Authorization': 'Basic ' + basic, 'Content-Type': 'application/xml', 'Depth': '0'})
+    except HTTPFailure as exc:
+        if exc.code != 401 or not nextcloud_two_factor(config, entry['username']):
+            raise
+        return NEXTCLOUD_TWO_FACTOR
+    return None
 
 
 def verify_project(config, app):
@@ -362,7 +391,7 @@ def provision(config, apps, output=print, client_factory=Client):
             continue
         output(store.APPS[app][0] + ': checking account setup')
         client = client_factory('navidrome' if app == 'navidrome_listener' else app)
-        extra = None
+        extra = note = None
         try:
             verify_project(config, app)
             wait('navidrome' if app == 'navidrome_listener' else app, client,
@@ -380,12 +409,12 @@ def provision(config, apps, output=print, client_factory=Client):
             elif app == 'seerr':
                 seerr(client, entry, store.get(config, 'jellyfin', verified=True))
             elif app == 'nextcloud':
-                nextcloud(client, entry, config)
+                note = nextcloud(client, entry, config)
             else:
                 {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome,
                  'qbittorrent': qbittorrent}[app](client, entry)
             store.update(config, app, state='verified', allow_create=False)
-            output(store.APPS[app][0] + ': verified')
+            output(store.APPS[app][0] + ': ' + (note or 'verified'))
         except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
             store.update(config, app, state='needs_setup')
             pending.append(app)

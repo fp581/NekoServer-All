@@ -27,6 +27,17 @@ CONTROL_GROUP='nekoserver-control'
 CONTROL_CONFIG=Path('/etc/nekoserver-control')  # wizard.PIN_FILE is its pin.json
 OPENRGB='nekoserver-openrgb.service'
 OPENRGB_BINARY=Path('/usr/bin/openrgb')
+# The control service reaches OpenRGB through this root-only socket: systemd's socket
+# proxy, inside OpenRGB's private network, passes it on (see control_units).
+PROXY_SOCKET='nekoserver-openrgb-proxy.socket'
+PROXY='nekoserver-openrgb-proxy.service'
+OPENRGB_SOCKET='/run/nekoserver-openrgb/openrgb.sock'  # runtime/src/openrgb.rs SOCKET
+# Where systemd keeps its socket proxy: /usr/lib/systemd on Arch, Fedora, AlmaLinux and
+# openSUSE, and on Debian and Ubuntu too (/lib is the same folder there); /lib/systemd on
+# a Debian that still keeps /lib apart. Looked up when setup runs.
+PROXYD_PLACES=(Path('/usr/lib/systemd/systemd-socket-proxyd'),Path('/lib/systemd/systemd-socket-proxyd'))
+# Lighting's units, in the order they are started.
+LIGHTING_UNITS=(OPENRGB,PROXY_SOCKET,PROXY)
 # Memory and motherboard lighting is reached over i2c (SMBus).
 I2C_MODULES=Path('/etc/modules-load.d/nekoserver-i2c.conf')
 
@@ -112,16 +123,28 @@ def installed_unit():
     try:return SERVICE_UNIT.read_text()
     except OSError:return None
 
-def control_units(code,lighting,fans=True,data=None):
+def socket_proxyd(places=None):
+    """systemd's socket proxy on this system, or None when it has none."""
+    return next((p for p in places or PROXYD_PLACES if p.is_file() and os.access(p,os.X_OK)),None)
+
+def control_units(code,lighting,fans=True,data=None,proxyd=None):
     """The root control service (fans, lights, and restarting or closing apps from the
-    dashboard) and, with lighting, OpenRGB's server. It runs whenever the dashboard is
-    installed: with fan control switched off it leaves every fan to the motherboard.
-    OpenRGB runs as root and changes hardware, so only the control service may reach it:
-    the two share a private network of their own (PrivateNetwork= plus JoinsNamespaceOf=),
-    which no other program on the computer can connect to. The control service needs
-    no other network: it talks to Docker and the dashboard over local files (Unix sockets)."""
+    dashboard) and, with lighting, OpenRGB's server and the link to it. The control
+    service runs whenever the dashboard is installed: with fan control switched off it
+    leaves every fan to the motherboard. It stays on the computer's own network: after
+    restarting an app it checks that the app answers on 127.0.0.1 (a private network
+    of its own would have its own 127.0.0.1, where no app ever answers).
+    OpenRGB runs as root and changes hardware, so only the control service may reach it.
+    OpenRGB runs in a private network of its own (PrivateNetwork=), which no program on
+    the computer can connect to. The control service reaches it through a Unix socket
+    only root may open (mode 0600): systemd holds that socket and, on the first
+    connection, starts its socket proxy inside OpenRGB's private network
+    (JoinsNamespaceOf=, as systemd-socket-proxyd's manual shows), which passes the bytes
+    on to 127.0.0.1:6742 there. The control service no longer shares a namespace with
+    OpenRGB, so it shares no /tmp with it either; OpenRGB shares /tmp with the proxy
+    only, which never uses it."""
     binary=str(code/"nekoserver-runtime")
-    after='After=systemd-modules-load.service docker.service'+(' '+OPENRGB+'\nWants='+OPENRGB+'\nJoinsNamespaceOf='+OPENRGB if lighting else '')
+    after='After=systemd-modules-load.service docker.service'+(' '+OPENRGB+' '+PROXY_SOCKET+'\nWants='+OPENRGB+' '+PROXY_SOCKET if lighting else '')
     found={CONTROL:'[Unit]\nDescription=NekoServer fan, light and app control\n'+after+'\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
         # Lighting off: the service never reads, asks or changes any lighting. Fan control
         # off: it never takes a fan over. The settings say which apps may be restarted.
@@ -138,15 +161,34 @@ def control_units(code,lighting,fans=True,data=None):
         # The shared lock that backups and monthly updates hold (an app restart waits for none).
         'NoNewPrivileges=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths='+str(CONTROL_CONFIG)+(' -'+str(Path(data)/'installer') if data else '')+'\nPrivateTmp=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n'
         # CAP_KILL: closing an app someone opened on the desktop (their own user's process).
-        'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_KILL\nRestrictAddressFamilies=AF_UNIX AF_INET\nIPAddressDeny=any\nIPAddressAllow=localhost\nPrivateNetwork=yes\n'
+        # The computer's own loopback only: the apps answer there; nothing else is reached.
+        'CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_KILL\nRestrictAddressFamilies=AF_UNIX AF_INET\nIPAddressDeny=any\nIPAddressAllow=localhost\n'
         '[Install]\nWantedBy=multi-user.target\n'}
     if lighting:
-        found[OPENRGB]=('[Unit]\nDescription=NekoServer lighting (OpenRGB server)\nAfter=systemd-modules-load.service\nJoinsNamespaceOf='+CONTROL+'\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
+        found.update(lighting_units(proxyd or socket_proxyd() or PROXYD_PLACES[0]))
+    return found
+
+def lighting_units(proxyd):
+    """OpenRGB in its own private network, and the socket (root only) and proxy that
+    lead into it. Both OpenRGB and the proxy set PrivateNetwork= and PrivateTmp=, so
+    whichever of the two starts first creates the private namespaces they share."""
+    private='PrivateNetwork=yes\nPrivateTmp=yes\nIPAddressDeny=any\nIPAddressAllow=localhost\n'
+    return {
+        OPENRGB:('[Unit]\nDescription=NekoServer lighting (OpenRGB server)\nAfter=systemd-modules-load.service\nJoinsNamespaceOf='+PROXY+'\nStartLimitIntervalSec=0\n[Service]\nType=simple\n'
             f'ExecStart={OPENRGB_BINARY} --server --server-port 6742\n'
             'Environment=QT_QPA_PLATFORM=offscreen HOME=/var/lib/nekoserver-openrgb XDG_CONFIG_HOME=/var/lib/nekoserver-openrgb\nStateDirectory=nekoserver-openrgb\n'
-            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\nPrivateTmp=yes\nIPAddressDeny=any\nIPAddressAllow=localhost\nPrivateNetwork=yes\n'
-            '[Install]\nWantedBy=multi-user.target\n')
-    return found
+            'Restart=on-failure\nRestartSec=10\nNoNewPrivileges=yes\nProtectHome=yes\n'+private+
+            '[Install]\nWantedBy=multi-user.target\n'),
+        PROXY_SOCKET:('[Unit]\nDescription=NekoServer lighting link (the socket only the control service may use)\n[Socket]\n'
+            f'ListenStream={OPENRGB_SOCKET}\nSocketUser=root\nSocketGroup=root\nSocketMode=0600\nDirectoryMode=0700\n'
+            '[Install]\nWantedBy=sockets.target\n'),
+        # Started by its socket on the first connection; it stops with OpenRGB.
+        PROXY:('[Unit]\nDescription=NekoServer lighting link (passes the control service\'s requests to OpenRGB)\n'
+            'BindsTo='+OPENRGB+'\nRequires='+PROXY_SOCKET+'\nAfter='+OPENRGB+' '+PROXY_SOCKET+'\nJoinsNamespaceOf='+OPENRGB+'\n[Service]\nType=notify\n'
+            f'ExecStart={proxyd} 127.0.0.1:6742\n'
+            'DynamicUser=yes\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateDevices=yes\nCapabilityBoundingSet=\n'
+            'RestrictAddressFamilies=AF_UNIX AF_INET\n'+private),
+    }
 
 def units(data,code,config,port,interval,public=None,control=False):
     serve=str(code/"nekoserver-runtime")+" serve"
@@ -320,13 +362,16 @@ def install_smart(cfg,log):
     family.install(['smartmontools'])
 
 def prepare_control(code,definitions,lighting,log,fans=True,data=None):
-    """The control group and OpenRGB; lighting is left out when OpenRGB can't be had.
-    Returns whether lighting is on."""
+    """The control group and OpenRGB; lighting is left out when OpenRGB, or systemd's
+    socket proxy that leads to it, can't be had. Returns whether lighting is on."""
     control_group()
-    if lighting and not install_openrgb(log):
-        del definitions[OPENRGB];definitions.update(control_units(code,False,fans,data))
-        return False
-    return lighting
+    if lighting and not socket_proxyd():
+        log('Lighting: this system has no systemd-socket-proxyd (part of systemd), which keeps OpenRGB out of reach of other programs, so RGB control is skipped')
+    elif not lighting or install_openrgb(log):
+        return lighting
+    for unit in LIGHTING_UNITS:definitions.pop(unit,None)
+    definitions.update(control_units(code,False,fans,data))
+    return False
 
 def write_files(folders,payloads,definitions):
     for folder in folders:
@@ -366,18 +411,59 @@ def fans_handed_back(wait=15):
         time.sleep(0.5)
     return False
 
+def network_of(pid):
+    """The network namespace a process is in (None when it can't be told)."""
+    try:return os.readlink(f'/proc/{pid}/ns/net')
+    except OSError:return None
+
+def main_pid(unit):
+    result=subprocess.run(['systemctl','show','--property=MainPID','--value',unit],capture_output=True,text=True,timeout=30,check=False)
+    value=(result.stdout or '').strip()
+    return int(value) if result.returncode==0 and value.isdigit() and value!='0' else None
+
+def openrgb_private(wait=10,sleep=time.sleep):
+    """False only when OpenRGB runs and is still in the computer's own network after a
+    few seconds (systemd moves it into its private one just after starting it)."""
+    for _ in range(wait):
+        pid=main_pid(OPENRGB)
+        own=network_of(pid) if pid else None
+        if own is None or own!=network_of(1):return True
+        sleep(0.5)
+    return False
+
+def check_openrgb_private(log):
+    """OpenRGB must be in its own network, never the computer's: there any program
+    could reach it (and skip the PIN). If it is not, it is stopped."""
+    if openrgb_private():return True
+    subprocess.run(['systemctl','stop',PROXY_SOCKET,PROXY,OPENRGB],capture_output=True,timeout=60,check=False)
+    log('Lighting: OpenRGB did not get a private network of its own, so it was stopped and lighting is off for now. '
+        'Restart the computer and run setup again; if this stays, set "rgb": false under "dashboard" in my-config.json')
+    return False
+
+def start_control(started,log):
+    """Stop the control service and lighting together, then start them in order:
+    OpenRGB (it creates its private network), the socket that leads to it, then the
+    control service. Restarting them one at a time could leave a namespace an older
+    release set up in use (OpenRGB on the computer's own network, or the control
+    service in OpenRGB's), until the computer restarts. Stopping the control service
+    waits for an app restart it is in the middle of."""
+    systemctl('stop',*[u for u in (CONTROL,*LIGHTING_UNITS) if u in started],timeout=CONTROL_WAIT)
+    for unit in (OPENRGB,PROXY_SOCKET,CONTROL):
+        if unit in started:systemctl('enable','--now',unit)
+    if OPENRGB in started:check_openrgb_private(log)
+
 def start_services(definitions,code,control,log,fans=True):
     systemctl('daemon-reload',timeout=30)
     systemctl('start','nekoserver-dashboard-collect.service',timeout=190)
-    started=[u for u in (OPENRGB,CONTROL) if u in definitions]
-    stopped=[u for u in (CONTROL,OPENRGB) if u not in definitions and (SYSTEMD_UNITS/u).exists()]
+    started=[u for u in (*LIGHTING_UNITS,CONTROL) if u in definitions]
+    stopped=[u for u in (CONTROL,PROXY_SOCKET,PROXY,OPENRGB) if u not in definitions and (SYSTEMD_UNITS/u).exists()]
     if stopped:stop_control(stopped)
     if control:
         CONTROL_CONFIG.mkdir(mode=0o700,exist_ok=True)
         choose_pin(code/native_runtime.NAME,log)
-    for unit in ('nekoserver-dashboard-collect.timer',*started,SERVICE):systemctl('enable','--now',unit)
-    # Restarting the control service waits for an app restart it is in the middle of.
-    for unit in (*started,SERVICE):systemctl('restart',unit,timeout=CONTROL_WAIT if unit==CONTROL else 60)
+    for unit in ('nekoserver-dashboard-collect.timer',SERVICE):systemctl('enable','--now',unit)
+    if started:start_control(started,log)
+    systemctl('restart',SERVICE)
     # Fan control switched off: the restart handed every fan back (or the service keeps
     # trying, at full speed meanwhile). Setup says so instead of carrying on. The service
     # hands them back as it starts, so it gets a moment to do so.

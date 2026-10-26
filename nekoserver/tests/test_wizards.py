@@ -55,6 +55,18 @@ class SettingsFileTests(unittest.TestCase):
         self.assertFalse(created_again)
         self.assertEqual(json.loads(again.read_text())['storage']['data_ssd']['uuid'], 'kept')
 
+    def test_started_as_root_without_an_account_ids_are_never_guessed(self):
+        # Debian with a root password and no sudo: no SUDO_USER. The template's 1000 is
+        # kept only when an account has it; otherwise setup stops and says how to name one.
+        with mock.patch.object(wizard.pwd, 'getpwuid', side_effect=KeyError(1000)), \
+                self.assertRaisesRegex(RuntimeError, r'no account with user ID 1000.*SUDO_USER=<your account name> bash install.sh'):
+            wizard.prepare_settings(self.root, None)
+        self.assertFalse((self.root / wizard.SETTINGS).exists())       # nothing written
+        with mock.patch.object(wizard.pwd, 'getpwuid', return_value=pwd.getpwuid(os.getuid())):
+            path, created = wizard.prepare_settings(self.root, None)
+        self.assertTrue(created)
+        self.assertEqual(json.loads(path.read_text())['media']['uid'], 1000)
+
     def test_template_runs_tailscale_and_capacity_in_full(self):
         full = json.loads((ROOT / 'config.json').read_text())['profiles']['full']
         self.assertEqual(full[:4], ['system', 'tailscale', 'storage', 'capacity'])
@@ -72,6 +84,10 @@ class WizardFlowTests(unittest.TestCase):
         geteuid = mock.patch('os.geteuid', return_value=0)
         geteuid.start()
         self.addCleanup(geteuid.stop)
+        # Without sudo the template's user ID needs an account; whatever this test PC has.
+        account = mock.patch.object(wizard.pwd, 'getpwuid', return_value=pwd.getpwuid(os.getuid()))
+        account.start()
+        self.addCleanup(account.stop)
         # The template names the real /srv/nekoserver: on a PC running NekoServer its setup
         # state there would be read (or refused to a normal user). This test's own folder.
         folder = mock.patch.object(wizard, 'data_folder', return_value=self.root / 'ssd')
@@ -549,6 +565,10 @@ class RecoveryWizardTests(unittest.TestCase):
         (self.root / 'ssd/installer').mkdir(parents=True)     # as on a set-up SSD
         self.config = {'media_mount': str(self.media), 'data_mount': str(self.root / 'ssd'),
                        'photos': {'archive_dir': 'photos/archive'}}
+        # The HDD counts as mounted here (the restore folder is suggested on it).
+        ready = mock.patch.object(recovery_wizard, 'hdd_ready', return_value=True)
+        ready.start()
+        self.addCleanup(ready.stop)
 
     def write(self, rel, body=b'x'):
         path = self.root / rel
@@ -844,7 +864,7 @@ class RecoveryWizardTests(unittest.TestCase):
         out = []
         with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / usb), \
                 mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
-            recovery_wizard.repair_backups(self.config, answers('2'), out.append)
+            recovery_wizard.repair_backups(self.config, answers('2', '1'), out.append)   # f: keep it as it is
         for k in 'abcde':
             for where in (archive, usb):
                 self.assertEqual((self.root / where / f'upload/{k}.jpg').read_bytes(), good[k], (k, where))
@@ -1005,6 +1025,71 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((self.root / archive / dated).read_bytes(), b'rotten')  # kept untouched
         self.assertIn('no copy matches its recorded checksum', '\n'.join(out))
         self.assertEqual(left['archive']['damaged'], [dated])
+
+    def unrepairable_cloud_copy(self):
+        """The USB copy (the only one) of report.txt rotted, and the file was edited since;
+        gone.txt's copy disappeared after the file was deleted."""
+        tree = 'usb/nextcloud'
+        self.write(f'{tree}/alice/files/report.txt', b'versiXn one')
+        self.ledger(tree, {'alice/files/report.txt': b'version one', 'alice/files/gone.txt': b'deleted'})
+        self.write('hdd/cloud/files/alice/files/report.txt', b'version two')
+        self.report({'usb_nextcloud': {'damaged': ['alice/files/report.txt'], 'missing': ['alice/files/gone.txt']}})
+        return self.root / tree
+
+    def test_an_unrepairable_copy_is_kept_until_you_accept_it_as_lost(self):
+        tree = self.unrepairable_cloud_copy()
+        out, left = self.repair(self.root / 'usb', '1', '1')   # keep both as they are
+        said = '\n'.join(out)
+        self.assertIn('the monthly snapshot and updates wait', said)
+        self.assertIn('Accept that this saved copy is lost', said)
+        self.assertEqual((tree / 'alice/files/report.txt').read_bytes(), b'versiXn one')
+        self.assertEqual(left['usb_nextcloud']['damaged'], ['alice/files/report.txt'])
+        self.assertIn('alice/files/report.txt', recovery_wizard.read_ledger(tree))
+
+    def test_an_unrepairable_copy_accepted_as_lost_is_kept_aside_and_retired(self):
+        tree = self.unrepairable_cloud_copy()
+        out, left = self.repair(self.root / 'usb', '2', '2')
+        said = '\n'.join(out)
+        self.assertIn('alice/files/gone.txt: the saved copy is missing', said)
+        self.assertIn('alice/files/report.txt: accepted as lost (the damaged copy is kept in neko-damaged/', said)
+        aside = next((tree / 'neko-damaged').iterdir())
+        self.assertEqual((aside / 'alice/files/report.txt').read_bytes(), b'versiXn one')
+        self.assertFalse((tree / 'alice/files/report.txt').exists())
+        # Out of the checksum list, with a record of why; the dashboard warning is cleared.
+        self.assertEqual(recovery_wizard.read_ledger(tree), {})
+        saved = json.loads((tree / '.neko-ledger.json').read_text())
+        self.assertIn('accepted as lost', saved['retired']['alice/files/report.txt']['why'])
+        self.assertTrue(saved['retired']['alice/files/gone.txt']['why'].startswith('missing'))
+        self.assertEqual((left['usb_nextcloud']['damaged'], left['usb_nextcloud']['missing']), ([], []))
+
+    def test_a_photo_copy_is_never_given_up_while_the_usb_drive_is_away(self):
+        archive = 'hdd/photos/archive'
+        self.write(f'{archive}/upload/a.jpg', b'rotten')
+        self.ledger(archive, {'upload/a.jpg': b'good a'})
+        self.write('ssd/photos/immich-library/upload/a.jpg', b'edited since')
+        self.report({'archive': {'damaged': ['upload/a.jpg']}})
+        out, _ = self.repair(None)   # no answer is asked for
+        self.assertNotIn('Accept that this saved copy is lost', '\n'.join(out))
+        self.assertEqual((self.root / archive / 'upload/a.jpg').read_bytes(), b'rotten')
+
+    def test_a_restore_never_writes_onto_the_system_disk_when_the_hdd_is_missing(self):
+        self.write('usb/nextcloud/alice/files/a.txt', b'kept')
+        elsewhere = self.root / 'other-drive'
+        elsewhere.mkdir()
+        shown = []
+        with mock.patch.object(recovery_wizard, 'hdd_ready', return_value=False), \
+                mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+            # A folder typed under the HDD's empty folder is refused too; then one elsewhere.
+            recovery_wizard.restore_cloud(self.config, answers('1', str(self.media / 'restored-here'), 'yes',
+                                                               str(elsewhere / 'files-back'), 'yes', '1', 'yes'),
+                                          shown.append)
+        said = '\n'.join(shown)
+        self.assertIn('The HDD is not mounted at', said)
+        self.assertIn('that folder would be on the system disk', said)
+        self.assertFalse((self.media / 'restored').exists())
+        self.assertFalse((self.media / 'restored-here').exists())
+        self.assertEqual((elsewhere / 'files-back/files/a.txt').read_bytes(), b'kept')
 
     def test_repair_with_nothing_reported(self):
         out = []

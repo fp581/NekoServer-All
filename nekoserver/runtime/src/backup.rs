@@ -269,6 +269,10 @@ pub(crate) struct Kept {
     pub sha256: Option<String>,
     pub how: &'static str,
     pub source_sha256: Option<String>,
+    /// The first saved copy no longer matches its recorded checksum, while the source
+    /// was edited since (so it cannot repair it): the edit is still saved as a dated
+    /// version (`added`), and the damage is reported.
+    pub first_damaged: bool,
 }
 impl Kept {
     fn only(added: Added) -> Kept {
@@ -278,6 +282,7 @@ impl Kept {
             sha256: None,
             how: "",
             source_sha256: None,
+            first_damaged: false,
         }
     }
 }
@@ -427,6 +432,7 @@ pub(crate) fn kept_copy(
             source_sha256: landed.clone(),
             sha256: landed,
             how: "copied",
+            first_damaged: false,
         });
     }
     if !target.is_file() {
@@ -450,17 +456,24 @@ pub(crate) fn kept_copy(
             sha256: Some(have),
             how: "agreed",
             source_sha256: Some(wanted),
+            first_damaged: false,
         });
     }
-    if expected.is_some_and(|e| e != have) {
+    let first_damaged = expected.is_some_and(|e| e != have);
+    if first_damaged && expected == Some(wanted.as_str()) {
+        // The source still holds what was recorded: the caller repairs the copy from it.
         return Ok(Kept {
             added: Added::Damaged,
             file: Some(target.to_path_buf()),
             sha256: None,
             how: "",
             source_sha256: Some(wanted),
+            first_damaged: false,
         });
     }
+    // A damaged first copy whose source was edited since can't be repaired from it, but
+    // the new content is still saved below as a dated version: otherwise no later
+    // version of the file would ever be backed up while the damage stays.
     let name = target
         .file_name()
         .unwrap_or_default()
@@ -482,6 +495,7 @@ pub(crate) fn kept_copy(
                 sha256: (!quick).then(|| wanted.clone()),
                 how: "agreed",
                 source_sha256: Some(wanted),
+                first_damaged,
             });
         }
     }
@@ -516,6 +530,7 @@ pub(crate) fn kept_copy(
         sha256: landed,
         how: "copied",
         source_sha256: Some(wanted),
+        first_damaged,
     })
 }
 /// The dated versions saved beside `target` (name, path), oldest first.
@@ -686,6 +701,9 @@ fn walk_listed<F: FnMut(&Path) -> Result<()>>(paths: Vec<PathBuf>, f: &mut F) ->
 }
 /// Folder (at the root of a backup tree) that keeps damaged copies aside; never data.
 const QUARANTINE: &str = "neko-damaged";
+/// How damage or a missing copy is settled, said with every such problem: until then
+/// the monthly check finds it again and the monthly snapshot and updates wait.
+pub(crate) const SETTLE: &str = "To settle it, run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\": it repairs each file from a copy that still matches, and when no good copy is left it offers \"accept that this saved copy is lost\" (the copy is kept in neko-damaged, never deleted). Until then the monthly check finds it again, and the monthly snapshot and updates wait";
 /// What the checksum checks of one backup tree found.
 #[derive(Debug, Default, PartialEq)]
 pub struct Integrity {
@@ -696,7 +714,8 @@ pub struct Integrity {
     /// Damaged copies replaced from a copy that matches the recorded checksum.
     pub repaired: u64,
     /// The primary copy (HDD archive, or the USB copy of a Nextcloud file) no longer
-    /// matches its recorded checksum; the other copy is kept.
+    /// matches its recorded checksum. It is kept as it is; for Nextcloud files the USB
+    /// copy is the only one, so there may be no good copy left.
     pub damaged: Vec<String>,
     /// Neither copy matches the recorded checksum; both are kept untouched.
     pub both_damaged: Vec<String>,
@@ -705,10 +724,19 @@ pub struct Integrity {
     pub disagree: Vec<String>,
     /// Recorded in the ledger (so backed up and verified once) but no longer there.
     pub missing: Vec<String>,
+    /// The list of the files you had at this run could not be written: the run is
+    /// incomplete ("as of the last backup" would miss its files), not a success.
+    pub list_problem: Option<String>,
 }
 impl Integrity {
-    /// Text for a failed job when a copy is damaged; None when everything checks out.
+    /// Text for a failed job when a copy is damaged, with how to settle it; None when
+    /// everything checks out.
     pub fn problem(&self, what: &str) -> Option<String> {
+        self.findings(what)
+            .map(|found| format!("{found}. {SETTLE}"))
+    }
+    /// What was found, without the advice (several trees' findings share one).
+    fn findings(&self, what: &str) -> Option<String> {
         let list = |rows: &Vec<String>| {
             let mut text = rows.iter().take(10).cloned().collect::<Vec<_>>().join(", ");
             if rows.len() > 10 {
@@ -719,7 +747,7 @@ impl Integrity {
         let mut parts = vec![];
         if !self.damaged.is_empty() {
             parts.push(format!(
-                "{} {what} files no longer match their recorded checksum (the other copy is kept): {}",
+                "{} {what} files no longer match their recorded checksum (kept as they are): {}",
                 self.damaged.len(),
                 list(&self.damaged)
             ));
@@ -888,7 +916,9 @@ fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
 /// The monthly deep audit: read every file again and compare it with its recorded
 /// checksum, whatever its size and dates say (silent bit rot keeps both).
 /// Ledger entries whose file is gone from `root` (an add-only backup never removes one).
+/// Partial files a cut-off run left are removed on the way (see `clear_partials`).
 fn missing_from(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<()> {
+    clear_partials(root)?;
     let present: std::collections::BTreeSet<String> =
         tree_files(root)?.into_iter().map(|(key, _)| key).collect();
     for key in ledger.keys() {
@@ -897,6 +927,36 @@ fn missing_from(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<
         }
     }
     Ok(())
+}
+/// Remove the partial copies (`.neko-<16 hex>.neko-part`, see `partial_name`) in a
+/// backup tree. Called by the tree's one writer (it holds the tree's lock), so every one
+/// found was left by a run that was cut off. One whose file is copied again would be
+/// replaced then, but one whose source was deleted or renamed meanwhile would stay for
+/// good, as big as the file. Returns how many went.
+fn clear_partials(root: &Path) -> Result<usize> {
+    let partial = regex::Regex::new(r"^\.neko-[0-9a-f]{16}\.neko-part$")
+        .map_err(|_| Error::new("Invalid partial-file pattern"))?;
+    let mut found = vec![];
+    if root.is_dir() {
+        walk(root, &mut |path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if partial.is_match(&name) {
+                found.push(path.to_path_buf());
+            }
+            Ok(())
+        })?;
+    }
+    for path in &found {
+        fs::remove_file(common::safe(path)?)?;
+    }
+    if !found.is_empty() {
+        println!(
+            "Backup: removed {} partial copies left by a run that was cut off in {}",
+            found.len(),
+            root.display()
+        );
+    }
+    Ok(found.len())
 }
 fn audit(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<()> {
     missing_from(root, ledger, report)?;
@@ -912,17 +972,37 @@ fn audit(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<()> {
     }
     Ok(())
 }
-/// Write the run's inventory of live files. Best effort: without it a restore offers
-/// every file ever kept, as before 0.39.6, so a failure is said but stops nothing.
-fn save_inventory(root: &Path, live: &Inventory, ledger: &Ledger, what: &str) {
-    match inventory::write(root, live, ledger) {
-        Ok(path) => println!(
+/// Write the run's inventory of live files. A failure stops nothing else (the copies
+/// are made), but it is returned: the run is then incomplete, as the restore's newest
+/// list no longer covers it (the restore says so, see inventory::LAST_RUN).
+fn save_inventory(root: &Path, live: &Inventory, ledger: &Ledger, what: &str) -> Option<String> {
+    let result = inventory::write(root, live, ledger);
+    let problem = result.as_ref().err().map(|e| {
+        format!("the list of the files you had at this backup ({what}) could not be written ({e}), so a restore \"as of the last backup\" can't include this backup's new files until a later run writes one")
+    });
+    match result {
+        Ok((path, true)) => println!(
             "{what}: noted the {} files you have now ({})",
             live.len(),
             path.display()
         ),
-        Err(e) => println!("{what}: the list of the files you have now could not be written ({e}); a restore then offers every file ever kept"),
+        Ok((path, false)) => println!(
+            "{what}: the {} files you have now are the same as in the last list ({}), so no new one was written",
+            live.len(),
+            path.display()
+        ),
+        Err(_) => println!("{what}: {}", problem.as_deref().unwrap_or_default()),
     }
+    problem
+}
+/// Note that a run starts copying into the tree at `root` (inventory::begin). When the
+/// note can't be written, the run goes on and is reported incomplete.
+fn begin_run(root: &Path) -> Option<String> {
+    inventory::begin(root).err().map(|e| {
+        let said = format!("the note that a backup run started could not be written ({e}), so a restore can't tell whether the newest list of files covers this run");
+        println!("Backup: {said}");
+        said
+    })
 }
 fn quarantine_folder(root: &Path) -> PathBuf {
     root.join(QUARANTINE).join(
@@ -946,7 +1026,26 @@ pub fn archive_checked(
     age: u64,
     check: Check,
 ) -> Result<(u64, Integrity)> {
-    if age < 60 {
+    archive_with(source, archive, apply, Some(age), check, true)
+}
+/// The quiesced-copy mode of `archive_with`: with Immich's writers verified stopped,
+/// no file can be half-written, so every original is copied whatever its age (the
+/// 60-second minimum applies only to the settling mode, `Some(age)`).
+const QUIESCED: Option<u64> = None;
+/// The archive copy. `settle`: files changed this recently (seconds) wait for the next
+/// run, as they may still be being written; None while Immich is stopped (nothing can
+/// be writing them then), so every original is copied. `list`: write the inventory of
+/// live files (the weekly run's first pass, with Immich still running, leaves it to the
+/// second).
+fn archive_with(
+    source: &Path,
+    archive: &Path,
+    apply: bool,
+    settle: Option<u64>,
+    check: Check,
+    list: bool,
+) -> Result<(u64, Integrity)> {
+    if settle.is_some_and(|age| age < 60) {
         return Err(Error::new("Archive minimum age is 60 seconds"));
     }
     let (source, archive) = separate(source, archive)?;
@@ -961,8 +1060,17 @@ pub fn archive_checked(
     } else {
         Ledger::read(&archive)?
     };
-    let mut report = Integrity::default();
+    // The run is pending until its files, checksums and list of files are all written.
+    let begun = apply.then(|| begin_run(&archive)).flatten();
+    let mut report = Integrity {
+        list_problem: begun,
+        ..Default::default()
+    };
     let quarantine = quarantine_folder(&archive);
+    // What a change of shape replaced (a file that became a folder, or back) is kept in
+    // REPLACED/<when>/ at the archive's root, as the Nextcloud copy does.
+    let when = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let mut replaced = 0;
     // The live originals, each with the archive copy that holds it (see inventory.rs).
     let mut live = Inventory::default();
     for section in ["upload", "library"] {
@@ -988,15 +1096,29 @@ pub fn archive_checked(
             // A photo dated ahead of the clock (a camera set wrong) is archived now: the
             // copy is verified anyway, and its date may not come for years.
             let modified = meta.mtime() as f64 + meta.mtime_nsec() as f64 / 1e9;
-            let target = archive.join(
-                path.strip_prefix(&source)
-                    .map_err(|_| Error::new("Invalid archive relative path"))?,
-            );
-            if common::settling(modified, age as f64) {
+            let relative = path
+                .strip_prefix(&source)
+                .map_err(|_| Error::new("Invalid archive relative path"))?;
+            let target = archive.join(relative);
+            if settle.is_some_and(|age| common::settling(modified, age as f64)) {
                 waiting += 1;
                 // Still live: its earlier copy (if any) stays in the inventory.
                 live.add(&target, &archive);
                 return Ok(());
+            }
+            // A saved file where one of its folders must go, or a saved folder where it
+            // must go: moved aside (kept, never deleted), or the archive could never
+            // copy this file again.
+            let in_way = in_the_way(&archive, relative);
+            if !in_way.is_empty() {
+                if !apply {
+                    copied += 1;
+                    return Ok(());
+                }
+                let history = archive.join(REPLACED).join(&when);
+                for object in &in_way {
+                    replaced += move_aside(object, &archive, &history, &mut ledger, &archive)?;
+                }
             }
             let key = ledger_key(&target, &archive)?;
             let expected = ledger.get(&key).map(|e| e.sha256.clone());
@@ -1024,7 +1146,10 @@ pub fn archive_checked(
                     replace_damaged(path, &target, &quarantine.join(&key))?;
                     report.repaired += 1;
                 }
-                Added::Damaged => report.damaged.push(key),
+                Added::Damaged => report.damaged.push(key.clone()),
+            }
+            if kept.first_damaged {
+                report.damaged.push(key);
             }
             // Read once: the audit and the USB check below need not read it again.
             if let (Some(file), Some(sha)) = (&kept.file, &kept.sha256) {
@@ -1044,14 +1169,20 @@ pub fn archive_checked(
         }
         // Published after every file it lists.
         ledger.save()?;
-        save_inventory(&archive, &live, &ledger, "Archive");
+        if list {
+            report.list_problem =
+                save_inventory(&archive, &live, &ledger, "Archive").or(report.list_problem.take());
+        }
     }
     report.print("Archive");
     if versions > 0 {
         println!("Archive: {versions} changed files kept as dated versions");
     }
+    if replaced > 0 {
+        println!("Archive: {replaced} saved files were in the way of a file that became a folder (or a folder that became a file); they are kept in {REPLACED}/{when} at the archive's top");
+    }
     if waiting > 0 {
-        println!("Archive: {waiting} files changed in the last {age} seconds wait for the next run (they may still be being written)");
+        println!("Archive: {waiting} files changed in the last {} seconds wait for the next run (they may still be being written)", settle.unwrap_or(0));
     }
     if in_use > 0 {
         println!("Archive: {in_use} files changed, moved or were deleted while being copied; the next run copies them if they are still there");
@@ -1094,8 +1225,23 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
     } else {
         Ledger::read(&source)?
     };
-    let mut report = Integrity::default();
+    // The run is pending until its files, checksums and list of files are all written
+    // (only where the HDD archive keeps lists: then this copy gets them too).
+    let begun = (apply && source.join(inventory::FOLDER).is_dir())
+        .then(|| begin_run(&dest))
+        .flatten();
+    let mut report = Integrity {
+        list_problem: begun,
+        ..Default::default()
+    };
     let quarantine = quarantine_folder(&dest);
+    let files = tree_files(&source)?;
+    // Saved files the HDD archive moved aside since the last copy: moved the same way
+    // here first, so they never stand in the way of what took their place.
+    let followed = follow_moves(&source, &dest, &files, &ledger, apply)?;
+    if followed > 0 {
+        println!("Backup: {followed} saved files the HDD archive kept aside (in {REPLACED}/) were moved the same way on the USB drive");
+    }
     // The USB copy's own ledger: its records stay, also when the HDD's ledger was lost
     // or is incomplete (they say which copy is good), and the HDD's ledger takes back
     // the ones it lacks. Two ledgers recording different checksums decide nothing.
@@ -1121,11 +1267,14 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
     };
     let mut conflicting = std::collections::BTreeSet::new();
     for (key, entry) in usb_ledger.iter().flat_map(Ledger::entries) {
+        // Given up as lost in the recovery menu: the USB's record brings nothing back.
+        if ledger.retired_as(key, &entry.sha256) {
+            continue;
+        }
         if ledger.adopt(key, entry)? == Recorded::Conflict {
             conflicting.insert(key.clone());
         }
     }
-    let files = tree_files(&source)?;
     // Files a current-version note names: what "restore newest" will take.
     let mut noted = std::collections::BTreeSet::new();
     let mut notes = vec![];
@@ -1223,6 +1372,7 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
         }
     }
     if apply {
+        clear_partials(&dest)?;
         for note in &notes {
             let target = dest.join(ledger_key(note, &source)?);
             let text = common::bytes(note, 4_000_000)?;
@@ -1235,12 +1385,18 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
         }
         // The inventories of live files, after the files they name.
         if let Err(e) = inventory::mirror(&source, &dest) {
-            println!("Backup: the lists of the files you have now could not be copied ({e}); a restore from the USB drive then offers every file ever kept");
+            let said = format!("the lists of the files you had could not be copied to the USB drive ({e}), so a restore from it can't go by the newest one");
+            println!("Backup: {said}");
+            report.list_problem = Some(said);
         }
         // Ledgers last: the HDD one with this run's agreements, then its USB copy, which
         // keeps every record it already had.
         ledger.save()?;
         ledger.publish_copy(&dest, usb_ledger.as_ref())?;
+        // Only now is this copy's run complete (see inventory::begin).
+        if report.list_problem.is_none() {
+            inventory::finish_mirror(&source, &dest)?;
+        }
     }
     report.print("Backup");
     println!(
@@ -1248,6 +1404,86 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
         if apply { "" } else { " identified (dry run)" }
     );
     Ok((copied, report))
+}
+/// For each saved file the HDD archive keeps in `REPLACED/<when>/<old place>` (see
+/// archive_with) while the USB copy still has it at `<old place>`: move it there too, its
+/// checksum moving with it in the USB drive's ledger. Only a USB file that holds what
+/// was recorded for it moves; anything else stays and is reported by the copy as usual.
+/// Folders it leaves empty go, so a file can take a folder's old name. Returns how many.
+fn follow_moves(
+    source: &Path,
+    dest: &Path,
+    files: &[(String, PathBuf)],
+    ledger: &Ledger,
+    apply: bool,
+) -> Result<usize> {
+    let prefix = format!("{REPLACED}/");
+    let mut usb: Option<Option<Ledger>> = None;
+    let mut moved = 0;
+    for (key, _) in files {
+        let Some((_, old)) = key.strip_prefix(&prefix).and_then(|r| r.split_once('/')) else {
+            continue;
+        };
+        let (from, to) = (dest.join(old), dest.join(key));
+        let Some(expected) = ledger.get(key) else {
+            continue;
+        };
+        if fs::symlink_metadata(&to).is_ok()
+            || !fs::symlink_metadata(&from).is_ok_and(|m| m.is_file())
+            || common::digest(&from)? != expected.sha256
+        {
+            continue;
+        }
+        moved += 1;
+        if !apply {
+            continue;
+        }
+        // An unreadable USB ledger is set aside by the copy itself; the files still move.
+        let usb_ledger = usb.get_or_insert_with(|| Ledger::open(dest).ok());
+        let parent = to
+            .parent()
+            .ok_or_else(|| Error::new("Target parent missing"))?;
+        common::directory(parent, 0o755)?;
+        common::on_drive(&to)?;
+        fs::rename(common::safe(&from)?, common::safe(&to)?)?;
+        if let Some(l) = usb_ledger.as_mut().filter(|l| l.get(old).is_some()) {
+            l.moved(old, key)?;
+            l.save()?;
+        }
+        // Its current-version note, unless the HDD still has one there.
+        let note = latest_marker(&from);
+        if note.is_file() && !latest_marker(&source.join(old)).exists() {
+            fs::remove_file(&note)?;
+        }
+        remove_emptied(source, dest, &from)?;
+    }
+    Ok(moved)
+}
+/// The folders above `from` (a file just moved away on the USB copy) that are no folder
+/// on the HDD any more and that hold nothing now but backup notes: removed, notes too (they are
+/// copied from the HDD, which keeps its own wherever it moved them).
+fn remove_emptied(source: &Path, dest: &Path, from: &Path) -> Result<()> {
+    let mut folder = from.parent();
+    while let Some(dir) = folder.filter(|d| *d != dest && d.starts_with(dest)) {
+        let rel = dir
+            .strip_prefix(dest)
+            .map_err(|_| Error::new("Invalid relative path"))?;
+        if fs::symlink_metadata(source.join(rel)).is_ok_and(|m| m.is_dir()) {
+            break;
+        }
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if metadata_name(&name) && fs::symlink_metadata(&path)?.is_file() {
+                fs::remove_file(&path)?;
+            }
+        }
+        if fs::remove_dir(dir).is_err() {
+            break;
+        }
+        folder = dir.parent();
+    }
+    Ok(())
 }
 /// Keep the damaged copy aside (never delete) and put the verified file back.
 fn replace_damaged(source: &Path, target: &Path, quarantine: &Path) -> Result<()> {
@@ -1425,7 +1661,12 @@ pub fn copy_cloud(
     } else {
         Ledger::read(&root)?
     };
-    let mut report = Integrity::default();
+    // The run is pending until its files, checksums and list of files are all written.
+    let begun = apply.then(|| begin_run(&root)).flatten();
+    let mut report = Integrity {
+        list_problem: begun,
+        ..Default::default()
+    };
     let quarantine = quarantine_folder(&root);
     let when = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let mut replaced = 0;
@@ -1511,7 +1752,10 @@ pub fn copy_cloud(
                             replace_damaged(path, &target, &quarantine.join(&key))?;
                             report.repaired += 1;
                         }
-                        Added::Damaged => report.damaged.push(key),
+                        Added::Damaged => report.damaged.push(key.clone()),
+                    }
+                    if kept.first_damaged {
+                        report.damaged.push(key);
                     }
                     if apply {
                         record_kept(&mut ledger, &root, &kept, &mut report)?;
@@ -1533,7 +1777,8 @@ pub fn copy_cloud(
             missing_from(&root, &ledger, &mut report)?;
         }
         ledger.save()?;
-        save_inventory(&root, &live, &ledger, "Nextcloud");
+        report.list_problem =
+            save_inventory(&root, &live, &ledger, "Nextcloud").or(report.list_problem.take());
     }
     report.print("Nextcloud");
     println!("Nextcloud: {copied} new files, {versions} changed files kept as dated versions, {skipped} skipped while in use");
@@ -1850,14 +2095,44 @@ fn parse_disks(lsblk: &str) -> std::collections::BTreeSet<String> {
         })
         .collect()
 }
+/// Every disk holding a device of the filesystem at `path`. A Btrfs pool over several
+/// disks (the system's, say) names one member as the mounted source; the others carry
+/// the same UUID and count too.
 fn disks_under(path: &Path) -> Option<std::collections::BTreeSet<String>> {
-    let out = common::findmnt("SOURCE", "--target", path, 10).ok()??;
+    let out = common::findmnt("UUID,SOURCE", "--target", path, 10).ok()??;
+    let (uuid, source) = match out.split_whitespace().collect::<Vec<_>>()[..] {
+        [uuid, source] => (uuid.to_string(), source.to_string()),
+        [source] => (String::new(), source.to_string()),
+        _ => return None,
+    };
     // btrfs shows "/dev/sdb1[/subvolume]".
-    let source = out.split('[').next()?.trim().to_string();
-    source
-        .starts_with("/dev/")
-        .then_some(source)
-        .and_then(|s| disks_of(&s))
+    let source = source.split('[').next()?.trim().to_string();
+    if !source.starts_with("/dev/") {
+        return None;
+    }
+    let mut disks = disks_of(&source)?;
+    if !uuid.is_empty() {
+        let (code, listed) =
+            common::command(&["lsblk", "-r", "-n", "-p", "-o", "NAME,UUID"], 10).ok()?;
+        if code == 0 {
+            for device in members(&listed, &uuid) {
+                disks.extend(disks_of(&device).unwrap_or_default());
+            }
+        }
+    }
+    Some(disks)
+}
+/// The devices lsblk ("NAME UUID" lines) lists with the filesystem UUID `uuid`.
+fn members(lsblk: &str, uuid: &str) -> Vec<String> {
+    lsblk
+        .lines()
+        .filter_map(
+            |line| match line.split_whitespace().collect::<Vec<_>>()[..] {
+                [name, id] if id == uuid => Some(name.to_string()),
+                _ => None,
+            },
+        )
+        .collect()
 }
 /// The USB drive must be a disk of its own: a partition of the system disk, the SSD or
 /// the media HDD fails together with what it protects. Checked every week, also for a
@@ -2182,12 +2457,12 @@ fn no_unfinished_update_at(journal: &Path) -> Result<()> {
         ))),
     }
 }
+/// Setup holds the same lock while it changes apps (also while it waits at a question):
+/// a job that is still waiting for setup after the 3 hours is postponed, not failed.
 pub fn coordinate(cfgpath: &Path, data: &Path, media: &Path) -> Result<fs::File> {
     guard(cfgpath, data, media)?;
-    let held = common::lock_wait(
-        &data.join("installer/recovery.lock"),
-        std::time::Duration::from_secs(3 * 3600),
-    )?;
+    let wait = std::time::Duration::from_secs(3 * 3600);
+    let held = common::shared_lock_wait(&data.join("installer/recovery.lock"), wait, wait)?;
     guard(cfgpath, data, media)?;
     Ok(held)
 }
@@ -2435,7 +2710,8 @@ fn prune_dumps_of(
     Ok(removed)
 }
 /// New Immich originals copied to the HDD archive, the copies checked as `check` says.
-fn archive_step(data: &Path, archive: &Path, min_age: u64, check: Check) -> Result<()> {
+/// Ok(Some(why)) when the run's list of files could not be written (incomplete).
+fn archive_step(data: &Path, archive: &Path, min_age: u64, check: Check) -> Result<Option<String>> {
     common::stage("copying new photos and videos to the HDD");
     let (_, checks) = archive_checked(
         &data.join("photos/immich-library"),
@@ -2444,11 +2720,264 @@ fn archive_step(data: &Path, archive: &Path, min_age: u64, check: Check) -> Resu
         min_age,
         check,
     )?;
-    save_integrity(data, "archive", &checks, check)?;
+    archive_result(data, &checks, check)
+}
+/// Save what the archive's checks found; damage fails the step (after it was saved).
+/// Ok(Some(why)) when its list of files could not be written.
+fn archive_result(data: &Path, checks: &Integrity, check: Check) -> Result<Option<String>> {
+    save_integrity(data, "archive", checks, check)?;
     if let Some(problem) = checks.problem("HDD archive") {
         return Err(Error::new(&problem));
     }
-    Ok(())
+    Ok(checks.list_problem.clone())
+}
+impl Integrity {
+    /// Add what a later pass over the same tree found (each file listed once).
+    fn merge(&mut self, later: Integrity) {
+        self.newly_verified += later.newly_verified;
+        self.repaired += later.repaired;
+        // The later pass looked at every file again: its count is the one that stands.
+        self.unverified = later.unverified;
+        self.list_problem = later.list_problem.or(self.list_problem.take());
+        for (mine, theirs) in [
+            (&mut self.damaged, later.damaged),
+            (&mut self.both_damaged, later.both_damaged),
+            (&mut self.disagree, later.disagree),
+            (&mut self.missing, later.missing),
+        ] {
+            for key in theirs {
+                if !mine.contains(&key) {
+                    mine.push(key);
+                }
+            }
+        }
+    }
+}
+/// The weekly Immich backup stops Immich's writers for a moment, so its photo copy and
+/// its database copy are of one point in time (a restore from them never lists a photo
+/// it has no file for, nor leaves out one it has). Written before anything is stopped:
+/// the containers to start again, so a power cut or a stopped job at any point still
+/// gets Immich running again (the job's ExecStopPost, the boot-time resume service, and
+/// the next run all finish it).
+pub(crate) const IMMICH_JOURNAL: &str = "/etc/nekoserver-backups/immich-resume.json";
+const IMMICH_FORMAT: &str = "neko-immich-resume-v1";
+/// Immich's services that write photos and videos, or work on them. The database and
+/// Redis keep running (the dump needs the database).
+const IMMICH_WRITERS: [&str; 3] = [
+    "immich-server",
+    "immich-microservices",
+    "immich-machine-learning",
+];
+/// What the pause needs from Docker (the tests give a stand-in).
+pub(crate) trait Containers {
+    /// The running containers of Immich's writers: (service, full container ID).
+    fn running_writers(&self) -> Result<Vec<(String, String)>>;
+    fn stop(&self, id: &str) -> Result<()>;
+    /// Start the container `id`, or, when Immich was set up again since (a new
+    /// container), the one container of `service` there now.
+    fn start(&self, service: &str, id: &str) -> Result<()>;
+}
+pub(crate) struct ImmichDocker;
+fn immich_docker(args: &[&str]) -> Result<String> {
+    let mut all = vec!["docker", "--host", "unix:///var/run/docker.sock"];
+    all.extend_from_slice(args);
+    let (code, output) = common::command(&all, 120)?;
+    if code != 0 {
+        return Err(Error::new(&format!(
+            "docker {} failed",
+            args.first().unwrap_or(&"")
+        )));
+    }
+    Ok(output)
+}
+fn container_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|c| c.is_ascii_hexdigit())
+}
+const IMMICH_LABEL: &str = "label=com.docker.compose.project=neko-immich";
+impl Containers for ImmichDocker {
+    fn running_writers(&self) -> Result<Vec<(String, String)>> {
+        let listed = immich_docker(&[
+            "ps",
+            "--no-trunc",
+            "--filter",
+            IMMICH_LABEL,
+            "--format",
+            "{{.ID}} {{.Label \"com.docker.compose.service\"}}",
+        ])?;
+        Ok(listed
+            .lines()
+            .filter_map(|l| l.trim().split_once(' '))
+            .filter(|(id, service)| container_id(id) && IMMICH_WRITERS.contains(service))
+            .map(|(id, service)| (service.to_string(), id.to_string()))
+            .collect())
+    }
+    fn stop(&self, id: &str) -> Result<()> {
+        immich_docker(&["stop", "--time", "60", id]).map(|_| ())
+    }
+    fn start(&self, service: &str, id: &str) -> Result<()> {
+        if !IMMICH_WRITERS.contains(&service) || !container_id(id) {
+            return Err(Error::new("Unknown Immich container in the resume journal"));
+        }
+        let label = format!("label=com.docker.compose.service={service}");
+        let listed = immich_docker(&[
+            "ps",
+            "-aq",
+            "--no-trunc",
+            "--filter",
+            IMMICH_LABEL,
+            "--filter",
+            &label,
+        ])?;
+        let found: Vec<&str> = listed.split_whitespace().collect();
+        let which = match found.as_slice() {
+            _ if found.contains(&id) => id,
+            [only] => only,
+            _ => {
+                return Err(Error::new(&format!(
+                    "{service}: its container from before the backup is gone and {} are there now; start Immich again (sudo bash install.sh), then remove {IMMICH_JOURNAL}",
+                    found.len()
+                )))
+            }
+        };
+        // A stop Docker is still finishing (the job cut off while stopping) ends first.
+        immich_docker(&["stop", "--time", "60", which])?;
+        immich_docker(&["start", which])?;
+        let running = immich_docker(&["inspect", "--format", "{{.State.Running}}", which])?;
+        if running.trim() != "true" {
+            return Err(Error::new(&format!("{service} did not start again")));
+        }
+        Ok(())
+    }
+}
+/// Stop Immich's running writers, each written down in `journal` first. Returns the
+/// containers stopped (none when Immich was not running: it is not started later either).
+fn pause_immich(ctl: &dyn Containers, journal: &Path) -> Result<Vec<(String, String)>> {
+    let writers = ctl.running_writers()?;
+    if writers.is_empty() {
+        return Ok(writers);
+    }
+    let rows: Vec<Value> = writers
+        .iter()
+        .map(|(service, id)| json!({"service": service, "id": id}))
+        .collect();
+    if let Some(parent) = journal.parent() {
+        common::directory(parent, 0o700)?;
+    }
+    common::atomic_json(
+        journal,
+        &json!({"format": IMMICH_FORMAT, "stopped_at": common::now(), "containers": rows}),
+    )?;
+    for (_, id) in &writers {
+        ctl.stop(id)?;
+    }
+    // Copied only once Docker says none of them runs any more (the caller starts them
+    // again from the journal either way).
+    let still = ctl.running_writers()?;
+    if !still.is_empty() {
+        let names: Vec<&str> = still.iter().map(|(s, _)| s.as_str()).collect();
+        return Err(Error::new(&format!(
+            "Immich did not stop for its backup ({} still running)",
+            names.join(", ")
+        )));
+    }
+    Ok(writers)
+}
+/// Start what `journal` names again, then remove it. Nothing to do without one. A
+/// container that would not start keeps the journal (the next try starts it).
+pub(crate) fn resume_immich(ctl: &dyn Containers, journal: &Path) -> Result<()> {
+    if !journal.exists() {
+        return Ok(());
+    }
+    let saved: Value = serde_json::from_slice(&common::bytes(journal, 64000)?)
+        .map_err(|_| Error::new("The Immich resume journal is unreadable"))?;
+    let rows = saved["containers"]
+        .as_array()
+        .filter(|r| saved["format"] == IMMICH_FORMAT && r.len() <= 8)
+        .ok_or_else(|| Error::new("The Immich resume journal is not valid"))?;
+    let problems: Vec<String> = rows
+        .iter()
+        .filter_map(|row| {
+            let (service, id) = (
+                row["service"].as_str().unwrap_or(""),
+                row["id"].as_str().unwrap_or(""),
+            );
+            ctl.start(service, id)
+                .err()
+                .map(|e| format!("{service}: {e}"))
+        })
+        .collect();
+    if !problems.is_empty() {
+        return Err(Error::new(&format!(
+            "Immich could not be started again after its backup; it is retried by: sudo systemctl start nekoserver-immich-resume.service ({})",
+            problems.join("; ")
+        )));
+    }
+    if let Some(at) = saved["stopped_at"].as_f64() {
+        println!(
+            "Immich: started again; it was paused for {:.0} seconds for its weekly backup",
+            (common::now() - at).max(0.0)
+        );
+    }
+    finish_journal(journal)
+}
+/// What the pause says it stopped.
+fn say_paused(stopped: &[(String, String)]) {
+    if stopped.is_empty() {
+        println!("Immich: not running, so nothing was paused (and it is not started)");
+        return;
+    }
+    let names: Vec<&str> = stopped.iter().map(|(s, _)| s.as_str()).collect();
+    println!(
+        "Immich: paused ({}) so its photos and its database are copied at one point in time; uploads wait until it is back",
+        names.join(", ")
+    );
+}
+/// The weekly Immich backup: photos copied to the HDD, then Immich paused for the last
+/// photos and the database copy, then started again: always, also when stopping it, the
+/// copy or the dump failed. The first pass, with Immich still running, copies nearly
+/// everything new (files still changing wait), so the pause only copies what came in
+/// meanwhile. While Immich is stopped nothing can be half-written, so the second pass
+/// copies every original, also those changed in the last minutes: the database copy that
+/// follows names no photo the archive lacks. Damage found in the archive is reported,
+/// but never keeps the database copy from being made. Returns the archive's result (with
+/// any problem starting Immich again) and the dump's.
+fn paused_backup(
+    ctl: &dyn Containers,
+    journal: &Path,
+    data: &Path,
+    archive: &Path,
+    min_age: u64,
+    dump: impl FnOnce() -> Result<Option<PathBuf>>,
+) -> (Result<Option<String>>, Result<Option<PathBuf>>) {
+    let library = data.join("photos/immich-library");
+    common::stage("copying new photos and videos to the HDD");
+    let first = archive_with(&library, archive, true, Some(min_age), Check::Quick, false);
+    if let Err(e) = &first {
+        println!("Archive: the first pass stopped ({e}); the pass with Immich paused tries again");
+    }
+    let (second, dumped) = match pause_immich(ctl, journal) {
+        Ok(stopped) => {
+            say_paused(&stopped);
+            common::stage("copying the last photos and videos with Immich paused");
+            let second = archive_with(&library, archive, true, QUIESCED, Check::Quick, true);
+            common::stage("making the Immich database copy");
+            (second, dump())
+        }
+        Err(e) => {
+            let said = format!("Immich could not be paused for its backup ({e})");
+            (Err(Error::new(&said)), Err(Error::new(&said)))
+        }
+    };
+    let resumed = resume_immich(ctl, journal);
+    let archived = second.and_then(|(_, mut checks)| {
+        if let Ok((_, earlier)) = first {
+            let mut all = earlier;
+            all.merge(checks);
+            checks = all;
+        }
+        archive_result(data, &checks, Check::Quick)
+    });
+    (common::first_error(archived, resumed), dumped)
 }
 /// The monthly run's first step for the HDD photo archive: every copy compared with its
 /// checksum, before anything is backed up or updated. Damage stops the monthly run.
@@ -2459,7 +2988,7 @@ pub fn monthly_archive_check(
     media: &Path,
     archive_dir: &str,
     min_age: u64,
-) -> Result<()> {
+) -> Result<Option<String>> {
     guard(cfg, data, media)?;
     let _lock = common::lock_wait(
         Path::new("/run/nekoserver-photo-preservation.lock"),
@@ -2467,14 +2996,59 @@ pub fn monthly_archive_check(
     )?;
     guard(cfg, data, media)?;
     let _drives = (common::expect_drive(media)?, common::expect_drive(data)?);
-    archive_step(
+    let listed = archive_step(
         data,
         &media.join(common::relative(archive_dir)?),
         min_age,
         Check::Full,
     )?;
     println!("Archive: compared every copy with its checksum (monthly check)");
+    Ok(listed)
+}
+/// After the Immich pause, which also ran ExecStopPost: start what a cut-off weekly run
+/// left stopped. Nothing to do (no lock waited for) without a journal.
+pub fn immich_resume(a: &Args) -> Result<()> {
+    if !Path::new(IMMICH_JOURNAL).exists() {
+        return Ok(());
+    }
+    let job = open_job(a, 64000)?;
+    let _recovery = coordinate(&job.cfgpath, &job.data, &job.media)?;
+    resume_immich(&ImmichDocker, Path::new(IMMICH_JOURNAL))
+}
+/// The weekly database copy, made while Immich is paused: kept on the SSD and the HDD,
+/// the newest `keep` in each.
+fn keep_dump(data: &Path, media: &Path, created: &Path, keep: u64) -> Result<()> {
+    let target = media.join("backups/immich-database").join(
+        created
+            .file_name()
+            .ok_or_else(|| Error::new("Invalid database filename"))?,
+    );
+    describe_dump(created, &data.join("compose/immich/.env"))?;
+    common::stage("copying the Immich database copy to the HDD");
+    verified_copy(created, &target, true, 0o600)?;
+    verified_copy(&dump_note(created), &dump_note(&target), true, 0o600)?;
+    // Weekly dumps used to pile up forever on both drives.
+    for folder in [
+        data.join("backups/immich-database"),
+        media.join("backups/immich-database"),
+    ] {
+        prune_dumps(&folder, keep, created.file_name().and_then(|n| n.to_str()))?;
+    }
     Ok(())
+}
+/// Both steps' problems: the archive's (damage, say) and the database copy's.
+fn both_steps(archived: Result<Option<String>>, saved: Result<()>) -> Result<Option<String>> {
+    match (archived, saved) {
+        (Err(a), Err(d)) => Err(Error::new(&format!("{a}; also, {d}"))),
+        (Err(e), Ok(())) | (Ok(_), Err(e)) => Err(e),
+        (Ok(listed), Ok(())) => Ok(listed),
+    }
+}
+/// A run whose list of files could not be written is done in part, said as such.
+fn listed_outcome(listed: Option<String>) -> Outcome {
+    Outcome {
+        partial: listed.map(|why| json!([why])),
+    }
 }
 pub fn preservation(a: &Args) -> Result<()> {
     common::require_root()?;
@@ -2486,7 +3060,9 @@ pub fn preservation(a: &Args) -> Result<()> {
     // (and then waits for this lock), so taking them the other way round could deadlock.
     let _recovery = coordinate(&cfg, &data, &media)?;
     let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
-    execute(
+    // Immich left stopped by a weekly run that was cut off is started again first.
+    resume_immich(&ImmichDocker, Path::new(IMMICH_JOURNAL))?;
+    execute_with(
         Some(&data),
         if a.flag("db-backup") {
             "database"
@@ -2499,48 +3075,43 @@ pub fn preservation(a: &Args) -> Result<()> {
             // A drive that drops out mid-run stops the run (see common::expect_drive).
             let _drives = (common::expect_drive(&media)?, common::expect_drive(&data)?);
             let archive_dir = common::relative(&a.value("archive-dir", "photos/archive"))?;
+            let archive = media.join(archive_dir);
+            let min_age = a.number("min-age", 600)?;
+            let keep = a.number("db-keep", 4)?;
             // Every copy is compared by checksum only in the monthly run (monthly_archive_check).
-            archive_step(
-                &data,
-                &media.join(archive_dir),
-                a.number("min-age", 600)?,
-                Check::Quick,
-            )?;
-            guard(&cfg, &data, &media)?;
-            if a.flag("db-backup") {
-                guard(&cfg, &data, &media)?;
-                // An update cut off while it installed (or rolled back) may have left
-                // Immich's database half-migrated: not saved as the newest copy (the
-                // photos above are copied anyway, they are never rolled back).
-                no_unfinished_update()?;
-                common::stage("making the Immich database copy");
-                let created = database(
-                    &data.join("compose/immich/compose.yaml"),
-                    &data.join("compose/immich/.env"),
-                    &data.join("backups/immich-database"),
-                    true,
-                )?
-                .ok_or_else(|| Error::new("Database dump missing"))?;
-                guard(&cfg, &data, &media)?;
-                let target = media.join("backups/immich-database").join(
-                    created
-                        .file_name()
-                        .ok_or_else(|| Error::new("Invalid database filename"))?,
-                );
-                describe_dump(&created, &data.join("compose/immich/.env"))?;
-                common::stage("copying the Immich database copy to the HDD");
-                verified_copy(&created, &target, true, 0o600)?;
-                verified_copy(&dump_note(&created), &dump_note(&target), true, 0o600)?;
-                // Weekly dumps used to pile up forever on both drives.
-                let keep = a.number("db-keep", 4)?;
-                for folder in [
-                    data.join("backups/immich-database"),
-                    media.join("backups/immich-database"),
-                ] {
-                    prune_dumps(&folder, keep, created.file_name().and_then(|n| n.to_str()))?;
-                }
+            if !a.flag("db-backup") {
+                return archive_step(&data, &archive, min_age, Check::Quick).map(listed_outcome);
             }
-            Ok(())
+            // An update cut off while it installed (or rolled back) may have left
+            // Immich's database half-migrated: not saved as the newest copy, and Immich
+            // not paused (its way back starts it). The photos are copied anyway: they
+            // are never rolled back.
+            if let Err(e) = no_unfinished_update() {
+                archive_step(&data, &archive, min_age, Check::Quick)?;
+                return Err(e);
+            }
+            let (archived, dumped) = paused_backup(
+                &ImmichDocker,
+                Path::new(IMMICH_JOURNAL),
+                &data,
+                &archive,
+                min_age,
+                || {
+                    guard(&cfg, &data, &media)?;
+                    database(
+                        &data.join("compose/immich/compose.yaml"),
+                        &data.join("compose/immich/.env"),
+                        &data.join("backups/immich-database"),
+                        true,
+                    )
+                },
+            );
+            let saved = dumped.and_then(|created| {
+                let created = created.ok_or_else(|| Error::new("Database dump missing"))?;
+                guard(&cfg, &data, &media)?;
+                keep_dump(&data, &media, &created, keep)
+            });
+            both_steps(archived, saved).map(listed_outcome)
         },
     )
 }
@@ -2620,6 +3191,8 @@ pub fn weekly(a: &Args) -> Result<()> {
     });
     match made {
         Ok(problem) => usb_copy(a, Check::Quick, problem),
+        // Setup was working: no failure recorded, the copy runs next week.
+        Err(e) if common::postponed(&e) => Err(e),
         Err(e) => execute(Some(&data), "external", &cfg, move || Err(e)),
     }
 }
@@ -2638,28 +3211,52 @@ fn no_monthly_run<F: FnOnce() -> Option<String>>(
     then: F,
 ) -> Result<Option<String>> {
     let _recovery = coordinate(cfg, data, media)?;
-    no_unfinished_update()?;
+    monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+    Ok(then())
+}
+fn unit_state(unit: &str) -> String {
+    common::probe(
+        &[
+            "systemctl",
+            "show",
+            "--property=ActiveState",
+            "--value",
+            unit,
+        ],
+        15,
+    )
+    .1
+}
+/// The weekly copy may go ahead: no monthly update cut off half-way (`journal`) and
+/// neither of its services at work (`state` gives a unit's systemd state).
+fn monthly_admission(state: &dyn Fn(&str) -> String, journal: &Path) -> Result<()> {
+    no_unfinished_update_at(journal)?;
     for unit in [
         "nekoserver-maintenance.service",
         "nekoserver-maintenance-resume.service",
     ] {
-        let (_, state) = common::probe(
-            &[
-                "systemctl",
-                "show",
-                "--property=ActiveState",
-                "--value",
-                unit,
-            ],
-            15,
-        );
-        if service_busy(&state) {
+        if service_busy(&state(unit)) {
             return Err(Error::new(
                 "The monthly update is running, so this week's USB copy did not start (the monthly run makes its own copy of the drive)",
             ));
         }
     }
-    Ok(then())
+    Ok(())
+}
+/// The weekly copy and the monthly run never overlap. The weekly copy checks, holding
+/// the USB drive's lock, that no monthly run has started (also one that started while
+/// it waited for that lock); the monthly run, already running (so that check sees it),
+/// takes and lets go of the same lock before it stops any app: a copy already at work
+/// is waited for, and any later one sees the monthly run and does not start.
+pub(crate) const USB_LOCK: &str = "/run/nekoserver-photo-backup.lock";
+pub fn no_weekly_copy() -> Result<()> {
+    no_weekly_copy_at(
+        Path::new(USB_LOCK),
+        std::time::Duration::from_secs(8 * 3600),
+    )
+}
+fn no_weekly_copy_at(lock: &Path, max: std::time::Duration) -> Result<()> {
+    common::lock_wait(lock, max).map(drop)
 }
 /// How a USB copy failure that is damage (a copy no longer matching its checksum, a
 /// verified file gone) begins, unlike a drive that is full or would not mount: the
@@ -2723,10 +3320,15 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
     // A weekly copy, the monthly check of the same drive and a restore from it (the
     // recovery menu holds this lock while it reads the drive) wait for each other.
     let _lock = common::lock_wait(
-        Path::new("/run/nekoserver-photo-backup.lock"),
+        Path::new(USB_LOCK),
         std::time::Duration::from_secs(8 * 3600),
     )?;
     execute_with(Some(&data), "external", &cfg, || {
+        // A monthly run may have started while this waited for the drive (the shared
+        // lock was let go after the first check): checked again, now that it is held.
+        if check == Check::Quick {
+            monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+        }
         common::stage("checking the USB drive");
         guard(&cfg, &data, &media)?;
         let device = Path::new("/dev/disk/by-uuid").join(uuid);
@@ -2845,21 +3447,36 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
             // Damage found by the checksum checks fails the job, after everything else
             // was copied: nothing is lost by finishing the run first.
             let damage: Vec<String> = [
-                photos.as_ref().and_then(|p| p.problem("HDD archive")),
+                photos.as_ref().and_then(|p| p.findings("HDD archive")),
                 cloud_copy
                     .as_ref()
-                    .and_then(|c| c.integrity.problem("USB Nextcloud")),
+                    .and_then(|c| c.integrity.findings("USB Nextcloud")),
             ]
             .into_iter()
             .flatten()
             .collect();
             if !damage.is_empty() {
-                return Err(Error::new(&format!("{INTEGRITY}{}", damage.join(". "))));
+                return Err(Error::new(&format!(
+                    "{INTEGRITY}{}. {SETTLE}",
+                    damage.join(". ")
+                )));
             }
+            // A list of files that could not be written makes the backup incomplete too.
+            let source_problem = joined(
+                [
+                    cloud_problem,
+                    photos.and_then(|p| p.list_problem),
+                    cloud_copy
+                        .as_ref()
+                        .and_then(|c| c.integrity.list_problem.clone()),
+                ]
+                .into_iter()
+                .flatten(),
+            );
             Ok(incomplete(
                 cloud_copy.and_then(|c| c.missing()),
                 database_problem,
-                cloud_problem,
+                source_problem,
             ))
         })();
         // A drive that would not unmount is reported after the copy's own error, which
@@ -2885,6 +3502,15 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_member_of_a_btrfs_pool_counts_as_its_disk() {
+        let listed = "/dev/sda\n/dev/sda2 pool\n/dev/sdb\n/dev/sdb1 pool\n/dev/sdc1 usb\n";
+        assert_eq!(members(listed, "pool"), ["/dev/sda2", "/dev/sdb1"]);
+        assert!(members(listed, "other").is_empty());
+        let source = include_str!("backup.rs");
+        let body = &source[source.find(&["fn disks", "_under("].concat()).unwrap()..];
+        assert!(body[..body.find("\n}\n").unwrap()].contains("members(&listed, &uuid)"));
+    }
     #[test]
     fn only_named_metadata_is_left_out_not_every_neko_name() {
         for name in [
@@ -3888,9 +4514,8 @@ mod tests {
         assert!(gate < weekly.find("nextcloud_dump(&cfg, &data, &media)").unwrap());
         let check = &source[source.find("fn no_monthly_run<").unwrap()..];
         let at = |s: &str| check.find(s).unwrap();
-        assert!(at("coordinate(cfg, data, media)?") < at("no_unfinished_update()?"));
-        assert!(at("no_unfinished_update()?") < at("Ok(then())"));
-        assert!(at("service_busy(&state)") < at("Ok(then())"));
+        assert!(at("coordinate(cfg, data, media)?") < at("monthly_admission("));
+        assert!(at("monthly_admission(") < at("Ok(then())"));
         let copy = &source[source.find("fn usb_copy(").unwrap()..];
         assert!(copy.contains("copy_newest_of(\n                            &NEXTCLOUD_DUMPS"));
     }
@@ -3987,7 +4612,9 @@ mod tests {
             fs::write(folder.join(format!("200001{day:02}T000000Z.json.gz")), b"x").unwrap();
         }
         inventory::prune(&folder, inventory::KEPT, "none").unwrap();
-        assert_eq!(fs::read_dir(&folder).unwrap().count(), inventory::KEPT);
+        // The lists, and the note of which one stands for the newest run (kept).
+        assert_eq!(lists(&hdd).len(), inventory::KEPT);
+        assert!(folder.join(inventory::LAST_RUN).is_file());
         assert!(!folder.join("20000110T000000Z.json.gz").exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -4058,6 +4685,7 @@ mod tests {
         let mut names: Vec<String> = fs::read_dir(root.join(inventory::FOLDER))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|n| inventory::inventory_name(n))
             .collect();
         inventory::oldest_first(&mut names);
         names
@@ -4729,7 +5357,7 @@ mod tests {
         let mut report = Integrity::default();
         assert!(report.problem("archive").is_none());
         report.damaged = (1..=10).map(|n| format!("photo{n}.jpg")).collect();
-        let text = report.problem("archive").unwrap();
+        let text = report.findings("archive").unwrap();
         assert!(
             text.starts_with("10 archive files no longer match"),
             "{text}"
@@ -4739,9 +5367,30 @@ mod tests {
             "{text}"
         );
         report.damaged.push("photo11.jpg".into());
-        let text = report.problem("archive").unwrap();
+        let text = report.findings("archive").unwrap();
         assert!(text.ends_with("photo10.jpg and 1 more"), "{text}");
         assert!(!text.contains("photo11"));
+    }
+    #[test]
+    fn damage_says_how_to_settle_it_and_never_claims_another_copy() {
+        let mut report = Integrity {
+            damaged: vec!["alice/files/report.txt".into()],
+            ..Default::default()
+        };
+        let text = report.problem("USB Nextcloud").unwrap();
+        assert!(!text.contains("other copy"), "{text}");
+        assert!(text.contains("Repair damaged backup copies"), "{text}");
+        assert!(
+            text.contains("accept that this saved copy is lost"),
+            "{text}"
+        );
+        report.damaged.clear();
+        report.missing = vec!["alice/files/gone.txt".into()];
+        let text = report.problem("USB Nextcloud").unwrap();
+        assert!(
+            text.contains("are missing") && text.ends_with(SETTLE),
+            "{text}"
+        );
     }
     #[test]
     fn backup_bookkeeping_is_not_part_of_the_tree() {
@@ -5128,8 +5777,504 @@ mod tests {
         let source = include_str!("backup.rs");
         let body = &source[source.find(&["pub fn ", "preservation("].concat()).unwrap()..];
         let at = |s: &str| body.find(s).unwrap_or_else(|| panic!("{s}"));
-        assert!(at("no_unfinished_update()?") < at("database(\n"));
-        // The photos are copied first either way.
-        assert!(at("archive_step(") < at("no_unfinished_update()?"));
+        assert!(at("no_unfinished_update()") < at("database(\n"));
+        // Immich is not paused then (its way back starts it), and the photos are still
+        // copied before the job says why the database copy waits.
+        assert!(at("no_unfinished_update()") < at("paused_backup("));
+        let refused = &body[at("no_unfinished_update()")..at("paused_backup(")];
+        assert!(refused.find("archive_step(").unwrap() < refused.find("return Err(e)").unwrap());
+    }
+    fn tick() {
+        std::thread::sleep(Duration::from_millis(1100));
+    }
+    fn lists(root: &Path) -> Vec<String> {
+        let folder = root.join(inventory::FOLDER);
+        if folder.is_dir() {
+            names(&folder)
+                .into_iter()
+                .filter(|n| inventory::inventory_name(n))
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+    fn hour_ago(path: &Path) {
+        dated(
+            path,
+            std::time::SystemTime::now() - Duration::from_secs(3600),
+        );
+    }
+    #[test]
+    fn a_damaged_first_copy_still_gets_the_edit_saved_and_the_damage_reported() {
+        let root = scratch("damaged-then-edited");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
+        fs::create_dir_all(&usb).unwrap();
+        let doc = cloud.join("alice/files/report.txt");
+        write(&doc, b"version one");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        // Bit rot on the USB copy, then the user edits the file.
+        fs::write(usb.join("nextcloud/alice/files/report.txt"), b"versiXn one").unwrap();
+        tick();
+        write(&doc, b"version two, edited");
+        let made = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert_eq!(made.versions, 1);
+        assert_eq!(made.integrity.damaged, ["alice/files/report.txt"]);
+        let folder = usb.join("nextcloud/alice/files");
+        let version = names(&folder)
+            .into_iter()
+            .find(|n| n.starts_with("report.neko-2"))
+            .expect("the edit is saved as a dated version");
+        assert_eq!(
+            fs::read(folder.join(&version)).unwrap(),
+            b"version two, edited"
+        );
+        let ledger = Ledger::read(&usb.join("nextcloud")).unwrap();
+        assert!(ledger.get(&format!("alice/files/{version}")).is_some());
+        // Next week (no change): nothing new, the damage still reported.
+        tick();
+        let again = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
+        assert_eq!(again.versions, 0);
+        assert!(again
+            .integrity
+            .damaged
+            .contains(&"alice/files/report.txt".to_string()));
+        // The photo archive does the same for an edited sidecar.
+        let (lib, hdd) = (root.join("lib"), root.join("hdd"));
+        let side = lib.join("library/admin/IMG_1.jpg.xmp");
+        write(&side, b"rating 1");
+        hour_ago(&side);
+        archive_checked(&lib, &hdd, true, 600, Check::Quick).unwrap();
+        // Bit rot changes no date.
+        let rotted = hdd.join("library/admin/IMG_1.jpg.xmp");
+        fs::write(&rotted, b"ratXng 1").unwrap();
+        dated(
+            &rotted,
+            std::time::SystemTime::now() - Duration::from_secs(7200),
+        );
+        write(&side, b"rating 5");
+        hour_ago(&side);
+        let (_, checks) = archive_checked(&lib, &hdd, true, 600, Check::Quick).unwrap();
+        assert_eq!(checks.damaged, ["library/admin/IMG_1.jpg.xmp"]);
+        assert!(names(&hdd.join("library/admin"))
+            .iter()
+            .any(|n| n.starts_with("IMG_1.jpg.neko-2")));
+        let _ = fs::remove_dir_all(root);
+    }
+    /// As the recovery menu's "accept that this saved copy is lost" leaves a tree (see
+    /// recovery_wizard.accept_lost): the copy in neko-damaged, its entry retired.
+    fn accept_lost(tree: &Path, key: &str) {
+        let path = tree.join(LEDGER);
+        let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let entry = saved["entries"][key].take();
+        saved["entries"].as_object_mut().unwrap().remove(key);
+        saved["retired"] = json!({ key: {"sha256": entry["sha256"], "size": 1, "retired_at": 1.0, "why": "lost"} });
+        fs::write(&path, saved.to_string()).unwrap();
+        let copy = tree.join(key);
+        if copy.exists() {
+            let aside = tree.join(QUARANTINE).join("20261026T000000Z").join(key);
+            fs::create_dir_all(aside.parent().unwrap()).unwrap();
+            fs::rename(copy, aside).unwrap();
+        }
+    }
+    #[test]
+    fn a_copy_accepted_as_lost_lets_the_monthly_check_pass_again() {
+        let root = scratch("accepted-lost");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
+        fs::create_dir_all(&usb).unwrap();
+        write(&cloud.join("alice/files/report.txt"), b"version one");
+        write(&cloud.join("alice/files/gone.txt"), b"deleted later");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let tree = usb.join("nextcloud");
+        // The only copy rots and the live file is edited; another saved copy disappears.
+        fs::write(tree.join("alice/files/report.txt"), b"versiXn one").unwrap();
+        fs::remove_file(tree.join("alice/files/gone.txt")).unwrap();
+        fs::remove_file(cloud.join("alice/files/gone.txt")).unwrap();
+        tick();
+        write(&cloud.join("alice/files/report.txt"), b"version two");
+        let found = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
+        let problem = found.integrity.problem("USB Nextcloud").unwrap();
+        assert!(
+            problem.contains("accept that this saved copy is lost"),
+            "{problem}"
+        );
+        accept_lost(&tree, "alice/files/report.txt");
+        accept_lost(&tree, "alice/files/gone.txt");
+        tick();
+        let full = copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
+        assert_eq!(
+            full.integrity.problem("USB Nextcloud"),
+            None,
+            "{:?}",
+            full.integrity
+        );
+        // The lost copy is kept aside; the current file is saved again; the record stays.
+        assert!(tree
+            .join(QUARANTINE)
+            .join("20261026T000000Z/alice/files/report.txt")
+            .is_file());
+        assert_eq!(
+            fs::read(tree.join("alice/files/report.txt")).unwrap(),
+            b"version two"
+        );
+        let saved: Value = serde_json::from_slice(&fs::read(tree.join(LEDGER)).unwrap()).unwrap();
+        assert_eq!(saved["retired"]["alice/files/gone.txt"]["why"], "lost");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_photo_archive_keeps_aside_a_file_that_became_a_folder_and_back() {
+        let root = scratch("photo-shape");
+        let (lib, hdd, usb) = (root.join("lib"), root.join("hdd"), root.join("usb"));
+        fs::create_dir_all(&usb).unwrap();
+        let trip = lib.join("library/admin/Trip");
+        let run = |lib: &Path| {
+            let (_, checks) = archive_checked(lib, &hdd, true, 600, Check::Quick).unwrap();
+            assert_eq!(checks.problem("HDD archive"), None);
+            let (_, mirrored) = mirror(&hdd, &usb, true, Check::Quick).unwrap();
+            assert_eq!(mirrored.problem("HDD archive"), None, "{mirrored:?}");
+            tick();
+        };
+        write(&trip, b"a file");
+        hour_ago(&trip);
+        run(&lib);
+        fs::remove_file(&trip).unwrap();
+        write(&trip.join("IMG_1.jpg"), b"photo");
+        hour_ago(&trip.join("IMG_1.jpg"));
+        run(&lib);
+        fs::remove_dir_all(&trip).unwrap();
+        write(&trip, b"a file again");
+        hour_ago(&trip);
+        run(&lib);
+        for tree in [&hdd, &usb] {
+            assert_eq!(
+                fs::read(tree.join("library/admin/Trip")).unwrap(),
+                b"a file again"
+            );
+            let kept: Vec<_> = tree_files(&tree.join(REPLACED))
+                .unwrap()
+                .into_iter()
+                .map(|(k, _)| k.split_once('/').unwrap().1.to_string())
+                .collect();
+            assert_eq!(kept.len(), 2, "{kept:?}");
+            assert!(kept.contains(&"library/admin/Trip".to_string()));
+            assert!(kept.contains(&"library/admin/Trip/IMG_1.jpg".to_string()));
+        }
+        let (_, full) = archive_checked(&lib, &hdd, true, 600, Check::Full).unwrap();
+        assert_eq!(full.problem("HDD archive"), None);
+        let (_, full) = mirror(&hdd, &usb, true, Check::Full).unwrap();
+        assert_eq!(full.problem("HDD archive"), None, "{full:?}");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_run_that_finds_nothing_changed_writes_no_new_list() {
+        let root = scratch("same-list");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
+        fs::create_dir_all(&usb).unwrap();
+        write(&cloud.join("alice/files/a.txt"), b"a");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        tick();
+        // The monthly check right after the weekly copy: the same files.
+        copy_cloud(&cloud, &usb, true, false, Check::Full, None).unwrap();
+        assert_eq!(lists(&usb.join("nextcloud")).len(), 1);
+        tick();
+        write(&cloud.join("alice/files/b.txt"), b"b");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert_eq!(lists(&usb.join("nextcloud")).len(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_partial_copy_left_by_a_cut_off_run_is_removed() {
+        let root = scratch("stale-part");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
+        fs::create_dir_all(&usb).unwrap();
+        write(&cloud.join("alice/files/a.txt"), b"a");
+        // Cut off while copying big.iso, which was deleted before the next run.
+        let part = usb
+            .join("nextcloud/alice/files")
+            .join(partial_name("big.iso"));
+        write(&part, b"half a file");
+        let mine = usb.join("nextcloud/alice/files/notes.neko-part");
+        write(&mine, b"not one of ours");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert!(!part.exists());
+        assert!(mine.exists());
+        // In the photo archive and its USB copy too.
+        let (lib, hdd, copy) = (root.join("lib"), root.join("hdd"), root.join("usb2"));
+        fs::create_dir_all(&copy).unwrap();
+        write(&lib.join("upload/u/a.jpg"), b"a");
+        hour_ago(&lib.join("upload/u/a.jpg"));
+        for tree in [&hdd, &copy] {
+            write(&tree.join("upload/u").join(partial_name("b.jpg")), b"half");
+        }
+        archive_checked(&lib, &hdd, true, 600, Check::Quick).unwrap();
+        mirror(&hdd, &copy, true, Check::Quick).unwrap();
+        for tree in [&hdd, &copy] {
+            assert_eq!(names(&tree.join("upload/u")), ["a.jpg"]);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+    /// Docker as the weekly Immich backup sees it, recording what was done.
+    #[derive(Default)]
+    struct FakeImmich {
+        running: std::cell::RefCell<Vec<(String, String)>>,
+        done: std::cell::RefCell<Vec<String>>,
+        /// A container that ignores the stop.
+        stubborn: bool,
+    }
+    impl FakeImmich {
+        fn up() -> FakeImmich {
+            let fake = FakeImmich::default();
+            fake.running.borrow_mut().extend([
+                ("immich-server".to_string(), "a".repeat(64)),
+                ("immich-machine-learning".to_string(), "b".repeat(64)),
+            ]);
+            fake
+        }
+        fn paused(&self) -> bool {
+            self.running.borrow().is_empty()
+        }
+    }
+    impl Containers for FakeImmich {
+        fn running_writers(&self) -> Result<Vec<(String, String)>> {
+            Ok(self.running.borrow().clone())
+        }
+        fn stop(&self, id: &str) -> Result<()> {
+            self.done.borrow_mut().push(format!("stop {}", &id[..1]));
+            if !self.stubborn {
+                self.running.borrow_mut().retain(|(_, i)| i != id);
+            }
+            Ok(())
+        }
+        fn start(&self, service: &str, id: &str) -> Result<()> {
+            self.done.borrow_mut().push(format!("start {}", &id[..1]));
+            self.running
+                .borrow_mut()
+                .push((service.to_string(), id.to_string()));
+            Ok(())
+        }
+    }
+    #[test]
+    fn an_upload_just_before_the_weekly_run_is_in_the_archive_and_the_dump() {
+        let root = scratch("immich-pause");
+        let (data, archive, journal) = (
+            root.join("ssd"),
+            root.join("hdd/archive"),
+            root.join("immich-resume.json"),
+        );
+        let library = data.join("photos/immich-library");
+        write(&library.join("upload/u/old.jpg"), b"old");
+        hour_ago(&library.join("upload/u/old.jpg"));
+        // Uploaded a moment ago: the first pass leaves it (it may still be being written).
+        write(&library.join("upload/u/new.jpg"), b"new");
+        let fake = FakeImmich::up();
+        let dump = data.join("backups/immich-database/immich-test.sql");
+        let (archived, dumped) = paused_backup(&fake, &journal, &data, &archive, 600, || {
+            // The dump is made with Immich stopped, after every photo was copied: it
+            // names (as Immich's database would) every asset in the library now.
+            assert!(fake.paused());
+            assert!(journal.is_file());
+            let mut assets: Vec<String> = names(&library.join("upload/u"));
+            assets.sort();
+            write(&dump, assets.join("\n").as_bytes());
+            Ok(Some(dump.clone()))
+        });
+        archived.unwrap();
+        // Every asset the dump names, the one uploaded just before the run too, is in
+        // the archive, as it was.
+        let named = fs::read_to_string(dumped.unwrap().unwrap()).unwrap();
+        assert_eq!(named, "new.jpg\nold.jpg");
+        for asset in named.lines() {
+            assert_eq!(
+                fs::read(archive.join("upload/u").join(asset)).unwrap(),
+                fs::read(library.join("upload/u").join(asset)).unwrap()
+            );
+        }
+        assert_eq!(
+            *fake.done.borrow(),
+            ["stop a", "stop b", "start a", "start b"]
+        );
+        assert!(!journal.exists());
+        // Immich not running when the job starts: nothing paused, nothing started.
+        let off = FakeImmich::default();
+        let (archived, dumped) = paused_backup(&off, &journal, &data, &archive, 600, || Ok(None));
+        assert!(archived.is_ok() && dumped.is_ok());
+        assert!(off.done.borrow().is_empty() && !journal.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn nothing_is_copied_while_an_immich_writer_still_runs() {
+        let root = scratch("immich-stubborn");
+        let (data, archive, journal) = (
+            root.join("ssd"),
+            root.join("hdd/archive"),
+            root.join("immich-resume.json"),
+        );
+        write(&data.join("photos/immich-library/upload/u/new.jpg"), b"new");
+        let fake = FakeImmich {
+            stubborn: true,
+            ..FakeImmich::up()
+        };
+        let (archived, dumped) = paused_backup(&fake, &journal, &data, &archive, 600, || {
+            panic!("no dump while Immich still runs")
+        });
+        let said = archived.unwrap_err().to_string();
+        assert!(said.contains("did not stop"), "{said}");
+        assert!(dumped.is_err());
+        // The quiesced pass did not run (the new upload waits), and the journal was used.
+        assert!(!archive.join("upload/u/new.jpg").exists());
+        assert!(!journal.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_failing_dump_or_a_cut_off_run_still_gets_immich_started_again() {
+        let root = scratch("immich-resume");
+        let (data, archive, journal) = (
+            root.join("ssd"),
+            root.join("hdd/archive"),
+            root.join("immich-resume.json"),
+        );
+        write(&data.join("photos/immich-library/upload/u/a.jpg"), b"a");
+        let fake = FakeImmich::up();
+        let (archived, dumped) = paused_backup(&fake, &journal, &data, &archive, 600, || {
+            Err(Error::new("Database dump failed or too small"))
+        });
+        assert!(archived.is_ok());
+        assert!(dumped.unwrap_err().to_string().contains("dump failed"));
+        assert!(!fake.paused() && !journal.exists());
+        // Cut off right after stopping Immich (a power cut): the journal stays, and the
+        // resume (ExecStopPost, boot, or the next run) starts what it names.
+        let cut = FakeImmich::up();
+        assert_eq!(pause_immich(&cut, &journal).unwrap().len(), 2);
+        assert!(cut.paused() && journal.is_file());
+        let after_boot = FakeImmich::default();
+        resume_immich(&after_boot, &journal).unwrap();
+        assert_eq!(*after_boot.done.borrow(), ["start a", "start b"]);
+        assert!(!journal.exists());
+        // Nothing to do without a journal.
+        resume_immich(&after_boot, &journal).unwrap();
+        assert_eq!(after_boot.done.borrow().len(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_run_whose_list_of_files_could_not_be_written_is_partial() {
+        let root = scratch("list-failed");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
+        write(&cloud.join("alice/files/new.txt"), b"new");
+        // The list's folder can't be made (as on a full drive, the write fails).
+        write(
+            &usb.join("nextcloud").join(inventory::FOLDER),
+            b"in the way",
+        );
+        let made = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let why = made.integrity.list_problem.clone().expect("said");
+        assert!(why.contains("as of the last backup"), "{why}");
+        assert!(usb.join("nextcloud/alice/files/new.txt").is_file());
+        // Reported as done in part (dashboard and alerts), never as a success.
+        let outcome = listed_outcome(Some(why.clone()));
+        assert_eq!(outcome.partial, Some(json!([why])));
+        assert!(listed_outcome(None).partial.is_none());
+        let data = root.join("ssd");
+        assert_eq!(
+            archive_result(&data, &made.integrity, Check::Quick)
+                .unwrap()
+                .as_deref(),
+            Some(why.as_str())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_weekly_copy_and_the_monthly_run_never_overlap() {
+        let root = scratch("weekly-vs-monthly");
+        let journal = root.join("maintenance-resume.json");
+        let idle = |_: &str| "inactive".to_string();
+        let monthly = |unit: &str| {
+            if unit == "nekoserver-maintenance.service" {
+                "activating".to_string()
+            } else {
+                "inactive".to_string()
+            }
+        };
+        assert!(monthly_admission(&idle, &journal).is_ok());
+        let said = monthly_admission(&monthly, &journal)
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("monthly update is running"), "{said}");
+        fs::write(&journal, br#"{"phase":"updating"}"#).unwrap();
+        assert!(monthly_admission(&idle, &journal).is_err());
+        // The weekly copy checks again once it holds the USB drive's lock (a monthly run
+        // may have started while it waited for it).
+        let source = include_str!("backup.rs");
+        let copy = &source[source.find(&["fn usb", "_copy("].concat()).unwrap()..];
+        let copy = &copy[..copy.find("\n}\n").unwrap()];
+        let at = |s: &str| copy.find(s).unwrap_or_else(|| panic!("{s}"));
+        assert!(at("Path::new(USB_LOCK)") < at("monthly_admission("));
+        assert!(at("execute_with(") < at("monthly_admission("));
+        // The monthly run waits for a copy at work before it stops anything.
+        let lock = root.join("usb.lock");
+        let held = common::lock(&lock).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let lock = lock.clone();
+            std::thread::spawn(move || {
+                no_weekly_copy_at(&lock, Duration::from_secs(60)).unwrap();
+                tx.send(()).unwrap();
+            })
+        };
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        drop(held);
+        rx.recv_timeout(Duration::from_secs(20)).unwrap();
+        waiter.join().unwrap();
+        let monthly_source = include_str!("maintenance.rs");
+        let run = &monthly_source[monthly_source
+            .find(&["fn trans", "action("].concat())
+            .unwrap()..];
+        let wait = run.find("backup::no_weekly_copy()?").unwrap();
+        assert!(run.find("check_copies(cfgpath, cfg)?").unwrap() < wait);
+        assert!(wait < run.find("secrets_key_ready(").unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_run_cut_off_part_way_leaves_its_note_pending() {
+        use std::os::unix::fs::FileTypeExt;
+        let root = scratch("run-cut-off");
+        let (cloud, usb) = (root.join("cloud"), root.join("usb"));
+        fs::create_dir_all(&usb).unwrap();
+        write(&cloud.join("alice/files/a.txt"), b"a");
+        copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        let note = || -> Value {
+            serde_json::from_slice(
+                &fs::read(
+                    usb.join("nextcloud")
+                        .join(inventory::FOLDER)
+                        .join(inventory::LAST_RUN),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(note()["state"], "complete");
+        // The next run copies b.txt, then stops (here at a special file) before any list.
+        tick();
+        write(&cloud.join("alice/files/b.txt"), b"b");
+        let fifo = cloud.join("alice/files/zz-pipe");
+        let made = Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(made.success() && fs::symlink_metadata(&fifo).unwrap().file_type().is_fifo());
+        assert!(copy_cloud(&cloud, &usb, true, false, Check::Quick, None).is_err());
+        assert!(usb.join("nextcloud/alice/files/b.txt").is_file());
+        assert_eq!(note()["state"], "pending");
+        assert!(note()["list"].is_null());
+        // The archive and its USB copy note the run before copying anything too.
+        for (function, first) in [
+            ("fn archive_with(", "walk(&root"),
+            ("fn copy_cloud(", "walk(&files"),
+            ("pub fn mirror(", "for (key, path) in &files"),
+        ] {
+            let body =
+                &include_str!("backup.rs")[include_str!("backup.rs").find(function).unwrap()..];
+            assert!(
+                body.find("begin_run(").unwrap() < body.find(first).unwrap(),
+                "{function}"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
     }
 }

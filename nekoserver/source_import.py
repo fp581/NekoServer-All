@@ -25,6 +25,20 @@ class SourceGone(RuntimeError):
     """The source folder is not there (a drive unplugged after its import, say)."""
 
 
+class NotMountedYet(SourceGone):
+    """A network share set up to be mounted when it is first opened (automount) that did
+    not connect when the import opened it (the NAS off or asleep, say)."""
+
+
+class SourceChanged(RuntimeError):
+    """A file changed while it was copied (still being written, say); names the file."""
+
+
+# The kernel's names for SMB and NFS mounts: a share mounted with `mount -t smb3` (or
+# smb3 in /etc/fstab) shows as smb3, not cifs.
+NETWORK_TYPES=('cifs','smb3','nfs','nfs4')
+
+
 def source_key(source):
     """A source's identity in the record of finished imports (never its path itself)."""
     where=source.get('mounted_path') if source.get('type')=='remote' else source.get('path')
@@ -37,7 +51,9 @@ def source_folder(source):
         value=source.get('mounted_path')
         if not value:raise RuntimeError('Remote source needs an already mounted local folder')
         path=safe_path(value)
-        if findmnt('FSTYPE',path,'--target') not in ('cifs','nfs','nfs4'):
+        kind=share_type(path)
+        if kind=='autofs':raise NotMountedYet('The network share is not mounted yet')
+        if kind not in NETWORK_TYPES:
             # The share is not mounted there now (unmounted after its import, the NAS off):
             # the folder is then an empty one on this PC, never copied from. Gone, like an
             # unplugged drive, so a finished import is not reported as a step left to do.
@@ -46,6 +62,32 @@ def source_folder(source):
     else:raise RuntimeError('Unknown source type')
     if not path.is_absolute() or not path.is_dir():raise SourceGone('Source folder is not accessible')
     return path
+
+
+def share_type(path):
+    """The filesystem type at `path`, after opening the folder once: a share set up with
+    an automount (x-systemd.automount in /etc/fstab) is mounted only when something opens
+    it, and until then shows as autofs."""
+    try:
+        with os.scandir(path) as listing:
+            next(listing,None)
+    except OSError:
+        pass   # not there or not readable: findmnt and the checks after it say what it is
+    return findmnt('FSTYPE',path,'--target')
+
+
+# Filesystems whose inode numbers are made up again each time a file is looked up (FAT
+# and exFAT drives, FUSE drivers, SMB shares without server inode numbers): a file
+# planned early in a long import can come back with another number, unchanged. Those
+# are identified by drive, size and date instead.
+UNSTABLE_INODES=('vfat','msdos','exfat','fuseblk','cifs','smb3')
+
+
+def stable_inodes(path):
+    """False when the filesystem at `path` does not keep its inode numbers (see above).
+    An unknown type is taken to keep them, which is the stricter check."""
+    kind=findmnt('FSTYPE',path,'--target') or ''
+    return not (kind in UNSTABLE_INODES or kind.startswith('fuse.'))
 
 
 # Files still being written by another program; never imported.
@@ -186,18 +228,24 @@ def open_folder(path,mode=None,uid=None,gid=None):
     return folder
 
 
-def open_source(current,stat):
+def identity(info,stable=True):
+    """What makes a file the one that was planned: its drive and inode, or on a
+    filesystem without stable inode numbers its drive, size and date."""
+    return (info.st_dev,info.st_ino) if stable else (info.st_dev,info.st_size,info.st_mtime_ns)
+
+
+def open_source(current,stat,stable=True):
     """The source file, opened without following a symlink anywhere below the source
-    folder, and checked to be the very file that was planned (same drive and inode, a
-    regular file). Anything else means the source changed since it was checked."""
+    folder, and checked to be the very file that was planned (see identity(), a regular
+    file). Anything else means the source changed since it was checked."""
     parent=open_folder(current.parent)
     try:
         reader=os.open(current.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK|os.O_CLOEXEC,dir_fd=parent)
     finally:os.close(parent)
     info=os.fstat(reader)
-    if not S_ISREG(info.st_mode) or (info.st_dev,info.st_ino)!=(stat.st_dev,stat.st_ino):
+    if not S_ISREG(info.st_mode) or identity(info,stable)!=identity(stat,stable):
         os.close(reader)
-        raise RuntimeError('Source changed during import')
+        raise SourceChanged('Source changed during import')
     return reader
 
 
@@ -227,7 +275,7 @@ def copy_into(reader,writer,stat):
     os.fsync(writer)
     after=os.fstat(reader)
     if after.st_size!=stat.st_size or after.st_mtime_ns!=stat.st_mtime_ns or fd_digest(writer)!=fd_digest(reader):
-        raise RuntimeError('Source changed during import')
+        raise SourceChanged('Source changed during import')
 
 
 def write_all(fd,data):
@@ -257,13 +305,13 @@ def copy_mode(original):
     account than the library's owner). A copy is never more open than its original."""
     return 0o660|(original.st_mode&0o004)
 
-def import_file(current,dest,stat,uid,gid,guard=None):
+def import_file(current,dest,stat,uid,gid,guard=None,stable=True):
     """Copy one file next to its destination, check it, then publish it (never over an
     existing file). The destination drive is checked before writing and before publishing.
     Source and library folders are used through handles opened without following
     symlinks, so a folder or file swapped meanwhile can't send the copy elsewhere."""
     if guard:guard.check(dest.parent)
-    reader=open_source(current,stat)
+    reader=open_source(current,stat,stable)
     parent=None
     try:
         parent=open_folder(safe_path(dest.parent),0o2775,uid,gid)
@@ -404,10 +452,41 @@ def copy_source(source,media,apply=False,uid=None,gid=None,guard=None):
     entries=planned_copies(folder,target,apply,conflicts)
     required=sum(stat.st_size for _,_,stat in entries)
     if required>shutil.disk_usage(media).free:raise RuntimeError('Not enough free space on target library filesystem')
+    skipped=copy_entries(entries,folder,uid,gid,guard) if apply else []
+    copied=len(entries)-len(skipped) if apply else 0
+    result={'status':'copied' if apply else 'preview','copied':copied,'new_files':len(entries),'bytes':required,'destination':str(target)}
+    return with_skipped(with_conflicts(result,conflicts),skipped)
+
+
+def shown_name(path):
+    """A file name as it can be printed and saved in the report, even one that is not
+    UTF-8 (its odd bytes shown as \\xe9)."""
+    return os.fsencode(str(path)).decode('utf-8','backslashreplace')
+
+
+def copy_entries(entries,folder,uid,gid,guard):
+    """Copy each planned file; returns the ones skipped because their name could not be
+    used (relative to the source), so one odd name never stops the whole source."""
+    skipped,stable=[],{}
     for current,dest,stat in entries:
-        if apply:import_file(current,dest,stat,uid,gid,guard)
-    result={'status':'copied' if apply else 'preview','copied':len(entries) if apply else 0,'new_files':len(entries),'bytes':required,'destination':str(target)}
-    return with_conflicts(result,conflicts)
+        if stat.st_dev not in stable:stable[stat.st_dev]=stable_inodes(current.parent)
+        try:
+            import_file(current,dest,stat,uid,gid,guard,stable[stat.st_dev])
+        except UnicodeError:
+            skipped.append(shown_name(current.relative_to(folder)))
+        except SourceChanged:
+            raise SourceChanged(shown_name(current.relative_to(folder))) from None
+    return skipped
+
+
+def with_skipped(result,skipped):
+    """The report row, naming the files whose names could not be copied."""
+    if skipped:
+        result['skipped_names']=len(skipped)
+        said=(f'{len(skipped)} files were not copied because their names could not be used (rename them, then '
+              'copy again with --again): '+', '.join(skipped[:10]))
+        result['reason']=result['reason']+'. '+said if result.get('reason') else said
+    return result
 
 
 def while_unplugged(source,media,category,apply,guard):
@@ -453,6 +532,14 @@ def gone(source,finished):
     return {'status':'needs_setup','reason':'Source folder not found: connect the drive, or take it out of the source list'}
 
 
+def not_mounted_yet(source,finished):
+    """An automount share that did not connect: not "not found", since its folder is
+    there; a finished import is still nothing left to do."""
+    if source_key(source) in finished:return gone(source,finished)
+    return {'status':'needs_setup','reason':'The network share is not mounted yet: it did not connect when the import '
+            'opened it. Check that the NAS is on and the share works (open the folder), then run setup again'}
+
+
 def import_one(source,root,apply,owner,guard,finished,again=False):
     """One source copied into `root`'s library: its row for the report. A finished
     import is recorded in `finished`, and not done again unless asked (`again`): Sonarr,
@@ -463,8 +550,13 @@ def import_one(source,root,apply,owner,guard,finished,again=False):
                 'reason':'Copied before; not copied again (to copy what is new in it, in the NekoServer folder: sudo python3 source_import.py --config my-config.json --again --apply)'}
     try:
         result=copy_source(source,root,apply,*owner,guard)
+    except NotMountedYet:
+        return not_mounted_yet(source,finished)
     except SourceGone:
         return gone(source,finished)
+    except SourceChanged as exc:
+        return {'status':'needs_setup','reason':'A file changed while it was being copied (another program may still be '
+                'writing it): '+str(exc)+'. The files before it were copied; run setup again when it is finished'}
     except IncompleteSource as exc:
         # Only paths inside the source are reported, never the source's own location.
         return {'status':'needs_setup','reason':f'Nothing was copied: {len(exc.paths)} folders or files could not be read: '+', '.join(exc.paths[:10])}

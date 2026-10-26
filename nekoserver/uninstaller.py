@@ -68,7 +68,7 @@ SYSTEM_PATHS = ('/etc/nekoserver-dashboard', '/etc/nekoserver-control', '/etc/ne
 # systemd's record of when each NekoServer timer last ran goes too: left behind, a setup run
 # on this PC later counts every night since as a missed backup (the timers are persistent),
 # and runs the nightly snapshot at once, stopping the apps just as setup finishes.
-SYSTEM_GLOBS = ('usr/local/lib/nekoserver-*', 'run/nekoserver-*', 'etc/systemd/system/*.d/10-nekoserver-storage.conf',
+SYSTEM_GLOBS = ('usr/local/lib/nekoserver-*', 'etc/systemd/system/*.d/10-nekoserver-storage.conf',
                 'var/lib/systemd/timers/stamp-nekoserver-*.timer')
 PACKAGES_LEFT = ('Docker, Samba, Caddy, Tailscale, Rust and gcc, smartmontools, qrencode, OpenRGB, and Steam if the TV step '
                  'added it, are packages of your Linux: they stay installed, with the package repositories NekoServer added for '
@@ -219,13 +219,37 @@ def unchanged_routes(owned, current):
     return ports
 
 
+def mismatch(found, record):
+    """How the drive mounted at a folder (neko_common.mounted_identity) differs from the
+    one its settings record names, in words."""
+    if found is None:
+        return 'not mounted'
+    uuid, fstype, tree = found
+    if uuid != record.get('uuid'):
+        return 'not the one the settings name (UUID ' + uuid + ', not ' + str(record.get('uuid')) + ')'
+    if fstype != record.get('fstype'):
+        return 'not the one the settings name (filesystem ' + fstype + ', not ' + str(record.get('fstype')) + ')'
+    wanted = str(record.get('subvolume') or '').rstrip('/')
+    return ('the right drive, but another part of it is mounted there (' + (tree or 'its top level') + ', not '
+            + (wanted or 'its top level') + ')')
+
+
+def without_locks(path):
+    """[path], or for a folder with a lock file in it, everything else in it."""
+    inside = sorted(path.iterdir()) if path.is_dir() and not path.is_symlink() else []
+    if not any(entry.name.endswith(LOCK_SUFFIX) for entry in inside):
+        return [path]
+    return [entry for entry in inside if not entry.name.endswith(LOCK_SUFFIX)]
+
+
 class Plan:
     """Everything a run would remove, by choice, found on this PC (a test's root stands
     in for /). Only what exists is listed, so the plan shown is the truth."""
 
-    def __init__(self, settings, root='/', run=run, group_exists=None):
+    def __init__(self, settings, root='/', run=run, group_exists=None, identity=None):
         self.root = Path(root)
         self.run = run
+        self.identity = identity   # reads (UUID, filesystem, subvolume) at a folder: neko_common.mounted_identity
         self.group_exists = group_exists or self._group_exists
         self.warnings = []
         folders = {}
@@ -238,10 +262,11 @@ class Plan:
         storage = settings.get('storage', {}) if isinstance(settings.get('storage'), dict) else {}
         self.uuids = {str(v.get('uuid')) for v in storage.values() if isinstance(v, dict) and v.get('uuid')}
         photos = settings.get('photos', {}) if isinstance(settings.get('photos'), dict) else {}
-        expected = {'data': (storage.get('data_ssd') or {}).get('uuid') if isinstance(storage.get('data_ssd'), dict) else None,
-                    'media': (storage.get('media_hdd') or {}).get('uuid') if isinstance(storage.get('media_hdd'), dict) else None,
-                    'external': photos.get('external_backup_uuid')}
-        self.identified = {drive: self._identify(drive, uuid) for drive, uuid in expected.items()}
+        expected = {'data': storage.get('data_ssd') if isinstance(storage.get('data_ssd'), dict) else {},
+                    'media': storage.get('media_hdd') if isinstance(storage.get('media_hdd'), dict) else {},
+                    'external': {'uuid': photos.get('external_backup_uuid')}}
+        self.records = expected
+        self.identified = {drive: self._identify(drive) for drive in expected}
         self.groups = {key: self._group(key) for key, *_ in CHOICES}
 
     def at(self, path):
@@ -264,14 +289,30 @@ class Plan:
     # ---- what each choice covers
     def units(self):
         folder = self.at(UNITS)
-        return sorted(p.name for p in folder.glob('nekoserver-*.*') if p.suffix in ('.service', '.timer') and p.is_file())
+        # Sockets too (the OpenRGB proxy's, 0.40.1): left on, one would start its service again.
+        return sorted(p.name for p in folder.glob('nekoserver-*.*') if p.suffix in UNIT_KINDS and p.is_file())
 
     def system_paths(self):
         found = [self.at(p) for p in SYSTEM_PATHS if self.at(p).exists()]
+        # The setup locks stay: the uninstall holds them until it ends, and a lock file
+        # deleted while held would let a setup started meanwhile take a new one. They are
+        # in /run, which is emptied at every start.
         for pattern in SYSTEM_GLOBS:
             found.extend(p for p in self.root.glob(pattern) if p.exists())
+        found.extend(self.run_paths())
         found.extend(self.at(UNITS) / unit for unit in self.units())
         return sorted(set(found))
+
+    def run_paths(self):
+        """NekoServer's places in /run, without a single lock file. A lock is held by a setup
+        (the uninstall holds those itself until it ends) or by a job: deleted while held, a
+        second program would take a new lock under the same name instead of waiting, so
+        the exclusion would be gone. /run is emptied at every start, so they go then."""
+        found = []
+        for path in sorted(self.root.glob('run/nekoserver-*')):
+            if not path.name.endswith(LOCK_SUFFIX) and (path.exists() or path.is_symlink()):
+                found.extend(without_locks(path))
+        return found
 
     def shortcuts(self):
         """Desktop entries NekoServer wrote for each person's account."""
@@ -440,22 +481,39 @@ class Plan:
     def folder_of(self, drive):
         return self.at({'data': self.data, 'media': self.media, 'external': self.external}[drive])
 
-    def _identify(self, drive, uuid):
-        """The drive mounted at this folder is the one the settings name (its filesystem's
-        UUID): only then is anything on it planned for removal."""
+    def _identify(self, drive):
+        """The drive mounted at this folder is the one the settings name: only then is
+        anything on it planned for removal (and it is checked again right before)."""
         folder = {'data': self.data, 'media': self.media, 'external': self.external}[drive]
         if not self.at(folder).is_dir():
             return False
+        uuid = self.records[drive].get('uuid')
         if not isinstance(uuid, str) or not uuid:
             self.warnings.append('The settings name no drive for ' + folder + ', so nothing on it is removed')
             return False
-        lines = [line.strip() for line in self.run(['findmnt', '-n', '-o', 'UUID', '--mountpoint', str(self.at(folder))], 20).splitlines() if line.strip()]
+        problem = self.identity_problem(drive)
+        if problem:
+            self.warnings.append('The drive at ' + folder + ' is ' + problem + ', so nothing on it is removed')
+        return problem is None
+
+    def identity_problem(self, drive):
+        """None when the drive mounted at its folder now is the one the settings name, else
+        how it differs, in words. The SSD and the HDD as setup checks them (UUID, filesystem
+        and Btrfs subvolume, as neko_common.identity_matches: the same Btrfs drive mounted
+        with another subvolume, or its top level, holds another tree); the USB drive by its
+        UUID, all its settings record."""
+        folder, record = self.folder_of(drive), self.records[drive]
+        if drive != 'external':
+            import neko_common
+            found = (self.identity or neko_common.mounted_identity)(folder)
+            wanted = (record.get('uuid'), record.get('fstype'), str(record.get('subvolume') or '').rstrip('/'))
+            return None if found is not None and tuple(found) == wanted else mismatch(found, record)
+        uuid = str(record.get('uuid'))
+        lines = [line.strip() for line in self.run(['findmnt', '-n', '-o', 'UUID', '--mountpoint', str(folder)], 20).splitlines() if line.strip()]
         found = lines[-1] if lines else ''   # stacked mounts: the last is the one in use
-        if found.lower() != uuid.lower():
-            self.warnings.append('The drive at ' + folder + ' is ' + ('not mounted' if not found else 'not the one the settings name (UUID '
-                                 + found + ', not ' + uuid + ')') + ', so nothing on it is removed')
-            return False
-        return True
+        if found.lower() == uuid.lower():
+            return None
+        return 'not mounted' if not found else 'not the one the settings name (UUID ' + found + ', not ' + uuid + ')'
 
     def owned(self, drive, names):
         """These top-level entries of a drive, when they exist and the drive is identified."""
@@ -707,40 +765,75 @@ def system_file(root, path):
 
 
 def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/', call=call, sleep=None, reconcile=None):
-    """Do it, in a safe order: stop everything, then the files, then the mounts. When
-    something does not stop (a service, the fan control, a container, Docker), Stopped is
-    raised before any file is deleted. `reconcile` finishes an unfinished package
-    installation (host.py's, on this PC by default)."""
+    """Do it, in a safe order. Nothing may be unfinished (a monthly update, a backup's
+    recovery record) when it starts; then the schedules are switched off and everything
+    stops (Samba too, when NekoServer switched it on); then, with the jobs' shared lock
+    held and everything checked again (nothing running, nothing unfinished, each drive
+    still the one the settings name), the files go; then the mounts. When something does
+    not stop or is unfinished, Stopped is raised before anything is deleted, with the
+    services as they were. `reconcile` finishes an unfinished package installation
+    (host.py's, on this PC by default)."""
     units = plan.units()
-    before = _unit_states(plan, units, call)
+    samba = [plan.samba_off] if getattr(plan, 'samba_off', None) else []
+    shares, own, accounts = plan.samba()   # read now: the files go with the rest
+    _admitted(plan, call)
+    before = _unit_states(plan, units + samba, call)
+    drives = {}
     try:
-        _stop_units(plan, units, call, out, sleep)
+        _stop_units(plan, units, call, out, sleep, check=lambda: _maintenance_idle(call))
+        _stop_samba(plan, call, out)
         if 'apps' in chosen:
             _remove_containers(plan, call, out)
         if plan.docker_root() and ('data' in chosen or 'mounts' in chosen):
             _reset_docker_root(system_file(root, DAEMON_JSON), call, out)
+        drives = open_drives(plan, out)
+        jobs = JobsLock(drives.get('data'), sleep)
+        jobs.take()
+        try:
+            _admitted(plan, call)
+            _nothing_running(units, call)
+        except BaseException:
+            jobs.release()
+            raise
     except Stopped as exc:
+        close_drives(drives)
         raise Stopped(str(exc) + _restore_units(before, call, out)) from None
-    left = []
-    for port in plan.served:
-        out('Switching off the Tailscale address on port ' + port)
-        _tried(call, out, ['tailscale', 'serve', '--bg', '--https=' + port, 'off'], left, 'the Tailscale address on port ' + port)
-    shares, own, accounts = plan.samba()
-    _remove_samba_accounts(plan, accounts, call, out, left)
-    _switch_off_samba(plan, call, out, left)
-    if plan.unmask:
-        out('Unmasking ' + ', '.join(plan.unmask))
-        _tried(call, out, ['systemctl', 'unmask', *plan.unmask], left, 'the masks on ' + ', '.join(plan.unmask))
-    _finish_packages(plan, call, out, reconcile)
-    journal_limits = any('journald' in str(p) for p in plan.os_dropins())
-    left += _remove_files(plan, chosen, out, rmtree)
-    if journal_limits:   # the log limits go now; logind's at the next start
-        _tried(call, out, ['systemctl', 'restart', 'systemd-journald.service'], left, "NekoServer's log limits (until the next restart)")
+    except BaseException:
+        close_drives(drives)
+        raise
+    try:
+        left = _destroy(plan, chosen, out, (rmtree, call, reconcile), accounts, drives, jobs)
+    finally:
+        jobs.release()
+        close_drives(drives)   # before the drives are unmounted: an open folder keeps one busy
     _tidy_system(plan, units, shares and not plan.samba_off, own, run, out)
     if 'mounts' in chosen:
         left += _remove_mounts(plan, system_file(root, FSTAB), call, out)
     if units:
         run(['systemctl', 'daemon-reload'], 120)
+    return left
+
+
+def _destroy(plan, chosen, out, tools, accounts, drives, jobs):
+    """Everything that cannot be undone, while the jobs' shared lock is held. Returns what
+    was left. (tools: rmtree, call and reconcile, as remove got them.)"""
+    rmtree, call, reconcile = tools
+    left = []
+    for port in plan.served:
+        out('Switching off the Tailscale address on port ' + port)
+        _tried(call, out, ['tailscale', 'serve', '--bg', '--https=' + port, 'off'], left, 'the Tailscale address on port ' + port)
+    _remove_samba_accounts(plan, accounts, call, out, left)
+    if plan.unmask:
+        out('Unmasking ' + ', '.join(plan.unmask))
+        _tried(call, out, ['systemctl', 'unmask', *plan.unmask], left, 'the masks on ' + ', '.join(plan.unmask))
+    _finish_packages(plan, call, out, reconcile)
+    journal_limits = any('journald' in str(p) for p in plan.os_dropins())
+    left += _remove_files(plan, chosen, out, rmtree, drives, jobs.kept())
+    # The lock last: released first, then its file (with the folder, when the SSD data goes).
+    jobs.release()
+    jobs.tidy('data' in chosen and plan.folder_of('data') / 'installer' in plan.groups['data']['paths'])
+    if journal_limits:   # the log limits go now; logind's at the next start
+        _tried(call, out, ['systemctl', 'restart', 'systemd-journald.service'], left, "NekoServer's log limits (until the next restart)")
     return left
 
 
@@ -819,16 +912,80 @@ def _tried(call, out, argv, left=None, what=''):
     return code == 0
 
 
-def _switch_off_samba(plan, call, out, left):
-    """Samba switched off when NekoServer switched it on (the plan says which, and why)."""
+def _stop_samba(plan, call, out):
+    """Samba switched off when NekoServer switched it on (the plan says which, and why),
+    before anything is deleted: it must have stopped, and systemd must say so. While it
+    still runs (or nobody can tell), its accounts and shares, and the files it serves,
+    are not touched: Stopped."""
     unit = getattr(plan, 'samba_off', None)
-    if unit:
-        out('Switching off Samba (' + unit + '), which NekoServer switched on')
-        _tried(call, out, ['systemctl', 'disable', '--now', unit], left, 'Samba is still on')
+    if not unit:
+        return
+    out('Switching off Samba (' + unit + '), which NekoServer switched on')
+    code, said = call(['systemctl', 'disable', '--now', unit], 120)
+    state = (call(['systemctl', 'is-active', unit], 30)[1].split() or ['unknown'])[0]
+    if code != 0 or state not in STOPPED:
+        why = (said or EXIT_STATUS + str(code)) if code != 0 else 'systemd says it is ' + state
+        raise Stopped('Samba (' + unit + ') did not switch off (' + why + '), so its accounts, its shares and the files it '
+                      'serves stay as they are.' + NOTHING_DELETED)
 
 
+# A NekoServer job that was cut off keeps its recovery record until it is finished (by its
+# resume service, at the next start at the latest): uninstalling then would delete what
+# can finish it, and leave the apps stopped or half restored. (maintenance.rs, backup.rs,
+# app_snapshot.rs, host_snapshot.rs, apps.rs)
+RECOVERY_RECORDS = (('/etc/nekoserver-backups/app-resume.json', 'nekoserver-app-resume.service'),
+                    ('/etc/nekoserver-backups/host-resume.json', 'nekoserver-host-resume.service'),
+                    ('/etc/nekoserver-backups/immich-resume.json', 'nekoserver-immich-resume.service'),
+                    ('/etc/nekoserver-backups/immich-snapshot-resume.json', 'nekoserver-immich-snapshot-resume.service'))
+
+
+def _admitted(plan, call):
+    """Nothing is unfinished or running that removing NekoServer would break: checked
+    before anything is stopped, and again with the jobs' lock held (a monthly update can
+    start, or be cut off, while you read the plan). Stopped otherwise."""
+    import neko_common
+    blocked = neko_common.pending_maintenance(plan.at(str(neko_common.MAINTENANCE_JOURNAL)), outcome='Nothing was removed.',
+                                              running=lambda: not _maintenance_idle(call, raises=False))
+    if blocked:
+        raise Stopped(blocked)
+    _maintenance_idle(call)
+    for record, unit in RECOVERY_RECORDS:
+        if plan.at(record).exists():
+            raise Stopped('A NekoServer job was cut off and is not finished yet: its record ' + record + ' is still there, and '
+                          'removing NekoServer now would delete what finishes it. Run  sudo systemctl start ' + unit
+                          + '  (or restart the computer) and let it finish.' + NOTHING_DELETED)
+
+
+def _maintenance_idle(call, raises=True):
+    """True when no monthly update (nor the service that finishes a cut-off one) is
+    working; one that is: Stopped (or False, with raises=False). It is never stopped
+    part-way: that would leave the apps half updated."""
+    import neko_common
+    states = call(['systemctl', 'is-active', *neko_common.MAINTENANCE_UNITS], 30)[1].split()
+    if not {'active', 'activating', 'deactivating', 'reloading'} & set(states):
+        return True
+    if raises:
+        raise Stopped('A monthly update is running right now. Let it finish (sudo systemctl status nekoserver-maintenance.service '
+                      'shows "inactive" once it has), then run  sudo bash uninstall.sh  again.' + NOTHING_DELETED)
+    return False
+
+
+def _nothing_running(units, call):
+    """With the jobs' lock held: none of NekoServer's services runs (none started again
+    since they were stopped)."""
+    for unit in units:
+        state = (call(['systemctl', 'is-active', unit], 30)[1].split() or ['unknown'])[0]
+        if state in STILL_RUNNING:
+            raise Stopped(unit + ' started again while the others were stopped (it is ' + state + ').' + NOTHING_DELETED)
+
+
+# The kinds of NekoServer's systemd units the uninstaller stops and removes, and those that
+# start a service by themselves.
+UNIT_KINDS = ('.service', '.timer', '.socket')
+STARTERS = ('.timer', '.socket')
 EXIT_STATUS = 'exit status '   # what a failed command said when it said nothing
 STILL_RUNNING = ('active', 'activating', 'deactivating', 'reloading', 'refreshing')
+STOPPED = ('inactive', 'failed')   # what systemctl is-active says of a service that has stopped
 NOTHING_DELETED = ' Nothing has been deleted yet. Fix that (or restart the computer), then run  sudo bash uninstall.sh  again.'
 
 
@@ -864,20 +1021,33 @@ def _restore_units(before, call, out):
     return " NekoServer's services and timers were switched back on as they were."
 
 
-def _stop_units(plan, units, call, out, sleep=None):
-    """Timers first (nothing new starts), then the services; each one must really have
-    stopped, and the fan control must have handed every fan back to the motherboard."""
-    if not units:
-        return
-    out("Stopping NekoServer's services and timers")
-    timers = [u for u in units if u.endswith('.timer')]
+def _disable(units, call):
+    """systemctl disable --now for each; what failed, in words."""
     failed = []
-    for unit in timers + [u for u in units if u not in timers]:
+    for unit in units:
         code, said = call(['systemctl', 'disable', '--now', unit], CONTROL_STOP_SECONDS if unit == CONTROL_UNIT else 120)
         if code != 0:
             failed.append(unit + ' (' + (said or EXIT_STATUS + str(code)) + ')')
+    return failed
+
+
+def _stop_units(plan, units, call, out, sleep=None, check=None):
+    """Timers and sockets first (nothing new starts), then `check` (a monthly update that
+    started meanwhile stops the uninstall, never the update), then the services, each
+    stopped with what it does when stopped (a backup restarts the apps it stopped); each
+    one must really have stopped, and the fan control must have handed every fan back to
+    the motherboard. No lock is held meanwhile: a stopping backup takes the jobs' lock."""
+    if not units:
+        return
+    out("Stopping NekoServer's services and timers")
+    # Timers and sockets first: either would start its service again once that is stopped.
+    timers = [u for u in units if u.endswith(STARTERS)]
+    failed = _disable(timers, call)
+    if check:
+        check()
+    failed += _disable([u for u in units if u not in timers], call)
     for unit in units:
-        code, said = call(['systemctl', 'is-active', unit], 30)
+        _, said = call(['systemctl', 'is-active', unit], 30)
         if said.split()[:1] and said.split()[0] in STILL_RUNNING:
             failed.append(unit + ' is still ' + said.split()[0])
     if failed:
@@ -936,23 +1106,51 @@ def _remove_samba_accounts(plan, accounts, call, out, left=None):
                     left.append('the Samba account ' + account + ' (sudo smbpasswd -x ' + account + ')')
 
 
-def _remove_files(plan, chosen, out, rmtree):
+def _drive_of(plan, path):
+    """Which of NekoServer's drives a planned path is on ('data', 'media', 'external'), or
+    None for a place of its own on the system disk. The plan lists a drive's entries
+    right inside its mount folder."""
+    return next((drive for drive in DRIVES if plan.identified[drive] and path.parent == plan.folder_of(drive)), None)
+
+
+def _chosen_paths(plan, chosen):
+    """Every path of the chosen groups, in the order of the choices, but Docker's start
+    guard while it is still needed (kept_for_docker)."""
+    keep = plan.kept_for_docker(chosen)
+    return [p for key, *_ in CHOICES if key in chosen for p in plan.groups[key]['paths'] if p not in keep]
+
+
+def _remove_files(plan, chosen, out, rmtree, drives=None, keep_inodes=()):
     """The paths of every chosen group: each one the plan itself found, under NekoServer's
     own places or its drives (mount_folder), never anywhere the settings alone point.
-    Returns what could not be removed (said at the end)."""
-    keep = plan.kept_for_docker(chosen)
-    left = []
-    for key, *_ in CHOICES:
-        if key not in chosen:
+    What is on a drive is deleted only through that drive's folder as opened and checked
+    right before (open_drives); a drive that is not the one the settings name any more
+    loses nothing. Returns what could not be removed (said at the end)."""
+    drives = drives or {}
+    left, lost = [], set()
+    for path in _chosen_paths(plan, chosen):
+        drive = _drive_of(plan, path)
+        if drive is not None and drive not in drives:
+            lost.add(drive)
+            left.append(str(path))
             continue
-        for path in (p for p in plan.groups[key]['paths'] if p not in keep):
-            out('  removing ' + str(path))
-            if not _removed(path, rmtree, out):
-                left.append(str(path))
+        out('  removing ' + str(path))
+        gone = _removed(path, rmtree, out) if drive is None else _removed_on(drives[drive], path, out, keep_inodes)
+        if not gone:
+            left.append(str(path))
+    for drive in sorted(lost):
+        out('  nothing was removed on ' + str(plan.folder_of(drive)) + ': it is not the drive the settings name any more')
     return left
 
 
 SHOWN_FAILURES = 5   # of the files inside one folder that could not be deleted, this many are named
+
+
+def _say_failed(failed, path, out):
+    for line in failed[:SHOWN_FAILURES]:
+        out('  could not delete ' + line)
+    if len(failed) > SHOWN_FAILURES:
+        out('  ... and ' + str(len(failed) - SHOWN_FAILURES) + ' more in ' + str(path))
 
 
 def _removed(path, rmtree, out=print):
@@ -969,11 +1167,201 @@ def _removed(path, rmtree, out=print):
             path.unlink(missing_ok=True)
     except OSError as exc:
         failed.append(str(path) + ': ' + str(exc))
-    for line in failed[:SHOWN_FAILURES]:
-        out('  could not delete ' + line)
-    if len(failed) > SHOWN_FAILURES:
-        out('  ... and ' + str(len(failed) - SHOWN_FAILURES) + ' more in ' + str(path))
+    _say_failed(failed, path, out)
     return not (path.exists() or path.is_symlink())
+
+
+# ---- deleting on a drive: only through its folder as opened and checked, never by path
+DRIVES = ('data', 'media', 'external')
+FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+OTHER_DRIVE = 'another drive is mounted there, so it was not touched'
+
+
+class Drive:
+    """One of NekoServer's drives, its mount folder open (fd) on the filesystem checked to be
+    the one the settings name (dev: that filesystem's device number)."""
+
+    def __init__(self, fd, dev, folder):
+        self.fd, self.dev, self.folder = fd, dev, folder
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+
+def open_drive(plan, drive):
+    """(Drive, None), or (None, why not): the mount folder opened once (never through a
+    symlink), the drive mounted there checked again (UUID, filesystem, subvolume), and the
+    folder checked to be still on the filesystem that was opened. Everything deleted on
+    the drive goes through this handle, so a drive mounted there later is never touched."""
+    folder = plan.folder_of(drive)
+    try:
+        fd = os.open(folder, FOLDER_FLAGS)
+    except OSError as exc:
+        return None, 'its folder could not be opened (' + (exc.strerror or str(exc)) + ')'
+    problem = plan.identity_problem(drive)
+    try:
+        moved = os.stat(folder, follow_symlinks=False).st_dev != os.fstat(fd).st_dev
+    except OSError:
+        moved = True
+    if problem or moved:
+        os.close(fd)
+        return None, problem or 'it changed while it was being checked'
+    return Drive(fd, os.fstat(fd).st_dev, folder), None
+
+
+def open_drives(plan, out):
+    """{drive: Drive} for each drive the plan identified and that is still the one the
+    settings name now, right before anything on it is deleted. One that is not (another
+    drive mounted there since the plan was made, or none): said, and nothing on it goes."""
+    drives = {}
+    for drive in DRIVES:
+        if not plan.identified[drive]:
+            continue
+        handle, why = open_drive(plan, drive)
+        if handle is None:
+            out('The drive at ' + str(plan.folder_of(drive)) + ' is no longer the one the settings name (' + why
+                + '), so nothing on it is removed.')
+        else:
+            drives[drive] = handle
+    return drives
+
+
+def close_drives(drives):
+    for handle in drives.values():
+        handle.close()
+
+
+def _removed_on(drive, path, out, keep_inodes=()):
+    """Delete one entry right inside the drive's folder, through the drive's handle; True
+    when it is gone. Never follows a symlink, and stops wherever another filesystem is
+    mounted (that one is not touched)."""
+    failed, held = [], []
+    _delete_at(drive.fd, path.name, drive.dev, (failed, str(path), set(keep_inodes), held))
+    _say_failed(failed, path, out)
+    if held:   # only the jobs' lock is left in it, until it is released (JobsLock.tidy)
+        return not failed
+    try:
+        os.stat(path.name, dir_fd=drive.fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _delete_at(parent, name, dev, how):
+    """Delete name (in the folder open as `parent`), all of it when it is a folder. how:
+    (the list of failures, its path for messages, (device, inode) pairs to keep, the list
+    of what was kept)."""
+    failed, where, keep, held = how
+    try:
+        found = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        failed.append(where + ': ' + (exc.strerror or str(exc)))
+        return
+    if found.st_dev != dev:
+        failed.append(where + ': ' + OTHER_DRIVE)
+        return
+    if (found.st_dev, found.st_ino) in keep:
+        held.append(where)
+        return
+    try:
+        if stat.S_ISDIR(found.st_mode):
+            _empty_at(parent, name, dev, how)
+            os.rmdir(name, dir_fd=parent)
+        else:
+            os.unlink(name, dir_fd=parent)
+    except OSError as exc:
+        if not (exc.errno == errno.ENOTEMPTY and (failed or held)):   # what stayed in it is said once, for itself
+            failed.append(where + ': ' + (exc.strerror or str(exc)))
+
+
+def _empty_at(parent, name, dev, how):
+    """Everything in the folder name (in `parent`), opened without following a symlink and
+    checked to be on the same filesystem."""
+    failed, where, keep, held = how
+    fd = os.open(name, FOLDER_FLAGS, dir_fd=parent)
+    try:
+        if os.fstat(fd).st_dev != dev:
+            raise OSError(errno.EXDEV, OTHER_DRIVE)
+        for entry in os.listdir(fd):
+            _delete_at(fd, entry, dev, (failed, where + '/' + entry, keep, held))
+    finally:
+        os.close(fd)
+
+
+class JobsLock:
+    """The lock NekoServer's jobs share (installer/recovery.lock on the SSD: backups, the
+    monthly update and setup take it before they change the apps). Taken only after every
+    job was stopped (a stopping backup takes it itself, to restart the apps), never while
+    waiting for one; held while anything is deleted. Opened through the SSD's checked
+    handle, so it is the SSD's own lock. Without the SSD no job can run, and none is taken."""
+    PATH = ('installer', 'recovery.lock')
+    TRIES, PAUSE = 6, 5   # a job that is just ending gets half a minute
+
+    def __init__(self, drive, sleep=None):
+        self.drive, self.sleep, self.fd, self.folder = drive, sleep or time.sleep, None, None
+
+    def take(self):
+        if self.drive is None:
+            return
+        name = self.PATH[0]
+        try:
+            os.mkdir(name, 0o700, dir_fd=self.drive.fd)
+        except FileExistsError:
+            pass
+        self.folder = os.open(name, FOLDER_FLAGS, dir_fd=self.drive.fd)
+        self.fd = os.open(self.PATH[1], os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=self.folder)
+        for attempt in range(self.TRIES):
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if attempt + 1 < self.TRIES:
+                    self.sleep(self.PAUSE)
+        self.release()
+        raise Stopped('A NekoServer job is still working (it holds ' + str(self.drive.folder / '/'.join(self.PATH))
+                      + '). Let it finish, then run  sudo bash uninstall.sh  again.' + NOTHING_DELETED)
+
+    def kept(self):
+        """The lock file, as (device, inode): it stays while it is held."""
+        if self.fd is None:
+            return set()
+        found = os.fstat(self.fd)
+        return {(found.st_dev, found.st_ino)}
+
+    def release(self):
+        """Closing the lock file releases the lock (again: nothing to do)."""
+        for name in ('fd', 'folder'):
+            if getattr(self, name) is not None:
+                os.close(getattr(self, name))
+                setattr(self, name, None)
+
+    def tidy(self, folder_goes):
+        """After release: the lock file goes when its folder goes too (the SSD data chosen),
+        then the folder, now empty. Through the SSD's checked handle, as everything else."""
+        if self.drive is None or self.drive.fd is None or not folder_goes:
+            return
+        name, lock = self.PATH
+        try:
+            folder = os.open(name, FOLDER_FLAGS, dir_fd=self.drive.fd)
+        except OSError:
+            return
+        try:
+            if os.fstat(folder).st_dev == self.drive.dev:
+                os.unlink(lock, dir_fd=folder)
+        except OSError:
+            pass
+        finally:
+            os.close(folder)
+        try:
+            os.rmdir(name, dir_fd=self.drive.fd)
+        except OSError:
+            pass
 
 
 def replace_system_file(path, text):
@@ -1033,6 +1421,7 @@ def not_removed(left):
             + ['   - ' + path for path in left])
 
 
+LOCK_SUFFIX = '.lock'
 # Held by a running setup (install.sh, then installer.py): one is enough to wait for.
 SETUP_LOCKS = ('/run/nekoserver-setup.lock', '/run/nekoserver-install.lock')
 

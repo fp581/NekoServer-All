@@ -78,13 +78,25 @@ def one_filesystem(group, sub_uuid=device_sub_uuid):
     if len(names)>1:
         if not all(r['fstype']=='btrfs' for r in group):
             raise RuntimeError(CLONED)
-        subs=[sub_uuid(n) for n in names]
-        if None in subs or len(set(subs))!=len(subs):
-            raise RuntimeError(CLONED)
+        pool_members(names, sub_uuid)
     disks=sorted({d for r in group for d in r['physical_disks'] if d})
     return {**group[0],'physical_disks':disks,'physical_disk':disks[0] if disks else None,
             'mountpoint':next((r['mountpoint'] for r in group if r['mountpoint']),None),
             'unlocks':sorted({n for r in group for n in r.get('unlocks',())})}
+
+
+def pool_members(names, sub_uuid=device_sub_uuid):
+    """Several devices with one Btrfs UUID are one pool only when each has a UUID_SUB of
+    its own. One that can't be read (blkid needs root to read a device that is not in its
+    cache) fails closed too, but says so: the drives are not known to be copies."""
+    subs=[sub_uuid(n) for n in names]
+    unread=[n for n, sub in zip(names, subs) if sub is None]
+    if unread:
+        raise RuntimeError(f'Could not read the Btrfs device ID of /dev/{unread[0]}, which tells the drives of a Btrfs '
+                           'pool apart from copies of one drive. Run setup with sudo (sudo bash install.sh) so it can '
+                           'read it; if it still can\'t, check that the drive is connected and working.')
+    if len(set(subs))!=len(subs):
+        raise RuntimeError(CLONED)
 
 
 CRYPTTAB=Path('/etc/crypttab')
@@ -134,21 +146,29 @@ def unlocked(device):
 
 def discover_filesystems(inventory, sub_uuid=device_sub_uuid):
     """Return candidates, never auto-select a device on model/size alone."""
-    rows=[]
-    os_disks,system_ids=set(),set()
+    rows,placed=[],[]
     def walk(dev, parent='', disk=None, unlocks=()):
         physical=dev.get('name','') if dev.get('type')=='disk' else disk
-        if mount_points(dev)&set(SYSTEM_MOUNTS):
-            system_ids.add(dev.get('uuid'))
-            os_disks.add(physical)
+        placed.append((dev,physical))
         row=candidate(dev,parent,physical,unlocks)
         if row:rows.append(row)
         below=(*unlocks,dev.get('name','')) if dev.get('type')=='crypt' else unlocks
         for child in dev.get('children',[]): walk(child,dev.get('model') or parent,physical,below)
     for device in inventory.get('blockdevices',[]): walk(device)
+    os_disks,system_ids=system_disks(placed)
     # The system's own filesystems (and anything sharing a disk with them) are never offered.
     mine=[r for r in rows if r['uuid'] not in system_ids]
     return [v for v in merged(mine, sub_uuid) if not set(v['physical_disks'])&os_disks]
+
+
+def system_disks(placed):
+    """The disks and filesystem UUIDs of the system, from (lsblk row, its disk) pairs. A
+    Btrfs system pool over two drives shows as mounted on one of them only (lsblk names
+    one member): every disk with a device of a system filesystem is a system disk."""
+    system_ids={dev.get('uuid') for dev, _ in placed if mount_points(dev)&set(SYSTEM_MOUNTS)}
+    os_disks={disk for dev, disk in placed if mount_points(dev)&set(SYSTEM_MOUNTS)}
+    os_disks|={disk for dev, disk in placed if dev.get('uuid') and dev.get('uuid') in system_ids}
+    return os_disks,system_ids
 
 
 NOT_LINUX = {'ntfs': 'NTFS (Windows)', 'exfat': 'exFAT', 'vfat': 'FAT'}
@@ -201,14 +221,7 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
         record=configured.setdefault(key,{})
         uuid=record.get('uuid','').strip()
         if uuid:
-            matches=[d for d in items if d['uuid']==uuid]
-            if len(matches)!=1:
-                raise RuntimeError(f'The drive chosen as {label} (UUID {uuid}) is not connected, or is not formatted ext4, xfs or btrfs. '
-                                   f'Connect it and run setup again. If you replaced that drive, take "uuid" out of "{key}" under "storage" in '
-                                   'my-config.json (next to the installer) and run setup again: it asks for the drive anew. Nothing is formatted.')
-            if record.get('fstype') and record['fstype']!=matches[0]['fstype']:
-                raise RuntimeError(f'Filesystem type mismatch for {key}')
-            record['fstype']=matches[0]['fstype']
+            saved_choice(record, uuid, items, key, label, apply)
         elif apply:
             if not interactive: raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
             # A drive the desktop opened by itself (/run/media/...) is still eligible.
@@ -225,6 +238,22 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
         selected_disks|=own_disks(uuid,items,selected_disks,apply)
         selected.add(uuid)
     return configured
+
+
+def saved_choice(record, uuid, items, key, label, apply):
+    """A drive already in the settings: it must be connected, of the same type and, when
+    setup goes on to mount it, unlocked by Linux at every start as a newly chosen one must
+    be (settings reused after a reinstall may name an encrypted drive opened by hand)."""
+    matches=[d for d in items if d['uuid']==uuid]
+    if len(matches)!=1:
+        raise RuntimeError(f'The drive chosen as {label} (UUID {uuid}) is not connected, or is not formatted ext4, xfs or btrfs. '
+                           f'Connect it and run setup again. If you replaced that drive, take "uuid" out of "{key}" under "storage" in '
+                           'my-config.json (next to the installer) and run setup again: it asks for the drive anew. Nothing is formatted.')
+    if record.get('fstype') and record['fstype']!=matches[0]['fstype']:
+        raise RuntimeError(f'Filesystem type mismatch for {key}')
+    if apply:
+        unlocked(matches[0])
+    record['fstype']=matches[0]['fstype']
 
 
 def own_disks(uuid,items,taken,apply):
@@ -305,8 +334,9 @@ def validate_device(uuid, fstype):
     real = source.resolve()
     host_source = (findmnt('SOURCE', '/', '--target') or '').split('[')[0]
     host_block = Path(host_source)
-    # Refuse using the exact OS filesystem even when identified by alternate device path.
-    if host_block.exists() and host_block.resolve() == real:
+    # Refuse using the exact OS filesystem even when identified by alternate device path,
+    # or by its UUID (by-uuid may name another device of a Btrfs system pool).
+    if (host_block.exists() and host_block.resolve() == real) or findmnt('UUID', '/', '--target') == uuid:
         raise RuntimeError(f'UUID {uuid} belongs to the OS filesystem')
     return str(source)
 
@@ -449,7 +479,7 @@ def run(context):
         current = findmnt('SOURCE', target)
         if current is not None:
             mounted = current.split('[')[0]
-            if not Path(mounted).exists() or Path(mounted).resolve() != source_path(uuid):
+            if mounted_filesystem(target) != (uuid, fstype):
                 raise RuntimeError(f'Wrong filesystem already mounted at {target}: {mounted}')
             only_a_folder(target, fstype, mounted_subvolume(target))
         elif Path(target).exists() and any(Path(target).iterdir()):
@@ -524,8 +554,7 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs'):
             if findmnt('TARGET', target) is None:   # the kernel may still have finished it
                 raise RuntimeError(f'Mounting {target} took longer than {MOUNT_WAIT // 60} minutes; check the drive '
                                    '(sudo dmesg shows what it is doing) and run setup again') from None
-    current = (findmnt('SOURCE', target) or '').split('[')[0]
-    if not Path(current).exists() or Path(current).resolve() != source_path(uuid):
+    if mounted_filesystem(target) != (uuid, fstype):
         raise RuntimeError(f'Post-mount validation failed for {target}')
     found = mounted_subvolume(target)
     only_a_folder(target, fstype, found)
@@ -555,5 +584,15 @@ def choose_usb(context):
         context.persist_config()
 
 
-def source_path(uuid):
-    return (Path('/dev/disk/by-uuid') / uuid).resolve()
+def mounted_filesystem(target):
+    """(UUID, filesystem type) of what is mounted at target, or None, read from the
+    filesystem itself as identity_matches does: findmnt's UUID column, or blkid of the
+    mounted device when that column is empty. Never by comparing device paths: every
+    device of a Btrfs pool carries the pool's UUID, findmnt names one of them (the lowest
+    device ID) as the source, and /dev/disk/by-uuid may point at another."""
+    fields = (findmnt('UUID,FSTYPE,SOURCE', target) or '').split()
+    if len(fields) == 3:
+        return fields[0], fields[1]
+    if len(fields) == 2 and fields[1].startswith('/dev/'):
+        return uuid_of(fields[1].split('[')[0]), fields[0]
+    return None

@@ -1,7 +1,7 @@
 """Create missing standard Seerr request providers, preserving existing choices."""
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from media_libraries import Client, SetupRequired, open_seerr, row
+from media_libraries import NOT_NEEDED, REQUEST_PROVIDERS, Client, SetupRequired, open_seerr, row
 from neko_common import app_port, safe_path
 
 SPECS = {'sonarr': (app_port('sonarr'), '/data/tv'), 'radarr': (app_port('radarr'), '/data/movies')}
@@ -145,16 +145,19 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
 def configure(root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Client, prompt=input, verify_only=False):
     if verify_only and apply:raise ValueError('Read-only verification cannot apply changes')
     selected = [app for app in SPECS if app in apps]
-    if 'seerr' not in apps or not selected:
-        return [row('seerr:request_providers', 'needs_setup', 'Select Seerr and at least one of Sonarr/Radarr')]
+    if 'seerr' not in apps:
+        return [row(REQUEST_PROVIDERS, 'needs_setup', 'Select Seerr and at least one of Sonarr/Radarr')]
+    if not selected:
+        # Seerr kept without Sonarr and Radarr (both removed, say): nothing to connect.
+        return [row(REQUEST_PROVIDERS, 'pass', NOT_NEEDED)]
     client = factory('seerr')
     try:
         try:
             open_seerr(client, root, 'Complete Seerr login/server selection in its first-run wizard')
         except SetupRequired as exc:
-            return [row('seerr:request_providers', 'needs_setup', str(exc))]
+            return [row(REQUEST_PROVIDERS, 'needs_setup', str(exc))]
         except (RuntimeError, ValueError, TypeError, KeyError):
-            return [row('seerr:request_providers', 'fail', 'Seerr settings/authentication check failed')]
+            return [row(REQUEST_PROVIDERS, 'fail', 'Seerr settings/authentication check failed')]
         results = []
         for app in selected:
             manager = factory(app)

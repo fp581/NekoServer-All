@@ -54,6 +54,8 @@ You can follow the installation in the terminal, and on a PC with a desktop also
 
 Already running NekoServer? Run `git pull`, then `sudo bash install.sh` in the same folder: your settings stay where they are ([Updating to a newer release](nekoserver/README.md#install)).
 
+Cloned before 0.40.0 (running 0.39.x or older)? Then `git pull` does not work once: the repository's history was cleaned in 0.40.0. Clone it again and copy your `my-config.json` into the new `nekoserver` folder, as [Updating from a clone made before 0.40.0](nekoserver/README.md#install) shows step by step.
+
 Want it gone? `sudo bash uninstall.sh` in the same folder: it lists what it would remove, you choose, and it asks twice ([Uninstalling](nekoserver/README.md#uninstalling)).
 
 ## More

@@ -20,9 +20,47 @@ use std::process::{Command, Stdio};
 
 /// Folder at a backup tree's root; never data (backup.rs tree_files leaves it out).
 pub(crate) const FOLDER: &str = ".neko-inventory";
+/// Beside the lists: which list stands for the newest run that copied files (`list`),
+/// written before that run's list and again after it. When writing the list failed (a
+/// full drive, say), it says `"list": null`: the restore then knows the newest list is
+/// older than the newest backup (recovery_wizard.list_gap) instead of offering it as
+/// "as of the last backup".
+pub(crate) const LAST_RUN: &str = "last-run.json";
+const LAST_RUN_FORMAT: &str = "neko-last-run-v1";
+fn note_run(folder: &Path, at: &str, list: Option<&str>) -> Result<()> {
+    let state = if list.is_some() {
+        "complete"
+    } else {
+        "pending"
+    };
+    common::atomic(
+        &folder.join(LAST_RUN),
+        &serde_json::to_vec(
+            &json!({"format": LAST_RUN_FORMAT, "at": at, "state": state, "list": list}),
+        )?,
+        0o600,
+    )
+}
+fn utc_now() -> String {
+    chrono::DateTime::from_timestamp(common::now() as i64, 0)
+        .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
+        .unwrap_or_default()
+}
+/// Called before a run copies anything into the tree at `root`: its note says
+/// "pending" until the files, the checksum list and the run's list of files are all
+/// written (`write`, or `finish_mirror` for the USB copy of the photo archive). A run cut
+/// off part-way leaves it so, and the restore then never offers the older list as the
+/// newest backup.
+pub(crate) fn begin(root: &Path) -> Result<()> {
+    let folder = root.join(FOLDER);
+    common::directory(&folder, 0o700)?;
+    note_run(&folder, &utc_now(), None)
+}
 /// v2 (0.39.7) adds each copy's SHA-256; v1 lists (0.39.6) named the copy only.
 const FORMAT: &str = "neko-inventory-v2";
-/// Inventories kept per tree (half a year of weekly runs); older ones go.
+/// Inventories kept per tree (half a year of weekly runs); older ones go. A run that
+/// finds the same files as the newest list (the monthly check right after a weekly copy,
+/// a week with no change) writes none, so these are never two alike in a row.
 pub(crate) const KEPT: usize = 26;
 
 /// `<UTC stamp>.json.gz` (`<UTC stamp>-<n>.json.gz` for a second one in the same
@@ -160,20 +198,64 @@ fn next_name(folder: &Path, now: &str) -> Result<PathBuf> {
     }
 }
 
-/// Write `inventory` for the tree at `root`, then keep the newest KEPT. Returns its path.
-pub(crate) fn write(root: &Path, inventory: &Inventory, ledger: &Ledger) -> Result<PathBuf> {
+/// The newest inventory in `folder` and the files it lists, if it can be read.
+fn newest(folder: &Path) -> Option<(PathBuf, Value)> {
+    let mut names: Vec<String> = fs::read_dir(folder)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| inventory_name(n))
+        .collect();
+    oldest_first(&mut names);
+    let path = folder.join(names.pop()?);
+    let output = Command::new("gzip")
+        .args(["-d", "-c"])
+        .stdin(fs::File::open(common::safe(&path).ok()?).ok()?)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+    (output.status.success() && value["format"] == FORMAT).then(|| (path, value["files"].clone()))
+}
+/// Write `inventory` for the tree at `root`, then keep the newest KEPT. Returns its path
+/// and true; or the newest list already there and false when that one names the same
+/// files (nothing is written).
+pub(crate) fn write(
+    root: &Path,
+    inventory: &Inventory,
+    ledger: &Ledger,
+) -> Result<(PathBuf, bool)> {
+    write_with(root, inventory, ledger, &compressed)
+}
+/// `write`, the list packed by `pack` (tests make it fail, as a full drive would).
+fn write_with(
+    root: &Path,
+    inventory: &Inventory,
+    ledger: &Ledger,
+    pack: &dyn Fn(&Value) -> Result<Vec<u8>>,
+) -> Result<(PathBuf, bool)> {
     let folder = root.join(FOLDER);
     common::directory(&folder, 0o700)?;
     let now = chrono::DateTime::from_timestamp(common::now() as i64, 0)
         .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
         .unwrap_or_default();
-    let path = next_name(&folder, &now)?;
     let files = with_checksums(root, inventory, ledger);
+    if let Some((path, _)) = newest(&folder).filter(|(_, listed)| *listed == json!(files)) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        note_run(&folder, &now, Some(&name))?;
+        return Ok((path, false));
+    }
+    // First: this run has no list yet. Only once its list is there does the note name it.
+    note_run(&folder, &now, None)?;
+    let path = next_name(&folder, &now)?;
     let value = json!({"format": FORMAT, "made_at": now, "files": files});
-    common::atomic(&path, &compressed(&value)?, 0o600)?;
+    common::atomic(&path, &pack(&value)?, 0o600)?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
+    note_run(&folder, &now, Some(&name))?;
     prune(&folder, KEPT, &name)?;
-    Ok(path)
+    Ok((path, true))
 }
 
 /// Keep the newest `keep` inventories in `folder`; `newest` (the one just written) is
@@ -220,6 +302,28 @@ pub(crate) fn mirror(source: &Path, dest: &Path) -> Result<()> {
         }
     }
     prune(&to, KEPT, &newest)
+}
+/// The USB copy's note, once its files, checksum list and lists are all there: the HDD
+/// archive's own (which says whether its newest run has a list). A HDD archive from
+/// before 0.40.1 has no note: its newest list then stands for its newest run.
+pub(crate) fn finish_mirror(source: &Path, dest: &Path) -> Result<()> {
+    let (from, to) = (source.join(FOLDER), dest.join(FOLDER));
+    if !to.is_dir() {
+        return Ok(());
+    }
+    if let Ok(note) = common::bytes(&from.join(LAST_RUN), 4096) {
+        return common::atomic(&to.join(LAST_RUN), &note, 0o600);
+    }
+    let mut names: Vec<String> = fs::read_dir(common::safe(&to)?)?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| inventory_name(n))
+        .collect();
+    oldest_first(&mut names);
+    match names.last() {
+        Some(newest) => note_run(&to, &utc_now(), Some(newest)),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -272,5 +376,38 @@ mod tests {
         assert_eq!(names.last().unwrap(), "20261101T030000Z.json.gz");
         assert_eq!(names[2], "20261025T030000Z-2.json.gz");
         fs::remove_dir_all(folder).unwrap();
+    }
+    #[test]
+    fn a_run_whose_list_could_not_be_written_is_noted_as_having_none() {
+        let root =
+            std::env::temp_dir().join(format!("neko-inventory-last-run-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("a/old.txt"), b"old").unwrap();
+        let ledger = Ledger::read(&root).unwrap();
+        let mut live = Inventory::default();
+        live.add(&root.join("a/old.txt"), &root);
+        let note = || -> Value {
+            serde_json::from_slice(&fs::read(root.join(FOLDER).join(LAST_RUN)).unwrap()).unwrap()
+        };
+        let (first, _) = write(&root, &live, &ledger).unwrap();
+        let first = first.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(note()["list"], first.as_str());
+        // The next run copied new.txt, and its list could not be written (a full drive).
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(root.join("a/new.txt"), b"new").unwrap();
+        live.add(&root.join("a/new.txt"), &root);
+        let full = |_: &Value| -> Result<Vec<u8>> { Err(Error::new("No space left on device")) };
+        assert!(write_with(&root, &live, &ledger, &full).is_err());
+        assert!(note()["list"].is_null());
+        assert_ne!(note()["at"], "");
+        // The next run that writes its list names it again.
+        let (again, written) = write(&root, &live, &ledger).unwrap();
+        assert!(written);
+        assert_eq!(
+            note()["list"],
+            again.file_name().unwrap().to_string_lossy().as_ref()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

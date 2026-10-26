@@ -1,4 +1,4 @@
-# NekoServer v0.40.0
+# NekoServer v0.40.1
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -136,6 +136,18 @@ sudo bash install.sh
 ```
 
 Your `my-config.json` stays where it is (git does not touch it); setup updates what changed, builds the runtime for the new version and keeps everything else. Steps the new release added are added to your settings' profiles (the log names them); a step you took out yourself stays out. Read the new version's *Upgrade notes* in [CHANGELOG.md](../CHANGELOG.md) first.
+
+**Updating from a clone made before 0.40.0** (a server running 0.39.x or older). The repository's history was cleaned in 0.40.0, so an older clone cannot simply `git pull`: git refuses ("refusing to merge unrelated histories") or wants to merge the whole old history back. Clone it again once, in the folder that holds `NekoServer-All`:
+
+```bash
+mv NekoServer-All NekoServer-All.old
+git clone https://github.com/fp581/NekoServer-All.git
+cp NekoServer-All.old/nekoserver/my-config.json NekoServer-All/nekoserver/
+cd NekoServer-All/nekoserver
+sudo bash install.sh
+```
+
+The third line copies your settings into the new folder. If you forget it, setup finds the copy it keeps on the SSD and asks `Use them for this release (yes when updating)?`: answer `yes`. Nothing installed runs from the old folder, so once setup has finished you can delete `NekoServer-All.old`. After this, updates are `git pull` again.
 
 Coming from a release before 0.39.2, where each release had a folder named for its version (`nekoserver-v0.37.3`, say)? After `git pull` the folder is simply `nekoserver`, and your `my-config.json` is still in the old one. Setup finds it there, or the copy it keeps on the SSD, and asks `Use them for this release (yes when updating)?`. Answer `yes`: it copies your settings in. The old folder can then be deleted.
 

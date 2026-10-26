@@ -209,6 +209,80 @@ class WindowTests(unittest.TestCase):
             self.cookie_browser().open(fresh.url, timeout=5)
         self.assertEqual(caught.exception.code, 403)
 
+    @staticmethod
+    def table_line(client, server, uid):
+        """A line of /proc/net/tcp as the kernel writes it for IPv4."""
+        def hex_of(address):
+            host, port = address
+            return f"{int.from_bytes(bytes(map(int, host.split('.'))), sys.byteorder):08X}:{port:04X}"
+        return f'   1: {hex_of(client)} {hex_of(server)} 01 00000000:00000000 00:00000000 00000000 {uid:5d}        0 4242 1'
+
+    def test_another_account_cannot_claim_the_window_first(self):
+        """Another account that reads the address from the browser's command line and
+        loads the page first is refused (its connection is not the desktop user's); the
+        desktop user's browser, later, still gets the window."""
+        import http.client
+        table = Path(self.tmp.name) / 'tcp'
+        fresh = setup_gui.Window(self.settings, self.config, wizard.STEPS, self.config['profiles']['full'],
+                                 owners={0, 1000}, tables=(table, Path(self.tmp.name) / 'missing'))
+        self.addCleanup(fresh.stop)
+        port = fresh.server.server_address[1]
+
+        def load_as(uid):
+            connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+            connection.connect()
+            here = connection.sock.getsockname()
+            table.write_text('  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n'
+                             + self.table_line(('127.0.0.1', port), here, 4321) + '\n'     # the server's own end
+                             + self.table_line(here, ('127.0.0.1', port), uid) + '\n')
+            connection.request('GET', '/t/' + fresh.token + '/')
+            response = connection.getresponse()
+            answer = response.status, response.getheader('Set-Cookie') or '', response.read()
+            connection.close()
+            return answer
+        status, cookie, body = load_as(2000)
+        self.assertEqual((status, cookie), (403, ''))
+        self.assertIn(b'Only the account that runs setup', body)
+        self.assertFalse(fresh.opened)
+        status, cookie, _ = load_as(1000)
+        self.assertEqual(status, 200)
+        self.assertIn(setup_gui.COOKIE + '=' + fresh.session, cookie)
+        self.assertEqual(load_as(0)[0], 403)            # it still works once
+        table.unlink()                                  # an owner that can't be told is refused too
+        refused = setup_gui.Window(self.settings, self.config, wizard.STEPS, [], owners={0}, tables=(table,))
+        self.addCleanup(refused.stop)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.cookie_browser().open(refused.url, timeout=5)
+        self.assertEqual(caught.exception.code, 403)
+
+    def test_the_owner_of_a_connection_is_read_from_the_kernels_tables(self):
+        client, server = ('127.0.0.1', 53412), ('127.0.0.1', 8787)
+        if sys.byteorder == 'little':
+            self.assertIn(' 0100007F:D0A4 0100007F:2253 ', self.table_line(client, server, 7))
+        head = 'sl local rem st\n'
+        with tempfile.TemporaryDirectory() as d:
+            v4, v6 = Path(d) / 'tcp', Path(d) / 'tcp6'
+            v4.write_text(head + self.table_line(server, client, 61234) + '\n' + self.table_line(client, server, 1000) + '\n')
+            self.assertEqual(setup_gui.peer_uid(client, server, (v4,)), 1000)
+            self.assertEqual(setup_gui.peer_uid(server, client, (v4,)), 61234)
+            self.assertIsNone(setup_gui.peer_uid(('127.0.0.1', 1), server, (v4,)))
+            # IPv6 tables, with 127.0.0.1 written the IPv6 way (::ffff:127.0.0.1).
+            raw = bytes(10) + b'\xff\xff' + bytes([127, 0, 0, 1])
+            mapped = ''.join(f'{int.from_bytes(raw[i:i + 4], sys.byteorder):08X}' for i in range(0, 16, 4))
+            v6.write_text(head + f'   0: {mapped}:D0A4 {mapped}:2253 01 0:0 0:0 0 1001 0 7 1\n   1: garbage\n')
+            self.assertEqual(setup_gui.peer_uid(client, server, (Path(d) / 'none', v4.with_name('x'), v6)), 1001)
+            self.assertEqual(setup_gui.peer_uid(('::ffff:127.0.0.1', 53412), server, (v6,)), 1001)
+        with self.assertRaises(ValueError):
+            setup_gui.table_address('0100:1F90')
+
+    def test_the_expected_accounts_are_root_sudo_and_the_desktop_user(self):
+        with mock.patch.dict(os.environ, {'SUDO_UID': '1001'}), \
+                mock.patch.object(setup_gui.guided_setup, 'desktop_command', return_value=['runuser', '-u', 'root', '--']):
+            self.assertEqual(setup_gui.expected_owners({}), {0, os.geteuid(), 1001})
+        with mock.patch.dict(os.environ, {'SUDO_UID': ''}), \
+                mock.patch.object(setup_gui.guided_setup, 'desktop_command', side_effect=RuntimeError('no desktop')):
+            self.assertEqual(setup_gui.expected_owners({}), {0, os.geteuid()})
+
     def test_choosing_before_the_start_saves_the_settings_and_start_is_seen(self):
         state = self.state()
         self.assertEqual(state['phase'], 'choose')

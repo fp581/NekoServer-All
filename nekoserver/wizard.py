@@ -81,6 +81,19 @@ def prepare_settings(root=ROOT, account=None):
     settings = json.loads((Path(root) / TEMPLATE).read_text())
     if account is not None:
         settings.setdefault('media', {}).update(uid=account.pw_uid, gid=account.pw_gid)
+    else:
+        # Started as root, not with sudo from someone's account (Debian with a root password
+        # and no sudo, say): the template's user ID is kept only when an account has it.
+        # Otherwise the apps' files would belong to nobody and the shared folder could not
+        # be set up, so setup stops before anything is written and says how to name yours.
+        uid = settings.get('media', {}).get('uid', 1000)
+        try:
+            pwd.getpwuid(int(uid))
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError('Setup does not know whose account this server is for: it was started as root, not with sudo '
+                               'from your own account, and this PC has no account with user ID ' + str(uid) + '. Run it from '
+                               'your own account with  sudo bash install.sh , or as root name your account:  SUDO_USER=<your '
+                               'account name> bash install.sh') from None
     atomic_json(path, settings)
     if account is not None:
         # Readable and editable by the person who ran sudo, nobody else.

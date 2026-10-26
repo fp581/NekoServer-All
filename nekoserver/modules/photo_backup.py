@@ -14,6 +14,7 @@ from neko_common import (
     VERSION,
     atomic_json,
     atomic_write,
+    forget_last_run,
     host_timezone,
     mount_path,
     pick_drive,
@@ -42,7 +43,15 @@ def disk_layout(config, inventory):
         rows.append((row,physical))
         for child in row.get('children',[]):walk(child,physical)
     for row in inventory.get('blockdevices',[]):walk(row)
-    return rows,busy_disks,forbidden
+    return rows,busy_disks|system_pool_disks(rows),forbidden
+
+def system_pool_disks(rows):
+    """A Btrfs system pool over several disks shows its mount on one member only: every
+    disk with a device of a system filesystem (the same UUID) is a system disk."""
+    def mounted(row):
+        return {row.get('mountpoint')}|set(row.get('mountpoints') or ())
+    system_ids={row.get('uuid') for row,_ in rows if row.get('uuid') and mounted(row)&set(SYSTEM_MOUNTS)}
+    return {physical for row,physical in rows if row.get('uuid') in system_ids}
 
 def eligible(config, inventory):
     """Filesystems that may hold the USB backup. It must be on its own physical disk: a
@@ -168,6 +177,7 @@ def install_units(config,cmd,photos,day,when,unit=None,timer=None):
         current=path.read_text() if path.exists() else text
         if current!=text and not current.startswith((MANAGED_UNIT, '[Unit]\nDescription=Weekly NekoServer photo backup\n')):
             raise RuntimeError(f'Unmanaged systemd unit preserved: {path}')
+    forget_last_run(timer)   # a timer created again must not run every missed week at once
     atomic_write(unit,service,0o644);atomic_write(timer,schedule,0o644)
     subprocess.run(['systemctl','daemon-reload'],check=True,timeout=120)
     subprocess.run(['systemctl','enable','--now',timer.name],check=True,capture_output=True,text=True,timeout=120)   # (see photo_preservation)

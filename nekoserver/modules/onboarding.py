@@ -65,6 +65,15 @@ def run(ctx):
 # The apps that other apps connect to. Taken out of media.services, their containers
 # are stopped (modules/media.py), and the connections setup made to them are taken away.
 CONNECTED=('sonarr','radarr','lidarr','qbittorrent')
+# Connections to these are not taken away by setup (they were not made by NekoServer
+# alone, or can't be told apart from yours), so they are named for you to remove:
+# {app: (the apps that keep them, what to do)}.
+BY_HAND={'prowlarr':(('sonarr','radarr','lidarr'),
+                     ('Prowlarr is no longer in media.services: the indexers it added to Sonarr, Radarr and Lidarr '
+                      'still point at it and will show errors. Remove them in each app (Settings, Indexers), or add your indexers there')),
+         'jellyfin':(('seerr',),
+                     ('Jellyfin is no longer in media.services: Seerr is still linked to it and cannot check its '
+                      'server. Link Seerr to your media server again (Seerr, Settings), or take Seerr out of media.services too'))}
 
 
 def remove_stale(ctx,release,config):
@@ -76,6 +85,9 @@ def remove_stale(ctx,release,config):
     services=ctx.config.get('media',{}).get('services',[])
     compose=Path(ctx.config['data_mount'])/'compose'
     removed=[a for a in CONNECTED if a not in services and (compose/a/'compose.yaml').is_file()]
+    for app,(users,what) in BY_HAND.items():
+        if app not in services and (compose/app/'compose.yaml').is_file() and set(users)&set(services):
+            ctx.log(what)
     if not removed:return
     ctx.log('Taking away the connections setup made to apps no longer in media.services: '+', '.join(removed))
     cmd=[sys.executable,str(release/'media-connect.py'),'--config',str(config),'--remove-stale','--apply']

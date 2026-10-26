@@ -66,7 +66,7 @@ class FolderMountTests(unittest.TestCase):
     def test_a_folder_of_an_ext4_drive_mounted_there_is_refused_not_saved_as_a_subvolume(self):
         sources = {'/srv/nekoserver': '/dev/sdb1[/old-share]'}
         with mock.patch.object(storage, 'findmnt', side_effect=lambda column, target, *a, **k: sources[str(target)]), \
-                mock.patch.object(storage, 'source_path', return_value=Path('/dev/sdb1')), \
+                mock.patch.object(storage, 'mounted_filesystem', side_effect=[('aaaa-1111', 'ext4'), ('aaaa-1111', 'btrfs')]), \
                 mock.patch.object(storage.Path, 'mkdir'), mock.patch.object(storage.Path, 'exists', return_value=True), \
                 mock.patch.object(storage.Path, 'resolve', lambda self, strict=False: self):
             with self.assertRaisesRegex(RuntimeError, 'Only the folder /old-share of the drive is mounted'):
@@ -79,12 +79,12 @@ class FolderMountTests(unittest.TestCase):
                   'storage': {'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'},
                               'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'}}}
         sources = {'/srv/nekoserver': '/dev/sdb1[/old-share]', '/srv/media': '/dev/sdc1'}
-        devices = {'aaaa-1111': Path('/dev/sdb1'), 'bbbb-2222': Path('/dev/sdc1')}
+        devices = {'/srv/nekoserver': ('aaaa-1111', 'ext4'), '/srv/media': ('bbbb-2222', 'ext4')}
         context = mock.Mock(config=config, log=lambda *_: None)
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(storage, 'findmnt', side_effect=lambda column, target, *a, **k: sources[str(target)]), \
                 mock.patch.object(storage, 'call', return_value=''), \
-                mock.patch.object(storage, 'source_path', side_effect=devices.get), \
+                mock.patch.object(storage, 'mounted_filesystem', side_effect=devices.get), \
                 mock.patch.object(storage.Path, 'mkdir'), mock.patch.object(storage.Path, 'exists', return_value=True), \
                 mock.patch.object(storage.Path, 'resolve', lambda self, strict=False: self):
             (Path(d) / 'fstab').write_text('UUID=root / ext4 defaults 0 1\n')
@@ -225,3 +225,150 @@ class RestoreReasonTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+POOL_MOUNT = {'TARGET': '/srv/nekoserver', 'SOURCE': '/dev/sdb', 'UUID,FSTYPE,SOURCE': 'pool-uuid btrfs /dev/sdb'}
+
+
+class PoolMountTests(unittest.TestCase):
+    """A Btrfs pool over two drives: findmnt names the member with the lowest device ID
+    as the mount's source, while /dev/disk/by-uuid may point at the other one. Setup
+    compared those two paths and refused the right pool; it now reads the UUID."""
+
+    def findmnt(self, answers):
+        return mock.patch.object(storage, 'findmnt', side_effect=lambda column, target, *a, **k: answers.get(column))
+
+    def test_the_pool_mounted_from_its_other_member_passes(self):
+        # by-uuid names the second member (/dev/sdc): it is not read at all.
+        by_uuid = {'pool-uuid': Path('/dev/sdc')}
+        with self.findmnt(POOL_MOUNT), mock.patch.object(storage.Path, 'mkdir'), \
+                mock.patch.object(storage.Path, 'resolve', lambda self, strict=False: by_uuid.get(self.name, self)):
+            self.assertIsNone(storage.mount_and_check('pool-uuid', '/srv/nekoserver', None, 'btrfs'))
+            with self.assertRaisesRegex(RuntimeError, 'Post-mount validation failed'):
+                storage.mount_and_check('other-uuid', '/srv/nekoserver', None, 'btrfs')
+            with self.assertRaisesRegex(RuntimeError, 'Post-mount validation failed'):
+                storage.mount_and_check('pool-uuid', '/srv/nekoserver', None, 'ext4')
+
+    def test_an_empty_uuid_column_is_read_from_the_mounted_device(self):
+        answers = {**POOL_MOUNT, 'UUID,FSTYPE,SOURCE': 'btrfs /dev/sdb[/@data]'}
+        with self.findmnt(answers), mock.patch.object(storage, 'call', return_value='pool-uuid') as call:
+            self.assertEqual(storage.mounted_filesystem('/srv/nekoserver'), ('pool-uuid', 'btrfs'))
+        self.assertEqual(call.call_args[0][0][-1], '/dev/sdb')
+
+    def test_a_rerun_with_the_pool_mounted_goes_on(self):
+        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/srv/media',
+                  'storage': {'data_ssd': {'uuid': 'pool-uuid', 'fstype': 'btrfs'},
+                              'media_hdd': {'uuid': 'hdd-uuid-1', 'fstype': 'ext4'}}}
+        context = mock.Mock(config=config, apply=True, log=lambda *_: None)
+        mounts = {'/srv/nekoserver': POOL_MOUNT,
+                  '/srv/media': {'SOURCE': '/dev/sdd1', 'UUID,FSTYPE,SOURCE': 'hdd-uuid-1 ext4 /dev/sdd1'}}
+        with mock.patch.object(storage, 'findmnt', side_effect=lambda column, target, *a, **k: mounts[target].get(column)), \
+                mock.patch.object(storage, 'inventory_now', return_value={'blockdevices': []}), \
+                mock.patch.object(storage, 'resolve_storage_identity'), mock.patch.object(storage, 'remember_subvolumes'), \
+                mock.patch.object(storage, 'validate_device'), mock.patch.object(storage, 'save_storage'), \
+                mock.patch.object(storage, 'mount_all') as mount_all, mock.patch.object(storage, 'choose_usb'), \
+                mock.patch.object(storage.os, 'geteuid', return_value=0), \
+                mock.patch.object(storage.shutil, 'which', return_value='/usr/bin/x'):
+            storage.run(context)
+            mount_all.assert_called_once()
+            mounts['/srv/nekoserver'] = {'SOURCE': '/dev/sde', 'UUID,FSTYPE,SOURCE': 'else-uuid btrfs /dev/sde'}
+            with self.assertRaisesRegex(RuntimeError, 'Wrong filesystem already mounted at /srv/nekoserver: /dev/sde'):
+                storage.run(context)
+
+    def test_the_second_device_of_a_btrfs_system_pool_is_the_system_disk(self):
+        inventory = {'blockdevices': [
+            disk('sda', part('sda1', 'btrfs', 'root-uuid-1', '/')),
+            disk('sdb', part('sdb1', 'btrfs', 'root-uuid-1'), part('sdb2', 'ext4', 'spare-uuid-1')),
+            disk('sdc', part('sdc1', 'ext4', 'ssd-uuid-01'))]}
+        self.assertEqual([v['uuid'] for v in storage.discover_filesystems(inventory, lambda name: None)], ['ssd-uuid-01'])
+
+    def test_a_root_pool_named_by_another_device_is_still_the_os_filesystem(self):
+        answers = {'SOURCE': '/dev/sda1', 'UUID': 'root-uuid-1'}
+        with self.findmnt(answers), mock.patch.object(storage, 'call', return_value='btrfs'), \
+                mock.patch.object(storage.Path, 'exists', return_value=True), \
+                self.assertRaisesRegex(RuntimeError, 'belongs to the OS filesystem'):
+            storage.validate_device('root-uuid-1', 'btrfs')
+
+
+ENCRYPTED_INVENTORY = {'blockdevices': [
+    disk('sda', part('sda1', 'ext4', 'os-uuid-001', '/')),
+    disk('sdb', {'name': 'sdb1', 'type': 'part', 'fstype': 'crypto_LUKS', 'uuid': 'luks-outer-1', 'children': [
+        {'name': 'secret', 'type': 'crypt', 'fstype': 'ext4', 'uuid': 'ssd-uuid-01', 'size': '1T'}]}),
+    disk('sdc', part('sdc1', 'ext4', 'hdd-uuid-01'))]}
+
+
+class SavedEncryptedDriveTests(unittest.TestCase):
+    """A drive already in the settings (reused after a reinstall) goes through the same
+    boot-unlock check as a newly chosen one."""
+
+    def resolve(self, crypttab_text):
+        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/srv/media',
+                  'storage': {'data_ssd': {'uuid': 'ssd-uuid-01'}, 'media_hdd': {'uuid': 'hdd-uuid-01'}}}
+        real = storage.boot_unlock_problem
+        with tempfile.TemporaryDirectory() as d:
+            crypttab = Path(d) / 'crypttab'
+            crypttab.write_text(crypttab_text)
+            with mock.patch.object(storage, 'boot_unlock_problem', side_effect=lambda dev: real(dev, crypttab)) as check:
+                try:
+                    return storage.resolve_storage_identity(config, ENCRYPTED_INVENTORY, apply=True)
+                finally:
+                    self.assertIn('secret', [c.args[0]['name'] for c in check.call_args_list])
+
+    def test_a_saved_encrypted_drive_opened_by_hand_is_refused(self):
+        for text in ('other UUID=1 none\n', 'secret UUID=2 /root/key luks,noauto\n'):
+            with self.assertRaisesRegex(RuntimeError, '/dev/mapper/secret.*/etc/crypttab'):
+                self.resolve(text)
+
+    def test_a_saved_encrypted_drive_unlocked_at_start_passes(self):
+        self.assertEqual(self.resolve('secret UUID=2 /root/key luks\n')['data_ssd']['fstype'], 'ext4')
+
+
+def block_devices(rows, sub_ids, blkid_code=0, lsblk_code=0):
+    """A fake subprocess.run answering lsblk's device list and blkid's UUID_SUB."""
+    def run(argv, **_):
+        if argv[0] == 'lsblk':
+            return mock.Mock(returncode=lsblk_code, stdout=json.dumps({'blockdevices': rows}))
+        return mock.Mock(returncode=blkid_code, stdout=sub_ids.get(argv[-1], '') + '\n')
+    return mock.patch.object(neko_common.subprocess, 'run', side_effect=run)
+
+
+DEVICES = [{'path': '/dev/sda', 'uuid': None}, {'path': '/dev/sdb1', 'uuid': 'aaaa-1111'},
+           {'path': '/dev/sdc1', 'uuid': 'bbbb-2222'}]
+
+
+class ConnectedCopyTests(unittest.TestCase):
+    """A copy of the SSD or HDD (dd, Clonezilla) connected after setup carries its UUID
+    too, and fstab mounts by UUID: the start checks refuse, unless the devices are the
+    distinct members of one Btrfs pool, or the check can't be made."""
+    CONFIG, MOUNTED = SUBVOLUME_CONFIG, MOUNTED
+    guard, checks = SubvolumeCheckTests.guard, SubvolumeCheckTests.checks
+
+    def run_checks(self, rows, sub_ids=None, blkid_code=0, lsblk_code=0):
+        failures = []
+        with block_devices(DEVICES + rows, sub_ids or {}, blkid_code, lsblk_code):
+            for check in self.checks(self.MOUNTED):
+                try:
+                    check(self.CONFIG)
+                except RuntimeError as exc:
+                    failures.append(str(exc))
+        return failures
+
+    def test_a_copy_of_the_hdd_is_refused(self):
+        failures = self.run_checks([{'path': '/dev/sdd1', 'uuid': 'bbbb-2222'}])
+        self.assertEqual(len(failures), 2)
+        for text in failures:
+            self.assertIn('two drives look the same (one is probably a copy); unplug the copy', text.lower())
+            self.assertIn('/dev/sdc1 and /dev/sdd1', text)
+
+    def test_a_copy_of_one_device_of_a_btrfs_pool_is_refused(self):
+        rows = [{'path': '/dev/sde1', 'uuid': 'aaaa-1111'}]
+        self.assertEqual(len(self.run_checks(rows, {'/dev/sdb1': 'dev-1', '/dev/sde1': 'dev-1'})), 2)
+
+    def test_a_pool_an_unreadable_device_id_or_no_lsblk_passes(self):
+        pool = [{'path': '/dev/sde1', 'uuid': 'aaaa-1111'}]
+        self.assertEqual(self.run_checks(pool, {'/dev/sdb1': 'dev-1', '/dev/sde1': 'dev-2'}), [])
+        self.assertEqual(self.run_checks(pool, blkid_code=2), [])
+        self.assertEqual(self.run_checks([{'path': '/dev/sdd1', 'uuid': 'bbbb-2222'}], lsblk_code=1), [])
+        # An LVM volume lsblk lists under each disk it spans is one device.
+        twice = [{'path': '/dev/sdc1', 'uuid': 'bbbb-2222'}]
+        self.assertEqual(self.run_checks(twice), [])

@@ -785,6 +785,47 @@ fn curl_as(url: &str, output: Option<&Path>, host: Option<&str>) -> Result<Strin
     args.push(url);
     checked(&args, 20)
 }
+/// The process ID (on this PC) of `service`'s container: its network is entered there.
+fn container_pid(file: &Path, project: &str, service: &str) -> Result<String> {
+    let id = compose(file, project, &["ps", "-q", service])?;
+    let id = id
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| Error::new("Restore-test container missing"))?;
+    let pid = docker(&["inspect", "--format", "{{.State.Pid}}", id])?;
+    let pid = pid.trim();
+    if pid.parse::<u32>().map_or(true, |p| p == 0) {
+        return Err(Error::new("Restore-test container is not running"));
+    }
+    Ok(pid.to_string())
+}
+/// `curl_as`, run by this PC's own curl inside the network of the process `pid` (a
+/// restore-test container): nothing outside that network is reachable or exposed.
+fn curl_inside(pid: &str, url: &str, host: Option<&str>) -> Result<String> {
+    let header = host.map(|h| format!("Host: {h}"));
+    let mut args = vec![
+        "nsenter",
+        "--target",
+        pid,
+        "--net",
+        "--",
+        "curl",
+        "--disable",
+        "--noproxy",
+        "*",
+        "--silent",
+        "--fail",
+        "--max-time",
+        "15",
+        "--max-redirs",
+        "0",
+    ];
+    if let Some(h) = &header {
+        args.extend(["--header", h.as_str()]);
+    }
+    args.push(url);
+    checked(&args, 20)
+}
 fn app_port(name: &str) -> Result<(u16, &'static str)> {
     Ok(match name {
         "jellyfin" => (8096, "/health"),
@@ -803,6 +844,70 @@ fn app_port(name: &str) -> Result<(u16, &'static str)> {
         _ => return Err(Error::new("Unknown application probe")),
     })
 }
+/// Apps whose first start on a new release can update their database for a long time
+/// (Jellyfin's library, Immich's and Nextcloud's databases, the Arr apps'): while one
+/// keeps running and working past `health_wait_seconds`, the update waits for it, up to
+/// MIGRATION_WAIT, instead of being rolled back half-way every month.
+const MIGRATING: [&str; 7] = [
+    "immich",
+    "nextcloud",
+    "jellyfin",
+    "sonarr",
+    "radarr",
+    "lidarr",
+    "prowlarr",
+];
+const MIGRATION_WAIT: u64 = 3600;
+/// Whether the health check goes on waiting after `wait` seconds (`elapsed` now): for an
+/// app that can migrate for long, not in a restore test, up to MIGRATION_WAIT, and only
+/// while `working` says its container is still running and doing something.
+fn keep_waiting(
+    name: &str,
+    elapsed: u64,
+    wait: u64,
+    rehearsal: bool,
+    working: impl FnOnce() -> bool,
+) -> bool {
+    !rehearsal
+        && MIGRATING.contains(&name)
+        && elapsed >= wait
+        && elapsed < MIGRATION_WAIT.max(wait)
+        && working()
+}
+/// The app's main container is running, has not restarted since the health check began
+/// (`seen`: its first start time and restart count), and shows work: something written
+/// to its log, or processor use, in the last two minutes.
+fn still_working(file: &Path, project: &str, service: &str, seen: &mut Option<Value>) -> bool {
+    let Some(id) = compose(file, project, &["ps", "-q", service])
+        .ok()
+        .and_then(|ids| ids.split_whitespace().next().map(str::to_string))
+    else {
+        return false;
+    };
+    let Some(state) = docker(&["inspect", &id])
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .map(|v| v[0]["State"].clone())
+    else {
+        return false;
+    };
+    let run = json!([state["StartedAt"], state["RestartCount"]]);
+    if state["Running"] != true
+        || state["Restarting"] == true
+        || *seen.get_or_insert(run.clone()) != run
+    {
+        return false;
+    }
+    let logged = docker(&["logs", "--since", "2m", "--tail", "5", &id])
+        .is_ok_and(|out| !out.trim().is_empty());
+    logged
+        || docker(&["stats", "--no-stream", "--format", "{{.CPUPerc}}", &id]).is_ok_and(|out| {
+            out.trim()
+                .trim_end_matches('%')
+                .parse::<f64>()
+                .is_ok_and(|cpu| cpu >= 1.0)
+        })
+}
 fn health(
     file: &Path,
     project: &str,
@@ -818,6 +923,7 @@ fn health(
     };
     let (port, path) = app_port(name)?;
     let start = Instant::now();
+    let (mut seen, mut said) = (None, false);
     loop {
         let attempt = (|| {
             let ids = compose(file, project, &["ps", "-q"])?;
@@ -841,15 +947,26 @@ fn health(
             if count != expected {
                 return Err(Error::new("Missing healthy services"));
             }
-            let binding = compose(file, project, &["port", service, &port.to_string()])?;
-            let binding = binding.trim();
-            let published = binding
-                .strip_prefix("127.0.0.1:")
-                .filter(|s| s.parse::<u16>().is_ok())
-                .ok_or_else(|| Error::new("Private health port required"))?;
             let own = format!("127.0.0.1:{port}");
             let host = (name == "qbittorrent").then_some(own.as_str());
-            let body = curl_as(&format!("http://127.0.0.1:{published}{path}"), None, host)?;
+            let body = if rehearsal {
+                // The restore test runs on an internal network with no published port:
+                // asked from inside the app's own network (see restored_model).
+                curl_inside(
+                    &container_pid(file, project, service)?,
+                    &format!("http://{own}{path}"),
+                    host,
+                )?
+            } else {
+                let binding = compose(file, project, &["port", service, &port.to_string()])?;
+                let published = binding
+                    .trim()
+                    .strip_prefix("127.0.0.1:")
+                    .filter(|s| s.parse::<u16>().is_ok())
+                    .ok_or_else(|| Error::new("Private health port required"))?
+                    .to_string();
+                curl_as(&format!("http://127.0.0.1:{published}{path}"), None, host)?
+            };
             if name == "nextcloud" {
                 let s: Value = serde_json::from_str(&body)?;
                 if s["installed"] != true
@@ -920,8 +1037,24 @@ fn health(
         if attempt.is_ok() {
             return Ok(());
         }
-        if start.elapsed() >= Duration::from_secs(wait) {
-            return attempt;
+        let elapsed = start.elapsed().as_secs();
+        if elapsed >= wait {
+            if keep_waiting(name, elapsed, wait, rehearsal, || {
+                still_working(file, project, service, &mut seen)
+            }) {
+                if !said {
+                    println!("Monthly update: {name} is still starting after {} minutes and keeps working (a new release may be updating its database); waiting for it up to {} minutes in all", wait / 60, MIGRATION_WAIT.max(wait) / 60);
+                    said = true;
+                }
+                thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+            return attempt.map_err(|e| {
+                Error::new(&format!(
+                    "{name} was not ready after {} minutes ({e}). If it was still updating its database, raise \"health_wait_seconds\" under \"maintenance\" (up to 1800) and run  sudo bash install.sh  again; the next monthly update then waits longer",
+                    elapsed / 60
+                ))
+            });
         }
         thread::sleep(Duration::from_secs(5));
     }
@@ -932,11 +1065,11 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
         .as_object_mut()
         .ok_or_else(|| Error::new("Invalid model"))?
         .remove("name");
-    // Docker publishes no port for a container on an "internal" network, and the health
-    // check needs the restored app's published port. A bridge without IP masquerading
-    // keeps the restored apps cut off from the outside (their packets get no way back)
-    // while this PC can reach the port.
-    model["networks"] = json!({"restore":{"driver_opts":{"com.docker.network.bridge.enable_ip_masquerade":"false"}}});
+    // An internal network: the restored apps (with production's settings, so their
+    // webhooks and links to other apps) reach nothing outside it, neither this PC, the
+    // home network nor the internet. No port is published; the health check asks the
+    // app from inside its own network (curl_inside).
+    model["networks"] = json!({"restore":{"internal":true}});
     model.as_object_mut().unwrap().remove("volumes");
     for (service, v) in model["services"].as_object_mut().unwrap() {
         let map = v.as_object_mut().unwrap();
@@ -953,12 +1086,7 @@ fn restored_model(original: &Value, stage: &Path, data: &Path, media: &Path) -> 
         }
         map.insert("networks".into(), json!(["restore"]));
         map.insert("restart".into(), json!("no"));
-        if let Some(ports) = map.get_mut("ports").and_then(Value::as_array_mut) {
-            for p in ports {
-                p["published"] = json!("0");
-                p["host_ip"] = json!("127.0.0.1");
-            }
-        }
+        map.remove("ports");
         // Only a service that has volumes is touched: indexing a missing key would
         // insert "volumes": null, which Compose rejects ("must be a array").
         let listed = v
@@ -2377,13 +2505,19 @@ fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
     let (archive, usb) = copies_to_check(cfg, cfgpath);
+    let mut notes = vec![];
     if let Some(archive_dir) = archive {
         if media.join(&archive_dir).is_dir() {
             common::stage("checking every photo copy on the HDD by checksum");
             let age = cfg["photos"]["archive_min_age_seconds"]
                 .as_u64()
                 .unwrap_or(600);
-            backup::monthly_archive_check(cfgpath, data, media, &archive_dir, age)?;
+            // A list of files that could not be written stops nothing; the run says so.
+            if let Some(why) =
+                backup::monthly_archive_check(cfgpath, data, media, &archive_dir, age)?
+            {
+                notes.push(format!("photo archive: {why}"));
+            }
         }
     }
     if let Some(options) = usb {
@@ -2397,13 +2531,13 @@ fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
                 // A full drive, one that would not mount, another filesystem: no damage
                 // found, so the snapshot and updates go on, and the result says so.
                 println!("USB drive: its copies could not be checked this month ({e}); the snapshot and updates go on");
-                return Ok(vec![format!("USB check: {e}")]);
+                notes.push(format!("USB check: {e}"));
             }
         } else {
             println!("USB drive not plugged in: its copies are checked by checksum in a monthly run it is plugged in for");
         }
     }
-    Ok(vec![])
+    Ok(notes)
 }
 /// The USB check found damage (rather than failing to run): that stops the monthly run.
 fn usb_damage(e: &Error) -> bool {
@@ -2581,6 +2715,11 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     } else {
         check_copies(cfgpath, cfg)?
     };
+    // A weekly USB copy at work (also when the check above was left out, or the USB
+    // drive was not checked) is waited for before any app stops; a later one sees this
+    // run and does not start (backup::no_weekly_copy).
+    common::stage("waiting for a weekly USB copy at work to finish");
+    backup::no_weekly_copy()?;
     mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
@@ -2859,8 +2998,24 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
                 return Ok(());
             }
         }
-    } else {
+    } else if recover {
         common::lock_wait(&lock, std::time::Duration::from_secs(3 * 3600))?
+    } else {
+        // Setup holds this lock too, also while it waits at a question: after half an
+        // hour the month's run gives way (it would take the night) and comes back the
+        // next night, instead of failing and paging you.
+        match common::shared_lock_wait(&lock, std::time::Duration::from_secs(3 * 3600), SETUP_WAIT)
+        {
+            Ok(held) => held,
+            Err(e) if common::postponed(&e) => {
+                return Err(Error::new(&format!(
+                    "{}; {}",
+                    common::POSTPONED,
+                    again_next_night(&cfg)
+                )))
+            }
+            Err(e) => return Err(e),
+        }
     };
     let installed = committed();
     // Read before resume() finishes the run and removes the journal.
@@ -3113,6 +3268,61 @@ fn prune_images(
 /// Set by nekoserver-maintenance-retry.service, the hourly retry of an unfinished update
 /// (modules/maintenance.py): it never waits for the lock.
 const RETRY_ENV: &str = "NEKOSERVER_MAINTENANCE_RETRY";
+/// How long the monthly run waits for setup to let go of the shared lock.
+const SETUP_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// The monthly timer fires on the 1st only: a run that gave way to setup asks systemd
+/// for one more start at the same time the next night (a one-off timer, gone after a
+/// restart: then the update waits for the next month). Says what was arranged.
+fn again_next_night(cfg: &Value) -> String {
+    let time = cfg["maintenance"]["time"].as_str().unwrap_or("02:30");
+    let Some(day) = next_night(time) else {
+        return "it runs again next month".to_string();
+    };
+    // The service runs with TZ set to the server's time zone, like the monthly timer.
+    let zone = std::env::var("TZ").unwrap_or_default();
+    let when = format!("{day} {time}:00 {zone}").trim().to_string();
+    let unit = format!("nekoserver-maintenance-postponed-{}", day.replace('-', ""));
+    let (code, _) = common::probe(
+        &[
+            "systemd-run",
+            "--quiet",
+            "--collect",
+            &format!("--unit={unit}"),
+            &format!("--on-calendar={when}"),
+            "--timer-property=AccuracySec=1min",
+            "--timer-property=RemainAfterElapse=no",
+            "systemctl",
+            "start",
+            "--no-block",
+            "nekoserver-maintenance.service",
+        ],
+        30,
+    );
+    if code == 0 {
+        format!("the monthly update tries again on {when}")
+    } else {
+        "it could not be set to try again tomorrow night, so it runs next month (or start it in a night yourself: sudo systemctl start nekoserver-maintenance.service)".to_string()
+    }
+}
+/// Tomorrow's date (local time, "YYYY-MM-DD") for a valid "HH:MM", else None.
+fn next_night(time: &str) -> Option<String> {
+    let valid = regex::Regex::new(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$").ok()?;
+    if !valid.is_match(time) {
+        return None;
+    }
+    let stamp = unsafe { libc::time(std::ptr::null_mut()) } + 86400;
+    let mut value = std::mem::MaybeUninit::<libc::tm>::uninit();
+    if unsafe { libc::localtime_r(&stamp, value.as_mut_ptr()) }.is_null() {
+        return None;
+    }
+    let tm = unsafe { value.assume_init() };
+    Some(format!(
+        "{:04}-{:02}-{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday
+    ))
+}
 fn hourly_retry() -> bool {
     std::env::var_os(RETRY_ENV).is_some_and(|v| v == "1")
 }
@@ -4096,16 +4306,17 @@ mod tests {
             Path::new("/mnt/neko"),
         )
         .unwrap();
-        assert!(clone["networks"]["restore"].get("internal").is_none());
-        assert_eq!(
-            clone["networks"]["restore"]["driver_opts"]
-                ["com.docker.network.bridge.enable_ip_masquerade"],
-            "false"
-        );
-        assert!(clone["services"]["jellyfin"]
-            .get("container_name")
-            .is_none());
-        assert_eq!(clone["services"]["jellyfin"]["ports"][0]["published"], "0");
+        // Strictly isolated: an internal network only, and no port on this PC.
+        assert_eq!(clone["networks"], json!({"restore": {"internal": true}}));
+        let app = &clone["services"]["jellyfin"];
+        assert_eq!(app["networks"], json!(["restore"]));
+        assert!(app.get("container_name").is_none() && app.get("ports").is_none());
+        // Its health check asks the app from inside that network.
+        let source = include_str!("maintenance.rs");
+        let check = &source[source.find(&["fn ", "health("].concat()).unwrap()..];
+        let check = &check[..check.find("\n}\n").unwrap()];
+        assert!(check.contains("if rehearsal {") && check.contains("curl_inside(\n"));
+        assert!(check.contains("&container_pid(file, project, service)?"));
     }
     fn models() -> Value {
         let port = |n: u16| json!([{"host_ip":"127.0.0.1","published":n.to_string(),"target":n}]);
@@ -4916,5 +5127,50 @@ mod tests {
         let guarded = format!("if hardware.exists() && {}() {{", "graphics_present");
         assert_eq!(source.matches(guarded.as_str()).count(), 2);
         assert_eq!(graphics_present(), Path::new("/dev/dri").exists());
+    }
+    #[test]
+    fn a_slow_database_update_is_waited_for_while_the_app_keeps_working() {
+        let busy = || true;
+        let idle = || false;
+        // Within health_wait_seconds nothing changes.
+        assert!(!keep_waiting("jellyfin", 100, 300, false, busy));
+        // Past it: Jellyfin, Immich, Nextcloud and the Arr apps get longer while working.
+        for app in [
+            "jellyfin",
+            "immich",
+            "nextcloud",
+            "sonarr",
+            "radarr",
+            "lidarr",
+            "prowlarr",
+        ] {
+            assert!(keep_waiting(app, 301, 300, false, busy), "{app}");
+        }
+        // Not when it stopped working (or restarted), not for other apps, not in the
+        // restore test, and never past the bound.
+        assert!(!keep_waiting("jellyfin", 301, 300, false, idle));
+        assert!(!keep_waiting("qbittorrent", 301, 300, false, busy));
+        assert!(!keep_waiting("jellyfin", 301, 300, true, busy));
+        assert!(!keep_waiting("jellyfin", MIGRATION_WAIT, 300, false, busy));
+        // A longer health_wait_seconds is never cut short.
+        assert!(!keep_waiting("jellyfin", 1799, 1800, false, busy));
+    }
+    #[test]
+    fn a_monthly_run_that_finds_setup_working_gives_way_and_comes_back_the_next_night() {
+        let day = next_night("02:30").unwrap();
+        assert!(
+            regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$")
+                .unwrap()
+                .is_match(&day),
+            "{day}"
+        );
+        assert!(next_night("2:30; rm -rf /").is_none());
+        let source = include_str!("maintenance.rs");
+        let run = &source[source.find(&["pub fn ", "run("].concat()).unwrap()..];
+        let run = &run[..run.find("\n}\n").unwrap()];
+        assert!(run.contains("common::shared_lock_wait("));
+        assert!(run.contains("again_next_night(&cfg)"));
+        let main = include_str!("main.rs");
+        assert!(main.contains("if common::postponed(&e)"));
     }
 }

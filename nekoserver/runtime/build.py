@@ -79,9 +79,12 @@ def main():
     # The runtime itself is always compiled again: cargo trusts file times, and after the
     # clock went back an older build looked newer than the sources, so the binary came out
     # unchanged while the manifest named the new sources. Dependencies stay cached.
+    # The download comes first, with its retries: cleaning one package reads crates.io's
+    # index too, so after it everything runs offline and a crates.io that does not answer
+    # is reported as such, not as a failed clean.
     target_arguments=['--target',target] if arguments else []
-    cargo_step([cargo,'clean','--release',*target_arguments,'-p','nekoserver-runtime'],'Cleaning the earlier runtime build')
     fetch(cargo,target_arguments)
+    cargo_step([cargo,'clean','--release','--offline',*target_arguments,'-p','nekoserver-runtime'],'Cleaning the earlier runtime build')
     cargo_step([cargo,'build','--release','--locked','--offline',*arguments],'Compiling the runtime')
     built=built_path(target,arguments)
     # The binary first, its record (build.json) last: install.sh compares the two, so a

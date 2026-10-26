@@ -1,18 +1,93 @@
 //! OpenRGB SDK client: list lighting devices, set their colour and effect.
 //!
 //! OpenRGB (installed by setup and run as a local service) does the hardware work for
-//! hundreds of devices; NekoServer speaks its network protocol on 127.0.0.1:6742.
-//! That address is inside a private network OpenRGB shares with the control service
-//! only (modules/dashboard.py), so no other program on the computer can reach it.
+//! hundreds of devices; NekoServer speaks its network protocol. OpenRGB listens on
+//! 127.0.0.1:6742 inside a private network of its own, which no program on the
+//! computer can reach. The control service reaches it through a root-only Unix socket
+//! (`SOCKET`) whose other end, systemd's socket proxy, sits in OpenRGB's private
+//! network (modules/dashboard.py). The control service itself stays on the computer's
+//! own network, so it can check that a restarted app answers.
 //! Protocol 0 is used: every OpenRGB server understands it. Little-endian throughout.
 use serde_json::{json, Value};
 use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
+    os::unix::net::UnixStream,
+    path::PathBuf,
     time::Duration,
 };
 
-pub const PORT: u16 = 6742;
+/// The Unix socket that leads to OpenRGB (only root may use it).
+pub const SOCKET: &str = "/run/nekoserver-openrgb/openrgb.sock";
+
+/// Where OpenRGB is reached: the Unix socket in normal use, or a port on 127.0.0.1
+/// (the stand-in servers of the tests).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Address {
+    Tcp(u16),
+    Unix(PathBuf),
+}
+impl From<u16> for Address {
+    fn from(port: u16) -> Self {
+        Address::Tcp(port)
+    }
+}
+impl From<PathBuf> for Address {
+    fn from(path: PathBuf) -> Self {
+        Address::Unix(path)
+    }
+}
+
+/// The connection to OpenRGB, over either kind of socket.
+enum Stream {
+    Tcp(TcpStream),
+    Unix(UnixStream),
+}
+impl Read for Stream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Stream::Tcp(s) => s.read(buf),
+            Stream::Unix(s) => s.read(buf),
+        }
+    }
+}
+impl Write for Stream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Stream::Tcp(s) => s.write(buf),
+            Stream::Unix(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Stream::Tcp(s) => s.flush(),
+            Stream::Unix(s) => s.flush(),
+        }
+    }
+}
+impl Stream {
+    fn open(address: &Address) -> io::Result<Self> {
+        let (read, write) = (Some(Duration::from_secs(3)), Some(Duration::from_secs(2)));
+        match address {
+            Address::Tcp(port) => {
+                let at = SocketAddr::from(([127, 0, 0, 1], *port));
+                let s = TcpStream::connect_timeout(&at, Duration::from_millis(300))?;
+                s.set_read_timeout(read)?;
+                s.set_write_timeout(write)?;
+                Ok(Stream::Tcp(s))
+            }
+            // A Unix socket connects at once (systemd holds it open and starts the
+            // proxy on the first connection); a missing OpenRGB shows as a closed
+            // connection instead, within the read timeout.
+            Address::Unix(path) => {
+                let s = UnixStream::connect(path)?;
+                s.set_read_timeout(read)?;
+                s.set_write_timeout(write)?;
+                Ok(Stream::Unix(s))
+            }
+        }
+    }
+}
 const REQUEST_CONTROLLER_COUNT: u32 = 0;
 const REQUEST_CONTROLLER_DATA: u32 = 1;
 const SET_CLIENT_NAME: u32 = 50;
@@ -399,14 +474,11 @@ pub fn mode_packet(device: &Device, mode: usize, color: Option<[u8; 3]>) -> Opti
 }
 
 pub struct Client {
-    stream: TcpStream,
+    stream: Stream,
 }
 impl Client {
-    pub fn connect(port: u16) -> io::Result<Self> {
-        let address = SocketAddr::from(([127, 0, 0, 1], port));
-        let stream = TcpStream::connect_timeout(&address, Duration::from_millis(300))?;
-        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    pub fn connect(address: impl Into<Address>) -> io::Result<Self> {
+        let stream = Stream::open(&address.into())?;
         let mut client = Client { stream };
         client.send(&packet(0, SET_CLIENT_NAME, b"NekoServer\0"))?;
         Ok(client)
@@ -542,48 +614,93 @@ pub mod tests {
     }
     /// Requests a stand-in server received, as (device, request id).
     pub type Requests = std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>>;
+    /// Answers one connection of a stand-in server: replies with `devices` and records
+    /// every request as (device, request id). `delay` makes it slow.
+    fn answer<S: Read + Write>(mut s: S, devices: &[Vec<u8>], log: &Requests, delay: Duration) {
+        loop {
+            let mut head = [0u8; 16];
+            if s.read_exact(&mut head).is_err() {
+                break;
+            }
+            let word = |i: usize| u32::from_le_bytes(head[i..i + 4].try_into().unwrap());
+            let (dev, id, size) = (word(4), word(8), word(12) as usize);
+            let mut data = vec![0; size];
+            if s.read_exact(&mut data).is_err() {
+                break;
+            }
+            log.lock().unwrap().push((dev, id));
+            let reply = match id {
+                REQUEST_CONTROLLER_COUNT => Some((devices.len() as u32).to_le_bytes().to_vec()),
+                REQUEST_CONTROLLER_DATA => devices.get(dev as usize).cloned(),
+                _ => None,
+            };
+            if let Some(r) = reply {
+                // A slow OpenRGB is slow to answer; packets it doesn't answer
+                // (the client's name, colours) are taken at once, as the real one does.
+                std::thread::sleep(delay);
+                if s.write_all(&packet(dev, id, &r)).is_err() {
+                    break;
+                }
+            }
+        }
+    }
     /// A stand-in OpenRGB server: answers with `devices` and records every request as
     /// (device, request id). `delay` makes it slow, like a busy or hung OpenRGB.
     pub fn fake_server(devices: Vec<Vec<u8>>, delay: Duration) -> (u16, Requests) {
         use std::net::TcpListener;
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let seen = Requests::default();
         let log = seen.clone();
         std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
+            for s in listener.incoming().flatten() {
                 let (devices, log) = (devices.clone(), log.clone());
-                std::thread::spawn(move || loop {
-                    let mut head = [0u8; 16];
-                    if s.read_exact(&mut head).is_err() {
-                        break;
-                    }
-                    let word = |i: usize| u32::from_le_bytes(head[i..i + 4].try_into().unwrap());
-                    let (dev, id, size) = (word(4), word(8), word(12) as usize);
-                    let mut data = vec![0; size];
-                    if s.read_exact(&mut data).is_err() {
-                        break;
-                    }
-                    log.lock().unwrap().push((dev, id));
-                    let reply = match id {
-                        REQUEST_CONTROLLER_COUNT => {
-                            Some((devices.len() as u32).to_le_bytes().to_vec())
-                        }
-                        REQUEST_CONTROLLER_DATA => devices.get(dev as usize).cloned(),
-                        _ => None,
-                    };
-                    if let Some(r) = reply {
-                        // A slow OpenRGB is slow to answer; packets it doesn't answer
-                        // (the client's name, colours) are taken at once, as the real one does.
-                        std::thread::sleep(delay);
-                        if s.write_all(&packet(dev, id, &r)).is_err() {
-                            break;
-                        }
-                    }
-                });
+                std::thread::spawn(move || answer(s, &devices, &log, delay));
             }
         });
         (port, seen)
+    }
+    /// The same stand-in, behind a Unix socket at `path` (as the proxy to OpenRGB is).
+    pub fn fake_unix_server(devices: Vec<Vec<u8>>, path: &std::path::Path) -> Requests {
+        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+        let seen = Requests::default();
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for s in listener.incoming().flatten() {
+                let (devices, log) = (devices.clone(), log.clone());
+                std::thread::spawn(move || answer(s, &devices, &log, Duration::ZERO));
+            }
+        });
+        seen
+    }
+
+    #[test]
+    fn openrgb_is_reached_over_its_unix_socket() {
+        let dir = std::env::temp_dir().join(format!("neko-openrgb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("openrgb.sock");
+        let body = device_bytes("Strip", &[("Direct", 0)], 2, false);
+        let seen = fake_unix_server(vec![body], &path);
+        let mut client = Client::connect(path.clone()).unwrap();
+        let devices = client.devices().unwrap();
+        assert_eq!(devices[0].name, "Strip");
+        client.set_color(&devices[0], [1, 2, 3]).unwrap();
+        // The answer to the colour is never awaited: ask again so the server has read it.
+        client.devices().unwrap();
+        let ids = seen.lock().unwrap().iter().map(|r| r.1).collect::<Vec<_>>();
+        assert_eq!(ids[0], SET_CLIENT_NAME);
+        assert!(
+            ids.contains(&SET_CUSTOM_MODE) && ids.contains(&UPDATE_LEDS),
+            "{ids:?}"
+        );
+        // No socket there (OpenRGB's link switched off): a plain error, not a hang.
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(Client::connect(path).is_err());
+        assert_eq!(
+            Address::from(PathBuf::from(SOCKET)),
+            Address::Unix(SOCKET.into())
+        );
     }
 
     #[test]

@@ -27,6 +27,10 @@ class Restoring(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # The HDD counts as mounted here (the restore folder is suggested on it).
+        ready = mock.patch.object(recovery_wizard, 'hdd_ready', return_value=True)
+        ready.start()
+        self.addCleanup(ready.stop)
         self.root = Path(self.tmp.name)
         self.media = self.root / 'hdd'
         self.media.mkdir()
@@ -79,6 +83,46 @@ class RestoreAsOfTests(Restoring):
         self.assertEqual(got, {'keep.txt': b'edited', 'new-name.txt': b'renamed'})
         self.assertIn('As of the last backup (2026-11-01 03:00 UTC)', out)
         self.assertIn('Restoring the 2 files you had', out)
+
+    def last_run(self, at, listed, state=None):
+        self.write(self.tree / '.neko-inventory/last-run.json', json.dumps(
+            {'format': 'neko-last-run-v1', 'at': at, 'state': state or ('complete' if listed else 'pending'),
+             'list': listed}).encode())
+
+    def test_a_run_cut_off_after_copying_files_makes_the_menu_warn(self):
+        # The run noted itself as pending, copied later.txt and was cut off before any list.
+        self.write(self.tree / 'alice/files/later.txt', b'later')
+        self.last_run('20261108T030000Z', None, 'pending')
+        got, out = self.restore('1', 'yes', '1', 'yes')
+        self.assertIn('did not finish: it was cut off part-way', out)
+        self.assertNotIn('As of the last backup', out)
+        self.assertEqual(got['later.txt'], b'later')
+        # A note that says pending is never taken as complete, whatever list it names.
+        self.last_run('20261108T030000Z', '20261101T030000Z.json.gz', 'pending')
+        _, out = self.restore('1', 'yes', '1', 'yes')
+        self.assertIn('did not finish', out)
+
+    def test_a_newest_backup_whose_list_failed_is_not_offered_as_the_last_backup(self):
+        # The newest run copied later.txt, then its list could not be written.
+        self.write(self.tree / 'alice/files/later.txt', b'later')
+        self.last_run('20261108T030000Z', None)
+        got, out = self.restore('1', 'yes', '1', 'yes')
+        self.assertNotIn('As of the last backup', out)
+        self.assertIn('The newest backup (2026-11-08 03:00 UTC) did not finish', out)
+        self.assertIn('The newest complete list is from 2026-11-01 03:00 UTC and leaves out', out)
+        self.assertIn('1. Everything ever kept, also files you deleted or renamed (recommended', out)
+        self.assertIn('As of 2026-11-01 03:00 UTC (an older list', out)
+        self.assertEqual(got['later.txt'], b'later')
+        # The older list is still there, by its date.
+        got, _ = self.restore('1', 'yes', '2')
+        self.assertNotIn('later.txt', got)
+
+    def test_a_normal_run_still_recommends_its_own_list(self):
+        self.last_run('20261101T030000Z', '20261101T030000Z.json.gz')
+        got, out = self.restore('1', 'yes', '1')
+        self.assertIn('As of the last backup (2026-11-01 03:00 UTC)', out)
+        self.assertEqual(got, {'keep.txt': b'edited', 'new-name.txt': b'renamed'})
+        self.assertNotIn('has no list', out)
 
     def test_as_of_a_chosen_date(self):
         got, _ = self.restore('1', 'yes', '2', '1')
