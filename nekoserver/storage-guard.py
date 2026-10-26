@@ -4,7 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
-from neko_common import identity_matches, mount_path
+from neko_common import copy_problem, identity_matches, mount_path
 
 
 def verify(config):
@@ -18,6 +18,10 @@ def verify(config):
         # mounted with another subvolume holds a different tree.
         if not identity_matches(path, config['storage'][key]):
             raise RuntimeError(f'{key}: missing or wrong filesystem (or Btrfs subvolume) at {path}')
+        # A copy of the drive left connected (dd, Clonezilla) could be the one mounted.
+        problem = copy_problem(config['storage'][key], 'SSD' if key == 'data_ssd' else 'HDD')
+        if problem:
+            raise RuntimeError(f'{key}: {problem}')
         identities.append(expected)
     if identities[0] == identities[1]:
         raise RuntimeError('SSD and HDD must be different filesystems')

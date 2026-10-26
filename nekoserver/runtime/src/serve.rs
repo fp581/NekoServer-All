@@ -17,7 +17,7 @@ use std::{
     collections::HashMap,
     fs,
     io::{BufRead, BufReader, Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
@@ -213,8 +213,9 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
 pub struct Who {
     /// The server itself.
     pub local: bool,
-    /// Another device: its Tailscale login, or else its tailnet address. Wrong PINs are
-    /// counted per source, so one device can't lock out the others.
+    /// Another device: its tailnet address, or else its Tailscale login. Wrong PINs are
+    /// counted per source, so one device can't lock out the others. A program on the
+    /// server itself that sends Tailscale's headers is `program:<its account number>`.
     pub source: Option<String>,
 }
 fn printable(v: &[u8]) -> Option<&str> {
@@ -223,20 +224,94 @@ fn printable(v: &[u8]) -> Option<&str> {
         .map(str::trim)
         .filter(|v| !v.is_empty() && v.len() <= 200 && v.bytes().all(|b| b.is_ascii_graphic()))
 }
-/// The source of a forwarded request: the login Tailscale Serve names, or else the last
-/// X-Forwarded-For address (the one the proxy itself added).
+/// The source of a forwarded request: the device's tailnet address (the last
+/// X-Forwarded-For address, the one Tailscale Serve itself added), or else the login
+/// Tailscale Serve names. The address comes first: a login names a person, who often
+/// has a phone, a tablet and a laptop on one account, while the address names one device.
 fn source_of(login: &[&[u8]], forwarded_for: &[&[u8]]) -> Option<String> {
-    if let [one] = login {
-        if let Some(login) = printable(one) {
-            return Some(format!("login:{login}"));
-        }
+    let address = forwarded_for
+        .last()
+        .and_then(|last| std::str::from_utf8(last).ok())
+        .and_then(|v| v.rsplit(',').next())
+        .and_then(|v| v.trim().parse::<IpAddr>().ok());
+    if let Some(ip) = address {
+        return Some(format!("ip:{ip}"));
     }
-    let last = forwarded_for.last()?;
-    let address = std::str::from_utf8(last).ok()?.rsplit(',').next()?.trim();
-    address
-        .parse::<std::net::IpAddr>()
-        .ok()
-        .map(|ip| format!("ip:{ip}"))
+    match login {
+        [one] => printable(one).map(|login| format!("login:{login}")),
+        _ => None,
+    }
+}
+
+/// The kernel's lists of TCP connections; each line names the account that owns it.
+pub const CONNECTION_TABLES: [&str; 2] = ["/proc/net/tcp", "/proc/net/tcp6"];
+/// An address as the connection tables write it: "0100007F:1F90" (IPv4) or 32 hex
+/// digits and a port (IPv6). Each group of 8 digits is 4 bytes in this computer's order.
+fn table_address(field: &str) -> Option<SocketAddr> {
+    let (host, port) = field.split_once(':')?;
+    let port = u16::from_str_radix(port, 16).ok()?;
+    let word = |i: usize| -> Option<[u8; 4]> {
+        let digits = host.get(i * 8..i * 8 + 8)?;
+        Some(u32::from_str_radix(digits, 16).ok()?.to_ne_bytes())
+    };
+    let ip = match host.len() {
+        8 => IpAddr::V4(Ipv4Addr::from(word(0)?)),
+        32 => {
+            let mut bytes = [0u8; 16];
+            for i in 0..4 {
+                bytes[i * 4..i * 4 + 4].copy_from_slice(&word(i)?);
+            }
+            IpAddr::V6(Ipv6Addr::from(bytes))
+        }
+        _ => return None,
+    };
+    Some(SocketAddr::new(plain(ip), port))
+}
+/// An IPv4 address written the IPv6 way (::ffff:127.0.0.1) as plain IPv4.
+fn plain(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
+}
+/// The account that owns the other end of a connection made on this computer: the
+/// `uid` column of the client's own socket (its address is `client`, connected to
+/// `server`) in the connection tables. None when it is not listed.
+pub fn peer_uid(tables: &[String], client: SocketAddr, server: SocketAddr) -> Option<u32> {
+    let (client, server) = (
+        SocketAddr::new(plain(client.ip()), client.port()),
+        SocketAddr::new(plain(server.ip()), server.port()),
+    );
+    tables
+        .iter()
+        .flat_map(|t| t.lines().skip(1))
+        .find_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            let (local, remote) = (
+                table_address(fields.get(1)?)?,
+                table_address(fields.get(2)?)?,
+            );
+            (local == client && remote == server).then(|| fields.get(7)?.parse().ok())?
+        })
+}
+/// Who sent a request with Tailscale's headers: Tailscale Serve (its service runs as
+/// root), or a program of another account on this computer pretending to be it. Such a
+/// program is counted on its own (`program:<account>`), so it can't use up the wrong
+/// PINs that all devices share. When the tables can't be read, it counts as Tailscale.
+fn forwarded_source(server: &Server, stream: &TcpStream, named: Option<String>) -> Option<String> {
+    let tables = server
+        .tables
+        .iter()
+        .filter_map(|t| fs::read_to_string(t).ok())
+        .collect::<Vec<_>>();
+    let owner = match (stream.peer_addr(), stream.local_addr()) {
+        (Ok(client), Ok(here)) => peer_uid(&tables, client, here),
+        _ => None,
+    };
+    match owner {
+        Some(uid) if uid != 0 => Some(format!("program:{uid}")),
+        _ => named,
+    }
 }
 
 struct Server {
@@ -246,6 +321,9 @@ struct Server {
     port: u16,
     public: Option<String>,
     live: Mutex<Live>,
+    /// The connection tables read to tell Tailscale from a local program (see
+    /// forwarded_source).
+    tables: Vec<PathBuf>,
 }
 
 impl Server {
@@ -438,7 +516,11 @@ fn handle(mut stream: TcpStream, server: &Server) {
         let who = Who {
             local,
             source: (!local)
-                .then(|| source_of(&values("tailscale-user-login"), &values("x-forwarded-for")))
+                .then(|| {
+                    let named =
+                        source_of(&values("tailscale-user-login"), &values("x-forwarded-for"));
+                    forwarded_source(server, &stream, named)
+                })
                 .flatten(),
         };
         let token = values("x-neko-token")
@@ -583,6 +665,7 @@ pub fn run(a: &Args) -> Result<()> {
         port,
         public,
         live: Mutex::new(Live::default()),
+        tables: CONNECTION_TABLES.iter().map(PathBuf::from).collect(),
     });
     let (tx, rx) = mpsc::sync_channel::<TcpStream>(32);
     let rx = Arc::new(Mutex::new(rx));
@@ -698,15 +781,26 @@ mod tests {
     fn the_source_of_a_forwarded_request_is_what_tailscale_added() {
         let ff: &[&[u8]] = &[b"9.9.9.9, 100.64.0.7"];
         assert_eq!(source_of(&[], ff).as_deref(), Some("ip:100.64.0.7"));
+        // One person's login is on all their devices: the device's address comes first.
         assert_eq!(
-            source_of(&[b"bo@example.com"], ff).as_deref(),
+            source_of(&[b"amy@x"], &[b"100.64.0.7"]).as_deref(),
+            Some("ip:100.64.0.7")
+        );
+        assert_eq!(
+            source_of(&[b"amy@x"], &[b"100.64.0.8"]).as_deref(),
+            Some("ip:100.64.0.8")
+        );
+        // Without an address, the login is used.
+        assert_eq!(
+            source_of(&[b"bo@example.com"], &[]).as_deref(),
+            Some("login:bo@example.com")
+        );
+        assert_eq!(
+            source_of(&[b"bo@example.com"], &[b"not an address"]).as_deref(),
             Some("login:bo@example.com")
         );
         // Two logins, or one that isn't plain text, don't count as one.
-        assert_eq!(
-            source_of(&[b"a@x", b"b@x"], ff).as_deref(),
-            Some("ip:100.64.0.7")
-        );
+        assert_eq!(source_of(&[b"a@x", b"b@x"], &[]), None);
         assert_eq!(source_of(&[b"a b"], &[]), None);
         assert_eq!(source_of(&[], &[b"not an address"]), None);
         assert_eq!(source_of(&[], &[]), None);
@@ -742,6 +836,16 @@ mod tests {
 
     /// A server on a free port, answering on its own thread. Returns the port.
     fn test_server(assets: PathBuf, root: &Path, control: PathBuf, public: Option<&str>) -> u16 {
+        test_server_with(assets, root, control, public, vec![])
+    }
+    /// The same, reading the connection tables from `tables` (none: none can be read).
+    fn test_server_with(
+        assets: PathBuf,
+        root: &Path,
+        control: PathBuf,
+        public: Option<&str>,
+        tables: Vec<PathBuf>,
+    ) -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = Server {
@@ -751,6 +855,7 @@ mod tests {
             port,
             public: public.map(str::to_string),
             live: Mutex::new(Live::default()),
+            tables,
         };
         thread::spawn(move || {
             for s in listener.incoming().flatten() {
@@ -808,11 +913,130 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A stand-in control service that answers with the request it was given.
+    fn stand_in_control(socket: &Path) {
+        let service = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        thread::spawn(move || {
+            for mut s in service.incoming().flatten() {
+                let mut line = String::new();
+                BufReader::new(s.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let answer = if request["pin"] == "0000" {
+                    json!({"ok": false, "error": "E44", "message": "Wrong PIN"})
+                } else {
+                    json!({"ok": true, "seen": request})
+                };
+                writeln!(s, "{answer}").unwrap();
+            }
+        });
+    }
+    /// The request the stand-in control service was given, from the server's reply.
+    fn seen(reply: &str) -> Value {
+        serde_json::from_str::<Value>(reply.split("\r\n\r\n").nth(1).unwrap()).unwrap()["seen"]
+            .clone()
+    }
+    /// A connection table line as the kernel writes it (IPv4, this computer's order).
+    fn table_line(client: SocketAddr, server: SocketAddr, uid: u32) -> String {
+        let hex = |a: SocketAddr| match a.ip() {
+            IpAddr::V4(v4) => format!("{:08X}:{:04X}", u32::from_ne_bytes(v4.octets()), a.port()),
+            IpAddr::V6(_) => unreachable!(),
+        };
+        format!(
+            "   1: {} {} 01 00000000:00000000 00:00000000 00000000  {uid:>4}        0 4242 1 0 20 4 30 10 -1",
+            hex(client),
+            hex(server)
+        )
+    }
+    const TABLE_HEAD: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode";
+    #[test]
+    fn the_owner_of_a_connection_is_read_from_the_kernels_tables() {
+        let client: SocketAddr = "127.0.0.1:53412".parse().unwrap();
+        let server: SocketAddr = "127.0.0.1:8787".parse().unwrap();
+        let v4 = format!(
+            "{TABLE_HEAD}\n{}\n{}\n",
+            table_line(server, client, 61234), // the server's own end: not the client's
+            table_line(client, server, 1000)
+        );
+        if cfg!(target_endian = "little") {
+            // As the kernel writes 127.0.0.1:53412 on a PC (x86 and ARM are little-endian).
+            let line = table_line(client, server, 7);
+            assert_eq!(line.split_whitespace().nth(1), Some("0100007F:D0A4"));
+        }
+        assert_eq!(
+            peer_uid(std::slice::from_ref(&v4), client, server),
+            Some(1000)
+        );
+        assert_eq!(
+            peer_uid(std::slice::from_ref(&v4), server, client),
+            Some(61234)
+        );
+        assert_eq!(
+            peer_uid(&[v4], "127.0.0.1:1".parse().unwrap(), server),
+            None
+        );
+        // IPv6 tables, with 127.0.0.1 written the IPv6 way (::ffff:127.0.0.1).
+        let mapped = |port: u16| {
+            let mut bytes = [0u8; 16];
+            bytes[10..12].copy_from_slice(&[0xff, 0xff]);
+            bytes[12..].copy_from_slice(&[127, 0, 0, 1]);
+            let words = (0..4)
+                .map(|i| {
+                    format!(
+                        "{:08X}",
+                        u32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
+                    )
+                })
+                .collect::<String>();
+            format!("{words}:{port:04X}")
+        };
+        let v6 = format!(
+            "{TABLE_HEAD}\n   0: {} {} 01 00000000:00000000 00:00000000 00000000     0        0 77 1\n",
+            mapped(53412),
+            mapped(8787)
+        );
+        assert_eq!(peer_uid(&[String::new(), v6], client, server), Some(0));
+        assert_eq!(
+            peer_uid(&[format!("{TABLE_HEAD}\n garbage\n")], client, server),
+            None
+        );
+    }
+    /// A program on the server itself that sends Tailscale's headers is counted as
+    /// itself, never as a device on the tailnet; Tailscale (root) is a device.
+    #[test]
+    fn a_local_program_posing_as_tailscale_is_counted_as_itself() {
+        let root = std::env::temp_dir().join(format!("neko-program-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("control.sock");
+        let table = root.join("tcp");
+        let port = test_server_with(
+            root.clone(),
+            &root,
+            socket.clone(),
+            None,
+            vec![table.clone()],
+        );
+        stand_in_control(&socket);
+        let local = format!("127.0.0.1:{port}");
+        for (uid, source) in [(1000, "program:1000"), (0, "ip:100.64.0.7")] {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let line = table_line(s.local_addr().unwrap(), s.peer_addr().unwrap(), uid);
+            fs::write(&table, format!("{TABLE_HEAD}\n{line}\n")).unwrap();
+            let body = r#"{"pin":"1234"}"#;
+            write!(s, "POST /api/control/unlock HTTP/1.1\r\nHost: {local}\r\nOrigin: http://{local}\r\nSec-Fetch-Site: same-origin\r\nX-Forwarded-For: 100.64.0.7\r\nTailscale-User-Login: amy@x\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            assert_eq!(seen(&out)["source"], source, "{out}");
+            assert_eq!(seen(&out)["local"], false);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
     /// Fan and light requests reach the control service only from the page itself,
     /// with `local` decided by the server and never by the page.
     #[test]
     fn control_requests_are_checked_and_forwarded() {
-        use std::os::unix::net::UnixListener;
         let root = std::env::temp_dir().join(format!("neko-control-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -841,27 +1065,7 @@ mod tests {
         let here = format!("http://{local}");
         // The service is not running yet.
         assert!(post("/api/control/fan", &local, &here, "", "{}").contains("\"E21\""));
-        // A stand-in service that answers with the request it was given.
-        let service = UnixListener::bind(&socket).unwrap();
-        thread::spawn(move || {
-            for mut s in service.incoming().flatten() {
-                let mut line = String::new();
-                BufReader::new(s.try_clone().unwrap())
-                    .read_line(&mut line)
-                    .unwrap();
-                let request: Value = serde_json::from_str(&line).unwrap();
-                let answer = if request["pin"] == "0000" {
-                    json!({"ok": false, "error": "E44", "message": "Wrong PIN"})
-                } else {
-                    json!({"ok": true, "seen": request})
-                };
-                writeln!(s, "{answer}").unwrap();
-            }
-        });
-        let seen = |reply: &str| -> Value {
-            serde_json::from_str::<Value>(reply.split("\r\n\r\n").nth(1).unwrap()).unwrap()["seen"]
-                .clone()
-        };
+        stand_in_control(&socket);
         let reply = post(
             "/api/control/fan",
             &local,
@@ -900,7 +1104,7 @@ mod tests {
             "X-Forwarded-For: 1.2.3.4, 100.64.0.9\r\nTailscale-User-Login: amy@example.com\r\n",
             r#"{"pin":"1234","source":"local"}"#,
         );
-        assert_eq!(seen(&reply)["source"], "login:amy@example.com", "{reply}");
+        assert_eq!(seen(&reply)["source"], "ip:100.64.0.9", "{reply}");
         let reply = post(
             "/api/control/unlock",
             &local,
@@ -969,6 +1173,7 @@ mod tests {
             port: 1,
             public: None,
             live: Mutex::new(Live::default()),
+            tables: vec![],
         };
         assert_eq!(server.snapshot().unwrap_err(), "E10", "no snapshot yet");
         for wrong in [

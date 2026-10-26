@@ -1514,6 +1514,7 @@ class FakeZypper(FakeDnf):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.zypper_envs = []     # the environment of each zypper call, in order
+        self.done_code, self.note = 0, ''   # another exit code and its output (106: a repository skipped)
 
     def __call__(self, argv, **kwargs):
         if argv[0] == 'zypper':
@@ -1522,6 +1523,8 @@ class FakeZypper(FakeDnf):
             if 'install' in argv:
                 return self.zypper_install(argv)
             # search --match-exact: 104 when nothing matches.
+            if self.done_code and argv[-1] in self.offered:
+                return subprocess.CompletedProcess(argv, self.done_code, 'i | ' + argv[-1] + ' | something | package\n', self.note)
             return subprocess.CompletedProcess(argv, 0 if argv[-1] in self.offered else 104, '', '')
         return super().__call__(argv, **kwargs)
 
@@ -1538,6 +1541,8 @@ class FakeZypper(FakeDnf):
                 if not example.exists():
                     example.write_text('# example\n')
         failed = len(done) < len(names)
+        if self.done_code:
+            return subprocess.CompletedProcess(argv, self.done_code, '', self.note)
         return subprocess.CompletedProcess(argv, 4 if failed else 0, '', 'Problem: nothing provides' if failed else '')
 
 
@@ -1604,6 +1609,37 @@ class SuseTest(unittest.TestCase):
     def test_a_failed_install_names_the_packages(self):
         family = self.family(FakeZypper(offered={'samba', 'caddy'}, fail_after=1))
         with self.assertRaisesRegex(RuntimeError, 'Installing samba, caddy failed: Problem: nothing provides'):
+            family.install(['samba', 'caddy'])
+
+    SKIPPED = ("Problem retrieving files from 'Packman Repository'.\n"
+               "Skipping repository 'Packman Repository' because of the above error.\n")
+
+    def done_but(self, code, note, fail_after=None):
+        zypper = FakeZypper(offered={'samba', 'caddy'}, fail_after=fail_after)
+        zypper.done_code, zypper.note = code, note
+        family = self.family(zypper)
+        family.say = mock.Mock()
+        return family, zypper
+
+    def test_a_skipped_repository_is_a_warning_naming_it_not_a_failure(self):
+        # zypper 106: a third-party repository (Packman) did not answer; the packages came
+        # from the others, and setup used to stop with "Installing samba failed".
+        family, zypper = self.done_but(106, self.SKIPPED)
+        self.assertTrue(family.available('samba'))
+        self.assertEqual(family.install(['samba', 'caddy']), ['samba', 'caddy'])
+        said = ' '.join(c.args[0] for c in family.say.call_args_list)
+        self.assertIn("could not reach the repository 'Packman Repository'", said)
+        self.assertEqual(len([argv for argv in zypper.calls if 'install' in argv]), 1)   # done: not tried again
+        self.assertFalse(family.available('openrgb'))                                    # not found stays not found
+
+    def test_a_failed_install_script_is_said_once_the_packages_are_there(self):
+        family, _ = self.done_but(107, 'warning: %post(samba) scriptlet failed, exit status 1')
+        self.assertEqual(family.install(['samba']), ['samba'])
+        self.assertIn('scriptlet failed', family.say.call_args.args[0])
+
+    def test_a_done_but_code_with_a_package_missing_stays_a_failure(self):
+        family, _ = self.done_but(106, self.SKIPPED, fail_after=1)
+        with self.assertRaisesRegex(RuntimeError, 'Installing samba, caddy failed'):
             family.install(['samba', 'caddy'])
 
 

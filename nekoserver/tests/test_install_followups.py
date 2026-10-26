@@ -1,5 +1,6 @@
 """0.39.6 follow-ups of the install review: the journal limits respect the administrator's
-own, and the Samba step records whether Samba was on before NekoServer switched it on."""
+own, and the Samba step records whether Samba was on before NekoServer switched it on.
+0.40.1: a timer created again forgets the last run an older uninstaller left behind."""
 import json
 import sys
 import tempfile
@@ -127,3 +128,68 @@ class SambaBeforeTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TimerStampTests(unittest.TestCase):
+    """A reinstall after an uninstall by 0.39.7 or older: systemd's record of a timer's last
+    run was left behind, so the new timer counted every night since as missed and ran its
+    backup as soon as setup switched it on."""
+
+    def setUp(self):
+        import neko_common
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.units, self.stamps = Path(tmp.name) / 'units', Path(tmp.name) / 'stamps'
+        self.units.mkdir()
+        self.stamps.mkdir()
+        for name in ('nekoserver-app-backup.timer', 'nekoserver-weekly.timer', 'fstrim.timer'):
+            (self.stamps / ('stamp-' + name)).write_text('')
+        for name, value in (('SYSTEMD_UNITS', self.units), ('TIMER_STAMPS', self.stamps)):
+            patcher = mock.patch.object(neko_common, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def stamped(self, name):
+        return (self.stamps / ('stamp-' + name)).exists()
+
+    def test_a_new_timer_forgets_the_last_run_and_an_existing_one_keeps_it(self):
+        import neko_common
+        (self.units / 'nekoserver-weekly.timer').write_text(neko_common.MANAGED_UNIT + 'weekly\n')
+        neko_common.write_units({'nekoserver-app-backup.timer': 'x', 'nekoserver-weekly.timer': 'y',
+                                 'nekoserver-app-backup.service': 'z'})
+        self.assertFalse(self.stamped('nekoserver-app-backup.timer'))   # new: waits for its first time
+        self.assertTrue(self.stamped('nekoserver-weekly.timer'))        # already there: still catches up
+        self.assertTrue(self.stamped('fstrim.timer'))                   # never another program's
+        neko_common.forget_last_run(self.units / 'fstrim.timer')
+        self.assertTrue(self.stamped('fstrim.timer'))
+
+    def test_the_weekly_usb_copy_forgets_it_too(self):
+        from modules import photo_backup
+        (self.stamps / 'stamp-nekoserver-photo-backup.timer').write_text('')
+        config = {'media_mount': '/mnt/m', 'timezone': 'UTC'}
+        with mock.patch.object(photo_backup.subprocess, 'run'):
+            photo_backup.install_units(config, '/bin/true', False, 'Sun', '03:00', self.units / 'nekoserver-photo-backup.service',
+                                       self.units / 'nekoserver-photo-backup.timer')
+        self.assertFalse(self.stamped('nekoserver-photo-backup.timer'))
+
+    def test_every_module_with_a_persistent_timer_writes_it_through_the_helpers(self):
+        for path in sorted((ROOT / 'modules').glob('*.py')):
+            text = path.read_text()
+            if 'Persistent=true' in text:
+                with self.subTest(module=path.name):
+                    self.assertTrue('write_units(' in text or 'forget_last_run(' in text)
+
+
+class RecloneNoteTests(unittest.TestCase):
+    """0.40.0 cleaned the repository's history, so an older clone cannot simply git pull:
+    both READMEs say how to clone again and keep the settings."""
+
+    def test_both_readmes_say_to_clone_again_and_copy_the_settings(self):
+        for path in (ROOT.parent / 'README.md', ROOT / 'README.md'):
+            with self.subTest(readme=path):
+                text = path.read_text()
+                self.assertIn('before 0.40.0', text)
+                self.assertIn('my-config.json', text)
+                self.assertRegex(text, r'[Cc]lone it again')
+        guide = (ROOT / 'README.md').read_text()
+        self.assertIn('cp NekoServer-All.old/nekoserver/my-config.json NekoServer-All/nekoserver/', guide)

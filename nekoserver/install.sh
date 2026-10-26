@@ -56,6 +56,29 @@ retrying() {
     rm -f -- "$output"
     return "$code"
 }
+# zypper, as retrying runs it, waiting for another zypper or YaST (up to 10 minutes). Its
+# documented "done, but" exit codes are not failures: 106 (ZYPPER_EXIT_INF_REPOS_SKIPPED)
+# when a repository that did not answer was skipped for this run, and 107
+# (ZYPPER_EXIT_INF_RPM_SCRIPT_FAILED) when a package's install script reported an error
+# though the package is installed. A refresh where only some repositories failed says so
+# ("Some of the repositories have not been refreshed"). Setup names the repository and
+# goes on with the others, as it does for apt's stale lists; every other failure (one
+# where no repository could be refreshed, too) stays one.
+zypper_run() {
+    local code output skipped
+    output=$(mktemp)
+    { retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive "$@" 2>&1 | tee "$output"; code=${PIPESTATUS[0]}; } || true
+    if (( code == 106 )) || { (( code != 0 )) && grep -q 'Some of the repositories have not been refreshed' "$output"; }; then
+        skipped=$(grep -oE "(Skipping repository|Problem retrieving files from) '[^']+'" "$output" | grep -oE "'[^']+'" | sort -u | paste -sd ' ' -) || true
+        echo "The repository ${skipped:-named above} could not be reached and was skipped; going on with the other repositories. If it stays away, turn it off with  sudo zypper modifyrepo --disable <its name>  and turn it back on later." >&2
+        code=0
+    elif (( code == 107 )); then
+        echo 'The packages were installed, but an install script of one of them reported an error (the lines above say which); going on.' >&2
+        code=0
+    fi
+    rm -f -- "$output"
+    return "$code"
+}
 # Nothing has pacman's lock open: libalpm, which pacman and the graphical updaters use,
 # keeps it open while it works, so a lock no program has open was left by a pacman that
 # was cut off (killed, or the PC lost power) and nothing would ever remove it.
@@ -94,8 +117,20 @@ fi
 
 if "$apply"; then
     if (( EUID != 0 )); then
-        echo 'Run it with sudo:  sudo bash install.sh' >&2
+        if command -v sudo >/dev/null; then
+            echo 'Run it with sudo:  sudo bash install.sh' >&2
+        else
+            # Debian set up with a root password has no sudo at first.
+            echo 'Setup needs administrator rights, and this PC has no sudo yet. Become root with  su -  (it asks for the root password), then either:' >&2
+            echo "  install sudo:  apt install sudo  and  usermod -aG sudo $(id -un)  then log out, log in again and run  sudo bash install.sh  here, or" >&2
+            echo "  run it as root with your account named:  cd $ROOT && SUDO_USER=$(id -un) bash install.sh" >&2
+        fi
         exit 1
+    fi
+    if [[ -z "${SUDO_USER:-}" || "$SUDO_USER" == root ]] && [[ ! -e "$ROOT/my-config.json" ]]; then
+        # Started as root, not with sudo from someone's account: setup cannot tell whose
+        # account the server is for (the apps' files, the shared folder, the build).
+        echo 'Started as root, not with sudo from your own account. To set the server up for your account, stop now (Ctrl+C) and run  SUDO_USER=<your account name> bash install.sh  instead (or  sudo bash install.sh  from your account).'
     fi
     # One setup at a time, held until setup ends (the installer inherits it). A second
     # one stops here, before it touches packages, their records or any service.
@@ -280,10 +315,10 @@ if "$apply"; then
             echo 'Refreshing the package lists (dnf makecache).'
             retrying dnf -q makecache
         elif [[ "$family" == suse ]]; then
-            # openSUSE: the same. ZYPP_LOCK_TIMEOUT makes zypper wait for another zypper
-            # or YaST (up to 10 minutes) instead of failing at once.
+            # openSUSE: the same (zypper_run waits for another zypper or YaST, up to 10
+            # minutes, instead of failing at once).
             echo 'Refreshing the package lists (zypper refresh).'
-            retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive --quiet refresh
+            zypper_run --quiet refresh
         else
             # Arch supports only full upgrades: refresh and upgrade everything first, so the
             # apps and their dependencies install at their current versions and match each
@@ -391,7 +426,7 @@ if "$apply"; then
             # (dnf5 takes no "--" before the names; these are fixed package names.)
             retrying dnf install -y --setopt=install_weak_deps=False "${packages[@]}"
         elif [[ "$family" == suse ]]; then
-            retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive install --no-recommends "${packages[@]}"
+            zypper_run install --no-recommends "${packages[@]}"
         else
             pacman -Si -- "${packages[@]}" >/dev/null
             retrying pacman -S --needed --noconfirm --noprogressbar -- "${packages[@]}"
@@ -421,10 +456,10 @@ if "$apply" && [[ "$family" == suse ]] && ! python3 -c 'import ssl, sqlite3, pye
     echo 'Python is installed, but parts of it do not load with the libraries this system has (it needs updating).'
     if [[ "${ID:-}" == opensuse-leap ]]; then
         echo 'Bringing the installed packages up to date (zypper update). This can take a while.'
-        retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive update --no-recommends
+        zypper_run update --no-recommends
     else
         echo 'Bringing the system up to date (zypper dist-upgrade). This can take a while.'
-        retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive dist-upgrade --no-recommends
+        zypper_run dist-upgrade --no-recommends
     fi
     if ! python3 -c 'import ssl, sqlite3, pyexpat, xml.etree.ElementTree, zlib, lzma, bz2, ctypes, hashlib'; then
         echo 'Parts of Python still do not load after the update; the lines above say which. Fix that, then run  sudo bash install.sh  again.' >&2

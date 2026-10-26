@@ -1425,6 +1425,13 @@ class Rhel(Fedora):
         return super().prepare(missing)
 
 
+# zypper's exit codes for "done, but": a repository that did not answer was skipped for
+# this run (ZYPPER_EXIT_INF_REPOS_SKIPPED), or a package's install script failed though the
+# package is installed (ZYPPER_EXIT_INF_RPM_SCRIPT_FAILED). How zypper names the repository.
+ZYPPER_REPOS_SKIPPED, ZYPPER_SCRIPT_FAILED = 106, 107
+SKIPPED_REPOSITORY = re.compile(r"(?:Skipping repository|Problem retrieving files from) '([^']+)'")
+
+
 class Suse(Fedora):
     """openSUSE Leap 16 and newer, Tumbleweed and Slowroll: rpm as on Fedora, zypper for
     the packages, and everything from openSUSE's own repositories (Docker, Compose, Caddy
@@ -1467,12 +1474,36 @@ class Suse(Fedora):
             return False
         # zypper answers 104 when no package matches. Its search ignores case unless told
         # otherwise, and the install does not: "openrgb" would be found and "OpenRGB" installed.
-        return all(self.retrying(lambda name=name: self._call(['zypper', '--non-interactive', '--quiet', 'search', '--match-exact',
-                                                               '--case-sensitive', '--type', 'package', name], 300)).returncode == 0
-                   for name in self.names(wanted))
+        return all(self._found(name, self.retrying(lambda name=name: self._call(
+            ['zypper', '--non-interactive', '--quiet', 'search', '--match-exact', '--case-sensitive', '--type', 'package', name], 300)))
+            for name in self.names(wanted))
+
+    @staticmethod
+    def _found(name, result):
+        """The search found this package; also when a repository that did not answer was
+        skipped (106), as long as the others list it."""
+        if result.returncode == ZYPPER_REPOS_SKIPPED:
+            return re.search(r'\|\s*' + re.escape(name) + r'\s*\|', result.stdout or '') is not None
+        return result.returncode == 0
 
     def _install(self, names, timeout):
-        return self._call(['zypper', '--non-interactive', 'install', '--no-recommends', *names], timeout + 600)
+        return self._done_but(self._call(['zypper', '--non-interactive', 'install', '--no-recommends', *names], timeout + 600), names)
+
+    def _done_but(self, result, names):
+        """zypper's "done, but" exit codes (its manual): 106 when it skipped a repository
+        that did not answer and installed from the others, 107 when a package's install
+        script reported an error though the package is installed. Both are a success once
+        rpm confirms every package (said with the reason); any other code stays a failure."""
+        if result.returncode not in (ZYPPER_REPOS_SKIPPED, ZYPPER_SCRIPT_FAILED) or not all(self.has(name) for name in names):
+            return result
+        if result.returncode == ZYPPER_REPOS_SKIPPED:
+            skipped = sorted(set(SKIPPED_REPOSITORY.findall(_output(result))))
+            self.say('zypper could not reach the repository ' + (', '.join("'" + name + "'" for name in skipped) or '(zypper did not say which)')
+                     + ' and skipped it; the packages came from the other repositories. If it stays away, turn it off with  '
+                     'sudo zypper modifyrepo --disable <its name>  and turn it back on later.')
+        else:
+            self.say('The packages were installed, but an install script of one of them reported an error: ' + _reason(result))
+        return subprocess.CompletedProcess(result.args, 0, result.stdout, result.stderr)
 
 
 FAMILIES = (Arch, Debian, Fedora, Rhel, Suse)
@@ -1544,7 +1575,7 @@ def rustc_version(run=subprocess.run):
     return (int(match[1]), int(match[2])) if match else None
 
 
-def toolchain(family=None, log=print, oldest=None, version=rustc_version):
+def toolchain(family=None, log=print, oldest=None, version=rustc_version, which=shutil.which):
     """Install what building the runtime needs: Rust (cargo, rustc) and gcc, and on a
     family whose plain Rust is older than Cargo.toml allows, the versioned newer one
     (which build.py then finds by its versioned name)."""
@@ -1552,6 +1583,14 @@ def toolchain(family=None, log=print, oldest=None, version=rustc_version):
     oldest = oldest or oldest_rust()
     label = '%d.%d' % oldest
     log('Installing what building the runtime needs: Rust and a C compiler')
+    found = version()
+    if found is not None and found >= oldest:
+        # A new enough Rust is already there (Debian 12's rustc-web, rustup, one set up by
+        # hand): it stays as it is, and only what is missing beside it is installed. Asking
+        # for the plain package then would make Debian 12's apt replace rustc-web with its
+        # older rustc, and every later run would fail at the build.
+        family.install(['gcc', *missing_cargo(family, which)])
+        return
     if debian_needs_newer_rust(family, oldest, version):
         return debian_newer_rust(family, oldest, label, log, version)
     family.install(TOOLCHAIN_PACKAGES)
@@ -1564,6 +1603,17 @@ def toolchain(family=None, log=print, oldest=None, version=rustc_version):
     # Ubuntu keeps the plain rustc at the release's version and newer ones beside it.
     log('This system\'s Rust is older than ' + label + ': installing rustc-' + label + ' and cargo-' + label)
     family.install(['rustc-' + label, 'cargo-' + label])
+
+
+def missing_cargo(family, which=shutil.which):
+    """What gives a new enough rustc its cargo, when there is no cargo on PATH yet: on
+    Debian beside rustc-web its own cargo-web (the plain cargo conflicts with it), else the
+    family's Rust package."""
+    if which('cargo'):
+        return []
+    if family.name == 'debian' and not family.ubuntu() and family.has(DEBIAN_NEWER_RUST[0]):
+        return [DEBIAN_NEWER_RUST[1]]
+    return ['rust']
 
 
 def debian_needs_newer_rust(family, oldest, version=rustc_version):

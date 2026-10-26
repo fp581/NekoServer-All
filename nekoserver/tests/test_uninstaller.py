@@ -1,5 +1,6 @@
 """The uninstaller (uninstall.sh, uninstaller.py): what it finds, what it asks, what it
 removes, and what it never touches."""
+import fcntl
 import json
 import os
 import sys
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import uninstaller  # noqa: E402
 
+REAL_REMOVE = uninstaller.remove   # main() calls a stand-in in some tests
 RealPlan = uninstaller.Plan   # the tests below stand in for Plan in main(); the fake system still builds a real one
 
 SETTINGS = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media', 'external_backup_mount': '/mnt/nekoserver-photos',
@@ -30,7 +32,7 @@ class FakeSystem:
         self.root = Path(root)
         self.calls = []
         self.projects = ['neko-jellyfin', 'neko-immich']
-        self.drives = dict(DRIVES)   # mount folder -> UUID of what is mounted there
+        self.drives = dict(DRIVES)   # mount folder -> UUID of what is mounted there, or (UUID, filesystem, subvolume)
         self.removed = False         # the apps' containers
         self.failing = {}            # argv prefix (tuple) -> (exit code, what it says): a command that fails
         self.running = set()         # units still running after a stop
@@ -67,6 +69,8 @@ class FakeSystem:
         w('/home/neko/Desktop/nekoserver-steam.desktop', '[Desktop Entry]\nName=Steam Big Picture\nComment=NekoServer\n')
         w('/home/neko/Desktop/nekoserver-mine.desktop', '[Desktop Entry]\nName=Something of my own\n')
         w('/run/nekoserver-control/originals.json', '{}')
+        w('/run/nekoserver-setup.lock', '')
+        w('/run/nekoserver-install.lock', '')
         w('/var/lib/systemd/timers/stamp-nekoserver-maintenance.timer', '')
         w('/var/lib/systemd/timers/stamp-other.timer', '')
         w('/var/lib/nekoserver-openrgb/OpenRGB/OpenRGB.json', '{}')
@@ -136,9 +140,14 @@ class FakeSystem:
             self.removed = True
         return 0, ''
 
-    def plan(self, group_exists=lambda name: name == 'nekoserver-control'):
+    def identity(self, path):
+        """neko_common.mounted_identity on this PC: (UUID, filesystem, subvolume), or None."""
+        found = self.drives.get('/' + str(Path(path).relative_to(self.root)))
+        return (found, 'ext4', '') if isinstance(found, str) else found
+
+    def plan(self, group_exists=lambda name: name == 'nekoserver-control', settings=SETTINGS):
         with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
-            return RealPlan(SETTINGS, self.root, run=self.run, group_exists=group_exists)
+            return RealPlan(settings, self.root, run=self.run, group_exists=group_exists, identity=self.identity)
 
 
 class PlanTests(unittest.TestCase):
@@ -160,6 +169,9 @@ class PlanTests(unittest.TestCase):
         self.assertIn('etc/samba/nekoserver.conf', names)
         self.assertIn('etc/samba/smb.conf', names)          # the include NekoServer wrote, nothing else in it
         self.assertIn('run/nekoserver-control', names)
+        # The setup locks the uninstall holds stay (deleted, a setup could take a new one meanwhile).
+        self.assertNotIn('run/nekoserver-setup.lock', names)
+        self.assertNotIn('run/nekoserver-install.lock', names)
         # When each timer last ran: left behind, a later setup would run every backup at once.
         self.assertIn('var/lib/systemd/timers/stamp-nekoserver-maintenance.timer', names)
         self.assertNotIn('var/lib/systemd/timers/stamp-other.timer', names)
@@ -218,6 +230,19 @@ class PlanTests(unittest.TestCase):
         warnings = '\n'.join(plan.warnings)
         self.assertIn('/srv/nekoserver is not the one the settings name (UUID ffff-9999, not aaaa-1111)', warnings)
         self.assertIn('/mnt/nekoserver-photos is not mounted', warnings)
+
+    def test_another_btrfs_subvolume_at_the_folder_is_not_nekoservers_drive(self):
+        # The SSD's own filesystem, but its top level (or another subvolume) mounted at the
+        # folder: another tree, so nothing on it is NekoServer's to remove.
+        settings = json.loads(json.dumps(SETTINGS))
+        settings['storage']['data_ssd'].update(fstype='btrfs', subvolume='/@data')
+        self.system.drives['/srv/nekoserver'] = ('aaaa-1111', 'btrfs', '')
+        plan = self.system.plan(settings=settings)
+        self.assertEqual(plan.groups['data']['paths'], [])
+        self.assertIn('/srv/nekoserver is the right drive, but another part of it is mounted there (its top level, not /@data)',
+                      '\n'.join(plan.warnings))
+        self.system.drives['/srv/nekoserver'] = ('aaaa-1111', 'btrfs', '/@data')
+        self.assertTrue(self.system.plan(settings=settings).groups['data']['paths'])   # its own subvolume: identified
 
     def test_apps_and_mounts_say_what_they_do(self):
         self.assertEqual(self.plan.groups['apps']['notes'], ['Remove the containers of neko-immich, neko-jellyfin',
@@ -288,8 +313,7 @@ class SettingsGateTests(unittest.TestCase):
             system = FakeSystem(tmp).populate()
             system.write('/etc/passwd', 'root:x:0:0')
             settings = {**SETTINGS, 'data_mount': '/etc', 'media_mount': '/srv/../etc'}
-            with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
-                plan = RealPlan(settings, system.root, run=system.run, group_exists=lambda name: False)
+            plan = system.plan(group_exists=lambda name: False, settings=settings)
             self.assertEqual((plan.data, plan.media), ('/srv/nekoserver', '/mnt/nekoserver-media'))
             text = plan.describe({'server', 'data'})
             self.assertIn("!! The settings name '/etc' as data_mount, which cannot be a drive of NekoServer's; /srv/nekoserver is used instead", text)
@@ -389,6 +413,18 @@ class RemoveTests(unittest.TestCase):
         self.remove({'server'})
         self.assertTrue(policy.exists())
         self.assertFalse(any('unfinished' in line for line in self.shown))
+
+    def test_a_socket_unit_is_stopped_before_its_service_and_removed(self):
+        # 0.40.1's OpenRGB proxy starts from a socket: left on, it would start the service again.
+        for unit in ('nekoserver-openrgb-proxy.socket', 'nekoserver-openrgb-proxy.service'):
+            self.system.write('/etc/systemd/system/' + unit, '[Unit]\n')
+        self.plan = self.system.plan()
+        self.remove({'server'})
+        calls = self.system.calls
+        stop = ['systemctl', 'disable', '--now']
+        self.assertLess(calls.index(stop + ['nekoserver-openrgb-proxy.socket']), calls.index(stop + ['nekoserver-openrgb-proxy.service']))
+        for unit in ('nekoserver-openrgb-proxy.socket', 'nekoserver-openrgb-proxy.service'):
+            self.assertFalse(self.exists('/etc/systemd/system/' + unit), unit)
 
     def test_the_server_alone_leaves_every_drive_and_the_apps_data(self):
         self.remove({'server'})
@@ -748,12 +784,10 @@ class FollowUpTests(unittest.TestCase):
 
     def test_commands_that_failed_are_listed_at_the_end(self):
         self.system.failing[('systemctl', 'unmask')] = (1, 'Access denied')
-        self.system.failing[('systemctl', 'disable', '--now', 'smbd.service')] = (1, 'Failed to disable')
         self.system.failing[('smbpasswd',)] = (1, 'Failed to delete entry')
         left = self.remove({'server'})
         text = '\n'.join(left)
         self.assertIn('the masks on sleep.target', text)
-        self.assertIn('Samba is still on (sudo systemctl disable --now smbd.service)', text)
         self.assertIn('the Samba account neko', text)
 
     def test_a_mount_folder_that_cannot_go_says_why(self):
@@ -817,6 +851,206 @@ class FollowUpTests(unittest.TestCase):
                 mock.patch('builtins.print', side_effect=lambda *a, **k: shown.append(' '.join(map(str, a)))):
             self.assertEqual(uninstaller.main(['--dry-run']), 0)
         self.assertIn('Settings: /etc/nekoserver-os/drives.json (...)', shown)
+
+
+class ExclusionTests(unittest.TestCase):
+    """The review of 3130211: the drives are checked again right before anything on them is
+    deleted, and deleted only through their checked folders; Samba must really be off
+    first; and nothing may be running or unfinished, with the jobs' lock held, while
+    anything is deleted."""
+    ALL = frozenset(key for key, *_ in uninstaller.CHOICES)
+    FILM = '/mnt/nekoserver-media/library/movies/film.mkv'
+    MAINTENANCE = '/etc/nekoserver-backups/maintenance-resume.json'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.system = FakeSystem(self.tmp.name).populate()
+        self.plan = self.system.plan()
+        self.shown = []
+
+    def at(self, path):
+        return self.system.root / path.lstrip('/')
+
+    def remove(self, chosen=None, call=None):
+        with mock.patch.object(uninstaller.shutil, 'which', return_value='/usr/bin/x'):
+            return REAL_REMOVE(self.plan, self.ALL if chosen is None else chosen, run=self.system.run, out=self.shown.append,
+                                      root=self.system.root, call=call or self.system.call, sleep=lambda seconds: None)
+
+    def assert_nothing_deleted(self):
+        for kept in (self.FILM, '/srv/nekoserver/appdata/jellyfin/config.xml', '/etc/samba/nekoserver.conf',
+                     '/etc/samba/nekoserver-accounts', '/etc/nekoserver-backups/storage.json'):
+            self.assertTrue(self.at(kept).exists(), kept)
+        self.assertFalse(any(argv[0] == 'smbpasswd' for argv in self.system.calls))
+
+    # ---- 2: the drive replaced after the plan was made
+    def test_a_drive_replaced_after_the_plan_loses_nothing(self):
+        self.system.drives['/mnt/nekoserver-media'] = 'ffff-9999'      # someone else's HDD mounted there now
+        self.remove()
+        self.assertTrue(self.at(self.FILM).exists())
+        self.assertTrue(any('/mnt/nekoserver-media is no longer the one the settings name' in line for line in self.shown), self.shown)
+        self.assertFalse(self.at('/srv/nekoserver/appdata').exists())   # the SSD is still the right one
+
+    def test_a_drive_replaced_during_the_deletion_is_never_touched(self):
+        real = uninstaller.open_drives
+        media = self.at('/mnt/nekoserver-media')
+
+        def then_replaced(plan, out):
+            drives = real(plan, out)
+            media.rename(media.with_name('nekoserver-media.original'))   # the checked drive moves away...
+            (media / 'library').mkdir(parents=True)                       # ...and another one takes its folder
+            (media / 'library/foreign video.mkv').write_text('not NekoServer\'s')
+            return drives
+        with mock.patch.object(uninstaller, 'open_drives', side_effect=then_replaced):
+            self.remove({'server', 'media'})
+        self.assertTrue((media / 'library/foreign video.mkv').exists())
+        self.assertFalse(media.with_name('nekoserver-media.original').joinpath('library').exists())   # the checked one's went
+
+    def test_the_deletion_never_follows_a_symlink_nor_enters_another_filesystem(self):
+        outside = self.at('/home/neko/keep.txt')
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text('mine')
+        tree = self.at('/mnt/nekoserver-media/library')
+        (tree / 'link').symlink_to(outside.parent)
+        (tree / 'mounted').mkdir()
+        (tree / 'mounted/other.mkv').write_text('another drive')
+        real_stat = os.stat
+
+        def stat(path, *args, **kwargs):
+            found = real_stat(path, *args, **kwargs)
+            if path == 'mounted':   # as if a drive were mounted on this folder
+                return os.stat_result((found.st_mode, found.st_ino, found.st_dev + 1, *tuple(found)[3:]))
+            return found
+        failed, held = [], []
+        fd = os.open(tree.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with mock.patch.object(uninstaller.os, 'stat', side_effect=stat):
+                uninstaller._delete_at(fd, 'library', real_stat(tree).st_dev, (failed, str(tree), set(), held))
+        finally:
+            os.close(fd)
+        self.assertTrue(outside.exists())
+        self.assertTrue((tree / 'mounted/other.mkv').exists())
+        self.assertFalse((tree / 'movies').exists())
+        self.assertTrue(any(uninstaller.OTHER_DRIVE in line for line in failed), failed)
+
+    # ---- 3: Samba must be off before its accounts, its shares or any file go
+    def test_samba_that_does_not_switch_off_stops_everything(self):
+        for unit, setup in (('smbd.service', None), ('smb.service', 'arch')):
+            for case, answer in (('failed', (1, 'Failed to stop')), ('timeout', (None, 'did not finish within 120 seconds')),
+                                 ('unknown', None)):
+                with self.subTest(unit=unit, case=case):
+                    self.setUp()
+                    if setup:
+                        self.system.write(uninstaller.SAMBA_BEFORE, json.dumps(
+                            {'format': 'neko-samba-before-v1', 'unit': unit, 'enabled': False, 'active': False}))
+                        self.system.units_on = {unit}
+                        self.plan = self.system.plan()
+                    self.assertEqual(self.plan.samba_off, unit)
+                    self.system.failing[('systemctl', 'is-enabled', unit)] = (0, 'enabled')
+                    if answer is None:
+                        self.system.failing[('systemctl', 'is-active', unit)] = (4, '')   # systemd cannot say
+                    else:
+                        self.system.failing[('systemctl', 'disable', '--now', unit)] = answer
+                    with self.assertRaisesRegex(uninstaller.Stopped, r'Samba \(' + unit + r'\) did not switch off'):
+                        self.remove()
+                    self.assert_nothing_deleted()
+                    self.assertIn(['systemctl', 'enable', unit], self.system.calls)   # back on, as it was
+
+    # ---- 4: nothing running or unfinished, the jobs' lock held, the locks kept
+    def test_unfinished_maintenance_found_after_the_confirmation_stops_it(self):
+        def confirmed(*_args):
+            self.system.write(self.MAINTENANCE, json.dumps({'version': '0.40.1', 'phase': 'restoring'}))   # began meanwhile
+            return True
+        shown = []
+        with mock.patch.object(uninstaller.os, 'geteuid', return_value=0), \
+                mock.patch.object(uninstaller, 'busy', return_value=(None, [])), \
+                mock.patch.object(uninstaller, 'find_settings', return_value=(SETTINGS, 'my-config.json')), \
+                mock.patch.object(uninstaller, 'Plan', return_value=self.plan), \
+                mock.patch.object(uninstaller, 'choose', return_value=self.ALL), \
+                mock.patch.object(uninstaller, 'confirm', side_effect=confirmed), \
+                mock.patch.object(uninstaller, 'remove', side_effect=lambda plan, chosen, out: self.remove(chosen)), \
+                mock.patch('builtins.print', side_effect=lambda *a, **k: shown.append(' '.join(map(str, a)))):
+            self.assertEqual(uninstaller.main([]), 1)
+        self.assertIn('did not finish', '\n'.join(shown))
+        self.assert_nothing_deleted()
+        self.assertTrue(self.at(self.MAINTENANCE).exists())
+        self.assertFalse(any(argv[:2] == ['systemctl', 'disable'] for argv in self.system.calls))   # nothing even stopped
+
+    def test_a_monthly_update_that_starts_while_the_timers_go_is_never_stopped(self):
+        timers_off = []
+
+        def call(argv, timeout=0):
+            if argv[:3] == ['systemctl', 'disable', '--now'] and argv[-1].endswith('.timer'):
+                timers_off.append(argv[-1])
+            if argv[:2] == ['systemctl', 'is-active'] and 'nekoserver-maintenance.service' in argv and timers_off:
+                self.system.calls.append(argv)
+                return 0, 'activating\ninactive'
+            return self.system.call(argv, timeout)
+        with self.assertRaisesRegex(uninstaller.Stopped, 'monthly update is running'):
+            self.remove(call=call)
+        self.assertNotIn(['systemctl', 'disable', '--now', 'nekoserver-maintenance.service'], self.system.calls)
+        self.assert_nothing_deleted()
+
+    def test_a_cut_off_backup_left_unfinished_stops_it(self):
+        self.system.write('/etc/nekoserver-backups/app-resume.json', '{}')
+        with self.assertRaisesRegex(uninstaller.Stopped, 'app-resume.json is still there.*nekoserver-app-resume.service'):
+            self.remove()
+        self.assert_nothing_deleted()
+
+    def test_a_job_cut_off_by_the_stop_itself_is_found_with_the_lock_held(self):
+        # A backup stopped part-way whose restart of the apps did not finish keeps its record.
+        def call(argv, timeout=0):
+            if argv[:3] == ['systemctl', 'disable', '--now'] and argv[-1] == 'nekoserver-dashboard.service':
+                self.system.write('/etc/nekoserver-backups/host-resume.json', '{}')
+            return self.system.call(argv, timeout)
+        with self.assertRaisesRegex(uninstaller.Stopped, 'host-resume.json is still there'):
+            self.remove(call=call)
+        self.assert_nothing_deleted()
+
+    def test_the_jobs_lock_is_held_while_files_go_and_a_job_holding_it_stops_it(self):
+        lock = self.at('/srv/nekoserver/installer/recovery.lock')
+        real = uninstaller._remove_files
+        seen = []
+
+        def removing(*args, **kwargs):
+            with lock.open() as other:
+                try:
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    seen.append('free')
+                except BlockingIOError:
+                    seen.append('held')
+            return real(*args, **kwargs)
+        with mock.patch.object(uninstaller, '_remove_files', side_effect=removing):
+            left = self.remove()
+        self.assertEqual(seen, ['held'])
+        self.assertFalse(self.at('/srv/nekoserver/installer').exists())   # the lock went last, with its folder
+        self.assertNotIn(str(self.at('/srv/nekoserver/installer')), left)
+        # A job that still holds it: nothing goes.
+        self.setUp()
+        lock = self.at('/srv/nekoserver/installer/recovery.lock')
+        lock.write_text('')
+        with lock.open() as job:
+            fcntl.flock(job, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(uninstaller.Stopped, 'job is still working'):
+                self.remove()
+        self.assert_nothing_deleted()
+
+    def test_lock_files_in_run_stay_so_a_setup_started_meanwhile_still_waits(self):
+        for path in ('/run/nekoserver-setup.lock', '/run/nekoserver-install.lock', '/run/nekoserver-packages.lock',
+                     '/run/nekoserver-heartbeat/worker.lock', '/run/nekoserver-heartbeat/status.json'):
+            self.system.write(path, '')
+        setup = self.at('/run/nekoserver-setup.lock')
+        held = uninstaller.hold_setup_locks((str(setup),))
+        self.addCleanup(lambda: [os.close(fd) for fd in held])
+        self.plan = self.system.plan()
+        self.remove({'server'})
+        for kept in ('/run/nekoserver-setup.lock', '/run/nekoserver-install.lock', '/run/nekoserver-packages.lock',
+                     '/run/nekoserver-heartbeat/worker.lock'):
+            self.assertTrue(self.at(kept).exists(), kept)
+        self.assertFalse(self.at('/run/nekoserver-heartbeat/status.json').exists())
+        self.assertFalse(self.at('/run/nekoserver-control').exists())
+        with setup.open() as installer, self.assertRaises(BlockingIOError):   # install.sh started now: it must wait
+            fcntl.flock(installer, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 if __name__ == '__main__':

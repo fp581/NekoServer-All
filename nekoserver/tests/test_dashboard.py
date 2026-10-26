@@ -19,6 +19,15 @@ APP = (ROOT / 'dashboard/app.js').read_text()
 PAGE = (ROOT / 'dashboard/index.html').read_text()
 
 
+HOST_NETWORK = 'net:[1]'     # PID 1's network namespace, as /proc shows it
+NOWHERE = Path('/nonexistent')
+
+
+def enabled(unit):
+    """The systemctl call that enables and starts a unit."""
+    return ('enable', '--now', unit)
+
+
 def served_files():
     block = SERVE[SERVE.index('const ASSETS'):SERVE.index('];', SERVE.index('const ASSETS'))]
     return {m.group(1) for m in re.finditer(r'\(\s*"/[^"]*",\s*"([^"]+)"', block)}
@@ -115,6 +124,40 @@ class ReadingFreshnessTests(unittest.TestCase):
             self.assertFalse(acceptance.dashboard_check(8787, now))
 
 
+    def test_the_acceptance_check_covers_the_control_service_and_its_network(self):
+        """The control service must run on the computer's own network: there it can see a
+        restarted app answer. OpenRGB must not: there any program could reach it."""
+        import acceptance
+        nets = {'1': HOST_NETWORK, '7': HOST_NETWORK, '8': 'net:[2]'}
+        pids = {acceptance.CONTROL_UNIT: '7', acceptance.OPENRGB_UNIT: '8'}
+
+        def run(args, timeout=8):
+            return 0, pids[args[2]] + '\n'
+        with mock.patch.object(acceptance, 'service', return_value=True), mock.patch.object(acceptance.health, 'run', side_effect=run), \
+                mock.patch.object(acceptance.os, 'readlink', side_effect=lambda path: nets[path.split('/')[2]]):
+            self.assertEqual(acceptance.control_check()[0], 'pass')
+            self.assertEqual(acceptance.lighting_check()[0], 'pass')
+            nets['7'], nets['8'] = 'net:[2]', HOST_NETWORK   # as 0.39.6 to 0.40.0 (or after an upgrade) left them
+            self.assertEqual(acceptance.control_check()[0], 'fail')
+            self.assertIn('never answer', acceptance.control_check()[1])
+            self.assertEqual(acceptance.lighting_check()[0], 'fail')
+            pids[acceptance.CONTROL_UNIT] = '0'          # not running: can't be told
+            self.assertEqual(acceptance.control_check()[0], 'needs_setup')
+        with mock.patch.object(acceptance, 'service', return_value=False):
+            self.assertEqual(acceptance.control_check()[0], 'fail')
+        # Part of the dashboard's checks; lighting only when it is on and set up.
+        with mock.patch.object(acceptance, 'dashboard_check', return_value=True), mock.patch.object(acceptance, 'service', return_value=True), \
+                mock.patch.object(acceptance, 'control_check', return_value=('pass', 'ok')), \
+                mock.patch.object(acceptance, 'lighting_check', return_value=('pass', 'ok')) as lighting, \
+                mock.patch.object(acceptance.Path, 'is_file', return_value=True):
+            ids = [c['id'] for c in acceptance.dashboard_checks({'dashboard': {'port': 8787}}, 0)]
+            self.assertIn('dashboard:control', ids)
+            self.assertIn('dashboard:lighting', ids)
+            lighting.reset_mock()
+            ids = [c['id'] for c in acceptance.dashboard_checks({'dashboard': {'port': 8787, 'rgb': False}}, 0)]
+            self.assertNotIn('dashboard:lighting', ids)
+            lighting.assert_not_called()
+
 class DashboardInstallTests(unittest.TestCase):
     def test_the_web_server_starts_with_the_computer_and_comes_back(self):
         units = dashboard.units(Path('/srv/nekoserver'), Path('/usr/local/lib/x'), Path('/etc/x.json'), 8787, 60)
@@ -170,23 +213,138 @@ class FanAndLightControlTests(unittest.TestCase):
                 dashboard.start_services({dashboard.CONTROL: ''}, self.code, False, lambda m: None)
             except (OSError, RuntimeError):
                 pass
-        restarts = {c.args[1]: c.kwargs.get('timeout') for c in systemctl.call_args_list if c.args[0] == 'restart'}
-        self.assertEqual(restarts[dashboard.CONTROL], dashboard.CONTROL_WAIT)
+        stops = {c.args[1]: c.kwargs.get('timeout') for c in systemctl.call_args_list if c.args[0] == 'stop'}
+        self.assertEqual(stops[dashboard.CONTROL], dashboard.CONTROL_WAIT)
+
+    @staticmethod
+    def section(text, name):
+        return text.split('[' + name + ']\n', 1)[1].split('\n[', 1)[0].split('\n')
+
+    def test_the_control_service_stays_on_the_computers_own_network(self):
+        """It checks that a restarted app answers on 127.0.0.1, where Docker publishes
+        the apps: a private network of its own (0.39.6 to 0.40.0) has its own 127.0.0.1,
+        where no app ever answers, so every restart from the dashboard failed."""
+        for lighting in (True, False):
+            control = dashboard.control_units(self.code, lighting)[dashboard.CONTROL]
+            self.assertNotIn('PrivateNetwork', control)
+            self.assertNotIn('JoinsNamespaceOf', control)
+            self.assertNotIn('NetworkNamespacePath', control)
+            self.assertIn('IPAddressDeny=any\nIPAddressAllow=localhost\n', control)
+            self.assertIn('RestrictAddressFamilies=AF_UNIX AF_INET\n', control)
 
     def test_only_the_control_service_can_reach_openrgb(self):
-        """OpenRGB runs as root and drives the hardware: it shares a private network with
-        the control service alone, so no other program can skip the PIN through it."""
-        def section(text, name):
-            return text.split('[' + name + ']\n', 1)[1].split('\n[', 1)[0].split('\n')
-        units = dashboard.control_units(self.code, True)
-        control, openrgb = units[dashboard.CONTROL], units[dashboard.OPENRGB]
-        for text, other in ((control, dashboard.OPENRGB), (openrgb, dashboard.CONTROL)):
+        """OpenRGB runs as root and drives the hardware: it is in a private network of
+        its own, and the only way in is a root-only socket whose proxy joins that network,
+        so no other program can skip the PIN through it."""
+        section = self.section
+        units = dashboard.control_units(self.code, True, proxyd=Path('/usr/lib/systemd/systemd-socket-proxyd'))
+        openrgb, proxy, socket = units[dashboard.OPENRGB], units[dashboard.PROXY], units[dashboard.PROXY_SOCKET]
+        for text in (openrgb, proxy):
             self.assertIn('PrivateNetwork=yes', section(text, 'Service'))
-            self.assertIn('JoinsNamespaceOf=' + other, section(text, 'Unit'))
-            self.assertIn('IPAddressDeny=any', section(text, 'Service'))  # still kept
-        alone = dashboard.control_units(self.code, False)[dashboard.CONTROL]
-        self.assertIn('PrivateNetwork=yes', section(alone, 'Service'))
-        self.assertNotIn('JoinsNamespaceOf', alone)
+            # Both create the namespaces whichever starts first, so neither can ever end
+            # up on the computer's own network (or /tmp).
+            self.assertIn('PrivateTmp=yes', section(text, 'Service'))
+            self.assertIn('IPAddressDeny=any', section(text, 'Service'))
+        self.assertIn('JoinsNamespaceOf=' + dashboard.PROXY, section(openrgb, 'Unit'))
+        self.assertIn('JoinsNamespaceOf=' + dashboard.OPENRGB, section(proxy, 'Unit'))
+        self.assertIn('BindsTo=' + dashboard.OPENRGB, section(proxy, 'Unit'))
+        self.assertIn('After=' + dashboard.OPENRGB + ' ' + dashboard.PROXY_SOCKET, section(proxy, 'Unit'))
+        self.assertIn('ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:6742', section(proxy, 'Service'))
+        self.assertIn('--server-port 6742', openrgb)
+        self.assertNotIn('[Install]', proxy)   # started by its socket only
+        # The socket: root only, at the place the runtime connects to.
+        listen = section(socket, 'Socket')
+        self.assertIn('ListenStream=' + dashboard.OPENRGB_SOCKET, listen)
+        self.assertIn('SocketMode=0600', listen)
+        self.assertIn('SocketUser=root', listen)
+        self.assertIn('DirectoryMode=0700', listen)
+        self.assertIn('pub const SOCKET: &str = "' + dashboard.OPENRGB_SOCKET + '";', (ROOT / 'runtime/src/openrgb.rs').read_text())
+        self.assertIn('PathBuf::from(openrgb::SOCKET)', (ROOT / 'runtime/src/control.rs').read_text())
+        # The control service waits for the socket; it shares no namespace (or /tmp) with OpenRGB.
+        control = units[dashboard.CONTROL]
+        self.assertIn('Wants=' + dashboard.OPENRGB + ' ' + dashboard.PROXY_SOCKET, section(control, 'Unit'))
+        self.assertNotIn('JoinsNamespaceOf', control)
+        for name, text in units.items():
+            self.assertTrue(text.startswith(dashboard.MANAGED_UNIT), name)
+        # Lighting off: none of it.
+        self.assertEqual(set(dashboard.control_units(self.code, False)), {dashboard.CONTROL})
+
+    def test_the_socket_proxy_is_looked_up_where_each_system_keeps_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            usr, lib = Path(d) / 'usr-lib', Path(d) / 'lib'
+            self.assertIsNone(dashboard.socket_proxyd((usr, lib)))
+            lib.write_text('#!/bin/sh\n')
+            lib.chmod(0o755)
+            self.assertEqual(dashboard.socket_proxyd((usr, lib)), lib)   # a Debian that keeps /lib apart
+            usr.write_text('#!/bin/sh\n')
+            usr.chmod(0o755)
+            self.assertEqual(dashboard.socket_proxyd((usr, lib)), usr)
+            with mock.patch.object(dashboard, 'PROXYD_PLACES', (lib,)):
+                self.assertIn('ExecStart=' + str(lib) + ' 127.0.0.1:6742', dashboard.control_units(self.code, True)[dashboard.PROXY])
+        self.assertEqual(dashboard.PROXYD_PLACES[0], Path('/usr/lib/systemd/systemd-socket-proxyd'))
+
+    def test_lighting_is_skipped_without_the_socket_proxy(self):
+        definitions = dashboard.control_units(self.code, True)
+        logs = []
+        with mock.patch.object(dashboard, 'control_group'), mock.patch.object(dashboard, 'socket_proxyd', return_value=None), \
+                mock.patch.object(dashboard, 'install_openrgb') as install:
+            self.assertFalse(dashboard.prepare_control(self.code, definitions, True, logs.append))
+        install.assert_not_called()
+        self.assertEqual(set(definitions), {dashboard.CONTROL})
+        self.assertIn(' --no-lights ', definitions[dashboard.CONTROL])
+        self.assertIn('systemd-socket-proxyd', logs[0])
+        # With the proxy there, lighting stays on.
+        definitions = dashboard.control_units(self.code, True)
+        with mock.patch.object(dashboard, 'control_group'), mock.patch.object(dashboard, 'socket_proxyd', return_value=Path('/p')), \
+                mock.patch.object(dashboard, 'install_openrgb', return_value=True):
+            self.assertTrue(dashboard.prepare_control(self.code, definitions, True, logs.append))
+        self.assertIn(dashboard.PROXY_SOCKET, definitions)
+
+    def test_lighting_and_control_are_stopped_together_then_started_in_order(self):
+        """After an upgrade, a namespace an older release set up stays in use while any
+        unit sharing it runs: so all of them stop first, then OpenRGB starts (and
+        creates its private network), then its socket, then the control service."""
+        calls, private = self.setup_calls(dashboard.control_units(self.code, True))
+        stop = calls.index(('stop', dashboard.CONTROL, *dashboard.LIGHTING_UNITS))
+        starts = [calls.index(enabled(u)) for u in (dashboard.OPENRGB, dashboard.PROXY_SOCKET, dashboard.CONTROL)]
+        self.assertEqual(starts, sorted(starts))
+        self.assertLess(stop, starts[0])
+        self.assertFalse([c for c in calls if c[0] == 'restart' and c[1] != dashboard.SERVICE], 'nothing is restarted one by one')
+        self.assertNotIn(enabled(dashboard.PROXY), calls)   # its socket starts it
+        private.assert_called_once()
+        # Lighting off: the control service alone is stopped and started again.
+        calls, private = self.setup_calls(dashboard.control_units(self.code, False))
+        self.assertLess(calls.index(('stop', dashboard.CONTROL)), calls.index(enabled(dashboard.CONTROL)))
+        private.assert_not_called()
+
+    def setup_calls(self, definitions):
+        """The systemctl calls setup makes for these units, and the namespace check."""
+        with mock.patch.object(dashboard, 'systemctl') as systemctl, mock.patch.object(dashboard, 'choose_pin'), \
+                mock.patch.object(dashboard, 'check_openrgb_private') as private, \
+                mock.patch.object(dashboard, 'CONTROL_CONFIG', NOWHERE):
+            dashboard.start_services(definitions, self.code, False, lambda m: None)
+        return [c.args for c in systemctl.call_args_list], private
+
+    def test_openrgb_on_the_computers_own_network_is_stopped(self):
+        nets = {1: HOST_NETWORK, 42: HOST_NETWORK}
+        with mock.patch.object(dashboard, 'main_pid', return_value=42), \
+                mock.patch.object(dashboard, 'network_of', side_effect=nets.get), \
+                mock.patch.object(dashboard.time, 'sleep'), mock.patch.object(dashboard.subprocess, 'run') as run:
+            logs = []
+            self.assertFalse(dashboard.check_openrgb_private(logs.append))
+            self.assertEqual(run.call_args.args[0], ['systemctl', 'stop', dashboard.PROXY_SOCKET, dashboard.PROXY, dashboard.OPENRGB])
+            self.assertIn('private network', logs[0])
+            run.reset_mock()
+            nets[42] = 'net:[2]'    # its own network: kept
+            self.assertTrue(dashboard.check_openrgb_private(logs.append))
+            run.assert_not_called()
+        # It gets a moment: systemd moves it just after starting it.
+        seen = iter([HOST_NETWORK, HOST_NETWORK, 'net:[9]', HOST_NETWORK])
+        with mock.patch.object(dashboard, 'main_pid', return_value=42), \
+                mock.patch.object(dashboard, 'network_of', side_effect=lambda pid: HOST_NETWORK if pid == 1 else next(seen)):
+            self.assertTrue(dashboard.openrgb_private(sleep=lambda _: None))
+        with mock.patch.object(dashboard, 'main_pid', return_value=None):
+            self.assertTrue(dashboard.openrgb_private(sleep=lambda _: None))   # not running: nothing to tell
 
     def test_only_the_control_service_runs_as_root_and_it_always_gives_fans_back(self):
         units = dashboard.control_units(self.code, True, data=Path('/srv/n'))
@@ -312,9 +470,10 @@ class SwitchingOffAndBackupTests(unittest.TestCase):
                     mock.patch.object(dashboard, 'systemctl') as ctl, \
                     mock.patch.object(dashboard.subprocess, 'run', side_effect=run):
                 dashboard.start_services(definitions, Path('/x'), True, lambda *_: None)
-            self.assertIn(['systemctl', 'disable', '--now', dashboard.OPENRGB], calls)
-            self.assertFalse(any(dashboard.CONTROL in c for c in calls), 'fan control is not stopped')
-            self.assertIn(('restart', dashboard.CONTROL), [c.args for c in ctl.call_args_list])
+            self.assertIn(['systemctl', 'disable', '--now', dashboard.PROXY_SOCKET, dashboard.PROXY, dashboard.OPENRGB], calls)
+            self.assertFalse(any(dashboard.CONTROL in c for c in calls), 'fan control is not switched off')
+            self.assertIn(('stop', dashboard.CONTROL), [c.args for c in ctl.call_args_list])
+            self.assertIn(enabled(dashboard.CONTROL), [c.args for c in ctl.call_args_list])
             self.assertTrue(journal.exists())
 
     def test_switching_fan_control_off_finishes_only_once_every_fan_is_back(self):

@@ -2,11 +2,15 @@
 
 **Easiest way:** `sudo bash install.sh --recover` opens a guided menu: photos and videos, Nextcloud files, the app password list, app settings, Steam/Samba settings, or a whole monthly snapshot. It lists the backups by date and restores into a new folder, never over what you have now. The rest of this page explains the underlying tools for advanced use.
 
-**Restore only the files you had.** The weekly photo and Nextcloud copies only ever add files. A file you deleted on purpose is still on them, and a renamed or moved file is there under both its old and its new name. So since 0.39.6 each weekly copy also writes down which files you had at that moment, and which saved copy holds each one's content then. These lists are kept in a hidden `.neko-inventory` folder in the backup (the newest 26, about half a year). When you restore photos or Nextcloud files, the recovery menu asks **Which files?**:
+**Restore only the files you had.** The weekly photo and Nextcloud copies only ever add files. A file you deleted on purpose is still on them, and a renamed or moved file is there under both its old and its new name. So since 0.39.6 each weekly copy also writes down which files you had at that moment, and which saved copy holds each one's content then. These lists are kept in a hidden `.neko-inventory` folder in the backup (the newest 26). A run writes a new list only when something changed since the last one (the monthly check right after a weekly copy, or a week without changes, adds none), so with the weekly schedule they reach back at least half a year. With the older `"backup_schedule": "legacy"` for photos (a copy every few hours), the photo lists can cover only days. When you restore photos or Nextcloud files, the recovery menu asks **Which files?**:
 
 - **As of the last backup** (recommended): only the files you had at the newest weekly copy, each as it was then. Deleted files stay out, and a renamed file comes back only under its new name.
 - **As of an earlier backup**: the same for a date you pick from the list.
 - **Everything ever kept**: every file the backup has, also the ones you deleted or renamed (the newest version of each, or every version).
+
+Each run notes, before it copies anything, that it has started (`.neko-inventory/last-run.json`, "pending"), and marks itself complete only once its files, checksum list and list of files are all written. If the newest backup did not finish (it was cut off part-way, or its list could not be written, a full drive say), it is shown as incomplete on the dashboard (when its list failed), and the menu does not offer the older list as "the last backup": it says the newest backup did not finish, that the newest complete list is from an earlier date and leaves out the files backed up after it, and recommends **Everything ever kept**. The older list is still offered, named by its date.
+
+**Where a restore goes.** Restores go into a new folder in `restored/` on the HDD, but only while the HDD is mounted and is the drive in your settings. When it has failed or is unplugged, its folder is an empty one on the system disk; the menu then says so and asks you to type a folder on another drive (one under the HDD's folder is refused), so a restore never fills the system disk.
 
 Each list also keeps the checksum of every file's content, so a date restores exactly what you had then: also when a file later became a folder (and the backup moved its saved copy into `neko-replaced`), or a new file took its name. A file whose content no saved copy holds any more is named as not restored, never replaced by another file's content. Lists written by 0.39.6 have no checksums yet: a file that became a folder (or the other way round) after such a list is left out of that date's restore, and the menu says so; "Everything ever kept" still has every saved copy of it. A backup made before 0.39.6 has no list yet. Then the menu says so and restores everything ever kept, as before: look through the restore folder and delete what you had removed before uploading the rest. A list that can't be read is never used; the menu then offers everything too. A photo still being written during a weekly copy is not in that copy yet, so it is not in its list either.
 
@@ -28,8 +32,8 @@ Apply this release's foundation profile once to preserve the recovery tools and 
 
 ```bash
 sudo bash install.sh --profile foundation --apply
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py check
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py checkpoint --apply
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py check
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py checkpoint --apply
 ```
 
 Save the current config.json, host-checkpoint.json, installer bundle and independent backups somewhere accessible outside the OS disk before replacing the OS. Keep the configured media UID/GID and note the Docker version (the reinstalled Linux needs that version or newer). Configuration contains drive identities; application secrets belong in the protected Compose/appdata files and snapshot bundles. Do not put those secrets into ordinary logs.
@@ -38,11 +42,11 @@ Save the current config.json, host-checkpoint.json, installer bundle and indepen
 
 The snapshot reads the existing pinned Immich deployment and the containers it actually uses. It checks the standard upload/database mounts and matches database credentials/routing. External libraries and custom services/hardware/user settings require a manual recovery plan; the tool refuses to silently omit them.
 
-Choose a new name directly beneath recovery-snapshots on the application SSD or media HDD. Free space must cover the full upload copy, a database size allowance and reserve. Snapshot creation can take a long time for large libraries; it keeps Immich's running non-database services paused during copy/dump. Do not perform other Immich maintenance at the same time. Before stopping them it records which ones it stopped and installs a one-time boot hook (`nekoserver-immich-snapshot-resume.service`). So if the PC loses power or the command is killed part-way, Immich is started again at the next boot. You can also run `sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py resume` to start it yourself. The record and the hook are removed only after the services are confirmed running.
+Choose a new name directly beneath recovery-snapshots on the application SSD or media HDD. Free space must cover the full upload copy, a database size allowance and reserve. Snapshot creation can take a long time for large libraries; it keeps Immich's running non-database services paused during copy/dump. Do not perform other Immich maintenance at the same time. Before stopping them it records which ones it stopped and installs a one-time boot hook (`nekoserver-immich-snapshot-resume.service`). So if the PC loses power or the command is killed part-way, Immich is started again at the next boot. You can also run `sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py resume` to start it yourself. The record and the hook are removed only after the services are confirmed running.
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py snapshot --destination /mnt/nekoserver-media/recovery-snapshots/first-test
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py snapshot --destination /mnt/nekoserver-media/recovery-snapshots/first-test --apply
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py snapshot --destination /mnt/nekoserver-media/recovery-snapshots/first-test
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py snapshot --destination /mnt/nekoserver-media/recovery-snapshots/first-test --apply
 ```
 
 The completed directory contains upload/, database.sql, compose-resolved.json and snapshot.json. All files are hashed; images are pinned by digest. An .incomplete marker means a failed snapshot and blocks restoration. Use a new name when retrying; published files are never overwritten. An interrupted snapshot records the original services to resume in its private .incomplete marker; if the process was forcibly killed, inspect and resume those services manually. If service resumption fails, the command reports failure even if the snapshot was already completed; inspect and resume the original services locally.
@@ -56,8 +60,8 @@ Old standalone SQL dumps and the add-only archive cannot be passed as this match
 Use a fresh workspace directly under recovery-tests on either SSD/HDD, with enough capacity for both the copied upload tree and a fresh database. The database requires POSIX ownership/permissions. The default test port is 2284, while live Immich uses 2283. No existing workspace is reused, including one left by a failed test.
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py restore-test --snapshot /mnt/nekoserver-media/recovery-snapshots/first-test --workspace /srv/nekoserver/recovery-tests/first-test
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py restore-test --snapshot /mnt/nekoserver-media/recovery-snapshots/first-test --workspace /srv/nekoserver/recovery-tests/first-test --apply --confirm RESTORE-ISOLATED
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py restore-test --snapshot /mnt/nekoserver-media/recovery-snapshots/first-test --workspace /srv/nekoserver/recovery-tests/first-test
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py restore-test --snapshot /mnt/nekoserver-media/recovery-snapshots/first-test --workspace /srv/nekoserver/recovery-tests/first-test --apply --confirm RESTORE-ISOLATED
 ```
 
 The tool verifies the snapshot, creates separate upload/Postgres/cache directories, generates protected Compose JSON and chooses a unique neko-restore-* project. Container/volume/network names and storage paths are independent of production. The test network has no way out (no IP masquerading), so outbound integrations are limited: its fresh ML cache may lack downloadable models, and OAuth/external services may not work during this isolated rehearsal. The published test address on this PC works. Local password login and media recovery are the acceptance focus.
@@ -84,7 +88,7 @@ Do not substitute the production project name. Automatic destructive cleanup and
 
 This path supports x86_64 Arch/Nyarch, Debian/Ubuntu, Fedora, RHEL / Rocky / AlmaLinux and openSUSE (tried on AlmaLinux 10 and openSUSE Tumbleweed; not yet on Fedora) with the classic overlay2 Docker store, and a Docker client/daemon of the version that last ran the apps or newer (an older one is refused: it may not read the store). App data moves between them; host settings (the host backup) belong to the Linux they came from, so restore those only onto the same family. Bazzite/Podman conversion is blocked. A UID/GID change, drive replacement or storage-backend migration needs a separate validated plan.
 
-1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.40.0/config.json` (and, when the settings change, the earlier ones beside it as `config.previous-<date-time>.json`: the oldest always, and the newest four after it; when a rebuilt copy of the same release replaces the kept one, as after reinstalling Linux, its settings and their earlier copies move into the new one, so they are still there), next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
+1. While the old OS works, finish checkpoint/backup preparation above and copy your settings file, `my-config.json` in the installer folder, off the OS drive. Setup also keeps a copy on the application SSD, `/srv/nekoserver/installer/releases/v0.40.1/config.json` (and, when the settings change, the earlier ones beside it as `config.previous-<date-time>.json`: the oldest always, and the newest four after it; when a rebuilt copy of the same release replaces the kept one, as after reinstalling Linux, its settings and their earlier copies move into the new one, so they are still there), next to the host checkpoint (`installer/host-checkpoint.json`) that setup records by itself; each nightly app backup keeps the Docker version in it current, as the OS's own updates move Docker on. Keep independent backups of important appdata/Compose/VM/media state; the photo snapshot covers Immich rather than every application.
 2. Install the new OS onto the 256GB OS SSD only. Keep data SSD/HDD contents intact. Recreate the desktop user with the expected UID/GID.
 3. Download the installer (the same release), put your saved settings file next to `install.sh` as `my-config.json`, and run a normal setup:
 
@@ -92,7 +96,7 @@ This path supports x86_64 Arch/Nyarch, Debian/Ubuntu, Fedora, RHEL / Rocky / Alm
 sudo bash install.sh
 ```
 
-It mounts the drives itself (the storage step never formats) and builds NekoServer's program for this Linux, which also replaces the copy kept on the SSD: the one the old Linux built may not start on this one (one built on Arch, Ubuntu 24.04 or Fedora does not start on Debian 12), and the reattach in step 5 needs it. Until step 5 is done, that run stops at the Docker step and points here: that is expected, it never takes over the existing app store by itself.
+It mounts the drives itself (the storage step never formats) and builds NekoServer's program for this Linux, which also replaces the copy kept on the SSD: the one the old Linux built may not start on this one (one built on Arch, Ubuntu 24.04 or Fedora does not start on Debian 12), and the reattach in step 5 needs it. Until step 5 is done, that run stops at the Docker step and points here: that is expected, it never takes over the existing app store by itself. A Btrfs pool over several drives is mounted and recognised like a single drive. Leave any copy of the SSD or HDD (made with `dd` or Clonezilla) unplugged: the drive checks refuse while two drives look the same. An encrypted drive must be listed in `/etc/crypttab` on the new Linux too; setup says which one.
 
 If you did not save the settings file, take the copy from the SSD first. Find the SSD with `lsblk -f` (by its size or label; `FSTYPE` shows ext4, xfs or btrfs), then, in the downloaded installer's folder, mount it read-only. The extra option keeps even a drive that was not shut down cleanly from being written to (a plain `-o ro` still finishes its journal): `noload` for ext4, `norecovery` for XFS, `nologreplay` for Btrfs. A Btrfs SSD used with a subvolume (`"subvolume"` under `data_ssd` in the settings, `/@data` say) is mounted with that subvolume:
 
@@ -101,7 +105,7 @@ sudo mkdir -p /mnt/neko-ssd-read
 sudo mount -o ro,noload /dev/sdX /mnt/neko-ssd-read             # ext4
 # sudo mount -o ro,norecovery /dev/sdX /mnt/neko-ssd-read       # XFS
 # sudo mount -o ro,nologreplay,subvol=/@data /dev/sdX /mnt/neko-ssd-read   # Btrfs with a subvolume (yours may have another name)
-sudo cp /mnt/neko-ssd-read/installer/releases/v0.40.0/config.json my-config.json
+sudo cp /mnt/neko-ssd-read/installer/releases/v0.40.1/config.json my-config.json
 # If setup already ran on the new Linux with new settings, that file holds those: take
 # the config.previous-<date-time>.json beside it whose "storage" UUIDs are your drives'
 # (the oldest one there is never removed, so the settings from before are kept).
@@ -109,21 +113,21 @@ sudo chown "$USER": my-config.json
 sudo umount /mnt/neko-ssd-read
 ```
 
-(Not sure which Btrfs subvolume? Mount the whole filesystem with `sudo mount -o ro,nologreplay,subvolid=5 /dev/sdX /mnt/neko-ssd-read`: each subvolume is a folder there, and the settings are in the one holding `installer/`, at `/mnt/neko-ssd-read/@data/installer/releases/v0.40.0/config.json` for `/@data`.) Then run `sudo bash install.sh` as above. Mounting only the drives, without the rest of setup, is `sudo bash install.sh --config /path/to/my-config.json --module storage --apply`; it does not replace the program kept on the SSD, so run the normal setup before step 5 anyway. Settings that lived on the old system disk are asked for again: the dashboard PIN, the Samba password, the Tailscale sign-in and the backup password (a new backup key; monthly snapshots made before still open with the password they were made with, see "App password files" below). The gateway's certificate authority is kept on the SSD, so phones that trusted it keep doing so; setup hands its files to the new Linux's caddy account.
+(Not sure which Btrfs subvolume? Mount the whole filesystem with `sudo mount -o ro,nologreplay,subvolid=5 /dev/sdX /mnt/neko-ssd-read`: each subvolume is a folder there, and the settings are in the one holding `installer/`, at `/mnt/neko-ssd-read/@data/installer/releases/v0.40.1/config.json` for `/@data`.) Then run `sudo bash install.sh` as above. Mounting only the drives, without the rest of setup, is `sudo bash install.sh --config /path/to/my-config.json --module storage --apply`; it does not replace the program kept on the SSD, so run the normal setup before step 5 anyway. Settings that lived on the old system disk are asked for again: the dashboard PIN, the Samba password, the Tailscale sign-in and the backup password (a new backup key; monthly snapshots made before still open with the password they were made with, see "App password files" below). The gateway's certificate authority is kept on the SSD, so phones that trusted it keep doing so; setup hands its files to the new Linux's caddy account.
 
 4. Install Docker the way setup does, and keep it stopped (a Docker that starts on its own makes a fresh, empty store of its own):
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py install-docker --apply
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py install-docker --apply
 ```
 
 It takes Docker's own packages on Debian, Ubuntu, Fedora and RHEL (from Docker's repository, which setup adds) and the system's on Arch and openSUSE, with the Compose plugin, and leaves `docker.service` and `docker.socket` stopped. It must be the version the host checkpoint names (`docker_version`) or newer. Debian's own `docker.io` is usually older (20.10 on Debian 12) and is refused: if you installed it, remove it first (`sudo apt remove docker.io`). If you installed Docker yourself, stop it before step 5: `sudo systemctl stop docker.service docker.socket`. If /var/lib/docker already contains data, recovery refuses it for review.
 5. From the verified persistent release, preview and then explicitly confirm reattachment:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py check
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py reattach
-sudo python3 /srv/nekoserver/installer/releases/v0.40.0/recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py check
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py reattach
+sudo python3 /srv/nekoserver/installer/releases/v0.40.1/recover.py reattach --apply --confirm YOUR_APPLICATION_SSD_UUID
 ```
 
 `check` also says when NekoServer's program kept on the SSD does not start on this Linux; then run `sudo bash install.sh` (step 3) first. The UUID must exactly match storage.data_ssd.uuid. The tool installs the mount/UUID guard before daemon configuration/startup. The existing Docker store's restart policies may start its existing containers. Failed post-start verification stops Docker and its socket. The tool preserves foreign configuration and refuses an automatic ownership or backend change, or an older Docker; after a successful takeover the host checkpoint names the Docker version now running.

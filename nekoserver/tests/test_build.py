@@ -1,4 +1,5 @@
 """The runtime build (runtime/build.py): static when the toolchain can, else for this PC."""
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -67,6 +68,12 @@ class FailureTests(unittest.TestCase):
             self.assertEqual(build.cli(), 1)
         self.assertIn(['cargo', 'build', '--release', '--locked', '--offline'], calls)
         self.assertLess(calls.index(['cargo', 'fetch', '--locked']), calls.index(['cargo', 'build', '--release', '--locked', '--offline']))
+        # The retried download is the first cargo call, and none after it uses the network
+        # (cleaning reads crates.io's index too, so it once failed first, called a failed clean).
+        cargo_calls = [argv for argv in calls if argv[0] == 'cargo']
+        self.assertEqual(cargo_calls[0], ['cargo', 'fetch', '--locked'])
+        self.assertTrue(all('--offline' in argv for argv in cargo_calls[1:]), cargo_calls)
+        self.assertIn(['cargo', 'clean', '--release', '--offline', '-p', 'nekoserver-runtime'], cargo_calls)
         printed = ''.join(c.args[0] for c in stderr.write.call_args_list)
         self.assertIn('ERROR: building the runtime: Compiling the runtime failed', printed)
         self.assertNotIn('Traceback', printed)
@@ -306,8 +313,51 @@ class ToolchainTests(unittest.TestCase):
     def test_the_plain_rust_when_it_is_new_enough(self):
         import host
         family = self.Family()
-        host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 85))
-        self.assertEqual(family.installed, [['rust', 'gcc']])
+        host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 85), which=lambda name: '/usr/bin/' + name)
+        self.assertEqual(family.installed, [['gcc']])     # the Rust already there stays as it is
+
+    def test_debian_12s_rustc_web_already_there_is_kept_on_every_later_run(self):
+        """An update, or a retry after the build failed: rustc-web provides rustc but is not
+        the package rustc, and asking apt for rustc would replace it with the older 1.63."""
+        import host
+        family = self.Family(ubuntu=False, offers={'rustc': (1, 63), 'rustc-web': (1, 85)}, has={'rustc-web', 'cargo-web', 'gcc'})
+        host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 85), which=lambda name: '/usr/bin/' + name)
+        self.assertEqual(family.installed, [['gcc']])
+        self.assertFalse(any(name in ('rust', 'rustc', 'cargo') for names in family.installed for name in names))
+
+    def test_a_new_enough_rustc_without_cargo_gets_the_cargo_that_goes_with_it(self):
+        import host
+        family = self.Family(ubuntu=False, offers={'rustc': (1, 63), 'rustc-web': (1, 85)}, has={'rustc-web'})
+        host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 85), which=lambda name: None)
+        self.assertEqual(family.installed, [['gcc', 'cargo-web']])
+        family = self.Family()
+        family.name = 'fedora'
+        host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 85), which=lambda name: None)
+        self.assertEqual(family.installed, [['gcc', 'rust']])
+
+    def test_following_the_switch_advice_ends_the_loop_through_real_apt(self):
+        """Through the real Debian family: after  apt install rustc-web cargo-web  (the
+        advice when an older rustc is installed) the next run asks apt for nothing of Rust's."""
+        import host
+        apt = []
+        present = {'rustc-web', 'cargo-web'}
+
+        def run(argv, **kw):
+            if argv[0] == 'dpkg-query':
+                there = argv[-1] in present
+                return mock.Mock(returncode=0 if there else 1, stdout='install ok installed' if there else '', stderr='')
+            apt.append(argv) if argv[0] == 'apt-get' else None
+            return mock.Mock(returncode=0, stdout='', stderr='')
+        with mock.patch('host.shutil.which', return_value='/usr/bin/apt-get'), mock.patch('host.setup_progress.packages'):
+            family = host.Debian(run, {'ID': 'debian', 'VERSION_ID': '12', 'VERSION_CODENAME': 'bookworm'})
+            family.refreshed, family.journal, family._reconcile = True, None, lambda: None
+            family.prepare, family.protect = (lambda *a: {}), (lambda *a: None)
+            family.locked = contextlib.nullcontext      # not this test PC's package lock
+            host.toolchain(family, log=lambda line: None, oldest=(1, 85), version=lambda: (1, 85), which=lambda name: '/usr/bin/' + name)
+        installs = [argv for argv in apt if 'install' in argv]
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0][-1], 'gcc')
+        self.assertFalse({'rustc', 'cargo'} & set(installs[0]))
 
     def test_ubuntus_versioned_rust_when_the_plain_one_is_too_old(self):
         import host

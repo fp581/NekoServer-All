@@ -1,9 +1,9 @@
 """Install combined weekly photo preservation, retiring old frequent archive timers."""
 import native_runtime
 import os,subprocess
-from neko_common import VERSION, SYSTEMD_UNITS
+from neko_common import RESUME_TIMEOUT, VERSION, SYSTEMD_UNITS
 from pathlib import Path
-from neko_common import safe_path, relative_path, atomic_write, host_timezone
+from neko_common import safe_path, relative_path, atomic_write, host_timezone, forget_last_run
 DEPENDENCIES=['photos']
 DESCRIPTION='Weekly additive archival of SSD Immich originals and database backup'
 
@@ -11,13 +11,43 @@ def command_line(binary,guard,data,media,age,archive,keep):
     """The runtime command the timer runs (tests check it against the real program)."""
     return f'{binary} preservation --config {guard} --data {data} --media {media} --min-age {age} --archive-dir {archive} --db-keep {keep}'
 
+# The weekly run pauses Immich for its last photos and the database copy (backup.rs
+# paused_backup). Its resume starts Immich again: when the run ends in any way
+# (ExecStopPost), and at boot after a power cut.
+RESUME='nekoserver-immich-resume'
+
+def resume_command(binary,guard):
+    return f'{binary} immich-resume --config {guard}'
+
+def resume_unit(binary,guard,data,media):
+    return (f'[Unit]\nDescription={RESUME}\nRequiresMountsFor={data} {media}\nAfter=docker.service\nRequires=docker.service\n'
+            f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\nExecStart={resume_command(binary,guard)}\n'
+            '[Install]\nWantedBy=multi-user.target\n')
+
+# The job that makes the Immich database copy (and pauses Immich for it).
+DB_BACKUP=' --db-backup'
+
+def service_text(name,cmd,data,media,binary,guard):
+    """A job's unit. The one that makes the database copy pauses Immich: whenever it ends
+    (finished, failed, stopped or cut off), its ExecStopPost starts Immich again."""
+    text=f'[Unit]\nDescription={name}\nRequiresMountsFor={data} {media}\n[Service]\nType=oneshot\nExecStart={cmd}\n'
+    if cmd.endswith(DB_BACKUP):
+        text+=f'ExecStopPost={resume_command(binary,guard)}\nTimeoutStopSec={RESUME_TIMEOUT}\n'
+    return text
+
+def install_resume(binary,guard,data,media):
+    resume=SYSTEMD_UNITS/(RESUME+SERVICE);text=resume_unit(binary,guard,data,media)
+    if resume.exists() and f'Description={RESUME}' not in resume.read_text():raise RuntimeError(f'Unmanaged existing unit: {resume}')
+    safe_path(resume);atomic_write(resume,text,0o644)
+
 def require_mounts(*paths):
     for p in paths:
         if p.is_symlink() or subprocess.run(['findmnt','-n','--mountpoint',str(p)],stdout=subprocess.DEVNULL,check=False,timeout=30).returncode:raise RuntimeError(f'Missing mount: {p}')
 
 # The schedules this step installs (legacy and weekly); the USB copy has its own.
 TIMER='.timer'
-UNITS=[name+suffix for name in ('nekoserver-photo-preservation','nekoserver-immich-db-backup') for suffix in (TIMER,'.service')]
+SERVICE='.service'
+UNITS=[name+suffix for name in ('nekoserver-photo-preservation','nekoserver-immich-db-backup') for suffix in (TIMER,SERVICE)]+[RESUME+SERVICE]
 
 def switch_off(ctx, units=None, run=subprocess.run):
     """No Immich, no photos to keep: no schedule. Ones an earlier setup installed are
@@ -45,7 +75,8 @@ def run(ctx):
     binary=native_runtime.deploy(Path(__file__).resolve().parents[1],cfg,runtime)
     keep=opts.get('database_keep',4)
     if type(keep) is not int or not 0<=keep<=520:raise RuntimeError('photos.database_keep must be a whole number from 0 to 520')
-    base=command_line(binary,native_runtime.backup_guard(cfg),data,media,age,archive,keep)
+    guard=native_runtime.backup_guard(cfg)
+    base=command_line(binary,guard,data,media,age,archive,keep)
     schedule=opts.get('backup_schedule','legacy')
     if schedule not in ('legacy','weekly'):raise RuntimeError('Invalid photo backup schedule')
     day=opts.get('backup_weekday','Sun')
@@ -55,22 +86,24 @@ def run(ctx):
         retire([SYSTEMD_UNITS/('nekoserver-photo-preservation.'+suffix) for suffix in ('timer','service')],subprocess.run)
     services={
       'nekoserver-photo-preservation':(base,f'OnBootSec=10min\nOnUnitInactiveSec={interval}min\n'),
-      'nekoserver-immich-db-backup':(base+' --db-backup',f'OnCalendar=*-*-* {tm}:00 {host_timezone(cfg)}\nPersistent=true\n')}
-    if schedule=='weekly':services={'nekoserver-immich-db-backup':(base+' --db-backup',f'OnCalendar={day} *-*-* {tm}:00 {host_timezone(cfg)}\nPersistent=true\n')}
+      'nekoserver-immich-db-backup':(base+DB_BACKUP,f'OnCalendar=*-*-* {tm}:00 {host_timezone(cfg)}\nPersistent=true\n')}
+    if schedule=='weekly':services={'nekoserver-immich-db-backup':(base+DB_BACKUP,f'OnCalendar={day} *-*-* {tm}:00 {host_timezone(cfg)}\nPersistent=true\n')}
     # The DB job also archives to keep an identical fail-closed precondition.
     for name,(cmd,calendar) in services.items():
-        service=SYSTEMD_UNITS/(name+'.service');timer=SYSTEMD_UNITS/(name+TIMER)
-        service_text=f'[Unit]\nDescription={name}\nRequiresMountsFor={data} {media}\n[Service]\nType=oneshot\nExecStart={cmd}\n'
+        service=SYSTEMD_UNITS/(name+SERVICE);timer=SYSTEMD_UNITS/(name+TIMER)
         timer_text=f'[Unit]\nDescription={name} timer\n[Timer]\n{calendar}\n[Install]\nWantedBy=timers.target\n'
-        for target,text in ((service,service_text),(timer,timer_text)):
+        for target,text in ((service,service_text(name,cmd,data,media,binary,guard)),(timer,timer_text)):
             content=text.replace('\\n','\n')
             if target.exists() and target.read_text()!=content:
                 previous=target.read_text()
                 # Require this unit's exact managed description before updating it.
                 if f'Description={name}' not in previous:raise RuntimeError(f'Unmanaged existing unit: {target}')
             safe_path(target)
+            forget_last_run(target)   # a timer created again must not run every missed night at once
             atomic_write(target,content,0o644)
+    install_resume(binary,guard,data,media)
     subprocess.run(['systemctl','daemon-reload'],check=True,timeout=120)
+    subprocess.run(['systemctl','enable',RESUME+SERVICE],check=True,capture_output=True,text=True,timeout=120)
     # Output captured: systemd's "Created symlink" notes stay off the screen; a failure's own
     # words still reach the log (installer.failure_reason).
     for name in services:subprocess.run(['systemctl','enable','--now',name+TIMER],check=True,capture_output=True,text=True,timeout=120)

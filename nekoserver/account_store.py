@@ -47,11 +47,38 @@ def private(path, directory=False):
         raise RuntimeError('Account storage must be private, root-owned and free of linked files')
 
 
-def validate_login(app, username, password, existing=False):
+def control(text):
+    return any(ord(ch) < 32 or 127 <= ord(ch) < 160 for ch in text)
+
+
+def existing_name_ok(app, username):
+    """A login you already have in the app (NekoServer only signs in with it): the names
+    the apps themselves allow, such as `mary.smith`, `Mary Smith`, `1stuser` or Immich's
+    `admin@localhost`. Still refused: control characters, spaces at either end, and for
+    Nextcloud a `:` (it would split the HTTP sign-in) or a leading `-` (Nextcloud's
+    command line would read it as an option)."""
+    if not 1 <= len(username) <= 128 or control(username) or username != username.strip():
+        return False
     if app in EMAIL_LOGINS:
-        valid = bool(re.fullmatch(r'[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', username)) and len(username) <= 128
-    else:
-        valid = bool(re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', username))
+        return bool(re.fullmatch(r'[^\s@]+@[^\s@]+', username))
+    return app != 'nextcloud' or not (':' in username or username.startswith('-'))
+
+
+def name_ok(app, username, existing):
+    """An existing login is taken as the app has it; one NekoServer creates follows its
+    own stricter pattern."""
+    if existing and isinstance(username, str):
+        return existing_name_ok(app, username)
+    if app in EMAIL_LOGINS:
+        return bool(re.fullmatch(r'[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', username)) and len(username) <= 128
+    return bool(re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', username))
+
+
+def validate_login(app, username, password, existing=False):
+    valid = name_ok(app, username, existing)
+    if not valid and existing:
+        raise ValueError('Enter the login exactly as the app has it (1-128 characters, no control characters' +
+                         (', no : and not starting with -' if app == 'nextcloud' else '') + ')')
     if not valid:
         raise ValueError('Enter a valid email login' if app in EMAIL_LOGINS else 'Username: start with a letter; use 1-32 letters, digits, underscores or hyphens')
     if not isinstance(password, str) or not (1 if existing else 12) <= len(password) <= 128 or any(ord(ch) < 32 or ord(ch) == 127 for ch in password):

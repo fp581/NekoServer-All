@@ -176,7 +176,7 @@ def open_seerr(client, root, unfinished):
         raise SetupRequired(unfinished)
 
 
-def seerr(client, root, server_id, library_ids, apply):
+def seerr(client, root, server_id, library_ids, apply, apps=('sonarr', 'radarr')):
     client.headers['X-Api-Key'] = seerr_key(root)
     settings = client.call('/settings/jellyfin')
     if not isinstance(settings, dict) or settings.get('serverId', settings.get('serverID')) != server_id:
@@ -202,8 +202,20 @@ def seerr(client, root, server_id, library_ids, apply):
             results.append(row('seerr:library:' + lib_id, 'pass'))
         else:
             results.append(row('seerr:library:' + lib_id, 'pass' if matches[0].get('enabled') is True else 'needs_setup'))
-    results.append(row('seerr:request_providers', 'needs_setup', 'Run --request-providers and verify a complete request/import/playback on the server'))
+    results.append(request_providers_row(apps))
     return results
+
+
+REQUEST_PROVIDERS = 'seerr:request_providers'
+NOT_NEEDED = 'Not needed: without Sonarr or Radarr, Seerr has no app to send requests to'
+
+
+def request_providers_row(apps):
+    """Seerr sends requests to Sonarr and Radarr. Without either there is nothing to
+    connect (both can be removed and Seerr kept), so the row is not a step left to do."""
+    if not set(apps) & {'sonarr', 'radarr'}:
+        return row(REQUEST_PROVIDERS, 'pass', NOT_NEEDED)
+    return row(REQUEST_PROVIDERS, 'needs_setup', 'Run --request-providers and verify a complete request/import/playback on the server')
 
 
 READINESS_APP = 'NekoServer readiness'
@@ -266,7 +278,7 @@ def configure(root, media, apply=False, apps=('jellyfin', 'seerr'), factory=Clie
             sr = factory('seerr')
             try:
                 try:
-                    results += seerr(sr, root, server_id, ids, apply)
+                    results += seerr(sr, root, server_id, ids, apply, apps)
                 except SetupRequired as exc:
                     results.append(row('seerr:setup', 'needs_setup', str(exc)))
                 except (RuntimeError, ValueError, TypeError, KeyError):

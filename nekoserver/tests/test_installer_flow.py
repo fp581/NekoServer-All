@@ -227,10 +227,10 @@ class FstabTests(unittest.TestCase):
                 mounted[argv[1]] = True
             return ''
         context = mock.Mock(config=config, log=logged.append, persist_config=lambda: saved.append(json.dumps(config)))
-        devices = {'ssd-uuid-0001': Path('/dev/sdb1'), 'hdd-uuid-0001': Path('/dev/sdc1')}
+        devices = {'/srv/nekoserver': ('ssd-uuid-0001', 'btrfs'), '/srv/media': ('hdd-uuid-0001', 'ext4')}
         with mock.patch.object(storage, 'findmnt', side_effect=findmnt), \
                 mock.patch.object(storage, 'call', side_effect=call), \
-                mock.patch.object(storage, 'source_path', side_effect=devices.get), \
+                mock.patch.object(storage, 'mounted_filesystem', side_effect=devices.get), \
                 mock.patch.object(storage.Path, 'mkdir'), \
                 mock.patch.object(storage.Path, 'exists', return_value=True), \
                 mock.patch.object(storage.Path, 'resolve', lambda self: self):

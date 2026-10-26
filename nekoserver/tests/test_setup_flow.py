@@ -78,7 +78,7 @@ class PreflightTests(unittest.TestCase):
         script = (Path(installer.ROOT) / 'install.sh').read_text()
         first = script.index('capabilities.py" preflight')
         self.assertLess(first, script.index('pacman -Syu --noconfirm'))      # before the system update
-        self.assertLess(first, script.index('zypper --non-interactive --quiet refresh'))
+        self.assertLess(first, script.index('zypper_run --quiet refresh'))
         self.assertLess(first, script.index('host.py" bootstrap'))
         second = script.rindex('capabilities.py" preflight')
         self.assertLess(script.index('runtime/build.py'), second)
@@ -234,9 +234,14 @@ class DriveLayoutTests(unittest.TestCase):
         inventory = {'blockdevices': [
             self.disk('sdb', self.fs('sdb1', 'pool', fstype='btrfs')),
             self.disk('sdc', self.fs('sdc1', 'pool', fstype='btrfs'))]}
-        for devices in ({'sdb1': 'dev-1', 'sdc1': 'dev-1'}, {'sdb1': 'dev-1'}):
-            with self.assertRaisesRegex(RuntimeError, 'cloned drives'):
-                storage.discover_filesystems(inventory, devices.get)
+        devices = {'sdb1': 'dev-1', 'sdc1': 'dev-1'}
+        with self.assertRaisesRegex(RuntimeError, 'cloned drives'):
+            storage.discover_filesystems(inventory, devices.get)
+        # A device ID blkid could not read (no sudo) still stops setup, but the drives are
+        # not called copies: it says what could not be read, and to use sudo.
+        with self.assertRaisesRegex(RuntimeError, r'Could not read the Btrfs device ID of /dev/sdc1.*sudo') as caught:
+            storage.discover_filesystems(inventory, {'sdb1': 'dev-1'}.get)
+        self.assertNotIn('clone', str(caught.exception))
 
     def test_lvm_raid_and_encrypted_volumes_are_offered(self):
         from modules import storage
@@ -347,7 +352,7 @@ class FstabTests(unittest.TestCase):
         seen = []
         with mock.patch.object(storage, 'findmnt', side_effect=[None, '/dev/sdb1', '/dev/sdb1']), \
                 mock.patch.object(storage, 'call', side_effect=lambda argv, timeout=30: seen.append(timeout) or ''), \
-                mock.patch.object(storage, 'source_path', return_value=Path('/dev/sdb1').resolve()), \
+                mock.patch.object(storage, 'mounted_filesystem', return_value=('abcd-1234', 'btrfs')), \
                 mock.patch.object(storage, 'mounted_subvolume', return_value=None), \
                 mock.patch.object(storage.Path, 'mkdir'), mock.patch.object(storage.Path, 'exists', return_value=True):
             storage.mount_and_check('abcd-1234', '/srv/nekoserver', None)
@@ -477,6 +482,21 @@ class UsbPickerSystemDiskTests(unittest.TestCase):
                  'mountpoints': ['/home', '/', '/.snapshots']},
                 {'name': 'sda3', 'type': 'part', 'fstype': 'ext4', 'uuid': 'spare'}]}]}
         self.assertEqual(photo_backup.eligible(config, inventory), [])
+
+    def test_every_disk_of_a_btrfs_system_pool_is_the_system_disk(self):
+        # A root pool over sda2 and sdb1: lsblk shows the mount on one member only.
+        from modules import photo_backup
+        config = {'storage': {}, 'external_backup_mount': '/mnt/usb'}
+        inventory = {'blockdevices': [
+            {'name': 'sda', 'type': 'disk', 'children': [
+                {'name': 'sda2', 'type': 'part', 'fstype': 'btrfs', 'uuid': 'pool', 'mountpoints': ['/']}]},
+            {'name': 'sdb', 'type': 'disk', 'children': [
+                {'name': 'sdb1', 'type': 'part', 'fstype': 'btrfs', 'uuid': 'pool'},
+                {'name': 'sdb2', 'type': 'part', 'fstype': 'ext4', 'uuid': 'spare'}]},
+            {'name': 'sdc', 'type': 'disk', 'children': [
+                {'name': 'sdc1', 'type': 'part', 'fstype': 'ext4', 'uuid': 'usb'}]}]}
+        self.assertEqual([r['uuid'] for r in photo_backup.eligible(config, inventory)], ['usb'])
+        self.assertIn('sdb', photo_backup.shared_disk(config, inventory, 'spare'))
 
 if __name__ == '__main__':
     unittest.main()

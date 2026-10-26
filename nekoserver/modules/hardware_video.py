@@ -288,7 +288,9 @@ NO_ENCODER = 'converts video in software: the chip decodes video but has no work
 LOW_POWER_ONLY = ('converts video in software: the chip encodes only in its low-power mode, which Immich '
                   'does not use with VA-API')
 # Results that are an answer (nothing left for you to do), not a step still to finish.
-ANSWERS = (SOFTWARE, SWITCHED_OFF, LOW_POWER_ONLY)
+# A chip that decodes but cannot encode is one too: switching Immich over by hand would
+# only make its video conversions fail.
+ANSWERS = (SOFTWARE, SWITCHED_OFF, LOW_POWER_ONLY, NO_ENCODER)
 
 
 def decisive(state):

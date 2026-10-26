@@ -9,6 +9,10 @@
 //!   published. Only one process writes it at a time (`.neko-ledger.lock`).
 //! * Every path in it is relative, has no `.`/`..`/empty parts, and is opened only
 //!   through folders that are not symlinks.
+//! * The one way an entry leaves: the recovery menu's "accept that this saved copy is
+//!   lost" (recovery_wizard.py). The copy goes to `neko-damaged/`, and its entry moves to
+//!   `retired` with when and why, so the checks stop expecting a copy that is gone for
+//!   good while the record of what it held stays.
 use crate::common::{self, Error, Result};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -52,6 +56,8 @@ pub enum Recorded {
 pub struct Ledger {
     root: PathBuf,
     entries: BTreeMap<String, Entry>,
+    /// Entries given up as lost in the recovery menu, kept as written there.
+    retired: Map<String, Value>,
     unsaved: usize,
     _lock: Option<File>,
 }
@@ -99,6 +105,7 @@ impl Ledger {
     pub fn read(root: &Path) -> Result<Ledger> {
         let path = root.join(LEDGER);
         let mut entries = BTreeMap::new();
+        let mut retired = Map::new();
         if fs::symlink_metadata(&path).is_ok() {
             if !fs::symlink_metadata(&path)?.is_file() {
                 return Err(Error::new("Checksum ledger is not a regular file"));
@@ -131,10 +138,12 @@ impl Ledger {
                     },
                 );
             }
+            retired = retired_rows(&value["retired"])?;
         }
         Ok(Ledger {
             root: root.to_path_buf(),
             entries,
+            retired,
             unsaved: 0,
             _lock: None,
         })
@@ -227,6 +236,13 @@ impl Ledger {
     pub fn entries(&self) -> impl Iterator<Item = (&String, &Entry)> {
         self.entries.iter()
     }
+    /// Whether the recovery menu gave up `rel` as lost while it held `sha256`: another
+    /// copy's ledger that still records it then brings back nothing.
+    pub fn retired_as(&self, rel: &str, sha256: &str) -> bool {
+        self.retired
+            .get(rel)
+            .is_some_and(|row| row["sha256"] == sha256)
+    }
     fn value(&self) -> Value {
         self.value_with(None)
     }
@@ -234,8 +250,17 @@ impl Ledger {
     /// records are never replaced either).
     fn value_with(&self, kept: Option<&Ledger>) -> Value {
         let mut all = self.entries.clone();
+        let mut retired = self.retired.clone();
         if let Some(kept) = kept {
-            all.extend(kept.entries.iter().map(|(k, e)| (k.clone(), e.clone())));
+            all.extend(
+                kept.entries
+                    .iter()
+                    .filter(|(k, e)| !self.retired_as(k, &e.sha256))
+                    .map(|(k, e)| (k.clone(), e.clone())),
+            );
+            for (k, row) in &kept.retired {
+                retired.entry(k.clone()).or_insert_with(|| row.clone());
+            }
         }
         let mut entries = Map::new();
         for (rel, e) in &all {
@@ -244,7 +269,10 @@ impl Ledger {
                 json!({"sha256": e.sha256, "size": e.size, "verified_at": e.verified_at, "how": e.how}),
             );
         }
-        json!({"format": FORMAT, "entries": entries})
+        if retired.is_empty() {
+            return json!({"format": FORMAT, "entries": entries});
+        }
+        json!({"format": FORMAT, "entries": entries, "retired": retired})
     }
     /// Publish the ledger durably (call after the files it lists are published).
     pub fn save(&mut self) -> Result<()> {
@@ -267,6 +295,22 @@ impl Ledger {
     }
 }
 
+/// The `retired` part of a ledger: {path: {sha256, retired_at, why, ...}}. Like the
+/// entries, a row with an unsafe path or no SHA-256 means the ledger is not trusted.
+fn retired_rows(value: &Value) -> Result<Map<String, Value>> {
+    let Some(rows) = value.as_object() else {
+        return Ok(Map::new());
+    };
+    for (rel, row) in rows {
+        if !valid_path(rel) || !row["sha256"].as_str().is_some_and(sha256_hex) {
+            return Err(Error::new(&format!(
+                "Checksum ledger entry is invalid: {}",
+                common::sanitize(rel)
+            )));
+        }
+    }
+    Ok(rows.clone())
+}
 /// The single-writer lock. A program another thread of this job just started can hold
 /// a copy of the lock for an instant before it starts running (its copy is closed then),
 /// so a busy lock is retried briefly before it counts as another writer.
@@ -421,6 +465,41 @@ mod tests {
         assert!(ledger.record("a", "abc123", 1, "copied").is_err()); // too short
         assert!(ledger.record("a", &"A".repeat(64), 1, "copied").is_err()); // not lowercase hex
         let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn an_entry_given_up_as_lost_stays_retired_and_is_not_brought_back() {
+        let root = scratch("retired");
+        let other = scratch("retired-usb");
+        // As the recovery menu writes it: the entry moved to "retired", with why.
+        let text = format!(
+            r#"{{"format":"{FORMAT}","entries":{{"b.txt":{{"sha256":"{B}","size":1}}}},"retired":{{"a.txt":{{"sha256":"{A}","size":1,"retired_at":1,"why":"lost"}}}}}}"#
+        );
+        fs::write(root.join(LEDGER), &text).unwrap();
+        // The other copy's ledger still records the lost copy.
+        fs::write(
+            other.join(LEDGER),
+            format!(r#"{{"format":"{FORMAT}","entries":{{"a.txt":{{"sha256":"{A}","size":1}}}}}}"#),
+        )
+        .unwrap();
+        let mut ledger = Ledger::open(&root).unwrap();
+        assert!(ledger.get("a.txt").is_none());
+        assert!(ledger.retired_as("a.txt", A) && !ledger.retired_as("a.txt", B));
+        ledger.record("c.txt", A, 1, "copied").unwrap();
+        ledger.save().unwrap();
+        let usb = Ledger::read(&other).unwrap();
+        ledger.publish_copy(&other, Some(&usb)).unwrap();
+        for tree in [&root, &other] {
+            let saved: Value =
+                serde_json::from_slice(&fs::read(tree.join(LEDGER)).unwrap()).unwrap();
+            assert!(saved["entries"].get("a.txt").is_none(), "{saved}");
+            assert_eq!(saved["retired"]["a.txt"]["why"], "lost", "{saved}");
+        }
+        // A retired row that is not safe makes the ledger untrusted, like an entry.
+        fs::write(root.join(LEDGER), text.replace("a.txt", "../a.txt")).unwrap();
+        drop(ledger);
+        assert!(Ledger::read(&root).is_err());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(other);
     }
     #[test]
     fn uuids_are_random_version_4() {

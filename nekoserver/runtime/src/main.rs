@@ -52,6 +52,12 @@ impl Args {
 }
 fn main() {
     if let Err(e) = entry() {
+        if common::postponed(&e) {
+            // Gave way to setup: said, but not a failure (systemd and the alerts see a
+            // job that ended well, and it runs again at its next time).
+            println!("{}", common::sanitize(&e.to_string()));
+            return;
+        }
         let stage = common::current_stage();
         eprintln!(
             "NekoServer runtime failed{}: {}. No success recorded.",
@@ -84,12 +90,12 @@ fn entry() -> Result<()> {
         return serve::hardware();
     }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, heartbeat, storage-guard, gateway-guard, drive-return, maintenance, maintenance-resume\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, heartbeat, storage-guard, gateway-guard, drive-return, maintenance, maintenance-resume\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {
         "storage-guard" | "gateway-guard" | "drive-return" | "heartbeat" | "hdd-policy"
-        | "host-snapshot" | "host-resume" => vec!["config"],
+        | "host-snapshot" | "host-resume" | "immich-resume" => vec!["config"],
         "music-backup" | "app-snapshot" | "app-resume" | "maintenance" | "maintenance-resume" => {
             vec!["config"]
         }
@@ -204,6 +210,7 @@ fn entry() -> Result<()> {
             Ok(())
         }
         "preservation" => backup::preservation(&a),
+        "immich-resume" => backup::immich_resume(&a),
         "weekly" => backup::weekly(&a),
         "database" => {
             backup::database(

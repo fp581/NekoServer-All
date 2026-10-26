@@ -14,6 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -58,6 +59,11 @@ def unit_texts():
     texts['docker'] = docker.guard_contents(cfg, BIN.parent)
     texts['photo_preservation'] = 'ExecStart=' + photo_preservation.command_line(
         BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8) + ' --db-backup'
+    texts['photo_preservation_resume'] = photo_preservation.resume_unit(BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media')
+    texts['photo_preservation_service'] = photo_preservation.service_text(
+        'nekoserver-immich-db-backup', photo_preservation.command_line(
+            BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8) + ' --db-backup',
+        '/srv/nekoserver', '/mnt/nekoserver-media', BIN, etc)
     texts['photo_backup'] = 'ExecStart=' + photo_backup.command_line(
         cfg, BIN, etc, 'cccc-3333', 'exfat', '/mnt/nekoserver-media/photos/archive', '/mnt/nekoserver-photos')
     texts['media_monitor'] = 'ExecStart=' + media_monitor.command_line(BIN, etc, '/srv/nekoserver/reports/media/latest.json')
@@ -121,12 +127,21 @@ class GeneratedCommandTests(unittest.TestCase):
                 timer = texts[backup.replace('.service', '.timer')]
                 self.assertIn('Persistent=true', timer)       # why the catch-up happens at boot
 
+    def test_immich_is_started_again_however_its_weekly_backup_ends(self):
+        # The weekly run pauses Immich: its unit's ExecStopPost and a boot-time service
+        # start it again after a failure, a stop or a power cut.
+        texts = unit_texts()
+        self.assertIn('ExecStopPost=' + str(BIN) + ' immich-resume --config', texts['photo_preservation_service'])
+        self.assertIn('WantedBy=multi-user.target', texts['photo_preservation_resume'])
+        self.assertIn('After=docker.service', texts['photo_preservation_resume'])
+
     def test_every_generated_runtime_command_uses_known_options(self):
         table = option_table()
         commands = runtime_commands()
         self.assertGreaterEqual({c for _, c, _, _ in commands},
                                 {'serve', 'collect', 'weekly', 'preservation', 'app-snapshot', 'maintenance',
-                                 'host-snapshot', 'hdd-policy', 'gateway-guard', 'storage-guard', 'media-health'})
+                                 'host-snapshot', 'hdd-policy', 'gateway-guard', 'storage-guard', 'media-health',
+                                 'immich-resume'})
         for where, command, options, _ in commands:
             with self.subTest(unit=where, command=command):
                 self.assertIn(command, table)
@@ -462,6 +477,40 @@ class InstallScriptTests(unittest.TestCase):
         self.assertLess(log.index('ZYPPER --non-interactive --quiet refresh'), log.index('BOOTSTRAP'))
         # zypper fails at once when another zypper runs, unless told how long to wait.
         self.assertIn('ZYPP_LOCK_TIMEOUT=600 zypper', (ROOT / 'install.sh').read_text())
+
+    def test_without_sudo_it_says_how_to_get_it_or_how_to_run_as_root(self):
+        # Debian set up with a root password: no sudo, so "Run it with sudo" led nowhere.
+        no_sudo = (('if (( EUID != 0 )); then\n        if command -v sudo', 'if (( 1 != 0 )); then\n        if command -v no-such-sudo'),)
+        result, log = self.run_script(self.root, replace=no_sudo)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('this PC has no sudo yet', result.stderr)
+        self.assertIn('apt install sudo', result.stderr)
+        self.assertIn('SUDO_USER=', result.stderr)
+        self.assertNotIn('START', log)
+        # As root without an account named, a first run says how to name one; with one, it does not.
+        with mock.patch.dict(os.environ, {'SUDO_USER': ''}):
+            result, _ = self.run_script(self.root)
+        self.assertIn('Started as root, not with sudo', result.stdout)
+        with mock.patch.dict(os.environ, {'SUDO_USER': 'neko'}):
+            result, _ = self.run_script(self.root)
+        self.assertNotIn('Started as root', result.stdout)
+
+    def test_suse_goes_on_when_only_a_repository_was_skipped(self):
+        # One third-party repository that does not answer (a Packman mirror, say) used to stop
+        # setup before it started; a refresh where no repository answered still stops it.
+        self.use_suse()
+        zypper = self.root / 'bin/zypper'
+        for code, last, ok in ((4, 'Some of the repositories have not been refreshed because of an error.', True),
+                               (106, '', True),
+                               (4, 'Could not refresh the repositories because of errors.', False)):
+            with self.subTest(code=code, last=last):
+                zypper.write_text('#!/bin/sh\necho "ZYPPER $*" >> "$LOG"\ncase "$*" in *refresh*) '
+                                  "echo \"Skipping repository 'Packman' because of the above error.\" >&2; "
+                                  f'echo "{last}" >&2; exit {code};; esac\nexit 0\n')
+                result, log = self.run_script(self.root)
+                self.assertEqual(result.returncode == 0, ok, result.stderr)
+                self.assertEqual('BOOTSTRAP' in log, ok)
+                self.assertEqual("The repository 'Packman' could not be reached and was skipped" in result.stderr, ok)   # warnings go to stderr
 
     def test_suse_updates_the_system_when_pythons_own_modules_do_not_load(self):
         # Seen on Leap 16: a fresh Python met a libexpat too old for it (openSUSE's

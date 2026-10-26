@@ -182,7 +182,8 @@ pub struct Gate {
     shared: Allowance,
 }
 /// Where an unlock comes from, as the web server determined it (never the page): the
-/// server itself, or the Tailscale login or address that Tailscale Serve passed on.
+/// server itself, the device's tailnet address (or else its Tailscale login) that
+/// Tailscale Serve passed on, or a program on the server that sent such headers itself.
 fn source_of(request: &Value) -> String {
     if request["local"] == true {
         return LOCAL.to_string();
@@ -193,6 +194,13 @@ fn source_of(request: &Value) -> String {
     }
 }
 const LOCAL: &str = "local";
+/// A program of another account on the server itself that sent Tailscale's headers (the
+/// web server saw that the connection was not Tailscale's). It has its own lockout and
+/// never uses up the wrong PINs that the devices share.
+const PROGRAM: &str = "remote:program:";
+/// The refusal when the devices together typed too many wrong PINs: not this device's
+/// own lockout, so it says so.
+const SHARED_USED_UP: &str = "Too many wrong PINs from other devices together, so phones and tablets must wait (one more try every 2 hours). On the server itself you can still unlock.";
 impl Gate {
     pub fn new(pin: Option<Value>) -> Self {
         Gate {
@@ -218,8 +226,12 @@ impl Gate {
     pub fn unlock(&mut self, pin: &str, request: &Value) -> Value {
         let source = source_of(request);
         let local = source == LOCAL;
-        if (!local && self.shared.used_up()) || self.strikes_for(&source).locked() {
+        let shares = !local && !source.starts_with(PROGRAM);
+        if self.strikes_for(&source).locked() {
             return coded("E45");
+        }
+        if shares && self.shared.used_up() {
+            return refuse("E45", SHARED_USED_UP);
         }
         let Some(record) = &self.pin else {
             return refuse(
@@ -229,7 +241,7 @@ impl Gate {
         };
         if !valid_pin(pin) || !pin_matches(record, pin) {
             self.strikes_for(&source).failed();
-            if !local {
+            if shares {
                 self.shared.left -= 1.0;
             }
             return coded("E44");
@@ -357,16 +369,16 @@ pub struct Lighting {
     pending: bool,
     /// OpenRGB's devices with their lasting names, asked for at most every few seconds.
     devices: Option<(Instant, Vec<(String, openrgb::Device)>)>,
-    port: u16,
+    openrgb: openrgb::Address,
     config: PathBuf,
 }
 impl Lighting {
-    pub fn new(chosen: Value, port: u16, config: PathBuf) -> Self {
+    pub fn new(chosen: Value, openrgb: impl Into<openrgb::Address>, config: PathBuf) -> Self {
         Lighting {
             chosen,
             pending: true,
             devices: None,
-            port,
+            openrgb: openrgb.into(),
             config,
         }
     }
@@ -374,7 +386,7 @@ impl Lighting {
         common::atomic_json(&self.config.join("lights.json"), &self.chosen)
     }
     fn ask(&self) -> std::io::Result<(openrgb::Client, Vec<(String, openrgb::Device)>)> {
-        let mut client = openrgb::Client::connect(self.port)?;
+        let mut client = openrgb::Client::connect(self.openrgb.clone())?;
         let devices = client.devices()?;
         let named = openrgb::identities(&devices)
             .into_iter()
@@ -1223,7 +1235,9 @@ pub fn run(a: &Args) -> Result<()> {
     }
     let service = Service::with(
         fans_state,
-        Lighting::new(chosen, openrgb::PORT, config),
+        // OpenRGB is reached through its root-only Unix socket: this service stays on
+        // the computer's own network (a restarted app is checked to answer there).
+        Lighting::new(chosen, PathBuf::from(openrgb::SOCKET), config),
         Gate::new(pin),
         lighting,
         options,
@@ -1912,7 +1926,7 @@ mod tests {
         // After a restart the same keyboard is /dev/hidraw2: same name, same colour.
         let (port, _) =
             openrgb::tests::fake_server(vec![keyboard("HID: /dev/hidraw2")], Duration::ZERO);
-        s.lights.lock().unwrap().port = port;
+        s.lights.lock().unwrap().openrgb = port.into();
         s.lights.lock().unwrap().devices = None;
         let status = answer(&s, &json!({"op": "status"}));
         assert_eq!(status["lights"]["devices"][0]["chosen"]["color"], "#123456");
@@ -2180,6 +2194,49 @@ mod tests {
         assert_eq!(gate.unlock("4321", &local)["error"], "E45");
         assert_eq!(gate.unlock("4321", &laptop)["ok"], true);
     }
+    /// Two devices of one person (one Tailscale login) have their own tailnet addresses,
+    /// which the web server names first: each has its own lockout.
+    #[test]
+    fn two_devices_of_one_person_are_locked_out_apart() {
+        let mut gate = Gate::new(Some(quick_pin("4321")));
+        let tablet = json!({"source": "ip:100.64.0.7"});
+        let phone = json!({"source": "ip:100.64.0.8"});
+        for _ in 0..MAX_TRIES {
+            assert_eq!(gate.unlock("0000", &tablet)["error"], "E44");
+        }
+        assert_eq!(gate.unlock("4321", &tablet)["error"], "E45");
+        assert_eq!(gate.unlock("4321", &phone)["ok"], true);
+    }
+    /// Programs on the server pretending to be devices can't use up what the devices
+    /// share; when the devices did, the refusal says so instead of blaming this device.
+    #[test]
+    fn local_programs_never_use_up_the_devices_allowance() {
+        let mut gate = Gate::new(Some(quick_pin("4321")));
+        for n in 0..SHARED_TRIES as usize * 2 {
+            let program = json!({"source": format!("program:{}", 1000 + n)});
+            assert_eq!(gate.unlock("0000", &program)["error"], "E44");
+        }
+        assert_eq!(gate.shared.left, SHARED_TRIES);
+        assert_eq!(
+            gate.unlock("4321", &json!({"source": "ip:100.64.0.7"}))["ok"],
+            true
+        );
+        // A program has its own lockout, with the usual message.
+        let program = json!({"source": "program:1000"});
+        for _ in 0..MAX_TRIES {
+            gate.unlock("0000", &program);
+        }
+        let refused = gate.unlock("4321", &program);
+        assert_eq!(refused["error"], "E45");
+        assert_eq!(refused["message"], crate::serve::error_message("E45"));
+        // The devices' allowance used up: the message names that cause.
+        gate.shared.left = 0.0;
+        let refused = gate.unlock("4321", &json!({"source": "ip:100.64.0.9"}));
+        assert_eq!(
+            (refused["error"].as_str(), refused["message"].as_str()),
+            (Some("E45"), Some(SHARED_USED_UP))
+        );
+    }
     #[test]
     fn many_devices_guessing_side_by_side_are_still_stopped() {
         let mut gate = Gate::new(Some(quick_pin("4321")));
@@ -2401,7 +2458,7 @@ mod review_rgb_extra_tests {
         lighting.apply(None).unwrap();
         lighting.pending = false;
         let (port2, seen) = openrgb::tests::fake_server(vec![body], Duration::ZERO);
-        lighting.port = port2;
+        lighting.openrgb = port2.into();
         lighting.devices = None;
         let status = lighting.status();
         assert_eq!(status["devices"][0]["chosen"]["color"], "#00ff00");
