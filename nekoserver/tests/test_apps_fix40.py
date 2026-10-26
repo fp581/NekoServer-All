@@ -79,8 +79,9 @@ class NextcloudTwoFactorTests(unittest.TestCase):
 
     def test_a_wrong_password_without_two_factor_still_fails(self):
         import account_setup
+        docker = occ(False)
         with self.assertRaises(account_setup.HTTPFailure):
-            self.check(occ(False))
+            self.check(docker)
 
     def test_a_password_that_works_needs_no_note(self):
         self.assertIsNone(self.check(occ(False), refuse=False))

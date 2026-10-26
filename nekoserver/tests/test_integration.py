@@ -510,7 +510,7 @@ class InstallScriptTests(unittest.TestCase):
                 result, log = self.run_script(self.root)
                 self.assertEqual(result.returncode == 0, ok, result.stderr)
                 self.assertEqual('BOOTSTRAP' in log, ok)
-                self.assertEqual("The repository 'Packman' could not be reached and was skipped" in result.stdout, ok)
+                self.assertEqual("The repository 'Packman' could not be reached and was skipped" in result.stderr, ok)   # warnings go to stderr
 
     def test_suse_updates_the_system_when_pythons_own_modules_do_not_load(self):
         # Seen on Leap 16: a fresh Python met a libexpat too old for it (openSUSE's

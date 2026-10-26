@@ -251,8 +251,9 @@ class WindowTests(unittest.TestCase):
         table.unlink()                                  # an owner that can't be told is refused too
         refused = setup_gui.Window(self.settings, self.config, wizard.STEPS, [], owners={0}, tables=(table,))
         self.addCleanup(refused.stop)
+        browser, url = self.cookie_browser(), refused.url
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.cookie_browser().open(refused.url, timeout=5)
+            browser.open(url, timeout=5)
         self.assertEqual(caught.exception.code, 403)
 
     def test_the_owner_of_a_connection_is_read_from_the_kernels_tables(self):

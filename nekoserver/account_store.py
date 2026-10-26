@@ -64,13 +64,18 @@ def existing_name_ok(app, username):
     return app != 'nextcloud' or not (':' in username or username.startswith('-'))
 
 
-def validate_login(app, username, password, existing=False):
+def name_ok(app, username, existing):
+    """An existing login is taken as the app has it; one NekoServer creates follows its
+    own stricter pattern."""
     if existing and isinstance(username, str):
-        valid = existing_name_ok(app, username)
-    elif app in EMAIL_LOGINS:
-        valid = bool(re.fullmatch(r'[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', username)) and len(username) <= 128
-    else:
-        valid = bool(re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', username))
+        return existing_name_ok(app, username)
+    if app in EMAIL_LOGINS:
+        return bool(re.fullmatch(r'[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', username)) and len(username) <= 128
+    return bool(re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', username))
+
+
+def validate_login(app, username, password, existing=False):
+    valid = name_ok(app, username, existing)
     if not valid and existing:
         raise ValueError('Enter the login exactly as the app has it (1-128 characters, no control characters' +
                          (', no : and not starting with -' if app == 'nextcloud' else '') + ')')

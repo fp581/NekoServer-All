@@ -70,10 +70,10 @@ zypper_run() {
     { retrying env ZYPP_LOCK_TIMEOUT=600 zypper --non-interactive "$@" 2>&1 | tee "$output"; code=${PIPESTATUS[0]}; } || true
     if (( code == 106 )) || { (( code != 0 )) && grep -q 'Some of the repositories have not been refreshed' "$output"; }; then
         skipped=$(grep -oE "(Skipping repository|Problem retrieving files from) '[^']+'" "$output" | grep -oE "'[^']+'" | sort -u | paste -sd ' ' -) || true
-        echo "The repository ${skipped:-named above} could not be reached and was skipped; going on with the other repositories. If it stays away, turn it off with  sudo zypper modifyrepo --disable <its name>  and turn it back on later."
+        echo "The repository ${skipped:-named above} could not be reached and was skipped; going on with the other repositories. If it stays away, turn it off with  sudo zypper modifyrepo --disable <its name>  and turn it back on later." >&2
         code=0
     elif (( code == 107 )); then
-        echo 'The packages were installed, but an install script of one of them reported an error (the lines above say which); going on.'
+        echo 'The packages were installed, but an install script of one of them reported an error (the lines above say which); going on.' >&2
         code=0
     fi
     rm -f -- "$output"

@@ -226,12 +226,21 @@ def mismatch(found, record):
         return 'not mounted'
     uuid, fstype, tree = found
     if uuid != record.get('uuid'):
-        return 'not the one the settings name (UUID ' + uuid + ', not ' + str(record.get('uuid')) + ')'
+        return other_drive('UUID', uuid, record.get('uuid'))
     if fstype != record.get('fstype'):
-        return 'not the one the settings name (filesystem ' + fstype + ', not ' + str(record.get('fstype')) + ')'
+        return other_drive('filesystem', fstype, record.get('fstype'))
     wanted = str(record.get('subvolume') or '').rstrip('/')
-    return ('the right drive, but another part of it is mounted there (' + (tree or 'its top level') + ', not '
-            + (wanted or 'its top level') + ')')
+    return 'the right drive, but another part of it is mounted there (' + instead(tree or 'its top level', wanted or 'its top level') + ')'
+
+
+def instead(found, wanted):
+    """'<found>, not <wanted>': what is there, and what the settings name."""
+    return str(found) + ', not ' + str(wanted)
+
+
+def other_drive(what, found, wanted):
+    """Another drive than the settings name, said with what differs."""
+    return 'not the one the settings name (' + what + ' ' + instead(found, wanted) + ')'
 
 
 def without_locks(path):
@@ -513,7 +522,7 @@ class Plan:
         found = lines[-1] if lines else ''   # stacked mounts: the last is the one in use
         if found.lower() == uuid.lower():
             return None
-        return 'not mounted' if not found else 'not the one the settings name (UUID ' + found + ', not ' + uuid + ')'
+        return 'not mounted' if not found else other_drive('UUID', found, uuid)
 
     def owned(self, drive, names):
         """These top-level entries of a drive, when they exist and the drive is identified."""
