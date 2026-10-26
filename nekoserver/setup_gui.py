@@ -542,7 +542,7 @@ def stop_note(value):
     real = os.path.realpath(str(value))
     if os.path.dirname(real) != os.path.realpath(tempfile.gettempdir()):
         return None
-    if not re.fullmatch(r'tmp\.[A-Za-z0-9_]{6,32}', os.path.basename(real)) or os.path.islink(str(value)):
+    if not re.fullmatch(r'tmp\.\w{6,32}', os.path.basename(real), re.ASCII) or os.path.islink(str(value)):
         return None
     return Path(real)
 
