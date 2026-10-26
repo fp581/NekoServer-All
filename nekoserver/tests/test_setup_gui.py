@@ -212,8 +212,9 @@ class WindowTests(unittest.TestCase):
         with browser.open(fresh.url, timeout=5) as response:
             self.assertEqual(response.status, 200)
         # A request of another kind still never claims it, also once it is open.
+        other = self.cookie_browser()
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.cookie_browser().open(grab, timeout=5)
+            other.open(grab, timeout=5)
         self.assertEqual(caught.exception.code, 403)
 
     @staticmethod

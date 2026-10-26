@@ -940,7 +940,7 @@ def restore_photos(config, prompt, output):
         sources = [('upload', base / 'upload'), ('library', base / 'library')]
         # What a file that became a folder (or back) replaced, kept at the archive's top.
         if (base / REPLACED).is_dir() and not (base / REPLACED).is_symlink():
-            sources.append(('replaced earlier', base / REPLACED))
+            sources.append((REPLACED_FOLDER, base / REPLACED))
         count, latest, checked = copy_choice(sources, target, prompt, output, ledger_root=base,
                                              other='the USB drive' if where == 'hdd' else 'the HDD')
         report_restore(config, 'archive' if where == 'hdd' else 'usb_photos', checked, target, output)
@@ -1023,7 +1023,12 @@ def reachable(path, uid, gid):
     """Whether account `uid` (in group `gid`) can get through every folder above `path`."""
     for parent in Path(path).parents:
         info = parent.stat()
-        bit = 0o100 if info.st_uid == uid else 0o010 if info.st_gid == gid else 0o001
+        if info.st_uid == uid:
+            bit = 0o100
+        elif info.st_gid == gid:
+            bit = 0o010
+        else:
+            bit = 0o001
         if not info.st_mode & bit:
             return False
     return True
@@ -1051,18 +1056,19 @@ def handed_over(config, target):
             os.chown(Path(target).parent, 0, gid)
             os.chmod(Path(target).parent, 0o750)
     except OSError as exc:
-        return (f'They belong to root ({exc.strerror}), so your account can\'t open them yet. Run:',
-                f'  sudo chown -R {name}: "{target}"')
+        return [f'They belong to root ({exc.strerror}), so your account can\'t open them yet. Run:',
+                f'  sudo chown -R {name}: "{target}"']
     if not reachable(target, uid, gid):
-        return (f'The folder now belongs to {name}, but that account can\'t get to where it is. Move it home:',
-                f'  sudo mv "{target}" "{home}/"')
-    return (f'The folder and its files now belong to {name}, so you can open them from your desktop.',)
+        return [f'The folder now belongs to {name}, but that account can\'t get to where it is. Move it home:',
+                f'  sudo mv "{target}" "{home}/"']
+    return [f'The folder and its files now belong to {name}, so you can open them from your desktop.']
 
 
 # Beside a user's backed-up files: what a later change of shape replaced (a file that
 # became a folder, or a folder that became a file), under the date it was set aside and
 # its own path (backup.rs REPLACED).
 REPLACED = 'neko-replaced'
+REPLACED_FOLDER = 'replaced earlier'   # its name in a restore
 
 
 def cloud_sources(usb, user):
@@ -1070,7 +1076,7 @@ def cloud_sources(usb, user):
     sources = [('files', usb / 'nextcloud' / user / 'files')]
     replaced = usb / 'nextcloud' / user / REPLACED
     if replaced.is_dir() and not replaced.is_symlink():
-        sources.append(('replaced earlier', replaced))
+        sources.append((REPLACED_FOLDER, replaced))
     return sources
 
 
@@ -1100,7 +1106,7 @@ def restore_cloud(config, prompt, output):
         return
     say(output, f'\nDone: {file_count(count)} copied to {target}',
         *(() if latest else (VERSIONS_EXPLAINED,)),
-        *(() if not (target / 'replaced earlier').is_dir() else (
+        *(() if not (target / REPLACED_FOLDER).is_dir() else (
             '"replaced earlier" holds what was in the way when a file became a folder (or a folder',
             'a file), in a folder named after the date it was set aside.',)),
         *ready,

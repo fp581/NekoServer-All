@@ -15,6 +15,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -534,14 +535,29 @@ def _settings(path):
     return value if isinstance(value, dict) else {}
 
 
+def stop_note(value):
+    """The file install.sh made for the reason (mktemp: /tmp/tmp.XXXXXXXXXX), checked
+    before it is read: only a file of that name, directly in the system's temporary
+    folder, and not a link. None for anything else."""
+    real = os.path.realpath(str(value))
+    if os.path.dirname(real) != os.path.realpath(tempfile.gettempdir()):
+        return None
+    if not re.fullmatch(r'tmp\.[A-Za-z0-9_]{6,32}', os.path.basename(real)) or os.path.islink(str(value)):
+        return None
+    return Path(real)
+
+
 def show_stopped(note, settings=ROOT / 'my-config.json', output=print, wait=STOP_WAIT, opener=None):
     """Setup stopped before the wizard (install.sh's package step: a site that could not be
     reached, say). Its reason, the file `note` host.py wrote, is shown in the setup window
     too, on a PC with a desktop: the window otherwise opens only after the packages and
     the build. Served until the window has shown it (its finishing screen then stays on
     screen), at most `wait` seconds. True when the window showed it."""
+    note = stop_note(note)
+    if note is None:
+        return False
     try:
-        text = Path(note).read_text(encoding='utf-8').strip()
+        text = note.read_text(encoding='utf-8').strip()
     except (OSError, UnicodeDecodeError):
         return False
     if not text:

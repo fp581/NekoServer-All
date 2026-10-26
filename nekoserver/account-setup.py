@@ -12,7 +12,7 @@ import account_store
 import account_setup
 from modules.accounts import finish_pending
 from types import SimpleNamespace
-from neko_common import safe_path, verify_storage, checked_settings, default_settings
+from neko_common import safe_path, settings_path, verify_storage, checked_settings, default_settings
 from recovery_tools import lock
 
 
@@ -42,7 +42,7 @@ def show_refused(screen):
 
 def saved_logins(settings):
     """The saved logins, from the SSD the settings name (checked to be that drive)."""
-    config = json.loads(safe_path(settings).read_text())
+    config = json.loads(settings_path(settings).read_text())
     verify_storage(config, keys=('data_ssd',))
     return account_store.load(config)['apps']
 
@@ -93,9 +93,9 @@ def show_menu(logins, prompt, output, qr):
         try:
             answer = prompt('Type a number to show that login (press Enter to stop): ').strip()
         except (EOFError, KeyboardInterrupt):
-            return 0
+            return
         if not answer:
-            return 0
+            return
         if answer.isdecimal() and 1 <= int(answer) <= len(names):
             show_entry(names[int(answer) - 1], logins[names[int(answer) - 1]], prompt, output, qr)
         else:
@@ -123,7 +123,8 @@ def show(settings, app=None, prompt=input, output=print, qr=terminal_qr, screen=
         output('No app logins are saved yet. Setup makes them at its "App passwords" step:  sudo bash install.sh')
         return 1
     if app is None:
-        return show_menu(logins, prompt, output, qr)
+        show_menu(logins, prompt, output, qr)
+        return 0
     key = app.strip().lower().replace('-', '_')
     if key not in logins:
         output('There is no saved login called "' + app + '". Saved: ' +

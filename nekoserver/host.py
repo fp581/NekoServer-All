@@ -1734,10 +1734,12 @@ def main(argv):
                   'again when you are ready.', file=sys.stderr)
         return 130
     except subprocess.TimeoutExpired as exc:
-        return stopped(str(exc.cmd[0]) + ' did not finish within ' + str(int(exc.timeout) // 60)
-                       + ' minutes; check the network and run  sudo bash install.sh  again')
+        stopped(str(exc.cmd[0]) + ' did not finish within ' + str(int(exc.timeout) // 60)
+                + ' minutes; check the network and run  sudo bash install.sh  again')
+        return 1
     except (RuntimeError, OSError, http.client.HTTPException) as exc:
-        return stopped(str(exc))
+        stopped(str(exc))
+        return 1
     finally:
         for number, handler in before.items():
             signal.signal(number, handler)
@@ -1747,7 +1749,7 @@ def main(argv):
 def stopped(message, note=None):
     """Why setup stopped, on the terminal and (for install.sh to show in the setup window)
     in the file NEKOSERVER_STOP_NOTE names: one install.sh made for it (mktemp), so it
-    is only ever written, never created, and never through a link. Returns 1."""
+    is only ever written, never created, and never through a link."""
     with contextlib.suppress(OSError, ValueError):
         sys.stdout.flush()      # the retry lines before it, also when both go to one file
     print('ERROR: ' + message, file=sys.stderr)
@@ -1756,10 +1758,9 @@ def stopped(message, note=None):
         try:
             handle = os.open(note, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC)
         except OSError:
-            return 1
+            return
         with os.fdopen(handle, 'w', encoding='utf-8') as stream:
             stream.write(message + '\n')
-    return 1
 
 
 HANGUPS = (signal.SIGHUP, signal.SIGTERM)

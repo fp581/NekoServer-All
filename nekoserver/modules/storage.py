@@ -225,7 +225,7 @@ def short_name(key):
 
 def size_bytes(text):
     """lsblk's size ("465.8G", "1.8T", "9.6M") in bytes, or None when it says none."""
-    match = re.fullmatch(r'\s*([0-9]+(?:[.,][0-9]+)?)\s*([BKMGTP])i?B?\s*', str(text or ''), re.IGNORECASE)
+    match = re.fullmatch(r'\s*(\d+(?:[.,]\d+)?)\s*([BKMGTP])i?B?\s*', str(text or ''), re.IGNORECASE)
     if not match:
         return None
     return int(float(match[1].replace(',', '.')) * 1024 ** UNITS[match[2].upper()])

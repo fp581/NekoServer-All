@@ -94,8 +94,9 @@ class DownloadTests(unittest.TestCase):
 
     def test_no_connection_names_every_likely_cause_not_the_internet_alone(self):
         _, fetch = self.failing(urllib.error.URLError('Temporary failure in name resolution'))
+        family = ubuntu(fetch)
         with self.assertRaises(RuntimeError) as caught:
-            ubuntu(fetch).fetch_key(host.TAILSCALE, 'ubuntu', 'noble')
+            family.fetch_key(host.TAILSCALE, 'ubuntu', 'noble')
         message = str(caught.exception)
         self.assertIn("Could not reach pkgs.tailscale.com (Tailscale's site)", message)
         for cause in ('blocks that site', 'the site is down', 'offline'):
@@ -106,15 +107,17 @@ class DownloadTests(unittest.TestCase):
                       urllib.error.URLError('certificate verify failed: certificate is not yet valid')):
             with self.subTest(error=error):
                 calls, fetch = self.failing(error)
+                family = ubuntu(fetch)
                 with self.assertRaises(RuntimeError):
-                    ubuntu(fetch).fetch_key(host.DOCKER, 'ubuntu', 'noble')
+                    family.fetch_key(host.DOCKER, 'ubuntu', 'noble')
                 self.assertEqual(len(calls), 1)
 
     def test_an_error_of_the_site_itself_is_asked_again_then_said_plainly(self):
         calls, fetch = self.failing(urllib.error.HTTPError('u', 503, 'Unavailable', {}, None))
+        family = ubuntu(fetch)
         with self.assertRaisesRegex(RuntimeError, r"download\.docker\.com \(Docker's site\) answered with an error 3 times "
                                                   r'\(HTTP 503'):
-            ubuntu(fetch).fetch_key(host.DOCKER, 'ubuntu', 'noble')
+            family.fetch_key(host.DOCKER, 'ubuntu', 'noble')
         self.assertEqual(len(calls), 3)
 
     def test_fedora_and_rhel_say_the_same(self):
@@ -130,7 +133,7 @@ class DownloadTests(unittest.TestCase):
             note = Path(d) / 'note'
             note.write_text('')
             with mock.patch('sys.stderr', io.StringIO()) as err:
-                self.assertEqual(host.stopped('Could not reach x.', str(note)), 1)
+                host.stopped('Could not reach x.', str(note))
             self.assertEqual(note.read_text(), 'Could not reach x.\n')
             self.assertIn('ERROR: Could not reach x.', err.getvalue())
             # Only a file install.sh made: never one created here, never through a link.
@@ -164,7 +167,7 @@ class StoppedWindowTests(unittest.TestCase):
             seen.update(json.loads(opener.open(url + 'api/state', timeout=5).read()))
             return True
         with tempfile.TemporaryDirectory() as d:
-            note = Path(d) / 'note'
+            note = mktemp_note(self)
             note.write_text("Could not reach download.docker.com (Docker's site). Check that it opens in a browser, then run  "
                             "sudo bash install.sh  again.\n")
             out = []
@@ -197,7 +200,12 @@ class StoppedWindowTests(unittest.TestCase):
 
     def test_without_a_desktop_or_a_reason_nothing_is_opened(self):
         with tempfile.TemporaryDirectory() as d:
-            note = Path(d) / 'note'
+            elsewhere = Path(d) / 'note'
+            elsewhere.write_text('x')
+            # Only the file install.sh made (mktemp, in the temporary folder) is read.
+            self.assertFalse(setup_gui.show_stopped(elsewhere, Path(d) / 'none.json', output=self.fail,
+                                                    opener=lambda config, url: self.fail('opened')))
+            note = mktemp_note(self)
             note.write_text('x')
             out = []
             self.assertFalse(setup_gui.show_stopped(note, Path(d) / 'none.json', out.append, wait=1,
@@ -206,6 +214,14 @@ class StoppedWindowTests(unittest.TestCase):
             note.write_text('')
             self.assertFalse(setup_gui.show_stopped(note, output=self.fail))
 
+
+
+def mktemp_note(test):
+    """A reason file as install.sh makes it (mktemp: /tmp/tmp.XXXXXXXXXX)."""
+    handle, name = tempfile.mkstemp(prefix='tmp.')
+    os.close(handle)
+    test.addCleanup(os.unlink, name)
+    return Path(name)
 
 class WindowAgainTests(unittest.TestCase):
     """D2: "Closed it by mistake? Open the address again" was refused."""

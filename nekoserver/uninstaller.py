@@ -1340,6 +1340,17 @@ def _delete_at(parent, name, dev, how):
         held.append(where)
         return
     before = len(failed)
+    _remove_found(parent, name, found, how)
+    if subvolume and len(failed) > before:   # one line for it, with the first reason
+        first = failed[before]
+        del failed[before:]
+        failed.append(where + ': ' + SUBVOLUME_LEFT + where + '  (' + first + ')')
+
+
+def _remove_found(parent, name, found, how):
+    """Remove `name` (its stat result `found`) in the folder open as `parent`: a folder
+    emptied first, then removed."""
+    failed, where, _keep, held = how
     try:
         if stat.S_ISDIR(found.st_mode):
             # A Btrfs subvolume in it is part of the same drive: emptied and removed with
@@ -1351,10 +1362,6 @@ def _delete_at(parent, name, dev, how):
     except OSError as exc:
         if not (exc.errno == errno.ENOTEMPTY and (failed or held)):   # what stayed in it is said once, for itself
             failed.append(where + ': ' + (exc.strerror or str(exc)))
-    if subvolume and len(failed) > before:   # one line for it, with the first reason
-        first = failed[before]
-        del failed[before:]
-        failed.append(where + ': ' + SUBVOLUME_LEFT + where + '  (' + first + ')')
 
 
 # A subvolume that could not be emptied (a read-only snapshot, say) is said with what removes it.

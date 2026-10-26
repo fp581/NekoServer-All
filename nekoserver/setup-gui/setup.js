@@ -195,7 +195,9 @@
     $('finish-title').textContent = title;
     // Stopped before the steps began (a site that could not be reached, say): not "finished".
     $('finish-label').textContent = state.stopped ? 'STOPPED' : 'FINISHED';
-    badge(ready ? 'Ready' : (state.stopped ? 'Stopped' : 'Needs you'), ready ? 'done' : 'waiting');
+    let word = 'Needs you';
+  if (ready) { word = 'Ready'; } else if (state.stopped) { word = 'Stopped'; }
+  badge(word, ready ? 'done' : 'waiting');
     // The terminal's ruled lines and its own title are the card's title here.
     $('finish-lines').textContent = state.finish.filter((l) => !/^=+$/.test(l.trim()) && l.trim().replace(/!$/, '') !== title.replace(/!$/, '')).join('\n').trim();
     $('steps-final').hidden = !state.steps.length;
