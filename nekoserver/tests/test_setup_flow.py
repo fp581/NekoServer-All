@@ -435,6 +435,33 @@ class FstabTests(unittest.TestCase):
         # NekoServer's own line is still its own.
         self.assertEqual(storage.existing_line([entry], 'abcd-1234', '/srv/nekoserver', entry, resolve=devices.get), 0)
 
+    def test_a_replaced_drive_takes_over_nekoservers_own_fstab_line(self):
+        # The SSD broke and a new one was put in (RECOVERY.md): the line NekoServer wrote
+        # for the old drive is rewritten for the new one, and setup says so.
+        from modules import storage
+        entry = storage.fstab_line('new-1111', 'ext4', '/srv/nekoserver')
+        old = storage.fstab_line('old-9999', 'ext4', '/srv/nekoserver')
+        notes = []
+        self.assertEqual(storage.existing_line([old], 'new-1111', '/srv/nekoserver', entry, resolve=dict().get,
+                                               connected=lambda u: False, notes=notes), 0)
+        self.assertIn('old-9999', notes[0])
+        self.assertIn('not connected', notes[0])
+        # The old drive is still connected: that is someone's drive, so setup stops as before.
+        with self.assertRaisesRegex(RuntimeError, 'did not write'):
+            storage.existing_line([old], 'new-1111', '/srv/nekoserver', entry, resolve=dict().get, connected=lambda u: True)
+        # A line with the folder but not NekoServer's options is never taken over.
+        theirs = 'UUID=old-9999 /srv/nekoserver ext4 defaults 0 2'
+        with self.assertRaisesRegex(RuntimeError, 'already has a line'):
+            storage.existing_line([theirs], 'new-1111', '/srv/nekoserver', entry, resolve=dict().get, connected=lambda u: False)
+        # The whole line is rewritten in the file, and the change is said.
+        with tempfile.TemporaryDirectory() as d:
+            fstab = Path(d) / 'fstab'
+            fstab.write_text('# keep\n' + old + '\n')
+            said = []
+            self.assertTrue(storage.install_fstab([('data_ssd', 'new-1111', 'ext4', '/srv/nekoserver', None)], fstab, said.append))
+            self.assertEqual(fstab.read_text(), '# keep\n' + entry + '\n')
+            self.assertEqual(len(said), 1)
+
     def test_the_first_fstab_copy_is_never_left_cut_off(self):
         from modules import storage
         with tempfile.TemporaryDirectory() as d:

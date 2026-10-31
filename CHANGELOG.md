@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **A replaced SSD or HDD no longer stops setup at /etc/fstab.** After a drive broke and a new one was put in (RECOVERY.md's way), setup refused the fstab line it had itself written for the old drive as "a line NekoServer did not write". A line of NekoServer's own for the same folder whose drive is not connected any more is now rewritten for the new drive, and setup says so; a line for a drive that is still connected, or one someone else wrote, stops setup as before. Found by the test rig's first-time installation after its drives were replaced.
+
 ### Added
 - **RAID arrays and Btrfs pools are watched, with the error counters that show a drive going bad early.** The dashboard's Drives page shows every Linux software RAID array (mdadm): each of its drives, a lost drive, a rebuild with its progress, and each drive's corrected-read-error count; each member's own SMART health is read too, and a member whose SMART fails marks the array as failing so the drive is replaced before it takes the array down. For a Btrfs SSD or HDD (a pool or a single drive) the per-drive read, write and corruption counters (`btrfs device stats`) and missing devices are shown. A lost drive, a rebuild, corruption, mismatching copies or an erring drive raise alerts on the page and the phone, with a "RECOVERED" message once the array is whole again. Setup refuses to put a new server on an array that has already lost a drive and says how to rebuild it first; a server already set up keeps running and warns instead (STORAGE.md, RECOVERY.md).
 

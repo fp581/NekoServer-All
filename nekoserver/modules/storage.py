@@ -674,11 +674,27 @@ def same_drive(source, uuid, resolve=uuid_of):
     return plain.startswith(('LABEL=', 'PARTUUID=', 'PARTLABEL=', '/dev/')) and resolve(plain) == uuid
 
 
-def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of):
+def drive_connected(uuid):
+    """A drive with this filesystem UUID is connected to this PC."""
+    return os.path.exists('/dev/disk/by-uuid/' + uuid)
+
+
+def own_line(found):
+    """The fields are a line NekoServer wrote (UUID=, the folder, a type, its own options,
+    then 0 2), for whatever drive."""
+    options = found[3].split(',') if len(found) == 6 else []
+    base = ','.join(o for o in options if not o.startswith('subvol='))
+    return (found[0].startswith('UUID=') and found[4:] == ['0', '2']
+            and base in (MOUNT_OPTIONS, *OLDER_OPTIONS))
+
+
+def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of, connected=drive_connected, notes=None):
     """The index of the fstab line already mounting this drive or folder, None when there
-    is none. One NekoServer wrote with older options may be brought up to date; any
-    other line for the same drive or folder (however its drive or folder is written)
-    stops setup: two lines for one folder would mount whichever comes first."""
+    is none. One NekoServer wrote with older options may be brought up to date, and one
+    NekoServer wrote for a drive that is not connected any more (the SSD or the HDD
+    replaced after it broke) is replaced, said through `notes`; any other line for the
+    same drive or folder (however its drive or folder is written) stops setup: two lines
+    for one folder would mount whichever comes first."""
     wanted = entry.split()
     folder = fstab_folder(mountpoint)
     matches = [(i, s.split()) for i, s in enumerate(lines)
@@ -687,6 +703,12 @@ def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of):
     if not matches:
         return None
     index, found = matches[0]
+    if len(matches) == 1 and own_line(found) and fstab_folder(found[1]) == folder and found[0] != wanted[0] \
+            and not connected(found[0][len('UUID='):]):
+        if notes is not None:
+            notes.append(f'{mountpoint}: the earlier drive ({found[0]}) is not connected; its line in /etc/fstab '
+                         f'is replaced by one for the new drive (UUID {uuid})')
+        return index
     # Older options are upgraded; with a subvolume the line must carry the same one. A
     # line of NekoServer's without one mounted the filesystem's default tree: once that
     # tree is known (and saved as the subvolume), the line is pinned to it.
@@ -724,21 +746,25 @@ def keep_first(path, backup):
         os.close(directory)
 
 
-def install_fstab(specs, path=Path('/etc/fstab')):
-    """Add (or bring up to date) the lines that mount the SSD and HDD at boot. A line
-    for the same drive or folder that NekoServer didn't write stops setup instead."""
+def install_fstab(specs, path=Path('/etc/fstab'), log=None):
+    """Add (or bring up to date) the lines that mount the SSD and HDD at boot: NekoServer's
+    own line with older options, or for a drive that is gone (replaced), is rewritten. A
+    line for the same drive or folder that NekoServer didn't write stops setup instead."""
     path = safe_path(path)
     existing = path.read_text() if path.exists() else ''
     lines = existing.splitlines()
-    additions, upgraded = [], False
+    additions, upgraded, notes = [], False, []
     for _, uuid, fstype, mountpoint, subvolume in specs:
         entry = fstab_line(uuid, fstype, mountpoint, subvolume)
-        index = existing_line(lines, uuid, mountpoint, entry)
+        index = existing_line(lines, uuid, mountpoint, entry, notes=notes)
         if index is None:
             additions.append(entry)
-        elif lines[index].split()[3] != entry.split()[3]:
+        elif lines[index].split() != entry.split():
             lines[index] = entry
             upgraded = True
+    for note in notes:
+        if log:
+            log(note)
     if not additions and not upgraded:
         return False
     backup = safe_path(path.with_name(path.name + '.nekoserver.bak'))
@@ -816,7 +842,7 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
     subvolume (`btrfs subvolume set-default`, `/@data` say): that tree is saved as the
     drive's subvolume and its fstab line pinned to it, so a restart (or a later change of
     the default) mounts the same files, and the next run finds the line its own."""
-    install_fstab(specs, fstab)
+    install_fstab(specs, fstab, context.log)
     call(['systemctl', 'daemon-reload'])
     pinned = []
     for key, uuid, fstype, target, subvolume in specs:
@@ -831,7 +857,7 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
         context.log(f'Mounted UUID={uuid} on {target}; fstab configured for reboot')
     if pinned:
         save_storage(context)
-        install_fstab(mount_specs(context.config), fstab)
+        install_fstab(mount_specs(context.config), fstab, context.log)
         call(['systemctl', 'daemon-reload'])
 
 
