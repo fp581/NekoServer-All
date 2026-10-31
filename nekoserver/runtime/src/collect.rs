@@ -425,7 +425,7 @@ fn space(blocks: u64, free: u64, available: u64, block: u64) -> Option<(u64, u64
         used,
     ))
 }
-fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, bool, bool)> {
+fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value>, bool, bool)> {
     let rows = [
         ("os", "OS SSD", PathBuf::from("/"), None, ""),
         (
@@ -444,6 +444,7 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, bool, boo
         ),
     ];
     let mut disks = vec![];
+    let mut mounted = vec![];
     let mut data_ok = false;
     let mut media_ok = false;
     for (key, name, path, expected, fs) in rows {
@@ -462,6 +463,7 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, bool, boo
                 r["status"] = json!("unavailable")
             }
             let source = text(&info["source"]);
+            mounted.push(json!({"id":key,"name":name,"source":source,"mount":path,"fstype":fs,"uuid":expected.unwrap_or("")}));
             r["smart"] = smart(
                 source,
                 expected.unwrap_or(source),
@@ -480,7 +482,100 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, bool, boo
         }
         disks.push(r)
     }
-    Ok((json!(disks), data_ok, media_ok))
+    Ok((json!(disks), mounted, data_ok, media_ok))
+}
+/// The NekoServer drives (by their ids and names) an array holds: the SSD mounted from
+/// /dev/md0 belongs to the RAID1 row md0, so its alerts can say which drive is at risk.
+fn locate_arrays(rows: &mut [Value], mounted: &[Value]) {
+    for row in rows.iter_mut() {
+        let Some(name) = row["id"].as_str().and_then(|id| id.strip_prefix("md-")) else {
+            continue;
+        };
+        let pattern = Regex::new(&format!("^/dev/{}(p[0-9]+)?$", regex::escape(name))).unwrap();
+        let holders: Vec<&Value> = mounted
+            .iter()
+            .filter(|m| pattern.is_match(text(&m["source"])))
+            .collect();
+        row["holds"] = json!(holders.iter().map(|m| m["id"].clone()).collect::<Vec<_>>());
+        row["holds_names"] = json!(holders
+            .iter()
+            .map(|m| m["name"].clone())
+            .collect::<Vec<_>>());
+    }
+}
+/// A member drive's SMART health, folded into its array row: a member whose SMART fails
+/// marks the whole array as failing, so the drive is replaced before it takes the array
+/// down with it.
+fn member_smart(row: &mut Value, cache: &mut Value, now: f64, interval: f64) {
+    let mut failing: Option<String> = None;
+    for member in row["members"].as_array_mut().into_iter().flatten() {
+        let device = text(&member["device"]).to_string();
+        if device.is_empty() {
+            continue;
+        }
+        let health = smart(
+            &format!("/dev/{device}"),
+            &format!("array-member:{device}"),
+            cache,
+            now,
+            interval,
+        );
+        if health["status"] == "fail" && failing.is_none() {
+            failing = Some(format!(
+                "SMART health failed on {device} ({}): replace that drive before it takes the array down",
+                text(&health["reason"])
+            ));
+        }
+        member["smart"] = json!({"status": health["status"], "reason": health["reason"]});
+    }
+    if let Some(reason) = failing {
+        if ["healthy", "warning", "rebuilding"].contains(&text(&row["status"])) {
+            row["status"] = json!("failing");
+            row["reason"] = json!(reason);
+        }
+    }
+}
+/// The health of every RAID array and Btrfs pool: the snapshot's "arrays" rows.
+fn arrays_section(mounted: &[Value], cache: &mut Value, now: f64, interval: f64) -> Value {
+    let mut rows = crate::array_health::md_arrays(Path::new("/sys/block"));
+    locate_arrays(&mut rows, mounted);
+    for m in mounted {
+        if m["fstype"] != "btrfs" || text(&m["uuid"]).is_empty() {
+            continue;
+        }
+        let uuid = text(&m["uuid"]).to_string();
+        let sys = Path::new("/sys/fs/btrfs").join(&uuid);
+        let mut missing = vec![];
+        for entry in std::fs::read_dir(sys.join("devinfo"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let flag = std::fs::read_to_string(entry.path().join("missing")).unwrap_or_default();
+            if flag.trim() == "1" {
+                missing.push(format!("device {}", entry.file_name().to_string_lossy()));
+            }
+        }
+        let (code, stats) = common::probe(&["btrfs", "device", "stats", text(&m["mount"])], 15);
+        let mut row =
+            crate::array_health::btrfs_pool(&uuid, (code == 0).then_some(stats.as_str()), &missing);
+        // Only a pool, or a drive with something to say, earns a row of its own: a
+        // healthy single Btrfs drive's health is already on its drive card.
+        let members = row["members"].as_array().map(|m| m.len()).unwrap_or(0);
+        if members < 2 && ["healthy", "unknown"].contains(&text(&row["status"])) {
+            continue;
+        }
+        row["holds"] = json!([m["id"]]);
+        row["holds_names"] = json!([m["name"]]);
+        row["name"] = json!(format!("Btrfs drives of the {}", text(&m["name"])));
+        rows.push(row);
+    }
+    for row in rows.iter_mut() {
+        if row["id"].as_str().is_some_and(|id| id.starts_with("md-")) {
+            member_smart(row, cache, now, interval);
+        }
+    }
+    json!(rows)
 }
 /// Bytes from a size Docker prints ("512MiB", "1.2GiB", "800kB").
 fn docker_size(text: &str) -> Option<f64> {
@@ -1839,6 +1934,71 @@ pub(crate) fn alerts(s: &Value) -> Value {
             }
         }
     }
+    for a in s["arrays"].as_array().into_iter().flatten() {
+        let id = text(&a["id"]);
+        let names: Vec<&str> = a["holds_names"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let shown = if names.is_empty() {
+            text(&a["name"]).to_string()
+        } else {
+            format!("{} ({})", text(&a["name"]), names.join(", "))
+        };
+        let worst_errors = a["members"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["errors"].as_u64())
+            .max()
+            .unwrap_or(0);
+        match text(&a["status"]) {
+            "degraded" => add(
+                format!("array-lost:{id}"),
+                "critical",
+                format!("{shown} has lost a drive"),
+                text(&a["reason"]),
+            ),
+            "rebuilding" => {
+                add(
+                    format!("array-lost:{id}"),
+                    "critical",
+                    format!("{shown} has one copy fewer"),
+                    text(&a["reason"]),
+                );
+                let done = a["progress"]
+                    .as_f64()
+                    .map(|p| format!(" ({p} % done)"))
+                    .unwrap_or_default();
+                add(
+                    format!("array-rebuild:{id}"),
+                    "warning",
+                    format!("{shown} is rebuilding{done}"),
+                    "Keep the computer on and every drive connected until it finishes; the Drives page shows the progress.",
+                );
+            }
+            "failing" => add(
+                format!("array-errors:{id}"),
+                "critical",
+                format!("{shown}: a drive is failing"),
+                text(&a["reason"]),
+            ),
+            "warning"
+                if a["mismatches"].as_u64().unwrap_or(0) > 0
+                    || worst_errors >= crate::array_health::ERRORS_ALERTED =>
+            {
+                add(
+                    format!("array-errors:{id}"),
+                    "warning",
+                    format!("{shown} needs a look"),
+                    text(&a["reason"]),
+                )
+            }
+            _ => {}
+        }
+    }
     let used = s["metrics"]["memory_percent"].as_f64().unwrap_or(0.0);
     if used >= 90.0 {
         add(
@@ -2069,7 +2229,15 @@ pub fn run(a: &Args) -> Result<()> {
                 .collect::<serde_json::Map<_, _>>())
         })
         .unwrap_or_else(empty);
-    let (disks, ok, media_ok) = storage(&cfg, &mut cache, now)?;
+    let (disks, mounted, ok, media_ok) = storage(&cfg, &mut cache, now)?;
+    let arrays = arrays_section(
+        &mounted,
+        &mut cache,
+        now,
+        cfg["dashboard"]["smart_interval_seconds"]
+            .as_f64()
+            .unwrap_or(1800.0),
+    );
     let (host, cpu) = metrics(&previous["cpu"]);
     let mut history=previous["history"].as_array().map(|rows|rows.iter().rev().take(119).filter_map(|v|{let t=num(&v["at"],0.0,now).as_f64()?;if now-t>7200.0{return None}Some(json!({"at":v["at"],"cpu":num(&v["cpu"],0.0,100.0),"memory":num(&v["memory"],0.0,100.0),"temperature":num(&v["temperature"],-10.0,150.0)}))}).collect::<Vec<_>>()).unwrap_or_default();
     history.reverse();
@@ -2101,6 +2269,7 @@ pub fn run(a: &Args) -> Result<()> {
     result["integrity"] = integrity(data, ok, away);
     result["backup_key"] = json!(backup_key_ready());
     result["tailscale"] = tailscale_login(now);
+    result["arrays"] = arrays;
     result["alerts"] = alerts(&result);
     // The readings are published even when the SSD can't keep the collector's own state
     // (unplugged since the readings began, or remounted read-only after errors): a

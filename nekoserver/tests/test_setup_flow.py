@@ -255,6 +255,18 @@ class DriveLayoutTests(unittest.TestCase):
         self.assertEqual(storage.size_bytes(single['size']), (4 * 1024 + 32) * 1024 ** 3)
         self.assertTrue(storage.big_enough(single, storage.sizes('media_hdd')[0]))
 
+    def test_a_drive_of_exactly_the_minimum_size_is_too_small_once_formatted(self):
+        # The drive space step wants the minimum FREE; a drive of that size in all never
+        # has it, so the picker says so, instead of accepting it and failing a step later.
+        from modules import storage
+        exactly = {'name': 'sdb1', 'size': '50G', 'fstype': 'ext4', 'uuid': 'x'}
+        enough = {'name': 'sdc1', 'size': '54G', 'fstype': 'ext4', 'uuid': 'y'}
+        self.assertFalse(storage.big_enough(exactly, 50))
+        self.assertTrue(storage.big_enough(enough, 50))
+        said = []
+        with self.assertRaisesRegex(RuntimeError, 'No drive here is big enough'):
+            storage.ask_drive([exactly], 'media_hdd', 'the HDD', lambda q: '', said.append)
+
     def test_a_mounted_pool_counts_what_the_pool_itself_reports(self):
         from modules import storage
         reported = mock.Mock(f_blocks=1000, f_bfree=900, f_bavail=700, f_frsize=1024 ** 3 // 25)
@@ -341,6 +353,36 @@ class DriveLayoutTests(unittest.TestCase):
         # Never offered, so never checked for clones either (even where blkid can't say).
         self.assertEqual([v['uuid'] for v in storage.discover_filesystems(inventory, lambda name: None)], ['ssd'])
 
+    def test_a_raid_array_that_lost_a_drive_is_refused_at_setup(self):
+        from modules import storage
+        with tempfile.TemporaryDirectory() as d:
+            md = Path(d) / 'md0' / 'md'
+            for member, state in (('dev-sda1', 'in_sync'), ('dev-sdb1', 'in_sync')):
+                (md / member).mkdir(parents=True)
+                (md / member / 'state').write_text(state + '\n')
+            (md / 'degraded').write_text('0\n')
+            device = {'name': 'md0', 'kind': 'raid1', 'uuid': 'x'}
+            self.assertIs(storage.whole(device, sys_block=d), device)
+            (md / 'degraded').write_text('1\n')
+            (md / 'dev-sdb1' / 'state').write_text('faulty\n')
+            with self.assertRaisesRegex(RuntimeError, 'md0 has lost a drive .*sdb1'):
+                storage.whole(device, sys_block=d)
+            # Not an array: nothing in /sys is read for it.
+            self.assertEqual(storage.whole({'name': 'sdc1', 'kind': 'part'}, sys_block=d)['name'], 'sdc1')
+
+    def test_a_rerun_warns_about_a_degraded_array_instead_of_stopping(self):
+        from modules import storage
+        with tempfile.TemporaryDirectory() as d:
+            md = Path(d) / 'md0' / 'md'
+            md.mkdir(parents=True)
+            (md / 'degraded').write_text('1\n')
+            with mock.patch.object(storage, 'findmnt', return_value='/dev/md0[/@data]'):
+                note = storage.raid_note('/srv/nekoserver', sys_block=d)
+            self.assertIn('one copy fewer', note)
+            self.assertIn('md0', note)
+            with mock.patch.object(storage, 'findmnt', return_value='/dev/sdb1'):
+                self.assertIsNone(storage.raid_note('/srv/nekoserver', sys_block=d))
+
     def test_an_encrypted_drive_must_be_unlocked_at_every_start(self):
         from modules import storage
         with tempfile.TemporaryDirectory() as d:
@@ -404,6 +446,33 @@ class FstabTests(unittest.TestCase):
                                                 '/srv/nekoserver', entry, resolve=devices.get))
         # NekoServer's own line is still its own.
         self.assertEqual(storage.existing_line([entry], 'abcd-1234', '/srv/nekoserver', entry, resolve=devices.get), 0)
+
+    def test_a_replaced_drive_takes_over_nekoservers_own_fstab_line(self):
+        # The SSD broke and a new one was put in (RECOVERY.md): the line NekoServer wrote
+        # for the old drive is rewritten for the new one, and setup says so.
+        from modules import storage
+        entry = storage.fstab_line('new-1111', 'ext4', '/srv/nekoserver')
+        old = storage.fstab_line('old-9999', 'ext4', '/srv/nekoserver')
+        notes = []
+        self.assertEqual(storage.existing_line([old], 'new-1111', '/srv/nekoserver', entry, resolve=dict().get,
+                                               connected=lambda u: False, notes=notes), 0)
+        self.assertIn('old-9999', notes[0])
+        self.assertIn('not connected', notes[0])
+        # The old drive is still connected: that is someone's drive, so setup stops as before.
+        with self.assertRaisesRegex(RuntimeError, 'did not write'):
+            storage.existing_line([old], 'new-1111', '/srv/nekoserver', entry, resolve=dict().get, connected=lambda u: True)
+        # A line with the folder but not NekoServer's options is never taken over.
+        theirs = 'UUID=old-9999 /srv/nekoserver ext4 defaults 0 2'
+        with self.assertRaisesRegex(RuntimeError, 'already has a line'):
+            storage.existing_line([theirs], 'new-1111', '/srv/nekoserver', entry, resolve=dict().get, connected=lambda u: False)
+        # The whole line is rewritten in the file, and the change is said.
+        with tempfile.TemporaryDirectory() as d:
+            fstab = Path(d) / 'fstab'
+            fstab.write_text('# keep\n' + old + '\n')
+            said = []
+            self.assertTrue(storage.install_fstab([('data_ssd', 'new-1111', 'ext4', '/srv/nekoserver', None)], fstab, said.append))
+            self.assertEqual(fstab.read_text(), '# keep\n' + entry + '\n')
+            self.assertEqual(len(said), 1)
 
     def test_the_first_fstab_copy_is_never_left_cut_off(self):
         from modules import storage

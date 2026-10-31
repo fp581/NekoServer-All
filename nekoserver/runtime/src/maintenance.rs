@@ -156,7 +156,8 @@ fn space_needed(app: u64, media: u64, images: u64) -> (u64, u64) {
         .saturating_add(spare);
     (ssd, hdd)
 }
-fn free(path: &Path) -> Result<u64> {
+/// (free, size) bytes of the drive holding `path`.
+fn drive_space(path: &Path) -> Result<(u64, u64)> {
     let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
         .map_err(|_| Error::new("Invalid path"))?;
     let mut s = std::mem::MaybeUninit::<libc::statvfs>::uninit();
@@ -164,7 +165,17 @@ fn free(path: &Path) -> Result<u64> {
         return Err(Error::new("Cannot check free space"));
     }
     let s = unsafe { s.assume_init() };
-    Ok(s.f_bavail.saturating_mul(s.f_frsize))
+    Ok((
+        s.f_bavail.saturating_mul(s.f_frsize),
+        s.f_blocks.saturating_mul(s.f_frsize),
+    ))
+}
+/// The space the run keeps free on a drive of `size` bytes: `maintenance.minimum_free_gb`
+/// (room for the apps' files to keep growing after the update), but at most a fifth of
+/// the drive. Setup accepts an SSD with 20 GB free and an HDD with 50 GB, and the
+/// setting's default of 20 GB alone would then stop every monthly run for good.
+fn reserve_for(setting: u64, size: u64) -> u64 {
+    setting.min(size / 5)
 }
 fn size(root: &Path, paths: &[String]) -> Result<u64> {
     if paths.is_empty() {
@@ -2732,7 +2743,7 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     // without it they stay in data.tar so the snapshot can still be restored.
     let sealing = secrets_key_ready(Path::new(SECRETS_KEY_DIR));
     let paths = snapshot_paths(&names, data, sealing);
-    let reserve = cfg["maintenance"]["minimum_free_gb"]
+    let setting = cfg["maintenance"]["minimum_free_gb"]
         .as_u64()
         .unwrap_or(20)
         .saturating_mul(1 << 30);
@@ -2745,7 +2756,8 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     let (ssd, hdd) = space_needed(app_bytes, media_bytes, image_bytes(&names)?);
     // The USB drive is not used by monthly maintenance.
     for (root, needed, what) in [(data, ssd, "SSD"), (media, hdd, "HDD")] {
-        let have = free(root)?;
+        let (have, drive) = drive_space(root)?;
+        let reserve = reserve_for(setting, drive);
         let wanted = needed.saturating_add(reserve);
         if have < wanted {
             let gb = |b: u64| (b as f64 / 1e9).ceil() as u64;
@@ -2762,11 +2774,16 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
                 String::new()
             };
             return Err(Error::new(&format!(
-                "Not enough space on the {what} ({}) for the monthly snapshot and update: {} GB free, about {} GB needed (a copy of the app data and the new app images, plus the {} GB reserve from maintenance.minimum_free_gb). Free up space there, or lower the reserve{unfinished}",
+                "Not enough space on the {what} ({}) for the monthly snapshot and update: {} GB free, about {} GB needed (a copy of the app data and the new app images, plus the {} GB reserve{}). Free up space there, or lower the reserve{unfinished}",
                 root.display(),
                 gb(have),
                 gb(wanted),
-                gb(reserve)
+                gb(reserve),
+                if reserve < setting {
+                    ": a fifth of the drive, less than maintenance.minimum_free_gb"
+                } else {
+                    " from maintenance.minimum_free_gb"
+                }
             )));
         }
     }
@@ -3937,6 +3954,15 @@ mod tests {
         assert_eq!(ssd, 12 * gib); // rollback copy + new images + spare
         assert_eq!(hdd, 22 * gib); // snapshot (11) + restore test (10) + spare
         assert_eq!(space_needed(u64::MAX, 1, 1).0, u64::MAX);
+    }
+    #[test]
+    fn the_reserve_is_at_most_a_fifth_of_the_drive() {
+        let gib = 1u64 << 30;
+        // A 24 GB SSD (setup's minimum, about): the 20 GB default would stop every run.
+        assert_eq!(reserve_for(20 * gib, 24 * gib), 24 * gib / 5);
+        // A big drive keeps the whole setting.
+        assert_eq!(reserve_for(20 * gib, 500 * gib), 20 * gib);
+        assert_eq!(reserve_for(2 * gib, 0), 0);
     }
     #[test]
     fn a_damaged_backup_key_copy_fails_the_snapshot_check() {

@@ -14,7 +14,7 @@ def check(config,kind):
         except (OSError,RuntimeError,ValueError,KeyError,TypeError):return [row('routes','needs_setup','Inspect Tailscale login, HTTPS permission and private route ownership locally.')]
     out=[]
     try:
-        g.verify_lan(config);saved=health.read_json(Path(config['data_mount'])/'gateway/lan-managed.json');expected=g.lan_model(config,Path('/usr/local/share/nekoserver-gateway/lan'));actual=health.read_json('/etc/nekoserver-gateway/lan.json');valid=actual==expected and bool(saved.get('sha256'))
+        g.verify_lan(config);saved=g.managed(Path(config['data_mount'])/'gateway/lan-managed.json');expected=g.lan_model(config,Path('/usr/local/share/nekoserver-gateway/lan'));actual=health.read_json('/etc/nekoserver-gateway/lan.json');valid=actual==expected and bool(saved.get('sha256'))
         for name,digest in saved.get('sha256',{}).items():
             if g.hashes({safe_path(name):safe_path(name).read_bytes()})[name]!=digest:valid=False
         out.append(row('configuration','pass' if valid else 'fail','Managed LAN configuration and files must match the selected address, subnet and apps.'))

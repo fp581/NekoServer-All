@@ -1,4 +1,5 @@
 """Regression tests for the compose-path, Seerr UID and timezone fixes."""
+import hashlib
 import http.cookiejar
 import json
 import os
@@ -1791,6 +1792,36 @@ class GatewayStateOwnerTests(unittest.TestCase):
                     self.assertRaisesRegex(RuntimeError, 'NekoServer did not leave them that way'):
                 gateway_tools.adopt_state(self.state, self.caddy, self.ledger)
         chown.assert_not_called()
+
+
+class GatewayRecordOnTheSystemDiskTests(unittest.TestCase):
+    """The SSD broke and was replaced (RECOVERY.md): the gateway's files on the system disk
+    are still the ones NekoServer wrote, and the copy of its record there proves it."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.file = root / 'lan.json'
+        self.file.write_text('old settings')
+        self.ssd, self.copy = root / 'ssd/lan-managed.json', root / 'etc/lan-managed.json'
+        self.copy.parent.mkdir()
+        self.copy.write_text(json.dumps({'sha256': {str(self.file): hashlib.sha256(b'old settings').hexdigest()}}))
+
+    def test_a_new_ssd_leaves_the_files_rewritable(self):
+        import gateway_tools
+        gateway_tools.preflight({self.file: 'new settings'}, self.ssd, self.copy)
+        self.assertEqual(gateway_tools.managed(self.ssd, self.copy), json.loads(self.copy.read_text()))
+
+    def test_the_ssds_own_record_comes_first_and_a_strangers_file_still_stops(self):
+        import gateway_tools
+        self.ssd.parent.mkdir()
+        self.ssd.write_text(json.dumps({'sha256': {str(self.file): 'not it'}, 'uid': 5, 'gid': 5}))
+        self.assertEqual(gateway_tools.managed(self.ssd, self.copy)['uid'], 5)
+        with self.assertRaisesRegex(RuntimeError, 'Unmanaged or modified gateway file'):
+            gateway_tools.preflight({self.file: 'new settings'}, self.ssd, self.copy)
+        self.copy.unlink()
+        with self.assertRaisesRegex(RuntimeError, 'Unmanaged or modified gateway file'):
+            gateway_tools.preflight({self.file: 'new settings'}, self.ssd / 'none', self.copy)
 
 
 class NextcloudFirstInstallTests(unittest.TestCase):

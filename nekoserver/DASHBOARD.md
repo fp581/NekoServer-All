@@ -35,7 +35,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Sensors** | Every temperature sensor (grouped: processor, graphics, drives, motherboard…), fan speeds, power use and voltages. |
 | **Fans & lights** | Fan speeds by temperature, fixed speeds, or the motherboard's own control, for every fan; finding which fan is which; colours, brightness and effects for RGB lighting. |
 | **Processes** | What's running, including inside each app, with processor and memory use. Search and sort. Right-click a program (on a phone, tap ⋯) to restart its app, or to close an app opened on the desktop. |
-| **Server health** | Drive space and health, **what starts by itself after a restart**, the outside heartbeat, phone notifications, app checks and waiting updates. |
+| **Server health** | Drive space and health, RAID arrays and Btrfs pools (each drive of an array, rebuilds with their progress, and the error counters that show a drive going bad early), **what starts by itself after a restart**, the outside heartbeat, phone notifications, app checks and waiting updates. |
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
 | **Help** | Step-by-step guides, the error codes below, installing it as an app, and a privacy-safe summary to share. |
 
@@ -146,7 +146,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.40.3/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.41.0/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -190,7 +190,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.40.3` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.41.0` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

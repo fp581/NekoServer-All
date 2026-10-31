@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.41.0 — 2026-10-31
+
+A QA round run as a company would: beta testers and IT on the WSL rig (fresh installs, the RAID drill, the fault suite), fixes, then QA again. Plus RAID and Btrfs pool health.
+
+### Fixed
+- **A replaced SSD or HDD no longer stops setup at /etc/fstab.** After a drive broke and a new one was put in (RECOVERY.md's way), setup refused the fstab line it had itself written for the old drive as "a line NekoServer did not write". A line of NekoServer's own for the same folder whose drive is not connected any more is now rewritten for the new drive, and setup says so; a line for a drive that is still connected, or one someone else wrote, stops setup as before. Found by the test rig's first-time installation after its drives were replaced.
+
+- **A drive of exactly the minimum size is refused by the drive question, not a step later.** The drive space step wants the minimum free (20 GB on the SSD, 50 GB on the HDD), and a drive of that size in all never has it once formatted (ext4 keeps about 5 % for itself). The question now allows for that, so it never accepts a drive that the space check then refuses. Found by the rig's shared test drives, made exactly as big as the minimums.
+
+- **A replaced SSD no longer makes setup refuse the gateway's own files.** The home gateway step keeps a record of the files it wrote (so it never overwrites a file someone else put there); that record lived only on the SSD, and after the SSD was replaced the step refused its own files on the system disk ("Unmanaged or modified gateway file preserved"). A copy of the record now stays on the system disk beside the files. Found on the test rig's fresh install on new drives.
+
+- **The monthly update runs on a small SSD or HDD.** Setup accepts an SSD with 20 GB free (and an HDD with 50 GB), but the monthly job kept a 20 GB reserve (`maintenance.minimum_free_gb`) on top of the room its snapshot and the new app images need, so on such a drive it stopped every month with "Not enough space". The reserve is now at most a fifth of the drive; the message says when that is what it used. Found on the test rig's 33 GB SSD.
+
+### Added
+- **RAID arrays and Btrfs pools are watched, with the error counters that show a drive going bad early.** The dashboard's Drives page shows every Linux software RAID array (mdadm): each of its drives, a lost drive, a rebuild with its progress, and each drive's corrected-read-error count; each member's own SMART health is read too, and a member whose SMART fails marks the array as failing so the drive is replaced before it takes the array down. For a Btrfs SSD or HDD (a pool or a single drive) the per-drive read, write and corruption counters (`btrfs device stats`) and missing devices are shown. A lost drive, a rebuild, corruption, mismatching copies or an erring drive raise alerts on the page and the phone, with a "RECOVERED" message once the array is whole again. Setup refuses to put a new server on an array that has already lost a drive and says how to rebuild it first; a server already set up keeps running and warns instead (STORAGE.md, RECOVERY.md).
+
 ## v0.40.3 — 2026-10-31
 
 Fixes for the project owner's review of 0.40.2.

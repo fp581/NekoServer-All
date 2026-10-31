@@ -321,7 +321,8 @@ class FanAndLightControlTests(unittest.TestCase):
         """The systemctl calls setup makes for these units, and the namespace check."""
         with mock.patch.object(dashboard, 'systemctl') as systemctl, mock.patch.object(dashboard, 'choose_pin'), \
                 mock.patch.object(dashboard, 'check_openrgb_private') as private, \
-                mock.patch.object(dashboard, 'CONTROL_CONFIG', NOWHERE):
+                mock.patch.object(dashboard, 'CONTROL_CONFIG', NOWHERE), \
+                mock.patch.object(dashboard, 'SYSTEMD_UNITS', NOWHERE):   # not this PC's own units
             dashboard.start_services(definitions, self.code, False, lambda m: None)
         return [c.args for c in systemctl.call_args_list], private
 

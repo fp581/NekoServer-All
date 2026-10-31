@@ -176,6 +176,7 @@ class TvLauncherUpdateTests(unittest.TestCase):
 class DebianFirefoxTests(unittest.TestCase):
     def test_debians_firefox_esr_counts_as_the_browser(self):
         found = {'firefox-esr': '/usr/bin/firefox-esr'}
-        files = desktop.shortcuts({'data_mount': '/srv/nekoserver', 'dashboard': {'port': 8787}, 'media': {'services': []}},
+        # A folder of its own: this PC's /srv/nekoserver may hold a server (and be closed to this user).
+        files = desktop.shortcuts({'data_mount': '/nonexistent/nekoserver-test', 'dashboard': {'port': 8787}, 'media': {'services': []}},
                                   which=found.get, launcher=Path('/nonexistent'))
         self.assertIn('Exec=/usr/bin/firefox-esr\n', files['nekoserver-browser.desktop'])

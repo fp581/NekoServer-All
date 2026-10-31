@@ -27,6 +27,8 @@ def inventory_now():
 # What can hold a filesystem: a disk or partition, an opened encrypted drive (LUKS), an
 # LVM volume or a software RAID array. The last three sit on top of one or more disks.
 VOLUME_KINDS=('part','disk','crypt','lvm','raid0','raid1','raid4','raid5','raid6','raid10','md')
+DEV = '/dev/'                       # where Linux shows drives
+BY_UUID = DEV + 'disk/by-uuid/'    # each filesystem by its UUID
 # Where Linux keeps itself: the root and the boot folders (Arch often mounts the EFI
 # partition at /efi). A disk holding any of them is the system disk.
 SYSTEM_MOUNTS=('/','/boot','/boot/efi','/efi')
@@ -48,7 +50,7 @@ def holds_system(dev):
 def device_sub_uuid(name):
     """A Btrfs device's own UUID (UUID_SUB): each device of a pool has its own, a cloned
     drive the same as its original. None when it can't be read."""
-    for path in ('/dev/' + name, '/dev/mapper/' + name):
+    for path in (DEV + name, DEV + 'mapper/' + name):
         if os.path.exists(path):
             try:
                 return call(['blkid', '-s', 'UUID_SUB', '-o', 'value', path]) or None
@@ -125,7 +127,7 @@ def data_profiles(names):
     (`btrfs inspect-internal dump-tree -t chunk`, which needs root and the btrfs tool),
     or None when they can't be read. More than one while a conversion is unfinished."""
     for name in names:
-        path='/dev/'+name if os.path.exists('/dev/'+name) else '/dev/mapper/'+name
+        path=DEV+name if os.path.exists(DEV+name) else DEV+'mapper/'+name
         if not os.path.exists(path):
             continue
         try:
@@ -225,6 +227,47 @@ def unlocked(device):
     """The chosen drive, unless it is an encrypted one Linux doesn't unlock at start."""
     problem=boot_unlock_problem(device)
     if problem:raise RuntimeError(problem)
+    return device
+
+
+# Where Linux reports the software RAID arrays (each /sys/block/<md>/md).
+SYS_BLOCK = '/sys/block'
+RAID_KINDS = ('md', 'linear', 'raid0', 'raid1', 'raid4', 'raid5', 'raid6', 'raid10')
+
+
+def raid_lost(name, sys_block=None):
+    """What a software RAID array is missing, or None: the array `name` (md0, as lsblk
+    and /sys/block name it) with a failed or absent drive. Reads nothing for other names."""
+    md = Path(sys_block or SYS_BLOCK) / name / 'md'
+    if not md.is_dir():
+        return None
+    try:
+        missing = int((md / 'degraded').read_text().strip() or 0)
+    except (OSError, ValueError):
+        missing = 0
+    failed = []
+    for member in sorted(md.glob('dev-*')):
+        try:
+            states = (member / 'state').read_text().split(',')
+        except OSError:
+            continue
+        if any(s.strip() == 'faulty' for s in states):
+            failed.append(member.name[len('dev-'):])
+    if not missing and not failed:
+        return None
+    return ('the drive ' + ', '.join(failed) + ' failed') if failed else 'a drive is missing'
+
+
+def whole(device, sys_block=None):
+    """The chosen drive, unless it is a RAID array that has lost a drive: what you put on
+    it would start life with no second copy, and the mirror may be about to go too."""
+    if device.get('kind') not in RAID_KINDS:
+        return device
+    lost = raid_lost(device.get('name', ''), sys_block)
+    if lost:
+        raise RuntimeError(f"The RAID array {device['name']} has lost a drive ({lost}), so what you put on it "
+                           'would have no second copy. Replace or reconnect the drive and let the array rebuild '
+                           '(cat /proc/mdstat shows the progress), then run setup again.')
     return device
 
 
@@ -333,11 +376,18 @@ def sizes(key):
     return capacity.SSD if key == 'data_ssd' else capacity.HDD
 
 
+# A filesystem keeps a share of its drive for itself (ext4 about 5 %: blocks reserved
+# for root, its own tables), so a drive of exactly the minimum size never has that much
+# free. The picker allows for it, so it never accepts a drive the drive space step then
+# refuses.
+OVERHEAD = 1.07
+
+
 def big_enough(device, smallest):
-    """The drive is at least `smallest` GB in all (a smaller one can never have that much
-    free). Unknown sizes are left to the drive space step."""
+    """The drive is big enough to have `smallest` GB free once formatted (a smaller one
+    never can). Unknown sizes are left to the drive space step."""
     found = size_bytes(device.get('size'))
-    return found is None or found >= smallest * GIB
+    return found is None or found >= smallest * GIB * OVERHEAD
 
 
 def size_said(device):
@@ -407,7 +457,7 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
                               interactive=interactive, out_fn=out_fn)
         if not uuid and apply:
             if not interactive: raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
-            device=unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn))
+            device=whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
             record['uuid']=device['uuid']; record['fstype']=device['fstype']
             uuid=device['uuid']
         elif not uuid:
@@ -441,7 +491,7 @@ def not_offered(inventory, uuid):
 
 def why_not(dev, system):
     """The reason one lsblk row is not offered as a drive."""
-    name, kind, fs = '/dev/' + str(dev.get('name')), dev.get('type', ''), dev.get('fstype')
+    name, kind, fs = DEV + str(dev.get('name')), dev.get('type', ''), dev.get('fstype')
     if system:
         return f'{name} is on the disk Linux runs from, which NekoServer never uses for your files'
     if kind not in VOLUME_KINDS:
@@ -576,7 +626,7 @@ def remember_subvolumes(config, run=subprocess.run):
 
 
 def validate_device(uuid, fstype):
-    source = Path('/dev/disk/by-uuid') / uuid
+    source = Path(BY_UUID + uuid)
     if not source.exists():
         raise RuntimeError(f'Drive UUID {uuid} not found; connect the disk and use lsblk -f')
     actual_type = call(['blkid', '-s', 'TYPE', '-o', 'value', str(source)])
@@ -612,7 +662,7 @@ def uuid_of(source):
     """The filesystem UUID an fstab source names (LABEL=, PARTUUID=, PARTLABEL=, a /dev
     path), or None when it can't be found (a drive not connected)."""
     try:
-        device = source if source.startswith('/dev/') else call(['findfs', source])
+        device = source if source.startswith(DEV) else call(['findfs', source])
         return call(['blkid', '-s', 'UUID', '-o', 'value', device]) or None
     except (RuntimeError, OSError, subprocess.SubprocessError):
         return None
@@ -626,18 +676,34 @@ def fstab_folder(field):
 def same_drive(source, uuid, resolve=uuid_of):
     """An fstab source that names this drive, however it is written."""
     plain = source.replace('"', '')
-    if plain in (f'UUID={uuid}', f'/dev/disk/by-uuid/{uuid}'):
+    if plain in (f'UUID={uuid}', BY_UUID + uuid):
         return True
     if plain.startswith('UUID='):
         return False
-    return plain.startswith(('LABEL=', 'PARTUUID=', 'PARTLABEL=', '/dev/')) and resolve(plain) == uuid
+    return plain.startswith(('LABEL=', 'PARTUUID=', 'PARTLABEL=', DEV)) and resolve(plain) == uuid
 
 
-def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of):
+def drive_connected(uuid):
+    """A drive with this filesystem UUID is connected to this PC."""
+    return os.path.exists(BY_UUID + uuid)
+
+
+def own_line(found):
+    """The fields are a line NekoServer wrote (UUID=, the folder, a type, its own options,
+    then 0 2), for whatever drive."""
+    options = found[3].split(',') if len(found) == 6 else []
+    base = ','.join(o for o in options if not o.startswith('subvol='))
+    return (found[0].startswith('UUID=') and found[4:] == ['0', '2']
+            and base in (MOUNT_OPTIONS, *OLDER_OPTIONS))
+
+
+def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of, connected=drive_connected, notes=None):
     """The index of the fstab line already mounting this drive or folder, None when there
-    is none. One NekoServer wrote with older options may be brought up to date; any
-    other line for the same drive or folder (however its drive or folder is written)
-    stops setup: two lines for one folder would mount whichever comes first."""
+    is none. One NekoServer wrote with older options may be brought up to date, and one
+    NekoServer wrote for a drive that is not connected any more (the SSD or the HDD
+    replaced after it broke) is replaced, said through `notes`; any other line for the
+    same drive or folder (however its drive or folder is written) stops setup: two lines
+    for one folder would mount whichever comes first."""
     wanted = entry.split()
     folder = fstab_folder(mountpoint)
     matches = [(i, s.split()) for i, s in enumerate(lines)
@@ -646,6 +712,12 @@ def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of):
     if not matches:
         return None
     index, found = matches[0]
+    if len(matches) == 1 and own_line(found) and fstab_folder(found[1]) == folder and found[0] != wanted[0] \
+            and not connected(found[0][len('UUID='):]):
+        if notes is not None:
+            notes.append(f'{mountpoint}: the earlier drive ({found[0]}) is not connected; its line in /etc/fstab '
+                         f'is replaced by one for the new drive (UUID {uuid})')
+        return index
     # Older options are upgraded; with a subvolume the line must carry the same one. A
     # line of NekoServer's without one mounted the filesystem's default tree: once that
     # tree is known (and saved as the subvolume), the line is pinned to it.
@@ -683,21 +755,25 @@ def keep_first(path, backup):
         os.close(directory)
 
 
-def install_fstab(specs, path=Path('/etc/fstab')):
-    """Add (or bring up to date) the lines that mount the SSD and HDD at boot. A line
-    for the same drive or folder that NekoServer didn't write stops setup instead."""
+def install_fstab(specs, path=Path('/etc/fstab'), log=None):
+    """Add (or bring up to date) the lines that mount the SSD and HDD at boot: NekoServer's
+    own line with older options, or for a drive that is gone (replaced), is rewritten. A
+    line for the same drive or folder that NekoServer didn't write stops setup instead."""
     path = safe_path(path)
     existing = path.read_text() if path.exists() else ''
     lines = existing.splitlines()
-    additions, upgraded = [], False
+    additions, upgraded, notes = [], False, []
     for _, uuid, fstype, mountpoint, subvolume in specs:
         entry = fstab_line(uuid, fstype, mountpoint, subvolume)
-        index = existing_line(lines, uuid, mountpoint, entry)
+        index = existing_line(lines, uuid, mountpoint, entry, notes=notes)
         if index is None:
             additions.append(entry)
-        elif lines[index].split()[3] != entry.split()[3]:
+        elif lines[index].split() != entry.split():
             lines[index] = entry
             upgraded = True
+    for note in notes:
+        if log:
+            log(note)
     if not additions and not upgraded:
         return False
     backup = safe_path(path.with_name(path.name + '.nekoserver.bak'))
@@ -775,11 +851,14 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
     subvolume (`btrfs subvolume set-default`, `/@data` say): that tree is saved as the
     drive's subvolume and its fstab line pinned to it, so a restart (or a later change of
     the default) mounts the same files, and the next run finds the line its own."""
-    install_fstab(specs, fstab)
+    install_fstab(specs, fstab, context.log)
     call(['systemctl', 'daemon-reload'])
     pinned = []
     for key, uuid, fstype, target, subvolume in specs:
         found = mount_and_check(uuid, target, subvolume, fstype)
+        note = raid_note(target)
+        if note:
+            context.log(note)
         if found != subvolume:
             context.config['storage'][key]['subvolume'] = found
             pinned.append((key, uuid, fstype, target, found))
@@ -787,11 +866,23 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
         context.log(f'Mounted UUID={uuid} on {target}; fstab configured for reboot')
     if pinned:
         save_storage(context)
-        install_fstab(mount_specs(context.config), fstab)
+        install_fstab(mount_specs(context.config), fstab, context.log)
         call(['systemctl', 'daemon-reload'])
 
 
 MOUNT_WAIT = 600
+
+
+def raid_note(target, sys_block=None):
+    """A warning when the drive mounted at `target` is a RAID array that has lost a drive
+    (a rerun with saved drives never stops a working server for it), or None."""
+    source = (findmnt('SOURCE', target) or '').split('[')[0]
+    name = os.path.basename(source)
+    lost = raid_lost(name, sys_block) if name.startswith('md') else None
+    if not lost:
+        return None
+    return (f'{target}: the RAID array {name} has lost a drive ({lost}), so your data there has one copy fewer. '
+            "Replace the failed drive and let the array rebuild; the dashboard's Drives page shows the state.")
 
 
 def only_a_folder(target, fstype, inside):
@@ -858,6 +949,6 @@ def mounted_filesystem(target):
     fields = (findmnt('UUID,FSTYPE,SOURCE', target) or '').split()
     if len(fields) == 3:
         return fields[0], fields[1]
-    if len(fields) == 2 and fields[1].startswith('/dev/'):
+    if len(fields) == 2 and fields[1].startswith(DEV):
         return uuid_of(fields[1].split('[')[0]), fields[0]
     return None
