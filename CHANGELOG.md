@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.41.0 — 2026-10-31
+
+A QA round run as a company would: beta testers and IT on the WSL rig (fresh installs, the RAID drill, the fault suite), fixes, then QA again. Plus RAID and Btrfs pool health.
 
 ### Fixed
 - **A replaced SSD or HDD no longer stops setup at /etc/fstab.** After a drive broke and a new one was put in (RECOVERY.md's way), setup refused the fstab line it had itself written for the old drive as "a line NekoServer did not write". A line of NekoServer's own for the same folder whose drive is not connected any more is now rewritten for the new drive, and setup says so; a line for a drive that is still connected, or one someone else wrote, stops setup as before. Found by the test rig's first-time installation after its drives were replaced.
