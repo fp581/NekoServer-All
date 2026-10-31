@@ -255,6 +255,18 @@ class DriveLayoutTests(unittest.TestCase):
         self.assertEqual(storage.size_bytes(single['size']), (4 * 1024 + 32) * 1024 ** 3)
         self.assertTrue(storage.big_enough(single, storage.sizes('media_hdd')[0]))
 
+    def test_a_drive_of_exactly_the_minimum_size_is_too_small_once_formatted(self):
+        # The drive space step wants the minimum FREE; a drive of that size in all never
+        # has it, so the picker says so, instead of accepting it and failing a step later.
+        from modules import storage
+        exactly = {'name': 'sdb1', 'size': '50G', 'fstype': 'ext4', 'uuid': 'x'}
+        enough = {'name': 'sdc1', 'size': '54G', 'fstype': 'ext4', 'uuid': 'y'}
+        self.assertFalse(storage.big_enough(exactly, 50))
+        self.assertTrue(storage.big_enough(enough, 50))
+        said = []
+        with self.assertRaisesRegex(RuntimeError, 'No drive here is big enough'):
+            storage.ask_drive([exactly], 'media_hdd', 'the HDD', lambda q: '', said.append)
+
     def test_a_mounted_pool_counts_what_the_pool_itself_reports(self):
         from modules import storage
         reported = mock.Mock(f_blocks=1000, f_bfree=900, f_bavail=700, f_frsize=1024 ** 3 // 25)

@@ -374,11 +374,18 @@ def sizes(key):
     return capacity.SSD if key == 'data_ssd' else capacity.HDD
 
 
+# A filesystem keeps a share of its drive for itself (ext4 about 5 %: blocks reserved
+# for root, its own tables), so a drive of exactly the minimum size never has that much
+# free. The picker allows for it, so it never accepts a drive the drive space step then
+# refuses.
+OVERHEAD = 1.07
+
+
 def big_enough(device, smallest):
-    """The drive is at least `smallest` GB in all (a smaller one can never have that much
-    free). Unknown sizes are left to the drive space step."""
+    """The drive is big enough to have `smallest` GB free once formatted (a smaller one
+    never can). Unknown sizes are left to the drive space step."""
     found = size_bytes(device.get('size'))
-    return found is None or found >= smallest * GIB
+    return found is None or found >= smallest * GIB * OVERHEAD
 
 
 def size_said(device):
