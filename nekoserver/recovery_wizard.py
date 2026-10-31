@@ -767,9 +767,8 @@ def recorded_copy(key, copy, sha, sums):
 
 def missing_copies(missing, files_listed, sums):
     """{saved copy: recorded checksum} for the listed files missing from the backup."""
-    found = dict(recorded_copy(key, *files_listed[key], sums) for key in missing)
-    found.pop(None, None)
-    return found
+    pairs = (recorded_copy(key, *files_listed[key], sums) for key in missing)
+    return {copy: sha for copy, sha in pairs if copy is not None}
 
 
 ACCEPTED = ', accepted as lost in the recovery menu'   # how accept_lost ends its reason
