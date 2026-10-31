@@ -4,6 +4,8 @@
 
 A QA round run as a company would: beta testers and IT on the WSL rig (fresh installs, the RAID drill, the fault suite), fixes, then QA again. Plus RAID and Btrfs pool health.
 
+**Tried for real** (WSL rig, one shared set of small virtual drives: 40 GB SSD, 56 GB HDD, 19 GB USB): openSUSE Tumbleweed and Ubuntu 24.04, each a fresh driven install on the shared drives (27 of 29 steps; the two left wait for the Tailscale sign-in), the feature check (47 of 47 and 46 of 46), the RAID drill (a loop-device RAID1: healthy, a drive failed, rebuilt, read errors counted, stopped; 8 of 8), the fault suite (power cuts in every phase of the monthly job and the backups, app crash, Docker restart, USB, HDD and SSD unplugged, HDD full; 30 of 30 on both) and the home gateway after a replaced SSD (3 of 3). The Python suite passes on all five rig distros (Tumbleweed, Ubuntu, Fedora 44, Arch, AlmaLinux 10); the Rust suite and clippy on Tumbleweed. Not tried on real hardware: Btrfs pool device counters (unit-tested only), a real mdadm array on physical disks.
+
 ### Fixed
 - **A replaced SSD or HDD no longer stops setup at /etc/fstab.** After a drive broke and a new one was put in (RECOVERY.md's way), setup refused the fstab line it had itself written for the old drive as "a line NekoServer did not write". A line of NekoServer's own for the same folder whose drive is not connected any more is now rewritten for the new drive, and setup says so; a line for a drive that is still connected, or one someone else wrote, stops setup as before. Found by the test rig's first-time installation after its drives were replaced.
 
