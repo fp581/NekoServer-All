@@ -358,7 +358,7 @@ const severity = urgent => urgent ? 'critical' : 'warning';
 const ALERT_GUIDES = [
   [id => id === 'job:maintenance', 'updates'], // the monthly run: backup, then updates
   [id => id.startsWith('integrity:'), 'integrity'],
-  [id => /^(mount|space|smart):/.test(id), 'storage'],
+  [id => /^(mount|space|smart|array-[a-z]+):/.test(id), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
   [id => id.includes('heartbeat'), 'heartbeat'],
@@ -410,7 +410,28 @@ function appIssues(s, add) {
     add('setup-unfinished', 'Setup isn’t finished yet', (notSetUp.length === 1 ? names + ' is' : names + ' are') + ' not set up yet. Run setup again on the server: it carries on where it stopped.', 'setup');
   }
 }
+const ARRAY_BADGES = {healthy: ['pass', 'Healthy'], rebuilding: ['warning', 'Rebuilding'], degraded: ['fail', 'Drive lost'],
+  failing: ['fail', 'Drive failing'], warning: ['warning', 'Needs a look'], unknown: ['unknown', 'Not checked']};
+function arrayShown(a) {
+  const names = list(a.holds_names).map(n => text(n)).filter(Boolean);
+  return text(a.name, 'Drive array') + (names.length ? ' (' + names.join(', ') + ')' : '');
+}
+function arrayIssues(s, add) {
+  for (const a of list(s.arrays)) {
+    const shown = arrayShown(a), reason = text(a.reason, 'Review the Drives page.');
+    if (a.status === 'degraded' || a.status === 'rebuilding') {
+      add('array-lost:' + a.id, shown + (a.status === 'rebuilding' ? ' has one copy fewer' : ' has lost a drive'), reason, 'storage', 'critical');
+      if (a.status === 'rebuilding') {
+        add('array-rebuild:' + a.id, shown + ' is rebuilding' + (numeric(a.progress) ? ' (' + a.progress + ' % done)' : ''),
+          'Keep the computer on and every drive connected until it finishes.', 'storage');
+      }
+    } else if (a.status === 'failing' || a.status === 'warning') {
+      add('array-errors:' + a.id, shown + (a.status === 'failing' ? ': a drive is failing' : ' needs a look'), reason, 'storage', severity(a.status === 'failing'));
+    }
+  }
+}
 function driveIssues(s, add) {
+  arrayIssues(s, add);
   for (const disk of s.storage) {
     const name = text(disk.name, 'Drive'), smart = object(disk.smart);
     if (disk.status !== 'mounted') {
@@ -1851,7 +1872,29 @@ function smartLine(smart) {
   const fine = smart.status === 'pass' || smart.status === 'unknown';
   return el('p', fine ? '' : 'reason', 'Health: ' + (LABELS[smart.status] || 'Not checked yet') + temperature + checked);
 }
-function driveCard(disk, old) {
+function arrayLine(a) {
+  const [, label] = ARRAY_BADGES[a.status] || ARRAY_BADGES.unknown;
+  const progress = a.status === 'rebuilding' && numeric(a.progress) ? ' (' + a.progress + ' % done)' : '';
+  return el('p', a.status === 'healthy' ? '' : 'reason', text(a.name, 'Drive array') + ': ' + label + progress);
+}
+function memberRow(m) {
+  const errors = count(m.errors) > 0 ? ' · ' + m.errors + ' corrected read errors' : '';
+  const smart = object(m.smart);
+  const health = ['fail', 'warning'].includes(smart.status) ? ' · ' + text(smart.reason, 'health needs a look') : '';
+  const row = el('div', 'row');
+  row.append(el('span', 'mono', text(m.device, 'drive') + errors + health),
+    badge(smart.status === 'fail' || /faulty/.test(text(m.state)) ? 'fail' : 'pass', text(m.state, 'state unknown')));
+  return row;
+}
+function arrayCard(a, old) {
+  const card = el('article', 'card'), [kind, label] = ARRAY_BADGES[a.status] || ARRAY_BADGES.unknown;
+  card.append(cardHeading(text(a.name, 'Drive array'), old ? badge('unknown', 'Old reading') : badge(kind, label)));
+  if (a.status === 'rebuilding' && numeric(a.progress)) { card.append(meter(a.progress, '')); }
+  for (const m of list(a.members)) { card.append(memberRow(m)); }
+  if (a.reason && a.status !== 'healthy') { card.append(hint(text(a.reason))); }
+  return card;
+}
+function driveCard(disk, old, arrays) {
   const card = el('article', 'card'), smart = object(disk.smart);
   card.append(cardHeading(text(disk.name, 'Drive'), driveBadge(disk, old)),
     el('p', 'big', numeric(disk.total) && numeric(disk.used) ? bytes(disk.total - disk.used) + ' free' : 'Space unknown'),
@@ -1859,6 +1902,10 @@ function driveCard(disk, old) {
     el('p', '', bytes(disk.used) + ' used of ' + bytes(disk.total)),
     smartLine(smart));
   if (smart.reason && smart.status !== 'pass') { card.append(hint(text(smart.reason))); }
+  for (const a of list(arrays).filter(a => list(a.holds).includes(disk.id))) {
+    card.append(arrayLine(a));
+    if (a.status !== 'healthy') { card.append(hint(text(a.reason))); }
+  }
   return card;
 }
 function staysRunning(unit) {
@@ -1913,7 +1960,10 @@ function renderHealth() {
   const s = state.status;
   if (!s) { return; }
   const old = statusStale(), media = s.media, trusted = !old && media.status === 'current';
-  put('drives', s.storage.length ? s.storage.map(disk => driveCard(disk, old)) : [empty('No drives reported.')]);
+  const arrays = list(s.arrays), held = new Set(s.storage.map(d => d.id));
+  const apart = arrays.filter(a => !list(a.holds).some(id => held.has(id)));
+  const driveCards = s.storage.map(disk => driveCard(disk, old, arrays)).concat(apart.map(a => arrayCard(a, old)));
+  put('drives', driveCards.length ? driveCards : [empty('No drives reported.')]);
   put('startup', s.startup.length ? s.startup.map(startupRow) : [empty('The startup check runs with the next reading.')]);
   put('monitoring', [monitorCard('Outside heartbeat', s.heartbeat, 'heartbeat', old), monitorCard('Phone notifications', s.notifications, 'notifications', old)]);
   put('readiness', [el('p', 'section-note', readinessNote(media)), ...media.checks.map(c => readinessRow(c, trusted))]);

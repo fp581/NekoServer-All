@@ -1,5 +1,6 @@
 mod app_snapshot;
 mod apps;
+mod array_health;
 mod backup;
 mod collect;
 mod common;

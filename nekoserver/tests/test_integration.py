@@ -263,8 +263,10 @@ class InstallScriptTests(unittest.TestCase):
         script.write_text(text)
         path = os.pathsep.join(p for p in (extra_path, str(self.root / 'bin'), os.environ['PATH']) if p)
         self.log.write_text('')
+        # Without a terminal, as in CI: with one, the script's "started as root" pause (10 s,
+        # for a person to read the note) would make the suite take minutes from a terminal.
         result = subprocess.run(['bash', str(script), *args], capture_output=True, text=True, timeout=60,
-                                env={**os.environ, 'PATH': path, 'LOG': str(self.log)})
+                                stdin=subprocess.DEVNULL, env={**os.environ, 'PATH': path, 'LOG': str(self.log)})
         return result, self.log.read_text()
 
     def test_finish_update_builds_and_finishes_only_the_unfinished_update(self):

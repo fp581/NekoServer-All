@@ -228,6 +228,47 @@ def unlocked(device):
     return device
 
 
+# Where Linux reports the software RAID arrays (each /sys/block/<md>/md).
+SYS_BLOCK = '/sys/block'
+RAID_KINDS = ('md', 'linear', 'raid0', 'raid1', 'raid4', 'raid5', 'raid6', 'raid10')
+
+
+def raid_lost(name, sys_block=None):
+    """What a software RAID array is missing, or None: the array `name` (md0, as lsblk
+    and /sys/block name it) with a failed or absent drive. Reads nothing for other names."""
+    md = Path(sys_block or SYS_BLOCK) / name / 'md'
+    if not md.is_dir():
+        return None
+    try:
+        missing = int((md / 'degraded').read_text().strip() or 0)
+    except (OSError, ValueError):
+        missing = 0
+    failed = []
+    for member in sorted(md.glob('dev-*')):
+        try:
+            states = (member / 'state').read_text().split(',')
+        except OSError:
+            continue
+        if any(s.strip() == 'faulty' for s in states):
+            failed.append(member.name[len('dev-'):])
+    if not missing and not failed:
+        return None
+    return ('the drive ' + ', '.join(failed) + ' failed') if failed else 'a drive is missing'
+
+
+def whole(device, sys_block=None):
+    """The chosen drive, unless it is a RAID array that has lost a drive: what you put on
+    it would start life with no second copy, and the mirror may be about to go too."""
+    if device.get('kind') not in RAID_KINDS:
+        return device
+    lost = raid_lost(device.get('name', ''), sys_block)
+    if lost:
+        raise RuntimeError(f"The RAID array {device['name']} has lost a drive ({lost}), so what you put on it "
+                           'would have no second copy. Replace or reconnect the drive and let the array rebuild '
+                           '(cat /proc/mdstat shows the progress), then run setup again.')
+    return device
+
+
 def discover_filesystems(inventory, sub_uuid=device_sub_uuid):
     """Return candidates, never auto-select a device on model/size alone."""
     rows,placed=[],[]
@@ -407,7 +448,7 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
                               interactive=interactive, out_fn=out_fn)
         if not uuid and apply:
             if not interactive: raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
-            device=unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn))
+            device=whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
             record['uuid']=device['uuid']; record['fstype']=device['fstype']
             uuid=device['uuid']
         elif not uuid:
@@ -780,6 +821,9 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
     pinned = []
     for key, uuid, fstype, target, subvolume in specs:
         found = mount_and_check(uuid, target, subvolume, fstype)
+        note = raid_note(target)
+        if note:
+            context.log(note)
         if found != subvolume:
             context.config['storage'][key]['subvolume'] = found
             pinned.append((key, uuid, fstype, target, found))
@@ -792,6 +836,18 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
 
 
 MOUNT_WAIT = 600
+
+
+def raid_note(target, sys_block=None):
+    """A warning when the drive mounted at `target` is a RAID array that has lost a drive
+    (a rerun with saved drives never stops a working server for it), or None."""
+    source = (findmnt('SOURCE', target) or '').split('[')[0]
+    name = os.path.basename(source)
+    lost = raid_lost(name, sys_block) if name.startswith('md') else None
+    if not lost:
+        return None
+    return (f'{target}: the RAID array {name} has lost a drive ({lost}), so your data there has one copy fewer. '
+            "Replace the failed drive and let the array rebuild; the dashboard's Drives page shows the state.")
 
 
 def only_a_folder(target, fstype, inside):

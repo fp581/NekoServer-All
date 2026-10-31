@@ -341,6 +341,36 @@ class DriveLayoutTests(unittest.TestCase):
         # Never offered, so never checked for clones either (even where blkid can't say).
         self.assertEqual([v['uuid'] for v in storage.discover_filesystems(inventory, lambda name: None)], ['ssd'])
 
+    def test_a_raid_array_that_lost_a_drive_is_refused_at_setup(self):
+        from modules import storage
+        with tempfile.TemporaryDirectory() as d:
+            md = Path(d) / 'md0' / 'md'
+            for member, state in (('dev-sda1', 'in_sync'), ('dev-sdb1', 'in_sync')):
+                (md / member).mkdir(parents=True)
+                (md / member / 'state').write_text(state + '\n')
+            (md / 'degraded').write_text('0\n')
+            device = {'name': 'md0', 'kind': 'raid1', 'uuid': 'x'}
+            self.assertIs(storage.whole(device, sys_block=d), device)
+            (md / 'degraded').write_text('1\n')
+            (md / 'dev-sdb1' / 'state').write_text('faulty\n')
+            with self.assertRaisesRegex(RuntimeError, 'md0 has lost a drive .*sdb1'):
+                storage.whole(device, sys_block=d)
+            # Not an array: nothing in /sys is read for it.
+            self.assertEqual(storage.whole({'name': 'sdc1', 'kind': 'part'}, sys_block=d)['name'], 'sdc1')
+
+    def test_a_rerun_warns_about_a_degraded_array_instead_of_stopping(self):
+        from modules import storage
+        with tempfile.TemporaryDirectory() as d:
+            md = Path(d) / 'md0' / 'md'
+            md.mkdir(parents=True)
+            (md / 'degraded').write_text('1\n')
+            with mock.patch.object(storage, 'findmnt', return_value='/dev/md0[/@data]'):
+                note = storage.raid_note('/srv/nekoserver', sys_block=d)
+            self.assertIn('one copy fewer', note)
+            self.assertIn('md0', note)
+            with mock.patch.object(storage, 'findmnt', return_value='/dev/sdb1'):
+                self.assertIsNone(storage.raid_note('/srv/nekoserver', sys_block=d))
+
     def test_an_encrypted_drive_must_be_unlocked_at_every_start(self):
         from modules import storage
         with tempfile.TemporaryDirectory() as d:

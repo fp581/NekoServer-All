@@ -35,7 +35,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Sensors** | Every temperature sensor (grouped: processor, graphics, drives, motherboard…), fan speeds, power use and voltages. |
 | **Fans & lights** | Fan speeds by temperature, fixed speeds, or the motherboard's own control, for every fan; finding which fan is which; colours, brightness and effects for RGB lighting. |
 | **Processes** | What's running, including inside each app, with processor and memory use. Search and sort. Right-click a program (on a phone, tap ⋯) to restart its app, or to close an app opened on the desktop. |
-| **Server health** | Drive space and health, **what starts by itself after a restart**, the outside heartbeat, phone notifications, app checks and waiting updates. |
+| **Server health** | Drive space and health, RAID arrays and Btrfs pools (each drive of an array, rebuilds with their progress, and the error counters that show a drive going bad early), **what starts by itself after a restart**, the outside heartbeat, phone notifications, app checks and waiting updates. |
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
 | **Help** | Step-by-step guides, the error codes below, installing it as an app, and a privacy-safe summary to share. |
 

@@ -47,6 +47,20 @@ fn label(id: &str) -> Option<String> {
             }
         ));
     }
+    let phrase = match kind {
+        "array-lost" => Some("has lost a drive"),
+        "array-rebuild" => Some("is rebuilding"),
+        "array-errors" => Some("counts drive errors"),
+        _ => None,
+    };
+    if let Some(phrase) = phrase {
+        let name = match key.split_once('-') {
+            Some(("btrfs", short)) => format!("The Btrfs drives ({short})"),
+            Some(("md", device)) => format!("The RAID array {device}"),
+            _ => return None,
+        };
+        return Some(format!("{name} {phrase}"));
+    }
     let name = match kind {
         "mount" | "space" | "smart" => match key {
             "data_ssd" => "Application SSD",
@@ -235,6 +249,13 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             unknown.remove(&format!("smart:{id}"));
         }
     }
+    for row in s["arrays"].as_array().into_iter().flatten() {
+        if row["status"] == "unknown" {
+            for kind in ["array-lost", "array-rebuild", "array-errors"] {
+                unknown.insert(format!("{kind}:{}", row["id"].as_str().unwrap_or("")));
+            }
+        }
+    }
     if s["media"]["status"] != "current" {
         unknown.insert("media-failure".into());
     }
@@ -346,8 +367,20 @@ fn plan(
         .cloned()
         .collect::<Vec<_>>();
     let gone = if fresh { retired(s) } else { BTreeSet::new() };
+    let arrays_listed: BTreeSet<String> = s["arrays"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["id"].as_str().map(String::from))
+        .collect();
     for id in keys {
-        if label(&id).is_none() || (gone.contains(&id) && !active.contains_key(&id)) {
+        // An array gone from the list was stopped or taken out on purpose: its alert is
+        // dropped without a "RECOVERED" (nothing recovered).
+        let vanished = fresh
+            && id.split_once(':').is_some_and(|(kind, key)| {
+                kind.starts_with("array-") && !arrays_listed.contains(key)
+            });
+        if label(&id).is_none() || ((gone.contains(&id) || vanished) && !active.contains_key(&id)) {
             state["entries"].as_object_mut().unwrap().remove(&id);
             continue;
         }
@@ -532,6 +565,61 @@ mod tests {
             label("backup:maintenance").unwrap(),
             "Monthly backup and updates: backup needs attention"
         );
+        assert_eq!(
+            label("array-lost:md-md0").unwrap(),
+            "The RAID array md0 has lost a drive"
+        );
+        assert_eq!(
+            label("array-errors:btrfs-aabbccdd").unwrap(),
+            "The Btrfs drives (aabbccdd) counts drive errors"
+        );
+        assert!(label("array-lost:nonsense").is_none());
+    }
+    /// A degraded array alerts once, recovers only when its row is back and healthy, and
+    /// is dropped silently when the array itself is taken away.
+    #[test]
+    fn an_array_alert_recovers_only_with_the_array_listed_again() {
+        let alerts = json!([{"id":"array-lost:md-md0","level":"critical"}]);
+        let degraded = |now: f64| {
+            let mut s = snapshot(now, alerts.clone());
+            s["arrays"] = json!([{"id":"md-md0","status":"degraded"}]);
+            s
+        };
+        let (state, events) = plan(&degraded(1000.), &json!({}), 1000., 180, 43200);
+        assert!(events.is_empty(), "debounced at first sight");
+        let (mut state, events) = plan(&degraded(1200.), &state, 1200., 180, 43200);
+        assert_eq!(
+            events,
+            vec![(
+                "array-lost:md-md0".to_string(),
+                false,
+                "critical".to_string()
+            )]
+        );
+        state["entries"]["array-lost:md-md0"]["last_sent"] = json!(1200.0);
+        // Health unreadable: no recovery is claimed.
+        let mut blind = snapshot(1400., json!([]));
+        blind["arrays"] = json!([{"id":"md-md0","status":"unknown"}]);
+        let (_, events) = plan(&blind, &state, 1400., 180, 43200);
+        assert!(events.is_empty(), "{events:?}");
+        // Whole again: the alert is gone and the array reports healthy -> recovered.
+        let mut whole = snapshot(1500., json!([]));
+        whole["arrays"] = json!([{"id":"md-md0","status":"healthy"}]);
+        let (_, events) = plan(&whole, &state, 1500., 180, 43200);
+        assert_eq!(
+            events,
+            vec![(
+                "array-lost:md-md0".to_string(),
+                true,
+                "recovered".to_string()
+            )]
+        );
+        // The array was stopped or taken out: dropped, nothing "recovered".
+        let mut gone = snapshot(1600., json!([]));
+        gone["arrays"] = json!([]);
+        let (after, events) = plan(&gone, &state, 1600., 180, 43200);
+        assert!(events.is_empty(), "{events:?}");
+        assert!(after["entries"]["array-lost:md-md0"].is_null());
     }
     use super::*;
     fn snapshot(now: f64, alerts: Value) -> Value {
