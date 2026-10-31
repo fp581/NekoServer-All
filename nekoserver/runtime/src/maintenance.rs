@@ -2316,15 +2316,54 @@ fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) ->
         json!({"keep":keep,"kept":kept,"removed":removed,"incomplete_not_removed":unmanaged,"held_back":held_back}),
     )
 }
-/// For a full HDD: the unfinished snapshots retention still keeps there. They go only
-/// once newer complete runs replace them, which a full HDD prevents, so the space
-/// message names them as the room a person can free.
+/// A full HDD: the unfinished monthly snapshots (cut off, or their restore test failed)
+/// that retention still keeps are removed, oldest first, until the run fits (`wanted`
+/// bytes free); a complete snapshot is never removed for room. They would otherwise go
+/// only once newer complete runs replace them, which the full HDD prevents: a server cut
+/// off a few times could never run its monthly job again. Returns the free bytes after.
+fn make_room(media: &Path, retention: &mut Value, wanted: u64) -> Result<u64> {
+    let folder = media.join("backups/monthly");
+    let runs: Vec<String> = retention["incomplete_not_removed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.as_str().map(str::to_string))
+        .collect();
+    let mut have = drive_space(media)?.0;
+    let mut left = vec![];
+    for run in runs {
+        if have >= wanted {
+            left.push(run);
+            continue;
+        }
+        match remove_run(&folder.join(&run)) {
+            Ok(()) => {
+                println!(
+                    "Monthly retention: unfinished snapshot {run} removed to make room on the HDD"
+                );
+                if let Some(removed) = retention["removed"].as_array_mut() {
+                    removed
+                        .push(json!({"run":run,"drive":"hdd","unfinished":true,"for_room":true}));
+                }
+                have = drive_space(media)?.0;
+            }
+            Err(e) => {
+                println!("Monthly retention: unfinished snapshot {run} kept ({e})");
+                left.push(run);
+            }
+        }
+    }
+    retention["incomplete_not_removed"] = json!(left);
+    Ok(have)
+}
+/// For a full HDD: the unfinished snapshots that could not be removed to make room (not
+/// the worker's own folders, or in use), named as the room a person can free.
 fn unfinished_note(folder: &Path, runs: &[String], bytes: u64) -> String {
     if runs.is_empty() {
         return String::new();
     }
     format!(
-        ". Unfinished monthly snapshots (cut off, or their restore test failed) take about {} GB there: {} in {}. They are removed by themselves only once newer complete snapshots replace them, so delete the ones you don't need",
+        ". Unfinished monthly snapshots (cut off, or their restore test failed) take about {} GB there: {} in {}. They could not be removed to make room, so delete the ones you don't need",
         (bytes as f64 / 1e9).ceil() as u64,
         runs.join(", "),
         folder.display()
@@ -2756,9 +2795,12 @@ fn transaction(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     let (ssd, hdd) = space_needed(app_bytes, media_bytes, image_bytes(&names)?);
     // The USB drive is not used by monthly maintenance.
     for (root, needed, what) in [(data, ssd, "SSD"), (media, hdd, "HDD")] {
-        let (have, drive) = drive_space(root)?;
+        let (mut have, drive) = drive_space(root)?;
         let reserve = reserve_for(setting, drive);
         let wanted = needed.saturating_add(reserve);
+        if have < wanted && what == "HDD" {
+            have = make_room(media, &mut retention, wanted)?;
+        }
         if have < wanted {
             let gb = |b: u64| (b as f64 / 1e9).ceil() as u64;
             let unfinished = if what == "HDD" {
@@ -4103,6 +4145,29 @@ mod tests {
             "{note}"
         );
         assert!(note.contains("delete the ones you don't need"), "{note}");
+    }
+    #[test]
+    fn unfinished_runs_make_room_on_a_full_hdd_but_complete_ones_stay() {
+        let root = scratch("room");
+        snapshot(&root, "hdd", "150-1", false);
+        snapshot(&root, "hdd", "200-1", true);
+        snapshot(&root, "hdd", "250-1", false);
+        let mut retention = prune_monthly(&root.join("ssd"), &root.join("hdd"), 3, None).unwrap();
+        assert_eq!(
+            retention["incomplete_not_removed"],
+            json!(["150-1", "250-1"])
+        );
+        // Room enough: nothing goes.
+        make_room(&root.join("hdd"), &mut retention, 0).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["150-1", "200-1", "250-1"]);
+        // Never room enough: every unfinished run goes, the complete one stays.
+        make_room(&root.join("hdd"), &mut retention, u64::MAX).unwrap();
+        assert_eq!(runs(&root, "hdd"), ["200-1"]);
+        assert_eq!(retention["incomplete_not_removed"], json!([]));
+        let removed = retention["removed"].as_array().unwrap();
+        assert_eq!(removed.len(), 2);
+        assert_eq!(removed[0]["for_room"], json!(true));
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn monthly_retention_zero_keeps_everything_and_reclaims_old_ssd_copies() {

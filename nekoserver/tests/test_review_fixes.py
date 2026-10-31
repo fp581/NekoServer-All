@@ -1817,10 +1817,10 @@ class GatewayRecordOnTheSystemDiskTests(unittest.TestCase):
         self.ssd.parent.mkdir()
         self.ssd.write_text(json.dumps({'sha256': {str(self.file): 'not it'}, 'uid': 5, 'gid': 5}))
         self.assertEqual(gateway_tools.managed(self.ssd, self.copy)['uid'], 5)
-        with self.assertRaisesRegex(RuntimeError, 'Unmanaged or modified gateway file'):
+        with self.assertRaisesRegex(RuntimeError, 'no record of writing them.*sudo rm'):
             gateway_tools.preflight({self.file: 'new settings'}, self.ssd, self.copy)
         self.copy.unlink()
-        with self.assertRaisesRegex(RuntimeError, 'Unmanaged or modified gateway file'):
+        with self.assertRaisesRegex(RuntimeError, 'no record of writing them.*sudo rm'):
             gateway_tools.preflight({self.file: 'new settings'}, self.ssd / 'none', self.copy)
 
 
@@ -1870,6 +1870,25 @@ class NextcloudFirstInstallTests(unittest.TestCase):
                 self.assertRaisesRegex(RuntimeError, 'did not finish installing within 15 minutes.*docker logs'):
             nextcloud.finish_install(self.BASE, lambda m: None, run=run, sleep=lambda s: None, now=lambda: next(clock))
         checked.assert_not_called()
+
+
+class NextcloudReinstalledLinuxTests(unittest.TestCase):
+    """Linux reinstalled and the SSD kept, the settings made anew: Nextcloud's administrator
+    (named by the account store on the SSD) is taken back, so the install is not refused."""
+    def test_the_installed_administrator_is_taken_back_into_the_settings(self):
+        from modules import nextcloud
+        owned = {'settings': {'admin_user': 'neko_12ab', 'image': 'nextcloud:33-apache'}}
+        chosen = {'username': 'neko_12ab'}
+        saved, said = [], []
+        opts = {'enabled': True, 'admin_user': 'admin'}
+        self.assertTrue(nextcloud.adopt_admin(opts, owned, chosen, lambda: saved.append(1), said.append))
+        self.assertEqual(opts['admin_user'], 'neko_12ab')
+        self.assertEqual(saved, [1])
+        self.assertIn('taken from the installed Nextcloud', said[0])
+        # A name the person chose themselves, or an installed name the store does not know, is left to the check.
+        for opts, chosen in ({'admin_user': 'alice'}, {'username': 'neko_12ab'}), ({}, {'username': 'other'}), ({}, None):
+            self.assertFalse(nextcloud.adopt_admin(opts, owned, chosen, lambda: saved.append(2), said.append))
+        self.assertEqual(saved, [1])
 
 
 class NextcloudUpgradeTests(unittest.TestCase):
