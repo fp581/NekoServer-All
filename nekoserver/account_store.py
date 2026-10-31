@@ -1,4 +1,5 @@
 """Private, durable installer credentials; never put secrets in public reports."""
+
 import getpass
 import json
 from pathlib import Path
@@ -11,11 +12,18 @@ from neko_common import APPS as CATALOG, atomic_json, atomic_write, ensure_direc
 
 # Each account: (what it is, the app's local port).
 ADMIN = ' administrator'
-APPS = {account: (CATALOG[app][0] + role, CATALOG[app][2]) for account, app, role in (
-    ('jellyfin', 'jellyfin', ADMIN), ('navidrome', 'navidrome', ADMIN),
-    ('navidrome_listener', 'navidrome', ' listener (non-admin)'),
-    *((app, app, ADMIN) for app in
-      ('sonarr', 'radarr', 'lidarr', 'prowlarr', 'qbittorrent', 'seerr', 'immich', 'nextcloud')))}
+APPS = {
+    account: (CATALOG[app][0] + role, CATALOG[app][2])
+    for account, app, role in (
+        ('jellyfin', 'jellyfin', ADMIN),
+        ('navidrome', 'navidrome', ADMIN),
+        ('navidrome_listener', 'navidrome', ' listener (non-admin)'),
+        *(
+            (app, app, ADMIN)
+            for app in ('sonarr', 'radarr', 'lidarr', 'prowlarr', 'qbittorrent', 'seerr', 'immich', 'nextcloud')
+        ),
+    )
+}
 EMAIL_LOGINS = {'immich', 'seerr'}
 STATES = {'planned', 'started', 'verified', 'needs_setup'}
 
@@ -77,11 +85,22 @@ def name_ok(app, username, existing):
 def validate_login(app, username, password, existing=False):
     valid = name_ok(app, username, existing)
     if not valid and existing:
-        raise ValueError('Enter the login exactly as the app has it (1-128 characters, no control characters' +
-                         (', no : and not starting with -' if app == 'nextcloud' else '') + ')')
+        raise ValueError(
+            'Enter the login exactly as the app has it (1-128 characters, no control characters'
+            + (', no : and not starting with -' if app == 'nextcloud' else '')
+            + ')'
+        )
     if not valid:
-        raise ValueError('Enter a valid email login' if app in EMAIL_LOGINS else 'Username: start with a letter; use 1-32 letters, digits, underscores or hyphens')
-    if not isinstance(password, str) or not (1 if existing else 12) <= len(password) <= 128 or any(ord(ch) < 32 or ord(ch) == 127 for ch in password):
+        raise ValueError(
+            'Enter a valid email login'
+            if app in EMAIL_LOGINS
+            else 'Username: start with a letter; use 1-32 letters, digits, underscores or hyphens'
+        )
+    if (
+        not isinstance(password, str)
+        or not (1 if existing else 12) <= len(password) <= 128
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in password)
+    ):
         raise ValueError('Password must contain 12-128 characters and no control characters')
 
 
@@ -92,7 +111,10 @@ def generate(app):
     alphabet = string.ascii_letters + string.digits + '-_'
     while True:
         password = ''.join(secrets.choice(alphabet) for _ in range(32))
-        if all(any(ch in group for ch in password) for group in (string.ascii_lowercase, string.ascii_uppercase, string.digits)):
+        if all(
+            any(ch in group for ch in password)
+            for group in (string.ascii_lowercase, string.ascii_uppercase, string.digits)
+        ):
             break
     return username, password
 
@@ -101,7 +123,11 @@ def drop_unfinished(root):
     """Remove the unfinished write a cut-off first save left (".credentials.json-xxxx",
     from atomic_write): it was never the store, and it may hold passwords."""
     for item in root.iterdir():
-        if item.name.startswith(('.credentials.json-', '.APP-CREDENTIALS.txt-')) and item.is_file() and not item.is_symlink():
+        if (
+            item.name.startswith(('.credentials.json-', '.APP-CREDENTIALS.txt-'))
+            and item.is_file()
+            and not item.is_symlink()
+        ):
             item.unlink()
 
 
@@ -122,10 +148,19 @@ def load(config):
         raise RuntimeError('Account store exceeds expected size')
     try:
         value = json.loads(path.read_text())
-        if value.get('format') != 1 or value.get('mode') not in ('generate', 'per-app') or not isinstance(value.get('apps'), dict):
+        if (
+            value.get('format') != 1
+            or value.get('mode') not in ('generate', 'per-app')
+            or not isinstance(value.get('apps'), dict)
+        ):
             raise ValueError
         for app, entry in value['apps'].items():
-            if app not in APPS or not isinstance(entry, dict) or entry.get('state') not in STATES or type(entry.get('allow_create')) is not bool:
+            if (
+                app not in APPS
+                or not isinstance(entry, dict)
+                or entry.get('state') not in STATES
+                or type(entry.get('allow_create')) is not bool
+            ):
                 raise ValueError
             validate_login(app, entry['username'], entry['password'], existing=not entry['allow_create'])
     except (ValueError, KeyError, TypeError, AttributeError):
@@ -145,19 +180,27 @@ def save(config, value):
             private(root / name)
         safe_path(root / name)
     atomic_json(root / 'credentials.json', value)
-    lines = ['NEKOSERVER APP CREDENTIALS',
-             'Sensitive plaintext - root only. Keep any offline copy private.',
-             'Only VERIFIED entries have passed an authenticated account check.',
-             'Generated @server.invalid logins cannot receive email recovery messages.', '']
+    lines = [
+        'NEKOSERVER APP CREDENTIALS',
+        'Sensitive plaintext - root only. Keep any offline copy private.',
+        'Only VERIFIED entries have passed an authenticated account check.',
+        'Generated @server.invalid logins cannot receive email recovery messages.',
+        '',
+    ]
     for app in APPS:
         if app not in value['apps']:
             continue
         entry = value['apps'][app]
-        lines.extend([f'=== {APPS[app][0]} ===',
-                      f'Local URL: http://127.0.0.1:{APPS[app][1]}',
-                      f'Status: {entry["state"].upper()}',
-                      f'Username: {entry["username"]}',
-                      f'Password: {entry["password"]}', ''])
+        lines.extend(
+            [
+                f'=== {APPS[app][0]} ===',
+                f'Local URL: http://127.0.0.1:{APPS[app][1]}',
+                f'Status: {entry["state"].upper()}',
+                f'Username: {entry["username"]}',
+                f'Password: {entry["password"]}',
+                '',
+            ]
+        )
     atomic_write(root / 'APP-CREDENTIALS.txt', '\n'.join(lines) + '\n', 0o600)
 
 
@@ -216,8 +259,10 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
             if entry['allow_create']:
                 # Account creation did not finish. If you completed the app's first-run
                 # setup yourself with another login, switch to that existing account.
-                output('  If you finished this app\'s setup yourself with a different login, choose c to enter it '
-                       '(the account in the app is not changed or reset).')
+                output(
+                    '  If you finished this app\'s setup yourself with a different login, choose c to enter it '
+                    '(the account in the app is not changed or reset).'
+                )
             while True:
                 answer = prompt('  ENTER to retry saved login, or c to enter the current login: ').strip().lower()
                 if answer in ('', 'c'):
@@ -225,8 +270,9 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
                 output('Choose ENTER or c.')
             if answer == 'c':
                 username, password = ask_login(app, True, value, prompt, password_prompt, output)
-                entry.update(username=username, password=password, state='planned', source='custom-existing',
-                             allow_create=False)
+                entry.update(
+                    username=username, password=password, state='planned', source='custom-existing', allow_create=False
+                )
                 save(config, value)
     missing = [app for app in apps if app not in value['apps']]
     if not missing:
@@ -234,7 +280,9 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
         return
     if not value['apps']:
         while True:
-            answer = prompt('Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2: ').strip()
+            answer = prompt(
+                'Logins for the apps: 1 = NekoServer makes a strong username and password for each app (recommended; you can see them later), 2 = you choose them app by app. Type 1 or 2: '
+            ).strip()
             if answer in ('1', '2'):
                 value['mode'] = 'generate' if answer == '1' else 'per-app'
                 break
@@ -259,7 +307,12 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
             username, password = generate(app)
         else:
             username, password = ask_login(app, not fresh, value, prompt, password_prompt, output)
-        value['apps'][app] = {'username': username, 'password': password, 'state': 'planned',
-                              'allow_create': fresh, 'source': mode}
+        value['apps'][app] = {
+            'username': username,
+            'password': password,
+            'state': 'planned',
+            'allow_create': fresh,
+            'source': mode,
+        }
         save(config, value)
     output('Account choices saved privately; passwords are not printed or written to installer logs.')

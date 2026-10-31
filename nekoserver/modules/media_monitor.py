@@ -1,4 +1,5 @@
 """Install a scheduled, read-only audit after media deployment."""
+
 import os
 from pathlib import Path
 import shutil
@@ -19,11 +20,13 @@ def command_line(binary, config, report):
 def refresh(config, log, target=None):
     """After every setup run: the installed monitor checks the apps set up now (an app
     added or taken out of media.services, say). Nothing happens when it is not installed."""
-    return refresh_settings(target or Path(config['data_mount']) / 'scripts' / 'config.json', config, log, 'Media monitor')
+    return refresh_settings(
+        target or Path(config['data_mount']) / 'scripts' / 'config.json', config, log, 'Media monitor'
+    )
 
 
 def run(context):
-    enabled = context.config.get('monitoring',{}).get('enabled',True)
+    enabled = context.config.get('monitoring', {}).get('enabled', True)
     if type(enabled) is not bool:
         raise RuntimeError('Schedule enable switch must be boolean')
     if not enabled:
@@ -31,7 +34,11 @@ def run(context):
             if os.geteuid() != 0:
                 raise RuntimeError('Root required')
             from modules._schedules import retire
-            retire([SYSTEMD_UNITS/('nekoserver-media-health.'+suffix) for suffix in ('timer','service')], subprocess.run)
+
+            retire(
+                [SYSTEMD_UNITS / ('nekoserver-media-health.' + suffix) for suffix in ('timer', 'service')],
+                subprocess.run,
+            )
         context.log('nekoserver-media-health: disabled; any old managed schedule is retired when applied')
         return
     if not context.apply:

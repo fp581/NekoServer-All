@@ -1,6 +1,7 @@
 """The docs team's fixes from the 0.40.1 release test: recovery messages that say what to
 do next (IT-16), acceptance text that matches this release (IT-15), and user guides
 that start with the user (D13, D14, D15)."""
+
 import io
 import subprocess
 import sys
@@ -29,8 +30,10 @@ class RecoveryMessageTests(unittest.TestCase):
     was not installed."""
 
     def failure(self, error):
-        with mock.patch.object(recovery_tools.subprocess, 'run', side_effect=error), \
-                self.assertRaises(RuntimeError) as caught:
+        with (
+            mock.patch.object(recovery_tools.subprocess, 'run', side_effect=error),
+            self.assertRaises(RuntimeError) as caught,
+        ):
             recovery_tools.command(['docker', 'info'], timeout=5)
         return str(caught.exception)
 
@@ -48,16 +51,21 @@ class RecoveryMessageTests(unittest.TestCase):
 
     def test_a_failing_program_says_where_to_look_and_never_its_output(self):
         result = subprocess.CompletedProcess(['docker'], 1, stdout=b'', stderr=b'POSTGRES_PASSWORD=secret')
-        with mock.patch.object(recovery_tools.subprocess, 'run', return_value=result), \
-                self.assertRaises(RuntimeError) as caught:
+        with (
+            mock.patch.object(recovery_tools.subprocess, 'run', return_value=result),
+            self.assertRaises(RuntimeError) as caught,
+        ):
             recovery_tools.command(['docker', 'info'])
         self.assertIn('systemctl status docker', str(caught.exception))
         self.assertNotIn('secret', str(caught.exception))
 
     def run_main(self, argv, error):
         err = io.StringIO()
-        with mock.patch.object(recover, 'run', side_effect=error), \
-                mock.patch.object(recover.Path, 'read_text', return_value='{}'), redirect_stderr(err):
+        with (
+            mock.patch.object(recover, 'run', side_effect=error),
+            mock.patch.object(recover.Path, 'read_text', return_value='{}'),
+            redirect_stderr(err),
+        ):
             code = recover.main(['--config', '/c.json', *argv])
         return code, err.getvalue()
 
@@ -81,8 +89,10 @@ class RecoveryMessageTests(unittest.TestCase):
             self.assertIn('Saved on the SSD', recover.checkpoint({}, True)['reason'])
 
     def test_sudo_is_asked_for_in_words(self):
-        with mock.patch.object(recovery_tools.os, 'geteuid', return_value=1000), \
-                self.assertRaises(RuntimeError) as caught:
+        with (
+            mock.patch.object(recovery_tools.os, 'geteuid', return_value=1000),
+            self.assertRaises(RuntimeError) as caught,
+        ):
             recovery_tools.require_root()
         self.assertIn('sudo  in front', str(caught.exception))
 
@@ -115,22 +125,35 @@ class UserGuideOrderTests(unittest.TestCase):
     under a heading that says it is for administrators."""
 
     def test_each_guide_starts_with_the_user_and_ends_with_the_administrator(self):
-        for name, first in (('GUIDED-SETUP.md', '## What setup asks, screen by screen'),
-                            ('RECOVERY.md', '## Which situation are you in?'),
-                            ('DASHBOARD.md', '## Open it')):
+        for name, first in (
+            ('GUIDED-SETUP.md', '## What setup asks, screen by screen'),
+            ('RECOVERY.md', '## Which situation are you in?'),
+            ('DASHBOARD.md', '## Open it'),
+        ):
             with self.subTest(doc=name):
                 text = doc(name)
                 admin = text.index('# For administrators')
                 self.assertLess(text.index(first), admin)
                 user_part = text[:admin]
-                for jargon in ('BackendState', '409', 'Funnel', 'POSIX', 'RESTORE-ISOLATED', 'hwmon',
-                               'systemd-socket-proxyd', '.neko-inventory', 'explanations.py'):
+                for jargon in (
+                    'BackendState',
+                    '409',
+                    'Funnel',
+                    'POSIX',
+                    'RESTORE-ISOLATED',
+                    'hwmon',
+                    'systemd-socket-proxyd',
+                    '.neko-inventory',
+                    'explanations.py',
+                ):
                     self.assertNotIn(jargon, user_part)
 
     def test_the_technical_details_are_kept(self):
-        for name, kept in (('GUIDED-SETUP.md', ('BackendState=Running', 'explanations.py', '(`409`)')),
-                           ('RECOVERY.md', ('RESTORE-ISOLATED', '.neko-inventory', 'POSIX')),
-                           ('DASHBOARD.md', ('systemd-socket-proxyd', 'Funnel', '/sys/class/hwmon'))):
+        for name, kept in (
+            ('GUIDED-SETUP.md', ('BackendState=Running', 'explanations.py', '(`409`)')),
+            ('RECOVERY.md', ('RESTORE-ISOLATED', '.neko-inventory', 'POSIX')),
+            ('DASHBOARD.md', ('systemd-socket-proxyd', 'Funnel', '/sys/class/hwmon')),
+        ):
             for words in kept:
                 with self.subTest(doc=name, words=words):
                     self.assertIn(words, doc(name))

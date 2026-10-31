@@ -1,4 +1,5 @@
 """Setup wizard, capacity check and recovery wizard."""
+
 import gzip
 import json
 import os
@@ -20,8 +21,8 @@ import recovery_wizard  # noqa: E402
 import wizard  # noqa: E402
 from modules import capacity  # noqa: E402
 
-GIB = 1024 ** 3
-REAL_HDD_READY = recovery_wizard.hdd_ready   # the real drive check (most tests replace it)
+GIB = 1024**3
+REAL_HDD_READY = recovery_wizard.hdd_ready  # the real drive check (most tests replace it)
 
 
 def chown_refused(folder, uid, gid):
@@ -76,10 +77,14 @@ class SettingsFileTests(unittest.TestCase):
     def test_started_as_root_without_an_account_ids_are_never_guessed(self):
         # Debian with a root password and no sudo: no SUDO_USER. The template's 1000 is
         # kept only when an account has it; otherwise setup stops and says how to name one.
-        with mock.patch.object(wizard.pwd, 'getpwuid', side_effect=KeyError(1000)), \
-                self.assertRaisesRegex(RuntimeError, r'no account with user ID 1000.*SUDO_USER=<your account name> bash install.sh'):
+        with (
+            mock.patch.object(wizard.pwd, 'getpwuid', side_effect=KeyError(1000)),
+            self.assertRaisesRegex(
+                RuntimeError, r'no account with user ID 1000.*SUDO_USER=<your account name> bash install.sh'
+            ),
+        ):
             wizard.prepare_settings(self.root, None)
-        self.assertFalse((self.root / wizard.SETTINGS).exists())       # nothing written
+        self.assertFalse((self.root / wizard.SETTINGS).exists())  # nothing written
         with mock.patch.object(wizard.pwd, 'getpwuid', return_value=pwd.getpwuid(os.getuid())):
             path, created = wizard.prepare_settings(self.root, None)
         self.assertTrue(created)
@@ -133,20 +138,31 @@ class WizardFlowTests(unittest.TestCase):
 
     def test_a_failed_first_checkup_fails_the_setup(self):
         with mock.patch('first_checkup.run', return_value=False):
-            code = wizard.run(mock.Mock(return_value=0), self.root / 'state', prompt=answers('yes'),
-                              output=lambda s: None, root=self.root)
+            code = wizard.run(
+                mock.Mock(return_value=0),
+                self.root / 'state',
+                prompt=answers('yes'),
+                output=lambda s: None,
+                root=self.root,
+            )
         self.assertEqual(code, 1)
 
     def test_no_first_backup_while_steps_are_unfinished(self):
         with mock.patch('first_checkup.run') as checkup:
-            wizard.run(mock.Mock(return_value=1), self.root / 'state', prompt=answers('yes'),
-                       output=lambda s: None, root=self.root)
+            wizard.run(
+                mock.Mock(return_value=1),
+                self.root / 'state',
+                prompt=answers('yes'),
+                output=lambda s: None,
+                root=self.root,
+            )
         checkup.assert_not_called()
 
     def test_needs_sudo(self):
         with mock.patch('os.geteuid', return_value=1000):
-            self.assertEqual(wizard.run(mock.Mock(), self.root, prompt=answers(), output=lambda s: None,
-                                        root=self.root), 2)
+            self.assertEqual(
+                wizard.run(mock.Mock(), self.root, prompt=answers(), output=lambda s: None, root=self.root), 2
+            )
 
     def saved(self, path, uuid):
         settings = json.loads((ROOT / 'config.json').read_text())
@@ -162,9 +178,9 @@ class WizardFlowTests(unittest.TestCase):
         def prompt(question=''):
             asked.append(question)
             return next(it)
+
         execute = mock.Mock()
-        self.assertEqual(wizard.run(execute, self.root / 'state', prompt=prompt, output=out.append,
-                                    root=self.root), 0)
+        self.assertEqual(wizard.run(execute, self.root / 'state', prompt=prompt, output=out.append, root=self.root), 0)
         execute.assert_not_called()
         return asked, out
 
@@ -195,13 +211,20 @@ class WizardFlowTests(unittest.TestCase):
         damaged.write_text('{"storage": ')
         self.saved(self.root.parent / 'nekoserver-v0.37.2/my-config.json', 'older')
         shown = []
-        self.assertEqual(wizard.earlier_settings(root, shown.append), self.root.parent / 'nekoserver-v0.37.2/my-config.json')
+        self.assertEqual(
+            wizard.earlier_settings(root, shown.append), self.root.parent / 'nekoserver-v0.37.2/my-config.json'
+        )
         self.assertEqual(len(shown), 1)
         self.assertIn(str(damaged) + ' cannot be read', shown[0])
         # The person's own files come before setup's copies on the SSD, whatever the versions.
-        (root / 'config.json').write_text(json.dumps({**json.loads((ROOT / 'config.json').read_text()), 'data_mount': str(self.root / 'ssd')}))
+        (root / 'config.json').write_text(
+            json.dumps({**json.loads((ROOT / 'config.json').read_text()), 'data_mount': str(self.root / 'ssd')})
+        )
         self.saved(self.root / 'ssd/installer/releases/v0.38.0/config.json', 'ssd')
-        self.assertEqual([p.parent.name for p in wizard.earlier_candidates(root)], ['nekoserver-v0.37.3', 'nekoserver-v0.37.2', 'v0.38.0'])
+        self.assertEqual(
+            [p.parent.name for p in wizard.earlier_candidates(root)],
+            ['nekoserver-v0.37.3', 'nekoserver-v0.37.2', 'v0.38.0'],
+        )
 
     def test_an_update_takes_the_settings_left_in_the_earlier_release_folder(self):
         # git pull moved the release into a new folder; my-config.json stayed in the old one.
@@ -218,7 +241,7 @@ class WizardFlowTests(unittest.TestCase):
         self.saved(self.root / 'ssd/installer/releases/v0.30.0/config.json', 'ssd')
         self.saved(self.root / 'ssd/installer/releases/v0.29.0/config.json', 'older')
         self.saved(self.root / 'ssd/installer/releases/v0.31.0.old/config.json', 'set aside')
-        (self.root.parent / 'nekoserver-v0.30.0').mkdir()     # left without settings
+        (self.root.parent / 'nekoserver-v0.30.0').mkdir()  # left without settings
         self.setup_until_ready('yes')
         self.assertEqual(self.settings_uuid(), 'ssd')
 
@@ -235,6 +258,7 @@ class WizardFlowTests(unittest.TestCase):
 
         def stopped(question=''):
             raise KeyboardInterrupt
+
         execute, state = mock.Mock(), self.root / 'state'
         with self.assertRaises(KeyboardInterrupt):
             wizard.run(execute, state, prompt=stopped, output=print, root=self.root)
@@ -246,7 +270,7 @@ class WizardFlowTests(unittest.TestCase):
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'old folder')
         self.saved(self.root / 'my-config.json', 'here')
         asked, _ = self.setup_until_ready()
-        self.assertEqual(len(asked), 1)                      # only "Ready to start?"
+        self.assertEqual(len(asked), 1)  # only "Ready to start?"
         self.assertEqual(self.settings_uuid(), 'here')
 
     def test_a_first_install_asks_nothing_more(self):
@@ -257,6 +281,7 @@ class WizardFlowTests(unittest.TestCase):
 
     def test_recovery_reads_the_earlier_settings_too(self):
         import recovery_wizard
+
         self.saved(self.root.parent / 'nekoserver-v0.30.0/my-config.json', 'kept')
         out = []
         with mock.patch.object(recovery_wizard, 'ROOT', self.root):
@@ -282,9 +307,11 @@ class FirstCheckupTests(unittest.TestCase):
             calls.append(argv)
             unit = argv[-1].rsplit('.', 1)[0]
             if argv[1] == 'is-enabled':
-                return mock.Mock(returncode=0 if unit in enabled else 1,
-                                 stdout='enabled\n' if unit in enabled else 'disabled\n')
+                return mock.Mock(
+                    returncode=0 if unit in enabled else 1, stdout='enabled\n' if unit in enabled else 'disabled\n'
+                )
             return mock.Mock(returncode=1 if unit in failing else 0)
+
         return run, calls
 
     def test_only_switched_on_backups_run_in_order_then_the_checkup(self):
@@ -315,8 +342,12 @@ class FirstCheckupTests(unittest.TestCase):
         self.assertIn('    done in part: Steam was open', out)
 
     def test_a_check_still_to_set_up_needs_a_look(self):
-        report = {'automatic': [{'id': 'a', 'name': 'Drives', 'status': 'pass'},
-                                {'id': 'b', 'name': 'Phone alerts', 'status': 'needs_setup'}]}
+        report = {
+            'automatic': [
+                {'id': 'a', 'name': 'Drives', 'status': 'pass'},
+                {'id': 'b', 'name': 'Phone alerts', 'status': 'needs_setup'},
+            ]
+        }
         with mock.patch('acceptance.inspect', return_value=report), mock.patch('acceptance.save'):
             self.assertEqual(first_checkup.inspect(self.config), (1, ['Phone alerts (still to set up)']))
 
@@ -325,6 +356,7 @@ class FirstCheckupTests(unittest.TestCase):
 
         def broken(config):
             raise RuntimeError('SSD not mounted')
+
         out = []
         self.assertFalse(first_checkup.run(self.config, out.append, run, checks=broken))
         self.assertIn('acceptance.py --save', out[-1])
@@ -348,8 +380,9 @@ class FinishingScreenTests(unittest.TestCase):
         self.data = Path(self.tmp.name)
         (self.data / 'reports').mkdir()
         (self.data / 'reports/gateway-lan.json').write_text(json.dumps({'portal': 'https://192.168.1.20:8442/'}))
-        (self.data / 'reports/gateway-tailnet.json').write_text(json.dumps(
-            {'links': {'jellyfin': 'https://neko.tail1.ts.net:8443/'}}))
+        (self.data / 'reports/gateway-tailnet.json').write_text(
+            json.dumps({'links': {'jellyfin': 'https://neko.tail1.ts.net:8443/'}})
+        )
         self.config = {'data_mount': str(self.data)}
 
     def screen(self, states):
@@ -393,18 +426,21 @@ class FinishingScreenTests(unittest.TestCase):
         complete, text = self.screen({'system': {'status': 'success'}, 'storage': {'status': 'success'}})
         self.assertFalse(complete)
         self.assertIn('Movie, TV and music apps: did not run', text)
-        complete, text = self.screen({'system': {'status': 'success'}, 'storage': {'status': 'success'},
-                                      'media': {'status': 'success'}})
+        complete, text = self.screen(
+            {'system': {'status': 'success'}, 'storage': {'status': 'success'}, 'media': {'status': 'success'}}
+        )
         self.assertTrue(complete)
 
     def test_pending_and_failed_steps_are_named_in_plain_words(self):
-        complete, text = self.screen({
-            'storage': {'status': 'success'},
-            'tailscale': {'status': 'needs_setup', 'reason': 'Tailscale authorization pending'},
-            'gateway_tailnet': {'status': 'blocked', 'reason': "Dependencies not successful: ['tailscale']"},
-        })
+        complete, text = self.screen(
+            {
+                'storage': {'status': 'success'},
+                'tailscale': {'status': 'needs_setup', 'reason': 'Tailscale authorization pending'},
+                'gateway_tailnet': {'status': 'blocked', 'reason': "Dependencies not successful: ['tailscale']"},
+            }
+        )
         self.assertFalse(complete)
-        self.assertIn('Setup stopped: 1 thing needs you', text)     # 1 of 3 steps done is not "almost ready"
+        self.assertIn('Setup stopped: 1 thing needs you', text)  # 1 of 3 steps done is not "almost ready"
         self.assertIn('Tailscale: Tailscale authorization pending', text)
         self.assertIn('Access from anywhere and phone setup', text)
         self.assertIn('run  sudo bash install.sh  again', text)
@@ -417,9 +453,14 @@ class CapacityTests(unittest.TestCase):
         free = {'/ssd': ssd * GIB, '/hdd': hdd * GIB}
         used = {'/ssd/photos/immich-library': photos * GIB, '/hdd/cloud/files': cloud * GIB}
         pending = photos + cloud if pending is None else pending
-        return capacity.assess(self.CONFIG, free=lambda p: free[str(p)], used=lambda p: used.get(str(p), 0),
-                               usb_space=lambda uuid, pairs, **_: None if usb is None else (usb * GIB, pending * GIB),
-                               dump=lambda config: dump * GIB, unarchived=lambda config: unarchived * GIB)
+        return capacity.assess(
+            self.CONFIG,
+            free=lambda p: free[str(p)],
+            used=lambda p: used.get(str(p), 0),
+            usb_space=lambda uuid, pairs, **_: None if usb is None else (usb * GIB, pending * GIB),
+            dump=lambda config: dump * GIB,
+            unarchived=lambda config: unarchived * GIB,
+        )
 
     def test_usb_counts_free_space_not_drive_size(self):
         # A big but nearly full drive warns; files the drive already has need no new room.
@@ -517,7 +558,7 @@ class CapacityTests(unittest.TestCase):
             (archive / 'upload/other.mp4').write_bytes(b'B' * 30)
             (usb / 'upload/.current.mp4.neko-latest').write_text('current.mp4')
             (usb / 'upload/current.mp4').write_bytes(b'Z' * 40)  # damaged, same size, newer
-            (usb / 'upload/other.mp4').write_bytes(b'Y' * 30)    # damaged, same size, newer
+            (usb / 'upload/other.mp4').write_bytes(b'Y' * 30)  # damaged, same size, newer
             pairs = [(archive / 'upload', 'upload')]
             # Weekly: the noted file is checked by checksum, the other one is not (the
             # monthly checksum check compares everything).
@@ -566,8 +607,11 @@ class CapacityTests(unittest.TestCase):
         with new_install, mock.patch.object(capacity, 'assess', return_value=(['too small'], [])):
             with self.assertRaisesRegex(RuntimeError, 'too small'):
                 capacity.run(ctx)
-        with new_install, mock.patch.object(capacity, 'assess', return_value=([], ['low'])), \
-                mock.patch('guided_setup.interactive', return_value=True):
+        with (
+            new_install,
+            mock.patch.object(capacity, 'assess', return_value=([], ['low'])),
+            mock.patch('guided_setup.interactive', return_value=True),
+        ):
             self.assertIsNone(capacity.run(Ctx({}), prompt=answers('yes'), output=lambda s: None))
             result = capacity.run(Ctx({}), prompt=answers('no'), output=lambda s: None)
             self.assertEqual(result['status'], 'needs_setup')
@@ -582,6 +626,7 @@ def then_stopped(*values):
             return next(it)
         except StopIteration:
             raise EOFError from None
+
     return prompt
 
 
@@ -592,9 +637,12 @@ class RecoveryWizardTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.media = self.root / 'hdd'
         self.media.mkdir()
-        (self.root / 'ssd/installer').mkdir(parents=True)     # as on a set-up SSD
-        self.config = {'media_mount': str(self.media), 'data_mount': str(self.root / 'ssd'),
-                       'photos': {'archive_dir': 'photos/archive'}}
+        (self.root / 'ssd/installer').mkdir(parents=True)  # as on a set-up SSD
+        self.config = {
+            'media_mount': str(self.media),
+            'data_mount': str(self.root / 'ssd'),
+            'photos': {'archive_dir': 'photos/archive'},
+        }
         # The HDD counts as mounted here (the restore folder is suggested on it), and so do
         # the SSD and the USB drive (the repair checks each drive it uses).
         for name in ('hdd_ready', 'ssd_ready', 'usb_ready'):
@@ -630,8 +678,9 @@ class RecoveryWizardTests(unittest.TestCase):
         existing.mkdir()
         out = []
         # Suggested folder exists -> refused; typed relative path -> refused; then a good one.
-        chosen = recovery_wizard.new_folder(existing, answers('yes', 'relative', str(self.root / 'fresh'), 'yes'),
-                                            out.append)
+        chosen = recovery_wizard.new_folder(
+            existing, answers('yes', 'relative', str(self.root / 'fresh'), 'yes'), out.append
+        )
         self.assertEqual(chosen, self.root / 'fresh')
         self.assertTrue(any('already exists' in line for line in out))
         self.assertIsNone(recovery_wizard.new_folder(existing, answers('no', ''), out.append))
@@ -640,8 +689,10 @@ class RecoveryWizardTests(unittest.TestCase):
         self.write('hdd/photos/archive/upload/u1/a.jpg', b'photo')
         self.write('hdd/photos/archive/library/b.heic', b'photo2')
         self.write('ssd/photos/immich-library/upload/live.jpg', b'live')
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             out = []
             recovery_wizard.restore_photos(self.config, answers('1', 'yes', 'no'), out.append)
         restored = next((self.media / 'restored').iterdir())
@@ -657,26 +708,33 @@ class RecoveryWizardTests(unittest.TestCase):
         inside = self.media / 'photos/archive/upload/restored-here'
         elsewhere = self.root / 'restore-elsewhere'
         out = []
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             # Offered folder declined; one inside the archive refused; then a separate one.
-            recovery_wizard.restore_photos(self.config, answers('1', 'no', str(inside), 'yes', str(elsewhere), 'yes', 'no'),
-                                           out.append)
+            recovery_wizard.restore_photos(
+                self.config, answers('1', 'no', str(inside), 'yes', str(elsewhere), 'yes', 'no'), out.append
+            )
         self.assertIn('inside (or around) a backup', '\n'.join(out))
         self.assertFalse(inside.exists())
         self.assertEqual((elsewhere / 'upload/u1/a.jpg').read_bytes(), b'photo')
         # The archive still holds its one file only.
         self.assertEqual(len([p for p in (self.media / 'photos/archive').rglob('*') if p.is_file()]), 1)
         # A folder around a backup is refused too.
-        self.assertIsNotNone(recovery_wizard.folder_problem(self.media / 'photos', recovery_wizard.backup_trees(self.config)))
+        self.assertIsNotNone(
+            recovery_wizard.folder_problem(self.media / 'photos', recovery_wizard.backup_trees(self.config))
+        )
 
     def test_nextcloud_restore_lists_users_from_the_usb(self):
         usb = self.root / 'usb'
         self.write('usb/nextcloud/alice/files/Docs/plan.odt', b'plan')
         self.write('usb/nextcloud/bob/files/todo.txt', b'todo')
         self.assertEqual(recovery_wizard.cloud_users(usb), ['alice', 'bob'])
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             out = []
             recovery_wizard.restore_cloud(self.config, answers('2', 'yes', 'no'), out.append)
         restored = next((self.media / 'restored').iterdir())
@@ -688,8 +746,10 @@ class RecoveryWizardTests(unittest.TestCase):
         usb = self.root / 'usb'
         self.write('usb/nextcloud/alice/files/Projects/notes.txt', b'notes')
         self.write('usb/nextcloud/alice/neko-replaced/20261025T010000Z/Projects', b'the old file')
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             out = []
             recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'yes'), out.append)
         restored = next((self.media / 'restored').iterdir())
@@ -699,9 +759,14 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_files_encrypted_by_nextcloud_are_not_called_ready_to_upload(self):
         usb = self.root / 'usb'
-        self.write('usb/nextcloud/alice/files/report.pdf', b'HBEGIN:oc_encryption_module:OC_DEFAULT_MODULE:cipher:AES-256-CTR:HEND')
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        self.write(
+            'usb/nextcloud/alice/files/report.pdf',
+            b'HBEGIN:oc_encryption_module:OC_DEFAULT_MODULE:cipher:AES-256-CTR:HEND',
+        )
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             out = []
             recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'no'), out.append)
         text = '\n'.join(out)
@@ -719,12 +784,25 @@ class RecoveryWizardTests(unittest.TestCase):
         self.write(files + 'IMG_1.HEIC.neko-20261005T000000Z.xmp', b'sidecar edit')
         self.write(files + 'IMG_1.HEIC.xmp', b'sidecar')
         # What the backup records (since 0.28.7) about whose versions these are.
-        self.write(files + '.neko-names.json', json.dumps({'format': 'neko-names-v1', 'names': {}, 'versions': {
-            'report.neko-20261001T090000Z.docx': 'report.docx', 'report.neko-20261012T140300Z.docx': 'report.docx',
-            'report.neko-20261012T140300Z-1.docx': 'report.docx',
-            'IMG_1.HEIC.neko-20261005T000000Z.xmp': 'IMG_1.HEIC.xmp'}}).encode())
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        self.write(
+            files + '.neko-names.json',
+            json.dumps(
+                {
+                    'format': 'neko-names-v1',
+                    'names': {},
+                    'versions': {
+                        'report.neko-20261001T090000Z.docx': 'report.docx',
+                        'report.neko-20261012T140300Z.docx': 'report.docx',
+                        'report.neko-20261012T140300Z-1.docx': 'report.docx',
+                        'IMG_1.HEIC.neko-20261005T000000Z.xmp': 'IMG_1.HEIC.xmp',
+                    },
+                }
+            ).encode(),
+        )
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             out = []
             recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'yes'), out.append)
         restored = next((self.media / 'restored').iterdir()) / 'files'
@@ -737,8 +815,10 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def restore_newest(self):
         usb = self.root / 'usb'
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'yes'), lambda s: None)
         return next((self.media / 'restored').iterdir()) / 'files'
 
@@ -759,8 +839,12 @@ class RecoveryWizardTests(unittest.TestCase):
         self.write(files + 'report.neko-20250101T120000Z.txt', b'another document')
         self.write(files + 'report.neko-20261022T130000Z.txt', b'edited')
         self.write(files + '.report.txt.neko-latest', b'report.neko-20261022T130000Z.txt')
-        self.write(files + '.neko-names.json', json.dumps({'format': 'neko-names-v1', 'names': {}, 'versions': {
-            'report.neko-20261022T130000Z.txt': 'report.txt'}}).encode())
+        self.write(
+            files + '.neko-names.json',
+            json.dumps(
+                {'format': 'neko-names-v1', 'names': {}, 'versions': {'report.neko-20261022T130000Z.txt': 'report.txt'}}
+            ).encode(),
+        )
         restored = self.restore_newest()
         self.assertEqual((restored / 'report.txt').read_bytes(), b'edited')
         self.assertEqual((restored / 'report.neko-20250101T120000Z.txt').read_bytes(), b'another document')
@@ -771,8 +855,12 @@ class RecoveryWizardTests(unittest.TestCase):
         self.write(files + 'report.neko-20261001T090000Z.txt', b'edit')
         self.write(files + '.report.txt.neko-latest', b'report.neko-20261001T090000Z.txt')
         self.write(files + 'report.neko-20261022T120000Z.txt', b'a file of its own')
-        self.write(files + '.neko-names.json', json.dumps({'format': 'neko-names-v1', 'names': {}, 'versions': {
-            'report.neko-20261001T090000Z.txt': 'report.txt'}}).encode())
+        self.write(
+            files + '.neko-names.json',
+            json.dumps(
+                {'format': 'neko-names-v1', 'names': {}, 'versions': {'report.neko-20261001T090000Z.txt': 'report.txt'}}
+            ).encode(),
+        )
         restored = self.restore_newest()
         self.assertEqual((restored / 'report.txt').read_bytes(), b'edit')
         self.assertEqual((restored / 'report.neko-20261022T120000Z.txt').read_bytes(), b'a file of its own')
@@ -789,9 +877,11 @@ class RecoveryWizardTests(unittest.TestCase):
         self.write(files + 'b.neko-20261001T090000Z.txt', b'two')
         self.write(files + 'b.neko-20261002T090000Z.txt', b'three')
         self.write(files + '.b.txt.neko-latest', b'b.neko-20261001T090000Z.txt')
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None), \
-                mock.patch.object(recovery_wizard, 'stamp', side_effect=['1', '2']):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+            mock.patch.object(recovery_wizard, 'stamp', side_effect=['1', '2']),
+        ):
             recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'yes'), lambda s: None)
             recovery_wizard.restore_cloud(self.config, answers('1', 'yes', 'no'), lambda s: None)
         latest, every = sorted((self.media / 'restored').iterdir())
@@ -799,21 +889,30 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((latest / 'files/b.txt').read_bytes(), b'two')
         # Versions from before 0.28.7 that no note or record ties to their file come back
         # as files of their own: an extra file, never a lost one.
-        self.assertEqual(sorted(p.name for p in (latest / 'files').iterdir()),
-                         ['a.neko-20261001T090000Z.txt', 'a.txt', 'b.neko-20261002T090000Z.txt', 'b.txt'])
+        self.assertEqual(
+            sorted(p.name for p in (latest / 'files').iterdir()),
+            ['a.neko-20261001T090000Z.txt', 'a.txt', 'b.neko-20261002T090000Z.txt', 'b.txt'],
+        )
         # Copying every version leaves the backup's notes out.
         self.assertFalse(any(p.name.endswith('.neko-latest') for p in (every / 'files').iterdir()))
 
     def ledger(self, rel_root, files):
         import hashlib as h
-        entries = {key: {'sha256': h.sha256(body).hexdigest(), 'size': len(body), 'verified_at': 1.0, 'how': 'copied'}
-                   for key, body in files.items()}
-        self.write(rel_root + '/.neko-ledger.json', json.dumps({'format': 'neko-ledger-v1', 'entries': entries}).encode())
+
+        entries = {
+            key: {'sha256': h.sha256(body).hexdigest(), 'size': len(body), 'verified_at': 1.0, 'how': 'copied'}
+            for key, body in files.items()
+        }
+        self.write(
+            rel_root + '/.neko-ledger.json', json.dumps({'format': 'neko-ledger-v1', 'entries': entries}).encode()
+        )
 
     def restore_cloud(self, *choices):
         usb = self.root / 'usb'
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             out = []
             recovery_wizard.restore_cloud(self.config, answers(*choices), out.append)
         return out
@@ -855,7 +954,7 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_an_unreadable_checksum_list_does_not_stop_the_restore(self):
         self.write('usb/nextcloud/alice/files/b.txt', b'also safe')
-        self.write('usb/nextcloud/.neko-ledger.json', b'{"format": "neko-ledg')   # cut off mid-write
+        self.write('usb/nextcloud/.neko-ledger.json', b'{"format": "neko-ledg')  # cut off mid-write
         out = '\n'.join(self.restore_cloud('1', 'yes', 'yes'))
         restored = next((self.media / 'restored').iterdir())
         self.assertEqual((restored / 'files/b.txt').read_bytes(), b'also safe')
@@ -870,13 +969,19 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_a_ledger_with_an_unsafe_path_is_not_trusted(self):
         from neko_common import read_ledger
-        self.write('usb/nextcloud/.neko-ledger.json', json.dumps({'format': 'neko-ledger-v1', 'entries': {
-            '../../etc/shadow': {'sha256': 'a' * 64, 'size': 1}}}).encode())
+
+        self.write(
+            'usb/nextcloud/.neko-ledger.json',
+            json.dumps(
+                {'format': 'neko-ledger-v1', 'entries': {'../../etc/shadow': {'sha256': 'a' * 64, 'size': 1}}}
+            ).encode(),
+        )
         with self.assertRaisesRegex(RuntimeError, 'not trusted'):
             read_ledger(self.root / 'usb/nextcloud')
 
     def test_repair_fixes_each_case_from_a_copy_that_matches_its_checksum(self):
         import hashlib as h
+
         good = {k: f'good {k}'.encode() for k in 'abcdef'}
         archive, usb = 'hdd/photos/archive', 'usb'
         for k in 'abcf':  # recorded checksums
@@ -884,26 +989,38 @@ class RecoveryWizardTests(unittest.TestCase):
             self.write(f'{usb}/upload/{k}.jpg', good[k])
         self.ledger(archive, {f'upload/{k}.jpg': good[k] for k in 'abcf'})
         self.ledger(usb, {f'upload/{k}.jpg': good[k] for k in 'abcf'})
-        self.write(f'{usb}/upload/a.jpg', b'rotten a')                  # USB damaged
-        self.write(f'{archive}/upload/b.jpg', b'rotten b')              # HDD damaged
-        self.write(f'{archive}/upload/c.jpg', b'rot1 c')                # both damaged...
+        self.write(f'{usb}/upload/a.jpg', b'rotten a')  # USB damaged
+        self.write(f'{archive}/upload/b.jpg', b'rotten b')  # HDD damaged
+        self.write(f'{archive}/upload/c.jpg', b'rot1 c')  # both damaged...
         self.write(f'{usb}/upload/c.jpg', b'rot2 c')
         self.write('ssd/photos/immich-library/upload/c.jpg', good['c'])  # ...Immich still has it
-        self.write(f'{archive}/upload/d.jpg', b'hdd d')                 # no checksum, copies differ,
-        self.write(f'{usb}/upload/d.jpg', good['d'])                     # the original decides
+        self.write(f'{archive}/upload/d.jpg', b'hdd d')  # no checksum, copies differ,
+        self.write(f'{usb}/upload/d.jpg', good['d'])  # the original decides
         self.write('ssd/photos/immich-library/upload/d.jpg', good['d'])
-        self.write(f'{archive}/upload/e.jpg', b'hdd e')                 # no checksum, no original:
-        self.write(f'{usb}/upload/e.jpg', good['e'])                     # you choose (USB)
-        self.write(f'{archive}/upload/f.jpg', b'rot1 f')                # nothing good left
+        self.write(f'{archive}/upload/e.jpg', b'hdd e')  # no checksum, no original:
+        self.write(f'{usb}/upload/e.jpg', good['e'])  # you choose (USB)
+        self.write(f'{archive}/upload/f.jpg', b'rot1 f')  # nothing good left
         self.write(f'{usb}/upload/f.jpg', b'rot2 f')
-        keys = {'damaged': ['upload/a.jpg', 'upload/b.jpg'], 'both_damaged': ['upload/c.jpg', 'upload/f.jpg'],
-                'disagree': ['upload/d.jpg', 'upload/e.jpg']}
-        self.write('ssd/reports/integrity.json', json.dumps({'format': 'neko-integrity-v1', 'sections': {
-            'usb_photos': {**keys, 'counts': {k: len(v) for k, v in keys.items()}}}}).encode())
+        keys = {
+            'damaged': ['upload/a.jpg', 'upload/b.jpg'],
+            'both_damaged': ['upload/c.jpg', 'upload/f.jpg'],
+            'disagree': ['upload/d.jpg', 'upload/e.jpg'],
+        }
+        self.write(
+            'ssd/reports/integrity.json',
+            json.dumps(
+                {
+                    'format': 'neko-integrity-v1',
+                    'sections': {'usb_photos': {**keys, 'counts': {k: len(v) for k, v in keys.items()}}},
+                }
+            ).encode(),
+        )
         out = []
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
-            recovery_wizard.repair_backups(self.config, answers('2', '1'), out.append)   # f: keep it as it is
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
+            recovery_wizard.repair_backups(self.config, answers('2', '1'), out.append)  # f: keep it as it is
         for k in 'abcde':
             for where in (archive, usb):
                 self.assertEqual((self.root / where / f'upload/{k}.jpg').read_bytes(), good[k], (k, where))
@@ -916,6 +1033,7 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((aside / 'upload/b.jpg').read_bytes(), b'rotten b')
         # The chosen checksums were recorded; the recorded ones were never changed.
         from neko_common import read_ledger
+
         ledger = read_ledger(self.root / archive)
         self.assertEqual(ledger['upload/e.jpg'], h.sha256(good['e']).hexdigest())
         self.assertEqual(ledger['upload/b.jpg'], h.sha256(good['b']).hexdigest())
@@ -925,13 +1043,25 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual(left['counts'], {'damaged': 0, 'both_damaged': 1, 'disagree': 0, 'missing': 0})
 
     def report(self, sections):
-        self.write('ssd/reports/integrity.json', json.dumps({'format': 'neko-integrity-v1', 'sections': {
-            name: {**lists, 'counts': {k: len(v) for k, v in lists.items()}} for name, lists in sections.items()}}).encode())
+        self.write(
+            'ssd/reports/integrity.json',
+            json.dumps(
+                {
+                    'format': 'neko-integrity-v1',
+                    'sections': {
+                        name: {**lists, 'counts': {k: len(v) for k, v in lists.items()}}
+                        for name, lists in sections.items()
+                    },
+                }
+            ).encode(),
+        )
 
     def repair(self, usb, *choices):
         out = []
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             recovery_wizard.repair_backups(self.config, answers(*choices), out.append)
         return out, json.loads((self.root / 'ssd/reports/integrity.json').read_text())['sections']
 
@@ -942,7 +1072,7 @@ class RecoveryWizardTests(unittest.TestCase):
         self.report({'archive': {'damaged': ['upload/a.jpg']}, 'usb_photos': {'damaged': ['upload/a.jpg']}})
         out, left = self.repair(None)  # USB drive not plugged in
         self.assertIn('not plugged in', '\n'.join(out))
-        self.assertEqual(left['archive']['damaged'], [])            # HDD copy checked: intact
+        self.assertEqual(left['archive']['damaged'], [])  # HDD copy checked: intact
         self.assertEqual(left['usb_photos']['damaged'], ['upload/a.jpg'])  # USB never checked
 
     def test_a_missing_archive_file_is_restored_from_the_usb_copy(self):
@@ -958,7 +1088,7 @@ class RecoveryWizardTests(unittest.TestCase):
     # Owner review of 0.40.2, finding 1: with the HDD unplugged, "Repair damaged backup
     # copies" wrote the HDD's copies into its empty folder on the system disk, said
     # "repaired the HDD copy" and cleared the warning.
-    HDD = MappingProxyType({'uuid': 'hdd-uuid', 'fstype': 'ext4'})   # read-only: shared by every test
+    HDD = MappingProxyType({'uuid': 'hdd-uuid', 'fstype': 'ext4'})  # read-only: shared by every test
 
     def hdd_copies_missing(self, *names, hdd=None):
         """The HDD archive lacks these photos; the USB drive has them, checked."""
@@ -973,8 +1103,10 @@ class RecoveryWizardTests(unittest.TestCase):
     def repair_with_hdd(self, mounted):
         """Repair with the real HDD check, findmnt saying `mounted` (UUID FSTYPE SOURCE, or
         None for nothing) is at the HDD's folder."""
-        with mock.patch.object(recovery_wizard, 'hdd_ready', REAL_HDD_READY), \
-                mock.patch('neko_common.findmnt', return_value=mounted):
+        with (
+            mock.patch.object(recovery_wizard, 'hdd_ready', REAL_HDD_READY),
+            mock.patch('neko_common.findmnt', return_value=mounted),
+        ):
             return self.repair(self.root / 'usb')
 
     def files_under(self, folder):
@@ -985,12 +1117,12 @@ class RecoveryWizardTests(unittest.TestCase):
         for key in keys:
             self.assertIn(f'{key}: already intact; the HDD copy was NOT repaired: {why}', said)
         self.assertNotIn('repaired the HDD', said)
-        self.assertEqual(left['archive']['missing'], keys)       # the HDD warnings stay
+        self.assertEqual(left['archive']['missing'], keys)  # the HDD warnings stay
         self.assertEqual(left['usb_photos']['missing'], keys)
 
     def test_repair_never_writes_under_a_missing_hdd(self):
         keys = self.hdd_copies_missing('a.jpg', 'b.jpg')
-        out, left = self.repair_with_hdd(None)   # nothing is mounted at the HDD's folder
+        out, left = self.repair_with_hdd(None)  # nothing is mounted at the HDD's folder
         self.assertEqual(self.files_under(self.media), [], 'nothing may land under the HDD mount folder')
         self.assert_hdd_copy_not_repaired(out, left, keys, f'the HDD is not mounted at {self.media}')
         self.assertIn('Its copies were NOT repaired, and their warnings stay listed', '\n'.join(out))
@@ -999,9 +1131,11 @@ class RecoveryWizardTests(unittest.TestCase):
         keys = self.hdd_copies_missing('a.jpg', hdd={'uuid': 'hdd-uuid', 'fstype': 'btrfs', 'subvolume': '/@media'})
         self.write('hdd/photos/archive/upload/a.jpg', b'what the other drive holds')
         before = self.files_under(self.media)
-        for mounted in ('other-uuid btrfs /dev/sdz1[/@media]',    # another drive
-                        'hdd-uuid ext4 /dev/sdb1',                  # the right UUID, another filesystem
-                        'hdd-uuid btrfs /dev/sdb1[/@snapshots]'):   # the right drive, another subvolume
+        for mounted in (
+            'other-uuid btrfs /dev/sdz1[/@media]',  # another drive
+            'hdd-uuid ext4 /dev/sdb1',  # the right UUID, another filesystem
+            'hdd-uuid btrfs /dev/sdb1[/@snapshots]',
+        ):  # the right drive, another subvolume
             out, left = self.repair_with_hdd(mounted)
             self.assertEqual(self.files_under(self.media), before, mounted)
             self.assert_hdd_copy_not_repaired(out, left, keys, 'the HDD is not mounted at')
@@ -1020,9 +1154,12 @@ class RecoveryWizardTests(unittest.TestCase):
                 self.media.rename(unplugged)
                 self.media.mkdir()
             return real(*args, **kwargs)
+
         ready = (lambda config: True) if keep_identity else (lambda config: not unplugged.exists())
-        with mock.patch.object(recovery_wizard, 'copy_checked_into', side_effect=writing), \
-                mock.patch.object(recovery_wizard, 'hdd_ready', side_effect=ready):
+        with (
+            mock.patch.object(recovery_wizard, 'copy_checked_into', side_effect=writing),
+            mock.patch.object(recovery_wizard, 'hdd_ready', side_effect=ready),
+        ):
             out, left = self.repair(self.root / 'usb')
         self.assertEqual(self.files_under(self.media), [], 'nothing may land under the HDD mount folder')
         return keys, unplugged, '\n'.join(out), left
@@ -1031,18 +1168,23 @@ class RecoveryWizardTests(unittest.TestCase):
         keys, unplugged, said, left = self.unplugged_during(keep_identity=False)
         # a.jpg reached the HDD before it went; b.jpg was never written anywhere.
         self.assertEqual(self.files_under(unplugged / 'photos/archive/upload'), [('a.jpg', b'good a.jpg')])
-        self.assertIn('upload/a.jpg: the HDD copy was written, but its checksum was NOT recorded (the HDD was '
-                      'disconnected or changed during the repair), so it stays listed', said)
-        self.assertIn('upload/b.jpg: the HDD copy was NOT repaired: the HDD was disconnected or changed during the repair',
-                      said)
+        self.assertIn(
+            'upload/a.jpg: the HDD copy was written, but its checksum was NOT recorded (the HDD was '
+            'disconnected or changed during the repair), so it stays listed',
+            said,
+        )
+        self.assertIn(
+            'upload/b.jpg: the HDD copy was NOT repaired: the HDD was disconnected or changed during the repair', said
+        )
         self.assertEqual(left['archive']['missing'], keys)
 
     def test_a_write_racing_an_unplug_lands_on_the_drive_it_was_opened_on(self):
         # The drive goes between the last check and the write: the file is written through
         # the HDD's open folder, so it lands on the HDD, never in the empty folder.
         _keys, unplugged, said, left = self.unplugged_during(keep_identity=True)
-        self.assertEqual(self.files_under(unplugged / 'photos/archive/upload'),
-                         [('a.jpg', b'good a.jpg'), ('b.jpg', b'good b.jpg')])
+        self.assertEqual(
+            self.files_under(unplugged / 'photos/archive/upload'), [('a.jpg', b'good a.jpg'), ('b.jpg', b'good b.jpg')]
+        )
         self.assertIn('upload/b.jpg: the HDD copy was written, but its checksum was NOT recorded', said)
         self.assertEqual(left['archive']['missing'], ['upload/b.jpg'])
 
@@ -1052,10 +1194,14 @@ class RecoveryWizardTests(unittest.TestCase):
         real = os.fstat
         inside = (self.media / 'photos/archive').stat().st_ino
 
-        def fstat(fd):   # the archive folder is another filesystem mounted inside the HDD
+        def fstat(fd):  # the archive folder is another filesystem mounted inside the HDD
             found = real(fd)
-            return os.stat_result((found.st_mode, found.st_ino, found.st_dev + 1, *found[3:])) \
-                if found.st_ino == inside else found
+            return (
+                os.stat_result((found.st_mode, found.st_ino, found.st_dev + 1, *found[3:]))
+                if found.st_ino == inside
+                else found
+            )
+
         with mock.patch.object(recovery_wizard.os, 'fstat', side_effect=fstat):
             out, left = self.repair(self.root / 'usb')
         self.assertEqual(self.files_under(self.media), [])
@@ -1066,19 +1212,24 @@ class RecoveryWizardTests(unittest.TestCase):
     # the repair option ("The last checksum checks found nothing to repair").
     def test_a_copy_missing_at_a_restore_is_offered_by_the_repair(self):
         import hashlib
+
         self.write('hdd/photos/archive/upload/u/kept.jpg', b'kept')
         self.ledger('hdd/photos/archive', {'upload/u/kept.jpg': b'kept', 'upload/u/missing.jpg': b'gone from the HDD'})
         self.write('usb/upload/u/missing.jpg', b'gone from the HDD')
         self.ledger('usb', {'upload/u/missing.jpg': b'gone from the HDD'})
         (self.root / 'ssd/reports').mkdir()
         out = []
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             recovery_wizard.restore_photos(self.config, answers('1', 'yes', 'yes', 'yes'), out.append)
         self.assertIn('now listed for this menu\'s "Repair damaged backup copies"', '\n'.join(out))
         archive = recovery_wizard.integrity_sections(self.config)['archive']
         self.assertEqual((archive['missing'], archive['counts']['missing']), (['upload/u/missing.jpg'], 1))
-        self.assertEqual(archive['checksums'], {'upload/u/missing.jpg': hashlib.sha256(b'gone from the HDD').hexdigest()})
+        self.assertEqual(
+            archive['checksums'], {'upload/u/missing.jpg': hashlib.sha256(b'gone from the HDD').hexdigest()}
+        )
         repaired, left = self.repair(self.root / 'usb')
         self.assertIn('upload/u/missing.jpg: repaired the HDD copy', '\n'.join(repaired))
         self.assertEqual((self.media / 'photos/archive/upload/u/missing.jpg').read_bytes(), b'gone from the HDD')
@@ -1086,6 +1237,7 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_a_missing_copy_is_listed_for_repair_even_when_you_stop_the_restore(self):
         import hashlib
+
         self.write('usb/nextcloud/alice/files/b.txt', b'b')
         self.ledger('usb/nextcloud', {'alice/files/b.txt': b'b', 'alice/files/gone.txt': b'was here'})
         (self.root / 'ssd/reports').mkdir()
@@ -1099,18 +1251,27 @@ class RecoveryWizardTests(unittest.TestCase):
         # The list names the file; what is missing (and what the repair fixes) is its
         # saved copy: here a dated version, which the live file still matches.
         import hashlib
+
         dated = 'doc.neko-20261020T010000Z.txt'
         sha = hashlib.sha256(b'version two').hexdigest()
         self.write('usb/nextcloud/alice/files/doc.txt', b'version one')
         self.write('usb/nextcloud/alice/files/.doc.txt.neko-latest', dated.encode())
         self.ledger('usb/nextcloud', {'alice/files/doc.txt': b'version one', f'alice/files/{dated}': b'version two'})
-        self.write('usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz', gzip.compress(json.dumps(
-            {'format': 'neko-inventory-v2', 'files': {'alice/files/doc.txt': {'copy': dated, 'sha256': sha}}}).encode()))
-        self.write('hdd/cloud/files/alice/files/doc.txt', b'version two')   # Nextcloud still has it
+        self.write(
+            'usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz',
+            gzip.compress(
+                json.dumps(
+                    {'format': 'neko-inventory-v2', 'files': {'alice/files/doc.txt': {'copy': dated, 'sha256': sha}}}
+                ).encode()
+            ),
+        )
+        self.write('hdd/cloud/files/alice/files/doc.txt', b'version two')  # Nextcloud still has it
         (self.root / 'ssd/reports').mkdir()
         self.restore_cloud('1', 'yes', '1', 'yes')
         cloud = recovery_wizard.integrity_sections(self.config)['usb_nextcloud']
-        self.assertEqual((cloud['missing'], cloud['checksums']), ([f'alice/files/{dated}'], {f'alice/files/{dated}': sha}))
+        self.assertEqual(
+            (cloud['missing'], cloud['checksums']), ([f'alice/files/{dated}'], {f'alice/files/{dated}': sha})
+        )
         out, left = self.repair(self.root / 'usb')
         self.assertIn(f'alice/files/{dated}: repaired the USB copy', '\n'.join(out))
         self.assertEqual((self.root / 'usb/nextcloud/alice/files' / dated).read_bytes(), b'version two')
@@ -1137,6 +1298,7 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_the_copy_you_choose_wins_in_both_ledgers(self):
         import hashlib
+
         hdd, usb = self.disagreeing()
         out, left = self.repair(usb, '2')  # the USB copy
         self.assertIn('matches the USB list', '\n'.join(out))
@@ -1151,16 +1313,19 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_nightly_restores_keep_owners_and_say_when_steam_is_missing(self):
         import json as json_module
+
         nights = self.media / 'backups/host-user'
         for stamp, left_out in (('1792900000', ['steam']), ('1792800000', [])):
             run = nights / f'snapshot-{stamp}-1'
             run.mkdir(parents=True)
-            (run / 'manifest.json').write_text(json_module.dumps({'format': 'neko-host-snapshot-v1', 'left_out': left_out}))
+            (run / 'manifest.json').write_text(
+                json_module.dumps({'format': 'neko-host-snapshot-v1', 'left_out': left_out})
+            )
         out, calls = [], []
         with mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: calls.append(a) or True):
             recovery_wizard.restore_nightly(self.config, 'host', answers('1', 'yes'), out.append)
         said = '\n'.join(out)
-        self.assertIn('(no Steam files: Steam was open)', said.split('2.')[0])   # the newest night is marked
+        self.assertIn('(no Steam files: Steam was open)', said.split('2.')[0])  # the newest night is marked
         self.assertNotIn('(no Steam files', said.split('2.')[1].split('0. Back')[0])
         self.assertIn('--preserve-owners', calls[0])
         self.assertIn('choose another night for those', said)
@@ -1171,8 +1336,10 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_the_top_menu_quits_and_keeps_the_old_usb_review_last_as_advanced(self):
         out = []
-        with mock.patch.object(os, 'geteuid', return_value=0), \
-                mock.patch.object(recovery_wizard, 'settings', return_value=self.config):
+        with (
+            mock.patch.object(os, 'geteuid', return_value=0),
+            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+        ):
             self.assertEqual(recovery_wizard.run(answers('0'), out.append), 0)
         said = '\n'.join(out)
         self.assertIn('  0. Quit', said)
@@ -1182,6 +1349,7 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_the_monthly_restore_says_where_the_password_files_are(self):
         import json as json_module
+
         for kept, expect in (('unencrypted_in_data_tar', 'are in it, unencrypted'), ('sealed', 'App password list')):
             month = self.media / 'backups/monthly' / f'1792900000-{len(kept)}'
             month.mkdir(parents=True)
@@ -1198,8 +1366,10 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_a_restore_stops_when_a_verified_file_is_missing(self):
         self.write('usb/nextcloud/alice/files/a.txt', b'kept')
-        self.ledger('usb/nextcloud', {'alice/files/a.txt': b'kept', 'alice/files/gone.txt': b'was here',
-                                      'bob/files/other.txt': b'not restored'})
+        self.ledger(
+            'usb/nextcloud',
+            {'alice/files/a.txt': b'kept', 'alice/files/gone.txt': b'was here', 'bob/files/other.txt': b'not restored'},
+        )
         shown = []
         usb = self.root / 'usb'
         restore = mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb)
@@ -1208,7 +1378,9 @@ class RecoveryWizardTests(unittest.TestCase):
         with restore, done, self.assertRaisesRegex(RuntimeError, 'Nothing was restored'):
             recovery_wizard.restore_cloud(self.config, replies, shown.append)
         said = '\n'.join(shown)
-        self.assertIn('Missing from this backup, though backed up and checked before: 1 file', said)   # bob's file is not counted
+        self.assertIn(
+            'Missing from this backup, though backed up and checked before: 1 file', said
+        )  # bob's file is not counted
         self.assertIn('alice/files/gone.txt', said)
         restored = self.media / 'restored'
         self.assertEqual(list(restored.iterdir()) if restored.exists() else [], [])
@@ -1252,7 +1424,7 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_an_unrepairable_copy_is_kept_until_you_accept_it_as_lost(self):
         tree = self.unrepairable_cloud_copy()
-        out, left = self.repair(self.root / 'usb', '1', '1')   # keep both as they are
+        out, left = self.repair(self.root / 'usb', '1', '1')  # keep both as they are
         said = '\n'.join(out)
         self.assertIn('the monthly snapshot and updates wait', said)
         self.assertIn('Accept that this saved copy is lost', said)
@@ -1282,7 +1454,7 @@ class RecoveryWizardTests(unittest.TestCase):
         self.ledger(archive, {'upload/a.jpg': b'good a'})
         self.write('ssd/photos/immich-library/upload/a.jpg', b'edited since')
         self.report({'archive': {'damaged': ['upload/a.jpg']}})
-        out, _ = self.repair(None)   # no answer is asked for
+        out, _ = self.repair(None)  # no answer is asked for
         self.assertNotIn('Accept that this saved copy is lost', '\n'.join(out))
         self.assertEqual((self.root / archive / 'upload/a.jpg').read_bytes(), b'rotten')
 
@@ -1291,13 +1463,19 @@ class RecoveryWizardTests(unittest.TestCase):
         elsewhere = self.root / 'other-drive'
         elsewhere.mkdir()
         shown = []
-        with mock.patch.object(recovery_wizard, 'hdd_ready', return_value=False), \
-                mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard, 'hdd_ready', return_value=False),
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             # A folder typed under the HDD's empty folder is refused too; then one elsewhere.
-            recovery_wizard.restore_cloud(self.config, answers('1', str(self.media / 'restored-here'), 'yes',
-                                                               str(elsewhere / 'files-back'), 'yes', '1', 'yes'),
-                                          shown.append)
+            recovery_wizard.restore_cloud(
+                self.config,
+                answers(
+                    '1', str(self.media / 'restored-here'), 'yes', str(elsewhere / 'files-back'), 'yes', '1', 'yes'
+                ),
+                shown.append,
+            )
         said = '\n'.join(shown)
         self.assertIn('The HDD is not mounted at', said)
         self.assertIn('that folder would be on the system disk', said)
@@ -1343,16 +1521,29 @@ class RecoveryWizardTests(unittest.TestCase):
         tree = self.unrepairable_cloud_copy()
         self.write('usb/nextcloud/alice/files/b.txt', b'b')
         self.repair(self.root / 'usb', '2', '2')
-        self.write('usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz', gzip.compress(json.dumps(
-            {'format': 'neko-inventory-v1', 'files': {'alice/files/report.txt': 'report.txt',
-                                                      'alice/files/b.txt': 'b.txt'}}).encode()))
-        out = '\n'.join(self.restore_cloud('1', 'yes', '1'))   # no "Restore everything else?" asked
+        self.write(
+            'usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz',
+            gzip.compress(
+                json.dumps(
+                    {
+                        'format': 'neko-inventory-v1',
+                        'files': {'alice/files/report.txt': 'report.txt', 'alice/files/b.txt': 'b.txt'},
+                    }
+                ).encode()
+            ),
+        )
+        out = '\n'.join(self.restore_cloud('1', 'yes', '1'))  # no "Restore everything else?" asked
         self.assertNotIn('Restore everything else', out)
         aside = next((tree / 'neko-damaged').iterdir()).name
-        self.assertIn('Not restored, as you accepted them as lost in the repair menu: 1 file '
-                      '(for example alice/files/report.txt: damaged; kept in neko-damaged/', out)
-        self.assertIn(f'its damaged copy is still on the backup, as it is: {tree}/neko-damaged/{aside}/alice/files/report.txt',
-                      out)
+        self.assertIn(
+            'Not restored, as you accepted them as lost in the repair menu: 1 file '
+            '(for example alice/files/report.txt: damaged; kept in neko-damaged/',
+            out,
+        )
+        self.assertIn(
+            f'its damaged copy is still on the backup, as it is: {tree}/neko-damaged/{aside}/alice/files/report.txt',
+            out,
+        )
         restored = next((self.media / 'restored').iterdir())
         self.assertEqual((restored / 'files/b.txt').read_bytes(), b'b')
         self.assertIn('accepted as lost: alice/files/report.txt', (restored / 'NOT-RESTORED.txt').read_text())
@@ -1366,10 +1557,12 @@ class RecoveryWizardTests(unittest.TestCase):
             self.skipTest('this system refuses to give files to the IDs 4321:4322 (no such IDs in its namespace)')
         self.write('hdd/photos/archive/upload/u1/a.jpg', b'photo')
         out = []
-        with mock.patch.dict(os.environ, {'SUDO_UID': '4321', 'SUDO_GID': '4322'}), \
-                mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None), \
-                mock.patch.object(recovery_wizard, 'reachable', return_value=True):
+        with (
+            mock.patch.dict(os.environ, {'SUDO_UID': '4321', 'SUDO_GID': '4322'}),
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+            mock.patch.object(recovery_wizard, 'reachable', return_value=True),
+        ):
             recovery_wizard.restore_photos(self.config, answers('1', 'yes', 'yes'), out.append)
         said = '\n'.join(out)
         restored = next((self.media / 'restored').iterdir())
@@ -1379,7 +1572,7 @@ class RecoveryWizardTests(unittest.TestCase):
             return
         for path in (restored, restored / 'upload', restored / 'upload/u1/a.jpg'):
             self.assertEqual((path.stat().st_uid, path.stat().st_gid), (4321, 4322), path)
-        self.assertEqual(restored.stat().st_mode & 0o777, 0o700)       # still private to that account
+        self.assertEqual(restored.stat().st_mode & 0o777, 0o700)  # still private to that account
         parent = (self.media / 'restored').stat()
         self.assertEqual((parent.st_uid, parent.st_gid, parent.st_mode & 0o777), (0, 4322, 0o750))
         self.assertIn('now belong to 4321, so you can open them from your desktop', said)
@@ -1389,8 +1582,10 @@ class RecoveryWizardTests(unittest.TestCase):
         target = self.root / 'private/back'
         target.mkdir(parents=True)
         (self.root / 'private').chmod(0o700)
-        with mock.patch.object(recovery_wizard, 'give_to'), \
-                mock.patch.object(recovery_wizard, 'owner', return_value=(4321, 4322)):
+        with (
+            mock.patch.object(recovery_wizard, 'give_to'),
+            mock.patch.object(recovery_wizard, 'owner', return_value=(4321, 4322)),
+        ):
             lines = recovery_wizard.handed_over({'media_mount': str(self.media)}, target)
         self.assertIn('can\'t get to where it is', lines[0])
         self.assertEqual(lines[1], f'  sudo mv "{target}" "/home/"')
@@ -1398,19 +1593,28 @@ class RecoveryWizardTests(unittest.TestCase):
     def test_restore_texts_say_what_happened(self):
         # UP-10, UP-12: wording that did not fit what happened.
         self.write('usb/nextcloud/alice/files/a.txt', b'a')
-        self.write('usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz', gzip.compress(json.dumps(
-            {'format': 'neko-inventory-v1', 'files': {'alice/files/a.txt': 'a.txt'}}).encode()))
+        self.write(
+            'usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz',
+            gzip.compress(
+                json.dumps({'format': 'neko-inventory-v1', 'files': {'alice/files/a.txt': 'a.txt'}}).encode()
+            ),
+        )
         out = '\n'.join(self.restore_cloud('1', 'yes', '1'))
-        self.assertIn('Checksums matched for 0 files; 1 file had no recorded checksum yet (the backup that '
-                      'copied it did not finish, or it was backed up before checksums were kept)', out)
+        self.assertIn(
+            'Checksums matched for 0 files; 1 file had no recorded checksum yet (the backup that '
+            'copied it did not finish, or it was backed up before checksums were kept)',
+            out,
+        )
         self.assertIn('Done: 1 file copied', out)
-        self.assertNotIn('replaced earlier', out)        # there is no such folder in this restore
+        self.assertNotIn('replaced earlier', out)  # there is no such folder in this restore
         self.assertLess(out.index('Which files?'), out.index('Copying...'))
         stopped = []
-        with mock.patch.object(os, 'geteuid', return_value=0), \
-                mock.patch.object(recovery_wizard, 'settings', return_value=self.config), \
-                mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(os, 'geteuid', return_value=0),
+            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             recovery_wizard.run(then_stopped('2', '1', 'yes', '1'), stopped.append)
         self.assertIn('Stopped. Nothing more was changed; what was already restored', stopped[-1])
 
@@ -1434,8 +1638,10 @@ class RecoveryWizardTests(unittest.TestCase):
         self.write('usb/backups/monthly/100-1/manifest.json', b'{"format":"neko-maintenance-v1"}')
         self.write('usb/backups/monthly/100-1/media.tar', b'old photos')
         self.write('usb/backups/monthly/200-1/manifest.json', b'{"format":"other"}')
-        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb), \
-                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
             out = []
             recovery_wizard.review_old_usb(self.config, answers('no', 'delete'), out.append)
             self.assertTrue((usb / 'backups/monthly/100-1/media.tar').exists())
@@ -1449,6 +1655,7 @@ class RecoveryWizardTests(unittest.TestCase):
 
     def test_a_password_list_from_a_snapshot_without_a_backup_key(self):
         import tarfile
+
         source = self.root / 'ssd'
         self.write('ssd/secrets/accounts/APP-CREDENTIALS.txt', b'jellyfin: admin / pw')
         self.write('ssd/appdata/jellyfin/config.xml', b'<x/>')
@@ -1458,10 +1665,18 @@ class RecoveryWizardTests(unittest.TestCase):
             for rel in ('appdata/jellyfin', 'secrets/accounts'):
                 archive.add(source / rel, arcname=rel)
         import hashlib
+
         digest = hashlib.sha256((run / 'data.tar').read_bytes()).hexdigest()
-        (run / 'manifest.json').write_text(json.dumps({'format': 'neko-maintenance-v1', 'password_files': 'unencrypted_in_data_tar',
-                                                       'paths': {'data': ['appdata/jellyfin', 'secrets/accounts'], 'media': []},
-                                                       'sha256': {'data': digest}}))
+        (run / 'manifest.json').write_text(
+            json.dumps(
+                {
+                    'format': 'neko-maintenance-v1',
+                    'password_files': 'unencrypted_in_data_tar',
+                    'paths': {'data': ['appdata/jellyfin', 'secrets/accounts'], 'media': []},
+                    'sha256': {'data': digest},
+                }
+            )
+        )
         # A changed archive is refused before anything is taken out of it.
         good = (run / 'data.tar').read_bytes()
         (run / 'data.tar').write_bytes(good.replace(b'admin / pw', b'admin / XX'))
@@ -1485,8 +1700,10 @@ class RecoveryWizardTests(unittest.TestCase):
     def test_menu_back_and_needs_sudo(self):
         with mock.patch('os.geteuid', return_value=1000):
             self.assertEqual(recovery_wizard.run(answers(), lambda s: None), 2)
-        with mock.patch('os.geteuid', return_value=0), \
-                mock.patch.object(recovery_wizard, 'settings', return_value=self.config):
+        with (
+            mock.patch('os.geteuid', return_value=0),
+            mock.patch.object(recovery_wizard, 'settings', return_value=self.config),
+        ):
             out = []
             self.assertEqual(recovery_wizard.run(answers('0'), out.append), 0)
             self.assertTrue(any('NEW folder' in line for line in out))

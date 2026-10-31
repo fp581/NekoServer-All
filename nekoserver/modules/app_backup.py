@@ -1,11 +1,22 @@
 """Install Rust snapshots of media application state on the separate HDD."""
+
 import os
 from pathlib import Path
 import re
 import subprocess
 
 import native_runtime
-from neko_common import RESUME_TIMEOUT, VERSION, atomic_json, host_timezone, refresh_settings, safe_path, verify_storage, check_units, write_units
+from neko_common import (
+    RESUME_TIMEOUT,
+    VERSION,
+    atomic_json,
+    host_timezone,
+    refresh_settings,
+    safe_path,
+    verify_storage,
+    check_units,
+    write_units,
+)
 
 DEPENDENCIES = ['media', 'recovery']
 DESCRIPTION = 'Nightly private media application snapshots with automatic restart recovery'
@@ -104,4 +115,7 @@ def run(context):
         ['systemctl', 'enable', '--now', 'nekoserver-app-backup.timer'],
     ):
         subprocess.run(command, check=True, capture_output=True, timeout=1200)
-    context.log('Nightly private app snapshots enabled on media HDD; apps stop briefly during each run. '+retention(keep_snapshots(context.config)))
+    context.log(
+        'Nightly private app snapshots enabled on media HDD; apps stop briefly during each run. '
+        + retention(keep_snapshots(context.config))
+    )

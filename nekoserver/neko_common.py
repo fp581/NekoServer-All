@@ -1,4 +1,5 @@
 """Shared local filesystem safety; standard library only."""
+
 import ctypes
 import errno
 import hashlib
@@ -15,7 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.41.0'
+VERSION = '0.41.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -108,6 +109,7 @@ def dashboard_port(config):
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     """Requests to the apps never follow a redirect (it could lead anywhere)."""
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
@@ -169,8 +171,9 @@ def maintenance_running(run=subprocess.run):
     """The monthly update, or the service that finishes a cut-off one, is working right
     now (both are oneshot services: "activating" while they run)."""
     try:
-        result = run(['systemctl', 'is-active', *MAINTENANCE_UNITS], capture_output=True, text=True,
-                     timeout=15, check=False)
+        result = run(
+            ['systemctl', 'is-active', *MAINTENANCE_UNITS], capture_output=True, text=True, timeout=15, check=False
+        )
     except (OSError, subprocess.SubprocessError):
         return False
     return bool({'activating', 'deactivating'} & set(result.stdout.split()))
@@ -181,7 +184,7 @@ def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was change
     (or rolled back) before anything else touches the apps: another version would
     replace the program that can finish it, and even the same version would start the
     apps, letting them write data that a pending rollback then replaces."""
-    running = running or maintenance_running   # looked up now, so a test's stand-in is used
+    running = running or maintenance_running  # looked up now, so a test's stand-in is used
     journal = Path(journal)
     if not journal.exists():
         return None
@@ -191,16 +194,20 @@ def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was change
         started = None
     which = f'NekoServer v{started}' if isinstance(started, str) and started else 'an earlier NekoServer'
     if running():
-        return (f'A monthly update started by {which} is running right now (it can take an hour or more). '
-                'Let it finish: sudo systemctl status nekoserver-maintenance.service shows "inactive" once it '
-                f'has. Then run  sudo bash install.sh  again. {outcome}')
-    return (f'A monthly update started by {which} did not finish, so some apps may still be stopped. '
-            'Let it finish (or roll back) before running setup:\n'
-            '  sudo systemctl start nekoserver-maintenance-resume.service\n'
-            'When that has finished (sudo systemctl status nekoserver-maintenance-resume.service shows it '
-            f'exited successfully), run  sudo bash install.sh  again. {outcome}\n'
-            'If it keeps failing, this release can finish it instead (it changes nothing else):\n'
-            '  sudo bash install.sh --finish-update')
+        return (
+            f'A monthly update started by {which} is running right now (it can take an hour or more). '
+            'Let it finish: sudo systemctl status nekoserver-maintenance.service shows "inactive" once it '
+            f'has. Then run  sudo bash install.sh  again. {outcome}'
+        )
+    return (
+        f'A monthly update started by {which} did not finish, so some apps may still be stopped. '
+        'Let it finish (or roll back) before running setup:\n'
+        '  sudo systemctl start nekoserver-maintenance-resume.service\n'
+        'When that has finished (sudo systemctl status nekoserver-maintenance-resume.service shows it '
+        f'exited successfully), run  sudo bash install.sh  again. {outcome}\n'
+        'If it keeps failing, this release can finish it instead (it changes nothing else):\n'
+        '  sudo bash install.sh --finish-update'
+    )
 
 
 def pick_drive(options, label, input_fn=input, out_fn=print, skippable=False, attempts=3):
@@ -208,9 +215,13 @@ def pick_drive(options, label, input_fn=input, out_fn=print, skippable=False, at
     again. ENTER (or Ctrl+D) stops: None when the choice may be left for later
     (`skippable`), otherwise "Selection aborted"."""
     for n, v in enumerate(options, 1):
-        out_fn(f"  {n}) /dev/{v['name']} {v.get('size', '')} {v['fstype']} UUID={v['uuid']} "
-               f"mounted={v.get('mountpoint') or '-'}")
-    question = f'Choose {label} by number (Enter to skip for now): ' if skippable else 'Choose number (or ENTER to abort): '
+        out_fn(
+            f"  {n}) /dev/{v['name']} {v.get('size', '')} {v['fstype']} UUID={v['uuid']} "
+            f"mounted={v.get('mountpoint') or '-'}"
+        )
+    question = (
+        f'Choose {label} by number (Enter to skip for now): ' if skippable else 'Choose number (or ENTER to abort): '
+    )
     for _ in range(attempts):
         try:
             choice = input_fn(question).strip()
@@ -232,7 +243,10 @@ def confirmed(device, label, input_fn, out_fn, attempts=3):
     """The drive, once its name is typed back (a typo is asked again)."""
     for _ in range(attempts):
         if input_fn(f"Type {device['name']} to confirm it is {label}: ").strip() in (
-                device['name'], '/dev/' + device['name'], device['uuid']):
+            device['name'],
+            '/dev/' + device['name'],
+            device['uuid'],
+        ):
             return device
         out_fn(f"That is not {device['name']}. Type {device['name']} exactly as shown, to be sure of the drive.")
     raise RuntimeError('Drive confirmation failed')
@@ -308,22 +322,24 @@ def private_mount_options(options, fstype):
             return int(found[key], 8) & 0o077 == 0o077
         except (KeyError, ValueError):
             return False
+
     return found.get('uid', '0') == '0' and found.get('gid', '0') == '0' and hidden('fmask') and hidden('dmask')
 
 
 def systemd_arg(value):
     """One argument for a systemd unit line, quoted so that spaces, quotes, `$` and `%`
     stay part of it ("Neko Server/recover.py" is one argument, not two)."""
-    text=str(value)
-    if any(c in text for c in '\n\r\0'):raise RuntimeError('This path cannot be used in a system service: '+repr(text))
-    return '"'+text.replace('\\','\\\\').replace('"','\\"').replace('%','%%').replace('$','$$')+'"'
+    text = str(value)
+    if any(c in text for c in '\n\r\0'):
+        raise RuntimeError('This path cannot be used in a system service: ' + repr(text))
+    return '"' + text.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
 
 
 # Long file names in backups. The rules match backup.rs (fitted, version_parts,
 # latest_marker, partial_name), which writes them.
-NAME_MAX = 255                       # longest name ext4 and exFAT accept, in bytes
-VERSION_TAG = len('.neko-20261022T104800Z-9999')   # room kept for a version's date
-NAMES_FILE = '.neko-names.json'      # full names behind shortened version names
+NAME_MAX = 255  # longest name ext4 and exFAT accept, in bytes
+VERSION_TAG = len('.neko-20261022T104800Z-9999')  # room kept for a version's date
+NAMES_FILE = '.neko-names.json'  # full names behind shortened version names
 
 
 def fitted(text, room, whole):
@@ -333,7 +349,7 @@ def fitted(text, room, whole):
     if len(data) <= room:
         return text
     tag = '~' + hashlib.sha256(whole.encode()).hexdigest()[:8]
-    return data[:max(0, room - len(tag))].decode('utf-8', 'ignore') + tag
+    return data[: max(0, room - len(tag))].decode('utf-8', 'ignore') + tag
 
 
 def version_parts(name):
@@ -347,7 +363,7 @@ def version_parts(name):
     return fitted(stem, NAME_MAX - VERSION_TAG - len(ext.encode()), name), ext
 
 
-LATEST_SUFFIX = '.neko-latest'     # the note naming a file's current saved copy
+LATEST_SUFFIX = '.neko-latest'  # the note naming a file's current saved copy
 
 
 def latest_note(name):
@@ -369,7 +385,11 @@ def saved_names(folder):
     except (OSError, ValueError):
         return {}
     names = value.get('names') if isinstance(value, dict) and value.get('format') == 'neko-names-v1' else None
-    return {k: v for k, v in names.items() if isinstance(k, str) and isinstance(v, str) and '/' not in v} if isinstance(names, dict) else {}
+    return (
+        {k: v for k, v in names.items() if isinstance(k, str) and isinstance(v, str) and '/' not in v}
+        if isinstance(names, dict)
+        else {}
+    )
 
 
 def saved_versions(folder):
@@ -380,18 +400,30 @@ def saved_versions(folder):
     except (OSError, ValueError):
         return {}
     versions = value.get('versions') if isinstance(value, dict) and value.get('format') == 'neko-names-v1' else None
-    return {k: v for k, v in versions.items() if isinstance(k, str) and isinstance(v, str) and '/' not in v and '/' not in k} \
-        if isinstance(versions, dict) else {}
+    return (
+        {
+            k: v
+            for k, v in versions.items()
+            if isinstance(k, str) and isinstance(v, str) and '/' not in v and '/' not in k
+        }
+        if isinstance(versions, dict)
+        else {}
+    )
 
 
-LEDGER_NAME = '.neko-ledger.json'   # checksum ledger at the root of a backup tree
-QUARANTINE = 'neko-damaged'         # damaged copies kept aside at the root; never data
+LEDGER_NAME = '.neko-ledger.json'  # checksum ledger at the root of a backup tree
+QUARANTINE = 'neko-damaged'  # damaged copies kept aside at the root; never data
 
 
 def valid_ledger_path(rel):
     """A ledger path is plain and relative: no leading /, no '.', '..' or empty parts."""
-    return (isinstance(rel, str) and rel and '\0' not in rel and not rel.startswith('/')
-            and all(part not in ('', '.', '..') for part in rel.split('/')))
+    return (
+        isinstance(rel, str)
+        and rel
+        and '\0' not in rel
+        and not rel.startswith('/')
+        and all(part not in ('', '.', '..') for part in rel.split('/'))
+    )
 
 
 def read_ledger(root):
@@ -431,6 +463,7 @@ def record_ledger(root, entries, how, replace=(), retire=None):
     import fcntl
     import time
     import uuid
+
     root = safe_path(Path(root))
     with open(root / '.neko-ledger.lock', 'a') as lock:
         try:
@@ -446,8 +479,12 @@ def record_ledger(root, entries, how, replace=(), retire=None):
                 raise RuntimeError('Refusing an invalid checksum ledger entry')
             if rel in value['entries'] and rel not in replace:
                 continue
-            value['entries'][rel] = {'sha256': sha, 'size': (root / rel).stat().st_size,
-                                     'verified_at': time.time(), 'how': how}
+            value['entries'][rel] = {
+                'sha256': sha,
+                'size': (root / rel).stat().st_size,
+                'verified_at': time.time(),
+                'how': how,
+            }
             added.append(rel)
         added += retire_entries(value, retire or {})
         if added:
@@ -474,6 +511,7 @@ def retire_entries(value, retire):
     """Move each of `retire`'s paths ({path: why}) from a ledger's entries to its
     "retired" part, with when and why. Returns the paths moved."""
     import time
+
     moved = []
     for rel, why in retire.items():
         old = value['entries'].pop(rel, None) if valid_ledger_path(rel) else None
@@ -517,8 +555,21 @@ def file_entry(path, problems):
 # it) comes from a settings file or a backup's own record, so a changed record must not
 # be able to point a restore or an import at them. Drives and folders anywhere else
 # (/srv, /mnt, /data, /home, a desktop drive under /media or /run/media) are fine.
-SYSTEM_FOLDERS = ('/bin', '/boot', '/dev', '/etc', '/lib', '/lib32', '/lib64', '/proc', '/root', '/run', '/sbin',
-                  '/sys', '/usr')
+SYSTEM_FOLDERS = (
+    '/bin',
+    '/boot',
+    '/dev',
+    '/etc',
+    '/lib',
+    '/lib32',
+    '/lib64',
+    '/proc',
+    '/root',
+    '/run',
+    '/sbin',
+    '/sys',
+    '/usr',
+)
 DESKTOP_DRIVES = '/run/media'
 
 
@@ -537,7 +588,7 @@ def plain_folder(value):
     real = os.path.realpath(text)
     if real == '/' or (any(inside(real, system) for system in SYSTEM_FOLDERS) and not inside(real, DESKTOP_DRIVES)):
         raise RuntimeError('NekoServer does not read the system\'s own folders: ' + text)
-    safe_path(Path(text))   # no symlinks along the way, so the resolved path is the same folder
+    safe_path(Path(text))  # no symlinks along the way, so the resolved path is the same folder
     return Path(real)
 
 
@@ -551,6 +602,7 @@ def strict_files(root, skip=None, skip_dirs=()):
 
     def unreadable(error):
         problems.append((error.filename, error.strerror))
+
     for folder, dirs, files in os.walk(root, onerror=unreadable):
         here = Path(folder)
         if here == root:
@@ -564,7 +616,7 @@ def strict_files(root, skip=None, skip_dirs=()):
 
 
 LEDGER_LOCK = '.neko-ledger.lock'
-ATOMIC_TEMP = re.compile(r'\.neko-\d+-\d+-\d+')   # the backup program's atomic-write temporaries
+ATOMIC_TEMP = re.compile(r'\.neko-\d+-\d+-\d+')  # the backup program's atomic-write temporaries
 
 
 def not_backup_data(here, root, name):
@@ -575,8 +627,7 @@ def not_backup_data(here, root, name):
     metadata_name and ledger_file say the same)."""
     if here == root and (name in (LEDGER_NAME, LEDGER_LOCK) or name.startswith(LEDGER_NAME + '.')):
         return True
-    return (name == NAMES_FILE or name.endswith((LATEST_SUFFIX, '.neko-part'))
-            or ATOMIC_TEMP.fullmatch(name) is not None)
+    return name == NAMES_FILE or name.endswith((LATEST_SUFFIX, '.neko-part')) or ATOMIC_TEMP.fullmatch(name) is not None
 
 
 def backup_files(root, tree_root=None):
@@ -589,11 +640,16 @@ def backup_files(root, tree_root=None):
     root = Path(root)
     at_root = tree_root is not None and Path(tree_root) == root
     try:
-        return strict_files(root, lambda here, name: not_backup_data(here, root if at_root else None, name),
-                            (QUARANTINE,) if at_root else ())
+        return strict_files(
+            root,
+            lambda here, name: not_backup_data(here, root if at_root else None, name),
+            (QUARANTINE,) if at_root else (),
+        )
     except UnreadableEntries as exc:
-        raise RuntimeError('Some backup files could not be read; nothing was restored from a partial list: '
-                           + str(exc).split(': ', 1)[1]) from None
+        raise RuntimeError(
+            'Some backup files could not be read; nothing was restored from a partial list: '
+            + str(exc).split(': ', 1)[1]
+        ) from None
 
 
 class BackupDamaged(RuntimeError):
@@ -654,13 +710,15 @@ def settings_path(value):
 
 
 # The settings a command uses when no --config is given (default_settings).
-MY_SETTINGS = 'my-config.json'      # made by the wizard; git does not track it
-SETTINGS_TEMPLATE = 'config.json'   # the template in the release folder (no drives in it)
-BUNDLE_MANIFEST = 'release-manifest.json'   # beside the copy kept on the SSD (modules/recovery.MANIFEST)
+MY_SETTINGS = 'my-config.json'  # made by the wizard; git does not track it
+SETTINGS_TEMPLATE = 'config.json'  # the template in the release folder (no drives in it)
+BUNDLE_MANIFEST = 'release-manifest.json'  # beside the copy kept on the SSD (modules/recovery.MANIFEST)
 NO_SETTINGS = '<no settings file found>'
-NO_SETTINGS_HELP = ('config.json in this folder is the settings template (no drives in it), not your settings. '
-                    'Run  sudo bash install.sh  first (it makes my-config.json), or name your settings file with '
-                    '--config (for example --config my-config.json)')
+NO_SETTINGS_HELP = (
+    'config.json in this folder is the settings template (no drives in it), not your settings. '
+    'Run  sudo bash install.sh  first (it makes my-config.json), or name your settings file with '
+    '--config (for example --config my-config.json)'
+)
 
 
 def default_settings(folder):
@@ -681,6 +739,7 @@ def checked_settings(value):
     """argparse type for --config: the value as given, but never the template stand-in
     (no settings found next to the command)."""
     import argparse
+
     if value == NO_SETTINGS:
         raise argparse.ArgumentTypeError(NO_SETTINGS_HELP)
     return value
@@ -694,18 +753,29 @@ HIDDEN_FROM_SERVICES = ('/home', '/root', '/run/user')
 
 def mount_path(value):
     path = safe_path(value)
-    if (not path.is_absolute() or str(path) in ('/', '/mnt', '/srv', '/home', '/var', '/tmp')
-            or '..' in path.parts or not re.fullmatch(r'/[A-Za-z0-9_./-]+', str(value))):
+    if (
+        not path.is_absolute()
+        or str(path) in ('/', '/mnt', '/srv', '/home', '/var', '/tmp')
+        or '..' in path.parts
+        or not re.fullmatch(r'/[A-Za-z0-9_./-]+', str(value))
+    ):
         raise RuntimeError(f'Unsafe mount path: {value}')
     if any(path == Path(top) or Path(top) in path.parents for top in HIDDEN_FROM_SERVICES):
-        raise RuntimeError(f'Drives cannot be mounted under /home, /root or /run/user ({value}): NekoServer\'s services '
-                           'cannot see those folders. Mount it under /srv or /mnt instead, for example /srv/nekoserver')
+        raise RuntimeError(
+            f'Drives cannot be mounted under /home, /root or /run/user ({value}): NekoServer\'s services '
+            'cannot see those folders. Mount it under /srv or /mnt instead, for example /srv/nekoserver'
+        )
     return path
 
 
 def relative_path(value):
     path = Path(value)
-    if path.is_absolute() or '..' in path.parts or str(path) == '.' or not re.fullmatch(r'[A-Za-z0-9_./-]+', str(value)):
+    if (
+        path.is_absolute()
+        or '..' in path.parts
+        or str(path) == '.'
+        or not re.fullmatch(r'[A-Za-z0-9_./-]+', str(value))
+    ):
         raise RuntimeError(f'Unsafe relative path: {value}')
     return path
 
@@ -719,18 +789,24 @@ def fetch(url, what, limit, timeout=30, opener=None, headers=None):
             return response.read(limit)
     except urllib.error.HTTPError as exc:
         if exc.code in (403, 429) and 'api.github.com' in url:
-            raise RuntimeError(f'{what}: GitHub is limiting requests from this address right now (HTTP {exc.code}); '
-                               'wait an hour and run setup again') from None
+            raise RuntimeError(
+                f'{what}: GitHub is limiting requests from this address right now (HTTP {exc.code}); '
+                'wait an hour and run setup again'
+            ) from None
         raise RuntimeError(f'{what}: {url} answered HTTP {exc.code}; try again later') from None
     except OSError as exc:
         reason = str(getattr(exc, 'reason', exc))
         # A clock set wrong makes every certificate look not valid yet, or expired.
         if re.search(r'not yet valid|certificate has expired', reason, re.IGNORECASE):
-            raise RuntimeError(f'{what}: could not download {url} ({reason}). This PC\'s clock looks wrong (check '
-                               'the date and time with  timedatectl): let the network set it (sudo timedatectl '
-                               'set-ntp true), wait a minute, then run setup again') from None
-        raise RuntimeError(f'{what}: could not download {url} ({reason}). Check that this PC '
-                           'is connected to the internet, then run setup again') from None
+            raise RuntimeError(
+                f'{what}: could not download {url} ({reason}). This PC\'s clock looks wrong (check '
+                'the date and time with  timedatectl): let the network set it (sudo timedatectl '
+                'set-ntp true), wait a minute, then run setup again'
+            ) from None
+        raise RuntimeError(
+            f'{what}: could not download {url} ({reason}). Check that this PC '
+            'is connected to the internet, then run setup again'
+        ) from None
 
 
 # Images are downloaded before the apps are started: a slow connection then has hours,
@@ -745,10 +821,12 @@ def compose_up(base, what, log=None, timeout=900):
     taken = busy_ports(base, services, what)
     if taken:
         # Docker would say only "failed to bind host port ...: address already in use".
-        raise RuntimeError(f'{what} cannot start: ' + '; '.join(
-            f'port {port} ({ip}) is in use by {holder}' for port, ip, holder in taken)
+        raise RuntimeError(
+            f'{what} cannot start: '
+            + '; '.join(f'port {port} ({ip}) is in use by {holder}' for port, ip, holder in taken)
             + f'. {what} needs it: stop that program and keep it from starting with the PC (for a '
-            'service, sudo systemctl disable --now its name), then run setup again')
+            'service, sudo systemctl disable --now its name), then run setup again'
+        )
     named = services_to_pull(base, what, services)
     if named:
         if log:
@@ -758,10 +836,13 @@ def compose_up(base, what, log=None, timeout=900):
     lost = without_network(base, what)
     if lost:
         if log:
-            log(f'{what}: {", ".join(lost)} was running without its network (left so by an earlier start that '
-                'failed); recreating it')
-        result = checked_run([*base, 'up', '-d', '--force-recreate', '--no-deps', *lost], timeout,
-                             f'{what} (docker compose up)')
+            log(
+                f'{what}: {", ".join(lost)} was running without its network (left so by an earlier start that '
+                'failed); recreating it'
+            )
+        result = checked_run(
+            [*base, 'up', '-d', '--force-recreate', '--no-deps', *lost], timeout, f'{what} (docker compose up)'
+        )
     return result
 
 
@@ -778,7 +859,7 @@ def port_taken(ip, port, protocol='tcp'):
     """Binding this address as Docker would fails: another program listens there."""
     kind = socket.SOCK_DGRAM if protocol == 'udp' else socket.SOCK_STREAM
     with socket.socket(socket.AF_INET6 if ':' in ip else socket.AF_INET, kind) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # a closing connection is no holder
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # a closing connection is no holder
         try:
             probe.bind((ip, port))
         except OSError as exc:
@@ -790,8 +871,13 @@ def port_holder(port, protocol='tcp', docker=('docker',)):
     """Who listens on this port, for a person to find it: a program and its process, or
     the Docker container publishing it."""
     try:
-        shown = subprocess.run(['ss', '-Hlunp' if protocol == 'udp' else '-Hltnp', f'sport = :{port}'],
-                               capture_output=True, text=True, timeout=15, check=False).stdout
+        shown = subprocess.run(
+            ['ss', '-Hlunp' if protocol == 'udp' else '-Hltnp', f'sport = :{port}'],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         shown = ''
     found = re.search(r'users:\(\("([^"]+)",pid=(\d+)', shown)
@@ -799,8 +885,13 @@ def port_holder(port, protocol='tcp', docker=('docker',)):
         return 'another program'
     if found.group(1) == 'docker-proxy':
         try:
-            names = subprocess.run([*docker, 'ps', '--filter', f'publish={port}', '--format', '{{.Names}}'],
-                                   capture_output=True, text=True, timeout=30, check=False).stdout.split()
+            names = subprocess.run(
+                [*docker, 'ps', '--filter', f'publish={port}', '--format', '{{.Names}}'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            ).stdout.split()
         except (OSError, subprocess.SubprocessError):
             names = []
         return 'the Docker container ' + ', '.join(names) if names else 'another Docker container'
@@ -811,9 +902,9 @@ def compose_rows(base, what):
     """The app's containers as docker compose ps lists them (a dict each)."""
     shown = checked_run([*base, 'ps', '--format', 'json'], 60, f'{what} (docker compose ps)').stdout or ''
     try:
-        rows = json.loads(shown)                  # an older Compose: one JSON list
+        rows = json.loads(shown)  # an older Compose: one JSON list
         rows = rows if isinstance(rows, list) else [rows]
-    except ValueError:                            # a newer one: a JSON object per line
+    except ValueError:  # a newer one: a JSON object per line
         rows = [json.loads(line) for line in shown.splitlines() if line.strip().startswith('{')]
     return [row for row in rows if isinstance(row, dict)]
 
@@ -823,15 +914,19 @@ def without_network(base, what):
     Docker set up its networking (a port in use, say) left the container that way, and
     Docker 29 went on starting it without one: the app runs, but nothing can reach it
     (tried on AlmaLinux). No NekoServer app runs without a network."""
-    docker = list(base[:base.index('compose')]) if 'compose' in base else ['docker']
+    docker = list(base[: base.index('compose')]) if 'compose' in base else ['docker']
     lost = []
     for row in compose_rows(base, what):
         if row.get('State') != 'running' or not (row.get('ID') or row.get('Name')):
             continue
         try:
-            shown = subprocess.run([*docker, 'inspect', '--format', '{{len .NetworkSettings.Networks}}',
-                                    row.get('ID') or row.get('Name')], capture_output=True, text=True,
-                                   timeout=30, check=False)
+            shown = subprocess.run(
+                [*docker, 'inspect', '--format', '{{len .NetworkSettings.Networks}}', row.get('ID') or row.get('Name')],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
         except (OSError, subprocess.SubprocessError):
             continue
         if shown.returncode == 0 and shown.stdout.strip() == '0':
@@ -842,12 +937,16 @@ def without_network(base, what):
 def busy_ports(base, services, what):
     """[(port, address, holder)] for the ports these services publish that another program
     holds now. The app's own running containers hold theirs: those are left out."""
-    wanted = [(name, p) for name, service in sorted(services.items())
-              for p in (service.get('ports') or []) if isinstance(p, dict) and p.get('published')]
+    wanted = [
+        (name, p)
+        for name, service in sorted(services.items())
+        for p in (service.get('ports') or [])
+        if isinstance(p, dict) and p.get('published')
+    ]
     if not wanted:
         return []
     running = {row.get('Service') for row in compose_rows(base, what) if row.get('State') == 'running'}
-    docker = tuple(base[:base.index('compose')]) if 'compose' in base else ('docker',)
+    docker = tuple(base[: base.index('compose')]) if 'compose' in base else ('docker',)
     taken = []
     for name, p in wanted:
         ip, port, protocol = p.get('host_ip') or '0.0.0.0', int(p['published']), p.get('protocol') or 'tcp'
@@ -863,16 +962,20 @@ def services_to_pull(base, what, services=None):
     denied for sha256"), and must already be on this PC, which is checked instead."""
     if services is None:
         services = compose_services(base, what)
-    docker = list(base[:base.index('compose')]) if 'compose' in base else ['docker']
+    docker = list(base[: base.index('compose')]) if 'compose' in base else ['docker']
     named = []
     for name, service in sorted(services.items()):
         image = str(service.get('image') or '')
         if image.startswith('sha256:'):
-            present = subprocess.run([*docker, 'image', 'inspect', image], capture_output=True, text=True, timeout=60, check=False)
+            present = subprocess.run(
+                [*docker, 'image', 'inspect', image], capture_output=True, text=True, timeout=60, check=False
+            )
             if present.returncode:
-                raise RuntimeError(f'{what}: the image the monthly update pinned for {name} ({image[:19]}...) is not on this PC '
-                                   'any more. Run the monthly update again (sudo systemctl start nekoserver-maintenance.service), '
-                                   'or take the pin out of maintenance-images.json next to its compose.yaml')
+                raise RuntimeError(
+                    f'{what}: the image the monthly update pinned for {name} ({image[:19]}...) is not on this PC '
+                    'any more. Run the monthly update again (sudo systemctl start nekoserver-maintenance.service), '
+                    'or take the pin out of maintenance-images.json next to its compose.yaml'
+                )
         else:
             named.append(name)
     return named
@@ -880,8 +983,17 @@ def services_to_pull(base, what, services=None):
 
 # A registry that is limiting requests ("toomanyrequests"), or a connection that drops
 # part-way, answers like this. Each is worth waiting for and trying again.
-TRANSIENT_PULL = ('toomanyrequests', 'too many requests', 'tls handshake timeout', 'unexpected eof',
-                  'i/o timeout', 'connection reset', 'temporary failure', 'service unavailable', '503')
+TRANSIENT_PULL = (
+    'toomanyrequests',
+    'too many requests',
+    'tls handshake timeout',
+    'unexpected eof',
+    'i/o timeout',
+    'connection reset',
+    'temporary failure',
+    'service unavailable',
+    '503',
+)
 PULL_RETRY_WAITS = (30, 60, 120, 240, 480)
 
 
@@ -898,8 +1010,10 @@ def pull_images(argv, what, log=None, waits=PULL_RETRY_WAITS, sleep=time.sleep):
                 raise
             if log:
                 reason = next((line.strip() for line in reversed(str(exc).splitlines()) if line.strip()), '')
-                log(f'{what}: the download was refused for now (the registry is busy or the '
-                    f'connection dropped: {reason[-160:]}); trying again in {wait} seconds ({attempt + 1} of {len(waits)})')
+                log(
+                    f'{what}: the download was refused for now (the registry is busy or the '
+                    f'connection dropped: {reason[-160:]}); trying again in {wait} seconds ({attempt + 1} of {len(waits)})'
+                )
             sleep(wait)
 
 
@@ -908,8 +1022,13 @@ def findmnt(columns, target, by='--mountpoint', run=None, timeout=10):
     folder it lists them oldest first, and the last one is the one in use. None when
     nothing is mounted there (or findmnt can't say)."""
     try:
-        result = (run or subprocess.run)(['findmnt', '-n', '-o', columns, by, str(target)], capture_output=True,
-                                         text=True, timeout=timeout, check=False)
+        result = (run or subprocess.run)(
+            ['findmnt', '-n', '-o', columns, by, str(target)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     lines = [line.strip() for line in (result.stdout or '').splitlines() if line.strip()]
@@ -988,7 +1107,7 @@ def rename_no_replace(source, target):
         raise RuntimeError('Linux renameat2 is needed to move folders safely')
     rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
     rename.restype = ctypes.c_int
-    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1) != 0:   # RENAME_NOREPLACE
+    if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1) != 0:  # RENAME_NOREPLACE
         code = ctypes.get_errno()
         raise (FileExistsError if code == errno.EEXIST else OSError)(code, os.strerror(code), str(target))
 
@@ -1031,7 +1150,7 @@ def made_whole(directory, mode, uid, gid):
     temp = directory.with_name('.' + directory.name + '.neko-new')
     if temp.is_dir() and not temp.is_symlink():
         try:
-            temp.rmdir()          # left by a run cut off here; empty, as it was made
+            temp.rmdir()  # left by a run cut off here; empty, as it was made
         except OSError:
             pass
     temp.mkdir(mode=mode)
@@ -1041,7 +1160,7 @@ def made_whole(directory, mode, uid, gid):
     try:
         rename_no_replace(temp, directory)
     except FileExistsError:
-        temp.rmdir()              # made meanwhile by something else: that one stays
+        temp.rmdir()  # made meanwhile by something else: that one stays
     except (OSError, RuntimeError):
         # A filesystem without no-replace renames (FAT, say): made in place as before.
         temp.rmdir()
@@ -1098,11 +1217,18 @@ def devices_with_uuid(uuid, run=None):
     volume under every disk it spans), or None when lsblk can't say. LVM snapshots of the
     drive are left out (lvm_snapshots): they are not copies."""
     try:
-        result = (run or subprocess.run)(['lsblk', '-J', '-l', '-o', 'PATH,UUID,TYPE,NAME,KNAME,PKNAME'], capture_output=True,
-                                         text=True, timeout=10, check=False)
+        result = (run or subprocess.run)(
+            ['lsblk', '-J', '-l', '-o', 'PATH,UUID,TYPE,NAME,KNAME,PKNAME'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
         rows = json.loads(result.stdout or '')['blockdevices'] if result.returncode == 0 else None
         snapshots = lvm_snapshots(rows)
-        found = [row['path'] for row in rows if row.get('uuid') == uuid and row.get('path') and row['path'] not in snapshots]
+        found = [
+            row['path'] for row in rows if row.get('uuid') == uuid and row.get('path') and row['path'] not in snapshots
+        ]
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
         return None
     return sorted(set(found))
@@ -1114,7 +1240,7 @@ def lvm_layer(name, suffix):
     the suffix is a separator only when the dashes there are odd in number."""
     if not name.endswith('-' + suffix):
         return False
-    stem = name[:-len(suffix)]
+    stem = name[: -len(suffix)]
     return (len(stem) - len(stem.rstrip('-'))) % 2 == 1
 
 
@@ -1142,8 +1268,13 @@ def btrfs_device_id(device, run=None):
     """A Btrfs device's own UUID (UUID_SUB), read from the device itself (blkid -p, which
     needs root), or None when it can't be read."""
     try:
-        result = (run or subprocess.run)(['blkid', '-p', '-s', 'UUID_SUB', '-o', 'value', '--', device],
-                                         capture_output=True, text=True, timeout=10, check=False)
+        result = (run or subprocess.run)(
+            ['blkid', '-p', '-s', 'UUID_SUB', '-o', 'value', '--', device],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode:
@@ -1174,9 +1305,11 @@ def copy_problem(record, drive, run=None):
     copies = look_alikes(record.get('uuid'), record.get('fstype'), run)
     if not copies:
         return None
-    return (f'Two drives look the same (one is probably a copy); unplug the copy and try again. '
-            f'{" and ".join(copies)} carry the same filesystem as the {drive} (UUID {record.get("uuid")}), '
-            'so Linux could use either one.')
+    return (
+        f'Two drives look the same (one is probably a copy); unplug the copy and try again. '
+        f'{" and ".join(copies)} carry the same filesystem as the {drive} (UUID {record.get("uuid")}), '
+        'so Linux could use either one.'
+    )
 
 
 def verify_storage(config, keys=('data_ssd', 'media_hdd')):
@@ -1213,7 +1346,7 @@ def compose_image_override(manifest):
     return out
 
 
-GIB = 1024 ** 3
+GIB = 1024**3
 
 
 def ensure_room(folder, need, what='This restore'):
@@ -1221,9 +1354,12 @@ def ensure_room(folder, need, what='This restore'):
     it goes, so a big restore never fills a drive or stops half-way. Shared by every
     restore: photos, Nextcloud files, nightly snapshots and monthly snapshots."""
     import shutil
+
     usage = shutil.disk_usage(folder)
     reserve = max(5 * GIB, usage.total // 20)
     if need + reserve > usage.free:
-        raise RuntimeError(f'not enough free space: {what.lower()} needs {need / GIB:.1f} GB and '
-                           f'{usage.free / GIB:.1f} GB is free on that drive (5 GB or 5% is kept free). '
-                           'Free some space or choose a folder on another drive.')
+        raise RuntimeError(
+            f'not enough free space: {what.lower()} needs {need / GIB:.1f} GB and '
+            f'{usage.free / GIB:.1f} GB is free on that drive (5 GB or 5% is kept free). '
+            'Free some space or choose a folder on another drive.'
+        )

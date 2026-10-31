@@ -1,4 +1,5 @@
 """Install nightly, versioned SSD music backups on the verified HDD."""
+
 import os
 from pathlib import Path
 import re
@@ -31,7 +32,7 @@ def definitions(config, binary, guard):
 
 
 def run(ctx):
-    enabled = ctx.config.get('music',{}).get('backup_enabled',True)
+    enabled = ctx.config.get('music', {}).get('backup_enabled', True)
     if type(enabled) is not bool:
         raise RuntimeError('Schedule enable switch must be boolean')
     if not enabled:
@@ -39,21 +40,34 @@ def run(ctx):
             if os.geteuid() != 0:
                 raise RuntimeError('Root required')
             from modules._schedules import retire
-            retire([SYSTEMD_UNITS/('nekoserver-music-backup.'+suffix) for suffix in ('timer','service')], subprocess.run)
+
+            retire(
+                [SYSTEMD_UNITS / ('nekoserver-music-backup.' + suffix) for suffix in ('timer', 'service')],
+                subprocess.run,
+            )
         ctx.log('nekoserver-music-backup: disabled; any old managed schedule is retired when applied')
         return
     definitions(ctx.config, '/placeholder/runtime', '/placeholder/config')
     if not ctx.apply:
-        ctx.log('Music: nightly '+ctx.config.get('music', {}).get('backup_time', '03:45')+' backup to HDD; older versions retained, no automatic deletions')
+        ctx.log(
+            'Music: nightly '
+            + ctx.config.get('music', {}).get('backup_time', '03:45')
+            + ' backup to HDD; older versions retained, no automatic deletions'
+        )
         return
     if os.geteuid() != 0:
         raise RuntimeError('Root required')
     verify_storage(ctx.config)
-    binary = native_runtime.deploy(Path(__file__).resolve().parents[1], ctx.config,
-        Path(ctx.config['data_mount'])/'installer/runtime'/('v'+VERSION))
+    binary = native_runtime.deploy(
+        Path(__file__).resolve().parents[1],
+        ctx.config,
+        Path(ctx.config['data_mount']) / 'installer/runtime' / ('v' + VERSION),
+    )
     units = definitions(ctx.config, binary, '/etc/nekoserver-backups/storage.json')
     check_units(units, 'music backup')
     native_runtime.backup_guard(ctx.config)
     write_units(units)
     subprocess.run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
-    subprocess.run(['systemctl', 'enable', '--now', 'nekoserver-music-backup.timer'], check=True, capture_output=True, timeout=30)
+    subprocess.run(
+        ['systemctl', 'enable', '--now', 'nekoserver-music-backup.timer'], check=True, capture_output=True, timeout=30
+    )

@@ -55,7 +55,7 @@ fn label(id: &str) -> Option<String> {
     };
     if let Some(phrase) = phrase {
         let name = match key.split_once('-') {
-            Some(("btrfs", short)) => format!("The Btrfs drives ({short})"),
+            Some(("btrfs", short)) => format!("The Btrfs pool ({short})"),
             Some(("md", device)) => format!("The RAID array {device}"),
             _ => return None,
         };
@@ -571,7 +571,7 @@ mod tests {
         );
         assert_eq!(
             label("array-errors:btrfs-aabbccdd").unwrap(),
-            "The Btrfs drives (aabbccdd) counts drive errors"
+            "The Btrfs pool (aabbccdd) counts drive errors"
         );
         assert!(label("array-lost:nonsense").is_none());
     }

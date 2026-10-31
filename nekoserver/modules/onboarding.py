@@ -1,4 +1,5 @@
 """Run onboarding from the persistent installer after media deployment."""
+
 import guided_setup
 import json
 import time
@@ -9,95 +10,139 @@ import sys
 from pathlib import Path
 from neko_common import MEDIA_APPS, VERSION, app_port, app_ports, atomic_json, safe_path
 
-DEPENDENCIES=['media','recovery']
-DESCRIPTION='Wait for media startup, collect sources and run guided configuration/readiness reporting'
+DEPENDENCIES = ['media', 'recovery']
+DESCRIPTION = 'Wait for media startup, collect sources and run guided configuration/readiness reporting'
 
 
 def run(ctx):
-    settings=ctx.config.get('onboarding',{})
-    if not ctx.apply or not settings.get('enabled',True):
-        ctx.log('Guided media onboarding deferred');return
+    settings = ctx.config.get('onboarding', {})
+    if not ctx.apply or not settings.get('enabled', True):
+        ctx.log('Guided media onboarding deferred')
+        return
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
         required = account_store.selected(ctx.config, ['media'])
         if any(not account_store.get(ctx.config, app, verified=True) for app in required):
-            return {'status': 'needs_setup', 'reason': 'Complete local media account setup before connecting applications'}
-    release=safe_path(Path(ctx.config['data_mount'])/'installer'/'releases'/('v'+VERSION))
-    script=release/'onboard.py'
-    if not script.is_file():raise RuntimeError('Persistent onboarding script missing')
-    config=release/'config.json'
-    wait=int(settings.get('wait_seconds',180))
-    if not 0<=wait<=600:raise RuntimeError('Onboarding wait must be 0..600 seconds')
-    cmd=[sys.executable,str(script),'--config',str(config),'--wait',str(wait)]
+            return {
+                'status': 'needs_setup',
+                'reason': 'Complete local media account setup before connecting applications',
+            }
+    release = safe_path(Path(ctx.config['data_mount']) / 'installer' / 'releases' / ('v' + VERSION))
+    script = release / 'onboard.py'
+    if not script.is_file():
+        raise RuntimeError('Persistent onboarding script missing')
+    config = release / 'config.json'
+    wait = int(settings.get('wait_seconds', 180))
+    if not 0 <= wait <= 600:
+        raise RuntimeError('Onboarding wait must be 0..600 seconds')
+    cmd = [sys.executable, str(script), '--config', str(config), '--wait', str(wait)]
     if sys.stdin.isatty():
-        cmd+=['--configure','--apply']
-        if settings.get('configure_libraries',True) and 'jellyfin' in ctx.config.get('media',{}).get('services',[]):cmd.append('--libraries')
-        services=ctx.config.get('media',{}).get('services',[])
-        if settings.get('configure_request_providers',True) and 'seerr' in services and set(services)&{'sonarr','radarr'}:cmd.append('--request-providers')
-        if settings.get('collect_sources',True):cmd.append('--sources')
-        if settings.get('configure_indexers',True) and 'prowlarr' in ctx.config.get('media',{}).get('services',[]):cmd.append('--indexers')
+        cmd += ['--configure', '--apply']
+        if settings.get('configure_libraries', True) and 'jellyfin' in ctx.config.get('media', {}).get('services', []):
+            cmd.append('--libraries')
+        services = ctx.config.get('media', {}).get('services', [])
+        if (
+            settings.get('configure_request_providers', True)
+            and 'seerr' in services
+            and set(services) & {'sonarr', 'radarr'}
+        ):
+            cmd.append('--request-providers')
+        if settings.get('collect_sources', True):
+            cmd.append('--sources')
+        if settings.get('configure_indexers', True) and 'prowlarr' in ctx.config.get('media', {}).get('services', []):
+            cmd.append('--indexers')
         # With the lock backups and monthly updates take: a nightly backup stopping the apps
         # while they are being connected would fail them half-way.
         from recovery_tools import lock
-        with lock(ctx.config), setup_progress.in_terminal('Connecting the media apps: your download sources and sign-ins'):
-            result=subprocess.run(cmd,check=False).returncode
+
+        with (
+            lock(ctx.config),
+            setup_progress.in_terminal('Connecting the media apps: your download sources and sign-ins'),
+        ):
+            result = subprocess.run(cmd, check=False).returncode
     else:
         cmd.append('--report-only')
-        result=subprocess.run(cmd,check=False).returncode
-    remove_stale(ctx,release,config)
+        result = subprocess.run(cmd, check=False).returncode
+    remove_stale(ctx, release, config)
     if result:
         # Something to fix, said with its reason (on the finishing screen too), not a
         # failed step: what is left is finished in the apps, then setup runs again.
-        why=first_problem(ctx.config)
+        why = first_problem(ctx.config)
         ports = app_ports(MEDIA_APPS)
-        guided_setup.checkpoint(ctx, 'Finish media provider setup', [
-            'Read the onboarding results above to identify the remaining configuration.',
-            'Sign into the relevant opened applications using their saved app accounts. '
-            'Finish selected provider/indexer credentials or any provider verification in its own page.',
-            'Run  sudo bash install.sh  again afterwards: it checks the configuration again.'
-        ], [('url', 'http://127.0.0.1:' + str(ports[a]) + '/')
-            for a in ctx.config.get('media', {}).get('services', []) if a in ports])
-        ctx.log('Media deployed; connecting the apps is not finished: '+why)
-        return {'status':'needs_setup','reason':'Connecting the media apps is not finished: '+why+'. Fix that, then run  sudo bash install.sh  again'}
+        guided_setup.checkpoint(
+            ctx,
+            'Finish media provider setup',
+            [
+                'Read the onboarding results above to identify the remaining configuration.',
+                'Sign into the relevant opened applications using their saved app accounts. '
+                'Finish selected provider/indexer credentials or any provider verification in its own page.',
+                'Run  sudo bash install.sh  again afterwards: it checks the configuration again.',
+            ],
+            [
+                ('url', 'http://127.0.0.1:' + str(ports[a]) + '/')
+                for a in ctx.config.get('media', {}).get('services', [])
+                if a in ports
+            ],
+        )
+        ctx.log('Media deployed; connecting the apps is not finished: ' + why)
+        return {
+            'status': 'needs_setup',
+            'reason': 'Connecting the media apps is not finished: '
+            + why
+            + '. Fix that, then run  sudo bash install.sh  again',
+        }
     ctx.log('Onboarding configuration checks complete')
     witness_playback(ctx)
 
 
 # The apps that other apps connect to. Taken out of media.services, their containers
 # are stopped (modules/media.py), and the connections setup made to them are taken away.
-CONNECTED=('sonarr','radarr','lidarr','qbittorrent')
+CONNECTED = ('sonarr', 'radarr', 'lidarr', 'qbittorrent')
 # Connections to these are not taken away by setup (they were not made by NekoServer
 # alone, or can't be told apart from yours), so they are named for you to remove:
 # {app: (the apps that keep them, what to do)}.
-BY_HAND={'prowlarr':(('sonarr','radarr','lidarr'),
-                     ('Prowlarr is no longer in media.services: the indexers it added to Sonarr, Radarr and Lidarr '
-                      'still point at it and will show errors. Remove them in each app (Settings, Indexers), or add your indexers there')),
-         'jellyfin':(('seerr',),
-                     ('Jellyfin is no longer in media.services: Seerr is still linked to it and cannot check its '
-                      'server. Link Seerr to your media server again (Seerr, Settings), or take Seerr out of media.services too'))}
+BY_HAND = {
+    'prowlarr': (
+        ('sonarr', 'radarr', 'lidarr'),
+        (
+            'Prowlarr is no longer in media.services: the indexers it added to Sonarr, Radarr and Lidarr '
+            'still point at it and will show errors. Remove them in each app (Settings, Indexers), or add your indexers there'
+        ),
+    ),
+    'jellyfin': (
+        ('seerr',),
+        (
+            'Jellyfin is no longer in media.services: Seerr is still linked to it and cannot check its '
+            'server. Link Seerr to your media server again (Seerr, Settings), or take Seerr out of media.services too'
+        ),
+    ),
+}
 
 
-def remove_stale(ctx,release,config):
+def remove_stale(ctx, release, config):
     """Take away the connections setup made to an app taken out of media.services (one
     whose Compose file is still on the SSD): Prowlarr's link to it, the qBittorrent
     client in Sonarr, Radarr and Lidarr, Seerr's request provider. Left in place, the apps
     would show errors about it for good. Only connections setup made are removed (by
     their name and where they point); never a problem for this step, only said."""
-    services=ctx.config.get('media',{}).get('services',[])
-    compose=Path(ctx.config['data_mount'])/'compose'
-    removed=[a for a in CONNECTED if a not in services and (compose/a/'compose.yaml').is_file()]
-    for app,(users,what) in BY_HAND.items():
-        if app not in services and (compose/app/'compose.yaml').is_file() and set(users)&set(services):
+    services = ctx.config.get('media', {}).get('services', [])
+    compose = Path(ctx.config['data_mount']) / 'compose'
+    removed = [a for a in CONNECTED if a not in services and (compose / a / 'compose.yaml').is_file()]
+    for app, (users, what) in BY_HAND.items():
+        if app not in services and (compose / app / 'compose.yaml').is_file() and set(users) & set(services):
             ctx.log(what)
-    if not removed:return
-    ctx.log('Taking away the connections setup made to apps no longer in media.services: '+', '.join(removed))
-    cmd=[sys.executable,str(release/'media-connect.py'),'--config',str(config),'--remove-stale','--apply']
-    if subprocess.run(cmd,check=False).returncode:
-        ctx.log('Some connections to the removed apps could not be checked (the messages above say which). '
-                'They only cause warnings in the other apps; remove them there, or run  sudo bash install.sh  again')
+    if not removed:
+        return
+    ctx.log('Taking away the connections setup made to apps no longer in media.services: ' + ', '.join(removed))
+    cmd = [sys.executable, str(release / 'media-connect.py'), '--config', str(config), '--remove-stale', '--apply']
+    if subprocess.run(cmd, check=False).returncode:
+        ctx.log(
+            'Some connections to the removed apps could not be checked (the messages above say which). '
+            'They only cause warnings in the other apps; remove them there, or run  sudo bash install.sh  again'
+        )
 
 
 # Said for the connector's row, which has no reason of its own: its messages are above.
-CONNECTOR='the app connections (Prowlarr, the download client or the library folders; the messages above say which)'
+CONNECTOR = 'the app connections (Prowlarr, the download client or the library folders; the messages above say which)'
 
 
 def first_problem(config):
@@ -105,21 +150,24 @@ def first_problem(config):
     pass, with its reason; a failed one before one still to set up. Tests only a person
     can do (a real playback) are left out: they never hold setup up."""
     from media_readiness import WITNESSED
+
     try:
-        rows=json.loads((Path(config['data_mount'])/'reports'/'onboarding.json').read_text()).get('checks',[])
-    except (OSError,ValueError,AttributeError):
-        rows=[]
-    rows=[r for r in rows if isinstance(r,dict) and r.get('status')!='pass' and r.get('check') not in WITNESSED]
-    for wanted in ('fail','needs_setup'):
-        row=next((r for r in rows if r.get('status')==wanted),None)
-        if row is not None:return problem_line(row)
+        rows = json.loads((Path(config['data_mount']) / 'reports' / 'onboarding.json').read_text()).get('checks', [])
+    except (OSError, ValueError, AttributeError):
+        rows = []
+    rows = [r for r in rows if isinstance(r, dict) and r.get('status') != 'pass' and r.get('check') not in WITNESSED]
+    for wanted in ('fail', 'needs_setup'):
+        row = next((r for r in rows if r.get('status') == wanted), None)
+        if row is not None:
+            return problem_line(row)
     return 'see the messages above'
 
 
 def problem_line(row):
     """One report row said as "check: reason"."""
-    if row.get('check')=='connector':return CONNECTOR
-    return str(row.get('check'))+(': '+str(row['reason']) if row.get('reason') else '')
+    if row.get('check') == 'connector':
+        return CONNECTOR
+    return str(row.get('check')) + (': ' + str(row['reason']) if row.get('reason') else '')
 
 
 def playback_record(config):
@@ -135,12 +183,17 @@ def witness_playback(ctx, checkpoint=None):
         return
     services = ctx.config.get('media', {}).get('services', [])
     try:
-        done = (checkpoint or guided_setup.checkpoint)(ctx, 'Test playback (optional)', [
-            'Using media you are allowed to use, request or add something, let it download and import, '
-            'and play it in Jellyfin' + (' (and a song in Navidrome)' if 'navidrome' in services else '') + '.',
-            'Answer yes only after it actually played. Press Ctrl+C to skip; setup still finishes '
-            'and reminds you that playback is untested.'
-        ], [('url', f"http://127.0.0.1:{app_port('jellyfin')}/")])
+        done = (checkpoint or guided_setup.checkpoint)(
+            ctx,
+            'Test playback (optional)',
+            [
+                'Using media you are allowed to use, request or add something, let it download and import, '
+                'and play it in Jellyfin' + (' (and a song in Navidrome)' if 'navidrome' in services else '') + '.',
+                'Answer yes only after it actually played. Press Ctrl+C to skip; setup still finishes '
+                'and reminds you that playback is untested.',
+            ],
+            [('url', f"http://127.0.0.1:{app_port('jellyfin')}/")],
+        )
     except KeyboardInterrupt:
         done = False
     if done:

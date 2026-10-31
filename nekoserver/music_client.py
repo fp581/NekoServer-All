@@ -1,4 +1,5 @@
 """Ad hoc authenticated Navidrome setup; periodic monitoring is native Rust."""
+
 import hashlib
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ FORMAT = 'neko-music-client-v1'
 
 
 def credential_path(config):
-    return safe_path(Path(config['data_mount'])/'appdata/navidrome/nekoserver-client.json')
+    return safe_path(Path(config['data_mount']) / 'appdata/navidrome/nekoserver-client.json')
 
 
 def credential(user, password):
@@ -23,7 +24,7 @@ def credential(user, password):
         raise RuntimeError('A listener password is required')
     salt = secrets.token_hex(16)
     # Token+salt MD5 is required by the Subsonic protocol, not a password-storage scheme.
-    token = hashlib.md5((password+salt).encode(), usedforsecurity=False).hexdigest()
+    token = hashlib.md5((password + salt).encode(), usedforsecurity=False).hexdigest()
     return {'format': FORMAT, 'user': user, 'salt': salt, 'token': token}
 
 
@@ -45,9 +46,18 @@ def inspect(value, base=NAVIDROME):
     if not re.fullmatch(r'http://127\.0\.0\.1:[0-9]{1,5}', base):
         raise RuntimeError('Music setup only contacts the local server')
     opener = local_opener()
+
     def call(endpoint, **extras):
-        params = {'u': value['user'], 't': value['token'], 's': value['salt'], 'v': '1.16.1', 'c': 'NekoServer', 'f': 'json', **extras}
-        url = base+'/rest/'+endpoint+'.view?'+urllib.parse.urlencode(params)
+        params = {
+            'u': value['user'],
+            't': value['token'],
+            's': value['salt'],
+            'v': '1.16.1',
+            'c': 'NekoServer',
+            'f': 'json',
+            **extras,
+        }
+        url = base + '/rest/' + endpoint + '.view?' + urllib.parse.urlencode(params)
         try:
             with opener.open(url, timeout=8) as response:
                 data = response.read(64001)
@@ -59,10 +69,14 @@ def inspect(value, base=NAVIDROME):
             return result
         except (OSError, ValueError, AttributeError):
             raise RuntimeError('Local music API unavailable; check Navidrome and the listener account') from None
+
     call('ping')
+
     def mapping(value):
-        if not isinstance(value,dict):raise RuntimeError('Unexpected music response structure')
+        if not isinstance(value, dict):
+            raise RuntimeError('Unexpected music response structure')
         return value
+
     user = mapping(call('getUser', username=value['user']).get('user', {}))
     if user.get('username') != value['user'] or user.get('adminRole') is not False:
         raise RuntimeError('Create a non-administrator listener account for clients and checks')
@@ -72,19 +86,32 @@ def inspect(value, base=NAVIDROME):
     albums = mapping(call('getAlbumList2', type='newest', size=1).get('albumList2', {})).get('album', [])
     if not isinstance(albums, list):
         raise RuntimeError('Unexpected music catalogue response')
-    return {'status': 'pass', 'authenticated': True, 'non_admin_listener': True, 'library_configured': True, 'library_empty': not albums, 'playback_verified': False}
+    return {
+        'status': 'pass',
+        'authenticated': True,
+        'non_admin_listener': True,
+        'library_configured': True,
+        'library_empty': not albums,
+        'playback_verified': False,
+    }
 
 
 def check(config):
     path = credential_path(config)
     if not path.exists():
-        return {'status': 'needs_setup', 'reason': 'Create a non-admin Navidrome listener and run music-setup.py --configure'}
+        return {
+            'status': 'needs_setup',
+            'reason': 'Create a non-admin Navidrome listener and run music-setup.py --configure',
+        }
     try:
-        if path.stat().st_uid != 0 or path.stat().st_mode & 0o077 or path.stat().st_size>64000:
+        if path.stat().st_uid != 0 or path.stat().st_mode & 0o077 or path.stat().st_size > 64000:
             raise RuntimeError('Music monitor credential must be private and root-owned')
         result = inspect(json.loads(path.read_text()))
     except (OSError, ValueError, RuntimeError):
-        return {'status': 'fail', 'reason': 'Authenticated music catalogue check failed; inspect the local service/account'}
+        return {
+            'status': 'fail',
+            'reason': 'Authenticated music catalogue check failed; inspect the local service/account',
+        }
     return result
 
 

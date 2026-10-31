@@ -9,6 +9,7 @@ Run as  python3 host.py bootstrap  (install.sh does) to install the system packa
 the apps need, and  python3 host.py repair  to undo repository settings an older
 NekoServer left that stop the package manager working (install.sh runs it first).
 """
+
 import contextlib
 import fcntl
 import hashlib
@@ -32,8 +33,17 @@ from neko_common import atomic_write
 
 OS_RELEASE = '/etc/os-release'
 # Every system package the apps need outside their containers, by NekoServer's names.
-APP_PACKAGES = ('docker', 'docker-compose', 'tailscale', 'caddy', 'samba', 'hdparm',
-                'smartmontools', 'qrencode', 'xdg-utils')
+APP_PACKAGES = (
+    'docker',
+    'docker-compose',
+    'tailscale',
+    'caddy',
+    'samba',
+    'hdparm',
+    'smartmontools',
+    'qrencode',
+    'xdg-utils',
+)
 # Tailscale's service has the same name on every family.
 TAILSCALE_UNIT = 'tailscaled.service'
 SAMBA_UNIT = 'smb.service'
@@ -94,10 +104,15 @@ def _still_needed(group, met, pending, satisfies):
 
 # What a clock set wrong makes package managers and downloads say: signatures and
 # certificates look not valid yet, or expired, and keys look made in the future.
-CLOCK = re.compile(r'not yet valid|not valid yet|certificate has expired|seconds? in the future|time warp'
-                   r'|clock problem', re.IGNORECASE)
-CLOCK_HINT = (" (this PC's clock looks wrong: check the date and time with  timedatectl, and let the network "
-              'set them:  sudo timedatectl set-ntp true)')
+CLOCK = re.compile(
+    r'not yet valid|not valid yet|certificate has expired|seconds? in the future|time warp'
+    r'|clock problem',
+    re.IGNORECASE,
+)
+CLOCK_HINT = (
+    " (this PC's clock looks wrong: check the date and time with  timedatectl, and let the network "
+    'set them:  sudo timedatectl set-ntp true)'
+)
 
 
 def clock_hint(text):
@@ -129,16 +144,20 @@ TRANSIENT = re.compile(
     r'|curl error|could not resolve|temporary failure|name resolution|connection (failed|timed out|refused|reset)'
     r'|timeout (was reached|exceeded)|timed out|network is unreachable|all mirrors were tried|hash sum mismatch'
     r'|operation too slow|not found on medium|http (response|error)[: ]+(404|5\d\d)|service unavailable|bad gateway',
-    re.IGNORECASE)
-RETRIES = 3            # attempts in all
-RETRY_PAUSE = 20       # seconds between them
+    re.IGNORECASE,
+)
+RETRIES = 3  # attempts in all
+RETRY_PAUSE = 20  # seconds between them
 
 
 # Another program holds the package manager's lock (automatic updates, PackageKit, a
 # software centre, another pacman): waited out, up to LOCK_WAIT seconds, instead of
 # counting as a failure. (apt-get and zypper wait for some of these locks themselves.)
-BUSY = re.compile(r'could not get lock|is held by process|failed to obtain rpm transaction lock'
-                  r'|unable to lock database|system management is locked', re.IGNORECASE)
+BUSY = re.compile(
+    r'could not get lock|is held by process|failed to obtain rpm transaction lock'
+    r'|unable to lock database|system management is locked',
+    re.IGNORECASE,
+)
 LOCK_WAIT = 600
 
 
@@ -166,8 +185,14 @@ def environment():
     "Candidate:" is "Candidat :" in French), no questions on the terminal, and Ubuntu's
     needrestart left out: after an install it can restart running services on its own,
     a Docker someone already runs included."""
-    return {**os.environ, 'LC_ALL': 'C', 'LANGUAGE': 'C', 'DEBIAN_FRONTEND': 'noninteractive',
-            'NEEDRESTART_SUSPEND': '1', 'NEEDRESTART_MODE': 'l'}
+    return {
+        **os.environ,
+        'LC_ALL': 'C',
+        'LANGUAGE': 'C',
+        'DEBIAN_FRONTEND': 'noninteractive',
+        'NEEDRESTART_SUSPEND': '1',
+        'NEEDRESTART_MODE': 'l',
+    }
 
 
 # apt waits this long (seconds) for another package job, such as Ubuntu's automatic
@@ -222,7 +247,7 @@ def _stop_patiently(process, grace=None):
     a dpkg it started goes on to the end, as it must.)"""
     if process.poll() is not None:
         return process.communicate()
-    with contextlib.suppress(OSError):      # the terminal may be gone (an SSH connection that dropped)
+    with contextlib.suppress(OSError):  # the terminal may be gone (an SSH connection that dropped)
         print('Asking ' + Path(str(process.args[0])).name + ' to stop; waiting until it has stopped safely...')
     process.send_signal(signal.SIGINT)
     try:
@@ -262,38 +287,47 @@ def unreachable(maker, url, what, reason, tries):
     site = _site(url)
     tried = f', after {tries} tries' if tries > 1 else ''
     if REFUSED.search(reason):
-        causes = (' A proxy, firewall or filter on your network refused it (a router or parental filter, an ad-blocker '
-                  'such as Pi-hole, a VPN): allow that site there, or ask whoever runs your network.')
+        causes = (
+            ' A proxy, firewall or filter on your network refused it (a router or parental filter, an ad-blocker '
+            'such as Pi-hole, a VPN): allow that site there, or ask whoever runs your network.'
+        )
     else:
-        causes = (' Likely causes: something on your network blocks that site (a proxy, a router or parental filter, '
-                  'an ad-blocker such as Pi-hole, a VPN), the site is down for a while, or this PC is offline right now.')
-    return (f'Could not reach {site} ({maker}\'s site) to download {what}{tried} ({reason}).{causes} Check that '
-            f'https://{site} opens in a browser on this PC, then run  sudo bash install.sh  again.' + clock_hint(reason))
+        causes = (
+            ' Likely causes: something on your network blocks that site (a proxy, a router or parental filter, '
+            'an ad-blocker such as Pi-hole, a VPN), the site is down for a while, or this PC is offline right now.'
+        )
+    return (
+        f'Could not reach {site} ({maker}\'s site) to download {what}{tried} ({reason}).{causes} Check that '
+        f'https://{site} opens in a browser on this PC, then run  sudo bash install.sh  again.' + clock_hint(reason)
+    )
 
 
 def answered_badly(maker, url, code, tries):
     """The words for a site that answered with an error of its own (it is up but failing)."""
     tried = f' {tries} times' if tries > 1 else ''
-    return (f'{_site(url)} ({maker}\'s site) answered with an error{tried} (HTTP {code} for {url}): the site has a '
-            'problem for now. Try again later with  sudo bash install.sh .')
+    return (
+        f'{_site(url)} ({maker}\'s site) answered with an error{tried} (HTTP {code} for {url}): the site has a '
+        'problem for now. Try again later with  sudo bash install.sh .'
+    )
 
 
 class Family:
     """One Linux family. Subclasses fill in the class attributes and the package-manager
     calls; everything else is shared."""
+
     name = ''
     label = ''
-    manager = ''          # the package-manager program
-    ids = ()              # os-release ID values of this family
-    like = ()             # os-release ID_LIKE words of derivatives
-    packages = MappingProxyType({})   # NekoServer's name -> this family's package name(s)
-    services = MappingProxyType({})   # NekoServer's name -> this family's systemd unit
-    settings = ()         # this family's own host settings, kept in host backups
-    journal = None        # where an unfinished installation is recorded, for families
-                          # whose packages need tidying afterwards (settle)
-    root = Path('/')      # where system files are (a folder in tests)
+    manager = ''  # the package-manager program
+    ids = ()  # os-release ID values of this family
+    like = ()  # os-release ID_LIKE words of derivatives
+    packages = MappingProxyType({})  # NekoServer's name -> this family's package name(s)
+    services = MappingProxyType({})  # NekoServer's name -> this family's systemd unit
+    settings = ()  # this family's own host settings, kept in host backups
+    journal = None  # where an unfinished installation is recorded, for families
+    # whose packages need tidying afterwards (settle)
+    root = Path('/')  # where system files are (a folder in tests)
     sleep = staticmethod(time.sleep)
-    say = staticmethod(print)   # a word to the person running setup
+    say = staticmethod(print)  # a word to the person running setup
 
     def __init__(self, run=run_command, release=None):
         self.run = run
@@ -313,8 +347,17 @@ class Family:
                 continue
             if not failed(result) or attempt == RETRIES:
                 return result
-            self.say('The package source did not answer (' + _reason(result) + '); trying again in '
-                     + str(RETRY_PAUSE) + ' seconds (' + str(attempt + 1) + ' of ' + str(RETRIES) + ')...')
+            self.say(
+                'The package source did not answer ('
+                + _reason(result)
+                + '); trying again in '
+                + str(RETRY_PAUSE)
+                + ' seconds ('
+                + str(attempt + 1)
+                + ' of '
+                + str(RETRIES)
+                + ')...'
+            )
             self.sleep(RETRY_PAUSE)
             attempt += 1
 
@@ -340,16 +383,28 @@ class Family:
                 reason = _why(exc)
                 if attempt == self.download_tries or clock_hint(reason):
                     raise
-            self.say(_site(url) + ' did not answer (' + reason + '); trying again in ' + str(RETRY_PAUSE)
-                     + ' seconds (' + str(attempt + 1) + ' of ' + str(self.download_tries) + ')...')
+            self.say(
+                _site(url)
+                + ' did not answer ('
+                + reason
+                + '); trying again in '
+                + str(RETRY_PAUSE)
+                + ' seconds ('
+                + str(attempt + 1)
+                + ' of '
+                + str(self.download_tries)
+                + ')...'
+            )
             self.sleep(RETRY_PAUSE)
-        raise RuntimeError('Nothing was downloaded from ' + url)   # (download_tries below 1)
+        raise RuntimeError('Nothing was downloaded from ' + url)  # (download_tries below 1)
 
     def _wait_for_other(self, result, waited):
         """One pause while another program uses the package manager (said once)."""
         if not waited:
-            self.say('Another program is installing or updating packages (' + _reason(result) + '); waiting for it '
-                     'to finish ' + _up_to(LOCK_WAIT))
+            self.say(
+                'Another program is installing or updating packages (' + _reason(result) + '); waiting for it '
+                'to finish ' + _up_to(LOCK_WAIT)
+            )
         self.sleep(RETRY_PAUSE)
         return waited + RETRY_PAUSE
 
@@ -449,8 +504,11 @@ class Family:
         try:
             saved = json.loads(record.read_text())
             packages, before = saved['packages'], saved['before']
-            if saved.get('format') != 'neko-package-install-v1' or not isinstance(before, dict) \
-                    or not all(isinstance(name, str) for name in packages):
+            if (
+                saved.get('format') != 'neko-package-install-v1'
+                or not isinstance(before, dict)
+                or not all(isinstance(name, str) for name in packages)
+            ):
                 raise ValueError
         except (OSError, ValueError, KeyError, TypeError):
             raise RuntimeError('Unreadable record of an unfinished package installation: ' + str(record)) from None
@@ -474,21 +532,28 @@ class Family:
             raise RuntimeError(SNAP_DOCKER)
         before = self.prepare(missing) or {}
         if self.journal is not None:
-            atomic_write(self.path(self.journal), json.dumps(
-                {'format': 'neko-package-install-v1', 'packages': missing, 'before': before}) + '\n')
+            atomic_write(
+                self.path(self.journal),
+                json.dumps({'format': 'neko-package-install-v1', 'packages': missing, 'before': before}) + '\n',
+            )
         # Only the parts that are missing: a package already there is never reinstalled
         # or upgraded (that would restart a Docker someone already runs, for example).
         # (Two of NekoServer's names can be one package here: listed once.)
         names = list(dict.fromkeys(real for name in missing for real in self.names(name) if not self.has(real)))
-        setup_progress.packages(missing, names)   # the setup window says what each is for
+        setup_progress.packages(missing, names)  # the setup window says what each is for
         try:
             self.protect(before)
             result = self.retrying(lambda: self._install(names, timeout))
         except subprocess.TimeoutExpired as exc:
             self._after_interruption()
             # The time actually waited (a family may allow more than asked).
-            raise RuntimeError('Installing ' + ', '.join(missing) + ' did not finish within '
-                               + str(int(exc.timeout or timeout) // 60) + ' minutes; run setup again') from None
+            raise RuntimeError(
+                'Installing '
+                + ', '.join(missing)
+                + ' did not finish within '
+                + str(int(exc.timeout or timeout) // 60)
+                + ' minutes; run setup again'
+            ) from None
         except BaseException:
             self._after_interruption()
             raise
@@ -509,8 +574,10 @@ class Family:
             raise RuntimeError('systemd could not report on ' + ', '.join(units) + ': ' + _reason(result))
         states = {}
         for block in result.stdout.split('\n\n'):
-            fields = {key.strip(): value.strip() for key, value in (line.split('=', 1) for line in block.splitlines()
-                                                                    if '=' in line)}
+            fields = {
+                key.strip(): value.strip()
+                for key, value in (line.split('=', 1) for line in block.splitlines() if '=' in line)
+            }
             if fields.get('Id'):
                 states[fields['Id']] = fields
         return states
@@ -526,15 +593,21 @@ class Family:
             return
         result = self._call(['systemctl', 'disable', '--now', '--quiet', *present], 120)
         states = self.unit_states(present)
-        still = [unit for unit in present
-                 if states.get(unit, {}).get('UnitFileState') not in ('disabled', 'masked')
-                 or states.get(unit, {}).get('ActiveState') not in ('inactive', 'failed')]
+        still = [
+            unit
+            for unit in present
+            if states.get(unit, {}).get('UnitFileState') not in ('disabled', 'masked')
+            or states.get(unit, {}).get('ActiveState') not in ('inactive', 'failed')
+        ]
         if result.returncode or still:
-            raise RuntimeError('Could not switch off ' + ', '.join(still or present) + ' after installing'
-                               + (': ' + _reason(result) if result.returncode else '')
-                               + '. NekoServer starts these itself once their drive is ready; switch them '
-                               'off (sudo systemctl disable --now ' + ' '.join(still or present)
-                               + ') and run setup again.')
+            raise RuntimeError(
+                'Could not switch off '
+                + ', '.join(still or present)
+                + ' after installing'
+                + (': ' + _reason(result) if result.returncode else '')
+                + '. NekoServer starts these itself once their drive is ready; switch them '
+                'off (sudo systemctl disable --now ' + ' '.join(still or present) + ') and run setup again.'
+            )
 
     def unmask(self, units):
         """Lift masks NekoServer set itself before installing."""
@@ -559,12 +632,13 @@ class Arch(Family):
     like = ('arch',)
     services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
-    wait = 600            # seconds to wait for another pacman to finish
+    wait = 600  # seconds to wait for another pacman to finish
     sleep = staticmethod(time.sleep)
 
     def available(self, wanted):
-        return self.ready() and all(self._call(['pacman', '-Si', name], 60).returncode == 0
-                                    for name in self.names(wanted))
+        return self.ready() and all(
+            self._call(['pacman', '-Si', name], 60).returncode == 0 for name in self.names(wanted)
+        )
 
     def has(self, package):
         return self._call(['pacman', '-Q', package], 30).returncode == 0
@@ -578,16 +652,23 @@ class Arch(Family):
         while lock.exists():
             if self.lock_holders() == []:
                 lock.unlink(missing_ok=True)
-                self.say("pacman's lock (" + PACMAN_LOCK + ') was left by a pacman that was cut off (no program has '
-                         'it open): removed.')
+                self.say(
+                    "pacman's lock (" + PACMAN_LOCK + ') was left by a pacman that was cut off (no program has '
+                    'it open): removed.'
+                )
                 return
             if waited >= self.wait:
-                raise RuntimeError(f'pacman is still locked ({PACMAN_LOCK}) after {self.wait // 60} minutes: '
-                                   'another installation is running. Let it finish, then run setup again. If '
-                                   'nothing is installing, the lock is left from one that was cut off: remove it '
-                                   f'(sudo rm {PACMAN_LOCK}), run  sudo pacman -Syu, then setup again.')
+                raise RuntimeError(
+                    f'pacman is still locked ({PACMAN_LOCK}) after {self.wait // 60} minutes: '
+                    'another installation is running. Let it finish, then run setup again. If '
+                    'nothing is installing, the lock is left from one that was cut off: remove it '
+                    f'(sudo rm {PACMAN_LOCK}), run  sudo pacman -Syu, then setup again.'
+                )
             if not waited:
-                self.say('Another package installation is running (pacman is locked); waiting for it to finish ' + _up_to(self.wait))
+                self.say(
+                    'Another package installation is running (pacman is locked); waiting for it to finish '
+                    + _up_to(self.wait)
+                )
             self.sleep(5)
             waited += 5
 
@@ -620,25 +701,33 @@ def _open_files(fds):
 
 class Repository:
     """A maker's apt repository: where it is, its signing key and its source line."""
+
     MARKER = '# Managed by NekoServer\n'
 
     def __init__(self, name, address, key_url, key_path, line, legacy_key=None):
         self.name, self.address, self.key_url, self.key_path, self.line = name, address, key_url, key_path, line
-        self.legacy_key = legacy_key   # where 0.28.0 kept the key
+        self.legacy_key = legacy_key  # where 0.28.0 kept the key
 
     def listing(self, key, system, codename):
         return self.line.format(key=key, address=self.address, os=system, codename=codename)
 
 
-DOCKER = Repository('docker', 'https://download.docker.com/linux/', 'https://download.docker.com/linux/{os}/gpg',
-                    '/etc/apt/keyrings/docker.asc',
-                    'deb [arch=amd64 signed-by={key}] {address}{os} {codename} stable\n')
-TAILSCALE = Repository('tailscale', 'https://pkgs.tailscale.com/stable/',
-                       'https://pkgs.tailscale.com/stable/{os}/{codename}.noarmor.gpg',
-                       # Under /etc/apt/keyrings, so host backups keep it with the list.
-                       '/etc/apt/keyrings/tailscale-archive-keyring.gpg',
-                       'deb [signed-by={key}] {address}{os} {codename} main\n',
-                       legacy_key='/usr/share/keyrings/tailscale-archive-keyring.gpg')
+DOCKER = Repository(
+    'docker',
+    'https://download.docker.com/linux/',
+    'https://download.docker.com/linux/{os}/gpg',
+    '/etc/apt/keyrings/docker.asc',
+    'deb [arch=amd64 signed-by={key}] {address}{os} {codename} stable\n',
+)
+TAILSCALE = Repository(
+    'tailscale',
+    'https://pkgs.tailscale.com/stable/',
+    'https://pkgs.tailscale.com/stable/{os}/{codename}.noarmor.gpg',
+    # Under /etc/apt/keyrings, so host backups keep it with the list.
+    '/etc/apt/keyrings/tailscale-archive-keyring.gpg',
+    'deb [signed-by={key}] {address}{os} {codename} main\n',
+    legacy_key='/usr/share/keyrings/tailscale-archive-keyring.gpg',
+)
 # Debian's samba package writes an example smb.conf; NekoServer writes its own.
 SAMBA_CONFIG = '/etc/samba/smb.conf'
 POLICY = '/usr/sbin/policy-rc.d'
@@ -650,16 +739,20 @@ PACMAN_LOCK = '/var/lib/pacman/db.lck'
 SNAP_FOLDERS = ('/snap', '/var/lib/snapd/snap')
 # Tried on Ubuntu: the snap's Docker takes over /run/docker.sock at once, and after it is
 # removed there is no socket until Docker is restarted.
-SNAP_DOCKER = ('Docker is installed here as a snap. Its Docker takes over the socket every docker command uses '
-               '(/run/docker.sock), so NekoServer\'s backups, updates and setup would reach it instead of the '
-               'Docker that runs your apps. NekoServer uses Docker\'s official packages and does not mix them: if '
-               'nothing else uses the snap\'s containers, remove it (sudo snap remove docker), restart Docker if it '
-               'is installed (sudo systemctl restart docker.socket docker), then run setup again.')
+SNAP_DOCKER = (
+    'Docker is installed here as a snap. Its Docker takes over the socket every docker command uses '
+    '(/run/docker.sock), so NekoServer\'s backups, updates and setup would reach it instead of the '
+    'Docker that runs your apps. NekoServer uses Docker\'s official packages and does not mix them: if '
+    'nothing else uses the snap\'s containers, remove it (sudo snap remove docker), restart Docker if it '
+    'is installed (sudo systemctl restart docker.socket docker), then run setup again.'
+)
 
 
 def snap_docker(root='/'):
     """Docker is installed as a snap (its daemon runs as snap.docker.dockerd)."""
     return any((Path(root) / folder.lstrip('/') / 'docker').is_dir() for folder in SNAP_FOLDERS)
+
+
 # Held while they work: apt's (released if apt-get is stopped) and dpkg's own (held
 # until dpkg itself has finished, also when the apt-get that started it was stopped).
 DPKG_LOCKS = ('/var/lib/dpkg/lock-frontend', '/var/lib/dpkg/lock')
@@ -671,8 +764,10 @@ OUR_POLICY = '#!/bin/sh\n# NekoServer: no service starts while packages install.
 
 
 # What apt says when it cannot check a repository with the key its definition names.
-KEY_REJECTED = re.compile(r'NO_PUBKEY|EXPKEYSIG|is not signed|unsupported filetype'
-                          r"|signatures? (couldn't|could not) be verified")
+KEY_REJECTED = re.compile(
+    r'NO_PUBKEY|EXPKEYSIG|is not signed|unsupported filetype'
+    r"|signatures? (couldn't|could not) be verified"
+)
 
 
 def valid_key(data):
@@ -681,7 +776,7 @@ def valid_key(data):
     text = data.strip()
     if text.startswith(b'-----BEGIN PGP PUBLIC KEY BLOCK-----'):
         return text.endswith(b'-----END PGP PUBLIC KEY BLOCK-----')
-    return bool(data) and data[0] in (0x98, 0x99, 0x9a, 0xc6)
+    return bool(data) and data[0] in (0x98, 0x99, 0x9A, 0xC6)
 
 
 def _valid_key_file(path):
@@ -694,8 +789,9 @@ def _valid_key_file(path):
 # Questions a package asks while it is set up, answered beforehand (debconf-set-selections):
 # with no terminal to ask on, Steam's installer takes its licence as declined and fails.
 # The TV step installs Steam because it was chosen, so its licence is accepted then.
-ANSWERS = MappingProxyType({
-    'steam-installer': 'steam-installer steam/question select I AGREE\nsteam-installer steam/license note \n'})
+ANSWERS = MappingProxyType(
+    {'steam-installer': 'steam-installer steam/question select I AGREE\nsteam-installer steam/license note \n'}
+)
 
 
 def _deb822(text):
@@ -760,9 +856,10 @@ def _md5(path):
 class PackageLock:
     """One NekoServer package job at a time across processes (setup, a retry, a step
     installing a missing tool), held at PACKAGE_LOCK; nested jobs share it."""
-    wait = 1800           # seconds to wait for another package job to finish
+
+    wait = 1800  # seconds to wait for another package job to finish
     sleep = staticmethod(time.sleep)
-    holding = 0           # nested package jobs in this process
+    holding = 0  # nested package jobs in this process
 
     @contextlib.contextmanager
     def locked(self):
@@ -793,10 +890,13 @@ class PackageLock:
                 return
             except BlockingIOError:
                 if waited >= self.wait:
-                    raise RuntimeError('Another NekoServer setup is installing packages; let it finish, '
-                                       'then run setup again') from None
+                    raise RuntimeError(
+                        'Another NekoServer setup is installing packages; let it finish, then run setup again'
+                    ) from None
                 if not waited:
-                    self.say('Another NekoServer setup is installing packages; waiting for it to finish ' + _up_to(self.wait))
+                    self.say(
+                        'Another NekoServer setup is installing packages; waiting for it to finish ' + _up_to(self.wait)
+                    )
                 self.sleep(5)
                 waited += 5
 
@@ -808,38 +908,53 @@ class Debian(PackageLock, Family):
     ids = ('debian', 'ubuntu')
     # Some Ubuntu-based systems (elementary OS, for one) name only Ubuntu.
     like = ('debian', 'ubuntu')
-    packages = MappingProxyType({
-        # Docker's official packages, never Debian's own docker.io.
-        'docker': ('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin'),
-        'docker-compose': 'docker-compose-plugin',
-        'intel-media-driver': 'intel-media-va-driver',
-        'libva-mesa-driver': 'mesa-va-drivers',
-        'libva-utils': 'vainfo',
-        'firefox': 'firefox-esr',
-        # The TV: Steam (contrib/multiverse, with 32-bit packages allowed), Mesa's Vulkan
-        # drivers for every chip in one package, and bluetoothctl inside bluez.
-        'steam': 'steam-installer',
-        'vulkan-intel': 'mesa-vulkan-drivers', 'lib32-vulkan-intel': 'mesa-vulkan-drivers:i386',
-        'vulkan-radeon': 'mesa-vulkan-drivers', 'lib32-vulkan-radeon': 'mesa-vulkan-drivers:i386',
-        'bluez-utils': 'bluez',
-        # Building the runtime: Rust comes as two packages here.
-        'rust': ('rustc', 'cargo'),
-    })
+    packages = MappingProxyType(
+        {
+            # Docker's official packages, never Debian's own docker.io.
+            'docker': ('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin'),
+            'docker-compose': 'docker-compose-plugin',
+            'intel-media-driver': 'intel-media-va-driver',
+            'libva-mesa-driver': 'mesa-va-drivers',
+            'libva-utils': 'vainfo',
+            'firefox': 'firefox-esr',
+            # The TV: Steam (contrib/multiverse, with 32-bit packages allowed), Mesa's Vulkan
+            # drivers for every chip in one package, and bluetoothctl inside bluez.
+            'steam': 'steam-installer',
+            'vulkan-intel': 'mesa-vulkan-drivers',
+            'lib32-vulkan-intel': 'mesa-vulkan-drivers:i386',
+            'vulkan-radeon': 'mesa-vulkan-drivers',
+            'lib32-vulkan-radeon': 'mesa-vulkan-drivers:i386',
+            'bluez-utils': 'bluez',
+            # Building the runtime: Rust comes as two packages here.
+            'rust': ('rustc', 'cargo'),
+        }
+    )
     services = MappingProxyType({'samba': 'smbd.service', 'tailscale': TAILSCALE_UNIT})
-    settings = ('/etc/apt/sources.list', '/etc/apt/sources.list.d', '/etc/apt/preferences.d',
-                '/etc/apt/keyrings', '/etc/default/locale', '/etc/default/keyboard')
+    settings = (
+        '/etc/apt/sources.list',
+        '/etc/apt/sources.list.d',
+        '/etc/apt/preferences.d',
+        '/etc/apt/keyrings',
+        '/etc/default/locale',
+        '/etc/default/keyboard',
+    )
     journal = '/var/lib/nekoserver-host/package-install.json'
     # Packages from their makers' own repositories (Debian doesn't carry them).
     repositories = MappingProxyType({'docker': DOCKER, 'docker-compose': DOCKER, 'tailscale': TAILSCALE})
     # Services these packages enable and start on their own. NekoServer starts them
     # itself once their storage, settings and guards are in place (Docker must never
     # start on the system disk), so they are kept from starting and left switched off.
-    autostarted = MappingProxyType({
-        'docker': ('docker.service', 'docker.socket'), 'caddy': ('caddy.service',),
-        # (samba-ad-dc.service comes masked by the package itself and is left as it is.
-        # winbind comes with samba here and is never used by a standalone server; the
-        # settings backup refuses to run beside it.)
-        'samba': ('smbd.service', 'nmbd.service', 'winbind.service'), 'tailscale': (TAILSCALE_UNIT,)})
+    autostarted = MappingProxyType(
+        {
+            'docker': ('docker.service', 'docker.socket'),
+            'caddy': ('caddy.service',),
+            # (samba-ad-dc.service comes masked by the package itself and is left as it is.
+            # winbind comes with samba here and is never used by a standalone server; the
+            # settings backup refuses to run beside it.)
+            'samba': ('smbd.service', 'nmbd.service', 'winbind.service'),
+            'tailscale': (TAILSCALE_UNIT,),
+        }
+    )
     # Debian's own container packages that would conflict with Docker's.
     conflicts = ('docker.io', 'docker-compose', 'docker-doc', 'podman-docker', 'containerd', 'runc')
 
@@ -847,7 +962,7 @@ class Debian(PackageLock, Family):
         super().__init__(run, release)
         self.fetch = fetch
         self.refreshed = False
-        self.holding = 0      # nested package jobs in this process
+        self.holding = 0  # nested package jobs in this process
         if self.ubuntu():
             self.packages = MappingProxyType({**type(self).packages, 'firefox': 'firefox'})
 
@@ -886,23 +1001,29 @@ class Debian(PackageLock, Family):
             raise RuntimeError('Refreshing the package lists failed: ' + _reason(result))
         if stale_lists(result):
             line = next(line for line in _output(result).splitlines() if STALE_LISTS.match(line))
-            self.say('Some package sources could not be reached (' + line[3:].strip() + '); going on with their '
-                     'lists from before' + clock_hint(_output(result)) + '.')
+            self.say(
+                'Some package sources could not be reached (' + line[3:].strip() + '); going on with their '
+                'lists from before' + clock_hint(_output(result)) + '.'
+            )
         self.refreshed = True
 
     def _wait_for_lists(self):
         waited = 0
         while waited < self.wait and not _free(self.path(APT_LISTS_LOCK)):
             if not waited:
-                self.say('The system is refreshing its package lists itself; waiting for it to finish ' + _up_to(self.wait))
+                self.say(
+                    'The system is refreshing its package lists itself; waiting for it to finish ' + _up_to(self.wait)
+                )
             self.sleep(5)
             waited += 5
 
     def _update(self):
         """apt-get update, tried again when a source did not answer, also when apt only
         warned about it (it exits 0 then)."""
-        return self.retrying(lambda: self._call(['apt-get', *APT_WAIT, 'update'], 1200),
-                             failed=lambda result: transient(result) or stale_lists(result))
+        return self.retrying(
+            lambda: self._call(['apt-get', *APT_WAIT, 'update'], 1200),
+            failed=lambda result: transient(result) or stale_lists(result),
+        )
 
     def _renew_rejected_keys(self, result):
         """NekoServer's own repositories whose signing key apt could not use (missing,
@@ -911,10 +1032,13 @@ class Debian(PackageLock, Family):
         system, codename = self.vendor_release()
         renewed = False
         for repository in dict.fromkeys(self.repositories.values()):
-            if not any(repository.address in line for line in rejected) \
-                    or not self.own_listing(repository, system, codename):
+            if not any(repository.address in line for line in rejected) or not self.own_listing(
+                repository, system, codename
+            ):
                 continue
-            self.say('apt could not check the ' + repository.name + ' repository with its key; downloading the key again')
+            self.say(
+                'apt could not check the ' + repository.name + ' repository with its key; downloading the key again'
+            )
             renewed = self.add_repository(repository, renew=True) or renewed
         return renewed
 
@@ -973,16 +1097,21 @@ class Debian(PackageLock, Family):
             data = self.download(url)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                raise RuntimeError(f'{name} does not offer packages for this release yet ({system} "{codename}": '
-                                   f'{url} was not found). Wait for {name} to add it, or install a release it '
-                                   f'supports, then run setup again') from None
+                raise RuntimeError(
+                    f'{name} does not offer packages for this release yet ({system} "{codename}": '
+                    f'{url} was not found). Wait for {name} to add it, or install a release it '
+                    f'supports, then run setup again'
+                ) from None
             raise RuntimeError(answered_badly(name, url, exc.code, self.download_tries)) from None
         except (OSError, http.client.HTTPException) as exc:
-            raise RuntimeError(unreachable(name, url, f'the key that checks {name}\'s packages', _why(exc),
-                                           self.download_tries)) from None
+            raise RuntimeError(
+                unreachable(name, url, f'the key that checks {name}\'s packages', _why(exc), self.download_tries)
+            ) from None
         if not data or len(data) >= 65536 or not valid_key(data):
-            raise RuntimeError(f'The {name} repository key downloaded from {url} is not a key file (a Wi-Fi login '
-                               'page or a proxy may have answered instead); try again later')
+            raise RuntimeError(
+                f'The {name} repository key downloaded from {url} is not a key file (a Wi-Fi login '
+                'page or a proxy may have answered instead); try again later'
+            )
         return data
 
     def add_repository(self, repository, renew=False):
@@ -997,14 +1126,18 @@ class Debian(PackageLock, Family):
         found = self.sources(repository.address)
         ours = listing in found and self._ours(repository, listing, system, codename)
         if ours and len(found) > 1:
-            listing.unlink()      # someone else defines it too: theirs is used
+            listing.unlink()  # someone else defines it too: theirs is used
             self.refreshed = False
             return False
         if found and not ours:
             return False
         if listing.exists() and not ours:
-            raise RuntimeError(str(listing) + ' is someone else\'s and does not use ' + repository.address
-                               + '; rename or remove it, then run setup again.')
+            raise RuntimeError(
+                str(listing)
+                + ' is someone else\'s and does not use '
+                + repository.address
+                + '; rename or remove it, then run setup again.'
+            )
         desired = Repository.MARKER + repository.listing(repository.key_path, system, codename)
         key = self.path(repository.key_path)
         if not renew and ours and listing.read_text() == desired and _valid_key_file(key):
@@ -1021,11 +1154,15 @@ class Debian(PackageLock, Family):
         waited = 0
         while not self.dpkg_idle():
             if waited >= self.wait:
-                raise RuntimeError('apt or dpkg is still working (another installation, or one that was cut '
-                                   'off). New services stay switched off; run setup again once it has finished.')
+                raise RuntimeError(
+                    'apt or dpkg is still working (another installation, or one that was cut '
+                    'off). New services stay switched off; run setup again once it has finished.'
+                )
             if not waited:
-                self.say('apt or dpkg is still working (another installation, or one that was cut off); waiting for '
-                         'it to finish ' + _up_to(self.wait))
+                self.say(
+                    'apt or dpkg is still working (another installation, or one that was cut off); waiting for '
+                    'it to finish ' + _up_to(self.wait)
+                )
             self.sleep(5)
             waited += 5
 
@@ -1038,12 +1175,18 @@ class Debian(PackageLock, Family):
         if not answers:
             return
         if 'steam-installer' in names:
-            self.say("Steam's installer asks to accept Valve's Steam licence: setup answers \"I agree\" for you "
-                     '(the TV step, which you chose, installs Steam).')
+            self.say(
+                "Steam's installer asks to accept Valve's Steam licence: setup answers \"I agree\" for you "
+                '(the TV step, which you chose, installs Steam).'
+            )
         result = self._call(['debconf-set-selections'], 60, input=answers)
         if result.returncode:
-            raise RuntimeError('Could not answer the setup questions of ' + ', '.join(n for n in names if n in ANSWERS)
-                               + ' beforehand: ' + _reason(result))
+            raise RuntimeError(
+                'Could not answer the setup questions of '
+                + ', '.join(n for n in names if n in ANSWERS)
+                + ' beforehand: '
+                + _reason(result)
+            )
 
     def finish_configuring(self, names):
         """Packages an interrupted installation left unpacked but not set up are set up
@@ -1051,12 +1194,15 @@ class Debian(PackageLock, Family):
         (dpkg --configure -a), their setup would start those services unprotected."""
         audit = self._call(['dpkg', '--audit'], 60)
         if audit.returncode and not audit.stdout.strip():
-            raise RuntimeError('dpkg could not say which packages are unfinished: ' + _reason(audit)
-                               + '. Their services stay switched off; run setup again.')
+            raise RuntimeError(
+                'dpkg could not say which packages are unfinished: '
+                + _reason(audit)
+                + '. Their services stay switched off; run setup again.'
+            )
         pending = _audit_packages(audit.stdout)
         ours = [name for name in names if name in pending]
         if not ours:
-            return              # nothing of this installation (someone else's is theirs)
+            return  # nothing of this installation (someone else's is theirs)
         # Only these and the unfinished packages they need, never someone else's.
         self.answer_questions(ours)
         chosen = self._with_dependencies(ours, pending)
@@ -1064,11 +1210,17 @@ class Debian(PackageLock, Family):
         if result.returncode:
             # Setup cannot go on past it (apt refuses to install anything while a package
             # is half set up), so it says which, and both ways out.
-            raise RuntimeError('dpkg could not finish setting up ' + ', '.join(chosen) + ' (left unfinished by an '
-                               'earlier installation): ' + _reason(result) + '. Their services stay switched off. '
-                               'Fix the problem and run setup again; or, if you no longer need ' + ', '.join(ours)
-                               + ', remove ' + ('it' if len(ours) == 1 else 'them') + ' (sudo apt-get remove '
-                               + ' '.join(ours) + ') and run setup again.')
+            raise RuntimeError(
+                'dpkg could not finish setting up ' + ', '.join(chosen) + ' (left unfinished by an '
+                'earlier installation): ' + _reason(result) + '. Their services stay switched off. '
+                'Fix the problem and run setup again; or, if you no longer need '
+                + ', '.join(ours)
+                + ', remove '
+                + ('it' if len(ours) == 1 else 'them')
+                + ' (sudo apt-get remove '
+                + ' '.join(ours)
+                + ') and run setup again.'
+            )
 
     def _with_dependencies(self, names, pending):
         """These packages plus the unfinished packages they need, directly or not. For a
@@ -1128,8 +1280,10 @@ class Debian(PackageLock, Family):
                     self.add_repository(repository)
                 except (OSError, RuntimeError, http.client.HTTPException) as exc:
                     if not usable:
-                        raise RuntimeError('The ' + repository.name + ' repository key is missing and could not '
-                                           'be downloaded: ' + str(exc)) from None
+                        raise RuntimeError(
+                            'The ' + repository.name + ' repository key is missing and could not '
+                            'be downloaded: ' + str(exc)
+                        ) from None
                     log('Keeping the ' + repository.name + ' repository as it is for now (' + str(exc) + ')')
                 finally:
                     self.download_tries = RETRIES
@@ -1156,8 +1310,7 @@ class Debian(PackageLock, Family):
         existing = self.existing_units(units)
         new = [unit for unit in units if unit not in existing]
         self.check_policy(new)
-        return {'samba_config_existed': self.path(SAMBA_CONFIG).exists(), 'units_before': existing,
-                'new_units': new}
+        return {'samba_config_existed': self.path(SAMBA_CONFIG).exists(), 'units_before': existing, 'new_units': new}
 
     def protect(self, before):
         """The new services are masked (they can't start, not even after a restart) and
@@ -1176,10 +1329,13 @@ class Debian(PackageLock, Family):
             return
         found = [name for name in self.conflicts if self.has(name)]
         if found:
-            raise RuntimeError('This system has its own Docker packages installed (' + ', '.join(found)
-                               + '). NekoServer uses Docker\'s official packages and does not mix or '
-                               'replace them. Remove them yourself if nothing else uses them, then run '
-                               'setup again.')
+            raise RuntimeError(
+                'This system has its own Docker packages installed ('
+                + ', '.join(found)
+                + '). NekoServer uses Docker\'s official packages and does not mix or '
+                'replace them. Remove them yourself if nothing else uses them, then run '
+                'setup again.'
+            )
 
     def check_policy(self, units):
         """A policy-rc.d that someone else put there must already refuse to start these
@@ -1189,10 +1345,12 @@ class Debian(PackageLock, Family):
             return
         allowed = [unit for unit in units if not self._refuses(policy, unit)]
         if allowed:
-            raise RuntimeError(str(POLICY) + ' (someone else\'s) would let ' + ', '.join(allowed) + ' start while '
-                               'installing, before NekoServer has its drive and settings ready. Move it aside '
-                               'for the installation (sudo mv ' + POLICY + ' ' + POLICY + '.saved), run setup '
-                               'again, then move it back.')
+            raise RuntimeError(
+                str(POLICY) + ' (someone else\'s) would let ' + ', '.join(allowed) + ' start while '
+                'installing, before NekoServer has its drive and settings ready. Move it aside '
+                'for the installation (sudo mv ' + POLICY + ' ' + POLICY + '.saved), run setup '
+                'again, then move it back.'
+            )
 
     def _refuses(self, policy, unit):
         """The policy answers "not allowed" (101) to starting this service. One that hangs
@@ -1204,10 +1362,13 @@ class Debian(PackageLock, Family):
 
     def _install(self, names, timeout):
         if not self.dpkg_idle():
-            self.say('Another program (automatic updates, say) is installing packages; apt waits for it to finish '
-                     'first (up to 10 minutes)...')
-        return self._call(['apt-get', *APT_WAIT, 'install', '-y', '-o', 'Dpkg::Options::=--force-confold', *names],
-                          timeout + 600)
+            self.say(
+                'Another program (automatic updates, say) is installing packages; apt waits for it to finish '
+                'first (up to 10 minutes)...'
+            )
+        return self._call(
+            ['apt-get', *APT_WAIT, 'install', '-y', '-o', 'Dpkg::Options::=--force-confold', *names], timeout + 600
+        )
 
     def _reconcile(self):
         policy = self.path(POLICY)
@@ -1231,7 +1392,7 @@ class Debian(PackageLock, Family):
             self.switch_off(new)
         except RuntimeError:
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                self._call(['systemctl', 'mask', '--quiet', *new], 60)   # stay protected until next time
+                self._call(['systemctl', 'mask', '--quiet', *new], 60)  # stay protected until next time
             raise
 
     def unmask(self, units):
@@ -1257,23 +1418,30 @@ class Debian(PackageLock, Family):
 class RpmRepository:
     """A maker's dnf repository, written from known text rather than a downloaded .repo
     file; dnf checks its packages with the maker's key from the https address it names."""
+
     MARKER = '# Managed by NekoServer\n'
 
     def __init__(self, name, maker, address, text, release_url=None):
         self.name, self.maker, self.address, self.text = name, maker, address, text
-        self.release_url = release_url   # answers only for a Fedora release the maker packages
+        self.release_url = release_url  # answers only for a Fedora release the maker packages
 
 
 DOCKER_RPM = RpmRepository(
-    'docker-ce', 'Docker', 'https://download.docker.com/linux/fedora/',
+    'docker-ce',
+    'Docker',
+    'https://download.docker.com/linux/fedora/',
     '[docker-ce-stable]\nname=Docker CE Stable - $basearch\n'
     'baseurl=https://download.docker.com/linux/fedora/$releasever/$basearch/stable\n'
     'enabled=1\ngpgcheck=1\ngpgkey=https://download.docker.com/linux/fedora/gpg\n',
-    release_url='https://download.docker.com/linux/fedora/{release}/x86_64/stable/repodata/repomd.xml')
+    release_url='https://download.docker.com/linux/fedora/{release}/x86_64/stable/repodata/repomd.xml',
+)
 TAILSCALE_RPM = RpmRepository(
-    'tailscale', 'Tailscale', 'https://pkgs.tailscale.com/stable/fedora/',
+    'tailscale',
+    'Tailscale',
+    'https://pkgs.tailscale.com/stable/fedora/',
     '[tailscale-stable]\nname=Tailscale stable\nbaseurl=https://pkgs.tailscale.com/stable/fedora/$basearch\n'
-    'enabled=1\ntype=rpm\nrepo_gpgcheck=1\ngpgcheck=1\ngpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg\n')
+    'enabled=1\ntype=rpm\nrepo_gpgcheck=1\ngpgcheck=1\ngpgkey=https://pkgs.tailscale.com/stable/fedora/repo.gpg\n',
+)
 
 
 class Fedora(PackageLock, Family):
@@ -1284,19 +1452,23 @@ class Fedora(PackageLock, Family):
     # RHEL and its rebuilds name fedora in ID_LIKE, but their repositories (and Docker's
     # for them) differ: not covered yet.
     like = ()
-    packages = MappingProxyType({
-        # Docker's official packages, never Fedora's own moby-engine.
-        'docker': ('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin'),
-        'docker-compose': 'docker-compose-plugin',
-        'libva-mesa-driver': 'mesa-va-drivers',
-        # The TV: Steam from RPM Fusion's repository for it (Fedora's third-party source),
-        # Mesa's Vulkan drivers for every chip in one package, bluetoothctl inside bluez.
-        'vulkan-intel': 'mesa-vulkan-drivers', 'lib32-vulkan-intel': 'mesa-vulkan-drivers.i686',
-        'vulkan-radeon': 'mesa-vulkan-drivers', 'lib32-vulkan-radeon': 'mesa-vulkan-drivers.i686',
-        'bluez-utils': 'bluez',
-        # Building the runtime: Rust comes as two packages here.
-        'rust': ('rust', 'cargo'),
-    })
+    packages = MappingProxyType(
+        {
+            # Docker's official packages, never Fedora's own moby-engine.
+            'docker': ('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin'),
+            'docker-compose': 'docker-compose-plugin',
+            'libva-mesa-driver': 'mesa-va-drivers',
+            # The TV: Steam from RPM Fusion's repository for it (Fedora's third-party source),
+            # Mesa's Vulkan drivers for every chip in one package, bluetoothctl inside bluez.
+            'vulkan-intel': 'mesa-vulkan-drivers',
+            'lib32-vulkan-intel': 'mesa-vulkan-drivers.i686',
+            'vulkan-radeon': 'mesa-vulkan-drivers',
+            'lib32-vulkan-radeon': 'mesa-vulkan-drivers.i686',
+            'bluez-utils': 'bluez',
+            # Building the runtime: Rust comes as two packages here.
+            'rust': ('rust', 'cargo'),
+        }
+    )
     services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT})
     settings = ('/etc/dnf/dnf.conf', '/etc/yum.repos.d')
     journal = '/var/lib/nekoserver-host/package-install.json'
@@ -1304,9 +1476,14 @@ class Fedora(PackageLock, Family):
     # Services these packages may enable on their own (presets, scriptlets): kept from
     # starting while they install, then left switched off until NekoServer's own steps
     # start them on the right drive, as on Debian.
-    autostarted = MappingProxyType({
-        'docker': ('docker.service', 'docker.socket'), 'caddy': ('caddy.service',),
-        'samba': (SAMBA_UNIT, 'nmb.service'), 'tailscale': (TAILSCALE_UNIT,)})
+    autostarted = MappingProxyType(
+        {
+            'docker': ('docker.service', 'docker.socket'),
+            'caddy': ('caddy.service',),
+            'samba': (SAMBA_UNIT, 'nmb.service'),
+            'tailscale': (TAILSCALE_UNIT,),
+        }
+    )
     # Fedora's own container packages that would conflict with Docker's.
     conflicts = ('moby-engine', 'podman-docker', 'containerd')
 
@@ -1321,8 +1498,11 @@ class Fedora(PackageLock, Family):
         if not self.ready():
             return False
         for name in self.names(wanted):
-            found = self.retrying(lambda name=name: self._call(['dnf', '-q', 'repoquery', '--available', '--latest-limit', '1',
-                                                                '--qf', '%{name}\n', name], 600))
+            found = self.retrying(
+                lambda name=name: self._call(
+                    ['dnf', '-q', 'repoquery', '--available', '--latest-limit', '1', '--qf', '%{name}\n', name], 600
+                )
+            )
             if found.returncode or name not in found.stdout.split():
                 return False
         return True
@@ -1354,13 +1534,18 @@ class Fedora(PackageLock, Family):
             self.download(url)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                raise RuntimeError(f'{repository.maker} does not offer packages for {system} {release} yet ({url} '
-                                   f'was not found). Wait for {repository.maker} to add it, or use a release '
-                                   'it supports, then run setup again') from None
+                raise RuntimeError(
+                    f'{repository.maker} does not offer packages for {system} {release} yet ({url} '
+                    f'was not found). Wait for {repository.maker} to add it, or use a release '
+                    'it supports, then run setup again'
+                ) from None
             raise RuntimeError(answered_badly(repository.maker, url, exc.code, self.download_tries)) from None
         except (OSError, http.client.HTTPException) as exc:
-            raise RuntimeError(unreachable(repository.maker, url, f'the list of {repository.maker}\'s packages',
-                                           _why(exc), self.download_tries)) from None
+            raise RuntimeError(
+                unreachable(
+                    repository.maker, url, f'the list of {repository.maker}\'s packages', _why(exc), self.download_tries
+                )
+            ) from None
 
     def add_repository(self, repository):
         """Make a maker's repository usable. Someone else's definition of it is used as it
@@ -1369,7 +1554,7 @@ class Fedora(PackageLock, Family):
         found = self.repo_files(repository.address)
         ours = listing in found and listing.read_text(errors='replace').startswith(RpmRepository.MARKER)
         if ours and len(found) > 1:
-            listing.unlink()      # someone else defines it too: theirs is used
+            listing.unlink()  # someone else defines it too: theirs is used
             return False
         if found and not ours:
             return False
@@ -1385,16 +1570,23 @@ class Fedora(PackageLock, Family):
         if {'docker', 'docker-compose'} & set(missing):
             found = [name for name in self.conflicts if self.has(name)]
             if found:
-                raise RuntimeError('This system has its own container packages installed (' + ', '.join(found)
-                                   + '). NekoServer uses Docker\'s official packages and does not mix or replace '
-                                   'them. Remove them yourself if nothing else uses them (sudo dnf remove '
-                                   + ' '.join(found) + '), then run setup again.')
+                raise RuntimeError(
+                    'This system has its own container packages installed ('
+                    + ', '.join(found)
+                    + '). NekoServer uses Docker\'s official packages and does not mix or replace '
+                    'them. Remove them yourself if nothing else uses them (sudo dnf remove '
+                    + ' '.join(found)
+                    + '), then run setup again.'
+                )
         for repository in dict.fromkeys(self.repositories[name] for name in missing if name in self.repositories):
             self.add_repository(repository)
         units = [unit for name in missing for unit in self.autostarted.get(name, ())]
         existing = self.existing_units(units)
-        return {'samba_config_existed': self.path(SAMBA_CONFIG).exists(), 'units_before': existing,
-                'new_units': [unit for unit in units if unit not in existing]}
+        return {
+            'samba_config_existed': self.path(SAMBA_CONFIG).exists(),
+            'units_before': existing,
+            'new_units': [unit for unit in units if unit not in existing],
+        }
 
     def protect(self, before):
         """The new services are masked while their packages install (a preset or
@@ -1414,7 +1606,7 @@ class Fedora(PackageLock, Family):
             self.switch_off(new)
         except RuntimeError:
             with contextlib.suppress(OSError, subprocess.SubprocessError):
-                self._call(['systemctl', 'mask', '--quiet', *new], 60)   # stay protected until next time
+                self._call(['systemctl', 'mask', '--quiet', *new], 60)  # stay protected until next time
             raise
 
     def packaged_example(self, absolute):
@@ -1433,6 +1625,7 @@ class Rhel(Fedora):
     """RHEL and its rebuilds (Rocky Linux, AlmaLinux, CentOS Stream), version 10 and newer:
     Fedora's way of working with dnf, other makers' repositories for Docker and
     Tailscale, and EPEL (Fedora's extra packages for them) for Caddy and qrencode."""
+
     name = 'rhel'
     label = 'RHEL / Rocky Linux / AlmaLinux'
     ids = ('rhel', 'rocky', 'almalinux', 'centos')
@@ -1441,7 +1634,7 @@ class Rhel(Fedora):
     # they clash with Docker's containerd.io and its docker command.
     conflicts = ('moby-engine', 'podman-docker', 'containerd', 'runc')
     epel = frozenset({'caddy', 'qrencode'})
-    EPEL_ADDRESS = 'repo=epel-'      # in every EPEL repository definition (its metalink)
+    EPEL_ADDRESS = 'repo=epel-'  # in every EPEL repository definition (its metalink)
 
     def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release, fetch)
@@ -1450,18 +1643,25 @@ class Rhel(Fedora):
         docker = 'rhel' if self.release.get('ID') == 'rhel' else 'centos'
         major = self.release_number()
         docker_rpm = RpmRepository(
-            'docker-ce', 'Docker', f'https://download.docker.com/linux/{docker}/',
+            'docker-ce',
+            'Docker',
+            f'https://download.docker.com/linux/{docker}/',
             '[docker-ce-stable]\nname=Docker CE Stable - $basearch\n'
             f'baseurl=https://download.docker.com/linux/{docker}/$releasever/$basearch/stable\n'
             f'enabled=1\ngpgcheck=1\ngpgkey=https://download.docker.com/linux/{docker}/gpg\n',
-            release_url=f'https://download.docker.com/linux/{docker}/{{release}}/x86_64/stable/repodata/repomd.xml')
+            release_url=f'https://download.docker.com/linux/{docker}/{{release}}/x86_64/stable/repodata/repomd.xml',
+        )
         tailscale_rpm = RpmRepository(
-            'tailscale', 'Tailscale', f'https://pkgs.tailscale.com/stable/rhel/{major}/',
+            'tailscale',
+            'Tailscale',
+            f'https://pkgs.tailscale.com/stable/rhel/{major}/',
             f'[tailscale-stable]\nname=Tailscale stable\nbaseurl=https://pkgs.tailscale.com/stable/rhel/{major}/$basearch\n'
             f'enabled=1\ntype=rpm\nrepo_gpgcheck=1\ngpgcheck=1\ngpgkey=https://pkgs.tailscale.com/stable/rhel/{major}/repo.gpg\n',
-            release_url='https://pkgs.tailscale.com/stable/rhel/{release}/x86_64/repodata/repomd.xml')
-        self.repositories = MappingProxyType({'docker': docker_rpm, 'docker-compose': docker_rpm,
-                                              'tailscale': tailscale_rpm})
+            release_url='https://pkgs.tailscale.com/stable/rhel/{release}/x86_64/repodata/repomd.xml',
+        )
+        self.repositories = MappingProxyType(
+            {'docker': docker_rpm, 'docker-compose': docker_rpm, 'tailscale': tailscale_rpm}
+        )
 
     def release_number(self):
         # "10.2" is release 10 to Docker and Tailscale (dnf's $releasever is "10" too).
@@ -1476,8 +1676,11 @@ class Rhel(Fedora):
         with EPEL's key, which that package brings."""
         if self.epel_ready():
             return False
-        source = ('https://dl.fedoraproject.org/pub/epel/epel-release-latest-' + self.release_number()
-                  + '.noarch.rpm') if self.release.get('ID') == 'rhel' else 'epel-release'
+        source = (
+            ('https://dl.fedoraproject.org/pub/epel/epel-release-latest-' + self.release_number() + '.noarch.rpm')
+            if self.release.get('ID') == 'rhel'
+            else 'epel-release'
+        )
         result = self._call(['dnf', 'install', '-y', source], 900)
         if result.returncode:
             raise RuntimeError('Adding EPEL, where Caddy and qrencode come from, failed: ' + _reason(result))
@@ -1506,26 +1709,31 @@ class Suse(Fedora):
     the packages, and everything from openSUSE's own repositories (Docker, Compose, Caddy
     and Tailscale included), as on Arch. SLES names only suse, has other repositories and
     a subscription: not covered."""
+
     name = 'suse'
     label = 'openSUSE'
     manager = 'zypper'
     ids = ('opensuse-leap', 'opensuse-tumbleweed', 'opensuse-slowroll', 'opensuse')
     like = ('opensuse',)
-    packages = MappingProxyType({
-        'docker': ('docker', 'docker-buildx'),
-        'docker-compose': 'docker-compose',
-        'libva-mesa-driver': 'Mesa-libva',
-        # The TV (Tumbleweed and Slowroll, from the non-OSS repository; Leap 16 has no
-        # Steam package).
-        'vulkan-intel': 'libvulkan_intel', 'lib32-vulkan-intel': 'libvulkan_intel-32bit',
-        'vulkan-radeon': 'libvulkan_radeon', 'lib32-vulkan-radeon': 'libvulkan_radeon-32bit',
-        'firefox': 'MozillaFirefox',
-        'bluez-utils': 'bluez',
-        # Lighting: openSUSE spells the package with capitals (Tumbleweed has it).
-        'openrgb': 'OpenRGB',
-        # Building the runtime: Rust comes as two packages here.
-        'rust': ('rust', 'cargo'),
-    })
+    packages = MappingProxyType(
+        {
+            'docker': ('docker', 'docker-buildx'),
+            'docker-compose': 'docker-compose',
+            'libva-mesa-driver': 'Mesa-libva',
+            # The TV (Tumbleweed and Slowroll, from the non-OSS repository; Leap 16 has no
+            # Steam package).
+            'vulkan-intel': 'libvulkan_intel',
+            'lib32-vulkan-intel': 'libvulkan_intel-32bit',
+            'vulkan-radeon': 'libvulkan_radeon',
+            'lib32-vulkan-radeon': 'libvulkan_radeon-32bit',
+            'firefox': 'MozillaFirefox',
+            'bluez-utils': 'bluez',
+            # Lighting: openSUSE spells the package with capitals (Tumbleweed has it).
+            'openrgb': 'OpenRGB',
+            # Building the runtime: Rust comes as two packages here.
+            'rust': ('rust', 'cargo'),
+        }
+    )
     settings = ('/etc/zypp/zypp.conf', '/etc/zypp/repos.d')
     repositories = MappingProxyType({})
     conflicts = ()
@@ -1543,9 +1751,28 @@ class Suse(Fedora):
             return False
         # zypper answers 104 when no package matches. Its search ignores case unless told
         # otherwise, and the install does not: "openrgb" would be found and "OpenRGB" installed.
-        return all(self._found(name, self.retrying(lambda name=name: self._call(
-            ['zypper', '--non-interactive', '--quiet', 'search', '--match-exact', '--case-sensitive', '--type', 'package', name], 300)))
-            for name in self.names(wanted))
+        return all(
+            self._found(
+                name,
+                self.retrying(
+                    lambda name=name: self._call(
+                        [
+                            'zypper',
+                            '--non-interactive',
+                            '--quiet',
+                            'search',
+                            '--match-exact',
+                            '--case-sensitive',
+                            '--type',
+                            'package',
+                            name,
+                        ],
+                        300,
+                    )
+                ),
+            )
+            for name in self.names(wanted)
+        )
 
     @staticmethod
     def _found(name, result):
@@ -1556,22 +1783,32 @@ class Suse(Fedora):
         return result.returncode == 0
 
     def _install(self, names, timeout):
-        return self._done_but(self._call(['zypper', '--non-interactive', 'install', '--no-recommends', *names], timeout + 600), names)
+        return self._done_but(
+            self._call(['zypper', '--non-interactive', 'install', '--no-recommends', *names], timeout + 600), names
+        )
 
     def _done_but(self, result, names):
         """zypper's "done, but" exit codes (its manual): 106 when it skipped a repository
         that did not answer and installed from the others, 107 when a package's install
         script reported an error though the package is installed. Both are a success once
         rpm confirms every package (said with the reason); any other code stays a failure."""
-        if result.returncode not in (ZYPPER_REPOS_SKIPPED, ZYPPER_SCRIPT_FAILED) or not all(self.has(name) for name in names):
+        if result.returncode not in (ZYPPER_REPOS_SKIPPED, ZYPPER_SCRIPT_FAILED) or not all(
+            self.has(name) for name in names
+        ):
             return result
         if result.returncode == ZYPPER_REPOS_SKIPPED:
             skipped = sorted(set(SKIPPED_REPOSITORY.findall(_output(result))))
-            self.say('zypper could not reach the repository ' + (', '.join("'" + name + "'" for name in skipped) or '(zypper did not say which)')
-                     + ' and skipped it; the packages came from the other repositories. If it stays away, turn it off with  '
-                     'sudo zypper modifyrepo --disable <its name>  and turn it back on later.')
+            self.say(
+                'zypper could not reach the repository '
+                + (', '.join("'" + name + "'" for name in skipped) or '(zypper did not say which)')
+                + ' and skipped it; the packages came from the other repositories. If it stays away, turn it off with  '
+                'sudo zypper modifyrepo --disable <its name>  and turn it back on later.'
+            )
         else:
-            self.say('The packages were installed, but an install script of one of them reported an error: ' + _reason(result))
+            self.say(
+                'The packages were installed, but an install script of one of them reported an error: '
+                + _reason(result)
+            )
         return subprocess.CompletedProcess(result.args, 0, result.stdout, result.stderr)
 
 
@@ -1590,8 +1827,13 @@ def current(run=run_command, path=OS_RELEASE):
     release = os_release(path)
     if family is None:
         named = release.get('PRETTY_NAME') or release.get('ID') or 'this system'
-        raise Unsupported('Automatic setup supports ' + ' and '.join(f.label for f in FAMILIES)
-                          + '; ' + named + ' is not supported yet')
+        raise Unsupported(
+            'Automatic setup supports '
+            + ' and '.join(f.label for f in FAMILIES)
+            + '; '
+            + named
+            + ' is not supported yet'
+        )
     return family(run, release)
 
 
@@ -1667,8 +1909,13 @@ def toolchain(family=None, log=print, oldest=None, version=rustc_version, which=
     if found is not None and found >= oldest:
         return
     if family.name != 'debian':
-        raise RuntimeError('Rust ' + label + ' or newer is needed to build the runtime; this system has '
-                           + ('%d.%d' % found if found else 'none') + '. Update it, or install a newer Rust and run setup again.')
+        raise RuntimeError(
+            'Rust '
+            + label
+            + ' or newer is needed to build the runtime; this system has '
+            + ('%d.%d' % found if found else 'none')
+            + '. Update it, or install a newer Rust and run setup again.'
+        )
     # Ubuntu keeps the plain rustc at the release's version and newer ones beside it.
     log('This system\'s Rust is older than ' + label + ': installing rustc-' + label + ' and cargo-' + label)
     family.install(['rustc-' + label, 'cargo-' + label])
@@ -1704,20 +1951,39 @@ def debian_newer_rust(family, oldest, label, log, version=rustc_version):
     replaced without you: setup says how instead."""
     newer = family.candidate(DEBIAN_NEWER_RUST[0])
     if newer is None or newer < oldest:
-        raise RuntimeError('Rust ' + label + ' or newer is needed to build the runtime, and this Debian offers none (rustc-web '
-                           + (f'{newer[0]}.{newer[1]}' if newer else 'is not available') + '). Make sure the "main" and security '
-                           'repositories are enabled in /etc/apt/sources.list, or use Debian 13 or newer.')
+        raise RuntimeError(
+            'Rust '
+            + label
+            + ' or newer is needed to build the runtime, and this Debian offers none (rustc-web '
+            + (f'{newer[0]}.{newer[1]}' if newer else 'is not available')
+            + '). Make sure the "main" and security '
+            'repositories are enabled in /etc/apt/sources.list, or use Debian 13 or newer.'
+        )
     found = version()
     if found is not None or family.has('rustc') or family.has('cargo'):
-        raise RuntimeError('This system\'s Rust (' + (f'{found[0]}.{found[1]}' if found else 'rustc') + ') is older than ' + label
-                           + ', which building the runtime needs. Debian\'s newer Rust takes its place: run  sudo apt install '
-                           'rustc-web cargo-web  (apt replaces the older rustc and cargo with them), then  sudo bash install.sh  again.')
-    log('Debian\'s own Rust is older than ' + label + ': installing rustc-web and cargo-web (Debian\'s newer Rust, the same commands)')
+        raise RuntimeError(
+            'This system\'s Rust ('
+            + (f'{found[0]}.{found[1]}' if found else 'rustc')
+            + ') is older than '
+            + label
+            + ', which building the runtime needs. Debian\'s newer Rust takes its place: run  sudo apt install '
+            'rustc-web cargo-web  (apt replaces the older rustc and cargo with them), then  sudo bash install.sh  again.'
+        )
+    log(
+        'Debian\'s own Rust is older than '
+        + label
+        + ': installing rustc-web and cargo-web (Debian\'s newer Rust, the same commands)'
+    )
     family.install(['gcc', *DEBIAN_NEWER_RUST])
     found = version()
     if found is None or found < oldest:
-        raise RuntimeError('rustc-web was installed, but rustc still reports ' + (f'{found[0]}.{found[1]}' if found else 'nothing')
-                           + ' (Rust ' + label + ' is needed); check  rustc --version  and run setup again')
+        raise RuntimeError(
+            'rustc-web was installed, but rustc still reports '
+            + (f'{found[0]}.{found[1]}' if found else 'nothing')
+            + ' (Rust '
+            + label
+            + ' is needed); check  rustc --version  and run setup again'
+        )
 
 
 def main(argv):
@@ -1729,13 +1995,20 @@ def main(argv):
     try:
         commands[argv[0]]()
     except KeyboardInterrupt:
-        with contextlib.suppress(OSError):      # the terminal may be gone
-            print('\nStopped. Packages already installed stay installed (switched off). Run  sudo bash install.sh  '
-                  'again when you are ready.', file=sys.stderr)
+        with contextlib.suppress(OSError):  # the terminal may be gone
+            print(
+                '\nStopped. Packages already installed stay installed (switched off). Run  sudo bash install.sh  '
+                'again when you are ready.',
+                file=sys.stderr,
+            )
         return 130
     except subprocess.TimeoutExpired as exc:
-        stopped(str(exc.cmd[0]) + ' did not finish within ' + str(int(exc.timeout) // 60)
-                + ' minutes; check the network and run  sudo bash install.sh  again')
+        stopped(
+            str(exc.cmd[0])
+            + ' did not finish within '
+            + str(int(exc.timeout) // 60)
+            + ' minutes; check the network and run  sudo bash install.sh  again'
+        )
         return 1
     except (RuntimeError, OSError, http.client.HTTPException) as exc:
         stopped(str(exc))
@@ -1751,7 +2024,7 @@ def stopped(message, note=None):
     in the file NEKOSERVER_STOP_NOTE names: one install.sh made for it (mktemp), so it
     is only ever written, never created, and never through a link."""
     with contextlib.suppress(OSError, ValueError):
-        sys.stdout.flush()      # the retry lines before it, also when both go to one file
+        sys.stdout.flush()  # the retry lines before it, also when both go to one file
     print('ERROR: ' + message, file=sys.stderr)
     note = os.environ.get('NEKOSERVER_STOP_NOTE', '') if note is None else note
     if note.startswith('/') and '..' not in note.split('/'):

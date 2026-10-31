@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.41.1 — 2026-11-01
+
+The second QA round of 0.41.0 (the three families the first round had not installed end to end: Fedora, Arch, AlmaLinux; the upgrade from 0.40.3; uninstall and reinstall), fixes, QA again.
+
+### Fixed
+- **A PC that ran an earlier release, with a new SSD, no longer stops at the home gateway with a `sudo rm` to type.** Setup keeps a record of the gateway files it wrote so it never overwrites a file of someone else's; before 0.41.0 that record lived only on the SSD, so after the SSD was replaced (or Linux reinstalled) setup found its own earlier unit `nekoserver-gateway-lan.service` "not as it would write it, with no record" and refused. A file under NekoServer's own name (its unit, anything in a `nekoserver-*` folder) is nobody else's: it is now set aside (a copy beside it, `name.before-<time>`, said in the log) and written anew. A file outside NekoServer's name is still refused. The uninstaller removes the kept copies with the units. Seen on the rig: Fedora 44 that had run 0.39.7, given the shared SSD.
+- **The gateway's certificates on an SSD moved to a reinstalled PC are adopted even when their old owner number now belongs to some other account.** The record on the SSD says NekoServer gave them that number (the old PC's caddy); whether the number is in use here (Fedora: "unbound") says nothing about the files. Before, setup asked for `chown -R caddy:caddy` by hand.
+- **The phone notification for a Btrfs pool reads correctly** ("The Btrfs pool (…) counts drive errors", not "The Btrfs drives (…) counts").
+
+### Changed
+- **The code is laid out legibly.** Much of the installer was written as one-line chains (`if x:raise …`, several statements per line, 200-column expressions), and the dashboard's and setup window's JavaScript, CSS and HTML and the shell scripts the same way (lines of up to 760 columns). Every `.py` file is now formatted by `ruff format` (`nekoserver/ruff.toml`: 120 columns, quotes kept), the web files by Prettier (`.prettierrc.json`) and `install.sh`/`uninstall.sh` by shfmt, with no change in what the code does (the formatters keep the program the same; the whole suite, the installs and the fault suite on the rig say so). Long message strings and regular expressions are left on one line: splitting those by hand could change them. The CI checks the layout, so a file put back the old way fails there; the step says the command that puts it right. Eight unit tests pinned to the old spacing, the file list or this PC's own maintenance journal were corrected.
+
 ## v0.41.0 — 2026-10-31
 
 A QA round run as a company would: beta testers and IT on the WSL rig (fresh installs, the RAID drill, the fault suite), fixes, then QA again. Plus RAID and Btrfs pool health.

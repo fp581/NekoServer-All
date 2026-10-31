@@ -14,6 +14,7 @@ Usage:
   sudo python3 backup_secrets.py --setup            # choose the backup password (asks once)
   sudo python3 backup_secrets.py --restore RUN --to NEW_DIR
 """
+
 import argparse
 import getpass
 import hashlib
@@ -46,7 +47,9 @@ def openssl(args, data=b'', password=None, timeout=120):
         fds = (read,)
         args = [a.replace('{fd}', str(read)) for a in args]
     try:
-        result = subprocess.run(['openssl', *args], input=data, capture_output=True, pass_fds=fds, timeout=timeout, check=False)
+        result = subprocess.run(
+            ['openssl', *args], input=data, capture_output=True, pass_fds=fds, timeout=timeout, check=False
+        )
     finally:
         for fd in fds:
             os.close(fd)
@@ -65,12 +68,29 @@ def create_key(password, key_dir=KEY_DIR):
         raise RuntimeError('An empty password cannot protect the backup key')
     plain = openssl(['genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:3072'])
     try:
-        locked = openssl(['pkcs8', '-topk8', '-v2', 'aes-256-cbc', '-v2prf', 'hmacWithSHA256',
-                          '-iter', '600000', '-passout', 'fd:{fd}'], plain, password)
+        locked = openssl(
+            [
+                'pkcs8',
+                '-topk8',
+                '-v2',
+                'aes-256-cbc',
+                '-v2prf',
+                'hmacWithSHA256',
+                '-iter',
+                '600000',
+                '-passout',
+                'fd:{fd}',
+            ],
+            plain,
+            password,
+        )
     finally:
         del plain
-    cert = openssl(['req', '-new', '-x509', '-key', '/dev/stdin', '-passin', 'fd:{fd}',
-                    '-subj', SUBJECT, '-days', '36500'], locked, password)
+    cert = openssl(
+        ['req', '-new', '-x509', '-key', '/dev/stdin', '-passin', 'fd:{fd}', '-subj', SUBJECT, '-days', '36500'],
+        locked,
+        password,
+    )
     safe_path(key_dir).mkdir(mode=0o700, parents=True, exist_ok=True)
     atomic_write(key_dir / KEY_NAME, locked, 0o600)
     atomic_write(key_dir / CERT_NAME, cert, 0o600)
@@ -107,11 +127,14 @@ def setup(ask=getpass.getpass, out=print, key_dir=KEY_DIR, tries=3):
         create_key(password, key_dir)
         out('Backup key created. Restoring the password list will ask for this backup password.')
         return
-    raise RuntimeError('Backup key not created: no backup password was confirmed. Run  sudo python3 backup_secrets.py --setup  to try again')
+    raise RuntimeError(
+        'Backup key not created: no backup password was confirmed. Run  sudo python3 backup_secrets.py --setup  to try again'
+    )
 
 
-RESTORE_PROMPT = ('Backup password that protected this backup '
-                  '(for backups made before 0.28.5: your sudo password at the time): ')
+RESTORE_PROMPT = (
+    'Backup password that protected this backup (for backups made before 0.28.5: your sudo password at the time): '
+)
 
 
 def absolute(value, what):
@@ -145,8 +168,11 @@ def snapshot_files(snapshot):
     for name in (ARCHIVE_NAME, KEY_NAME, CERT_NAME):
         path = safe_path(snapshot / name)
         if not path.is_file():
-            raise RuntimeError('This snapshot holds no encrypted password files' if name == ARCHIVE_NAME
-                               else 'Snapshot key copy is missing')
+            raise RuntimeError(
+                'This snapshot holds no encrypted password files'
+                if name == ARCHIVE_NAME
+                else 'Snapshot key copy is missing'
+            )
         files.append(path)
     # CMS decryption does not detect damage: a changed byte gives changed passwords.
     # The checksum recorded when the snapshot was made is checked before anything else.
@@ -154,8 +180,10 @@ def snapshot_files(snapshot):
     if not isinstance(expected, str) or len(expected) != 64:
         raise RuntimeError('This snapshot has no checksum for its encrypted password files; refusing to restore them')
     if sha256(files[0]) != expected:
-        raise RuntimeError('The encrypted password files in this snapshot are damaged (checksum mismatch); '
-                           'nothing was restored. Use another monthly snapshot.')
+        raise RuntimeError(
+            'The encrypted password files in this snapshot are damaged (checksum mismatch); '
+            'nothing was restored. Use another monthly snapshot.'
+        )
     return (*files, key_damaged(manifest['sha256'], files[1], files[2]))
 
 
@@ -163,8 +191,10 @@ def key_damaged(sums, key, cert):
     """Whether the snapshot's key copy fails its checksum (recorded since 0.28.7). A
     damaged certificate stops the restore: no other copy can stand in for it."""
     if sums.get('secrets_cert') and sha256(cert) != sums['secrets_cert']:
-        raise RuntimeError('The backup certificate in this snapshot is damaged (checksum mismatch); '
-                           'nothing was restored. Use another monthly snapshot.')
+        raise RuntimeError(
+            'The backup certificate in this snapshot is damaged (checksum mismatch); '
+            'nothing was restored. Use another monthly snapshot.'
+        )
     return bool(sums.get('secrets_key')) and sha256(key) != sums['secrets_key']
 
 
@@ -182,8 +212,10 @@ def opening_key(key, cert, password, damaged, key_dir=KEY_DIR, out=print):
         out('The key copy in this snapshot is damaged; this server\'s own backup key (the same key) opens it instead.')
         return own_key
     if damaged:
-        raise RuntimeError('The backup key copy in this snapshot is damaged (checksum mismatch), and this server has no '
-                           'copy of the same key; nothing was restored. Use another monthly snapshot.')
+        raise RuntimeError(
+            'The backup key copy in this snapshot is damaged (checksum mismatch), and this server has no '
+            'copy of the same key; nothing was restored. Use another monthly snapshot.'
+        )
     raise RuntimeError('Wrong password for this backup')
 
 
@@ -194,14 +226,38 @@ def restore(snapshot, destination, password, key_dir=KEY_DIR, out=print):
     if destination.exists() or not destination.parent.is_dir():
         raise RuntimeError('Choose a new directory, inside an existing folder, for the restored password files')
     key = opening_key(key, cert, password, damaged, key_dir, out)
-    plain = openssl(['cms', '-decrypt', '-binary', '-inform', 'DER', '-in', str(archive), '-inkey', str(key),
-                     '-passin', 'fd:{fd}', '-recip', str(cert)], b'', password, timeout=600)
+    plain = openssl(
+        [
+            'cms',
+            '-decrypt',
+            '-binary',
+            '-inform',
+            'DER',
+            '-in',
+            str(archive),
+            '-inkey',
+            str(key),
+            '-passin',
+            'fd:{fd}',
+            '-recip',
+            str(cert),
+        ],
+        b'',
+        password,
+        timeout=600,
+    )
     destination.mkdir(mode=0o700)
     try:
         # Unpacked inside the new folder (its working directory), so the folder's name is
         # never an argument tar could read as an option.
-        unpacked = subprocess.run(['tar', '--extract', '--file', '-', '--no-same-owner', '--no-same-permissions'],
-                                  input=plain, capture_output=True, timeout=600, check=False, cwd=destination)
+        unpacked = subprocess.run(
+            ['tar', '--extract', '--file', '-', '--no-same-owner', '--no-same-permissions'],
+            input=plain,
+            capture_output=True,
+            timeout=600,
+            check=False,
+            cwd=destination,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         unpacked = None
         reason = str(exc)
@@ -211,15 +267,21 @@ def restore(snapshot, destination, password, key_dir=KEY_DIR, out=print):
             reason = reason[0]
         # Nothing half-unpacked is left behind to be mistaken for the full list.
         shutil.rmtree(destination, ignore_errors=True)
-        raise RuntimeError(f'The password files could not be unpacked ({reason}); nothing was restored. '
-                           'Check the free space there, or choose another folder and try again')
+        raise RuntimeError(
+            f'The password files could not be unpacked ({reason}); nothing was restored. '
+            'Check the free space there, or choose another folder and try again'
+        )
     return destination
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--setup', action='store_true', help='Create the backup key, protected by a backup password you choose')
-    parser.add_argument('--restore', type=Path, metavar='SNAPSHOT', help='Monthly snapshot directory (backups/monthly/RUN)')
+    parser.add_argument(
+        '--setup', action='store_true', help='Create the backup key, protected by a backup password you choose'
+    )
+    parser.add_argument(
+        '--restore', type=Path, metavar='SNAPSHOT', help='Monthly snapshot directory (backups/monthly/RUN)'
+    )
     parser.add_argument('--to', type=Path, metavar='NEW_DIR', help='New directory for the decrypted password files')
     args = parser.parse_args()
     if os.geteuid() != 0:

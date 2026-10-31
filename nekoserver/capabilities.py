@@ -8,6 +8,7 @@ it on by default), and says how to try permissive mode and report what it logs.
 Everything else (AppArmor, firewall, desktop) is reported so a beginner can see what
 was found.
 """
+
 import platform
 import re
 import shutil
@@ -18,38 +19,49 @@ from pathlib import Path
 import host
 
 MIN_PYTHON = (3, 11)
-MIN_SYSTEMD = 247       # first release with every unit option NekoServer writes
+MIN_SYSTEMD = 247  # first release with every unit option NekoServer writes
 # Firewalls that are switched on block Samba and the home gateway until they allow them
 # (ports Docker publishes skip them, which is why the apps listen only on 127.0.0.1).
 FIREWALLS = ('firewalld', 'nftables')
 # Not tested with SELinux yet: Samba, the home gateway (Caddy on ports 8442-8447) and the
 # runtime the services start from the SSD may all be refused, in ways that are hard to see.
-SELINUX_ENFORCING = ('SELinux is enforcing, and NekoServer has not been tested with SELinux yet (the shared folders, '
-                     'the home gateway and the backup jobs may be refused in ways that are hard to see). To try it, '
-                     'switch SELinux to permissive: sudo setenforce 0, and SELINUX=permissive in /etc/selinux/config '
-                     'so it stays after a restart, then run setup again. Permissive mode only logs what SELinux would '
-                     'have refused: please send the output of  sudo ausearch -m AVC -ts recent  with your report, so '
-                     'the right rules can be added')
+SELINUX_ENFORCING = (
+    'SELinux is enforcing, and NekoServer has not been tested with SELinux yet (the shared folders, '
+    'the home gateway and the backup jobs may be refused in ways that are hard to see). To try it, '
+    'switch SELinux to permissive: sudo setenforce 0, and SELINUX=permissive in /etc/selinux/config '
+    'so it stays after a restart, then run setup again. Permissive mode only logs what SELinux would '
+    'have refused: please send the output of  sudo ausearch -m AVC -ts recent  with your report, so '
+    'the right rules can be added'
+)
 
 
 def firewall_hint(firewalls):
     """How to let the home network reach the shared folders and the home addresses."""
     if 'firewalld' in firewalls:
         # One call cannot add a service and ports both: firewall-cmd refuses the pair.
-        example = ('sudo firewall-cmd --permanent --add-service=samba && sudo firewall-cmd --permanent '
-                   '--add-port=8442-8447/tcp --add-port=8450-8499/tcp && sudo firewall-cmd --reload')
+        example = (
+            'sudo firewall-cmd --permanent --add-service=samba && sudo firewall-cmd --permanent '
+            '--add-port=8442-8447/tcp --add-port=8450-8499/tcp && sudo firewall-cmd --reload'
+        )
     elif 'ufw' in firewalls:
-        example = ('sudo ufw allow from 192.168.1.0/24 to any port 445,8442:8447,8450:8499 proto tcp  '
-                   '(your network instead of 192.168.1.0/24)')
+        example = (
+            'sudo ufw allow from 192.168.1.0/24 to any port 445,8442:8447,8450:8499 proto tcp  '
+            '(your network instead of 192.168.1.0/24)'
+        )
     else:
         # nftables on its own (Arch's nftables.service, say): a rule in its own ruleset.
-        example = ('sudo nft add rule inet filter input ip saddr 192.168.1.0/24 tcp dport { 445, 8442-8447, 8450-8499 } accept  '
-                   '(your network instead of 192.168.1.0/24, and the same rule in /etc/nftables.conf so it stays '
-                   'after a restart)')
-    return (', '.join(firewalls) + ' is on: allow your home network to reach shared folders (port 445) and the home '
-            'addresses (ports 8442-8447, or 8450-8499 when one of those is taken), for example  ' + example
-            + '. Tailscale needs no rule. Setup checks the home addresses from this PC itself, which a firewall '
-            'does not block: test them from a phone on your home Wi-Fi')
+        example = (
+            'sudo nft add rule inet filter input ip saddr 192.168.1.0/24 tcp dport { 445, 8442-8447, 8450-8499 } accept  '
+            '(your network instead of 192.168.1.0/24, and the same rule in /etc/nftables.conf so it stays '
+            'after a restart)'
+        )
+    return (
+        ', '.join(firewalls) + ' is on: allow your home network to reach shared folders (port 445) and the home '
+        'addresses (ports 8442-8447, or 8450-8499 when one of those is taken), for example  '
+        + example
+        + '. Tailscale needs no rule. Setup checks the home addresses from this PC itself, which a firewall '
+        'does not block: test them from a phone on your home Wi-Fi'
+    )
 
 
 def memory_gib(root='/'):
@@ -57,7 +69,7 @@ def memory_gib(root='/'):
     for line in _read(root, '/proc/meminfo').splitlines():
         if line.startswith('MemTotal:'):
             try:
-                return int(line.split()[1]) / 2 ** 20      # kB
+                return int(line.split()[1]) / 2**20  # kB
             except (IndexError, ValueError):
                 return 0
     return 0
@@ -74,8 +86,10 @@ def memory_note(gib):
         return 'unknown'
     found = f'{gib:.1f} GB'
     if gib < ENOUGH_MEMORY_GIB:
-        found += (': the apps use about 2 GB when idle and more while Immich looks at new photos or Jellyfin '
-                  'converts a video; with less than 8 GB those can be stopped for lack of memory. Add memory if you can')
+        found += (
+            ': the apps use about 2 GB when idle and more while Immich looks at new photos or Jellyfin '
+            'converts a video; with less than 8 GB those can be stopped for lack of memory. Add memory if you can'
+        )
     return found
 
 
@@ -120,9 +134,11 @@ def clock(run=subprocess.run, which=shutil.which):
 
 # A wrong clock makes downloads and the package managers fail with errors that do not
 # name it ("certificate not yet valid", "signature from the future").
-CLOCK_NOTE = ('no: the network does not keep this PC\'s clock right. A wrong clock makes downloads and package '
-              'installs fail with confusing errors (a certificate or a signature "not yet valid" or "expired"). Check '
-              'the date and time (timedatectl) and let the network set them: sudo timedatectl set-ntp true')
+CLOCK_NOTE = (
+    'no: the network does not keep this PC\'s clock right. A wrong clock makes downloads and package '
+    'installs fail with confusing errors (a certificate or a signature "not yet valid" or "expired"). Check '
+    'the date and time (timedatectl) and let the network set them: sudo timedatectl set-ntp true'
+)
 
 
 def row(name, label, found, ok, required=False, problem=None):
@@ -135,8 +151,12 @@ def docker_rows(docker, compose, installed):
     packages are installed switched off, and that step starts it on the SSD."""
     missing = 'not installed yet (setup installs it)'
     return [
-        row('docker', 'Docker Engine',
-            docker or ('installed, not started yet (the Docker step starts it)' if installed else missing), True),
+        row(
+            'docker',
+            'Docker Engine',
+            docker or ('installed, not started yet (the Docker step starts it)' if installed else missing),
+            True,
+        ),
         row('compose', 'Docker Compose', compose or ('checked once Docker runs' if installed else missing), True),
     ]
 
@@ -159,23 +179,51 @@ def detect(run=subprocess.run, root='/', machine=None, python=None, which=shutil
     return [
         row('architecture', 'x86-64 processor', machine, machine == 'x86_64', True),
         row('python', 'Python 3.11 or newer', '.'.join(map(str, python)), tuple(python) >= MIN_PYTHON, True),
-        row('systemd', 'systemd ' + str(MIN_SYSTEMD) + ' or newer', str(systemd) if systemd else 'not found',
-            systemd >= MIN_SYSTEMD, True),
+        row(
+            'systemd',
+            'systemd ' + str(MIN_SYSTEMD) + ' or newer',
+            str(systemd) if systemd else 'not found',
+            systemd >= MIN_SYSTEMD,
+            True,
+        ),
         row('family', 'Supported Linux family', family.label if family else 'not supported yet', family, True),
-        row('restart', 'No restart pending from an earlier update',
-            'restart needed (sudo reboot)' if restart else 'none', not restart, True),
-        row('cgroup', 'Control groups v2', 'yes' if _read(root, '/sys/fs/cgroup/cgroup.controllers') else 'no',
-            _read(root, '/sys/fs/cgroup/cgroup.controllers')),
+        row(
+            'restart',
+            'No restart pending from an earlier update',
+            'restart needed (sudo reboot)' if restart else 'none',
+            not restart,
+            True,
+        ),
+        row(
+            'cgroup',
+            'Control groups v2',
+            'yes' if _read(root, '/sys/fs/cgroup/cgroup.controllers') else 'no',
+            _read(root, '/sys/fs/cgroup/cgroup.controllers'),
+        ),
         *docker_rows(docker, compose, bool(which('docker'))),
-        row('selinux', 'SELinux', {'1': 'enforcing', '0': 'permissive'}.get(selinux, 'off'), selinux != '1', True,
-            problem=SELINUX_ENFORCING),
+        row(
+            'selinux',
+            'SELinux',
+            {'1': 'enforcing', '0': 'permissive'}.get(selinux, 'off'),
+            selinux != '1',
+            True,
+            problem=SELINUX_ENFORCING,
+        ),
         row('apparmor', 'AppArmor', 'on' if apparmor.upper().startswith('Y') else 'off', True),
         row('firewall', 'Firewall', firewall_hint(firewalls) if firewalls else 'off', not firewalls),
         row('desktop', 'Desktop', desktop_found(target, which), True),
-        row('memory', 'Memory (8 GB or more recommended)', memory_note(memory),
-            not memory or memory >= ENOUGH_MEMORY_GIB),
-        row('clock', 'Clock set by the network', {'yes': 'yes', 'no': CLOCK_NOTE}.get(synchronised, 'unknown'),
-            synchronised != 'no'),
+        row(
+            'memory',
+            'Memory (8 GB or more recommended)',
+            memory_note(memory),
+            not memory or memory >= ENOUGH_MEMORY_GIB,
+        ),
+        row(
+            'clock',
+            'Clock set by the network',
+            {'yes': 'yes', 'no': CLOCK_NOTE}.get(synchronised, 'unknown'),
+            synchronised != 'no',
+        ),
     ]
 
 
@@ -186,6 +234,7 @@ def desktop_found(target, which=shutil.which):
     if target != 'graphical.target':
         return 'no (server)'
     from modules.tv import DESKTOP_PROGRAMS
+
     return 'yes' if any(which(name) for name in DESKTOP_PROGRAMS) else 'no (no desktop installed)'
 
 
@@ -195,15 +244,23 @@ def value(rows, name):
 
 def missing(rows):
     """The required things this computer lacks, as plain sentences."""
-    return [row.get('problem') or row['label'] + ' is required (found: ' + row['found'] + ')'
-            for row in rows if row['required'] and not row['ok']]
+    return [
+        row.get('problem') or row['label'] + ' is required (found: ' + row['found'] + ')'
+        for row in rows
+        if row['required'] and not row['ok']
+    ]
 
 
 def report(rows, log=print):
     log('This computer:')
     for row in rows:
-        log('  ' + ('ok   ' if row['ok'] else 'MISSING ' if row['required'] else 'note ')
-            + row['label'] + ': ' + row['found'])
+        log(
+            '  '
+            + ('ok   ' if row['ok'] else 'MISSING ' if row['required'] else 'note ')
+            + row['label']
+            + ': '
+            + row['found']
+        )
 
 
 def require(rows):

@@ -1,4 +1,5 @@
 """Read-only host inventory and prerequisites."""
+
 import os
 import platform
 import shutil
@@ -10,10 +11,13 @@ from neko_common import host_timezone, local_timezone
 DEPENDENCIES = []
 DESCRIPTION = "Inspect distribution, hardware and basic prerequisites"
 
+
 def timezone_note(config):
     if config.get('timezone', 'auto') == 'auto' and local_timezone() is None:
-        return ('Timezone: this PC\'s timezone could not be read, so backups and updates run at UTC times '
-                '(set "timezone" in my-config.json, e.g. "Europe/London", to change that)')
+        return (
+            'Timezone: this PC\'s timezone could not be read, so backups and updates run at UTC times '
+            '(set "timezone" in my-config.json, e.g. "Europe/London", to change that)'
+        )
     return f'Timezone for backups and updates: {host_timezone(config)}'
 
 

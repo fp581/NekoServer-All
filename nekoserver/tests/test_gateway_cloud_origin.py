@@ -1,4 +1,5 @@
 """Nextcloud must keep working on every gateway address, in any setup order."""
+
 import json
 import sys
 import unittest
@@ -26,7 +27,7 @@ class FakeNextcloud:
         if 'inspect' in args:
             networks = {f'net{i}': {'Gateway': g} for i, g in enumerate(self.gateways)}
             return json.dumps([{'NetworkSettings': {'Networks': networks}}])
-        occ = args[args.index('occ') + 1:]
+        occ = args[args.index('occ') + 1 :]
         action, key = occ[0], occ[1]
         if action == 'config:system:get':
             if key not in self.system:
@@ -40,21 +41,27 @@ class FakeNextcloud:
             if len(occ) == 4:  # indexed array entry
                 array = self.system.setdefault(key, [])
                 index = int(occ[2])
-                array[index:index + 1] = [value]
+                array[index : index + 1] = [value]
             else:
                 self.system[key] = value
             return ''
         raise AssertionError(args)
 
 
-CONFIG = {'data_mount': '/srv/nekoserver', 'gateway': {'services': ['nextcloud', 'jellyfin']},
-          'nextcloud': {'enabled': True}, 'media': {'services': ['jellyfin']}}
+CONFIG = {
+    'data_mount': '/srv/nekoserver',
+    'gateway': {'services': ['nextcloud', 'jellyfin']},
+    'nextcloud': {'enabled': True},
+    'media': {'services': ['jellyfin']},
+}
 
 
 class CloudOriginTests(unittest.TestCase):
     def run_gateways(self, fake, *hosts):
-        with mock.patch.object(gateway_tools, 'command', fake), \
-                mock.patch('neko_common.compose_image_override', return_value=[]):
+        with (
+            mock.patch.object(gateway_tools, 'command', fake),
+            mock.patch('neko_common.compose_image_override', return_value=[]),
+        ):
             for host in hosts:
                 gateway_tools.configure_cloud_origin(CONFIG, host, 8447)
 
@@ -62,8 +69,9 @@ class CloudOriginTests(unittest.TestCase):
         fake = FakeNextcloud()
         self.run_gateways(fake, '192.168.1.20', 'neko.tail1234.ts.net')
         self.assertNotIn('overwritehost', fake.system)
-        self.assertEqual(fake.system['trusted_domains'],
-                         ['localhost', '127.0.0.1', '192.168.1.20', 'neko.tail1234.ts.net'])
+        self.assertEqual(
+            fake.system['trusted_domains'], ['localhost', '127.0.0.1', '192.168.1.20', 'neko.tail1234.ts.net']
+        )
         # No forced https: Nextcloud on this PC itself (http://127.0.0.1:8088) keeps working;
         # both gateways say the client used https.
         self.assertNotIn('overwriteprotocol', fake.system)
@@ -78,8 +86,10 @@ class CloudOriginTests(unittest.TestCase):
     def test_the_link_address_does_not_flip_between_gateway_ports(self):
         # The home gateway on a spare port, then Tailscale on 8447, then the home one again.
         fake = FakeNextcloud()
-        with mock.patch.object(gateway_tools, 'command', fake), \
-                mock.patch('neko_common.compose_image_override', return_value=[]):
+        with (
+            mock.patch.object(gateway_tools, 'command', fake),
+            mock.patch('neko_common.compose_image_override', return_value=[]),
+        ):
             gateway_tools.configure_cloud_origin(CONFIG, '192.168.1.20', 8452)
             gateway_tools.configure_cloud_origin(CONFIG, 'neko.tail1234.ts.net', 8447)
             gateway_tools.configure_cloud_origin(CONFIG, '192.168.1.20', 8452)
@@ -123,39 +133,53 @@ class CloudOriginTests(unittest.TestCase):
     def test_skipped_when_nextcloud_not_exposed(self):
         fake = FakeNextcloud()
         with mock.patch.object(gateway_tools, 'command', fake):
-            gateway_tools.configure_cloud_origin({**CONFIG, 'gateway': {'services': ['jellyfin']}}, '192.168.1.20', 8447)
+            gateway_tools.configure_cloud_origin(
+                {**CONFIG, 'gateway': {'services': ['jellyfin']}}, '192.168.1.20', 8447
+            )
         self.assertEqual(fake.calls, [])
-
 
 
 class GatewayListTests(unittest.TestCase):
     """The shipped gateway list names every app; a media-only server (Immich and
     Nextcloud off) must not fail on it, while a list you wrote is taken as it is."""
+
     def test_the_default_list_follows_the_apps_set_up(self):
-        config = {'gateway': {'services': list(gateway_tools.DEFAULT_SERVICES)}, 'media': {'services': ['jellyfin', 'seerr']},
-                  'photos': {'deploy_immich': False}, 'nextcloud': {'enabled': False}}
+        config = {
+            'gateway': {'services': list(gateway_tools.DEFAULT_SERVICES)},
+            'media': {'services': ['jellyfin', 'seerr']},
+            'photos': {'deploy_immich': False},
+            'nextcloud': {'enabled': False},
+        }
         self.assertEqual(gateway_tools.selected(config), ['jellyfin', 'seerr'])
         config['photos']['deploy_immich'] = True
         self.assertEqual(gateway_tools.selected(config), ['jellyfin', 'seerr', 'immich'])
 
     def test_a_list_you_wrote_names_what_is_missing(self):
-        config = {'gateway': {'services': ['jellyfin', 'immich']}, 'media': {'services': ['jellyfin']},
-                  'photos': {'deploy_immich': False}}
+        config = {
+            'gateway': {'services': ['jellyfin', 'immich']},
+            'media': {'services': ['jellyfin']},
+            'photos': {'deploy_immich': False},
+        }
         with self.assertRaisesRegex(RuntimeError, '"immich" is in the gateway list'):
             gateway_tools.selected(config)
 
 
 class ReadinessTests(unittest.TestCase):
-    CONFIG = {'gateway': {'services': ['navidrome'], 'confirmed_services': ['navidrome']}, 'media': {},
-              'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
+    CONFIG = {
+        'gateway': {'services': ['navidrome'], 'confirmed_services': ['navidrome']},
+        'media': {},
+        'data_mount': '/srv/nekoserver',
+        'media_mount': '/mnt/nekoserver-media',
+    }
 
     def setUp(self):
-        installed = mock.patch.object(gateway_tools, 'installed', return_value=True)   # the app is set up
+        installed = mock.patch.object(gateway_tools, 'installed', return_value=True)  # the app is set up
         installed.start()
         self.addCleanup(installed.stop)
 
     def opener(self, pages):
         """A local opener answering each path with its body."""
+
         class Response:
             def __init__(self, body):
                 self.body = body
@@ -168,18 +192,23 @@ class ReadinessTests(unittest.TestCase):
 
             def read(self, limit):
                 return self.body.encode()
+
         fake = mock.Mock()
         fake.open.side_effect = lambda url, timeout=5: Response(next(b for p, b in pages.items() if url.endswith(p)))
         return fake
 
     def test_an_app_without_its_first_account_is_never_published(self):
-        cases = (('immich', {'/api/server/config': '{"isInitialized": false}'}),
-                 ('nextcloud', {'/status.php': '{"installed": false}'}),
-                 ('navidrome', {'/app/': '<script>window.__APP_CONFIG__ = "{\\"firstTime\\":true}"</script>'}))
+        cases = (
+            ('immich', {'/api/server/config': '{"isInitialized": false}'}),
+            ('nextcloud', {'/status.php': '{"installed": false}'}),
+            ('navidrome', {'/app/': '<script>window.__APP_CONFIG__ = "{\\"firstTime\\":true}"</script>'}),
+        )
         for app, pages in cases:
             config = {'gateway': {'services': [app], 'confirmed_services': [app]}, 'media': {}}
-            with mock.patch.object(gateway_tools, 'local_opener', return_value=self.opener(pages)), \
-                    self.assertRaisesRegex(RuntimeError, 'has no account yet'):
+            with (
+                mock.patch.object(gateway_tools, 'local_opener', return_value=self.opener(pages)),
+                self.assertRaisesRegex(RuntimeError, 'has no account yet'),
+            ):
                 gateway_tools.readiness(config)
 
     def test_navidrome_with_its_account_passes_its_check(self):
@@ -191,8 +220,10 @@ class ReadinessTests(unittest.TestCase):
         self.addCleanup(mock.patch.stopall)
         # Tried on Ubuntu: the snap's Docker took over Docker's socket, so every app's
         # container looked missing and the gateway said only that containers were wrong.
-        with mock.patch.object(gateway_tools.host, 'snap_docker', return_value=True), \
-                mock.patch('acceptance.containers') as containers:
+        with (
+            mock.patch.object(gateway_tools.host, 'snap_docker', return_value=True),
+            mock.patch('acceptance.containers') as containers,
+        ):
             with self.assertRaisesRegex(RuntimeError, 'Docker is installed here as a snap'):
                 gateway_tools.readiness(dict(self.CONFIG))
         containers.assert_not_called()
@@ -209,8 +240,10 @@ class ReadinessTests(unittest.TestCase):
         mock.patch.object(gateway_tools, 'navidrome_onboarded').start()
         self.addCleanup(mock.patch.stopall)
         rows = [{'id': 'container:navidrome', 'name': 'Music / navidrome', 'status': 'fail'}]
-        with mock.patch.object(gateway_tools.host, 'snap_docker', return_value=False), \
-                mock.patch('acceptance.containers', return_value=rows):
+        with (
+            mock.patch.object(gateway_tools.host, 'snap_docker', return_value=False),
+            mock.patch('acceptance.containers', return_value=rows),
+        ):
             with self.assertRaisesRegex(RuntimeError, r'not verified: Music / navidrome \(sudo docker ps -a'):
                 gateway_tools.readiness(dict(self.CONFIG))
 

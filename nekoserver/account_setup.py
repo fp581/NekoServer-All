@@ -1,4 +1,5 @@
 """One-time account provisioning over fixed loopback APIs; no runtime worker."""
+
 import base64
 import http.cookiejar
 import json
@@ -14,11 +15,18 @@ import xml.etree.ElementTree as ET
 import account_store as store
 from neko_common import app_port, local_opener, safe_path
 
-ARR = {app: (version, app_port(app)) for app, version in
-       (('sonarr', 'v3'), ('radarr', 'v3'), ('lidarr', 'v1'), ('prowlarr', 'v1'))}
-HEALTH = {'jellyfin': '/System/Info/Public', 'navidrome': '/ping',
-          'qbittorrent': '/api/v2/app/version', 'immich': '/api/server/ping',
-          'seerr': '/api/v1/status', 'nextcloud': '/status.php'}
+ARR = {
+    app: (version, app_port(app))
+    for app, version in (('sonarr', 'v3'), ('radarr', 'v3'), ('lidarr', 'v1'), ('prowlarr', 'v1'))
+}
+HEALTH = {
+    'jellyfin': '/System/Info/Public',
+    'navidrome': '/ping',
+    'qbittorrent': '/api/v2/app/version',
+    'immich': '/api/server/ping',
+    'seerr': '/api/v1/status',
+    'nextcloud': '/status.php',
+}
 
 
 class HTTPFailure(RuntimeError):
@@ -32,7 +40,9 @@ class Client:
         self.base = f'http://127.0.0.1:{port or store.APPS[app][1]}'
         self.headers = {'Accept': 'application/json', 'Referer': self.base}
         if app == 'jellyfin':
-            self.headers['Authorization'] = 'MediaBrowser Client="NekoServer", Device="Installer", DeviceId="neko-account-setup", Version="1"'
+            self.headers['Authorization'] = (
+                'MediaBrowser Client="NekoServer", Device="Installer", DeviceId="neko-account-setup", Version="1"'
+            )
         self.jar = http.cookiejar.CookieJar()
         self.opener = local_opener(urllib.request.HTTPCookieProcessor(self.jar))
 
@@ -70,8 +80,14 @@ class Client:
 
 
 def docker(args, input_text=None):
-    result = subprocess.run(['docker', '--host', 'unix:///var/run/docker.sock', *args],
-                            input=input_text, capture_output=True, text=True, timeout=60, check=False)
+    result = subprocess.run(
+        ['docker', '--host', 'unix:///var/run/docker.sock', *args],
+        input=input_text,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
     if result.returncode:
         raise RuntimeError('Local account setup command failed; private output was suppressed')
     return result.stdout + (result.stderr if args and args[0] == 'logs' else '')
@@ -79,9 +95,11 @@ def docker(args, input_text=None):
 
 def allowed(entry):
     if not entry['allow_create']:
-        raise RuntimeError('the app did not accept the saved username and password, and it already has an account, '
-                           'so none is made or reset. Run  sudo python3 account-setup.py  and choose c to enter the '
-                           'login the app really has')
+        raise RuntimeError(
+            'the app did not accept the saved username and password, and it already has an account, '
+            'so none is made or reset. Run  sudo python3 account-setup.py  and choose c to enter the '
+            'login the app really has'
+        )
 
 
 def attempt(action):
@@ -115,12 +133,20 @@ def wait(app, client, seconds=60):
 
 def jellyfin(client, entry):
     def login():
-        result = client.call('/Users/AuthenticateByName', 'POST', {'Username': entry['username'], 'Pw': entry['password']})
-        check(result.get('User', {}).get('Name') == entry['username'] and
-              result.get('User', {}).get('Policy', {}).get('IsAdministrator') is True and result.get('AccessToken'))
+        result = client.call(
+            '/Users/AuthenticateByName', 'POST', {'Username': entry['username'], 'Pw': entry['password']}
+        )
+        check(
+            result.get('User', {}).get('Name') == entry['username']
+            and result.get('User', {}).get('Policy', {}).get('IsAdministrator') is True
+            and result.get('AccessToken')
+        )
         client.headers['X-Emby-Token'] = result['AccessToken']
-        client.headers['Authorization'] = client.headers['Authorization'].split(', Token=')[0] + ', Token="' + result['AccessToken'] + '"'
+        client.headers['Authorization'] = (
+            client.headers['Authorization'].split(', Token=')[0] + ', Token="' + result['AccessToken'] + '"'
+        )
         return result
+
     info = client.call('/System/Info/Public')
     result = attempt(login)
     if not result:
@@ -140,11 +166,16 @@ def immich(client, entry):
         value = client.call('/api/auth/login', 'POST', {'email': entry['username'], 'password': entry['password']})
         check(value.get('isAdmin') is True and value.get('userEmail', '').casefold() == entry['username'].casefold())
         return value
+
     result = attempt(login)
     if not result:
         allowed(entry)
         check(client.call('/api/server/config').get('isInitialized') is False)
-        client.call('/api/auth/admin-sign-up', 'POST', {'email': entry['username'], 'password': entry['password'], 'name': entry['username'].split('@')[0]})
+        client.call(
+            '/api/auth/admin-sign-up',
+            'POST',
+            {'email': entry['username'], 'password': entry['password'], 'name': entry['username'].split('@')[0]},
+        )
         result = login()
     client.headers['Authorization'] = 'Bearer ' + result['accessToken']
     client.call('/api/auth/logout', 'POST')
@@ -172,15 +203,25 @@ def listener(client, entry, administrator, admin_entry):
         check(not any(user.get('userName') == entry['username'] for user in users))
         libraries = administrator.call('/api/library/')
         check(isinstance(libraries, list) and libraries)
-        administrator.call('/api/user/', 'POST', {'userName': entry['username'], 'name': entry['username'],
-                            'password': entry['password'], 'isAdmin': False})
+        administrator.call(
+            '/api/user/',
+            'POST',
+            {'userName': entry['username'], 'name': entry['username'], 'password': entry['password'], 'isAdmin': False},
+        )
         value = client.call('/auth/login', 'POST', body)
-    check(value.get('username') == entry['username'] and value.get('isAdmin') is False and value.get('token') and value.get('id'))
+    check(
+        value.get('username') == entry['username']
+        and value.get('isAdmin') is False
+        and value.get('token')
+        and value.get('id')
+    )
     if entry['allow_create'] and entry['state'] != 'verified':
         libraries = administrator.call('/api/library/')
         check(isinstance(libraries, list) and bool(libraries))
         identity = urllib.parse.quote(str(value['id']), safe='')
-        administrator.call('/api/user/' + identity + '/library/', 'PUT', {'libraryIds': [lib['id'] for lib in libraries]})
+        administrator.call(
+            '/api/user/' + identity + '/library/', 'PUT', {'libraryIds': [lib['id'] for lib in libraries]}
+        )
     return value
 
 
@@ -197,8 +238,13 @@ def arr(client, entry, config, app):
     check(isinstance(current, dict) and 'authenticationMethod' in current and 'username' in current)
     if not current.get('username') and not current.get('password'):
         allowed(entry)
-        current.update(authenticationMethod='forms', authenticationRequired='enabled',
-                       username=entry['username'], password=entry['password'], passwordConfirmation=entry['password'])
+        current.update(
+            authenticationMethod='forms',
+            authenticationRequired='enabled',
+            username=entry['username'],
+            password=entry['password'],
+            passwordConfirmation=entry['password'],
+        )
         client.call(endpoint, 'PUT', current)
         # The app saves the new sign-in settings at once but applies them only after a
         # restart (its settings page says "restart required"): until then there is no
@@ -210,15 +256,22 @@ def arr(client, entry, config, app):
     else:
         check(current.get('username') == entry['username'])
     verified = client.call(endpoint)
-    check(verified.get('username') == entry['username'] and
-          str(verified.get('authenticationMethod', '')).lower() == 'forms' and
-          str(verified.get('authenticationRequired', '')).lower() == 'enabled')
+    check(
+        verified.get('username') == entry['username']
+        and str(verified.get('authenticationMethod', '')).lower() == 'forms'
+        and str(verified.get('authenticationRequired', '')).lower() == 'enabled'
+    )
     # API-key success is not proof of the selected login password. Use a fresh
     # cookie session without the API key and verify an authenticated page.
     client.headers.pop('X-Api-Key', None)
     client.jar.clear()
     try:
-        client.call('/login', 'POST', form={'username': entry['username'], 'password': entry['password'], 'rememberMe': 'false'}, raw=True)
+        client.call(
+            '/login',
+            'POST',
+            form={'username': entry['username'], 'password': entry['password'], 'rememberMe': 'false'},
+            raw=True,
+        )
     except HTTPFailure as exc:
         if exc.code != 302 or not client.jar:
             raise
@@ -242,13 +295,23 @@ def qbittorrent(client, entry):
         # qBittorrent 5 with an empty 204 and QBT_SID_<port>. A wrong login is
         # "Fails." (or 401). The session cookie is the proof.
         if reply.strip() not in (b'Ok.', b'') or not any(
-                cookie.name == 'SID' or cookie.name.startswith('QBT_SID') for cookie in client.jar):
+            cookie.name == 'SID' or cookie.name.startswith('QBT_SID') for cookie in client.jar
+        ):
             return None
         return True
+
     if not attempt(lambda: login(entry['username'], entry['password'])):
         allowed(entry)
-        ids = docker(['ps', '-q', '--filter', 'label=com.docker.compose.project=neko-qbittorrent',
-                      '--filter', 'label=com.docker.compose.service=qbittorrent']).split()
+        ids = docker(
+            [
+                'ps',
+                '-q',
+                '--filter',
+                'label=com.docker.compose.project=neko-qbittorrent',
+                '--filter',
+                'label=com.docker.compose.service=qbittorrent',
+            ]
+        ).split()
         check(len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]))
         logs = docker(['logs', '--tail', '200', ids[0]])
         matches = re.findall(r'temporary password is provided for this session:\s*(\S+)', logs)
@@ -256,16 +319,30 @@ def qbittorrent(client, entry):
         check(login('admin', matches[-1]))
         preferences = client.call('/api/v2/app/preferences')
         check(preferences.get('web_ui_username', 'admin') == 'admin')
-        client.call('/api/v2/app/setPreferences', 'POST', form={'json': json.dumps({
-            'web_ui_username': entry['username'], 'web_ui_password': entry['password'],
-            'bypass_local_auth': False, 'bypass_auth_subnet_whitelist_enabled': False})}, raw=True)
+        client.call(
+            '/api/v2/app/setPreferences',
+            'POST',
+            form={
+                'json': json.dumps(
+                    {
+                        'web_ui_username': entry['username'],
+                        'web_ui_password': entry['password'],
+                        'bypass_local_auth': False,
+                        'bypass_auth_subnet_whitelist_enabled': False,
+                    }
+                )
+            },
+            raw=True,
+        )
         client.call('/api/v2/auth/logout', 'POST', form={}, raw=True)
         client.jar.clear()
         check(login(entry['username'], entry['password']))
     preferences = client.call('/api/v2/app/preferences')
-    check(preferences.get('web_ui_username') == entry['username'] and
-          preferences.get('bypass_local_auth') is False and
-          preferences.get('bypass_auth_subnet_whitelist_enabled') is False)
+    check(
+        preferences.get('web_ui_username') == entry['username']
+        and preferences.get('bypass_local_auth') is False
+        and preferences.get('bypass_auth_subnet_whitelist_enabled') is False
+    )
     client.call('/api/v2/auth/logout', 'POST', form={}, raw=True)
 
 
@@ -285,7 +362,11 @@ def seerr(client, entry, jellyfin_entry):
         allowed(entry)
         check(client.call('/api/v1/settings/public').get('initialized') is False)
         check(jellyfin_entry and jellyfin_entry['state'] == 'verified')
-        sign_in = {'username': jellyfin_entry['username'], 'password': jellyfin_entry['password'], 'email': entry['username']}
+        sign_in = {
+            'username': jellyfin_entry['username'],
+            'password': jellyfin_entry['password'],
+            'email': entry['username'],
+        }
         where = {'hostname': 'jellyfin', 'port': app_port('jellyfin'), 'useSsl': False, 'urlBase': '', 'serverType': 2}
         try:
             result = client.call('/api/v1/auth/jellyfin', 'POST', {**sign_in, **where})
@@ -315,8 +396,25 @@ def nextcloud_occ(config, *args):
     """Nextcloud's own command line (occ) inside its container, as its web user."""
     manifest = safe_path(Path(config['data_mount']) / 'compose/nextcloud/compose.yaml')
     env = safe_path(manifest.parent / '.env')
-    return docker(['compose', '-p', 'neko-nextcloud', '-f', str(manifest), '--env-file', str(env),
-                   'exec', '-T', '--user', 'www-data', 'nextcloud', 'php', 'occ', *args])
+    return docker(
+        [
+            'compose',
+            '-p',
+            'neko-nextcloud',
+            '-f',
+            str(manifest),
+            '--env-file',
+            str(env),
+            'exec',
+            '-T',
+            '--user',
+            'www-data',
+            'nextcloud',
+            'php',
+            'occ',
+            *args,
+        ]
+    )
 
 
 def nextcloud_two_factor(config, username, groups=()):
@@ -334,7 +432,7 @@ def nextcloud_two_factor(config, username, groups=()):
         return True
     try:
         listed = nextcloud_occ(config, 'config:list', 'system', '--output=json')
-    except RuntimeError:   # can't be told: the refused password counts as wrong
+    except RuntimeError:  # can't be told: the refused password counts as wrong
         return False
     return two_factor_required_of(listed, groups)
 
@@ -346,7 +444,10 @@ def two_factor_required_of(listed, groups):
     the settings can't be read: a refused password is then a wrong password."""
     try:
         system = json.loads(listed)['system']
-        named, excluded = system.get('twofactor_enforced_groups') or [], system.get('twofactor_enforced_excluded_groups') or []
+        named, excluded = (
+            system.get('twofactor_enforced_groups') or [],
+            system.get('twofactor_enforced_excluded_groups') or [],
+        )
     except (ValueError, KeyError, TypeError, AttributeError):
         return False
     if not isinstance(named, list) or not isinstance(excluded, list) or str(system.get('twofactor_enforced')) != 'true':
@@ -356,9 +457,11 @@ def two_factor_required_of(listed, groups):
     return not any(group in groups for group in excluded)
 
 
-NEXTCLOUD_TWO_FACTOR = ('verified: the administrator exists; two-factor sign-in is on, so Nextcloud does not accept '
-                        'a plain password from NekoServer and the saved password could not be tried (an app '
-                        'password from Nextcloud, Settings, Security, can be saved instead with account-setup.py c)')
+NEXTCLOUD_TWO_FACTOR = (
+    'verified: the administrator exists; two-factor sign-in is on, so Nextcloud does not accept '
+    'a plain password from NekoServer and the saved password could not be tried (an app '
+    'password from Nextcloud, Settings, Security, can be saved instead with account-setup.py c)'
+)
 
 
 def nextcloud(client, entry, config):
@@ -373,8 +476,13 @@ def nextcloud(client, entry, config):
     basic = base64.b64encode((entry['username'] + ':' + entry['password']).encode()).decode()
     path = '/remote.php/dav/files/' + urllib.parse.quote(entry['username'], safe='') + '/'
     try:
-        client.call(path, 'PROPFIND', b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>',
-                    raw=True, headers={'Authorization': 'Basic ' + basic, 'Content-Type': 'application/xml', 'Depth': '0'})
+        client.call(
+            path,
+            'PROPFIND',
+            b'<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>',
+            raw=True,
+            headers={'Authorization': 'Basic ' + basic, 'Content-Type': 'application/xml', 'Depth': '0'},
+        )
     except HTTPFailure as exc:
         if exc.code != 401 or not nextcloud_two_factor(config, entry['username'], info.get('groups', [])):
             raise
@@ -389,24 +497,43 @@ def verify_project(config, app):
     root = Path(config['data_mount'])
     manifest = safe_path(root / 'compose' / project / 'compose.yaml')
     check(manifest.is_file())
-    ids = docker(['ps', '-q', '--filter', 'label=com.docker.compose.project=neko-' + project,
-                  '--filter', 'label=com.docker.compose.service=' + service]).split()
+    ids = docker(
+        [
+            'ps',
+            '-q',
+            '--filter',
+            'label=com.docker.compose.project=neko-' + project,
+            '--filter',
+            'label=com.docker.compose.service=' + service,
+        ]
+    ).split()
     check(len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]))
     values = json.loads(docker(['inspect', ids[0]]))
     check(isinstance(values, list) and len(values) == 1)
     value = values[0]
     labels = value.get('Config', {}).get('Labels', {})
-    check(value.get('State', {}).get('Running') is True and
-          labels.get('com.docker.compose.project') == 'neko-' + project and
-          labels.get('com.docker.compose.service') == service)
-    expected = root / ('photos/immich-library' if project == 'immich' else
-                       'appdata/nextcloud/html' if project == 'nextcloud' else 'appdata/' + project)
+    check(
+        value.get('State', {}).get('Running') is True
+        and labels.get('com.docker.compose.project') == 'neko-' + project
+        and labels.get('com.docker.compose.service') == service
+    )
+    expected = root / (
+        'photos/immich-library'
+        if project == 'immich'
+        else 'appdata/nextcloud/html'
+        if project == 'nextcloud'
+        else 'appdata/' + project
+    )
     check(any(m.get('Type') == 'bind' and m.get('Source') == str(expected) for m in value.get('Mounts', [])))
     bindings = value.get('HostConfig', {}).get('PortBindings', {})
     port = 80 if project == 'nextcloud' else store.APPS[project][1]
     ports = bindings.get(str(port) + '/tcp')
-    check(isinstance(ports, list) and len(ports) == 1 and
-          ports[0].get('HostIp') == '127.0.0.1' and ports[0].get('HostPort') == str(store.APPS[project][1]))
+    check(
+        isinstance(ports, list)
+        and len(ports) == 1
+        and ports[0].get('HostIp') == '127.0.0.1'
+        and ports[0].get('HostPort') == str(store.APPS[project][1])
+    )
 
 
 def provision(config, apps, output=print, client_factory=Client):
@@ -421,8 +548,11 @@ def provision(config, apps, output=print, client_factory=Client):
         extra = note = None
         try:
             verify_project(config, app)
-            wait('navidrome' if app == 'navidrome_listener' else app, client,
-                 config.get('accounts', {}).get('wait_seconds', 180))
+            wait(
+                'navidrome' if app == 'navidrome_listener' else app,
+                client,
+                config.get('accounts', {}).get('wait_seconds', 180),
+            )
             store.update(config, app, state='started')
             if app in ARR:
                 arr(client, entry, config, app)
@@ -432,21 +562,28 @@ def provision(config, apps, output=print, client_factory=Client):
                 extra = client_factory('navidrome')
                 listener(client, entry, extra, admin)
                 import music_client
+
                 music_client.save(config, music_client.credential(entry['username'], entry['password']))
             elif app == 'seerr':
                 seerr(client, entry, store.get(config, 'jellyfin', verified=True))
             elif app == 'nextcloud':
                 note = nextcloud(client, entry, config)
             else:
-                {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome,
-                 'qbittorrent': qbittorrent}[app](client, entry)
+                {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
+                    client, entry
+                )
             store.update(config, app, state='verified', allow_create=False)
             output(store.APPS[app][0] + ': ' + (note or 'verified'))
         except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
             store.update(config, app, state='needs_setup')
             pending.append(app)
             # The reason, never the password: the checks' own messages name no values.
-            output(store.APPS[app][0] + ': not verified (' + (str(exc) or type(exc).__name__) + '); the saved login is kept')
+            output(
+                store.APPS[app][0]
+                + ': not verified ('
+                + (str(exc) or type(exc).__name__)
+                + '); the saved login is kept'
+            )
         finally:
             client.close()
             if extra:

@@ -3,6 +3,7 @@
 Shared by app-recovery.py (app settings) and host-recovery.py (Steam, Samba and other
 host files). Nothing here starts containers or services, or writes to live paths.
 """
+
 import argparse
 from dataclasses import dataclass, field
 import hashlib
@@ -22,10 +23,11 @@ REPORT_NAME = 'restore-report.json'
 @dataclass(frozen=True)
 class Kind:
     """What differs between the two nightly snapshot kinds."""
+
     format: str
     restore_format: str
-    roots: tuple = ()                  # allowed first path parts; empty = sourceN
-    links: bool = False                # symlinks are stored as inert text files
+    roots: tuple = ()  # allowed first path parts; empty = sourceN
+    links: bool = False  # symlinks are stored as inert text files
     report: dict = field(default_factory=dict)
     restored_message: str = ''
     failed_message: str = ''
@@ -40,19 +42,28 @@ class Kind:
 
 
 APPS = Kind(
-    format='neko-media-snapshot-v1', restore_format='neko-media-restore-v1',
+    format='neko-media-snapshot-v1',
+    restore_format='neko-media-restore-v1',
     roots=('appdata', 'compose', 'installer'),
     report={'containers_started': False, 'application_startup_verified': False},
     restored_message='Files restored into a new directory; live application startup remains untested.',
-    failed_message='Snapshot verification or restoration failed. Live app data was not changed.')
+    failed_message='Snapshot verification or restoration failed. Live app data was not changed.',
+)
 
 HOST = Kind(
-    format='neko-host-snapshot-v1', restore_format='neko-host-restore-v1', links=True,
-    report={'services_started': False, 'application_startup_verified': False,
-            'links_are_inert_text': True, 'live_paths_changed': False},
+    format='neko-host-snapshot-v1',
+    restore_format='neko-host-restore-v1',
+    links=True,
+    report={
+        'services_started': False,
+        'application_startup_verified': False,
+        'links_are_inert_text': True,
+        'live_paths_changed': False,
+    },
     restored_message='Files restored into a new private directory; symbolic links remain inert text. '
-                     'Live service startup remains untested.',
-    failed_message='Snapshot verification or restoration failed. Live OS/user/Samba data was not changed.')
+    'Live service startup remains untested.',
+    failed_message='Snapshot verification or restoration failed. Live OS/user/Samba data was not changed.',
+)
 
 
 def digest(path):
@@ -67,7 +78,14 @@ def relative(kind, value):
     if not isinstance(value, str) or not value or '\x00' in value:
         raise RuntimeError('Invalid snapshot path')
     path = PurePosixPath(value)
-    if not path.parts or value == '.' or path.is_absolute() or '..' in path.parts or '.' in path.parts or str(path) != value:
+    if (
+        not path.parts
+        or value == '.'
+        or path.is_absolute()
+        or '..' in path.parts
+        or '.' in path.parts
+        or str(path) != value
+    ):
         raise RuntimeError('Unsafe snapshot path')
     if not kind.root_ok(path.parts[0]):
         raise RuntimeError('Unmanaged snapshot path')
@@ -75,12 +93,16 @@ def relative(kind, value):
 
 
 def check_metadata(row):
-    for key, maximum in (('uid', 2**32-2), ('gid', 2**32-2), ('mode', 0o7777), ('size', 2**63-1)):
+    for key, maximum in (('uid', 2**32 - 2), ('gid', 2**32 - 2), ('mode', 0o7777), ('size', 2**63 - 1)):
         if type(row.get(key)) is not int or not 0 <= row[key] <= maximum:
             raise RuntimeError('Invalid file metadata')
     # When the file was last changed (recorded since 0.27.x host / 0.28.5 app snapshots).
-    if 'mtime' in row and (type(row['mtime']) is not int or abs(row['mtime']) > 2**62
-                           or type(row.get('mtime_nsec')) is not int or not 0 <= row['mtime_nsec'] < 10**9):
+    if 'mtime' in row and (
+        type(row['mtime']) is not int
+        or abs(row['mtime']) > 2**62
+        or type(row.get('mtime_nsec')) is not int
+        or not 0 <= row['mtime_nsec'] < 10**9
+    ):
         raise RuntimeError('Invalid file metadata')
     # Setuid/setgid file execution is never needed for restored settings.
     if row['kind'] == 'file' and row['mode'] & 0o6000:
@@ -99,9 +121,16 @@ def check_row(kind, snapshot, row, inventory):
     if row['kind'] == 'directory':
         if not path.is_dir():
             raise RuntimeError('Snapshot directory missing')
-    elif not path.is_file() or metadata.st_nlink != 1 or metadata.st_size != row['size'] or digest(path) != row.get('sha256'):
+    elif (
+        not path.is_file()
+        or metadata.st_nlink != 1
+        or metadata.st_size != row['size']
+        or digest(path) != row.get('sha256')
+    ):
         raise RuntimeError('Snapshot file checksum or size mismatch')
-    if row['kind'] == 'symlink' and (not isinstance(row.get('link_target'), str) or path.read_text() != row['link_target']):
+    if row['kind'] == 'symlink' and (
+        not isinstance(row.get('link_target'), str) or path.read_text() != row['link_target']
+    ):
         raise RuntimeError('Link inventory mismatch')
     return rel
 
@@ -141,8 +170,10 @@ def restore(kind, snapshot, destination, preserve_owners=False):
         raise RuntimeError('Restore directory must be separate from snapshot')
     if not destination.parent.is_dir():
         # Said with what to do: a missing parent is never made here (see below).
-        raise RuntimeError(f'The folder {destination.parent} does not exist, so nothing was restored. Create it first '
-                           f'(sudo mkdir -p "{destination.parent}"), or choose a new folder inside one that exists')
+        raise RuntimeError(
+            f'The folder {destination.parent} does not exist, so nothing was restored. Create it first '
+            f'(sudo mkdir -p "{destination.parent}"), or choose a new folder inside one that exists'
+        )
     manifest = verify(kind, snapshot)
     ensure_room(destination.parent, sum(r['size'] for r in manifest['files'] if r['kind'] != 'directory'))
     if preserve_owners and os.geteuid() != 0:
@@ -154,12 +185,20 @@ def restore(kind, snapshot, destination, preserve_owners=False):
     # Privately retain evidence before applying original directory permissions. Owners
     # count as restored only after every chown/chmod worked: a failure leaves the
     # report saying so (the command itself fails too).
-    report = {'format': kind.restore_format, 'files': len(rows), 'checksums_verified': True,
-              'original_owners_restored': False,
-              'ownership': 'incomplete' if preserve_owners else 'not requested', **kind.report}
+    report = {
+        'format': kind.restore_format,
+        'files': len(rows),
+        'checksums_verified': True,
+        'original_owners_restored': False,
+        'ownership': 'incomplete' if preserve_owners else 'not requested',
+        **kind.report,
+    }
     if kind.links:
-        report.update(sources=manifest.get('sources', []), missing_optional=manifest.get('missing_optional', []),
-                      left_out=manifest.get('left_out', []))   # Steam's, on a night Steam was open
+        report.update(
+            sources=manifest.get('sources', []),
+            missing_optional=manifest.get('missing_optional', []),
+            left_out=manifest.get('left_out', []),
+        )  # Steam's, on a night Steam was open
     atomic_json(destination / REPORT_NAME, report)
     if preserve_owners:
         apply_owners(kind, destination, rows)
@@ -233,8 +272,12 @@ def main(kind, description, argv=None):
     except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
         print(kind.failed_message + ' Reason: ' + failure_reason(exc), file=sys.stderr)
         if args.command == 'restore' and not existed and Path(args.destination).exists():
-            print('What was restored before it stopped is kept in ' + args.destination
-                  + ' (incomplete): look at it or delete it, then restore again into a new folder.', file=sys.stderr)
+            print(
+                'What was restored before it stopped is kept in '
+                + args.destination
+                + ' (incomplete): look at it or delete it, then restore again into a new folder.',
+                file=sys.stderr,
+            )
         return 1
     return 0
 

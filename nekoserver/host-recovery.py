@@ -3,6 +3,7 @@
 
 This ad hoc tool never starts containers or writes to live OS, user or Samba paths.
 """
+
 import sys
 
 import snapshot_restore

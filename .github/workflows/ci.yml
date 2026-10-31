@@ -47,6 +47,15 @@ jobs:
       - name: Lint (syntax errors and undefined names)
         # Pinned, so lint results only change when this line does.
         run: pipx run ruff==0.16.8 check --select E9,F63,F7,F82 --output-format github .
+      - name: Layout of the Python (ruff.toml; `ruff format .` in this folder puts a file right)
+        run: pipx run ruff==0.16.8 format --check .
+      - name: Layout of the dashboard, the setup window and the shell scripts
+        # Prettier (.prettierrc.json) and shfmt, pinned like ruff; `npx prettier@3.3.3 --write <file>`
+        # and `shfmt -i 2 -ci -w <file>` put a file right.
+        run: |
+          npx --yes prettier@3.3.3 --check "dashboard/*.{js,css,html}" "setup-gui/*.{js,css,html}"
+          curl -sSfL https://github.com/mvdan/sh/releases/download/v3.7.0/shfmt_v3.7.0_linux_amd64 -o /tmp/shfmt && chmod +x /tmp/shfmt
+          /tmp/shfmt -i 2 -ci -d install.sh uninstall.sh
       - name: Unit tests
         run: python -m unittest discover -s tests -v
 

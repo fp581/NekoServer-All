@@ -2,6 +2,7 @@
 
 The phone guide used to send you to  sudo cat .../APP-CREDENTIALS.txt  for every app,
 to read a 32-letter password and type it on the phone, about five times."""
+
 import importlib.util
 import subprocess
 import sys
@@ -18,8 +19,7 @@ spec.loader.exec_module(setup)
 
 LOGINS = {
     'jellyfin': {'username': 'neko_ab12cd', 'password': 'Pw-Jelly-0123456789abcdefghijk', 'state': 'verified'},
-    'navidrome_listener': {'username': 'neko_listen', 'password': 'Pw-Music-0123456789abcdefghijk',
-                           'state': 'planned'},
+    'navidrome_listener': {'username': 'neko_listen', 'password': 'Pw-Music-0123456789abcdefghijk', 'state': 'planned'},
 }
 
 
@@ -40,8 +40,11 @@ class ShowLoginTests(unittest.TestCase):
             if not asked:
                 raise EOFError
             return asked.pop(0)
-        with mock.patch.object(setup.os, 'geteuid', return_value=0 if root else 1000), \
-                mock.patch.object(setup, 'saved_logins', return_value=logins):
+
+        with (
+            mock.patch.object(setup.os, 'geteuid', return_value=0 if root else 1000),
+            mock.patch.object(setup, 'saved_logins', return_value=logins),
+        ):
             code = setup.show('/c.json', app, prompt=prompt, output=said.append, qr=qr, screen=Screen(tty))
         return code, '\n'.join(said)
 
@@ -94,8 +97,10 @@ class ShowLoginTests(unittest.TestCase):
     def test_the_qr_code_gets_the_password_on_its_input_not_its_command_line(self):
         """Every account can read another program's command line (/proc/PID/cmdline)."""
         result = subprocess.CompletedProcess([], 0, stdout='QR-DRAWING')
-        with mock.patch.object(setup.shutil, 'which', return_value='/usr/bin/qrencode'), \
-                mock.patch.object(setup.subprocess, 'run', return_value=result) as run:
+        with (
+            mock.patch.object(setup.shutil, 'which', return_value='/usr/bin/qrencode'),
+            mock.patch.object(setup.subprocess, 'run', return_value=result) as run,
+        ):
             self.assertEqual(setup.terminal_qr('Pw-Jelly'), 'QR-DRAWING')
         self.assertNotIn('Pw-Jelly', ' '.join(run.call_args.args[0]))
         self.assertEqual(run.call_args.kwargs['input'], 'Pw-Jelly')
@@ -104,8 +109,10 @@ class ShowLoginTests(unittest.TestCase):
         self.assertIn('QR-DRAWING', text)
 
     def test_a_drive_problem_is_said_plainly(self):
-        with mock.patch.object(setup.os, 'geteuid', return_value=0), \
-                mock.patch.object(setup, 'saved_logins', side_effect=RuntimeError('Storage identity mismatch')):
+        with (
+            mock.patch.object(setup.os, 'geteuid', return_value=0),
+            mock.patch.object(setup, 'saved_logins', side_effect=RuntimeError('Storage identity mismatch')),
+        ):
             said = []
             code = setup.show('/c.json', 'jellyfin', output=said.append, screen=Screen())
         self.assertEqual(code, 2)

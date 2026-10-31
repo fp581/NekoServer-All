@@ -1,4 +1,5 @@
 """Finish Navidrome listener setup (its desktop shortcut comes from modules/desktop.py)."""
+
 import os
 from pathlib import Path
 import subprocess
@@ -33,17 +34,25 @@ def run(ctx):
     if os.geteuid() != 0:
         raise RuntimeError('Root required')
     from neko_common import verify_storage
+
     verify_storage(ctx.config)
     result = music_client.check(ctx.config)
     if result['status'] != 'pass' and sys.stdin.isatty():
-        release = Path(ctx.config['data_mount'])/'installer/releases'/('v'+VERSION)
+        release = Path(ctx.config['data_mount']) / 'installer/releases' / ('v' + VERSION)
         with setup_progress.in_terminal('Music listener setup'):
-            code = subprocess.run([sys.executable, str(release/'music-setup.py'), '--config', str(ctx.config_path), '--configure'], check=False).returncode
+            code = subprocess.run(
+                [sys.executable, str(release / 'music-setup.py'), '--config', str(ctx.config_path), '--configure'],
+                check=False,
+            ).returncode
         if code == 2:
             raise RuntimeError('Music listener setup failed; credentials/configuration preserved')
         result = music_client.check(ctx.config)
-    atomic_json(Path(ctx.config['data_mount'])/'reports/music-setup.json', result)
-    ctx.log('Music uses the SSD library/music folder read-only; Lidarr imports into the same folder. Music gateway: HTTPS port 8446. Phone/desktop client login and real playback remain acceptance steps.')
+    atomic_json(Path(ctx.config['data_mount']) / 'reports/music-setup.json', result)
+    ctx.log(
+        'Music uses the SSD library/music folder read-only; Lidarr imports into the same folder. Music gateway: HTTPS port 8446. Phone/desktop client login and real playback remain acceptance steps.'
+    )
     if result['status'] != 'pass':
-        return {'status': 'needs_setup', 'reason': 'Finish the Navidrome listener using music-setup.py --configure on the server'}
-
+        return {
+            'status': 'needs_setup',
+            'reason': 'Finish the Navidrome listener using music-setup.py --configure on the server',
+        }

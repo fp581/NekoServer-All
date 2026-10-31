@@ -27,13 +27,13 @@ class Arch(Family):
     name = 'arch'
     label = 'Arch Linux / Nyarch'
     manager = 'pacman'
-    ids = ('arch', 'nyarch')          # /etc/os-release ID
-    like = ('arch',)                  # /etc/os-release ID_LIKE words of derivatives
+    ids = ('arch', 'nyarch')  # /etc/os-release ID
+    like = ('arch',)  # /etc/os-release ID_LIKE words of derivatives
     services = {'samba': 'smb.service', 'tailscale': 'tailscaled.service'}
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
 
     def available(self, wanted): ...  # the repositories offer it
-    def has(self, package): ...       # this one package is installed
+    def has(self, package): ...  # this one package is installed
     def _install(self, names, timeout): ...
 ```
 

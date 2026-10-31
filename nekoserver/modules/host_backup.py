@@ -1,4 +1,5 @@
 """Configure private Rust host/Steam/Samba snapshots and staged recovery."""
+
 import json
 import os
 from pathlib import Path
@@ -8,23 +9,50 @@ import subprocess
 
 import native_runtime
 import host
-from neko_common import RESUME_TIMEOUT, SYSTEMD_UNITS, VERSION, atomic_json, check_units, host_timezone, refresh_settings, safe_path, verify_storage, write_units
+from neko_common import (
+    RESUME_TIMEOUT,
+    SYSTEMD_UNITS,
+    VERSION,
+    atomic_json,
+    check_units,
+    host_timezone,
+    refresh_settings,
+    safe_path,
+    verify_storage,
+    write_units,
+)
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Nightly host, Steam and standalone Samba snapshots; staged restore only'
-HOST_FILES = ('/etc/fstab', '/etc/hostname', '/etc/hosts', '/etc/locale.conf',
-              '/etc/vconsole.conf',
-              '/etc/passwd', '/etc/group', '/etc/docker/daemon.json',
-              # The i2c driver OpenRGB needs for memory and motherboard lighting.
-              '/etc/modules-load.d/nekoserver-i2c.conf',
-              # OpenRGB's own settings, not its whole folder: the server writes a log there
-              # all the time (logs/), which made the settings backup fail now and then.
-              '/var/lib/nekoserver-openrgb/OpenRGB/OpenRGB.json', '/var/lib/nekoserver-openrgb/OpenRGB/sizes.ors')
-HOST_DIRS = ('/etc/nekoserver-backups', '/etc/nekoserver-os', '/etc/nekoserver-notifications',
-             '/etc/nekoserver-gateway', '/etc/nekoserver-heartbeat', '/etc/systemd/sleep.conf.d',
-             '/etc/systemd/logind.conf.d', '/etc/systemd/journald.conf.d',
-             # Fan curves, lighting choices and the PIN hash; the dashboard's settings.
-             '/etc/nekoserver-control', '/etc/nekoserver-dashboard')
+HOST_FILES = (
+    '/etc/fstab',
+    '/etc/hostname',
+    '/etc/hosts',
+    '/etc/locale.conf',
+    '/etc/vconsole.conf',
+    '/etc/passwd',
+    '/etc/group',
+    '/etc/docker/daemon.json',
+    # The i2c driver OpenRGB needs for memory and motherboard lighting.
+    '/etc/modules-load.d/nekoserver-i2c.conf',
+    # OpenRGB's own settings, not its whole folder: the server writes a log there
+    # all the time (logs/), which made the settings backup fail now and then.
+    '/var/lib/nekoserver-openrgb/OpenRGB/OpenRGB.json',
+    '/var/lib/nekoserver-openrgb/OpenRGB/sizes.ors',
+)
+HOST_DIRS = (
+    '/etc/nekoserver-backups',
+    '/etc/nekoserver-os',
+    '/etc/nekoserver-notifications',
+    '/etc/nekoserver-gateway',
+    '/etc/nekoserver-heartbeat',
+    '/etc/systemd/sleep.conf.d',
+    '/etc/systemd/logind.conf.d',
+    '/etc/systemd/journald.conf.d',
+    # Fan curves, lighting choices and the PIN hash; the dashboard's settings.
+    '/etc/nekoserver-control',
+    '/etc/nekoserver-dashboard',
+)
 PRIVATE = Path('/etc/nekoserver-backups/host.json')
 BACKUP_UNIT, BACKUP_TIMER = 'nekoserver-host-backup.service', 'nekoserver-host-backup.timer'
 RESUME_UNIT = 'nekoserver-host-resume.service'
@@ -86,11 +114,15 @@ def choose_user(config, opts, previous):
 def system_paths():
     """Host settings and NekoServer's own units, always backed up when present."""
     family = host.family_or_default()
-    paths = [str(SYSTEMD_UNITS/name) for name in (BACKUP_UNIT, BACKUP_TIMER, RESUME_UNIT)] + list(HOST_FILES) + list(family.settings) + list(HOST_DIRS)
+    paths = (
+        [str(SYSTEMD_UNITS / name) for name in (BACKUP_UNIT, BACKUP_TIMER, RESUME_UNIT)]
+        + list(HOST_FILES)
+        + list(family.settings)
+        + list(HOST_DIRS)
+    )
     # Preserve only NekoServer units/drop-ins, not unrelated host services.
-    paths += [str(p) for p in sorted(SYSTEMD_UNITS.glob('nekoserver-*'))
-              if not p.is_symlink() and str(p) not in paths]
-    paths += [str(SYSTEMD_UNITS/name) for name in (family.service('docker') + '.d', family.service('samba') + '.d')]
+    paths += [str(p) for p in sorted(SYSTEMD_UNITS.glob('nekoserver-*')) if not p.is_symlink() and str(p) not in paths]
+    paths += [str(SYSTEMD_UNITS / name) for name in (family.service('docker') + '.d', family.service('samba') + '.d')]
     return paths
 
 
@@ -103,14 +135,14 @@ def owned_home(user):
 
 def steam_paths(home):
     """Native Arch Steam. Root symlinks are resolved only here, within this home."""
-    steam = home/'.local/share/Steam'
-    if not steam.exists() and (home/'.steam/steam').exists():
-        steam = home/'.steam/steam'
+    steam = home / '.local/share/Steam'
+    if not steam.exists() and (home / '.steam/steam').exists():
+        steam = home / '.steam/steam'
     if steam.exists():
         steam = steam.resolve(strict=True)
         if home not in steam.parents:
             raise RuntimeError('Steam root outside selected home; configure explicit extra paths')
-    return [steam/name for name in ('config', 'userdata', 'steamapps/compatdata')]
+    return [steam / name for name in ('config', 'userdata', 'steamapps/compatdata')]
 
 
 def extra_path(config, home, value):
@@ -118,7 +150,7 @@ def extra_path(config, home, value):
     media = Path(config['media_mount'])
     if not path.is_absolute() or not any(root in path.parents for root in (home, Path(config['data_mount']), media)):
         raise RuntimeError('Extra paths must be inside the selected home or verified storage')
-    if path == media/'backups' or media/'backups' in path.parents:
+    if path == media / 'backups' or media / 'backups' in path.parents:
         raise RuntimeError('Backup recursion refused')
     return path
 
@@ -128,14 +160,16 @@ def guard(config, previous=None):
     With user "auto", the account chosen the first time stays chosen."""
     opts = settings(config)
     sources = []
+
     def add(path, optional=True, steam=False):
-        row = {'id': 'source'+str(len(sources)), 'path': str(Path(path)), 'optional': optional}
+        row = {'id': 'source' + str(len(sources)), 'path': str(Path(path)), 'optional': optional}
         if steam:
             # Left out (and reported) on a night Steam is open; the rest is still saved.
             row['steam'] = True
         sources.append(row)
-    add(Path(config['data_mount'])/'installer/releases')
-    add(Path(config['data_mount'])/'gateway')
+
+    add(Path(config['data_mount']) / 'installer/releases')
+    add(Path(config['data_mount']) / 'gateway')
     for path in system_paths():
         add(path)
     user = None
@@ -151,10 +185,14 @@ def guard(config, previous=None):
         add('/etc/samba')
         add('/var/lib/samba')
     value = native_runtime.storage_config(config)
-    value['host_backup'] = {'sources': sources, 'samba': samba, 'steam_uid': user.pw_uid if user and opts.get('steam', True) else None,
-                            'user': user.pw_name if user else None,
-                            'minimum_free_bytes': opts.get('minimum_free_gb', 2)*1024**3,
-                            'keep_snapshots': opts.get('keep_snapshots', 7)}
+    value['host_backup'] = {
+        'sources': sources,
+        'samba': samba,
+        'steam_uid': user.pw_uid if user and opts.get('steam', True) else None,
+        'user': user.pw_name if user else None,
+        'minimum_free_bytes': opts.get('minimum_free_gb', 2) * 1024**3,
+        'keep_snapshots': opts.get('keep_snapshots', 7),
+    }
     return value
 
 
@@ -185,9 +223,11 @@ def refresh(config, log, target=None):
 # read-only, a /tmp of their own, the kernel's settings and control groups read-only, and
 # no new privileges. Not ProtectSystem (the record in /etc), nor ProtectClock or
 # PrivateDevices (the drive check reads the drives' own IDs with blkid).
-SANDBOX = ('NoNewPrivileges=yes\nRestrictRealtime=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n'
-           'SystemCallArchitectures=native\nPrivateTmp=yes\nProtectHome=read-only\nProtectKernelTunables=yes\n'
-           'ProtectControlGroups=yes\n')
+SANDBOX = (
+    'NoNewPrivileges=yes\nRestrictRealtime=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n'
+    'SystemCallArchitectures=native\nPrivateTmp=yes\nProtectHome=read-only\nProtectKernelTunables=yes\n'
+    'ProtectControlGroups=yes\n'
+)
 
 
 def definitions(config, binary, private):
@@ -197,32 +237,52 @@ def definitions(config, binary, private):
     # A night missed while the PC was off is caught up at boot, when the resume service
     # runs too and holds the same job lock: the backup waits for it instead of failing.
     return {
-        BACKUP_UNIT: '[Unit]\nDescription=NekoServer host and user snapshot\n'+mounts+f'After={RESUME_UNIT} nekoserver-maintenance-resume.service\n'+
-            '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'+f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec={RESUME_TIMEOUT}\n'+SANDBOX,
-        BACKUP_TIMER: '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'+f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
-        RESUME_UNIT: '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'+mounts+
-            f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\n'+f'ExecStart={resume}\n'+SANDBOX+'[Install]\nWantedBy=multi-user.target\n',
+        BACKUP_UNIT: '[Unit]\nDescription=NekoServer host and user snapshot\n'
+        + mounts
+        + f'After={RESUME_UNIT} nekoserver-maintenance-resume.service\n'
+        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'
+        + f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec={RESUME_TIMEOUT}\n'
+        + SANDBOX,
+        BACKUP_TIMER: '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'
+        + f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
+        RESUME_UNIT: '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'
+        + mounts
+        + f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\n'
+        + f'ExecStart={resume}\n'
+        + SANDBOX
+        + '[Install]\nWantedBy=multi-user.target\n',
     }
 
 
 def run(context):
     settings(context.config)
     if not context.apply:
-        context.log('Host snapshot timer available with --apply; Steam must be closed, extra save/share paths selected explicitly')
+        context.log(
+            'Host snapshot timer available with --apply; Steam must be closed, extra save/share paths selected explicitly'
+        )
         return
     if os.geteuid() != 0:
         raise RuntimeError('Host snapshots require root and runtime.backend=rust')
     verify_storage(context.config)
-    try: options = expected(context.config)
+    try:
+        options = expected(context.config)
     except KeyError:
         return {'status': 'needs_setup', 'reason': 'Set host_backup.user to the existing desktop user and reapply'}
     project = Path(__file__).resolve().parents[1]
-    binary = native_runtime.deploy(project, context.config, Path(context.config['data_mount'])/'installer/runtime'/('v'+VERSION))
+    binary = native_runtime.deploy(
+        project, context.config, Path(context.config['data_mount']) / 'installer/runtime' / ('v' + VERSION)
+    )
     private = safe_path(PRIVATE)
     units = definitions(context.config, binary, private)
     check_units(units, 'host backup')
     atomic_json(private, options)
     write_units(units)
-    for command in (['systemctl','daemon-reload'], ['systemctl','enable','--now',RESUME_UNIT], ['systemctl','enable','--now',BACKUP_TIMER]):
+    for command in (
+        ['systemctl', 'daemon-reload'],
+        ['systemctl', 'enable', '--now', RESUME_UNIT],
+        ['systemctl', 'enable', '--now', BACKUP_TIMER],
+    ):
         subprocess.run(command, check=True, capture_output=True, timeout=300)
-    context.log('Host/Steam/Samba timer installed; no first snapshot assumed. Extra save/share folders require explicit selection; independent restore remains pending.')
+    context.log(
+        'Host/Steam/Samba timer installed; no first snapshot assumed. Extra save/share folders require explicit selection; independent restore remains pending.'
+    )

@@ -1,4 +1,5 @@
 """Authenticated library setup. No account creation, resets or secret persistence."""
+
 import getpass
 import account_store
 import json
@@ -23,7 +24,9 @@ def jellyfin_headers(app, headers):
     if app != 'jellyfin' or not headers.get('X-Emby-Token'):
         return headers
     sent = dict(headers)
-    authorization = sent.get('Authorization', 'MediaBrowser Client="NekoServer", Device="Installer", DeviceId="nekoserver-installer"')
+    authorization = sent.get(
+        'Authorization', 'MediaBrowser Client="NekoServer", Device="Installer", DeviceId="nekoserver-installer"'
+    )
     if 'Token=' not in authorization:
         sent['Authorization'] = authorization + ', Token="' + sent['X-Emby-Token'] + '"'
     return sent
@@ -35,16 +38,20 @@ class Client:
         self.base = f'http://127.0.0.1:{PORTS[app]}'
         self.headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
         if app == 'jellyfin':
-            self.headers['Authorization'] = f'MediaBrowser Client="NekoServer", Device="Installer", DeviceId="nekoserver-installer", Version="{VERSION}"'
+            self.headers['Authorization'] = (
+                f'MediaBrowser Client="NekoServer", Device="Installer", DeviceId="nekoserver-installer", Version="{VERSION}"'
+            )
         # Local credentials must never follow redirects or environment proxies.
         self.opener = local_opener()
 
     def call(self, endpoint, method='GET', payload=None):
         if not endpoint.startswith('/') or endpoint.startswith('//'):
             raise ValueError('Invalid local endpoint')
-        prefix = {'seerr':'/api/v1','sonarr':'/api/v3','radarr':'/api/v3'}.get(self.app,'')
+        prefix = {'seerr': '/api/v1', 'sonarr': '/api/v3', 'radarr': '/api/v3'}.get(self.app, '')
         body = json.dumps(payload).encode() if payload is not None else None
-        req = urllib.request.Request(self.base + prefix + endpoint, data=body, method=method, headers=jellyfin_headers(self.app, self.headers))
+        req = urllib.request.Request(
+            self.base + prefix + endpoint, data=body, method=method, headers=jellyfin_headers(self.app, self.headers)
+        )
         try:
             with self.opener.open(req, timeout=12) as res:
                 data = res.read(3_000_001)
@@ -52,7 +59,8 @@ class Client:
                     raise RuntimeError('API response too large')
                 return json.loads(data) if data.strip() else {}
         except urllib.error.HTTPError as exc:
-            code=exc.code;exc.close()
+            code = exc.code
+            exc.close()
             raise RuntimeError(f'{self.app}: HTTP {code}') from None
         except (OSError, ValueError):
             raise RuntimeError(f'{self.app}: unavailable or incompatible API response') from None
@@ -75,7 +83,9 @@ def row(check, status, reason=None):
 
 def folders(client):
     values = client.call('/Library/VirtualFolders')
-    if not isinstance(values, list) or any(not isinstance(x, dict) or not isinstance(x.get('Locations'), list) for x in values):
+    if not isinstance(values, list) or any(
+        not isinstance(x, dict) or not isinstance(x.get('Locations'), list) for x in values
+    ):
         raise RuntimeError('Unsupported Jellyfin library response')
     return values
 
@@ -104,8 +114,10 @@ def sign_in(client, user, secret):
         if str(exc) != 'jellyfin: HTTP 401':
             raise
         # A typing mistake: something to do again, not a broken Jellyfin.
-        raise SetupRequired('Jellyfin did not accept that administrator username and password; '
-                            'run  sudo bash install.sh  again and type them as you set them in Jellyfin') from None
+        raise SetupRequired(
+            'Jellyfin did not accept that administrator username and password; '
+            'run  sudo bash install.sh  again and type them as you set them in Jellyfin'
+        ) from None
     if not isinstance(auth, dict) or not isinstance(auth.get('AccessToken'), str) or not auth['AccessToken']:
         raise SetupRequired('Jellyfin administrator authentication was not verified')
     client.headers['X-Emby-Token'] = auth['AccessToken']
@@ -139,7 +151,9 @@ def jellyfin(client, media, apply, username, password):
                 results.append(row('jellyfin:' + category, 'needs_setup', 'Preview: library would be created'))
                 continue
             if not existing:
-                query = urllib.parse.urlencode({'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'true'})
+                query = urllib.parse.urlencode(
+                    {'name': name, 'collectionType': kind, 'paths': '/data/' + category, 'refreshLibrary': 'true'}
+                )
                 client.call('/Library/VirtualFolders?' + query, 'POST', {})
                 existing = matching(folders(client), category, name, kind)
                 if not existing:
@@ -149,7 +163,9 @@ def jellyfin(client, media, apply, username, password):
         except SetupRequired as exc:
             results.append(row('jellyfin:' + category, 'needs_setup', str(exc)))
         except (RuntimeError, ValueError, TypeError, KeyError):
-            results.append(row('jellyfin:' + category, 'fail', 'Library API/path check failed; existing settings preserved'))
+            results.append(
+                row('jellyfin:' + category, 'fail', 'Library API/path check failed; existing settings preserved')
+            )
     return results, info['Id'], ids
 
 
@@ -197,11 +213,15 @@ def seerr(client, root, server_id, library_ids, apply, apps=('sonarr', 'radarr')
         if matches[0].get('enabled') is not True and apply:
             client.call('/settings/jellyfin/library/' + urllib.parse.quote(lib_id, safe=''), 'PUT', {'enabled': True})
             saved = client.call('/settings/jellyfin/library')
-            if not isinstance(saved, list) or not any(isinstance(x, dict) and str(x.get('id')) == lib_id and x.get('enabled') is True for x in saved):
+            if not isinstance(saved, list) or not any(
+                isinstance(x, dict) and str(x.get('id')) == lib_id and x.get('enabled') is True for x in saved
+            ):
                 raise RuntimeError('Seerr library setting was not retained')
             results.append(row('seerr:library:' + lib_id, 'pass'))
         else:
-            results.append(row('seerr:library:' + lib_id, 'pass' if matches[0].get('enabled') is True else 'needs_setup'))
+            results.append(
+                row('seerr:library:' + lib_id, 'pass' if matches[0].get('enabled') is True else 'needs_setup')
+            )
     results.append(request_providers_row(apps))
     return results
 
@@ -215,7 +235,11 @@ def request_providers_row(apps):
     connect (both can be removed and Seerr kept), so the row is not a step left to do."""
     if not set(apps) & {'sonarr', 'radarr'}:
         return row(REQUEST_PROVIDERS, 'pass', NOT_NEEDED)
-    return row(REQUEST_PROVIDERS, 'needs_setup', 'Run --request-providers and verify a complete request/import/playback on the server')
+    return row(
+        REQUEST_PROVIDERS,
+        'needs_setup',
+        'Run --request-providers and verify a complete request/import/playback on the server',
+    )
 
 
 READINESS_APP = 'NekoServer readiness'
@@ -241,8 +265,15 @@ def ensure_readiness_key(client, root, log=print):
     def active():
         keys = client.call('/Auth/Keys')
         items = keys.get('Items', []) if isinstance(keys, dict) else []
-        return [k['AccessToken'] for k in items if isinstance(k, dict)
-                and k.get('AppName') == READINESS_APP and isinstance(k.get('AccessToken'), str) and k['AccessToken']]
+        return [
+            k['AccessToken']
+            for k in items
+            if isinstance(k, dict)
+            and k.get('AppName') == READINESS_APP
+            and isinstance(k.get('AccessToken'), str)
+            and k['AccessToken']
+        ]
+
     tokens = active()
     if kept and kept in tokens:
         return
@@ -257,7 +288,9 @@ def ensure_readiness_key(client, root, log=print):
         log('Jellyfin: NekoServer\'s key was revoked or replaced in Jellyfin; saved its current key')
 
 
-def configure(root, media, apply=False, apps=('jellyfin', 'seerr'), factory=Client, username=input, password=getpass.getpass):
+def configure(
+    root, media, apply=False, apps=('jellyfin', 'seerr'), factory=Client, username=input, password=getpass.getpass
+):
     if 'jellyfin' not in apps:
         return [row('media_libraries', 'needs_setup', 'Jellyfin is required for this library workflow')]
     stored = account_store.get({'data_mount': str(root)}, 'jellyfin', verified=True)
@@ -273,7 +306,9 @@ def configure(root, media, apply=False, apps=('jellyfin', 'seerr'), factory=Clie
         except SetupRequired as exc:
             return [row('jellyfin:setup', 'needs_setup', str(exc))]
         except (RuntimeError, ValueError, TypeError, KeyError, EOFError):
-            return [row('jellyfin:setup', 'fail', 'Authenticated Jellyfin setup failed; rerun after checking the service')]
+            return [
+                row('jellyfin:setup', 'fail', 'Authenticated Jellyfin setup failed; rerun after checking the service')
+            ]
         if 'seerr' in apps:
             sr = factory('seerr')
             try:

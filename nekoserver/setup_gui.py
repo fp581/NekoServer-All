@@ -7,6 +7,7 @@ at the end it shows the finishing screen.
 
 It is served by setup itself on 127.0.0.1, on a port picked at random, behind a path
 nobody can guess (a token), and only for as long as setup runs."""
+
 import ipaddress
 import json
 import os
@@ -31,38 +32,54 @@ INDEX = 'index.html'
 PLAIN = 'text/plain'
 JSON = 'application/json'
 HTML = 'text/html; charset=utf-8'
-STATIC = {'setup.css': ('setup.css', 'text/css; charset=utf-8'),
-          'setup.js': ('setup.js', 'text/javascript; charset=utf-8'),
-          'logo.svg': ('../dashboard/logo.svg', 'image/svg+xml')}
+STATIC = {
+    'setup.css': ('setup.css', 'text/css; charset=utf-8'),
+    'setup.js': ('setup.js', 'text/javascript; charset=utf-8'),
+    'logo.svg': ('../dashboard/logo.svg', 'image/svg+xml'),
+}
 NOT_FOUND = (404, b'Not found', PLAIN)
 
 
 def refusal(title, text):
     """A short page that says why the window did not open (a page, so it wraps to the
     browser's width and reads as words, not as code)."""
-    page = ('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
-            'content="width=device-width,initial-scale=1"><title>NekoServer setup</title></head><body>'
-            f'<h1>{title}</h1><p>{text}</p></body></html>')
+    page = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
+        'content="width=device-width,initial-scale=1"><title>NekoServer setup</title></head><body>'
+        f'<h1>{title}</h1><p>{text}</p></body></html>'
+    )
     return 403, page.encode(), HTML
 
 
 # A request that is not the page itself, without this browser's cookie (an older window
 # after the address was opened again elsewhere, say), or the page loaded from another
 # account than the one that opened the window first.
-SPENT = refusal('This setup window is open somewhere else',
-                'It was opened again in another browser window, which is the one that works now. Use that one, '
-                'or load this address again from the same account on this PC to use it here instead.')
+SPENT = refusal(
+    'This setup window is open somewhere else',
+    'It was opened again in another browser window, which is the one that works now. Use that one, '
+    'or load this address again from the same account on this PC to use it here instead.',
+)
 # Another account (or one that can't be told) asks for the page before the window does.
-OTHER_ACCOUNT = refusal('Only the account that runs setup can open this window',
-                        'Open it from that account\'s desktop on this PC (or as root).')
+OTHER_ACCOUNT = refusal(
+    'Only the account that runs setup can open this window',
+    'Open it from that account\'s desktop on this PC (or as root).',
+)
 COOKIE = 'neko_setup'
 # The kernel's lists of TCP connections; each line names the account that owns it.
 TCP_TABLES = (Path('/proc/net/tcp'), Path('/proc/net/tcp6'))
 # The browsers that open a page as a small window of its own (Chromium's --app), in the
 # order tried; any other browser gets a normal window.
-APP_BROWSERS = ('chromium', 'chromium-browser', 'google-chrome-stable', 'google-chrome', 'brave', 'brave-browser',
-                'microsoft-edge-stable', 'microsoft-edge')
-WINDOW = ('1180', '480')       # the small window's size; it is placed low on the screen
+APP_BROWSERS = (
+    'chromium',
+    'chromium-browser',
+    'google-chrome-stable',
+    'google-chrome',
+    'brave',
+    'brave-browser',
+    'microsoft-edge-stable',
+    'microsoft-edge',
+)
+WINDOW = ('1180', '480')  # the small window's size; it is placed low on the screen
 LARGEST_BODY = 10_000
 # The extras setup asks about when it gets to their step, as long as nothing was chosen
 # for them (Nextcloud is not asked: it is set up unless switched off).
@@ -80,12 +97,16 @@ def family_packages():
     and AMD's drivers) when this Linux or the chips can't be told."""
     try:
         import host
+
         names = host.current().names
     except (OSError, RuntimeError, ValueError):
+
         def names(wanted):
             return [wanted]
+
     try:
         import gpu
+
         vulkan = gpu.vulkan_packages(gpu.graphics()) or []
     except (OSError, RuntimeError, ValueError):
         vulkan = ['vulkan-intel', 'lib32-vulkan-intel']
@@ -108,7 +129,7 @@ def table_address(field):
     host, _, port = field.partition(':')
     if len(host) not in (8, 32):
         raise ValueError('not an address')
-    raw = b''.join(int(host[i:i + 8], 16).to_bytes(4, sys.byteorder) for i in range(0, len(host), 8))
+    raw = b''.join(int(host[i : i + 8], 16).to_bytes(4, sys.byteorder) for i in range(0, len(host), 8))
     return _plain(str(ipaddress.ip_address(raw))), int(port, 16)
 
 
@@ -175,10 +196,10 @@ class Window:
         self.claimant = None
         self.owners = expected_owners(config) if owners is None else set(owners)
         self.tables = tables
-        self.packages = None                 # this Linux's package names (family_packages), once asked
-        self.started = threading.Event()     # Start was pressed in the window
-        self.frozen = False                  # setup has started: the choices are fixed
-        self.delivered = threading.Event()   # the page has shown the finishing screen
+        self.packages = None  # this Linux's package names (family_packages), once asked
+        self.started = threading.Event()  # Start was pressed in the window
+        self.frozen = False  # setup has started: the choices are fixed
+        self.delivered = threading.Event()  # the page has shown the finishing screen
         self.lock = threading.Lock()
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), self._handler())
         self.server.daemon_threads = True
@@ -240,20 +261,33 @@ class Window:
                 notes.setdefault(record['step'], []).append(record['text'])
         ran = setup_progress.last('plan')
         plan = list(dict.fromkeys([*(ran['steps'] if ran else ()), *self.plan]))
-        return [{'id': name, 'title': self.titles.get(name) or step_title(name),
-                 'explanation': explanations.STEP_EXPLANATIONS.get(name, ''),
-                 'status': latest.get(name, {}).get('status', 'pending'),
-                 'reason': latest.get(name, {}).get('reason', ''),
-                 'packages': _package_rows(packages.get(name, [])),
-                 'notes': notes.get(name, [])[-6:]} for name in plan]
+        return [
+            {
+                'id': name,
+                'title': self.titles.get(name) or step_title(name),
+                'explanation': explanations.STEP_EXPLANATIONS.get(name, ''),
+                'status': latest.get(name, {}).get('status', 'pending'),
+                'reason': latest.get(name, {}).get('reason', ''),
+                'packages': _package_rows(packages.get(name, [])),
+                'notes': notes.get(name, [])[-6:],
+            }
+            for name in plan
+        ]
 
     def _extras(self):
         with self.lock:
-            return [{'id': e['id'], 'title': e['title'], 'explanation': e['explanation'],
-                     'installs': self._installs(e),
-                     'on': explanations.extra_state(self.config, e),
-                     'asked': e['id'] in ASKED_LATER and not isinstance(self.config.get(e['section'], {}).get(e['key']), bool)}
-                    for e in explanations.EXTRAS]
+            return [
+                {
+                    'id': e['id'],
+                    'title': e['title'],
+                    'explanation': e['explanation'],
+                    'installs': self._installs(e),
+                    'on': explanations.extra_state(self.config, e),
+                    'asked': e['id'] in ASKED_LATER
+                    and not isinstance(self.config.get(e['section'], {}).get(e['key']), bool),
+                }
+                for e in explanations.EXTRAS
+            ]
 
     def _installs(self, extra):
         """What an extra installs, as this Linux names the packages (Ubuntu's
@@ -287,21 +321,33 @@ class Window:
         current = next((s for s in steps if s['status'] == 'running'), None)
         question = setup_progress.pending_question()
         if question is not None:
-            question = {'seq': question['seq'], 'text': question['text'], 'secret': question['secret'],
-                        'kind': question.get('form', 'text'), 'context': question.get('context', [])}
+            question = {
+                'seq': question['seq'],
+                'text': question['text'],
+                'secret': question['secret'],
+                'kind': question.get('form', 'text'),
+                'context': question.get('context', []),
+            }
         if phase == 'finished':
             self.delivered.set()
         # Counted as the terminal's summary and the log count them: steps done, out of the
         # steps this PC can have (one not available here counts in neither).
         here = [s for s in steps if s['status'] != 'unavailable']
-        return {'version': self.version, 'phase': phase, 'extras': self._extras(), 'steps': steps,
-                'current': current['id'] if current else None,
-                'done': sum(1 for s in here if s['status'] == 'success'), 'total': len(here),
-                'question': question, 'terminal': setup_progress.terminal_handoff(),
-                'finish': finished['lines'] if finished else [],
-                'title': (finished.get('title') or '') if finished else '',
-                'stopped': bool(finished and finished.get('stopped') is True),
-                'complete': bool(finished and finished.get('complete') is True)}
+        return {
+            'version': self.version,
+            'phase': phase,
+            'extras': self._extras(),
+            'steps': steps,
+            'current': current['id'] if current else None,
+            'done': sum(1 for s in here if s['status'] == 'success'),
+            'total': len(here),
+            'question': question,
+            'terminal': setup_progress.terminal_handoff(),
+            'finish': finished['lines'] if finished else [],
+            'title': (finished.get('title') or '') if finished else '',
+            'stopped': bool(finished and finished.get('stopped') is True),
+            'complete': bool(finished and finished.get('complete') is True),
+        }
 
     def freeze(self):
         """Setup has started (in the terminal or the window): from now on the choices
@@ -332,7 +378,11 @@ class Window:
                 config = self._saved()
                 for key, value in chosen.items():
                     explanations.set_extra(config, by_id[key], value)
-                owner = (self.config_path.stat().st_uid, self.config_path.stat().st_gid) if self.config_path.exists() else None
+                owner = (
+                    (self.config_path.stat().st_uid, self.config_path.stat().st_gid)
+                    if self.config_path.exists()
+                    else None
+                )
                 atomic_json(self.config_path, config)
                 if owner is not None and os.geteuid() == 0:
                     os.chown(self.config_path, *owner)
@@ -367,8 +417,12 @@ class Window:
         if route == 'api/answer' and isinstance(body, dict):
             # The window's answer to the question setup is waiting on; the terminal may
             # have answered first, in which case this says so.
-            taken = (isinstance(body.get('seq'), int) and isinstance(body.get('text'), str)
-                     and len(body['text']) <= 1000 and setup_progress.answer_from_window(body['seq'], body['text']))
+            taken = (
+                isinstance(body.get('seq'), int)
+                and isinstance(body.get('text'), str)
+                and len(body['text']) <= 1000
+                and setup_progress.answer_from_window(body['seq'], body['text'])
+            )
             return 200, json.dumps({'ok': bool(taken)}).encode(), JSON
         return NOT_FOUND
 
@@ -387,7 +441,7 @@ class Window:
             server_version = 'NekoServerSetup/' + window.version
             sys_version = ''
 
-            def log_message(self, *args):   # nothing on the terminal, nothing in a log
+            def log_message(self, *args):  # nothing on the terminal, nothing in a log
                 pass
 
             def route(self):
@@ -399,7 +453,7 @@ class Window:
                     return None
                 if not self.path.startswith(prefix):
                     return None
-                return self.path[len(prefix):].split('?', 1)[0]
+                return self.path[len(prefix) :].split('?', 1)[0]
 
             def handle_one_request(self):
                 # A window closed in the middle of a reply is not an error to print on
@@ -412,6 +466,7 @@ class Window:
             def admitted(self, route):
                 def owner():
                     return peer_uid(self.client_address, self.connection.getsockname(), window.tables)
+
                 allowed, given, self.refusal = window.admit(route, self.headers.get('Cookie'), self.command, owner)
                 self.given = given
                 return allowed
@@ -420,7 +475,9 @@ class Window:
                 code, body, kind = answer
                 self.send_response(code)
                 if getattr(self, 'given', None):
-                    self.send_header('Set-Cookie', f'{COOKIE}={self.given}; Path=/t/{window.token}/; HttpOnly; SameSite=Strict')
+                    self.send_header(
+                        'Set-Cookie', f'{COOKIE}={self.given}; Path=/t/{window.token}/; HttpOnly; SameSite=Strict'
+                    )
                 self.send_header('Content-Type', kind)
                 self.send_header('Content-Length', str(len(body)))
                 self.send_header('Cache-Control', 'no-store')
@@ -458,7 +515,7 @@ class Window:
         return Handler
 
 
-SCREEN = re.compile(r'current (\d+) x (\d+)')   # xrandr's line for the whole screen
+SCREEN = re.compile(r'current (\d+) x (\d+)')  # xrandr's line for the whole screen
 
 
 def screen_size(config, run=subprocess.run):
@@ -468,8 +525,13 @@ def screen_size(config, run=subprocess.run):
     if not xrandr:
         return None
     try:
-        result = run(guided_setup.desktop_command(config, [xrandr, '--current']), capture_output=True, text=True,
-                     timeout=10, check=False)
+        result = run(
+            guided_setup.desktop_command(config, [xrandr, '--current']),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
     except (OSError, RuntimeError, KeyError, ValueError, subprocess.SubprocessError):
         return None
     match = SCREEN.search(result.stdout or '')
@@ -490,7 +552,13 @@ def open_window(config, url):
     no desktop or no browser to open it with (setup goes on in the terminal alone)."""
     browser = next((found for found in (find_program(name) for name in APP_BROWSERS) if found), None)
     if browser:
-        argv = [browser, '--app=' + url, '--window-size=' + ','.join(WINDOW), '--no-first-run', '--no-default-browser-check']
+        argv = [
+            browser,
+            '--app=' + url,
+            '--window-size=' + ','.join(WINDOW),
+            '--no-first-run',
+            '--no-default-browser-check',
+        ]
         screen = screen_size(config)
         if screen:
             argv.append('--window-position=' + window_position(screen))
@@ -502,8 +570,14 @@ def open_window(config, url):
         return False
     try:
         command = guided_setup.desktop_command(config, argv)
-        child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, start_new_session=True, cwd='/')
+        child = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd='/',
+        )
         try:
             return child.wait(timeout=2) == 0
         except subprocess.TimeoutExpired:
@@ -515,7 +589,7 @@ def open_window(config, url):
 # ----- setup stopped before the wizard
 
 STOPPED_TITLE = 'Setup stopped before it began'
-STOP_WAIT = 30      # seconds the window may take to open and show it
+STOP_WAIT = 30  # seconds the window may take to open and show it
 NOTHING_TOUCHED = 'Nothing on your drives was touched.'
 AGAIN = 'Once that is fixed, run  sudo bash install.sh  again.'
 
@@ -578,7 +652,7 @@ def show_stopped(note, settings=ROOT / 'my-config.json', output=print, wait=STOP
         shown = window.delivered.wait(wait)
         if shown:
             window.delivered.clear()
-            window.delivered.wait(2)       # the page's own files (its style, the logo) are fetched too
+            window.delivered.wait(2)  # the page's own files (its style, the logo) are fetched too
         return shown
     finally:
         window.stop()

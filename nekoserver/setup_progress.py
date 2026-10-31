@@ -7,6 +7,7 @@ last lines as its context (the list of drives to choose from, say), and the answ
 come from either: the first one wins and the other is told. Nothing secret is kept: an
 answer is never recorded, and a hidden entry (a password, a PIN) is reported only as
 "a hidden entry"; its answer from the window travels on this PC's loopback alone."""
+
 import builtins
 import collections
 import contextlib
@@ -23,11 +24,11 @@ import time
 _events = []
 _lock = threading.Lock()
 _path = None
-_step = None          # the step running now
-_recent = collections.deque(maxlen=40)   # the terminal's last lines, for a question's context
-_pending = None       # {'seq', 'event', 'answer'} while a question waits
+_step = None  # the step running now
+_recent = collections.deque(maxlen=40)  # the terminal's last lines, for a question's context
+_pending = None  # {'seq', 'event', 'answer'} while a question waits
 CONTEXT_LINES = 14
-POLL = 0.3            # seconds between looks at the terminal and the window while waiting
+POLL = 0.3  # seconds between looks at the terminal and the window while waiting
 
 
 def enable(path=None):
@@ -81,7 +82,7 @@ def step(name, status, reason=''):
     with _lock:
         _step = name if status == 'running' else None
     if status == 'running':
-        _cut()   # a question in this step shows what this step said, not the one before
+        _cut()  # a question in this step shows what this step said, not the one before
     # (Long enough for a whole reason: a site that could not be reached names the site,
     # the likely causes and what to do.)
     event('step', name=name, status=status, reason=str(reason or '')[:1000])
@@ -99,15 +100,16 @@ def note(text):
 
 # ----- questions
 
+
 def question_kind(text, secret):
     if secret:
         return 'secret'
     return 'yesno' if '[yes/no]' in text else 'text'
 
 
-CUT = '\x00'   # in _recent: where the last answered question, or the step before, ended
+CUT = '\x00'  # in _recent: where the last answered question, or the step before, ended
 STAMP = re.compile(r'\[\d{4}-\d\d-\d\dT[^\]]*\] ')
-MARKERS = ('START ', 'PASS ', 'FAILED ', 'NEEDS SETUP ', 'UNAVAILABLE ', 'BLOCKED ')   # the installer's step lines
+MARKERS = ('START ', 'PASS ', 'FAILED ', 'NEEDS SETUP ', 'UNAVAILABLE ', 'BLOCKED ')  # the installer's step lines
 
 
 def _cut():
@@ -129,7 +131,7 @@ def question_context():
     with _lock:
         raw = list(_recent)
     if CUT in raw:
-        raw = raw[len(raw) - raw[::-1].index(CUT):]
+        raw = raw[len(raw) - raw[::-1].index(CUT) :]
     lines = []
     for line in raw:
         line = STAMP.sub('', line).rstrip()
@@ -145,7 +147,9 @@ def question(text, secret=False):
     """A question setup is asking; the window may answer it (answer_from_window)."""
     global _pending
     shown = 'a hidden entry' if secret else str(text).strip()[:300]
-    record = event('question', text=shown, secret=bool(secret), form=question_kind(shown, secret), context=question_context())
+    record = event(
+        'question', text=shown, secret=bool(secret), form=question_kind(shown, secret), context=question_context()
+    )
     with _lock:
         _pending = {'seq': record['seq'], 'event': threading.Event(), 'answer': None}
     return record
@@ -280,7 +284,7 @@ def _wait_for_answer(stream, secret):
                 if answer is not None:
                     if _claimed_by_terminal(pending, answer):
                         return answer
-                    return _from_window(pending, secret)   # the window's came in the same moment
+                    return _from_window(pending, secret)  # the window's came in the same moment
     except _Unwatchable:
         return None
 
@@ -341,7 +345,7 @@ def watching_prompts():
         question(prompt, secret=secret)
         try:
             answer = _wait_for_answer(sys.stdin, secret)
-        except BaseException:      # Ctrl+D, Ctrl+C: the window stops showing the question too
+        except BaseException:  # Ctrl+D, Ctrl+C: the window stops showing the question too
             answered()
             raise
         if answer is None:

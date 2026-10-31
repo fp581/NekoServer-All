@@ -1,6 +1,7 @@
 """Small, bounded, read-only checks of this server (commands, saved reports, drives,
 apps, backup schedules) used by setup, the gateway and the acceptance checker.
 The dashboard itself is read by the Rust collector (runtime/src/collect.rs)."""
+
 import json
 import math
 import os
@@ -10,13 +11,15 @@ from pathlib import Path
 
 from neko_common import APPS, findmnt, safe_path
 
-JOBS = {'music': ('Music library backup', 'nekoserver-music-backup', 172800),
-        'archive': ('Photo archive', 'nekoserver-photo-preservation', 10800),
-        'database': ('Immich database', 'nekoserver-immich-db-backup', 172800),
-        'external': ('USB copy (photos and files)', 'nekoserver-photo-backup', 864000),
-        'applications': ('Media application snapshot', 'nekoserver-app-backup', 172800),
-        'host': ('Host and user snapshot', 'nekoserver-host-backup', 172800),
-        'maintenance': ('Monthly backup and updates', 'nekoserver-maintenance', 3024000)}
+JOBS = {
+    'music': ('Music library backup', 'nekoserver-music-backup', 172800),
+    'archive': ('Photo archive', 'nekoserver-photo-preservation', 10800),
+    'database': ('Immich database', 'nekoserver-immich-db-backup', 172800),
+    'external': ('USB copy (photos and files)', 'nekoserver-photo-backup', 864000),
+    'applications': ('Media application snapshot', 'nekoserver-app-backup', 172800),
+    'host': ('Host and user snapshot', 'nekoserver-host-backup', 172800),
+    'maintenance': ('Monthly backup and updates', 'nekoserver-maintenance', 3024000),
+}
 # Only these programs are run, with plain arguments (no shell, no control characters).
 PROGRAMS = {'systemctl', 'docker', 'findmnt', 'tailscale'}
 PLAIN_ARGUMENT = re.compile(r'[A-Za-z0-9 _@%:=,./+{}-]{0,512}')
@@ -33,8 +36,14 @@ def run(args, timeout=8):
     if not all(plain):
         return None, ''
     try:
-        p = subprocess.run([m.group(0) for m in plain], capture_output=True, text=True, timeout=timeout,
-                           env={**os.environ, 'LC_ALL': 'C', 'TZ': 'UTC'}, check=False)
+        p = subprocess.run(
+            [m.group(0) for m in plain],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, 'LC_ALL': 'C', 'TZ': 'UTC'},
+            check=False,
+        )
         return p.returncode, p.stdout[:2000000]
     except (OSError, subprocess.TimeoutExpired):
         return None, ''
@@ -91,8 +100,11 @@ def health_of(status):
 
 def app_state(app, code, records):
     project, service = 'neko-' + app, 'immich-server' if app == 'immich' else app
-    found = [(state, status) for labels, state, status in records
-             if labels.get('com.docker.compose.project') == project and labels.get('com.docker.compose.service') == service]
+    found = [
+        (state, status)
+        for labels, state, status in records
+        if labels.get('com.docker.compose.project') == project and labels.get('com.docker.compose.service') == service
+    ]
     if len(found) > 1:
         return 'ambiguous', 'unknown'
     if len(found) == 1:
@@ -112,8 +124,16 @@ def applications(config):
     for app in (a for a in APPS if a in selected):
         state, health = app_state(app, code, records)
         name, description, port = APPS[app]
-        out.append({'id': app, 'name': name, 'description': description, 'state': state, 'health': health,
-                    'url': f'http://127.0.0.1:{port}/'})
+        out.append(
+            {
+                'id': app,
+                'name': name,
+                'description': description,
+                'state': state,
+                'health': health,
+                'url': f'http://127.0.0.1:{port}/',
+            }
+        )
     return out
 
 
@@ -121,8 +141,14 @@ def timer_and_known(unit):
     """(the timer as shown, whether systemd could be asked about it)."""
     code, text = run(['systemctl', 'show', unit + '.timer', '--property=LoadState,ActiveState,NextElapseUSecRealtime'])
     fields = {k: v for k, _, v in (line.partition('=') for line in text.splitlines()) if _}
-    return ({'installed': code == 0 and fields.get('LoadState') == 'loaded', 'active': fields.get('ActiveState') == 'active',
-             'next_run': fields.get('NextElapseUSecRealtime', '')[:80] or None}, code == 0 and 'LoadState' in fields)
+    return (
+        {
+            'installed': code == 0 and fields.get('LoadState') == 'loaded',
+            'active': fields.get('ActiveState') == 'active',
+            'next_run': fields.get('NextElapseUSecRealtime', '')[:80] or None,
+        },
+        code == 0 and 'LoadState' in fields,
+    )
 
 
 def timer_status(unit):
@@ -149,8 +175,13 @@ def restore_tests(config, key):
     cloud = config.get('nextcloud', {}).get('enabled') is True
     if key == 'external':
         return [test for on, test in ((immich, 'independent_restore'), (cloud, 'cloud_restore')) if on]
-    return {'archive': ['independent_restore'], 'database': ['independent_restore'], 'music': ['music_restore'],
-            'applications': ['app_restore'], 'host': ['host_restore']}.get(key, [])
+    return {
+        'archive': ['independent_restore'],
+        'database': ['independent_restore'],
+        'music': ['music_restore'],
+        'applications': ['app_restore'],
+        'host': ['host_restore'],
+    }.get(key, [])
 
 
 def schedule_stopped(timer, known, ever_ran):
@@ -198,8 +229,15 @@ def job_row(config, now, data_ok, key, name, unit, maximum):
     # A backup that keeps failing stays a failure once it is also overdue.
     state = 'stale' if since is not None and now - since > maximum and status != 'fail' else status
     timer, known = timer_and_known(unit)
-    row = {'id': key, 'name': name, 'status': state, 'last_success': success, 'last_attempt': started, 'timer': timer,
-           'restore': restore_tests(config, key)}
+    row = {
+        'id': key,
+        'name': name,
+        'status': state,
+        'last_success': success,
+        'last_attempt': started,
+        'timer': timer,
+        'restore': restore_tests(config, key),
+    }
     why = retired(config, key)
     if why:
         return {**row, 'status': 'disabled', 'reason': why, 'restore': []}
@@ -225,8 +263,13 @@ def heartbeat_status(config, now):
     # A timer switched off by choice ("wanted": false) is not a missed check-in.
     if timer['active'] and (stamp is None or now - stamp > interval + 90):
         state = 'stale'
-    return {'status': state, 'timer': timer, 'last_attempt': stamp,
-            'last_success': number(saved.get('last_success'), 0, now + 30), 'provider_notifications_verified': False}
+    return {
+        'status': state,
+        'timer': timer,
+        'last_attempt': stamp,
+        'last_success': number(saved.get('last_success'), 0, now + 30),
+        'provider_notifications_verified': False,
+    }
 
 
 def notification_status(now):
@@ -237,5 +280,10 @@ def notification_status(now):
     state = saved.get('status') if valid else 'unknown'
     if timer['active'] and (stamp is None or now - stamp > 180):
         state = 'stale'
-    return {'status': state, 'timer': timer, 'last_success': number(saved.get('last_success'), 0, now + 30),
-            'last_attempt': number(saved.get('last_attempt'), 0, now + 30), 'pending': number(saved.get('pending'), 0, 100)}
+    return {
+        'status': state,
+        'timer': timer,
+        'last_success': number(saved.get('last_success'), 0, now + 30),
+        'last_attempt': number(saved.get('last_attempt'), 0, now + 30),
+        'pending': number(saved.get('pending'), 0, 100),
+    }
