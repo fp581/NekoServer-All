@@ -38,7 +38,7 @@ def lan_ports(config):
 def owned_listeners(config):
     """ip:port pairs the running NekoServer home gateway itself listens on (its own ports
     are not "taken")."""
-    path=LAN_CONFIG;ledger=health.read_json(Path(config['data_mount'])/'gateway/lan-managed.json');old=health.read_json(path)
+    path=LAN_CONFIG;ledger=managed(Path(config['data_mount'])/'gateway/lan-managed.json');old=health.read_json(path)
     rc,_=health.run(['systemctl','is-active','--quiet','nekoserver-gateway-lan.service'])
     owned=set()
     if rc==0 and path.is_file() and ledger.get('sha256',{}).get(str(path))==hashlib.sha256(path.read_bytes()).hexdigest():
@@ -77,6 +77,16 @@ def choose_lan_ports(ctx):
     return ports
 
 LAN_CONFIG=Path('/etc/nekoserver-gateway/lan.json')   # the home gateway's Caddy settings
+# The record of the files the gateway step wrote (their checksums, caddy's account) lives on
+# the SSD beside the certificates; a copy stays on the system disk beside the files
+# themselves, so a replaced SSD (RECOVERY.md) does not make setup refuse them as someone else's.
+LAN_RECORD=Path('/etc/nekoserver-gateway/lan-managed.json')
+
+def managed(ledger,copy=LAN_RECORD):
+    """What the gateway step wrote last time: the SSD's record, or its copy on the system
+    disk when the SSD is new (replaced after it broke; the files it describes are still here)."""
+    saved=health.read_json(ledger)
+    return saved if saved.get('sha256') else health.read_json(copy)
 HTTPS='https://'
 OCC_GET,OCC_SET,OCC_DELETE='config:system:get','config:system:set','config:system:delete'
 
@@ -227,8 +237,8 @@ def unit(config,code,state):
 
 def hashes(payloads):return {str(p):hashlib.sha256(v if isinstance(v,bytes) else v.encode()).hexdigest() for p,v in payloads.items()}
 
-def preflight(payloads,ledger):
-    previous=health.read_json(ledger).get('sha256',{})
+def preflight(payloads,ledger,copy=LAN_RECORD):
+    previous=managed(ledger,copy).get('sha256',{})
     for path,content in payloads.items():
         p=safe_path(path);desired=content if isinstance(content,bytes) else content.encode()
         if p.exists() and p.read_bytes()!=desired and hashlib.sha256(p.read_bytes()).hexdigest()!=previous.get(str(p)):raise RuntimeError('Unmanaged or modified gateway file preserved; inspect before applying')
@@ -302,7 +312,7 @@ def _apply_lan(config):
     state.mkdir(parents=True,exist_ok=True,mode=0o700);os.chown(state,user.pw_uid,user.pw_gid)
     for p,content in payloads.items():atomic_write(p,content,0o750 if p.name==native_runtime.NAME else 0o644)
     clean={k:config[k] for k in ('data_mount','media_mount','storage')};clean['gateway']={k:config['gateway'][k] for k in ('lan_ip','lan_cidr')};atomic_json(Path('/etc/nekoserver-gateway/storage.json'),clean)
-    atomic_json(ledger,{'sha256':hashes(payloads),'uid':user.pw_uid,'gid':user.pw_gid})
+    record={'sha256':hashes(payloads),'uid':user.pw_uid,'gid':user.pw_gid};atomic_json(ledger,record);atomic_json(LAN_RECORD,record)
     configure_cloud_origin(config,lan(config)[0],lan_ports(config).get('nextcloud',8447))
     command(['systemctl','daemon-reload']);command(['systemctl','enable','--now','nekoserver-gateway-lan.service']);
     try:command(['systemctl','restart','nekoserver-gateway-lan.service'])

@@ -543,8 +543,12 @@ class DriveSizeTests(unittest.TestCase):
         fstab.assert_not_called()
         self.assertNotIn('uuid', config['storage']['data_ssd'])
 
+    # A folder of this test's own: a server set up on this PC's /srv/nekoserver (the
+    # drive's "docker-engine" folder) would count as the saved drive's, and keep it.
+    EMPTY = {**DRIVE_FOLDERS, 'data_mount': '/nonexistent/nekoserver-test'}
+
     def test_a_saved_drive_too_small_is_asked_for_again(self):
-        config = {**DRIVE_FOLDERS, 'storage': {'data_ssd': {'uuid': 'small-0001', 'fstype': 'ext4'}}}
+        config = {**self.EMPTY, 'storage': {'data_ssd': {'uuid': 'small-0001', 'fstype': 'ext4'}}}
         config, out = self.resolve(['2', 'sdc1', '2', 'sdd1'], config)
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertIn('sdb1 (16 GB), the drive saved as the SSD, is too small: it needs at least 20 GB. '
@@ -552,12 +556,12 @@ class DriveSizeTests(unittest.TestCase):
 
     def test_a_saved_drive_too_small_already_mounted_says_how_to_choose_again(self):
         inventory = json.loads(json.dumps(dict(self.INVENTORY)))
-        inventory['blockdevices'][4]['children'][0]['mountpoint'] = SSD_FOLDER
-        config = {**DRIVE_FOLDERS, 'storage': {'data_ssd': {'uuid': 'small-0001', 'fstype': 'ext4'}}}
+        inventory['blockdevices'][4]['children'][0]['mountpoint'] = self.EMPTY['data_mount']
+        config = {**self.EMPTY, 'storage': {'data_ssd': {'uuid': 'small-0001', 'fstype': 'ext4'}}}
         with self.assertRaises(RuntimeError) as caught:
             self.resolve([], config, inventory)
         message = str(caught.exception)
-        for step in ('sudo umount /srv/nekoserver', 'UUID=small-0001 out of /etc/fstab', '"uuid" out of "data_ssd"'):
+        for step in ('sudo umount /nonexistent/nekoserver-test', 'UUID=small-0001 out of /etc/fstab', '"uuid" out of "data_ssd"'):
             self.assertIn(step, message)
 
     def test_the_drive_lines_leave_out_loop_devices_swap_and_tiny_ones(self):
