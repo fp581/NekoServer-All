@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import MappingProxyType
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,21 @@ import wizard  # noqa: E402
 from modules import capacity  # noqa: E402
 
 GIB = 1024 ** 3
+REAL_HDD_READY = recovery_wizard.hdd_ready   # the real drive check (most tests replace it)
+
+
+def chown_refused(folder, uid, gid):
+    """Whether this system refuses to give a file to `uid`:`gid` (a container or user
+    namespace without those IDs answers EINVAL), so a test of it can't run here."""
+    probe = Path(folder) / '.chown-probe'
+    probe.write_bytes(b'')
+    try:
+        os.chown(probe, uid, gid)
+        return False
+    except OSError:
+        return True
+    finally:
+        probe.unlink()
 
 
 def answers(*values):
@@ -579,10 +595,12 @@ class RecoveryWizardTests(unittest.TestCase):
         (self.root / 'ssd/installer').mkdir(parents=True)     # as on a set-up SSD
         self.config = {'media_mount': str(self.media), 'data_mount': str(self.root / 'ssd'),
                        'photos': {'archive_dir': 'photos/archive'}}
-        # The HDD counts as mounted here (the restore folder is suggested on it).
-        ready = mock.patch.object(recovery_wizard, 'hdd_ready', return_value=True)
-        ready.start()
-        self.addCleanup(ready.stop)
+        # The HDD counts as mounted here (the restore folder is suggested on it), and so do
+        # the SSD and the USB drive (the repair checks each drive it uses).
+        for name in ('hdd_ready', 'ssd_ready', 'usb_ready'):
+            ready = mock.patch.object(recovery_wizard, name, return_value=True)
+            ready.start()
+            self.addCleanup(ready.stop)
         # Dates are said in this computer's own time: UTC for these tests.
         utc = mock.patch.dict(os.environ, {'TZ': 'UTC'})
         utc.start()
@@ -937,6 +955,167 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((self.root / archive / 'upload/a.jpg').read_bytes(), b'good a')
         self.assertEqual(left['usb_photos']['missing'], [])
 
+    # Owner review of 0.40.2, finding 1: with the HDD unplugged, "Repair damaged backup
+    # copies" wrote the HDD's copies into its empty folder on the system disk, said
+    # "repaired the HDD copy" and cleared the warning.
+    HDD = MappingProxyType({'uuid': 'hdd-uuid', 'fstype': 'ext4'})   # read-only: shared by every test
+
+    def hdd_copies_missing(self, *names, hdd=None):
+        """The HDD archive lacks these photos; the USB drive has them, checked."""
+        files = {f'upload/{name}': f'good {name}'.encode() for name in names}
+        for key, body in files.items():
+            self.write(f'usb/{key}', body)
+        self.ledger('usb', files)
+        self.report({'archive': {'missing': sorted(files)}, 'usb_photos': {'missing': sorted(files)}})
+        self.config['storage'] = {'media_hdd': dict(hdd or self.HDD)}
+        return sorted(files)
+
+    def repair_with_hdd(self, mounted):
+        """Repair with the real HDD check, findmnt saying `mounted` (UUID FSTYPE SOURCE, or
+        None for nothing) is at the HDD's folder."""
+        with mock.patch.object(recovery_wizard, 'hdd_ready', REAL_HDD_READY), \
+                mock.patch('neko_common.findmnt', return_value=mounted):
+            return self.repair(self.root / 'usb')
+
+    def files_under(self, folder):
+        return sorted((str(p.relative_to(folder)), p.read_bytes()) for p in Path(folder).rglob('*') if p.is_file())
+
+    def assert_hdd_copy_not_repaired(self, out, left, keys, why):
+        said = '\n'.join(out)
+        for key in keys:
+            self.assertIn(f'{key}: already intact; the HDD copy was NOT repaired: {why}', said)
+        self.assertNotIn('repaired the HDD', said)
+        self.assertEqual(left['archive']['missing'], keys)       # the HDD warnings stay
+        self.assertEqual(left['usb_photos']['missing'], keys)
+
+    def test_repair_never_writes_under_a_missing_hdd(self):
+        keys = self.hdd_copies_missing('a.jpg', 'b.jpg')
+        out, left = self.repair_with_hdd(None)   # nothing is mounted at the HDD's folder
+        self.assertEqual(self.files_under(self.media), [], 'nothing may land under the HDD mount folder')
+        self.assert_hdd_copy_not_repaired(out, left, keys, f'the HDD is not mounted at {self.media}')
+        self.assertIn('Its copies were NOT repaired, and their warnings stay listed', '\n'.join(out))
+
+    def test_repair_never_writes_onto_another_drive_at_the_hdd_folder(self):
+        keys = self.hdd_copies_missing('a.jpg', hdd={'uuid': 'hdd-uuid', 'fstype': 'btrfs', 'subvolume': '/@media'})
+        self.write('hdd/photos/archive/upload/a.jpg', b'what the other drive holds')
+        before = self.files_under(self.media)
+        for mounted in ('other-uuid btrfs /dev/sdz1[/@media]',    # another drive
+                        'hdd-uuid ext4 /dev/sdb1',                  # the right UUID, another filesystem
+                        'hdd-uuid btrfs /dev/sdb1[/@snapshots]'):   # the right drive, another subvolume
+            out, left = self.repair_with_hdd(mounted)
+            self.assertEqual(self.files_under(self.media), before, mounted)
+            self.assert_hdd_copy_not_repaired(out, left, keys, 'the HDD is not mounted at')
+
+    def unplugged_during(self, *, keep_identity):
+        """Repair two missing HDD copies; the HDD is unplugged while the first is written:
+        its mount folder (now on the system disk) is empty again. With `keep_identity`,
+        the drive check still says yes (it can't tell in time); otherwise it says no."""
+        keys = self.hdd_copies_missing('a.jpg', 'b.jpg')
+        unplugged = self.root / 'hdd-unplugged'
+        real, calls = recovery_wizard.copy_checked_into, []
+
+        def writing(*args, **kwargs):
+            calls.append(args[2])
+            if len(calls) == 1 + keep_identity and not unplugged.exists():
+                self.media.rename(unplugged)
+                self.media.mkdir()
+            return real(*args, **kwargs)
+        ready = (lambda config: True) if keep_identity else (lambda config: not unplugged.exists())
+        with mock.patch.object(recovery_wizard, 'copy_checked_into', side_effect=writing), \
+                mock.patch.object(recovery_wizard, 'hdd_ready', side_effect=ready):
+            out, left = self.repair(self.root / 'usb')
+        self.assertEqual(self.files_under(self.media), [], 'nothing may land under the HDD mount folder')
+        return keys, unplugged, '\n'.join(out), left
+
+    def test_an_hdd_unplugged_mid_repair_gets_nothing_more(self):
+        keys, unplugged, said, left = self.unplugged_during(keep_identity=False)
+        # a.jpg reached the HDD before it went; b.jpg was never written anywhere.
+        self.assertEqual(self.files_under(unplugged / 'photos/archive/upload'), [('a.jpg', b'good a.jpg')])
+        self.assertIn('upload/a.jpg: the HDD copy was written, but its checksum was NOT recorded (the HDD was '
+                      'disconnected or changed during the repair), so it stays listed', said)
+        self.assertIn('upload/b.jpg: the HDD copy was NOT repaired: the HDD was disconnected or changed during the repair',
+                      said)
+        self.assertEqual(left['archive']['missing'], keys)
+
+    def test_a_write_racing_an_unplug_lands_on_the_drive_it_was_opened_on(self):
+        # The drive goes between the last check and the write: the file is written through
+        # the HDD's open folder, so it lands on the HDD, never in the empty folder.
+        _keys, unplugged, said, left = self.unplugged_during(keep_identity=True)
+        self.assertEqual(self.files_under(unplugged / 'photos/archive/upload'),
+                         [('a.jpg', b'good a.jpg'), ('b.jpg', b'good b.jpg')])
+        self.assertIn('upload/b.jpg: the HDD copy was written, but its checksum was NOT recorded', said)
+        self.assertEqual(left['archive']['missing'], ['upload/b.jpg'])
+
+    def test_a_folder_of_another_drive_inside_the_archive_is_never_written_through(self):
+        keys = self.hdd_copies_missing('a.jpg')
+        (self.media / 'photos/archive').mkdir(parents=True)
+        real = os.fstat
+        inside = (self.media / 'photos/archive').stat().st_ino
+
+        def fstat(fd):   # the archive folder is another filesystem mounted inside the HDD
+            found = real(fd)
+            return os.stat_result((found.st_mode, found.st_ino, found.st_dev + 1, *found[3:])) \
+                if found.st_ino == inside else found
+        with mock.patch.object(recovery_wizard.os, 'fstat', side_effect=fstat):
+            out, left = self.repair(self.root / 'usb')
+        self.assertEqual(self.files_under(self.media), [])
+        self.assertIn('the HDD copy was NOT repaired: "archive" in the HDD is on another drive', '\n'.join(out))
+        self.assertEqual(left['archive']['missing'], keys)
+
+    # Owner review of 0.40.2, finding 2: a copy a restore found missing never reached
+    # the repair option ("The last checksum checks found nothing to repair").
+    def test_a_copy_missing_at_a_restore_is_offered_by_the_repair(self):
+        import hashlib
+        self.write('hdd/photos/archive/upload/u/kept.jpg', b'kept')
+        self.ledger('hdd/photos/archive', {'upload/u/kept.jpg': b'kept', 'upload/u/missing.jpg': b'gone from the HDD'})
+        self.write('usb/upload/u/missing.jpg', b'gone from the HDD')
+        self.ledger('usb', {'upload/u/missing.jpg': b'gone from the HDD'})
+        (self.root / 'ssd/reports').mkdir()
+        out = []
+        with mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'), \
+                mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None):
+            recovery_wizard.restore_photos(self.config, answers('1', 'yes', 'yes', 'yes'), out.append)
+        self.assertIn('now listed for this menu\'s "Repair damaged backup copies"', '\n'.join(out))
+        archive = recovery_wizard.integrity_sections(self.config)['archive']
+        self.assertEqual((archive['missing'], archive['counts']['missing']), (['upload/u/missing.jpg'], 1))
+        self.assertEqual(archive['checksums'], {'upload/u/missing.jpg': hashlib.sha256(b'gone from the HDD').hexdigest()})
+        repaired, left = self.repair(self.root / 'usb')
+        self.assertIn('upload/u/missing.jpg: repaired the HDD copy', '\n'.join(repaired))
+        self.assertEqual((self.media / 'photos/archive/upload/u/missing.jpg').read_bytes(), b'gone from the HDD')
+        self.assertEqual(left['archive']['missing'], [])
+
+    def test_a_missing_copy_is_listed_for_repair_even_when_you_stop_the_restore(self):
+        import hashlib
+        self.write('usb/nextcloud/alice/files/b.txt', b'b')
+        self.ledger('usb/nextcloud', {'alice/files/b.txt': b'b', 'alice/files/gone.txt': b'was here'})
+        (self.root / 'ssd/reports').mkdir()
+        with self.assertRaisesRegex(RuntimeError, 'Nothing was restored'):
+            self.restore_cloud('1', 'yes', 'no')
+        cloud = recovery_wizard.integrity_sections(self.config)['usb_nextcloud']
+        self.assertEqual(cloud['missing'], ['alice/files/gone.txt'])
+        self.assertEqual(cloud['checksums']['alice/files/gone.txt'], hashlib.sha256(b'was here').hexdigest())
+
+    def test_a_restore_as_of_a_backup_lists_the_saved_copy_that_is_missing(self):
+        # The list names the file; what is missing (and what the repair fixes) is its
+        # saved copy: here a dated version, which the live file still matches.
+        import hashlib
+        dated = 'doc.neko-20261020T010000Z.txt'
+        sha = hashlib.sha256(b'version two').hexdigest()
+        self.write('usb/nextcloud/alice/files/doc.txt', b'version one')
+        self.write('usb/nextcloud/alice/files/.doc.txt.neko-latest', dated.encode())
+        self.ledger('usb/nextcloud', {'alice/files/doc.txt': b'version one', f'alice/files/{dated}': b'version two'})
+        self.write('usb/nextcloud/.neko-inventory/20261101T030000Z.json.gz', gzip.compress(json.dumps(
+            {'format': 'neko-inventory-v2', 'files': {'alice/files/doc.txt': {'copy': dated, 'sha256': sha}}}).encode()))
+        self.write('hdd/cloud/files/alice/files/doc.txt', b'version two')   # Nextcloud still has it
+        (self.root / 'ssd/reports').mkdir()
+        self.restore_cloud('1', 'yes', '1', 'yes')
+        cloud = recovery_wizard.integrity_sections(self.config)['usb_nextcloud']
+        self.assertEqual((cloud['missing'], cloud['checksums']), ([f'alice/files/{dated}'], {f'alice/files/{dated}': sha}))
+        out, left = self.repair(self.root / 'usb')
+        self.assertIn(f'alice/files/{dated}: repaired the USB copy', '\n'.join(out))
+        self.assertEqual((self.root / 'usb/nextcloud/alice/files' / dated).read_bytes(), b'version two')
+        self.assertEqual(left['usb_nextcloud']['missing'], [])
+
     def disagreeing(self):
         archive, usb = 'hdd/photos/archive', 'usb'
         self.write(f'{archive}/upload/a.jpg', b'hdd version')
@@ -1177,9 +1356,14 @@ class RecoveryWizardTests(unittest.TestCase):
         restored = next((self.media / 'restored').iterdir())
         self.assertEqual((restored / 'files/b.txt').read_bytes(), b'b')
         self.assertIn('accepted as lost: alice/files/report.txt', (restored / 'NOT-RESTORED.txt').read_text())
+        # Given up on purpose: never listed for the repair option again as new damage.
+        cloud = recovery_wizard.integrity_sections(self.config)['usb_nextcloud']
+        self.assertEqual(recovery_wizard.listed(cloud), [])
 
     def test_restored_files_belong_to_the_person_who_restores_them(self):
         # UP-02: they were root's only, so "upload them in the browser" could not work.
+        if os.geteuid() == 0 and chown_refused(self.root, 4321, 4322):
+            self.skipTest('this system refuses to give files to the IDs 4321:4322 (no such IDs in its namespace)')
         self.write('hdd/photos/archive/upload/u1/a.jpg', b'photo')
         out = []
         with mock.patch.dict(os.environ, {'SUDO_UID': '4321', 'SUDO_GID': '4322'}), \

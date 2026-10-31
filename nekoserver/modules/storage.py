@@ -75,14 +75,98 @@ def one_filesystem(group, sub_uuid=device_sub_uuid):
     one pool only when each device has a UUID_SUB of its own: a copy of a Btrfs drive (dd,
     a disk cloner) has the same one, and the kernel could then write to either drive."""
     names=sorted({r['name'] for r in group})
+    mountpoint=next((r['mountpoint'] for r in group if r['mountpoint']),None)
+    sized={}
     if len(names)>1:
         if not all(r['fstype']=='btrfs' for r in group):
             raise RuntimeError(CLONED)
         pool_members(names, sub_uuid)
+        sized=pool_size(group, mountpoint)
     disks=sorted({d for r in group for d in r['physical_disks'] if d})
     return {**group[0],'physical_disks':disks,'physical_disk':disks[0] if disks else None,
-            'mountpoint':next((r['mountpoint'] for r in group if r['mountpoint']),None),
-            'unlocks':sorted({n for r in group for n in r.get('unlocks',())})}
+            'mountpoint':mountpoint,'unlocks':sorted({n for r in group for n in r.get('unlocks',())}),**sized}
+
+
+# How many copies of the data a Btrfs data profile keeps, for working out how much of a
+# pool over several drives is usable. RAID5 and RAID6 are counted as 2 and 3 copies,
+# which is never more than they really hold (their parity takes less), so they are safe.
+PROFILE_COPIES={'SINGLE':1,'DUP':2,'RAID1':2,'RAID10':2,'RAID1C3':3,'RAID1C4':4,'RAID5':2,'RAID6':3}
+
+
+def kept_copies(sizes, copies):
+    """Bytes usable on drives of these sizes when every piece of data is kept on `copies`
+    different drives (RAID1 and the like): the most x with sum(min(size, x)) >= copies * x.
+    A 32 GB drive mirrored with a 4 TB one holds 32 GB, not 2 TB."""
+    if len(sizes)<copies:
+        return 0
+    low,high=0,sum(sizes)//copies
+    while low<high:
+        middle=(low+high+1)//2
+        if sum(min(s,middle) for s in sizes)>=copies*middle:
+            low=middle
+        else:
+            high=middle-1
+    return low
+
+
+def profile_capacity(profile, sizes):
+    """Usable bytes of a Btrfs pool of drives of `sizes` keeping its data as `profile`."""
+    if profile=='SINGLE':
+        return sum(sizes)
+    if profile=='DUP':        # both copies on the same drive
+        return sum(sizes)//2
+    if profile=='RAID0':      # striped over at least two drives
+        return min(sum(sizes),2*(sum(sizes)-max(sizes)))
+    return kept_copies(sizes, PROFILE_COPIES.get(profile,len(sizes)))
+
+
+def data_profiles(names):
+    """The data profiles of a Btrfs pool (RAID1, SINGLE...), read from one of its drives
+    (`btrfs inspect-internal dump-tree -t chunk`, which needs root and the btrfs tool),
+    or None when they can't be read. More than one while a conversion is unfinished."""
+    for name in names:
+        path='/dev/'+name if os.path.exists('/dev/'+name) else '/dev/mapper/'+name
+        if not os.path.exists(path):
+            continue
+        try:
+            text=call(['btrfs','inspect-internal','dump-tree','-t','chunk',path],timeout=60)
+        except (RuntimeError,OSError,subprocess.SubprocessError):
+            continue
+        found={(set(kind.split('|'))-{'DATA','METADATA','SYSTEM'} or {'SINGLE'}).pop()
+               for kind in re.findall(r'\btype ([A-Z0-9|]+)',text) if 'DATA' in kind.split('|')}
+        if found:
+            return found
+    return None
+
+
+def mounted_capacity(folder):
+    """Usable bytes of the filesystem mounted at `folder`, as it reports them (used and
+    still free: Btrfs works out the free space by its data profile), or None."""
+    try:
+        found=os.statvfs(folder)
+    except OSError:
+        return None
+    return (found.f_blocks-found.f_bfree+found.f_bavail)*found.f_frsize
+
+
+def pool_size(group, mountpoint):
+    """{'size', 'size_note'} for a Btrfs pool over several drives (its lsblk rows). Not the
+    first drive's size (that made the answer depend on the order lsblk lists them): the
+    pool's own figure when it is mounted, else what its data profile makes usable, else,
+    when the profile can't be read, only its smallest drive, to be safe (and said so)."""
+    members={r['name']:size_bytes(r.get('size')) for r in group}
+    sizes=sorted(s for s in members.values() if s)
+    shown=f"a Btrfs pool of {len(members)} drives ({' + '.join(size_words(f'{s}B') for s in sizes)})"
+    usable=mounted_capacity(mountpoint) if mountpoint else None
+    if usable is not None:
+        return {'size':f'{usable}B','size_note':f'{shown}, usable space as the pool itself reports it'}
+    profiles=data_profiles(sorted(members)) if sizes else None
+    if profiles:
+        return {'size':f'{min(profile_capacity(p,sizes) for p in profiles)}B',
+                'size_note':f"{shown} keeping its data as {' and '.join(sorted(profiles))}: this much is usable"}
+    return {'size':f'{sizes[0]}B' if sizes else None,
+            'size_note':f'{shown} whose layout (RAID1 or not) could not be read, so only its smallest drive is '
+                        'counted, to be safe. Run setup with sudo, with the btrfs tool installed, to read it'}
 
 
 def pool_members(names, sub_uuid=device_sub_uuid):
@@ -256,9 +340,15 @@ def big_enough(device, smallest):
     return found is None or found >= smallest * GIB
 
 
+def size_said(device):
+    """A drive's size in words, with how it was counted for a Btrfs pool over several drives."""
+    note = device.get('size_note')
+    return size_words(device.get('size')) + (f' ({note})' if note else '')
+
+
 def describe(device):
     """One drive as the person knows it: its size, the name they gave it (the label in the
-    Disks app), its model, where the desktop opened it."""
+    Disks app), its model, where the desktop opened it; for a pool, how its size was counted."""
     words = [size_words(device.get('size'))]
     if device.get('label'):
         words.append(f'named "{device["label"]}"')
@@ -266,7 +356,8 @@ def describe(device):
         words.append(str(device['model']).strip())
     if device.get('mountpoint'):
         words.append(f'open at {device["mountpoint"]}')
-    return f"{device['name']}: " + ', '.join(words) + f" ({device['fstype']})"
+    note = f"; {device['size_note']}" if device.get('size_note') else ''
+    return f"{device['name']}: " + ', '.join(words) + f" ({device['fstype']})" + note
 
 
 def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
@@ -297,7 +388,7 @@ def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
         device = options[int(choice) - 1]
         if big_enough(device, smallest):
             return confirmed(device, f"{short} ({size_words(device.get('size'))})", input_fn, out_fn, attempts)
-        out_fn(f"{device['name']} is {size_words(device.get('size'))}, too small for {short}: it needs at least "
+        out_fn(f"{device['name']} is {size_said(device)}, too small for {short}: it needs at least "
                f'{smallest} GB. Choose another one from the list.')
     raise RuntimeError(f'No drive was chosen for {label}. Run  sudo bash install.sh  again to choose it; nothing was changed.')
 
@@ -400,7 +491,7 @@ def too_small(device, key, label, config, interactive, out_fn):
     if big_enough(device, smallest) or (Path(str(config.get('data_mount', ''))) / 'docker-engine').is_dir():
         return False
     short = short_name(key)
-    said = (f"{device['name']} ({size_words(device.get('size'))}), the drive saved as {short}, is too small: it needs at "
+    said = (f"{device['name']} ({size_said(device)}), the drive saved as {short}, is too small: it needs at "
             f'least {smallest} GB.')
     if device.get('mountpoint') and device['mountpoint'] == folder:
         raise RuntimeError(f'{said} To choose another, take it out first:  sudo umount {folder} , take the line with '

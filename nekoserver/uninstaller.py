@@ -831,7 +831,8 @@ def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/', cal
     recovery record) when it starts; then the schedules are switched off and everything
     stops (Samba too, when NekoServer switched it on); then, with the jobs' shared lock
     held and everything checked again (nothing running, nothing unfinished, each drive
-    still the one the settings name), the files go; then the mounts. When something does
+    still the one the settings name), the apps' containers, Docker's data-root setting
+    and the files go; then the mounts. When something does
     not stop or is unfinished, Stopped is raised before anything is deleted, with the
     services as they were. `reconcile` finishes an unfinished package installation
     (host.py's, on this PC by default)."""
@@ -844,16 +845,16 @@ def remove(plan, chosen, run=run, out=print, rmtree=shutil.rmtree, root='/', cal
     try:
         _stop_units(plan, units, call, out, sleep, check=lambda: _maintenance_idle(call))
         _stop_samba(plan, call, out)
-        if 'apps' in chosen:
-            _remove_containers(plan, call, out)
-        if plan.docker_root() and ('data' in chosen or 'mounts' in chosen):
-            _reset_docker_root(system_file(root, DAEMON_JSON), call, out)
         drives = open_drives(plan, out)
         jobs = JobsLock(drives.get('data'), sleep)
         jobs.take()
         try:
             _admitted(plan, call)
             _nothing_running(units, call)
+            # Only now, with the lock held and every check passed, what can't be undone
+            # starts: the apps' containers (a job holding the lock may be using them), then
+            # Docker's data-root setting. Neither waits for a service that takes the lock.
+            _remove_docker_parts(plan, chosen, root, call, out)
         except BaseException:
             jobs.release()
             raise
@@ -1126,6 +1127,15 @@ def _fans_handed_back(plan, sleep=None, wait=15):
             return True
         (sleep or time.sleep)(0.5)
     return False
+
+
+def _remove_docker_parts(plan, chosen, root, call, out):
+    """The apps' containers (with the apps chosen), then Docker's data-root setting (when
+    the folder it names goes). Called with the jobs' lock held, after the last checks."""
+    if 'apps' in chosen:
+        _remove_containers(plan, call, out)
+    if plan.docker_root() and ('data' in chosen or 'mounts' in chosen):
+        _reset_docker_root(system_file(root, DAEMON_JSON), call, out)
 
 
 def _remove_containers(plan, call, out):
@@ -1556,23 +1566,44 @@ LOCK_SUFFIX = '.lock'
 SETUP_LOCKS = ('/run/nekoserver-setup.lock', '/run/nekoserver-install.lock')
 
 
+LOCK_UNUSABLE = ', so it can\'t keep a setup from starting meanwhile.' + NOTHING_DELETED
+
+
+def open_setup_lock(lock):
+    """One setup lock file, opened (made when it is not there: no setup ran since the last
+    start, and one started now must find it and wait). Made private to root (0600), never
+    through a link. One already there is install.sh's (made readable by all, as bash
+    makes files): it must be root's own plain file that only root can change; anything
+    else under its name is refused."""
+    try:
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+    except OSError as exc:   # a link under its name, say
+        raise Stopped(f'{lock} could not be opened as a lock file ({exc.strerror})' + LOCK_UNUSABLE) from None
+    found = os.fstat(fd)
+    if not stat.S_ISREG(found.st_mode) or found.st_uid != os.geteuid() or found.st_mode & 0o022:
+        os.close(fd)
+        raise Stopped(f'{lock} is not a lock file of root\'s that only root can change' + LOCK_UNUSABLE)
+    return fd
+
+
 def hold_setup_locks(locks=SETUP_LOCKS):
     """The setup locks, held for the whole uninstall so that no setup starts meanwhile, or
-    None when a setup is running now. (A lock file that is not there: no setup ever ran.)"""
+    None when a setup is running now. A lock file that is not there is made and held too:
+    otherwise a setup started meanwhile would make it and go ahead."""
     held = []
-    for lock in locks:
-        try:
-            fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        except FileNotFoundError:
-            continue
-        try:
+    try:
+        for lock in locks:
+            fd = open_setup_lock(lock)
+            held.append(fd)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+    except BlockingIOError:
+        for fd in held:
             os.close(fd)
-            for other in held:
-                os.close(other)
-            return None
-        held.append(fd)
+        return None
+    except BaseException:
+        for fd in held:
+            os.close(fd)
+        raise
     return held
 
 
@@ -1588,7 +1619,10 @@ def busy(locks=SETUP_LOCKS, journal=None):
                    'shows "inactive" once it has), then run  sudo bash uninstall.sh  again. Nothing was removed.')
     if blocked:
         return blocked, []
-    held = hold_setup_locks(locks)
+    try:
+        held = hold_setup_locks(locks)
+    except Stopped as exc:
+        return str(exc), []
     if held is None:
         return ('NekoServer setup is running right now. Let it finish (or stop it), then run  sudo bash uninstall.sh  again. '
                 'Nothing was removed.'), []

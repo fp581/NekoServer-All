@@ -210,6 +210,76 @@ class DriveLayoutTests(unittest.TestCase):
     """Btrfs pools over several drives stopped setup ("Duplicate filesystem UUID"), and
     encrypted, LVM and RAID drives were never offered."""
 
+    def setUp(self):
+        from modules import storage
+        self.real_profiles = storage.data_profiles
+        # A pool's data profile is never read from this computer's own drives here.
+        profiles = mock.patch.object(storage, 'data_profiles', return_value=None)
+        profiles.start()
+        self.addCleanup(profiles.stop)
+
+    # Owner review of 0.40.2: a Btrfs pool's size was its first drive's, so the same
+    # 32 GB + 4 TB pool listed the other way round went from "too small" to "big enough".
+    def pool_both_ways(self, profiles=None, statvfs=None, mountpoint=None):
+        """The pool of a 32 GB and a 4 TB drive, as discovered with the drives listed in
+        each order."""
+        from modules import storage
+        found = []
+        for sizes in (('32G', '4T'), ('4T', '32G')):
+            members = [self.fs(name, 'pool', fstype='btrfs', mountpoint=mountpoint) for name in ('sdb1', 'sdc1')]
+            for row, size in zip(members, sizes):
+                row['size'] = size
+            inventory = {'blockdevices': [self.disk('sdb', members[0]), self.disk('sdc', members[1])]}
+            with mock.patch.object(storage, 'data_profiles', return_value=profiles), \
+                    mock.patch.object(storage.os, 'statvfs', side_effect=statvfs or OSError(2, 'not mounted')):
+                [pool] = storage.discover_filesystems(inventory, {'sdb1': 'dev-1', 'sdc1': 'dev-2'}.get)
+            found.append(pool)
+        self.assertEqual(found[0]['size'], found[1]['size'], 'the order the drives are listed in changes nothing')
+        return found[0]
+
+    def test_a_pool_whose_layout_cannot_be_read_counts_only_its_smallest_drive(self):
+        from modules import storage
+        pool = self.pool_both_ways()
+        self.assertEqual(storage.size_bytes(pool['size']), 32 * 1024 ** 3)
+        self.assertIn('only its smallest drive is counted, to be safe', storage.describe(pool))
+        with self.assertRaisesRegex(RuntimeError, 'No drive here is big enough.*32 GB.*could not be read'):
+            storage.ask_drive([pool], 'media_hdd', 'the HDD', lambda q: '', lambda s: None)
+
+    def test_a_raid1_pool_holds_what_its_smallest_mirror_holds_and_a_single_one_the_sum(self):
+        from modules import storage
+        mirrored = self.pool_both_ways(profiles={'RAID1'})
+        self.assertEqual(storage.size_bytes(mirrored['size']), 32 * 1024 ** 3)
+        self.assertIn('keeping its data as RAID1', storage.describe(mirrored))
+        self.assertFalse(storage.big_enough(mirrored, storage.sizes('media_hdd')[0]))
+        single = self.pool_both_ways(profiles={'SINGLE'})
+        self.assertEqual(storage.size_bytes(single['size']), (4 * 1024 + 32) * 1024 ** 3)
+        self.assertTrue(storage.big_enough(single, storage.sizes('media_hdd')[0]))
+
+    def test_a_mounted_pool_counts_what_the_pool_itself_reports(self):
+        from modules import storage
+        reported = mock.Mock(f_blocks=1000, f_bfree=900, f_bavail=700, f_frsize=1024 ** 3 // 25)
+        pool = self.pool_both_ways(statvfs=lambda folder: reported, mountpoint='/run/media/neko/pool')
+        self.assertEqual(storage.size_bytes(pool['size']), 800 * (1024 ** 3 // 25))
+        self.assertIn('usable space as the pool itself reports it', storage.describe(pool))
+
+    def test_usable_space_by_data_profile(self):
+        from modules import storage
+        gib = 1024 ** 3
+        cases = {('RAID1', (32, 4096)): 32, ('RAID1', (1000, 1000, 1000)): 1500, ('RAID1C3', (1000, 1000, 1000)): 1000,
+                 ('RAID1C4', (1000, 1000, 1000)): 0, ('DUP', (100, 300)): 200, ('RAID0', (32, 4096)): 64,
+                 ('RAID10', (500, 500, 500, 500)): 1000, ('RAID6', (32, 4096, 4096)): 32}
+        for (profile, sizes), usable in cases.items():
+            self.assertEqual(storage.profile_capacity(profile, [s * gib for s in sizes]), usable * gib, (profile, sizes))
+        chunks = ('item 2 key (FIRST_CHUNK_TREE CHUNK_ITEM 13631488) itemoff 15975 itemsize 112\n'
+                  '\t\tlength 8388608 owner 2 stripe_len 65536 type SYSTEM|RAID1\n'
+                  '\t\tlength 1073741824 owner 2 stripe_len 65536 type METADATA|RAID1\n'
+                  '\t\tlength 1073741824 owner 2 stripe_len 65536 type DATA|RAID1\n'
+                  '\t\tlength 1073741824 owner 2 stripe_len 65536 type DATA\n')   # a conversion from single, unfinished
+        with mock.patch.object(storage.os.path, 'exists', return_value=True), \
+                mock.patch.object(storage, 'call', return_value=chunks) as called:
+            self.assertEqual(self.real_profiles(['sdb1']), {'RAID1', 'SINGLE'})
+        self.assertEqual(called.call_args.args[0], ['btrfs', 'inspect-internal', 'dump-tree', '-t', 'chunk', '/dev/sdb1'])
+
     def disk(self, name, *children, mountpoint=None):
         return {'name': name, 'type': 'disk', 'size': '1T', 'children': list(children), 'mountpoint': mountpoint}
 
