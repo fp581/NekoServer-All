@@ -758,8 +758,10 @@ class ReviewFixTests(unittest.TestCase):
             self.assertIn('setup is running', blocked)
         with mock.patch('neko_common.maintenance_running', return_value=False):
             blocked, held = uninstaller.busy(locks=(str(lock), str(lock) + '.missing'), journal=Path(self.tmp.name) / 'none.json')
+        self.addCleanup(lambda: [os.close(fd) for fd in held])
         self.assertIsNone(blocked)
-        self.assertEqual(len(held), 1)
+        self.assertEqual(len(held), 2)                           # the missing one was made, and is held too
+        self.assertTrue(Path(str(lock) + '.missing').is_file())
 
     def test_main_refuses_before_any_change(self):
         with mock.patch.object(uninstaller.os, 'geteuid', return_value=0), \
@@ -1192,6 +1194,90 @@ class ExclusionTests(unittest.TestCase):
             with self.assertRaisesRegex(uninstaller.Stopped, 'job is still working'):
                 self.remove()
         self.assert_nothing_deleted()
+
+    # Owner review of 0.40.2: the apps' containers were removed before the jobs' lock was
+    # taken, so a job holding it stopped the uninstall only after they were gone.
+    def assert_docker_untouched(self):
+        calls = self.system.calls
+        self.assertFalse(any(c[:2] == ['docker', 'rm'] or c[:3] == ['docker', 'network', 'rm'] for c in calls), calls)
+        self.assertNotIn(['systemctl', 'stop', 'docker.service', 'docker.socket'], calls)
+        daemon = json.loads(self.at('/etc/docker/daemon.json').read_text())
+        self.assertEqual(daemon['data-root'], '/srv/nekoserver/docker-engine')
+
+    def test_no_container_goes_while_a_job_holds_the_lock(self):
+        lock = self.at('/srv/nekoserver/installer/recovery.lock')
+        lock.write_text('')
+        with lock.open() as job:
+            fcntl.flock(job, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(uninstaller.Stopped, 'job is still working'):
+                self.remove()
+        self.assert_docker_untouched()
+        self.assert_nothing_deleted()
+
+    def test_no_container_goes_when_the_checks_under_the_lock_stop_the_uninstall(self):
+        def call(argv, timeout=0):   # a backup's record is left by its stop
+            if argv[:3] == ['systemctl', 'disable', '--now'] and argv[-1] == 'nekoserver-dashboard.service':
+                self.system.write('/etc/nekoserver-backups/app-resume.json', '{}')
+            return self.system.call(argv, timeout)
+        with self.assertRaisesRegex(uninstaller.Stopped, 'app-resume.json is still there'):
+            self.remove(call=call)
+        self.assert_docker_untouched()
+
+    def test_containers_go_only_with_the_lock_held(self):
+        lock, seen = self.at('/srv/nekoserver/installer/recovery.lock'), []
+
+        def call(argv, timeout=0):
+            if argv[:2] == ['docker', 'rm']:
+                with lock.open() as other:
+                    try:
+                        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        seen.append('free')
+                    except BlockingIOError:
+                        seen.append('held')
+            return self.system.call(argv, timeout)
+        self.remove(call=call)
+        self.assertEqual(seen, ['held'])
+
+    # Owner review of 0.40.2: a setup lock file that was not there was skipped, so a setup
+    # started during the uninstall made it and went ahead.
+    def test_absent_setup_locks_are_made_and_held_so_a_setup_started_meanwhile_waits(self):
+        import shutil
+        import stat
+        import subprocess
+        locks = [str(self.at(path)) for path in uninstaller.SETUP_LOCKS]
+        for lock in locks:
+            os.unlink(lock)
+        with mock.patch('neko_common.maintenance_running', return_value=False):
+            blocked, held = uninstaller.busy(locks=locks, journal=self.at('/none.json'))
+        self.addCleanup(lambda: [os.close(fd) for fd in held])
+        self.assertIsNone(blocked)
+        for lock in locks:
+            info = os.lstat(lock)
+            self.assertTrue(stat.S_ISREG(info.st_mode), lock)
+            self.assertEqual((info.st_uid, info.st_mode & 0o777), (os.geteuid(), 0o600), lock)   # as installer.py needs it
+            # The installer opens it as installer.py does, and can't take it.
+            fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            self.addCleanup(os.close, fd)
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if shutil.which('flock'):   # and install.sh, as it does: exec 9>>lock; flock -n 9
+            started = subprocess.run(['bash', '-c', 'exec 9>>"$1" && flock -n 9', 'install.sh', locks[0]], check=False)
+            self.assertEqual(started.returncode, 1)
+
+    def test_a_setup_lock_name_that_is_not_a_lock_file_stops_before_anything(self):
+        lock, elsewhere = self.at('/run/nekoserver-setup.lock'), self.at('/etc/elsewhere')
+        lock.unlink()
+        lock.symlink_to(elsewhere)
+        with mock.patch('neko_common.maintenance_running', return_value=False):
+            blocked, held = uninstaller.busy(locks=(str(lock),), journal=self.at('/none.json'))
+        self.assertIn('could not be opened as a lock file', blocked)
+        self.assertEqual((held, elsewhere.exists()), ([], False))
+        lock.unlink()
+        lock.write_text('')
+        lock.chmod(0o666)            # anyone could swap what it holds
+        with mock.patch('neko_common.maintenance_running', return_value=False):
+            blocked, _ = uninstaller.busy(locks=(str(lock),), journal=self.at('/none.json'))
+        self.assertIn('is not a lock file of root\'s that only root can change', blocked)
 
     def test_lock_files_in_run_stay_so_a_setup_started_meanwhile_still_waits(self):
         for path in ('/run/nekoserver-setup.lock', '/run/nekoserver-install.lock', '/run/nekoserver-packages.lock',

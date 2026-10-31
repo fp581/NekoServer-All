@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.40.2'
+VERSION = '0.40.3'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -606,8 +606,23 @@ def copy_checked(source, target, expected=None):
     recorded checksum) is given, if the backup copy no longer matches it."""
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    folder = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with open(source, 'rb') as src:
+            return copy_checked_into(src, folder, target.name, expected, source)
+    finally:
+        os.close(folder)
+
+
+def copy_checked_into(src, folder, name, expected=None, what=None):
+    """copy_checked's copy, written as a new file `name` in the open folder `folder` (a
+    folder handle: the file lands in that folder, wherever its path now leads), never
+    through a link and never over a file already there. `src`: an open binary file;
+    `what`: where it is read from, for the messages. Returns the checksum written."""
+    what = what or name
+    fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=folder)
     stream = hashlib.sha256()
-    with open(source, 'rb') as src, open(target, 'xb') as out:
+    with os.fdopen(fd, 'w+b') as out:
         os.fchmod(out.fileno(), 0o600)
         while chunk := src.read(1 << 20):
             stream.update(chunk)
@@ -617,13 +632,12 @@ def copy_checked(source, target, expected=None):
         # Written to the drive: dropped from memory, so the read below comes from the
         # drive itself (from memory, damage on the drive would never be seen).
         os.posix_fadvise(out.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-    with open(target, 'rb') as back:
-        os.posix_fadvise(back.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-        landed = hashlib.file_digest(back, 'sha256').hexdigest()
+        out.seek(0)
+        landed = hashlib.file_digest(out, 'sha256').hexdigest()
     if landed != stream.hexdigest():
-        raise RuntimeError(f'Restoring {source} failed: the copy written to disk does not match what was read')
+        raise RuntimeError(f'Restoring {what} failed: the copy written to disk does not match what was read')
     if expected is not None and landed != expected:
-        raise BackupDamaged(f'{source} is damaged on the backup (it no longer matches its recorded checksum)')
+        raise BackupDamaged(f'{what} is damaged on the backup (it no longer matches its recorded checksum)')
     return landed
 
 

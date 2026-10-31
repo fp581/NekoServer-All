@@ -3,8 +3,11 @@
 A menu over the existing restore tools. Everything is restored into a NEW folder;
 live data is never overwritten. Each restore ends with what to do next.
 """
+import contextlib
 import datetime as dt
+import errno
 import fcntl
+import functools
 import gzip
 import hashlib
 import json
@@ -13,12 +16,14 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import zlib
 
 import guided_setup
-from neko_common import (LEDGER_NAME, QUARANTINE, BackupDamaged, atomic_json, backup_files, copy_checked, ensure_room, findmnt, identity_matches, read_ledger,
+from neko_common import (LEDGER_NAME, QUARANTINE, BackupDamaged, atomic_json, backup_files, copy_checked, copy_checked_into,
+                         ensure_room, findmnt, identity_matches, mounted_identity, read_ledger,
                          record_ledger, settings_path, sha256_file, valid_ledger_path, usb_mount_options,
                          private_mount_options, latest_note, saved_names, saved_versions)
 
@@ -244,8 +249,16 @@ class Checked:
         self.missing = []
         self.uncertain = []
         self.accepted = []
-        # Whether the damage found was handed to the repair option (see note_damage).
+        # Where what a restore finds is published for the repair option and the dashboard:
+        # report(kind, {saved copy: recorded checksum}) -> True once written (note_findings).
+        self.report = None
+        # Whether what was found was handed to the repair option.
         self.reported = False
+
+    def publish(self, kind, copies):
+        """Hand damaged or missing copies ({saved copy: checksum or None}) to the repair option."""
+        if copies and self.report is not None and self.report(kind, copies):
+            self.reported = True
 
     def begin(self, destination):
         """The new restore folder is made; files are copied into it next."""
@@ -301,16 +314,16 @@ class Checked:
             here = {path.relative_to(self.root).as_posix() for path, _ in backup_files(folder)} \
                 if Path(folder).is_dir() else set()
             missing += sorted(k for k in self.sums if k.startswith(prefix) and k not in here)
-        self.missing = missing
         return missing
 
     def where_else(self):
         """What to do about files this backup can't give back."""
         if self.reported:
-            fix = ('The damaged ones are now listed for this menu\'s "Repair damaged backup copies", '
+            fix = ('They are now listed for this menu\'s "Repair damaged backup copies", '
                    'which fixes them from a copy that still matches.')
         else:
-            fix = 'This menu\'s "Repair damaged backup copies" fixes damaged ones from a copy that still matches.'
+            fix = ('This menu\'s "Repair damaged backup copies" fixes damaged or missing ones from a copy that '
+                   'still matches.')
         return (f'Get them from {self.other}, if it has them. ' if self.other else '') + fix
 
     def summary(self, destination=None):
@@ -724,8 +737,12 @@ def restore_scope(listed, prompt, output, newest_run=None):
 COPYING = 'Copying... this can take a while for a big backup.'
 
 
-def missing_check(missing, checked, prompt, output):
-    """Say which checked files this backup lost, and stop if you say so."""
+def missing_check(missing, checked, prompt, output, copies):
+    """Say which checked files this backup lost, and stop if you say so. They are listed
+    for the repair option first (`copies`: {saved copy: its recorded checksum}), so it
+    has them whether you go on or stop here."""
+    checked.missing = missing
+    checked.publish(MISSING, copies)
     if missing:
         output(f'Missing from this backup, though backed up and checked before: {file_count(len(missing))} '
                f'(for example {", ".join(missing[:5])}).' + (f' {checked.other.capitalize()} may have them.'
@@ -733,7 +750,26 @@ def missing_check(missing, checked, prompt, output):
         if not ask('Restore everything else from this backup now? ("no" stops, with nothing restored)', prompt, output):
             raise RuntimeError('Nothing was restored.' + (f' Use {checked.other} instead, or choose' if checked.other
                                                           else ' Choose') + ' "Repair damaged backup copies" in this menu.')
-    checked.missing = missing
+
+
+def recorded_copy(key, copy, sha, sums):
+    """(the saved copy, its recorded checksum) of a listed file (`key`, kept as `copy`
+    beside it, with the list's checksum `sha` or None) that is missing from the backup;
+    (None, None) when no saved copy is known to have held it (its name holds other
+    content now, and no other saved copy has that checksum)."""
+    saved = key.rsplit('/', 1)[0] + '/' + copy
+    if sha is None:
+        return saved, sums.get(saved)
+    if sums.get(saved) not in (None, sha):
+        saved = next((k for k in sorted(sums) if sums[k] == sha), None)
+    return (saved, sha) if saved else (None, None)
+
+
+def missing_copies(missing, files_listed, sums):
+    """{saved copy: recorded checksum} for the listed files missing from the backup."""
+    found = dict(recorded_copy(key, *files_listed[key], sums) for key in missing)
+    found.pop(None, None)
+    return found
 
 
 ACCEPTED = ', accepted as lost in the recovery menu'   # how accept_lost ends its reason
@@ -778,17 +814,21 @@ def copy_as_of(sources, target, checked, inventory, output, prompt):
     if uncertain:
         output(f'Left out ({file_count(len(uncertain))}, for example {", ".join(uncertain[:5])}): {UNCERTAIN_WHY}')
     checked.uncertain = uncertain
-    missing_check(accepted_check(missing, checked, listed, output), checked, prompt, output)
+    missing = accepted_check(missing, checked, listed, output)
+    missing_check(missing, checked, prompt, output, missing_copies(missing, listed, checked.sums))
     output(f'Restoring the {file_count(len(chosen))} you had at the backup of {date}. {COPYING}')
     return copy_listed(chosen, target, checked)
 
 
-def copy_choice(sources, target, prompt, output, ledger_root=None, other=None):
+def copy_choice(sources, target, prompt, output, ledger_root=None, other=None, report=None):
     """The files you had at a backup (when the backup lists them; recommended), else the
     newest version of each file ever kept, or every version as stored. Every file is
     checked against the checksum ledger at `ledger_root`; `other`: where else these
-    files are backed up, if anywhere. Returns (files restored, newest only, the check)."""
+    files are backed up, if anywhere; `report`: where damaged and missing copies are
+    published for the repair option (Checked.report). Returns (files restored, newest
+    only, the check)."""
     checked = Checked(ledger_root, other)
+    checked.report = report
     listed = inventories(ledger_root) if ledger_root else []
     scope = restore_scope(listed, prompt, output, list_gap(ledger_root, listed) if ledger_root else None)
     if scope is None:
@@ -796,7 +836,8 @@ def copy_choice(sources, target, prompt, output, ledger_root=None, other=None):
     count = copy_as_of(sources, target, checked, scope[1:], output, prompt) if scope[0] == 'as_of' else None
     if count is not None:
         return count - len(checked.damaged), True, checked
-    missing_check(checked.require_present(sources), checked, prompt, output)
+    missing = checked.require_present(sources)
+    missing_check(missing, checked, prompt, output, {key: checked.sums[key] for key in missing})
     latest = ask('Restore only the NEWEST version of each file? (recommended; "no" copies every version)',
                  prompt, output)
     output(COPYING)
@@ -941,9 +982,11 @@ def restore_photos(config, prompt, output):
         # What a file that became a folder (or back) replaced, kept at the archive's top.
         if (base / REPLACED).is_dir() and not (base / REPLACED).is_symlink():
             sources.append((REPLACED_FOLDER, base / REPLACED))
+        section = 'archive' if where == 'hdd' else 'usb_photos'
         count, latest, checked = copy_choice(sources, target, prompt, output, ledger_root=base,
-                                             other='the USB drive' if where == 'hdd' else 'the HDD')
-        report_restore(config, 'archive' if where == 'hdd' else 'usb_photos', checked, target, output)
+                                             other='the USB drive' if where == 'hdd' else 'the HDD',
+                                             report=functools.partial(note_findings, config, section))
+        report_restore(checked, target, output)
     say(output, f'\nDone: {file_count(count)} copied to {target}',
         *(() if latest else (VERSIONS_EXPLAINED,)),
         *handed_over(config, target),
@@ -953,11 +996,11 @@ def restore_photos(config, prompt, output):
         f'Your current Immich library ({data / "photos/immich-library"}) was not touched.')
 
 
-def report_restore(config, section, checked, target, output):
+def report_restore(checked, target, output):
     """Damage a restore found goes where the checks put theirs (so the repair option and
-    the dashboard see it), then the restore's summary is said."""
-    if checked.damaged:
-        checked.reported = note_damage(config, section, checked.damaged)
+    the dashboard see it; missing copies went there before the copying began), then the
+    restore's summary is said."""
+    checked.publish(DAMAGED, {key: checked.sums.get(key) for key in checked.damaged})
     output(checked.summary(target))
 
 
@@ -965,6 +1008,7 @@ def report_restore(config, section, checked, target, output):
 INTEGRITY_REPORT = 'reports/integrity.json'
 INTEGRITY_FORMAT = 'neko-integrity-v1'
 DAMAGED = 'damaged'
+MISSING = 'missing'
 
 
 def ssd_ready(config):
@@ -972,11 +1016,13 @@ def ssd_ready(config):
     return identity_matches(Path(config['data_mount']), config.get('storage', {}).get('data_ssd', {}))
 
 
-def note_damage(config, section, keys):
-    """Add the damaged copies a restore found to reports/integrity.json under `section`
-    (the backup tree's checks: archive, usb_photos, usb_nextcloud), as a quick check adds
-    what it finds: the repair option works from that list, and the dashboard shows it.
-    The next full check of that tree replaces the list. True once written."""
+def note_findings(config, section, kind, copies):
+    """Add the damaged or missing copies (`kind`) a restore found ({saved copy: its
+    recorded checksum or None}) to reports/integrity.json under `section` (the backup
+    tree's checks: archive, usb_photos, usb_nextcloud), as a quick check adds what it
+    finds: the repair option works from that list, and the dashboard shows it. Their
+    checksums are kept beside the list ("checksums"), for a copy no ledger records. The
+    next full check of that tree replaces the list. True once written."""
     path = Path(config['data_mount']) / INTEGRITY_REPORT
     if not ssd_ready(config) or not path.parent.is_dir():
         return False
@@ -990,11 +1036,14 @@ def note_damage(config, section, keys):
     entry = sections.get(section)
     if not isinstance(entry, dict):
         entry = sections[section] = {}
-    rows = [k for k in entry.get(DAMAGED, []) if isinstance(k, str)]
-    added = sorted({k for k in keys if valid_ledger_path(k)} - set(rows))
-    entry[DAMAGED] = rows + added
+    rows = [k for k in entry.get(kind, []) if isinstance(k, str)]
+    added = sorted({k for k in copies if valid_ledger_path(k)} - set(rows))
+    entry[kind] = rows + added
     counts = entry.setdefault('counts', {})
-    counts[DAMAGED] = max(counts.get(DAMAGED, 0), len(rows)) + len(added)
+    counts[kind] = max(counts.get(kind, 0), len(rows)) + len(added)
+    sums = entry[CHECKSUMS] if isinstance(entry.get(CHECKSUMS), dict) else {}
+    sums.update((k, sha) for k, sha in copies.items() if valid_ledger_path(k) and isinstance(sha, str) and SHA256.match(sha))
+    entry[CHECKSUMS] = sums
     entry['found_by_restore_at'] = dt.datetime.now(dt.timezone.utc).timestamp()
     atomic_json(path, value)
     return True
@@ -1094,8 +1143,9 @@ def restore_cloud(config, prompt, output):
             return
         sources = cloud_sources(usb, user)
         # The USB drive holds the only copy of Nextcloud files: no "other backup".
-        count, latest, checked = copy_choice(sources, target, prompt, output, ledger_root=usb / 'nextcloud')
-        report_restore(config, 'usb_nextcloud', checked, target, output)
+        count, latest, checked = copy_choice(sources, target, prompt, output, ledger_root=usb / 'nextcloud',
+                                             report=functools.partial(note_findings, config, 'usb_nextcloud'))
+        report_restore(checked, target, output)
     ready = handed_over(config, target)
     if encrypted_by_nextcloud(target):
         say(output, f'\nDone: {file_count(count)} copied to {target}, but they are ENCRYPTED by Nextcloud\'s',
@@ -1259,7 +1309,7 @@ def legacy_usb_snapshots(usb):
     return list(reversed(found))
 
 
-PROBLEM_LISTS = (DAMAGED, 'both_damaged', 'disagree', 'missing')
+PROBLEM_LISTS = (DAMAGED, 'both_damaged', 'disagree', MISSING)
 
 
 def integrity_sections(config):
@@ -1277,14 +1327,172 @@ def listed(section):
                    if isinstance(key, str) and valid_ledger_path(key)})
 
 
-def replace_copy(good, bad, root, key, expected, aside):
-    """Move a bad copy (if any) to <root>/neko-damaged/<time>/<key>, then copy the good
-    one in its place, checked against `expected` (SHA-256)."""
-    if bad.exists() or bad.is_symlink():
-        kept = Path(root) / QUARANTINE / aside / key
-        kept.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.rename(bad, kept)
-    copy_checked(good, bad, expected)
+FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+DRIVE_NAMES = {'HDD': 'HDD', 'USB': 'USB drive'}
+
+
+class DriveGone(OSError):
+    """A drive the repair writes to is not the one it opened any more (unplugged, or
+    another drive mounted at its folder)."""
+
+
+class Tree:
+    """One backup tree the repair reads and writes (the HDD's photo archive, the USB
+    drive's copies), on a drive whose identity was checked (`ready`: its UUID, filesystem
+    and Btrfs subvolume, as the settings name them). The drive's folder is opened once and
+    every file is reached from that open folder, never by its path again: when the drive
+    is unplugged mid-repair (or another drive is mounted there), a write can't land in the
+    empty folder on the system disk, nor on the other drive. A folder inside the tree that
+    is on another filesystem is refused too. Before each write the drive is checked again,
+    so a drive that went away is said, and nothing more is written to it."""
+
+    def __init__(self, label, mount, rel, ready):
+        self.label, self.mount, self.ready = label, Path(mount), ready
+        self.parts = rel.split('/') if rel else []
+        self.root = self.mount.joinpath(*self.parts)
+        self.fd = self.dev = None
+        self.gone = None if rel is not None else (f'the {self.drive()}\'s backup folder in the settings ("archive_dir") '
+                                                  'is not a plain folder inside it')
+
+    def drive(self):
+        return DRIVE_NAMES[self.label]
+
+    def open(self):
+        """Open the drive's folder; True when it is the right drive. Otherwise `gone` says why."""
+        if self.gone is None and self.ready():
+            self.fd = os.open(self.mount, FOLDER_FLAGS)
+            self.dev = os.fstat(self.fd).st_dev
+            if self.same():     # still the drive that was checked, now that it is open
+                return True
+            self.close()
+        self.gone = self.gone or f'the {self.drive()} is not mounted at {self.mount} (or another drive is there)'
+        return False
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def same(self):
+        """The drive mounted at its folder is still the right one, and the one opened."""
+        try:
+            now, held = os.stat(self.mount), os.fstat(self.fd)
+        except OSError:
+            return False
+        return (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino) and self.ready()
+
+    def usable(self):
+        """Checked right before each write: False (and `gone` says why) once the drive left."""
+        if self.gone is None and not self.same():
+            self.gone = f'the {self.drive()} was disconnected or changed during the repair'
+        return self.gone is None
+
+    def step(self, folder, part, create):
+        """Open the folder `part` inside the open `folder`, made when missing and `create`."""
+        try:
+            found = os.open(part, FOLDER_FLAGS, dir_fd=folder)
+        except FileNotFoundError:
+            if not create:
+                raise
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, 0o700, dir_fd=folder)
+            found = os.open(part, FOLDER_FLAGS, dir_fd=folder)
+        if os.fstat(found).st_dev != self.dev:
+            os.close(found)
+            raise DriveGone(errno.EXDEV, f'"{part}" in the {self.drive()} is on another drive (one mounted there)')
+        return found
+
+    def folder(self, parts, create=False):
+        """An open folder of this tree (`parts` below its root), reached from the drive's
+        open folder without following a link. The caller closes it."""
+        if self.fd is None:
+            raise DriveGone(errno.ENODEV, self.gone or f'the {self.drive()} is not open')
+        fd = os.dup(self.fd)
+        try:
+            for part in (*self.parts, *parts):
+                found = self.step(fd, part, create)
+                os.close(fd)
+                fd = found
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+
+class Saved:
+    """One saved copy (`key`) in a Tree, read and written only through the tree's open folders."""
+
+    def __init__(self, tree, key):
+        self.tree, self.key = tree, key
+        *self.dirs, self.name = key.split('/')
+
+    def __str__(self):
+        return str(self.tree.root / self.key)
+
+    def reader(self):
+        """The copy, open for reading; OSError when it is not a regular file there."""
+        folder = self.tree.folder(self.dirs)
+        try:
+            fd = os.open(self.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=folder)
+        finally:
+            os.close(folder)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise OSError(errno.EINVAL, 'not a regular file', str(self))
+        return os.fdopen(fd, 'rb')
+
+    def checksum(self):
+        """Its SHA-256, or None when there is no regular file to read."""
+        try:
+            with self.reader() as stream:
+                return hashlib.file_digest(stream, 'sha256').hexdigest()
+        except OSError:
+            return None
+
+    def stat(self):
+        with self.reader() as stream:
+            return os.fstat(stream.fileno())
+
+    def lexists(self):
+        """Something (a file, a link, anything) is there under its name."""
+        try:
+            folder = self.tree.folder(self.dirs)
+        except OSError:
+            return False
+        try:
+            os.stat(self.name, dir_fd=folder, follow_symlinks=False)
+            return True
+        except OSError:
+            return False
+        finally:
+            os.close(folder)
+
+    def set_aside(self, aside):
+        """Move it to <tree>/neko-damaged/<aside>/<key> (kept, never deleted)."""
+        folder = self.tree.folder(self.dirs)
+        try:
+            kept = self.tree.folder([QUARANTINE, aside, *self.dirs], create=True)
+            try:
+                os.rename(self.name, self.name, src_dir_fd=folder, dst_dir_fd=kept)
+            finally:
+                os.close(kept)
+        finally:
+            os.close(folder)
+
+    def replace(self, good, expected, aside):
+        """Move this copy (if any) aside, then copy the good one (a Saved, or the live
+        original's path) in its place, checked against `expected` (SHA-256). DriveGone
+        when the drive is not the one opened any more: then nothing is written."""
+        if not self.tree.usable():
+            raise DriveGone(errno.ENODEV, self.tree.gone)
+        if self.lexists():
+            self.set_aside(aside)
+        folder = self.tree.folder(self.dirs, create=True)
+        try:
+            with (good.reader() if isinstance(good, Saved) else open(good, 'rb')) as source:
+                copy_checked_into(source, folder, self.name, expected, str(good))
+        finally:
+            os.close(folder)
 
 
 def describe(label, path):
@@ -1352,7 +1560,7 @@ def decide(key, present, sums, recorded, expected, live, original, prompt, outpu
 def undecided(key, why, present, ledgers, every_copy, asking):
     """Nothing could be repaired (`why`). With no good copy left anywhere (and every copy
     looked at), you may accept that the saved copy is lost; otherwise nothing changes."""
-    if why == NO_GOOD_COPY and every_copy:
+    if why == NO_GOOD_COPY and every_copy and all(tree.usable() for _, tree, _ in present):
         return accept_lost(key, present, ledgers, *asking)
     return why, set()
 
@@ -1363,7 +1571,7 @@ def accept_lost(key, present, ledgers, prompt, output, aside):
     monthly check then keeps stopping the monthly snapshot and updates), or accept that
     the saved copy is lost: it goes to <tree>/neko-damaged/<time>/ (kept, never
     deleted), and its checksum entry is retired, with why, so the checks pass again."""
-    gone = not any(path.exists() or path.is_symlink() for _, _, path in present)
+    gone = not any(saved.lexists() for _, _, saved in present)
     say(output, f'\n{key}: the saved copy ' + ('is missing' if gone else 'no longer matches its recorded checksum')
         + ', and no other copy (nor the original, which changed or is gone) holds what was saved,'
         ' so it cannot be repaired. Until you decide, the monthly check finds it again and the'
@@ -1372,32 +1580,73 @@ def accept_lost(key, present, ledgers, prompt, output, aside):
                   prompt, output)
     if pick != 'lost':
         return NO_GOOD_COPY, set()
-    for _, root, path in present:
-        if path.exists() or path.is_symlink():
-            kept = Path(root) / QUARANTINE / aside / key
-            kept.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.rename(path, kept)
+    if not all(tree.usable() for _, tree, _ in present):   # a drive went away while you chose
+        return 'nothing was changed: ' + '; '.join(t.gone for _, t, _ in present if t.gone), set()
+    for _, _, saved in present:
+        if saved.lexists():
+            saved.set_aside(aside)
     why = ('missing' if gone else f'damaged; kept in {QUARANTINE}/{aside}') + ', accepted as lost in the recovery menu'
-    for root, known in ledgers:
-        if key in known:
-            record_ledger(root, {}, 'lost', retire={key: why})
+    for tree, known in ledgers:
+        if key in known and tree.usable():
+            record_ledger(tree.root, {}, 'lost', retire={key: why})
             del known[key]
     return ('accepted as lost' + ('' if gone else f' (the damaged copy is kept in {QUARANTINE}/{aside})'),
             {label for label, _, _ in present})
 
 
-def repair_one(key, copies, ledgers, original, prompt, output, aside, every_copy=True):
-    """Repair one file of a tree. `copies`: [(label, root)] that should hold it under `key`
-    (HDD archive and USB copy, or just the USB copy); `ledgers`: [(root, its ledger)];
-    `original`: a live source (the Immich library or Nextcloud) that may still hold it.
-    `every_copy`: all of the file's copies are here (False while the USB drive with a
-    second photo copy is not plugged in: a copy can't be given up as lost then).
+def put_copies(present, sums, good, expected, aside):
+    """Write the good copy over each copy that does not match `expected`. Returns (labels
+    repaired, {label: why it was NOT repaired}) (a drive that went away, a write refused)."""
+    fixed, failed = [], {}
+    for label, _, saved in present:
+        if sums[label] == expected:
+            continue
+        try:
+            saved.replace(good, expected, aside)
+            fixed.append(label)
+        except OSError as exc:
+            failed[label] = exc.strerror or str(exc)
+    return fixed, failed
+
+
+def record_sums(key, ledgers, expected, settled, failed):
+    """The checksum recorded in each tree's ledger, after the files are in place (it is
+    never replaced): not in a tree whose copy could not be repaired, nor on a drive that
+    went away. Returns {label: why} for the trees whose checksum could not be recorded."""
+    unrecorded = {}
+    for tree, known in ledgers:
+        if tree.label in failed or (key in known and known[key] == expected):
+            continue
+        if not tree.usable():
+            unrecorded[tree.label] = tree.gone
+            continue
+        record_ledger(tree.root, {key: expected}, 'chosen', replace=settled)
+        known[key] = expected
+    return unrecorded
+
+
+def repair_said(fixed, failed, unrecorded):
+    """What happened to one file's copies, in words."""
+    done = [label for label in fixed if label not in unrecorded]
+    said = ['repaired the ' + ' and '.join(done) + ' copy'] if done else []
+    said += [f'the {label} copy was NOT repaired: {why}' for label, why in failed.items()]
+    said += [f'the {label} copy was written, but its checksum was NOT recorded ({why}), so it stays listed'
+             for label, why in unrecorded.items()]
+    return '; '.join(said) or 'already intact'
+
+
+def repair_one(key, trees, ledgers, original, prompt, output, aside, every_copy=True, hint=None):
+    """Repair one file of a tree. `trees`: the Trees that should hold it under `key` (HDD
+    archive and USB copy, or just one of them); `ledgers`: [(tree, its ledger)];
+    `original`: a live source (the Immich library or Nextcloud) that may still hold it, or
+    None. `every_copy`: all of the file's copies are here (False while the drive with its
+    other photo copy is not connected: a copy can't be given up as lost then). `hint`: the
+    checksum a restore recorded for it, used when no ledger has one.
     Returns (what happened, labels of the copies now verified to match)."""
-    present = [(label, root, Path(root) / key) for label, root in copies]
-    labels = {str(root): label for label, root in copies}
-    recorded = {labels.get(str(root), str(root)): known[key] for root, known in ledgers if key in known}
-    expected = next(iter(recorded.values()), None)
-    sums = {label: sha256_file(path) if path.is_file() else None for label, _, path in present}
+    present = [(tree.label, tree, Saved(tree, key)) for tree in trees]
+    recorded = {tree.label: known[key] for tree, known in ledgers if key in known}
+    expected = next(iter(recorded.values()), hint)
+    sums = {label: saved.checksum() for label, _, saved in present}
     live = sha256_file(original) if original and original.is_file() else None
     if live is not None and live_name(key) != key and expected is None:
         # The live file is a later edit of a dated version: it can only stand in for
@@ -1407,79 +1656,154 @@ def repair_one(key, copies, ledgers, original, prompt, output, aside, every_copy
     expected, good = decide(key, present, sums, recorded, expected, live, original, prompt, output)
     if expected is None:
         return undecided(key, good, present, ledgers, every_copy, (prompt, output, aside))
-    settled = {key} if conflict else set()
-    fixed = []
-    for label, root, path in present:
-        if sums[label] != expected:
-            replace_copy(good, path, root, key, expected, aside)
-            fixed.append(label)
-    # The checksum is recorded after the files are in place (it is never replaced).
-    for root, known in ledgers:
-        if key not in known or known[key] != expected:
-            record_ledger(root, {key: expected}, 'chosen', replace=settled)
-            known[key] = expected
-    text = 'repaired the ' + ' and '.join(fixed) + ' copy' if fixed else 'already intact'
-    return text, {label for label, _, _ in present}
+    fixed, failed = put_copies(present, sums, good, expected, aside)
+    unrecorded = record_sums(key, ledgers, expected, {key} if conflict else set(), failed)
+    return repair_said(fixed, failed, unrecorded), {label for label, _, _ in present} - set(failed) - set(unrecorded)
+
+
+INTEGRITY_SECTIONS = ('archive', 'usb_photos', 'usb_nextcloud')
+# A warning is cleared only for the copies it is about, once each was checked: the
+# archive check is about the HDD copy, the USB checks about the USB copies.
+NEEDS = {'archive': {'HDD'}, 'usb_photos': {'HDD', 'USB'}, 'usb_nextcloud': {'USB'}}
+CHECKSUMS = 'checksums'   # {saved copy: recorded SHA-256} beside a restore's findings (note_findings)
+
+
+def usb_ready(config, mount):
+    """The USB drive mounted at `mount` is the one the settings name: its UUID and
+    filesystem, the whole filesystem (as the weekly backup and Usb mount it)."""
+    photos = config.get('photos', {})
+    found = mounted_identity(Path(mount))
+    return (found is not None and found[0].lower() == str(photos.get('external_backup_uuid', '')).lower()
+            and found[1] == photos.get('external_backup_fstype', 'ext4') and found[2] == '')
+
+
+def open_trees(config, usb, output):
+    """{'hdd', 'usb', 'cloud'}: the backup trees the repair works on, each opened only when
+    its drive is the one the settings name. One that can't be used is said, once."""
+    rel = str(config.get('photos', {}).get('archive_dir', ARCHIVE_DIR)).rstrip('/')
+    trees = {'hdd': Tree('HDD', config['media_mount'], rel if valid_ledger_path(rel) else None,
+                         functools.partial(hdd_ready, config))}
+    if usb:
+        ready = functools.partial(usb_ready, config, usb)
+        trees.update(usb=Tree('USB', usb, '', ready), cloud=Tree('USB', usb, 'nextcloud', ready))
+    for tree in trees.values():
+        tree.open()
+    for tree in {tree.label: tree for tree in trees.values() if tree.gone}.values():
+        output(f'  Not used: {tree.gone}. Its copies were NOT repaired, and their warnings stay listed. '
+               f'Connect the right drive (or restart the computer), then choose this again.')
+    return trees
+
+
+def repair_jobs(config, work, trees, output):
+    """[(keys, trees, originals folder or None, sections, every copy here, trees away)]."""
+    media, data = Path(config['media_mount']), Path(config['data_mount'])
+    hdd, usb = trees["hdd"], trees.get("usb")
+    photos = [tree for tree in (hdd, usb) if tree is not None and not tree.gone]
+    away = [tree for tree in (hdd, usb) if tree is not None and tree.gone]
+    keys = sorted(set(work['archive']) | set(work['usb_photos']))
+    # A live original is read only from the drive the settings name (Immich's on the
+    # SSD, Nextcloud's on the HDD).
+    jobs = []
+    if keys and photos:
+        # A photo copy is given up as lost only when both of its copies were looked at.
+        jobs.append((keys, photos, data / 'photos/immich-library' if ssd_ready(config) else None,
+                     ('archive', 'usb_photos'), len(photos) == 2, away))
+    jobs += cloud_job(work, trees, media, output)
+    return jobs
+
+
+def cloud_job(work, trees, media, output):
+    """The Nextcloud copy's repair job (repair_jobs), or none: Nextcloud's live files are
+    read only from the HDD the settings name."""
+    hdd, usb, cloud = trees['hdd'], trees.get('usb'), trees.get('cloud')
+    if cloud is not None and not cloud.gone:
+        return [(work['usb_nextcloud'], [cloud], None if hdd.gone else media / 'cloud/files', ('usb_nextcloud',),
+                 True, [])]
+    if usb is None and (work['usb_nextcloud'] or work['usb_photos']):
+        output('  The USB drive is not plugged in: its copies were not checked and stay listed.')
+    return []
+
+
+def reported_sums(sections):
+    """{saved copy: checksum} a restore recorded beside its findings (when the sections agree)."""
+    sums = {}
+    for name in INTEGRITY_SECTIONS:
+        found = sections.get(name, {}).get(CHECKSUMS)
+        for key, sha in (found.items() if isinstance(found, dict) else ()):
+            if valid_ledger_path(key) and isinstance(sha, str) and SHA256.match(sha):
+                sums[key] = sha if sums.get(key, sha) == sha else None
+    return {key: sha for key, sha in sums.items() if sha}
+
+
+def repair_job(job, hints, asking, resolved):
+    """Repair every file of one job (repair_jobs), adding what is now fixed to `resolved`."""
+    keys, trees, originals, names, every_copy, away = job
+    prompt, output, aside = asking
+    ledgers = [(tree, read_ledger(tree.root)) for tree in trees]
+    for key in keys:
+        original = originals / live_name(key, trees[0].root) if originals else None
+        result, verified = repair_one(key, trees, ledgers, original, prompt, output, aside, every_copy, hints.get(key))
+        said = [result] + [f'the {tree.label} copy was NOT repaired: {tree.gone}' for tree in away]
+        output(f'  {key}: ' + '; '.join(said))
+        for name in names:
+            if NEEDS[name] <= verified:
+                resolved[name].append(key)
 
 
 def repair_backups(config, prompt, output):
-    """Fix the files the checksum checks reported, from a copy that still matches."""
+    """Fix the files the checksum checks reported, from a copy that still matches. Only
+    drives that are the ones the settings name are read or written (see Tree)."""
     from recovery_tools import lock
     sections = integrity_sections(config)
-    work = {name: listed(sections.get(name, {})) for name in ('archive', 'usb_photos', 'usb_nextcloud')}
+    work = {name: listed(sections.get(name, {})) for name in INTEGRITY_SECTIONS}
     if not any(work.values()):
         output('The last checksum checks found nothing to repair.')
         return
-    media, data = Path(config['media_mount']), Path(config['data_mount'])
-    archive = media / config.get('photos', {}).get('archive_dir', ARCHIVE_DIR)
     aside = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     say(output, '\nRepair damaged backup copies',
         'Each file is compared with its recorded SHA-256 checksum and fixed from a copy that',
         'still matches it. Damaged copies are moved to a "neko-damaged" folder, never deleted.')
     resolved = {name: [] for name in work}
-    # A warning is cleared only for the copies it is about, once each was checked:
-    # the archive check is about the HDD copy, the USB checks about the USB copies.
-    needs = {'archive': {'HDD'}, 'usb_photos': {'HDD', 'USB'}, 'usb_nextcloud': {'USB'}}
+    hints = reported_sums(sections)
     with lock(config, changes_apps=False), Usb(config, writable=True) as usb:
-        copies = [('HDD', archive)] + ([('USB', usb)] if usb else [])
-        # A photo copy is given up as lost only when both of its copies were looked at.
-        jobs = [(sorted(set(work['archive']) | set(work['usb_photos'])), copies,
-                 data / 'photos/immich-library', ('archive', 'usb_photos'), usb is not None)]
-        if usb:
-            jobs.append((work['usb_nextcloud'], [('USB', usb / 'nextcloud')], media / 'cloud/files', ('usb_nextcloud',),
-                         True))
-        elif work['usb_nextcloud'] or work['usb_photos']:
-            output('  The USB drive is not plugged in: its copies were not checked and stay listed.')
-        for keys, trees, originals, names, every_copy in jobs:
-            ledgers = [(root, read_ledger(root)) for _, root in trees]
-            for key in keys:
-                result, verified = repair_one(key, trees, ledgers, originals / live_name(key, trees[0][1]), prompt, output,
-                                              aside, every_copy)
-                output(f'  {key}: {result}')
-                for name in names:
-                    if needs[name] <= verified:
-                        resolved[name].append(key)
+        trees = open_trees(config, usb, output)
+        try:
+            for job in repair_jobs(config, work, trees, output):
+                repair_job(job, hints, (prompt, output, aside), resolved)
+        finally:
+            # Closed before the USB drive is unmounted: an open folder would keep it busy.
+            for tree in trees.values():
+                tree.close()
     clear_resolved(config, resolved)
     say(output, '\nDone. The next backup run checks everything again.')
 
 
 def clear_resolved(config, resolved):
-    """Take repaired files off the dashboard's list until the next check runs."""
+    """Take repaired files off the dashboard's list until the next check runs (on the SSD
+    the settings name only)."""
     path = Path(config['data_mount']) / INTEGRITY_REPORT
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(path.read_text()) if ssd_ready(config) else None
     except (OSError, ValueError):
+        value = None
+    if not isinstance(value, dict):
         return
     for name, keys in resolved.items():
         section = value.get('sections', {}).get(name)
-        if not isinstance(section, dict) or not keys:
-            continue
-        for kind in PROBLEM_LISTS:
-            rows = section.get(kind, [])
-            section[kind] = [k for k in rows if k not in keys]
-            counts = section.setdefault('counts', {})
-            counts[kind] = max(0, counts.get(kind, len(rows)) - (len(rows) - len(section[kind])))
+        if isinstance(section, dict) and keys:
+            drop_resolved(section, keys)
     atomic_json(path, value)
+
+
+def drop_resolved(section, keys):
+    """One integrity section without the repaired files `keys` (lists, counts, checksums)."""
+    for kind in PROBLEM_LISTS:
+        rows = section.get(kind, [])
+        section[kind] = [k for k in rows if k not in keys]
+        counts = section.setdefault('counts', {})
+        counts[kind] = max(0, counts.get(kind, len(rows)) - (len(rows) - len(section[kind])))
+    if isinstance(section.get(CHECKSUMS), dict):
+        section[CHECKSUMS] = {k: v for k, v in section[CHECKSUMS].items() if k not in keys}
 
 
 def review_old_usb(config, prompt, output):

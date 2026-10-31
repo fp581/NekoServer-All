@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.40.3 — 2026-10-31
+
+Fixes for the project owner's review of 0.40.2.
+
+### Fixed
+- **"Repair damaged backup copies" never writes underneath a missing HDD.** With the HDD unplugged (or another drive in its folder), the repair copied the good USB copy into the empty folder on the system disk, said "repaired the HDD copy" and cleared the warning. Each drive the repair uses is now checked first (UUID, filesystem and Btrfs subvolume); a missing or wrong drive is left out, said as "NOT repaired" with the reason, and its warning stays. Every copy is written through the drive's own open folder, so a drive unplugged or swapped during the repair gets nothing more, and nothing lands on the system disk.
+- **A copy found missing during a restore can be repaired right away.** The restore listed it in NOT-RESTORED.txt but did not pass it to the repair option, which then said there was nothing to repair. It is now recorded for repair, with the saved copy and its checksum, also when you stop the restore; copies you accepted as lost stay apart.
+- **The uninstaller removes no container before its final checks.** It removed the apps' containers before taking the jobs' lock; now every destructive step comes after the checks under the lock, so a running job stops the uninstall with nothing removed.
+- **The uninstaller holds the setup locks even when their files were missing**, so a setup started meanwhile waits instead of running alongside it.
+- **A Btrfs pool's size is the pool's, not its first drive's.** A pool of a 32 GB and a 4 TB drive was accepted or refused depending on the order of its drives. A mounted pool now counts what the pool reports; one not yet mounted counts by its data profile (a RAID1 holds what its smallest mirror holds), or only its smallest drive when the profile can't be read.
+- A test that gives files to other user IDs is skipped where the system refuses those IDs.
+
+### Not in this release
+- RAID and pool health monitoring with error counters is part-way built and comes in a later release.
+
 ## v0.40.2 — 2026-10-26
 
 A company-style release test of 0.40.1: an IT team installed it for real on a clean Ubuntu 24.04 machine with systemd and test drives, QA tested every 0.40.1 change, and three customers used it (a first-time installer, a teenager on the phone dashboard, a photographer restoring after a lost HDD). IT fixed everything they found; QA then verified every fix (three rounds) before release.
