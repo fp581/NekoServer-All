@@ -70,6 +70,23 @@ def settings(config, image):
             'data_mount': str(config['data_mount']), 'media_mount': str(config['media_mount'])}
 
 
+def adopt_admin(opts, owned, chosen, persist, log):
+    """Settings made anew (Linux reinstalled, the SSD kept) name the default administrator
+    while the installed Nextcloud has the one the account store on the SSD names: that
+    name is taken back into my-config.json, so the install is recognised as this one.
+    True when it was."""
+    if not chosen or opts.get('admin_user', 'admin') != 'admin':
+        return False
+    installed = settings_of(owned).get('admin_user')
+    if installed in (None, 'admin') or installed != chosen['username']:
+        return False
+    opts['admin_user'] = installed
+    persist()
+    log('Nextcloud: the administrator\'s name in my-config.json was taken from the installed Nextcloud '
+        '(the settings were made anew, the SSD kept)')
+    return True
+
+
 def settings_of(owned):
     """The settings an installed definition was made from: recorded since 0.29.0, read
     back from the definition itself for earlier installs."""
@@ -270,6 +287,7 @@ def run(ctx):
             raise RuntimeError('Nextcloud credentials must be private and root-owned')
         owned = json.loads(safe_path(managed).read_text())
         image = owned['image']
+        adopt_admin(opts, owned, chosen, ctx.persist_config, ctx.log)
         if settings_of(owned) != settings(config, image):
             raise RuntimeError('Nextcloud\'s settings in my-config.json changed since it was installed (its image, '
                                'trusted hosts or public address), and a running Nextcloud is never reconfigured on a '

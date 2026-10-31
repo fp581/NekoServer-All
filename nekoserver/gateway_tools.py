@@ -238,10 +238,19 @@ def unit(config,code,state):
 def hashes(payloads):return {str(p):hashlib.sha256(v if isinstance(v,bytes) else v.encode()).hexdigest() for p,v in payloads.items()}
 
 def preflight(payloads,ledger,copy=LAN_RECORD):
+    """Every gateway file already on this PC is as setup would write it, or one setup wrote
+    before (its record says so): a file of someone else's is never overwritten."""
     previous=managed(ledger,copy).get('sha256',{})
+    strangers=[]
     for path,content in payloads.items():
         p=safe_path(path);desired=content if isinstance(content,bytes) else content.encode()
-        if p.exists() and p.read_bytes()!=desired and hashlib.sha256(p.read_bytes()).hexdigest()!=previous.get(str(p)):raise RuntimeError('Unmanaged or modified gateway file preserved; inspect before applying')
+        if p.exists() and p.read_bytes()!=desired and hashlib.sha256(p.read_bytes()).hexdigest()!=previous.get(str(p)):strangers.append(str(p))
+    if strangers:
+        names=' '.join(strangers)
+        raise RuntimeError(f'Gateway files on this PC are not as setup would write them, and setup has no record of writing them: {names}. '
+                           f'If NekoServer ran on this PC before (Linux reinstalled, or the SSD replaced by a release before 0.41.0) and nobody '
+                           f'changed them by hand, remove them and run setup again:  sudo rm {names} . Otherwise look at them first; '
+                           f'setup never overwrites a file it did not write')
 
 def port_preflight(config):
     """Every home-address port is free or already this gateway's own (choose_lan_ports
