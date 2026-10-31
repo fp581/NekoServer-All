@@ -27,6 +27,8 @@ def inventory_now():
 # What can hold a filesystem: a disk or partition, an opened encrypted drive (LUKS), an
 # LVM volume or a software RAID array. The last three sit on top of one or more disks.
 VOLUME_KINDS=('part','disk','crypt','lvm','raid0','raid1','raid4','raid5','raid6','raid10','md')
+DEV = '/dev/'                       # where Linux shows drives
+BY_UUID = DEV + 'disk/by-uuid/'    # each filesystem by its UUID
 # Where Linux keeps itself: the root and the boot folders (Arch often mounts the EFI
 # partition at /efi). A disk holding any of them is the system disk.
 SYSTEM_MOUNTS=('/','/boot','/boot/efi','/efi')
@@ -48,7 +50,7 @@ def holds_system(dev):
 def device_sub_uuid(name):
     """A Btrfs device's own UUID (UUID_SUB): each device of a pool has its own, a cloned
     drive the same as its original. None when it can't be read."""
-    for path in ('/dev/' + name, '/dev/mapper/' + name):
+    for path in (DEV + name, DEV + 'mapper/' + name):
         if os.path.exists(path):
             try:
                 return call(['blkid', '-s', 'UUID_SUB', '-o', 'value', path]) or None
@@ -125,7 +127,7 @@ def data_profiles(names):
     (`btrfs inspect-internal dump-tree -t chunk`, which needs root and the btrfs tool),
     or None when they can't be read. More than one while a conversion is unfinished."""
     for name in names:
-        path='/dev/'+name if os.path.exists('/dev/'+name) else '/dev/mapper/'+name
+        path=DEV+name if os.path.exists(DEV+name) else DEV+'mapper/'+name
         if not os.path.exists(path):
             continue
         try:
@@ -489,7 +491,7 @@ def not_offered(inventory, uuid):
 
 def why_not(dev, system):
     """The reason one lsblk row is not offered as a drive."""
-    name, kind, fs = '/dev/' + str(dev.get('name')), dev.get('type', ''), dev.get('fstype')
+    name, kind, fs = DEV + str(dev.get('name')), dev.get('type', ''), dev.get('fstype')
     if system:
         return f'{name} is on the disk Linux runs from, which NekoServer never uses for your files'
     if kind not in VOLUME_KINDS:
@@ -624,7 +626,7 @@ def remember_subvolumes(config, run=subprocess.run):
 
 
 def validate_device(uuid, fstype):
-    source = Path('/dev/disk/by-uuid') / uuid
+    source = Path(BY_UUID + uuid)
     if not source.exists():
         raise RuntimeError(f'Drive UUID {uuid} not found; connect the disk and use lsblk -f')
     actual_type = call(['blkid', '-s', 'TYPE', '-o', 'value', str(source)])
@@ -660,7 +662,7 @@ def uuid_of(source):
     """The filesystem UUID an fstab source names (LABEL=, PARTUUID=, PARTLABEL=, a /dev
     path), or None when it can't be found (a drive not connected)."""
     try:
-        device = source if source.startswith('/dev/') else call(['findfs', source])
+        device = source if source.startswith(DEV) else call(['findfs', source])
         return call(['blkid', '-s', 'UUID', '-o', 'value', device]) or None
     except (RuntimeError, OSError, subprocess.SubprocessError):
         return None
@@ -674,16 +676,16 @@ def fstab_folder(field):
 def same_drive(source, uuid, resolve=uuid_of):
     """An fstab source that names this drive, however it is written."""
     plain = source.replace('"', '')
-    if plain in (f'UUID={uuid}', f'/dev/disk/by-uuid/{uuid}'):
+    if plain in (f'UUID={uuid}', BY_UUID + uuid):
         return True
     if plain.startswith('UUID='):
         return False
-    return plain.startswith(('LABEL=', 'PARTUUID=', 'PARTLABEL=', '/dev/')) and resolve(plain) == uuid
+    return plain.startswith(('LABEL=', 'PARTUUID=', 'PARTLABEL=', DEV)) and resolve(plain) == uuid
 
 
 def drive_connected(uuid):
     """A drive with this filesystem UUID is connected to this PC."""
-    return os.path.exists('/dev/disk/by-uuid/' + uuid)
+    return os.path.exists(BY_UUID + uuid)
 
 
 def own_line(found):
@@ -947,6 +949,6 @@ def mounted_filesystem(target):
     fields = (findmnt('UUID,FSTYPE,SOURCE', target) or '').split()
     if len(fields) == 3:
         return fields[0], fields[1]
-    if len(fields) == 2 and fields[1].startswith('/dev/'):
+    if len(fields) == 2 and fields[1].startswith(DEV):
         return uuid_of(fields[1].split('[')[0]), fields[0]
     return None
