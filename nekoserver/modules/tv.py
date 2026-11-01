@@ -107,6 +107,10 @@ def browser():
     return next((found for found in (find_program(name) for name in BROWSERS) if found), None)
 
 
+# The XDG settings folder in a home.
+USER_CONFIG = '.config'
+
+
 def user_command(user, home, argv):
     return [
         'runuser',
@@ -115,7 +119,7 @@ def user_command(user, home, argv):
         '--',
         'env',
         'HOME=' + str(home),
-        'XDG_CONFIG_HOME=' + str(home / '.config'),
+        'XDG_CONFIG_HOME=' + str(home / USER_CONFIG),
         'XDG_DATA_HOME=' + str(home / '.local/share'),
         *argv,
     ]
@@ -404,7 +408,7 @@ def run(ctx):
     recorded = recorded_launchers(root)
     check_launchers(destinations, user, home, recorded)
     if opts.get('keep_awake', True):
-        power_dir = safe_path(home / '.config')
+        power_dir = safe_path(home / USER_CONFIG)
         if power_dir.exists() and (not power_dir.is_dir() or power_dir.stat().st_uid != user.pw_uid):
             raise RuntimeError('Desktop power configuration directory must be owned by the selected user')
     vendors = graphics()
@@ -462,7 +466,7 @@ def run(ctx):
         )
     write_launchers(destinations, user, home, recorded)
     if opts.get('keep_awake', True):
-        ensure_user_dir(home / '.config', home, user)
+        ensure_user_dir(home / USER_CONFIG, home, user)
         results.append(keep_awake(user, home, ctx.log))
     results.append({'check': 'tv:launchers', 'status': 'pass'})
     handoffs = [

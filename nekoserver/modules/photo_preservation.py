@@ -113,7 +113,7 @@ def run(ctx):
     tm = opts.get('database_backup_time', '02:15')
     import re
 
-    if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', tm):
+    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', tm):
         raise RuntimeError('Invalid database backup time')
     archive = relative_path(opts.get('archive_dir', 'photos/archive'))
     binary = native_runtime.deploy(Path(__file__).resolve().parents[1], cfg, runtime)

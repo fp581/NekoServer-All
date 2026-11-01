@@ -37,22 +37,18 @@ def options(config):
         raise RuntimeError('Invalid Nextcloud options')
     image = opts.get('image', 'auto')
     if image != 'auto' and (
-        not isinstance(image, str) or not re.fullmatch(r'nextcloud:[1-9][0-9](?:\.\d+){0,2}-apache', image)
+        not isinstance(image, str) or not re.fullmatch(r'nextcloud:[1-9]\d(?:\.\d+){0,2}-apache', image)
     ):
         raise RuntimeError('Use auto or a versioned nextcloud Apache image')
     hosts = opts.get('trusted_hosts', ['localhost', '127.0.0.1'])
     if (
         not isinstance(hosts, list)
         or not hosts
-        or any(
-            not isinstance(h, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?', h) for h in hosts
-        )
+        or any(not isinstance(h, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*(?::\d{1,5})?', h) for h in hosts)
     ):
         raise RuntimeError('Explicit Nextcloud trusted hosts required; no wildcard')
     url = opts.get('public_url', '')
-    if url and (
-        not isinstance(url, str) or not re.fullmatch(r'https://[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?', url)
-    ):
+    if url and (not isinstance(url, str) or not re.fullmatch(r'https://[A-Za-z0-9][A-Za-z0-9.-]*(?::\d{1,5})?', url)):
         raise RuntimeError('Nextcloud public_url must be an HTTPS origin')
     if not isinstance(opts.get('admin_user', 'admin'), str) or not re.fullmatch(
         r'[A-Za-z][A-Za-z0-9_-]{0,31}', opts.get('admin_user', 'admin')

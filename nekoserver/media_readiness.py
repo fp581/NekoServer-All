@@ -53,6 +53,11 @@ def jellyfin_key(root, settings, server_id):
     )
 
 
+def refuse_prompt(_):
+    """The prompt a read-only readiness check hands out: it must never be asked anything."""
+    raise RuntimeError('Readiness must not prompt')
+
+
 def check(config, factory=ReadClient):
     root = safe_path(config['data_mount'])
     apps = config.get('media', {}).get('services', [])
@@ -133,7 +138,7 @@ def check(config, factory=ReadClient):
                 apps=apps,
                 factory=factory,
                 verify_only=True,
-                prompt=lambda _: (_ for _ in ()).throw(RuntimeError('Readiness must not prompt')),
+                prompt=refuse_prompt,
             )
     if 'navidrome' in apps:
         import music_client

@@ -751,11 +751,16 @@ def checked_settings(value):
 HIDDEN_FROM_SERVICES = ('/home', '/root', '/run/user')
 
 
+# The system's top-level folders a drive is mounted inside of, never on.
+TOP_FOLDERS = ('mnt', 'srv', 'home', 'var', 'tmp')
+
+
 def mount_path(value):
     path = safe_path(value)
     if (
         not path.is_absolute()
-        or str(path) in ('/', '/mnt', '/srv', '/home', '/var', '/tmp')
+        or len(path.parts) == 1
+        or (len(path.parts) == 2 and path.parts[1] in TOP_FOLDERS)
         or '..' in path.parts
         or not re.fullmatch(r'/[A-Za-z0-9_./-]+', str(value))
     ):

@@ -76,15 +76,13 @@ def desktop_command(config, argv):
         env.append('DBUS_SESSION_BUS_ADDRESS=unix:path=' + str(bus))
     display = os.environ.get('DISPLAY', '')
     wayland = os.environ.get('WAYLAND_DISPLAY', '')
-    if re.fullmatch(r':[0-9]+(?:\.[0-9]+)?', display):
+    if re.fullmatch(r':\d+(?:\.\d+)?', display):
         env.append('DISPLAY=' + display)
-    if re.fullmatch(r'wayland-[0-9]+', wayland) and (runtime / wayland).exists():
+    if re.fullmatch(r'wayland-\d+', wayland) and (runtime / wayland).exists():
         env.append('WAYLAND_DISPLAY=' + wayland)
     elif not wayland:
         # sudo may strip WAYLAND_DISPLAY; use an actual socket in this user's runtime.
-        sockets = sorted(
-            p for p in runtime.glob('wayland-*') if re.fullmatch(r'wayland-[0-9]+', p.name) and p.is_socket()
-        )
+        sockets = sorted(p for p in runtime.glob('wayland-*') if re.fullmatch(r'wayland-\d+', p.name) and p.is_socket())
         if len(sockets) == 1:
             env.append('WAYLAND_DISPLAY=' + sockets[0].name)
     auth = os.environ.get('XAUTHORITY', '')
@@ -137,6 +135,10 @@ def valid_page(path, root=None):
         return False
 
 
+# GNOME's settings window, which also has the Bluetooth page.
+SETTINGS_APP = '/usr/bin/gnome-control-center'
+
+
 def launch(ctx, target, kind='url'):
     """Targets are passed as argv, never as shell text. No GUI secrets in logs."""
     if not interactive(ctx):
@@ -170,13 +172,13 @@ def launch(ctx, target, kind='url'):
         commands = {
             'steam': [find_program('steam') or '/usr/bin/steam', '-gamepadui'],
             'bluetooth': ['/usr/bin/blueman-manager'],
-            'settings': ['/usr/bin/gnome-control-center', 'display'],
+            'settings': [SETTINGS_APP, 'display'],
         }
         if kind not in commands:
             raise ValueError('Unsupported desktop application')
         argv = commands[kind]
-        if kind == 'bluetooth' and Path('/usr/bin/gnome-control-center').is_file():
-            argv = ['/usr/bin/gnome-control-center', 'bluetooth']
+        if kind == 'bluetooth' and Path(SETTINGS_APP).is_file():
+            argv = [SETTINGS_APP, 'bluetooth']
         if not Path(argv[0]).is_file():
             return False
     try:
@@ -197,6 +199,50 @@ def launch(ctx, target, kind='url'):
         return False
 
 
+def show_step(output, title, instructions):
+    output('\n=== ' + title + ' ===')
+    for number, instruction in enumerate(instructions, 1):
+        output(str(number) + '. ' + instruction)
+    output('Return to the terminal afterward. No reopens this step; Ctrl+C leaves it pending.')
+
+
+def prepared_targets(targets, prepare, output):
+    """The step's targets and what `prepare` adds to them (nothing when it fails, said)."""
+    current = list(targets)
+    if prepare:
+        try:
+            current.extend(prepare() or ())
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            output('The launch preparation did not complete. Follow the instructions manually or answer no to retry.')
+    return current
+
+
+def open_targets(ctx, targets, output):
+    for kind, target in targets:
+        opened = launch(ctx, target, kind)
+        if kind in ('url', 'page'):
+            # Print only to the user's console, not the durable installer logger.
+            output(('Opened: ' if opened else 'Open this address manually: ') + target)
+        elif not opened:
+            output('Automatic launch unavailable. Open ' + kind + ' from your desktop menu.')
+
+
+def check_passed(verify, output):
+    """Whether the step's own check passes (no check: yes); a failure is said with its reason."""
+    if not verify:
+        return True
+    why = ''
+    try:
+        passed = verify()
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        passed, why = False, str(exc)
+    if not passed:
+        output(
+            'The automatic check has not passed' + (': ' + why if why else '') + '. Review the step, then try again.'
+        )
+    return passed
+
+
 def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, prompt=None, output=None):
     """No repeats instructions/opening; yes must also pass any supplied verifier.
 
@@ -209,47 +255,15 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, 
     output = output or print
     try:
         while True:
-            output('\n=== ' + title + ' ===')
-            for number, instruction in enumerate(instructions, 1):
-                output(str(number) + '. ' + instruction)
-            output('Return to the terminal afterward. No reopens this step; Ctrl+C leaves it pending.')
-            current = list(targets)
-            if prepare:
-                try:
-                    extra = prepare()
-                    if extra:
-                        current.extend(extra)
-                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-                    output(
-                        'The launch preparation did not complete. Follow the instructions manually or answer no to retry.'
-                    )
-            for kind, target in current:
-                opened = launch(ctx, target, kind)
-                if kind in ('url', 'page'):
-                    # Print only to the user's console, not the durable installer logger.
-                    output(('Opened: ' if opened else 'Open this address manually: ') + target)
-                elif not opened:
-                    output('Automatic launch unavailable. Open ' + kind + ' from your desktop menu.')
+            show_step(output, title, instructions)
+            open_targets(ctx, prepared_targets(targets, prepare, output), output)
             answer = yes_no('Have you completed this step successfully?', prompt, output)
             if answer is None:
                 raise EOFError
             if not answer:
                 output('Reopening this step and repeating its instructions.')
-                continue
-            if verify:
-                why = ''
-                try:
-                    verified = verify()
-                except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-                    verified, why = False, str(exc)
-                if not verified:
-                    output(
-                        'The automatic check has not passed'
-                        + (': ' + why if why else '')
-                        + '. Review the step, then try again.'
-                    )
-                    continue
-            return True
+            elif check_passed(verify, output):
+                return True
     except EOFError:
         output('\nStep remains pending. Reapply this profile to resume; saved choices are kept.')
         return False

@@ -139,7 +139,7 @@ def guard_check(config):
         root = Path(config['data_mount']) / 'installer/guards'
         if (
             runtime.parent != root
-            or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', runtime.name)
+            or not re.fullmatch(r'v\d+\.\d+\.\d+', runtime.name)
             or args[3] != str(runtime / 'storage.json')
         ):
             return False
@@ -161,6 +161,21 @@ def guard_check(config):
         )
     except (OSError, RuntimeError, ValueError, KeyError, IndexError, StopIteration, subprocess.SubprocessError):
         return False
+
+
+# Where an app sees its library or store inside its container.
+DATA = '/data'
+# Immich's upload folder, under its older and its newer name.
+IMMICH_UPLOAD = (DATA, '/usr/src/app/upload')
+
+
+def verdict(good, bad):
+    """A check's status: pass when good, fail when bad, else waiting for setup."""
+    if good:
+        return 'pass'
+    if bad:
+        return 'fail'
+    return 'needs_setup'
 
 
 def containers(config, photos=False):
@@ -213,32 +228,29 @@ def containers(config, photos=False):
                     )
 
                 if app == 'immich':
-                    expected = (
-                        str(Path(config['data_mount']) / 'photos/immich-library')
-                        if svc == 'immich-server'
-                        else str(Path(config['data_mount']) / 'appdata/immich/postgres')
-                        if svc == 'database'
-                        else None
-                    )
-                    targets = (
-                        ('/data', '/usr/src/app/upload') if svc == 'immich-server' else ('/var/lib/postgresql/data',)
-                    )
+                    if svc == 'immich-server':
+                        expected = str(Path(config['data_mount']) / 'photos/immich-library')
+                        targets = IMMICH_UPLOAD
+                    elif svc == 'database':
+                        expected = str(Path(config['data_mount']) / 'appdata/immich/postgres')
+                        targets = ('/var/lib/postgresql/data',)
+                    else:
+                        expected, targets = None, ()
                     mounts = expected is None or bound(expected, targets)
                 else:
-                    destination = '/app/config' if app == 'seerr' else '/data' if app == 'navidrome' else '/config'
+                    destination = {'seerr': '/app/config', 'navidrome': DATA}.get(app, '/config')
                     mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,))
                     if app in ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'qbittorrent'):
                         library = (
                             Path(config['data_mount'] if app in ('navidrome', 'lidarr') else config['media_mount'])
                             / 'library'
                         )
-                        needed = (
-                            [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
-                            if app == 'jellyfin'
-                            else [('music', '/music', True)]
-                            if app == 'navidrome'
-                            else [('', '/data', False)]
-                        )
+                        if app == 'jellyfin':
+                            needed = [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
+                        elif app == 'navidrome':
+                            needed = [('music', '/music', True)]
+                        else:
+                            needed = [('', DATA, False)]
                         mounts = mounts and all(bound(str(library / rel), (dest,), ro) for rel, dest, ro in needed)
                         if app == 'qbittorrent':
                             mounts = mounts and bound(
@@ -712,7 +724,7 @@ def inspect(config, profile='full', now=None):
         add(
             'mount:' + role,
             name,
-            'pass' if matched[role] else 'needs_setup' if value['status'] == 'not_configured' else 'fail',
+            verdict(matched[role], value['status'] != 'not_configured'),
             'Configured UUID and filesystem verified.'
             if matched[role]
             else 'Configure and mount the intended drive; no private data is inspected on a mismatch.',
@@ -863,15 +875,12 @@ def inspect(config, profile='full', now=None):
         for job in rows:
             if job['id'] not in selected:
                 continue
-            status = (
-                'pass'
-                if job['status'] == 'pass'
+            status = verdict(
+                job['status'] == 'pass'
                 and job['last_success'] is not None
                 and job['timer']['installed']
-                and job['timer']['active']
-                else 'fail'
-                if job['status'] in ('fail', 'stale')
-                else 'needs_setup'
+                and job['timer']['active'],
+                job['status'] in ('fail', 'stale'),
             )
             add(
                 'backup:' + job['id'],
@@ -890,7 +899,7 @@ def inspect(config, profile='full', now=None):
             add(
                 'external:identity',
                 'External backup identity',
-                'pass' if state == 'mounted' else 'fail' if state == 'wrong_drive' else 'needs_setup',
+                verdict(state == 'mounted', state == 'wrong_drive'),
                 'Connect the intended external drive for this acceptance check; normal offline storage between runs is expected.',
             )
     if drives:
@@ -913,7 +922,7 @@ def inspect(config, profile='full', now=None):
         add(
             'maintenance:rehearsal',
             'Recent restore rehearsal and live checks',
-            'pass' if good else 'fail' if report.get('status') == 'fail' else 'needs_setup',
+            verdict(good, report.get('status') == 'fail'),
             'A real successful monthly transaction is required; unit tests do not establish server acceptance.',
         )
     if 'media_monitor' in modules and config.get('monitoring', {}).get('enabled', True):
@@ -947,7 +956,7 @@ def inspect(config, profile='full', now=None):
         add(
             'heartbeat:delivery',
             'Heartbeat HTTPS acknowledgement',
-            'pass' if good else 'fail' if heartbeat['status'] in ('fail', 'stale') else 'needs_setup',
+            verdict(good, heartbeat['status'] in ('fail', 'stale')),
             'A current successful HTTPS request and active timer are required; monitor registration and outside alerts remain witnessed.',
         )
     if 'notifications' in modules:
@@ -962,11 +971,10 @@ def inspect(config, profile='full', now=None):
         add(
             'notifications:delivery',
             'Notification provider acceptance',
-            'fail'
-            if delivery['status'] in ('fail', 'stale')
-            else 'pass'
-            if delivery['last_success'] is not None
-            else 'needs_setup',
+            verdict(
+                delivery['status'] not in ('fail', 'stale') and delivery['last_success'] is not None,
+                delivery['status'] in ('fail', 'stale'),
+            ),
             'A recorded provider-accepted delivery is required; actual phone receipt remains a witnessed check.',
         )
     if 'tailscale' in modules:
@@ -1087,13 +1095,12 @@ def summarize(report):
     report['acceptance_complete'] = bool(report['automatic']) and all(
         x['status'] == 'pass' for group in ('automatic', 'manual') for x in report[group]
     )
-    report['status'] = (
-        'complete'
-        if report['acceptance_complete']
-        else 'failed'
-        if any(x['status'] == 'fail' for group in ('automatic', 'manual') for x in report[group])
-        else 'pending'
-    )
+    if report['acceptance_complete']:
+        report['status'] = 'complete'
+    elif any(x['status'] == 'fail' for group in ('automatic', 'manual') for x in report[group]):
+        report['status'] = 'failed'
+    else:
+        report['status'] = 'pending'
     return report
 
 

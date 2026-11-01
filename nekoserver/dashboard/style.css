@@ -130,8 +130,10 @@ p {
 .skip:focus {
   top: 15px;
 }
-[hidden] {
-  display: none !important;
+/* Outranks every display rule below (none has two classes and a tag), so the hidden
+   attribute always wins. */
+html [hidden][hidden] {
+  display: none;
 }
 .eyebrow {
   font-size: 11px;

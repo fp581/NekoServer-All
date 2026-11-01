@@ -202,9 +202,7 @@ def main(argv=None):
         if a.apply:
             cmd.append('--apply')
         result = subprocess.call(cmd)
-        source_results.append(
-            {'check': 'source_import', 'status': 'pass' if result == 0 else 'needs_setup' if result == 1 else 'fail'}
-        )
+        source_results.append({'check': 'source_import', 'status': {0: 'pass', 1: 'needs_setup'}.get(result, 'fail')})
     findings += source_results
     library_results = []
     if a.libraries:

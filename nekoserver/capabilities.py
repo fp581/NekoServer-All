@@ -254,13 +254,13 @@ def missing(rows):
 def report(rows, log=print):
     log('This computer:')
     for row in rows:
-        log(
-            '  '
-            + ('ok   ' if row['ok'] else 'MISSING ' if row['required'] else 'note ')
-            + row['label']
-            + ': '
-            + row['found']
-        )
+        if row['ok']:
+            mark = 'ok   '
+        elif row['required']:
+            mark = 'MISSING '
+        else:
+            mark = 'note '
+        log('  ' + mark + row['label'] + ': ' + row['found'])
 
 
 def require(rows):

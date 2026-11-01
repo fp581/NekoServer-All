@@ -12,6 +12,7 @@ import shutil
 import sys
 from pathlib import Path
 from stat import S_ISREG
+import neko_common
 from neko_common import (
     UnreadableEntries,
     findmnt,
@@ -671,8 +672,8 @@ def import_one(source, root, apply, owner, guard, finished, again=False):
 
 
 def run(config, sources, apply=False, verify=None, again=False):
-    media = safe_path(config['media_mount'])
-    data = safe_path(config['data_mount'])
+    media = neko_common.mount_path(config['media_mount'])
+    data = neko_common.mount_path(config['data_mount'])
     if not os.path.ismount(media) or not os.path.ismount(data):
         raise RuntimeError('Mounted data SSD and media HDD required')
     uid, gid = int(config['media'].get('uid', 1000)), int(config['media'].get('gid', 1000))
@@ -733,10 +734,13 @@ def main(argv=None):
             verify=(lambda: verify_storage(config)) if args.apply else None,
             again=args.again,
         )
-        print(
-            'Source import:',
-            'incomplete; check source-import report' if result else 'complete' if args.apply else 'preview complete',
-        )
+        if result:
+            outcome = 'incomplete; check source-import report'
+        elif args.apply:
+            outcome = 'complete'
+        else:
+            outcome = 'preview complete'
+        print('Source import:', outcome)
         return result
     except DriveGone as exc:
         print(

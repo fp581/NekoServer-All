@@ -3377,7 +3377,7 @@ function renderHealth() {
 
 /* ---------- help ---------- */
 function shellQuote(v) {
-  return "'" + v.replaceAll("'", "'\\''") + "'";
+  return "'" + v.replaceAll("'", String.raw`'\''`) + "'";
 }
 function installedScript(name) {
   const root = state.status?.storage.find(d => d.id === 'data_ssd')?.mount,
@@ -4088,10 +4088,15 @@ window.addEventListener('beforeinstallprompt', e => {
     renderHelp();
   }
 });
-if ('serviceWorker' in navigator && window.isSecureContext) {
-  navigator.serviceWorker.register('sw.js').catch(() => {
+async function registerWorker() {
+  try {
+    await navigator.serviceWorker.register('sw.js');
+  } catch {
     /* the page works without it */
-  });
+  }
+}
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  registerWorker();
 }
 setInterval(() => {
   if (!document.hidden) {

@@ -2,6 +2,10 @@
 
 import ipaddress, json, re, subprocess, sys
 
+# The home networks (RFC 1918) a gateway address may be on, and Tailscale's own range.
+PRIVATE_NETWORKS = tuple(ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
+TAILNET = '100.64.0.0/10'
+
 
 def command(args):
     try:
@@ -18,7 +22,7 @@ def private_ip(value):
         ip = ipaddress.IPv4Address(value)
     except (ValueError, TypeError):
         raise RuntimeError('A specific RFC1918 LAN IPv4 address is required') from None
-    if not any(ip in ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')):
+    if not any(ip in n for n in PRIVATE_NETWORKS):
         raise RuntimeError('Gateway LAN address must be RFC1918 IPv4')
     return str(ip)
 
@@ -34,7 +38,7 @@ def lan(config):
         not 16 <= net.prefixlen <= 30
         or ipaddress.ip_address(ip) not in net
         or ipaddress.ip_address(ip) in (net.network_address, net.broadcast_address)
-        or not any(net.subnet_of(ipaddress.ip_network(n)) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
+        or not any(net.subnet_of(n) for n in PRIVATE_NETWORKS)
     ):
         raise RuntimeError('LAN subnet must be a restricted RFC1918 network containing the server')
     return ip, str(net)

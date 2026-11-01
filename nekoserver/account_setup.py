@@ -80,6 +80,10 @@ class Client:
 
 
 def docker(args, input_text=None):
+    """Docker's own command line (never a shell); an argument with a control character
+    (a newline, say) is refused before it is passed on."""
+    if not args or any(not isinstance(a, str) or re.search(r'[\x00-\x1f\x7f]', a) for a in args):
+        raise RuntimeError('Local account setup command refused: an argument is not plain text')
     result = subprocess.run(
         ['docker', '--host', 'unix:///var/run/docker.sock', *args],
         input=input_text,
@@ -517,12 +521,8 @@ def verify_project(config, app):
         and labels.get('com.docker.compose.project') == 'neko-' + project
         and labels.get('com.docker.compose.service') == service
     )
-    expected = root / (
-        'photos/immich-library'
-        if project == 'immich'
-        else 'appdata/nextcloud/html'
-        if project == 'nextcloud'
-        else 'appdata/' + project
+    expected = root / {'immich': 'photos/immich-library', 'nextcloud': 'appdata/nextcloud/html'}.get(
+        project, 'appdata/' + project
     )
     check(any(m.get('Type') == 'bind' and m.get('Source') == str(expected) for m in value.get('Mounts', [])))
     bindings = value.get('HostConfig', {}).get('PortBindings', {})

@@ -519,6 +519,10 @@ def compose_args(config):
     return DOCKER + ['compose', '-p', 'neko-immich', '-f', str(compose), '--env-file', str(env)]
 
 
+# Where Immich's containers see the photo library (older and newer image) and the database.
+IMMICH_BINDINGS = {'immich-server': ('/data', '/usr/src/app/upload'), 'database': ('/var/lib/postgresql/data',)}
+
+
 def validate_model(model, upload, database):
     services = model.get('services', {})
     if set(services) != SERVICES:
@@ -559,27 +563,17 @@ def validate_model(model, upload, database):
                 if source == '/etc/localtime' and volume.get('read_only'):
                     continue
                 expected = upload if name == 'immich-server' else database if name == 'database' else None
-                expected_target = (
-                    ('/data', '/usr/src/app/upload') if name == 'immich-server' else ('/var/lib/postgresql/data',)
-                )
+                expected_target = IMMICH_BINDINGS.get(name, ())
                 if expected is None or source != str(expected) or target not in expected_target:
                     raise RuntimeError('External/custom Immich mounts are not covered; no incomplete snapshot allowed')
-            elif (
+            elif not (
                 volume.get('type') == 'volume'
                 and name == 'immich-machine-learning'
                 and isinstance(source, str)
                 and re.fullmatch(r'[A-Za-z0-9_-]+', source)
             ):
-                pass
-            else:
                 raise RuntimeError('Unsupported Immich persistent volume')
-        required = (
-            ('/data', '/usr/src/app/upload')
-            if name == 'immich-server'
-            else ('/var/lib/postgresql/data',)
-            if name == 'database'
-            else ()
-        )
+        required = IMMICH_BINDINGS.get(name, ())
         if required and not any(x in seen for x in required):
             raise RuntimeError('Required Immich storage binding is missing')
     server_env = services['immich-server'].get('environment', {})
@@ -668,7 +662,7 @@ def snapshot_plan(config, destination):
     for line in safe_path(Path(config['data_mount']) / 'compose/immich/.env').read_text().splitlines():
         if line.startswith('IMMICH_VERSION='):
             version = line.split('=', 1)[1]
-    if not isinstance(version, str) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', version):
+    if not isinstance(version, str) or not re.fullmatch(r'v\d+\.\d+\.\d+', version):
         raise RuntimeError('A pinned Immich version is required')
     destination = new_folder(config, destination, 'recovery-snapshots')
     files = regular_files(upload)
@@ -800,6 +794,10 @@ def restart_again(config, base, failed):
         )
 
 
+# Marks a snapshot or a rehearsal that is not usable yet.
+INCOMPLETE = '.incomplete'
+
+
 def snapshot(config, destination, apply=False, config_path=None):
     if not apply:
         plan = snapshot_plan(config, destination)
@@ -819,7 +817,7 @@ def snapshot(config, destination, apply=False, config_path=None):
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         destination.mkdir(mode=0o700)
         atomic_json(
-            destination / '.incomplete',
+            destination / INCOMPLETE,
             {
                 'reason': 'Snapshot is not usable until manifest publication',
                 'source_project': 'neko-immich',
@@ -868,7 +866,7 @@ def snapshot(config, destination, apply=False, config_path=None):
             entries = {
                 str(p.relative_to(destination)): digest(p)
                 for p in regular_files(destination)
-                if p != destination / '.incomplete'
+                if p != destination / INCOMPLETE
             }
             metadata = {
                 'format': FORMAT,
@@ -881,7 +879,7 @@ def snapshot(config, destination, apply=False, config_path=None):
                 'empty_directories': [str(p.relative_to(photo)) for p in sorted(photo.rglob('*')) if p.is_dir()],
             }
             atomic_json(destination / 'snapshot.json', metadata)
-            (destination / '.incomplete').unlink()
+            (destination / INCOMPLETE).unlink()
     return {
         'status': 'pass',
         'reason': 'Matched full-upload/database snapshot created; restore acceptance still required',
@@ -892,10 +890,10 @@ def snapshot(config, destination, apply=False, config_path=None):
 
 def verify_snapshot(path):
     path = safe_path(path)
-    if (path / '.incomplete').exists():
+    if (path / INCOMPLETE).exists():
         raise RuntimeError('Incomplete snapshot cannot be restored')
     meta = json.loads(safe_path(path / 'snapshot.json').read_text())
-    if meta.get('format') != FORMAT or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', meta.get('immich_version', '')):
+    if meta.get('format') != FORMAT or not re.fullmatch(r'v\d+\.\d+\.\d+', meta.get('immich_version', '')):
         raise RuntimeError('Unsupported snapshot format/version')
     entries = meta.get('sha256')
     if not isinstance(entries, dict) or not {'database.sql', 'compose-resolved.json'} <= set(entries):
@@ -959,13 +957,12 @@ def isolated_model(model, meta, workspace, port):
         for volume in source.get('volumes', []):
             if volume.get('source') == '/etc/localtime':
                 continue
-            folder = (
-                workspace / 'upload'
-                if name == 'immich-server'
-                else workspace / 'postgres'
-                if name == 'database'
-                else workspace / 'cache' / volume['source']
-            )
+            if name == 'immich-server':
+                folder = workspace / 'upload'
+            elif name == 'database':
+                folder = workspace / 'postgres'
+            else:
+                folder = workspace / 'cache' / volume['source']
             service['volumes'].append(
                 {'type': 'bind', 'source': str(folder), 'target': volume['target'], 'bind': {'create_host_path': False}}
             )
@@ -1103,7 +1100,7 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
     with lock(config):
         workspace.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         workspace.mkdir(mode=0o700)
-        atomic_write(workspace / '.incomplete', 'Restore rehearsal incomplete\n')
+        atomic_write(workspace / INCOMPLETE, 'Restore rehearsal incomplete\n')
         base = DOCKER + ['compose', '-p', project, '-f', str(workspace / 'compose.json')]
         started = False
         try:
@@ -1169,7 +1166,7 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
                     f'The restored app did not answer at {result["url"]} within 10 minutes; its report is kept. '
                     f'See what it is doing with  sudo docker compose -p {project} ps  and  sudo docker compose -p {project} logs --tail 50'
                 )
-            (workspace / '.incomplete').unlink()
+            (workspace / INCOMPLETE).unlink()
             return result
         except BaseException:
             if started:

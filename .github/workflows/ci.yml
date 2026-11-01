@@ -53,9 +53,10 @@ jobs:
         # Prettier (.prettierrc.json) and shfmt, pinned like ruff; `npx prettier@3.3.3 --write <file>`
         # and `shfmt -i 2 -ci -w <file>` put a file right.
         run: |
-          npx --yes prettier@3.3.3 --check "dashboard/*.{js,css,html}" "setup-gui/*.{js,css,html}"
-          curl -sSfL https://github.com/mvdan/sh/releases/download/v3.7.0/shfmt_v3.7.0_linux_amd64 -o /tmp/shfmt && chmod +x /tmp/shfmt
-          /tmp/shfmt -i 2 -ci -d install.sh uninstall.sh
+          npm install --no-save --no-package-lock --no-audit --no-fund --ignore-scripts prettier@3.3.3
+          node_modules/.bin/prettier --check "dashboard/*.{js,css,html}" "setup-gui/*.{js,css,html}"
+          curl -sSf --proto '=https' --proto-redir '=https' -L https://github.com/mvdan/sh/releases/download/v3.7.0/shfmt_v3.7.0_linux_amd64 -o "$RUNNER_TEMP/shfmt"
+          chmod +x "$RUNNER_TEMP/shfmt" && "$RUNNER_TEMP/shfmt" -i 2 -ci -d install.sh uninstall.sh
       - name: Unit tests
         run: python -m unittest discover -s tests -v
 

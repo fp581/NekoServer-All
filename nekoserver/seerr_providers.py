@@ -67,6 +67,10 @@ def connection_matches(value, connection):
     return all(value.get(k, '' if k == 'baseUrl' else None) == v for k, v in connection.items())
 
 
+# The check name of an app's request provider in Seerr.
+PROVIDER = 'seerr:provider:'
+
+
 def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
     port, directory = SPECS[app]
     endpoint = settings_of(app)
@@ -142,9 +146,7 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
             raise SetupRequired(
                 'Existing provider prevents searches or has an unknown search policy; review it in Seerr'
             )
-        return row(
-            'seerr:provider:' + app, 'pass', 'Existing default provider verified through Seerr; settings preserved'
-        )
+        return row(PROVIDER + app, 'pass', 'Existing default provider verified through Seerr; settings preserved')
     selected = choose(available, app.capitalize() + ' request quality profile', prompt)
     payload = dict(
         connection,
@@ -164,9 +166,7 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
     else:
         payload['minimumAvailability'] = 'released'
     if not apply:
-        return row(
-            'seerr:provider:' + app, 'needs_setup', 'Preview: connection tested; default provider would be created'
-        )
+        return row(PROVIDER + app, 'needs_setup', 'Preview: connection tested; default provider would be created')
     if records(seerr.call(endpoint)) != initial:
         raise SetupRequired('Provider settings changed during setup; rerun before saving')
     seerr.call(endpoint, 'POST', payload)
@@ -181,7 +181,7 @@ def provider(seerr, manager, root, app, apply, prompt, verify_only=False):
         or not any(str(p.get('path', '')).rstrip('/') == directory for p in records(retained.get('rootFolders')))
     ):
         raise RuntimeError('Retained provider connection could not be verified')
-    return row('seerr:provider:' + app, 'pass', 'Default provider created, read back and tested through Seerr')
+    return row(PROVIDER + app, 'pass', 'Default provider created, read back and tested through Seerr')
 
 
 def configure(root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Client, prompt=input, verify_only=False):
@@ -208,11 +208,11 @@ def configure(root, apply=False, apps=('seerr', 'sonarr', 'radarr'), factory=Cli
                 try:
                     results.append(provider(client, manager, root, app, apply, prompt, verify_only))
                 except SetupRequired as exc:
-                    results.append(row('seerr:provider:' + app, 'needs_setup', str(exc)))
+                    results.append(row(PROVIDER + app, 'needs_setup', str(exc)))
                 except (RuntimeError, ValueError, TypeError, KeyError, EOFError):
                     results.append(
                         row(
-                            'seerr:provider:' + app,
+                            PROVIDER + app,
                             'fail',
                             'Provider API verification failed; review the service and rerun',
                         )

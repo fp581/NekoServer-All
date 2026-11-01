@@ -20,9 +20,7 @@ PRIVATE = '/etc/nekoserver-heartbeat/config.json'
 def endpoint(value):
     if not isinstance(value, str):
         return False
-    match = re.fullmatch(
-        r'https://[A-Za-z0-9][A-Za-z0-9.-]*(?::([0-9]{1,5}))?/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*', value
-    )
+    match = re.fullmatch(r'https://[A-Za-z0-9][A-Za-z0-9.-]*(?::(\d{1,5}))?/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*', value)
     return bool(
         match
         and len(value) <= 2048

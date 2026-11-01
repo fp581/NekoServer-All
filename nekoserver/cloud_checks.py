@@ -47,16 +47,15 @@ def check(config):
             good = good and binds.get('80/tcp') == [{'HostIp': '127.0.0.1', 'HostPort': '8088'}]
         else:
             good = good and not any(binds.values())
-        wanted = (
-            {
+        if service in ('nextcloud', 'cron'):
+            wanted = {
                 '/var/www/html': str(Path(config['data_mount']) / 'appdata/nextcloud/html'),
                 '/var/www/html/data': str(Path(config['media_mount']) / 'cloud/files'),
             }
-            if service in ('nextcloud', 'cron')
-            else {'/var/lib/postgresql/data': str(Path(config['data_mount']) / 'appdata/nextcloud/postgres')}
-            if service == 'database'
-            else {}
-        )
+        elif service == 'database':
+            wanted = {'/var/lib/postgresql/data': str(Path(config['data_mount']) / 'appdata/nextcloud/postgres')}
+        else:
+            wanted = {}
         mounts = {m.get('Destination'): m.get('Source') for m in row.get('Mounts', []) if m.get('Type') == 'bind'}
         good = good and all(mounts.get(dest) == source for dest, source in wanted.items())
     record(

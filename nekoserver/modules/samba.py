@@ -34,7 +34,7 @@ def share_config(settings, media, user):
     ip, net = (
         network_access.lan({'gateway': {'lan_ip': settings.get('lan_ip'), 'lan_cidr': settings.get('lan_cidr')}})
         if mode == 'lan'
-        else ('tailscale0', '100.64.0.0/10')
+        else ('tailscale0', network_access.TAILNET)
     )
     out = [
         '# Managed by NekoServer; never expose Samba to public interfaces',

@@ -224,6 +224,10 @@ def backup_guard(config):
     return path
 
 
+# How a unit names its settings file on its command line.
+CONFIG_FLAG = '--config '
+
+
 def acceptance_checks(config, modules):
     """Inspect native selection, executable bytes, private guard and loaded commands."""
     import status_checks as health
@@ -312,7 +316,7 @@ def acceptance_checks(config, modules):
                     and health.read_json(private) == config
                     and private.stat().st_uid == 0
                     and private.stat().st_mode & 0o077 == 0
-                    and '--config ' + str(private) in loaded
+                    and CONFIG_FLAG + str(private) in loaded
                 )
                 rc, recovery = health.run(['systemctl', 'show', unit, '--property=ExecStopPost'])
                 good = good and rc == 0 and str(binary) + ' maintenance-resume --config ' + str(private) in recovery
@@ -359,7 +363,7 @@ def acceptance_checks(config, modules):
 
                 good = (
                     good
-                    and '--config ' + str(private) in loaded
+                    and CONFIG_FLAG + str(private) in loaded
                     and private.stat().st_uid == 0
                     and private.stat().st_mode & 0o077 == 0
                     and heartbeat.endpoint(health.read_json(private).get('endpoint'))
@@ -368,7 +372,7 @@ def acceptance_checks(config, modules):
                 private = safe_path('/etc/nekoserver-notifications/config.json')
                 good = (
                     good
-                    and '--config ' + str(private) in loaded
+                    and CONFIG_FLAG + str(private) in loaded
                     and private.stat().st_uid == 0
                     and private.stat().st_mode & 0o077 == 0
                 )

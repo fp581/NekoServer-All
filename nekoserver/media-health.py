@@ -93,7 +93,7 @@ def fetch_arr(name, port, key, endpoint, version):
     except urllib.error.HTTPError as exc:
         exc.close()
         return None
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return None
 
 
@@ -168,19 +168,20 @@ def audit(config, probe=http_check):
             media_ok = media_ok and str(Path(config['data_mount']) / 'library/downloads/music') in mounts
         if name == 'lidarr':
             media_ok = str(Path(config['data_mount']) / 'library') in mounts
-        level = (
-            'fail'
-            if info['state'] != 'running'
+        if (
+            info['state'] != 'running'
             or not info['network']
             or not data_ok
             or not media_ok
             or info['health'] == 'unhealthy'
             or status is None
             or status >= 500
-            else 'warning'
-            if status >= 400 and status not in (401, 403)
-            else 'pass'
-        )
+        ):
+            level = 'fail'
+        elif status >= 400 and status not in (401, 403):
+            level = 'warning'
+        else:
+            level = 'pass'
         out['services'][name] = {
             'result': level,
             'container': info['state'],
@@ -251,13 +252,12 @@ def main(argv=None):
         for category in ('services', 'integrations', 'readiness'):
             for name, rec in report[category].items():
                 print(f'  {category}/{name}: {rec["result"]}')
-        return (
-            2
-            if report['summary']['fail']
-            else 1
-            if report['summary']['needs_setup'] or report['summary']['warning']
-            else 0
-        )
+        summary = report['summary']
+        if summary['fail']:
+            return 2
+        if summary['needs_setup'] or summary['warning']:
+            return 1
+        return 0
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.TimeoutExpired) as e:
         print('Media audit failed:', type(e).__name__, file=sys.stderr)
         return 2
