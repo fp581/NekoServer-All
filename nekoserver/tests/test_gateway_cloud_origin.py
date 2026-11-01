@@ -247,6 +247,47 @@ class ReadinessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, r'not verified: Music / navidrome \(sudo docker ps -a'):
                 gateway_tools.readiness(dict(self.CONFIG))
 
+    def test_a_container_still_starting_is_waited_for(self):
+        # Seen on the rig: setup minutes after a drive-return restarted Docker, Immich's
+        # health check still "starting", and the gateway step failed at once.
+        from acceptance import STARTING
+
+        mock.patch.object(gateway_tools, 'navidrome_onboarded').start()
+        mock.patch.object(gateway_tools.host, 'snap_docker', return_value=False).start()
+        healthy = [
+            {'id': a, 'state': 'running', 'health': 'healthy'} for a in gateway_tools.selected(dict(self.CONFIG))
+        ]
+        mock.patch.object(gateway_tools.health, 'applications', return_value=healthy).start()
+        self.addCleanup(mock.patch.stopall)
+        starting = [{'id': 'container:navidrome', 'name': 'Music / navidrome', 'status': 'fail', 'detail': STARTING}]
+        passed = [{'id': 'container:navidrome', 'name': 'Music / navidrome', 'status': 'pass', 'detail': 'ok'}]
+        now = [0.0]
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            now[0] += seconds
+
+        with mock.patch('acceptance.containers', side_effect=[starting, starting, passed]):
+            gateway_tools.readiness(dict(self.CONFIG), sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(slept, [10, 10])
+        # One that never gets through its check is still named, once the wait is over.
+        with (
+            mock.patch('acceptance.containers', return_value=starting),
+            self.assertRaisesRegex(RuntimeError, 'not verified: Music / navidrome'),
+        ):
+            gateway_tools.readiness(dict(self.CONFIG), sleep=sleep, clock=lambda: now[0])
+        self.assertGreaterEqual(now[0], gateway_tools.STARTING_WAIT)
+        # A container that is wrong (not merely starting) is not waited for.
+        wrong = [{'id': 'container:navidrome', 'name': 'Music / navidrome', 'status': 'fail', 'detail': 'Inspect it'}]
+        slept.clear()
+        with (
+            mock.patch('acceptance.containers', return_value=wrong),
+            self.assertRaisesRegex(RuntimeError, 'not verified'),
+        ):
+            gateway_tools.readiness(dict(self.CONFIG), sleep=sleep, clock=lambda: now[0])
+        self.assertEqual(slept, [])
+
 
 if __name__ == '__main__':
     unittest.main()
