@@ -704,9 +704,8 @@ class Repository:
 
     MARKER = '# Managed by NekoServer\n'
 
-    def __init__(self, name, address, key_url, key_path, line, legacy_key=None):
+    def __init__(self, name, address, key_url, key_path, line):
         self.name, self.address, self.key_url, self.key_path, self.line = name, address, key_url, key_path, line
-        self.legacy_key = legacy_key  # where 0.28.0 kept the key
 
     def listing(self, key, system, codename):
         return self.line.format(key=key, address=self.address, os=system, codename=codename)
@@ -726,7 +725,6 @@ TAILSCALE = Repository(
     # Under /etc/apt/keyrings, so host backups keep it with the list.
     '/etc/apt/keyrings/tailscale-archive-keyring.gpg',
     'deb [signed-by={key}] {address}{os} {codename} main\n',
-    legacy_key='/usr/share/keyrings/tailscale-archive-keyring.gpg',
 )
 # Debian's samba package writes an example smb.conf; NekoServer writes its own.
 SAMBA_CONFIG = '/etc/samba/smb.conf'
@@ -1029,12 +1027,9 @@ class Debian(PackageLock, Family):
         """NekoServer's own repositories whose signing key apt could not use (missing,
         damaged, or replaced by its maker): their key is downloaded again. True when one was."""
         rejected = [line for line in _output(result).splitlines() if KEY_REJECTED.search(line)]
-        system, codename = self.vendor_release()
         renewed = False
         for repository in dict.fromkeys(self.repositories.values()):
-            if not any(repository.address in line for line in rejected) or not self.own_listing(
-                repository, system, codename
-            ):
+            if not any(repository.address in line for line in rejected) or not self.own_listing(repository):
                 continue
             self.say(
                 'apt could not check the ' + repository.name + ' repository with its key; downloading the key again'
@@ -1081,11 +1076,9 @@ class Debian(PackageLock, Family):
                 found.append(path)
         return found
 
-    def _ours(self, repository, listing, system, codename):
-        """The list is NekoServer's: marked, or exactly what 0.28.0 wrote."""
-        text = listing.read_text(errors='replace')
-        legacy = repository.listing(repository.legacy_key or repository.key_path, system, codename)
-        return text.startswith(Repository.MARKER) or text == legacy
+    def _ours(self, listing):
+        """The list is NekoServer's: it carries the marker setup writes first."""
+        return listing.read_text(errors='replace').startswith(Repository.MARKER)
 
     def fetch_key(self, repository, system, codename):
         """The repository's signing key, or an error that says what went wrong: no
@@ -1124,7 +1117,7 @@ class Debian(PackageLock, Family):
             raise RuntimeError('Cannot tell this system\'s release codename for the ' + repository.name + ' repository')
         listing = self.path('/etc/apt/sources.list.d/' + repository.name + '.list')
         found = self.sources(repository.address)
-        ours = listing in found and self._ours(repository, listing, system, codename)
+        ours = listing in found and self._ours(listing)
         if ours and len(found) > 1:
             listing.unlink()  # someone else defines it too: theirs is used
             self.refreshed = False
@@ -1260,15 +1253,12 @@ class Debian(PackageLock, Family):
 
     def repair(self, log=print):
         """Bring NekoServer's own repository definitions up to date, whether or not any
-        package needs installing (on an upgrade, everything usually is installed):
-        - 0.28.0 could add Docker's or Tailscale's repository next to someone else's
-          definition of it, which stops apt from working at all: its copy goes;
-        - 0.28.0 kept Tailscale's key outside host backups: it moves to /etc/apt/keyrings;
-        - a restored definition whose key is missing gets the key back."""
+        package needs installing (on an upgrade, everything usually is installed): a copy
+        of a repository someone else also defines goes (two definitions stop apt from
+        working at all), and a restored definition whose key is missing gets the key back."""
         with self.locked():
-            system, codename = self.vendor_release()
             for repository in dict.fromkeys(self.repositories.values()):
-                listing = self.own_listing(repository, system, codename)
+                listing = self.own_listing(repository)
                 if not listing:
                     continue
                 # A definition that still works is kept when its site does not answer: asked
@@ -1288,10 +1278,10 @@ class Debian(PackageLock, Family):
                 finally:
                     self.download_tries = RETRIES
 
-    def own_listing(self, repository, system, codename):
+    def own_listing(self, repository):
         """NekoServer's own definition of this repository, when apt uses it (else None)."""
         listing = self.path('/etc/apt/sources.list.d/' + repository.name + '.list')
-        if listing in self.sources(repository.address) and self._ours(repository, listing, system, codename):
+        if listing in self.sources(repository.address) and self._ours(listing):
             return listing
         return None
 

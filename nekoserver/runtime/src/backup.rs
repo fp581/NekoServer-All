@@ -2233,27 +2233,108 @@ fn is_dump(app: &str, name: &str) -> bool {
                 .is_match(rest)
         })
 }
-/// Full monthly snapshots that releases before v0.21.1 wrote to the USB drive. They are
-/// never removed automatically: a file deleted from the server long ago may exist only
-/// there. The recovery menu lists them and removes them only when you choose to.
-pub fn legacy_usb_snapshots(dest: &Path) -> Vec<String> {
-    let pattern = regex::Regex::new(r"^[0-9]+-[0-9]+$").unwrap();
-    let mut out: Vec<String> = fs::read_dir(dest.join("backups/monthly"))
+/// Where the weekly copy keeps the password list on the USB drive: a monthly snapshot's
+/// encrypted password archive with the key copy, certificate and manifest that open it
+/// (the recovery menu and `backup_secrets.py --restore` take such a folder as it is).
+/// Without it, a server whose SSD and HDD both broke had no password list anywhere.
+const USB_PASSWORDS: &str = "passwords";
+/// How many snapshots' password lists the USB drive keeps (the newest ones).
+const USB_PASSWORD_LISTS: usize = 3;
+/// A snapshot's password list: each file with the manifest key that records its checksum.
+const SECRETS_FILES: [(&str, &str); 3] = [
+    ("secrets", crate::maintenance::SECRETS_ARCHIVE),
+    ("secrets_key", crate::maintenance::SECRETS_KEY),
+    ("secrets_cert", crate::maintenance::SECRETS_CERT),
+];
+/// A monthly snapshot folder's name: the run's time and number.
+fn snapshot_stamp(name: &str) -> Option<u64> {
+    let (stamp, number) = name.split_once('-')?;
+    if number.is_empty() || !number.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    stamp.parse().ok()
+}
+/// The monthly snapshots in `folder` ("<time>-<number>" folders), oldest first.
+fn snapshot_folders(folder: &Path) -> Vec<(u64, PathBuf)> {
+    let mut runs: Vec<(u64, PathBuf)> = fs::read_dir(folder)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| pattern.is_match(&e.file_name().to_string_lossy()))
         .filter(|e| fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir()))
-        .filter(|e| {
-            common::bytes(&e.path().join("manifest.json"), 2_000_000)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-                .is_some_and(|m| m["format"] == "neko-maintenance-v1")
-        })
-        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter_map(|e| Some((snapshot_stamp(&e.file_name().to_string_lossy())?, e.path())))
         .collect();
-    out.sort();
-    out
+    runs.sort();
+    runs
+}
+/// The newest monthly snapshot on the HDD with an encrypted password list (the three
+/// files there, their checksums in its manifest), with that manifest.
+fn newest_sealed_snapshot(monthly: &Path) -> Option<(PathBuf, Value)> {
+    snapshot_folders(monthly)
+        .into_iter()
+        .rev()
+        .find_map(|(_, path)| {
+            let manifest = common::json(&path.join("manifest.json"), 2_000_000);
+            let sealed = manifest["format"] == "neko-maintenance-v1"
+                && SECRETS_FILES.iter().all(|(key, file)| {
+                    manifest["sha256"][key].is_string() && path.join(file).is_file()
+                });
+            sealed.then_some((path, manifest))
+        })
+}
+/// The password list to the USB drive: the newest sealed snapshot's files, each checked
+/// against the manifest's checksum on the HDD and again once copied, into
+/// `passwords/<run>/` with the manifest; the newest USB_PASSWORD_LISTS runs are kept
+/// there. No snapshot with a list yet is nothing to copy (the first monthly run with a
+/// backup key makes one); a damaged list on the HDD is said, in words, for the report.
+fn copy_newest_secrets(monthly: &Path, usb: &Path) -> Result<Option<String>> {
+    let Some((source, manifest)) = newest_sealed_snapshot(monthly) else {
+        println!("USB: no password list to copy yet (the first monthly snapshot made with a backup key holds one)");
+        return Ok(None);
+    };
+    let run = source
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let expected = |key: &str| manifest["sha256"][key].as_str().unwrap_or("").to_string();
+    for (key, file) in SECRETS_FILES {
+        if common::digest(&source.join(file))? != expected(key) {
+            return Ok(Some(format!(
+                "the password list in the newest monthly snapshot ({run}) is damaged ({file} does not match its checksum) and was not copied to the USB drive"
+            )));
+        }
+    }
+    let folder = usb.join(USB_PASSWORDS);
+    common::directory(&folder, 0o700)?;
+    let target = folder.join(&run);
+    common::directory(&target, 0o700)?;
+    for (key, file) in SECRETS_FILES {
+        let copy = target.join(file);
+        if copy.exists() {
+            if common::digest(&copy).is_ok_and(|d| d == expected(key)) {
+                continue;
+            }
+            fs::remove_file(common::safe(&copy)?)?; // a damaged copy is replaced
+        }
+        verified_copy(&source.join(file), &copy, true, 0o600)?;
+    }
+    common::atomic(
+        &target.join("manifest.json"),
+        &common::bytes(&source.join("manifest.json"), 2_000_000)?,
+        0o600,
+    )?;
+    let kept = snapshot_folders(&folder);
+    for (_, old) in kept
+        .iter()
+        .take(kept.len().saturating_sub(USB_PASSWORD_LISTS))
+    {
+        fs::remove_dir_all(common::safe(old)?)?;
+    }
+    let date = chrono::DateTime::from_timestamp(snapshot_stamp(&run).unwrap_or(0) as i64, 0)
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| run.clone());
+    println!("USB: password list from the monthly snapshot of {date} (encrypted; the recovery menu's \"App password list\" opens it with the backup password)");
+    Ok(None)
 }
 /// Physical disks a block device lives on (through partitions, encryption, LVM).
 fn disks_of(device: &str) -> Option<std::collections::BTreeSet<String>> {
@@ -3356,23 +3437,26 @@ fn joined(problems: impl Iterator<Item = String>) -> Option<String> {
     (!all.is_empty()).then(|| all.join("; "))
 }
 /// One "incomplete" report for the weekly USB copy: Nextcloud files left out and/or a
-/// database copy problem.
+/// database copy, source list or password list problem.
 fn incomplete(
     files: Option<Value>,
     database: Option<String>,
     source: Option<String>,
+    passwords: Option<String>,
 ) -> Option<Value> {
-    if files.is_none() && database.is_none() && source.is_none() {
+    if files.is_none() && database.is_none() && source.is_none() && passwords.is_none() {
         return None;
     }
     let mut out = files.unwrap_or_else(|| json!({"in_use":0,"unsupported_names":0,"files":[]}));
-    if let Some(problem) = database {
-        out["database"] = json!(problem);
-        out["reason"] = json!("The USB backup is incomplete");
-    }
-    if let Some(problem) = source {
-        out["source"] = json!(problem);
-        out["reason"] = json!("The USB backup is incomplete");
+    for (key, problem) in [
+        ("database", database),
+        ("source", source),
+        ("passwords", passwords),
+    ] {
+        if let Some(problem) = problem {
+            out[key] = json!(problem);
+            out["reason"] = json!("The USB backup is incomplete");
+        }
     }
     Some(out)
 }
@@ -3676,14 +3760,9 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
                     cloud_problem = Some(CLOUD_MISSING.to_string());
                 }
             }
-            let legacy = legacy_usb_snapshots(&dest);
-            if !legacy.is_empty() {
-                println!(
-                    "USB: {} full monthly snapshots from before v0.21.1 are kept ({}). They may hold files that are nowhere else; review or remove them with: sudo bash install.sh --recover",
-                    legacy.len(),
-                    legacy.join(", ")
-                );
-            }
+            common::stage("copying the password list to the USB drive");
+            let passwords_problem = copy_newest_secrets(&media.join("backups/monthly"), &dest)?;
+            validate_external(&dest, uuid)?;
             if let Some(photos) = &photos {
                 save_integrity(&data, "usb_photos", photos, check)?;
             }
@@ -3723,6 +3802,7 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
                 cloud_copy.and_then(|c| c.missing()),
                 database_problem,
                 source_problem,
+                passwords_problem,
             ))
         })();
         // A drive that would not unmount is reported after the copy's own error, which
@@ -3970,8 +4050,8 @@ mod tests {
     }
     #[test]
     fn a_missing_nextcloud_folder_makes_the_backup_incomplete() {
-        assert!(incomplete(None, None, None).is_none());
-        let partial = incomplete(None, None, Some(CLOUD_MISSING.into())).unwrap();
+        assert!(incomplete(None, None, None, None).is_none());
+        let partial = incomplete(None, None, Some(CLOUD_MISSING.into()), None).unwrap();
         assert_eq!(partial["source"], CLOUD_MISSING);
         assert_eq!(partial["reason"], "The USB backup is incomplete");
     }
@@ -4103,19 +4183,56 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
-    fn old_usb_snapshots_are_listed_never_removed() {
-        let root = scratch("legacy");
+    fn the_password_list_goes_to_the_usb_drive_from_the_newest_sealed_snapshot() {
+        let root = scratch("usb-passwords");
+        let (monthly, usb) = (root.join("backups/monthly"), root.join("usb"));
+        // A snapshot made without a backup key (no list), one damaged, and the newest.
+        let sealed = |run: &str, archive: &[u8], key: &[u8], recorded: Option<&str>| {
+            let folder = monthly.join(run);
+            write(&folder.join(SECRETS_FILES[0].1), archive);
+            write(&folder.join(SECRETS_FILES[1].1), key);
+            write(&folder.join(SECRETS_FILES[2].1), b"cert");
+            let sum = |file: &str| common::digest(&folder.join(file)).unwrap();
+            let manifest = json!({"format":"neko-maintenance-v1","sha256":{
+                "secrets": recorded.map(str::to_string).unwrap_or_else(|| sum(SECRETS_FILES[0].1)),
+                "secrets_key": sum(SECRETS_FILES[1].1), "secrets_cert": sum(SECRETS_FILES[2].1)}});
+            write(
+                &folder.join("manifest.json"),
+                manifest.to_string().as_bytes(),
+            );
+        };
         write(
-            &root.join("backups/monthly/100-1/manifest.json"),
-            br#"{"format":"neko-maintenance-v1"}"#,
+            &monthly.join("100-1/manifest.json"),
+            br#"{"format":"neko-maintenance-v1","sha256":{}}"#,
         );
-        write(&root.join("backups/monthly/200-1/manifest.json"), b"{}");
-        write(
-            &root.join("backups/monthly/notes/manifest.json"),
-            br#"{"format":"neko-maintenance-v1"}"#,
+        sealed("200-1", b"older archive", b"key", None);
+        sealed("300-1", b"newest archive", b"key", None);
+        assert!(copy_newest_secrets(&monthly, &usb).unwrap().is_none());
+        let copied = usb.join(USB_PASSWORDS).join("300-1");
+        assert_eq!(
+            fs::read(copied.join(SECRETS_FILES[0].1)).unwrap(),
+            b"newest archive"
         );
-        assert_eq!(legacy_usb_snapshots(&root), ["100-1"]);
-        assert!(root.join("backups/monthly/100-1/manifest.json").is_file());
+        assert!(copied.join("manifest.json").is_file());
+        assert!(
+            !usb.join(USB_PASSWORDS).join("200-1").exists(),
+            "only the newest list is copied"
+        );
+        // A damaged newest list is said and not copied; the one already there stays.
+        sealed("400-1", b"changed", b"key", Some("0".repeat(64).as_str()));
+        let said = copy_newest_secrets(&monthly, &usb).unwrap().unwrap();
+        assert!(said.contains("400-1") && said.contains("damaged"), "{said}");
+        assert!(copied.join(SECRETS_FILES[0].1).is_file());
+        // Only the newest USB_PASSWORD_LISTS lists are kept on the drive.
+        for run in ["500-1", "600-1", "700-1"] {
+            sealed(run, run.as_bytes(), b"key", None);
+            copy_newest_secrets(&monthly, &usb).unwrap();
+        }
+        let kept: Vec<String> = snapshot_folders(&usb.join(USB_PASSWORDS))
+            .into_iter()
+            .map(|(_, p)| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(kept, ["500-1", "600-1", "700-1"]);
         let _ = fs::remove_dir_all(root);
     }
     fn dump_name(days_ago: f64) -> String {
@@ -4178,9 +4295,9 @@ mod tests {
             problem.contains("no record of its Immich version"),
             "{problem}"
         );
-        let report = incomplete(None, Some(problem), None).unwrap();
+        let report = incomplete(None, Some(problem), None, None).unwrap();
         assert!(report["database"].as_str().unwrap().contains("no record"));
-        assert_eq!(incomplete(None, None, None), None);
+        assert_eq!(incomplete(None, None, None, None), None);
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -5506,7 +5623,7 @@ mod tests {
         fs::create_dir_all(cloud.join("files_encryption/OC_DEFAULT_MODULE")).unwrap();
         assert!(cloud_encrypted(&cloud));
         // The job's report says so, in the words the dashboard shows.
-        let report = incomplete(None, None, Some(CLOUD_ENCRYPTED.to_string())).unwrap();
+        let report = incomplete(None, None, Some(CLOUD_ENCRYPTED.to_string()), None).unwrap();
         assert_eq!(report["reason"], "The USB backup is incomplete");
         assert!(report["source"]
             .as_str()
