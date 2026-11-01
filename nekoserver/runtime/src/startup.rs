@@ -117,13 +117,31 @@ pub fn devices_with_uuid(uuid: &str) -> Option<Vec<String>> {
     }
     Some(with_uuid(&serde_json::from_str(&text).ok()?, uuid))
 }
+/// The devices under a software RAID array (lsblk lists the array once under each, with
+/// the member as PKNAME). A member whose array superblock sits at its end (metadata 1.0,
+/// how a drive is made a mirror in place) shows the filesystem's UUID too until udev
+/// looks at it again, but it is the array's own drive, not a copy left connected.
+fn raid_members(rows: &Value) -> Vec<String> {
+    rows["blockdevices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| {
+            let kind = row["type"].as_str().unwrap_or("");
+            kind.starts_with("raid") || kind == "md" || kind == "linear"
+        })
+        .filter_map(|row| row["pkname"].as_str().map(str::to_string))
+        .collect()
+}
 fn with_uuid(rows: &Value, uuid: &str) -> Vec<String> {
     let snapshots = lvm_snapshots(rows);
+    let members = raid_members(rows);
     let mut found: Vec<String> = rows["blockdevices"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|row| !uuid.is_empty() && row["uuid"].as_str() == Some(uuid))
+        .filter(|row| !members.iter().any(|m| row["kname"].as_str() == Some(m)))
         .filter_map(|row| row["path"].as_str().map(str::to_string))
         .filter(|path| !snapshots.contains(path))
         .collect();
@@ -311,6 +329,19 @@ mod tests {
         let text = copy_message("HDD", "u-1", &two);
         assert!(text.contains("Two drives look the same (one is probably a copy); unplug the copy"));
         assert!(text.contains("/dev/sdb1 and /dev/sdc1"));
+    }
+    #[test]
+    fn the_drives_of_a_raid_array_are_its_own_not_copies_of_it() {
+        // The HDD made a RAID-1 in place (metadata 1.0): until udev looks again, the
+        // member sdb still shows the filesystem's UUID beside the array's.
+        let rows = json!({"blockdevices":[
+            {"path":"/dev/sdb","uuid":"u-1","type":"disk","name":"sdb","kname":"sdb","pkname":null},
+            {"path":"/dev/sdc","uuid":null,"type":"disk","name":"sdc","kname":"sdc","pkname":null},
+            {"path":"/dev/md0","uuid":"u-1","type":"raid1","name":"md0","kname":"md0","pkname":"sdb"},
+            {"path":"/dev/md0","uuid":"u-1","type":"raid1","name":"md0","kname":"md0","pkname":"sdc"},
+            {"path":"/dev/sdd1","uuid":"u-1","type":"part","name":"sdd1","kname":"sdd1","pkname":"sdd"}]});
+        // sdb is left out; a copy on another drive (sdd1) is still found.
+        assert_eq!(with_uuid(&rows, "u-1"), ["/dev/md0", "/dev/sdd1"]);
     }
     fn lvm_row(name: &str, kname: &str, parent: &str, uuid: Option<&str>) -> Value {
         json!({"path":format!("/dev/mapper/{name}"),"uuid":uuid,"type":"lvm","name":name,"kname":kname,"pkname":parent})

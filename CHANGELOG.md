@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+The fifth round: a mirror (RAID-1) that lost a drive, tried for real.
+
+### Fixed
+- **A Btrfs pool that lost a drive is opened on the drives left.** A Btrfs HDD or SSD mirrored over two drives refuses an ordinary mount once one of them is gone (only `degraded` opens it), so after a restart nothing was mounted there: Docker and every app stayed down and the backups said the drive was missing, although the other half of the mirror was fine. The drive-return service now opens such a pool on its remaining drives, says so in its log, and starts Docker and the backups as usual; the dashboard's Drives page shows the pool as degraded and the alert goes out. A rerun of setup on such a server mounts it the same way and says so. RECOVERY.md shows how to replace the drive (`btrfs replace`), after which a restart mounts the pool the ordinary way again. An mdadm mirror never needed this: Linux keeps the array running on one drive, and every backup, the drive policy and the start guard were tried on one.
+- **A drive made a RAID-1 member in place no longer stops Docker as a "copy".** Mirroring the existing HDD without reformatting it (the array's superblock at the drive's end, `mdadm --metadata=1.0`) leaves the member showing the filesystem's UUID beside the array's until Linux looks at it again, and the start guard refused to start Docker with "Two drives look the same (one is probably a copy)". A drive under an array is the array's own now, never a copy of it.
+
 ## v0.41.2 — 2026-11-01
 
 What the third round's drills left open: a monthly run that fails no longer costs a whole month, the password list has a copy off the SSD and HDD, two paths nobody runs any more are gone, and two smaller findings.

@@ -983,7 +983,7 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
     call(['systemctl', 'daemon-reload'])
     pinned = []
     for key, uuid, fstype, target, subvolume in specs:
-        found = mount_and_check(uuid, target, subvolume, fstype)
+        found = mount_and_check(uuid, target, subvolume, fstype, context.log)
         note = raid_note(target)
         if note:
             context.log(note)
@@ -1028,7 +1028,35 @@ def only_a_folder(target, fstype, inside):
         )
 
 
-def mount_and_check(uuid, target, subvolume, fstype='btrfs'):
+def pool_lacks_a_drive(uuid):
+    """A Btrfs pool over several drives with one of them gone: `btrfs filesystem show`
+    lists the drives it finds and ends with "*** Some devices missing". Such a pool
+    refuses an ordinary mount; only `-o degraded` opens it on the drives left."""
+    try:
+        shown = call(['btrfs', 'filesystem', 'show', uuid], timeout=30)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return False
+    return any(line.strip().startswith('***') and 'missing' in line for line in shown.splitlines())
+
+
+def mount_target(target, uuid, fstype, log=None):
+    """`mount target` (fstab's line), or, for a Btrfs pool missing a drive, the same with
+    `degraded` added: a rerun of setup on a server whose mirror lost a drive goes on, and
+    says so, as the drive-return service does at boot (drive_return.rs)."""
+    try:
+        call(['mount', target], timeout=MOUNT_WAIT)
+    except RuntimeError:
+        if fstype != 'btrfs' or not pool_lacks_a_drive(uuid):
+            raise
+        call(['mount', '-o', 'degraded', target], timeout=MOUNT_WAIT)
+        if log:
+            log(
+                f'{target}: a drive of the Btrfs pool is missing, so it was mounted on the drives left (degraded). '
+                'Your data there has one copy fewer until the drive is replaced; RECOVERY.md shows how'
+            )
+
+
+def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None):
     """Mount the drive (unless it is) and make sure what is mounted is the drive, and the
     Btrfs subvolume, the settings name. Returns the subvolume mounted: with none saved
     (the fstab line names none) that is the filesystem's default tree, whatever it is;
@@ -1037,7 +1065,7 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs'):
     if findmnt('TARGET', target) is None:
         try:
             # A big drive replaying its journal after a power cut can take minutes.
-            call(['mount', target], timeout=MOUNT_WAIT)
+            mount_target(target, uuid, fstype, log)
         except subprocess.TimeoutExpired:
             if findmnt('TARGET', target) is None:  # the kernel may still have finished it
                 raise RuntimeError(
