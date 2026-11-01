@@ -98,23 +98,69 @@ def settings(config, image):
     }
 
 
+# The administrator names setup makes up itself (account_store.generate): never a person's choice.
+GENERATED_NAME = re.compile(r'neko_[0-9a-f]{12}')
+
+
 def adopt_admin(opts, owned, chosen, persist, log):
-    """Settings made anew (Linux reinstalled, the SSD kept) name the default administrator
-    while the installed Nextcloud has the one the account store on the SSD names: that
-    name is taken back into my-config.json, so the install is recognised as this one.
-    True when it was."""
-    if not chosen or opts.get('admin_user', 'admin') != 'admin':
+    """Settings that do not name the installed administrator while the account store on the
+    SSD does: made anew (Linux reinstalled, the SSD kept: they say "admin"), or made for an
+    earlier server (another name setup made up). The installed name is taken back into
+    my-config.json, so the install is recognised as this one; a name a person chose is left
+    to the settings check. True when the name was taken."""
+    named = opts.get('admin_user', 'admin')
+    if not chosen or not (named == 'admin' or GENERATED_NAME.fullmatch(named)):
         return False
     installed = settings_of(owned).get('admin_user')
-    if installed in (None, 'admin') or installed != chosen['username']:
+    if installed in (None, 'admin', named) or installed != chosen['username']:
         return False
     opts['admin_user'] = installed
     persist()
     log(
         'Nextcloud: the administrator\'s name in my-config.json was taken from the installed Nextcloud '
-        '(the settings were made anew, the SSD kept)'
+        '(the settings were made anew or for an earlier server; the SSD was kept)'
     )
     return True
+
+
+# The files Nextcloud checks for at the top of its files folder before it serves anything
+# (.ncdata since Nextcloud 31, .ocdata before).
+DATA_MARKERS = ('.ncdata', '.ocdata')
+WWW_DATA = 33
+# Nextcloud's files folder, under the HDD's mount.
+FILES_FOLDER = 'cloud/files'
+
+
+def files_folder_given_back(config, log):
+    """A Nextcloud already set up whose files folder on the HDD is missing or empty (a new
+    HDD after the old one broke, say): the folder is made, given to Nextcloud (www-data)
+    and marked as its files folder, so Nextcloud starts again, with no files; the way to
+    get them back is said. True when that was done."""
+    files = safe_path(Path(config['media_mount']) / FILES_FOLDER)
+    if files.is_dir() and any(files.iterdir()):
+        return False
+    ensure_directory(safe_path(files.parent), 0o755)
+    ensure_directory(files, 0o750)
+    for marker in DATA_MARKERS:
+        (files / marker).write_text('# Nextcloud data directory\n')
+        os.chown(files / marker, WWW_DATA, WWW_DATA)
+    os.chown(files, WWW_DATA, WWW_DATA)
+    log(
+        'Nextcloud: its files folder on the HDD was empty (a new HDD?): made Nextcloud\'s own again, so it '
+        'starts with no files. Get them back with  sudo bash install.sh --recover  (Nextcloud files, from '
+        'the USB drive), then upload them again in Nextcloud.'
+    )
+    return True
+
+
+def settings_changed(recorded, wanted):
+    """What differs between the settings Nextcloud was installed with and the ones in
+    my-config.json now, named for the refusal; '' when nothing does."""
+    return ', '.join(
+        f'{key}: {recorded.get(key)!r} is now {wanted.get(key)!r}'
+        for key in wanted
+        if recorded.get(key) != wanted.get(key)
+    )
 
 
 def settings_of(owned):
@@ -126,7 +172,7 @@ def settings_of(owned):
     env = app.get('environment', {})
     volumes = app.get('volumes', [])
     data = volumes[0].split(':', 1)[0].rsplit('/appdata/nextcloud/html', 1)[0] if volumes else ''
-    media = volumes[1].split(':', 1)[0].rsplit('/cloud/files', 1)[0] if len(volumes) > 1 else ''
+    media = volumes[1].split(':', 1)[0].rsplit(f'/{FILES_FOLDER}', 1)[0] if len(volumes) > 1 else ''
     return {
         'image': owned.get('image'),
         'admin_user': env.get('NEXTCLOUD_ADMIN_USER', 'admin'),
@@ -140,7 +186,7 @@ def settings_of(owned):
 def model(config, image):
     opts = options(config)
     root = Path(config['data_mount']) / 'appdata/nextcloud'
-    files = Path(config['media_mount']) / 'cloud/files'
+    files = Path(config['media_mount']) / FILES_FOLDER
     mounts = [str(root / 'html') + ':/var/www/html', str(files) + ':/var/www/html/data']
     env = {
         'POSTGRES_HOST': 'database',
@@ -374,7 +420,7 @@ def run(ctx):
             if chosen:
                 opts['admin_user'] = chosen['username']
                 ctx.persist_config()
-            for existing in (data / HTML, data / POSTGRES, Path(config['media_mount']) / 'cloud/files'):
+            for existing in (data / HTML, data / POSTGRES, Path(config['media_mount']) / FILES_FOLDER):
                 safe_path(existing)
                 if existing.exists() and any(existing.iterdir()):
                     raise RuntimeError('Existing Nextcloud data preserved; explicit recovery required')
@@ -386,14 +432,14 @@ def run(ctx):
                 (data / HTML, 0o755),
                 (data / POSTGRES, 0o700),
                 (Path(config['media_mount']) / 'cloud', 0o755),
-                (Path(config['media_mount']) / 'cloud/files', 0o750),
+                (Path(config['media_mount']) / FILES_FOLDER, 0o750),
                 (folder, 0o700),
             ):
                 ensure_directory(safe_path(target), mode)
             # Nextcloud/Apache writes as www-data; only newly empty application data is initialized.
-            files = safe_path(Path(config['media_mount']) / 'cloud/files')
+            files = safe_path(Path(config['media_mount']) / FILES_FOLDER)
             if not any(files.iterdir()):
-                os.chown(files, 33, 33)
+                os.chown(files, WWW_DATA, WWW_DATA)
             password = chosen['password'] if chosen else secrets.token_hex(24)
             atomic_write(
                 env,
@@ -415,18 +461,21 @@ def run(ctx):
             )
             # Written last: a compose.yaml means every setting file of this step is in place.
             atomic_write(manifest, payload, 0o600)
+        else:
+            files_folder_given_back(config, ctx.log)
         safe_path(env)
         if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
             raise RuntimeError('Nextcloud credentials must be private and root-owned')
         owned = json.loads(safe_path(managed).read_text())
         image = owned['image']
         adopt_admin(opts, owned, chosen, ctx.persist_config, ctx.log)
-        if settings_of(owned) != settings(config, image):
+        changed = settings_changed(settings_of(owned), settings(config, image))
+        if changed:
             raise RuntimeError(
-                'Nextcloud\'s settings in my-config.json changed since it was installed (its image, '
-                'trusted hosts or public address), and a running Nextcloud is never reconfigured on a '
-                'guess. Put the earlier values back, or change them inside Nextcloud (occ config:system:set); '
-                'the gateway steps set trusted hosts and the address themselves'
+                f'Nextcloud\'s settings in my-config.json changed since it was installed ({changed}), and a '
+                'running Nextcloud is never reconfigured on a guess. Put the earlier values back, or change them '
+                'inside Nextcloud (occ config:system:set); the gateway steps set trusted hosts and the address '
+                'themselves, and the administrator\'s name cannot change after the install'
             )
         if json.loads(manifest.read_text()) != model(config, image) or owned['model'] != model(config, image):
             # Same settings, another definition: this release changed how Nextcloud is run

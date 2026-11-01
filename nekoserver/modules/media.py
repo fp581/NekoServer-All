@@ -397,10 +397,6 @@ def network_exists():
 
 
 def run(context):
-    if not context.apply:
-        return _run(context)
-    from recovery_tools import mounts, lock
+    from recovery_tools import guarded
 
-    mounts(context.config)
-    with lock(context.config):
-        return _run(context)
+    return guarded(context, _run)

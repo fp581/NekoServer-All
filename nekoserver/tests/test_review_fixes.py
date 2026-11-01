@@ -2430,9 +2430,123 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
             ({'admin_user': 'alice'}, {'username': 'neko_12ab'}),
             ({}, {'username': 'other'}),
             ({}, None),
+            ({'admin_user': 'neko_12ab'}, {'username': 'neko_12ab'}),  # already the installed one
         ):
             self.assertFalse(nextcloud.adopt_admin(opts, owned, chosen, lambda: saved.append(2), said.append))
         self.assertEqual(saved, [1])
+
+    def test_a_name_setup_made_up_for_an_earlier_server_is_replaced_too(self):
+        # Seen on the rig: a PC whose settings came from its earlier server, given the SSD of
+        # another one. The settings named that earlier server's generated administrator, the
+        # installed Nextcloud has this SSD's; the store on the SSD confirms the installed one.
+        from modules import nextcloud
+
+        owned = {'settings': {'admin_user': 'neko_6d72bdeaa6a2', 'image': 'nextcloud:33-apache'}}
+        opts = {'admin_user': 'neko_ca69ea7c1642'}
+        saved = []
+        self.assertTrue(
+            nextcloud.adopt_admin(
+                opts, owned, {'username': 'neko_6d72bdeaa6a2'}, lambda: saved.append(1), lambda m: None
+            )
+        )
+        self.assertEqual(opts['admin_user'], 'neko_6d72bdeaa6a2')
+        self.assertEqual(saved, [1])
+
+    def test_an_empty_files_folder_on_a_new_hdd_is_given_back_to_nextcloud(self):
+        # Seen on the rig: the HDD replaced, the new one's cloud/files made root-owned, Nextcloud
+        # (www-data) could not write, answered 503, and setup waited 15 minutes for "its install".
+        from modules import nextcloud
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(nextcloud.os, 'chown') as chown:
+            config = {'media_mount': tmp}
+            said = []
+            self.assertTrue(nextcloud.files_folder_given_back(config, said.append))
+            files = Path(tmp) / 'cloud/files'
+            for marker in nextcloud.DATA_MARKERS:
+                self.assertIn('Nextcloud data directory', (files / marker).read_text())
+            self.assertEqual(chown.call_args_list[-1].args, (files, nextcloud.WWW_DATA, nextcloud.WWW_DATA))
+            self.assertIn('--recover', said[0])
+            # A folder with files in it (the same HDD as before) is left exactly as it is.
+            (files / 'alice').mkdir()
+            chown.reset_mock()
+            self.assertFalse(nextcloud.files_folder_given_back(config, said.append))
+            chown.assert_not_called()
+
+    def test_the_refusal_names_what_differs(self):
+        from modules import nextcloud
+
+        recorded = {
+            'image': 'nextcloud:33-apache',
+            'admin_user': 'alice',
+            'trusted_hosts': ['localhost'],
+            'public_url': '',
+        }
+        self.assertEqual(nextcloud.settings_changed(recorded, dict(recorded)), '')
+        self.assertEqual(
+            nextcloud.settings_changed(recorded, {**recorded, 'admin_user': 'bob', 'public_url': 'https://x'}),
+            "admin_user: 'alice' is now 'bob', public_url: '' is now 'https://x'",
+        )
+
+
+class RestoreListChoiceTests(unittest.TestCase):
+    """After a new HDD the weekly copy's newest list names no files: the menu says so and
+    recommends the last backup that lists files."""
+
+    @staticmethod
+    def inventory(folder, stamp, files):
+        import gzip
+
+        path = folder / recovery_wizard_module().INVENTORY_DIR / f'{stamp}.json.gz'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {'format': 'neko-inventory-v2', 'files': {k: {'copy': k, 'sha256': '0' * 64} for k in files}}
+        with gzip.open(path, 'wt') as stream:
+            json.dump(payload, stream)
+        return path
+
+    def test_the_last_backup_with_files_is_recommended_over_an_empty_newest_one(self):
+        wizard = recovery_wizard_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = self.inventory(Path(tmp), '20261101T120000Z', [])
+            full = self.inventory(Path(tmp), '20261025T120000Z', ['a.txt', 'b.txt'])
+            listed = wizard.inventories(tmp)
+            self.assertEqual([p for p, _ in listed], [empty, full])
+            said = []
+            scope = wizard.restore_scope(listed, lambda _: '1', said.append)
+            self.assertEqual(scope[:2], ('as_of', full))
+            self.assertIn('lists no files', '\n'.join(said))
+            self.assertIn('(recommended)', next(line for line in said if 'As of the backup of' in line))
+            # With files in the newest list, the last backup is recommended as before.
+            self.inventory(Path(tmp), '20261101T130000Z', ['a.txt'])
+            said.clear()
+            scope = wizard.restore_scope(wizard.inventories(tmp), lambda _: '1', said.append)
+            self.assertEqual(scope[0], 'as_of')
+            self.assertTrue(any('As of the last backup' in line and '(recommended)' in line for line in said))
+
+
+def recovery_wizard_module():
+    import recovery_wizard
+
+    return recovery_wizard
+
+
+class RecoveryMenuStopTests(unittest.TestCase):
+    def test_a_terminal_closed_ends_the_menu_the_way_ctrl_c_does(self):
+        # Seen on the rig: a restore from the USB drive cut off by a kill left the drive mounted
+        # read-only, and every weekly copy after it failed to mount the drive.
+        import signal
+
+        import recovery_wizard
+
+        before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+        try:
+            recovery_wizard.stop_on_sigterm()
+            for s in before:
+                handler = signal.getsignal(s)
+                with self.assertRaises(KeyboardInterrupt):
+                    handler(s, None)
+        finally:
+            for s, handler in before.items():
+                signal.signal(s, handler)
 
 
 class NextcloudUpgradeTests(unittest.TestCase):

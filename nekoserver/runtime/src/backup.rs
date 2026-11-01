@@ -722,6 +722,10 @@ pub struct Integrity {
     pub unverified: u64,
     /// Damaged copies replaced from a copy that matches the recorded checksum.
     pub repaired: u64,
+    /// Files the USB drive alone holds: recorded before this HDD archive was begun (a
+    /// new HDD after the old one broke, say). Not damage: a restore from the USB drive
+    /// still has them.
+    pub usb_only: u64,
     /// The primary copy (HDD archive, or the USB copy of a Nextcloud file) no longer
     /// matches its recorded checksum. It is kept as it is; for Nextcloud files the USB
     /// copy is the only one, so there may be no good copy left.
@@ -802,6 +806,12 @@ impl Integrity {
             println!(
                 "{what}: {} files have no recorded checksum yet (unverified until a second copy agrees)",
                 self.unverified
+            );
+        }
+        if self.usb_only > 0 {
+            println!(
+                "{what}: {} files are on the USB drive only (saved before this HDD archive was begun); a restore from the USB drive has them",
+                self.usb_only
             );
         }
     }
@@ -934,8 +944,16 @@ fn missing_from(root: &Path, ledger: &Ledger, report: &mut Integrity) -> Result<
     clear_partials(root)?;
     let present: std::collections::BTreeSet<String> =
         tree_files(root)?.into_iter().map(|(key, _)| key).collect();
-    for key in ledger.keys() {
-        if !present.contains(key) && !report.missing.contains(key) {
+    // A record older than this archive folder is not this archive's (taken over from the
+    // USB drive's records by an earlier release, after a new HDD): the USB drive's own.
+    let since = archive_birth(root).unwrap_or(f64::NEG_INFINITY);
+    for (key, entry) in ledger.entries() {
+        if present.contains(key) || report.missing.contains(key) {
+            continue;
+        }
+        if entry.verified_at < since {
+            report.usb_only += 1;
+        } else {
             report.missing.push(key.clone());
         }
     }
@@ -1206,6 +1224,106 @@ fn archive_with(
     );
     Ok((copied, report))
 }
+/// When the HDD archive folder was made (the filesystem's birth time), as seconds since
+/// the epoch: no record of this archive can be older. None where the filesystem keeps
+/// no birth time.
+fn archive_birth(source: &Path) -> Option<f64> {
+    fs::metadata(source)
+        .ok()?
+        .created()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs_f64())
+}
+/// How a ledger entry says its file is the USB drive's alone (a dated version added there
+/// by `histories_apart`): never taken back into the HDD archive's ledger, which would
+/// then expect the file on the HDD.
+const USB_ONLY: &str = "usb";
+/// Whether the USB ledger records a dated version of `key` (`name.neko-<stamp>.ext` in
+/// the same folder) with this checksum.
+fn holds_version(theirs: &Ledger, key: &str, sha256: &str) -> bool {
+    let (folder, name) = match key.rsplit_once('/') {
+        Some((folder, name)) => (format!("{folder}/"), name),
+        None => (String::new(), key),
+    };
+    let (stem, ext) = version_parts(name);
+    let prefix = format!("{stem}.neko-");
+    theirs.entries().any(|(other, entry)| {
+        entry.sha256 == sha256
+            && other
+                .strip_prefix(&folder)
+                .is_some_and(|n| !n.contains('/') && n.starts_with(&prefix) && n.ends_with(&ext))
+    })
+}
+/// Two intact histories of one file, told apart from damage: this HDD archive was made
+/// anew (after a new HDD, say) and holds the file's current content under its plain
+/// name, while the USB drive keeps the first version it ever saw under that name, the
+/// later ones dated beside it. When each copy matches its own record and the USB's
+/// record is from before this archive began, the archive's content is added to the USB
+/// drive as a dated version (unless it holds it already) and noted as the newest, so
+/// nothing is lost and neither copy is called damaged. True when so.
+#[allow(clippy::too_many_arguments)]
+fn histories_apart(
+    key: &str,
+    hdd: &Path,
+    usb: &Path,
+    ledger: &Ledger,
+    theirs: &mut Ledger,
+    archive_since: f64,
+    dest: &Path,
+    apply: bool,
+) -> Result<bool> {
+    let (Some(ours), Some(record)) = (ledger.get(key).cloned(), theirs.get(key).cloned()) else {
+        return Ok(false);
+    };
+    if record.verified_at >= archive_since || !usb.is_file() {
+        return Ok(false);
+    }
+    if digest_once(hdd)? != ours.sha256 || common::digest(usb)? != record.sha256 {
+        return Ok(false);
+    }
+    if holds_version(theirs, key, &ours.sha256) {
+        return Ok(true);
+    }
+    let stamp = chrono::DateTime::from_timestamp(common::now() as i64, 0)
+        .map(|d| d.format("%Y%m%dT%H%M%SZ").to_string())
+        .unwrap_or_else(|| (common::now() as i64).to_string());
+    let mut versioned = version_name(usb, &stamp);
+    let mut n = 1;
+    while versioned.exists() {
+        versioned = version_name(usb, &format!("{stamp}-{n}"));
+        n += 1;
+    }
+    let parent = usb.parent().unwrap_or(dest);
+    let name = usb
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let (stem, ext) = version_parts(&name);
+    if format!("{stem}{ext}") != name {
+        remember_name(parent, &stem, &name, apply)?;
+    }
+    verified_copy(hdd, &versioned, apply, 0o644)?;
+    let version = versioned
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    remember_version(parent, &version, &name, apply)?;
+    mark_latest(usb, &version, apply)?;
+    if apply {
+        let entry = ledger::Entry {
+            sha256: ours.sha256.clone(),
+            size: fs::metadata(hdd)?.len(),
+            verified_at: common::now(),
+            how: USB_ONLY.to_string(),
+        };
+        theirs.adopt(&ledger_key(&versioned, dest)?, &entry)?;
+    }
+    Ok(true)
+}
 /// Mirror the HDD photo archive to the USB drive, checking both copies against the
 /// archive's checksum ledger (recorded when each file was first verified):
 ///
@@ -1258,7 +1376,16 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
     // The USB copy's own ledger: its records stay, also when the HDD's ledger was lost
     // or is incomplete (they say which copy is good), and the HDD's ledger takes back
     // the ones it lacks. Two ledgers recording different checksums decide nothing.
-    let usb_ledger = match Ledger::read(&dest) {
+    // When this HDD archive's own records begin: a USB record from before that is the
+    // USB drive's own history (the archive was made anew, after a new HDD, say), never
+    // something this archive lost.
+    let archive_since = archive_birth(&source).unwrap_or_else(|| {
+        ledger
+            .entries()
+            .map(|(_, entry)| entry.verified_at)
+            .fold(f64::INFINITY, f64::min)
+    });
+    let mut usb_ledger = match Ledger::read(&dest) {
         Ok(found) => Some(found),
         Err(e) => {
             // Never written over: moved aside (kept), and a new one is started from the HDD's.
@@ -1278,10 +1405,24 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
             None
         }
     };
+    // A USB record for a file this archive holds without a record of its own: the
+    // archive's ledger was lost (or is short), so the USB's records are taken back, every
+    // one. Without such a file the archive is complete, and a record older than it is
+    // the USB drive's own history.
+    let on_hdd: std::collections::BTreeSet<&String> = files.iter().map(|(k, _)| k).collect();
+    let ledger_lost = usb_ledger
+        .iter()
+        .flat_map(Ledger::entries)
+        .any(|(key, _)| on_hdd.contains(key) && ledger.get(key).is_none());
     let mut conflicting = std::collections::BTreeSet::new();
     for (key, entry) in usb_ledger.iter().flat_map(Ledger::entries) {
         // Given up as lost in the recovery menu: the USB's record brings nothing back.
         if ledger.retired_as(key, &entry.sha256) {
+            continue;
+        }
+        let usb_only = entry.how == USB_ONLY || (!ledger_lost && entry.verified_at < archive_since);
+        if ledger.get(key).is_none() && usb_only {
+            report.usb_only += 1;
             continue;
         }
         if ledger.adopt(key, entry)? == Recorded::Conflict {
@@ -1308,7 +1449,22 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
     for (key, path) in &files {
         let target = dest.join(key);
         if conflicting.contains(key) {
-            report.disagree.push(key.clone());
+            let apart = match usb_ledger.as_mut() {
+                Some(theirs) => histories_apart(
+                    key,
+                    path,
+                    &target,
+                    &ledger,
+                    theirs,
+                    archive_since,
+                    &dest,
+                    apply,
+                )?,
+                None => false,
+            };
+            if !apart {
+                report.disagree.push(key.clone());
+            }
             continue;
         }
         let recorded = ledger.get(key).map(|e| e.sha256.clone());
@@ -1366,19 +1522,26 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
     // still matches, is kept (repair from it in the recovery menu); if it is gone or
     // damaged too, no good copy is left.
     let present: std::collections::BTreeSet<&String> = files.iter().map(|(k, _)| k).collect();
-    let gone: Vec<(String, String)> = ledger
+    let gone: Vec<(String, String, f64)> = ledger
         .keys()
         .filter(|k| !present.contains(k) && !conflicting.contains(*k))
         .map(|k| {
+            let entry = ledger.get(k);
             (
                 k.clone(),
-                ledger.get(k).map(|e| e.sha256.clone()).unwrap_or_default(),
+                entry.map(|e| e.sha256.clone()).unwrap_or_default(),
+                entry.map(|e| e.verified_at).unwrap_or(f64::INFINITY),
             )
         })
         .collect();
-    for (key, expected) in gone {
+    for (key, expected, verified_at) in gone {
         let usb = dest.join(&key);
-        if usb.is_file() && common::digest(&usb)? == expected {
+        let intact = usb.is_file() && common::digest(&usb)? == expected;
+        if intact && verified_at < archive_since {
+            // Recorded before this archive was made (taken over from the USB drive's
+            // records by an earlier release): the USB drive's own, never this archive's.
+            report.usb_only += 1;
+        } else if intact {
             report.missing.push(key);
         } else {
             report.both_damaged.push(key);
@@ -2180,6 +2343,11 @@ fn usb_mount_options(fstype: &str) -> String {
         "rw,nosuid,nodev".to_string()
     }
 }
+/// Mounted read-only (findmnt's OPTIONS), as the recovery menu mounts the USB drive
+/// while it reads a backup from it.
+fn read_only(options: &str) -> bool {
+    options.split(',').any(|option| option == "ro")
+}
 /// Are these mount options private (root only)? Filesystems with real permissions are,
 /// since the backup sets them itself; exFAT needs uid/gid 0 and masks that hide
 /// everything from group and others.
@@ -2524,7 +2692,8 @@ fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &s
     let drive = if key == "data_ssd" { "SSD" } else { "HDD" };
     let found = match found.trim() {
         "" => "nothing is mounted there".to_string(),
-        seen => format!("found {seen}"),
+        // Another drive there: replaced, and this service's record still names the old one.
+        seen => format!("found {seen}. If the drive was replaced, run  sudo bash install.sh  so every service learns the new one"),
     };
     format!(
         "Drive check failed: {} should be the {drive} (UUID {uuid}, {fstype}); {found}",
@@ -3418,6 +3587,17 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
         }
         fs::create_dir_all(&dest)?;
         let already = common::mounted(&dest);
+        if already {
+            let options =
+                common::findmnt("OPTIONS", "--mountpoint", &dest, 10)?.unwrap_or_default();
+            if read_only(&options) {
+                return Err(Error::new(&format!(
+                    "The USB drive is mounted read-only at {} (a restore from the recovery menu that was cut off leaves it so): unmount it with  sudo umount {}  and the copy runs again",
+                    dest.display(),
+                    dest.display()
+                )));
+            }
+        }
         if !already && fs::read_dir(&dest)?.next().is_some() {
             return Err(Error::new("Nonempty mount destination refused"));
         }
@@ -3747,11 +3927,19 @@ mod tests {
         assert_eq!(
             wrong,
             "Drive check failed: /srv/nekoserver should be the SSD (UUID aaaa-1111, ext4); \
-             found bbbb-2222 ext4 /dev/sdc1"
+             found bbbb-2222 ext4 /dev/sdc1. If the drive was replaced, run  sudo bash install.sh  \
+             so every service learns the new one"
         );
         let media = Path::new("/mnt/nekoserver-media");
         assert!(identity_mismatch("media_hdd", media, "cccc", "xfs", "")
             .ends_with("should be the HDD (UUID cccc, xfs); nothing is mounted there"));
+    }
+    #[test]
+    fn a_read_only_usb_mount_is_told_apart() {
+        // The recovery menu's mount while it reads a backup, and the weekly copy's own.
+        assert!(read_only("ro,nosuid,nodev,noexec,relatime"));
+        assert!(!read_only("rw,nosuid,nodev,relatime"));
+        assert!(!read_only("rw,errors=remount-ro"));
     }
     #[test]
     fn a_cut_off_backup_says_why() {
@@ -4316,6 +4504,81 @@ mod tests {
         assert!(!names(&hdd.join("upload/u"))
             .iter()
             .any(|n| n.contains(".neko-2")));
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_new_hdd_archive_keeps_the_usb_drives_history() {
+        // Seen on the rig: the HDD replaced, the archive made anew held Immich's marker
+        // files under their plain names with their current content, the USB drive their
+        // first content and dated later versions; the weekly copy called both "disagree"
+        // and the USB's older versions "missing" and refused, week after week.
+        let root = scratch("new-hdd");
+        let (library, hdd, hdd2, usb) = (
+            root.join("library"),
+            root.join("hdd"),
+            root.join("hdd2"),
+            root.join("usb"),
+        );
+        // Written in the past, so the archive takes the files at once (it waits for files
+        // changed in the last minute); each edit a little later than the one before.
+        let written = |name: &str, body: &[u8], when: i64| {
+            let path = library.join("upload/u").join(name);
+            write(&path, body);
+            let past = libc::timespec {
+                tv_sec: when,
+                tv_nsec: 0,
+            };
+            let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), [past, past].as_ptr(), 0) };
+        };
+        written("a.jpg", b"photo a", 1_000_000_000);
+        written("note.txt", b"A", 1_000_000_000);
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        copy_tree(&hdd, &usb, true, Check::Quick).unwrap();
+        // Edited in place: the archive keeps A and adds a dated B, mirrored to the USB drive.
+        written("note.txt", b"BB", 1_000_000_100);
+        archive(&library, &hdd, true, 60, Check::Quick).unwrap();
+        copy_tree(&hdd, &usb, true, Check::Quick).unwrap();
+        let versions = |dir: &Path| {
+            names(dir)
+                .into_iter()
+                .filter(|n| n.starts_with("note.neko-"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(versions(&usb.join("upload/u")).len(), 1);
+        // The HDD broke. The archive on the new one begins with C under the plain name.
+        written("note.txt", b"CCC", 1_000_000_200);
+        archive(&library, &hdd2, true, 60, Check::Quick).unwrap();
+        let (_, report) = mirror(&hdd2, &usb, true, Check::Quick).unwrap();
+        assert!(
+            report.disagree.is_empty()
+                && report.missing.is_empty()
+                && report.both_damaged.is_empty(),
+            "{report:?}"
+        );
+        assert_eq!(
+            report.usb_only, 1,
+            "B's dated version is the USB drive's alone"
+        );
+        assert_eq!(fs::read(usb.join("upload/u/note.txt")).unwrap(), b"A");
+        let now = versions(&usb.join("upload/u"));
+        assert_eq!(now.len(), 2, "{now:?}");
+        let newest = now
+            .iter()
+            .find(|v| fs::read(usb.join("upload/u").join(v)).unwrap() == b"CCC")
+            .expect("C added as a dated version");
+        assert_eq!(
+            fs::read(latest_marker(&usb.join("upload/u/note.txt"))).unwrap(),
+            newest.as_bytes()
+        );
+        // A week later: nothing to add, still nothing called damaged, and the copy runs through.
+        let (_, report) = mirror(&hdd2, &usb, true, Check::Quick).unwrap();
+        assert!(
+            report.disagree.is_empty() && report.missing.is_empty(),
+            "{report:?}"
+        );
+        assert_eq!(versions(&usb.join("upload/u")).len(), 2);
+        copy_tree(&hdd2, &usb, true, Check::Full).unwrap();
         let _ = fs::remove_dir_all(root);
     }
     #[test]

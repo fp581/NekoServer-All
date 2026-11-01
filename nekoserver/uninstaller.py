@@ -257,11 +257,6 @@ def find_settings(root=ROOT, system='/'):
     return {}, 'no settings found, so nothing on the drives is removed'
 
 
-def read_settings(root=ROOT, system='/'):
-    """my-config.json, or setup's record of the drives with the template's defaults."""
-    return find_settings(root, system)[0]
-
-
 def mount_folder(value, default):
     """The folder a drive is mounted at, from the settings: a plain absolute path of its
     own (/srv/nekoserver, /mnt/...). Anything else (the root, a system folder, '..', not
