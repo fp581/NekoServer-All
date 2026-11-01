@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.41.3 — 2026-11-02
 
-The fifth round: a mirror (RAID-1) that lost a drive, tried for real.
+The fifth round: a mirror (RAID-1) that lost a drive, tried for real. The backups keep going on the half of the mirror that is left, and a Btrfs pool missing a drive is opened on the drives left instead of staying unmounted.
+
+**Tried for real** (WSL rig, openSUSE Tumbleweed with its 0.41.2 server on the shared drives): the HDD made an mdadm RAID-1 mirror in place (the array's superblock at the drive's end, the filesystem untouched, a second drive added and synced), then the update over it (27 of 29 steps, the two left wait for the Tailscale sign-in; feature check 47 of 47). With one member taken away mid-run: every backup ran as usual (the weekly USB copy, the nightly app and host copies, the Immich database copy, the monthly verified snapshot with the app updates), the drive policy and the drive-return service were fine, the dashboard's Drives page said degraded with the critical alert, the rebuilding alert came and went when the member was put back, and the array was healthy again. The same HDD as a Btrfs RAID-1 pool over two drives, chosen by setup: with one drive taken offline the ordinary mount refused, the drive-return service opened the pool degraded, Docker and the apps came up and the backups passed; the drive back, the ordinary mount again. The Python suite (1153 tests), the Rust suite (393) and clippy pass.
 
 ### Fixed
 - **A Btrfs pool that lost a drive is opened on the drives left.** A Btrfs HDD or SSD mirrored over two drives refuses an ordinary mount once one of them is gone (only `degraded` opens it), so after a restart nothing was mounted there: Docker and every app stayed down and the backups said the drive was missing, although the other half of the mirror was fine. The drive-return service now opens such a pool on its remaining drives, says so in its log, and starts Docker and the backups as usual; the dashboard's Drives page shows the pool as degraded and the alert goes out. A rerun of setup on such a server mounts it the same way and says so. RECOVERY.md shows how to replace the drive (`btrfs replace`), after which a restart mounts the pool the ordinary way again. An mdadm mirror never needed this: Linux keeps the array running on one drive, and every backup, the drive policy and the start guard were tried on one.
