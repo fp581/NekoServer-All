@@ -3201,6 +3201,12 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         // without a verified snapshot and the updates is too long for a passing trouble.
         Err(failure) if !common::postponed(&failure) && tried < RETRY_NIGHTS => {
             let again = again_next_night(&cfg);
+            // On a line of its own too: a long failure text leaves no room for it in the
+            // report's reason (300 characters, in the log's last line as well).
+            println!(
+                "Monthly update: {again} (night {} of {RETRY_NIGHTS})",
+                tried + 1
+            );
             let note = |key: &str, value: Value| {
                 backup::note_failed_report(&cfgpath, &data, "maintenance", key, value)
             };

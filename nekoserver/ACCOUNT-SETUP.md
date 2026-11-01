@@ -46,7 +46,7 @@ The text file has a heading for each app/account, its local URL, setup status, u
 **To see one app's login** (to type it on a phone, say), show it on the screen, one app at a time, with a QR code of the password to scan:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.41.1/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.41.2/account-setup.py show
 ```
 
 It lists the saved logins: type a number to show one, Enter to hide it again (the screen is cleared). `show jellyfin` (or `immich`, `seerr`, `nextcloud`, `navidrome_listener`…) goes straight to one. It runs only with sudo and only in a terminal: it refuses to print into a file or another program, so a password never lands in a log. The QR code is drawn by `qrencode`, which gets the password on its input, not its command line (other accounts can read command lines).

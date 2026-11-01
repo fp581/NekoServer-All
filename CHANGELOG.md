@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.41.2 — 2026-11-01
 
 What the third round's drills left open: a monthly run that fails no longer costs a whole month, the password list has a copy off the SSD and HDD, two paths nobody runs any more are gone, and two smaller findings.
+
+**Tried for real** (WSL rig, openSUSE Tumbleweed with its 0.41.1 server on the shared drives): the update over it (27 of 29 steps, the two left wait for the Tailscale sign-in; feature check 47 of 47), then the three fixes driven as a person would meet them: the weekly copy put the newest sealed password list on the USB drive (the four files the same bytes as the HDD's, each private, the newest ones kept) and said so; with every sealed list on the HDD set aside, the recovery menu's **App password list** said it looks on the USB drive, offered the drive's copy and restored the current list from it, and unmounted the drive afterwards; with the HDD filled, the monthly run failed on room, its report carried `retries` 1 and the time of the next try, the next night's timer existed, and the next run (space freed) passed and carried no retry note. Then the fault suite (30 of 30). The Python suite (1091 tests), the Rust suite (391) and clippy pass.
 
 ### Fixed
 - **A monthly run that fails comes back the next night, not next month.** An app not ready in time, the HDD short of room, a damaged copy found: before, the run was left to the next month, so a passing trouble cost a month without a verified snapshot and without the app updates. Now it is tried again the next night at the maintenance time, three nights running, before it is left to the next month (the way a run postponed by setup already came back). The dashboard's "The update was undone" says when the next try is, and the result's reason ends with it ("night 1 of 3"). A run that stopped because the night ran out before the apps were stopped comes back the next night too. Only the hourly retry of an update cut off part-way was already there; it is unchanged.
