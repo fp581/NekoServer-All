@@ -208,6 +208,16 @@ def lock(config, changes_apps=True):
         yield
 
 
+def guarded(context, step):
+    """A setup step that changes apps: previewed as it is; applied only with the drives
+    checked and the shared lock held (modules/media and modules/photos run this way)."""
+    if not context.apply:
+        return step(context)
+    mounts(context.config)
+    with lock(context.config):
+        return step(context)
+
+
 BUSY = 'A NekoServer backup or monthly update is running right now. Wait for it to finish (usually under an hour), then run  sudo bash install.sh  again.'
 
 

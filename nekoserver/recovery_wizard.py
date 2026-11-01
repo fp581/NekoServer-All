@@ -17,6 +17,7 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -784,8 +785,18 @@ def restore_scope(listed, prompt, output, newest_run=None):
     if not listed:
         output(NO_INVENTORY)
         return 'everything', None, None
+    earlier = newest_with_files(listed) if not newest_run else None
     if newest_run:
         options = stale_list_options(listed, newest_run, output)
+    elif earlier:
+        output(
+            f'The last backup ({listed[0][1]}) lists no files: the folder was empty then, as after a new '
+            f'drive. The last backup that lists files is the one of {earlier[1]}.'
+        )
+        options = [
+            ('earlier', f'As of the backup of {earlier[1]}: the last one that lists files (recommended)'),
+            ('last', f'As of the last backup ({listed[0][1]}): nothing, as it lists no files'),
+        ]
     else:
         options = [('last', f'As of the last backup ({listed[0][1]}): only the files you had then (recommended)')]
     if len(listed) > 1:
@@ -798,7 +809,18 @@ def restore_scope(listed, prompt, output, newest_run=None):
         return None if path is None else ('as_of', path, dict(listed)[path])
     if pick == 'last':
         return 'as_of', listed[0][0], listed[0][1]
+    if pick == 'earlier':
+        return 'as_of', earlier[0], earlier[1]
     return None if pick is None else ('everything', None, None)
+
+
+def newest_with_files(listed):
+    """The newest list that names any file, when the newest of all names none (the files
+    folder was empty at that backup: a new HDD, say, before anything was put back);
+    (path, date), else None."""
+    if read_inventory(listed[0][0]):
+        return None
+    return next(((path, date) for path, date in listed[1:] if read_inventory(path)), None)
 
 
 COPYING = 'Copying... this can take a while for a big backup.'
@@ -2078,10 +2100,22 @@ def settings(config_path=None, output=None):
     raise RuntimeError('Settings file not found: ' + ', '.join(str(p) for p in candidates))
 
 
+def stop_on_sigterm():
+    """A terminal closed or a `kill` ends the menu the way Ctrl+C does: the USB drive it
+    mounted is unmounted again (left mounted read-only, the weekly copy could not use it)."""
+
+    def stop(*_):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGHUP, stop)
+
+
 def run(prompt=input, output=print, config_path=None):
     if os.geteuid() != 0:
         output('Run it with sudo:  sudo bash install.sh --recover')
         return 2
+    stop_on_sigterm()
     config = settings(config_path, output)
     say(output, '\nNekoServer recovery', 'Everything is restored into a NEW folder. Nothing you have now is changed.')
     handlers = {

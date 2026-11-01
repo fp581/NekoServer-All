@@ -165,8 +165,6 @@ def guard_check(config):
 
 # Where an app sees its library or store inside its container.
 DATA = '/data'
-# Immich's upload folder, under its older and its newer name.
-IMMICH_UPLOAD = (DATA, '/usr/src/app/upload')
 
 
 def verdict(good, bad):
@@ -228,14 +226,14 @@ def containers(config, photos=False):
                     )
 
                 if app == 'immich':
+                    # The same bindings the snapshot checks (recovery_tools.IMMICH_BINDINGS).
+                    targets = recovery_tools.IMMICH_BINDINGS.get(svc, ())
                     if svc == 'immich-server':
                         expected = str(Path(config['data_mount']) / 'photos/immich-library')
-                        targets = IMMICH_UPLOAD
                     elif svc == 'database':
                         expected = str(Path(config['data_mount']) / 'appdata/immich/postgres')
-                        targets = ('/var/lib/postgresql/data',)
                     else:
-                        expected, targets = None, ()
+                        expected = None
                     mounts = expected is None or bound(expected, targets)
                 else:
                     destination = {'seerr': '/app/config', 'navidrome': DATA}.get(app, '/config')

@@ -1117,36 +1117,6 @@ def rename_no_replace(source, target):
         raise (FileExistsError if code == errno.EEXIST else OSError)(code, os.strerror(code), str(target))
 
 
-def publish_no_replace(temp, target):
-    """Atomic publication; hard link on Linux FS, no-replace rename on exFAT.
-
-    If the kernel/filesystem lacks either primitive, fail without overwriting.
-    Never substitute ordinary rename(), which replaces existing files.
-    """
-    temp, target = safe_path(temp), safe_path(target)
-    try:
-        os.link(temp, target)
-    except OSError as exc:
-        if exc.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS):
-            raise
-        libc = ctypes.CDLL(None, use_errno=True)
-        rename = getattr(libc, 'renameat2', None)
-        if rename is None:
-            raise RuntimeError('Filesystem needs Linux renameat2 for safe backup publication') from None
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        if rename(-100, os.fsencode(temp), -100, os.fsencode(target), 1) != 0:
-            code = ctypes.get_errno()
-            raise OSError(code, os.strerror(code), str(target)) from exc
-    else:
-        temp.unlink()
-    directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
-
-
 def made_whole(directory, mode, uid, gid):
     """Make one folder that appears with its owner and mode already set: made under a
     temporary name beside it, then moved into place. Cut off between making and

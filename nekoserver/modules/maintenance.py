@@ -57,8 +57,6 @@ def options(config):
             )
     if int(time[:2]) >= opts.get('night_end_hour', 6):
         raise RuntimeError('Maintenance starts after its allowed night window')
-    # require_external is obsolete since v0.21.1: monthly snapshots stay on the HDD and
-    # the USB drive only receives the weekly add-only photo/Nextcloud copies.
     return opts
 
 
