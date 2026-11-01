@@ -79,11 +79,16 @@ class Client:
         self.headers.clear()
 
 
+# What may be passed to docker: a word (a name, a label, a path, an account name with
+# Nextcloud's allowed characters) or an option, never a shell construct or a control character.
+ARGUMENT = re.compile(r"[A-Za-z0-9/][A-Za-z0-9_.@:/=+,'-]*|--?[A-Za-z][A-Za-z0-9-]*(?:=[A-Za-z0-9_./:,-]*)?")
+
+
 def docker(args, input_text=None):
-    """Docker's own command line (never a shell); an argument with a control character
-    (a newline, say) is refused before it is passed on."""
-    if not args or any(not isinstance(a, str) or re.search(r'[\x00-\x1f\x7f]', a) for a in args):
-        raise RuntimeError('Local account setup command refused: an argument is not plain text')
+    """Docker's own command line (never a shell). Every argument must be a plain word (a
+    name, a path, a label) or an option; anything else is refused before it is passed on."""
+    if not args or any(not isinstance(a, str) or not ARGUMENT.fullmatch(a) for a in args):
+        raise RuntimeError('Local account setup command refused: an argument is not a plain word or option')
     result = subprocess.run(
         ['docker', '--host', 'unix:///var/run/docker.sock', *args],
         input=input_text,

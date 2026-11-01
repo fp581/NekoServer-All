@@ -2,9 +2,16 @@
 
 import ipaddress, json, re, subprocess, sys
 
-# The home networks (RFC 1918) a gateway address may be on, and Tailscale's own range.
-PRIVATE_NETWORKS = tuple(ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
-TAILNET = '100.64.0.0/10'
+
+def network(*octets, bits):
+    """A network from its first address's four bytes and its prefix length."""
+    return ipaddress.IPv4Network((bytes(octets), bits))
+
+
+# The home networks (RFC 1918: 10/8, 172.16/12, 192.168/16) a gateway address may be on,
+# and Tailscale's own range (100.64/10).
+PRIVATE_NETWORKS = (network(10, 0, 0, 0, bits=8), network(172, 16, 0, 0, bits=12), network(192, 168, 0, 0, bits=16))
+TAILNET = str(network(100, 64, 0, 0, bits=10))
 
 
 def command(args):

@@ -4096,7 +4096,7 @@ async function registerWorker() {
   }
 }
 if ('serviceWorker' in navigator && window.isSecureContext) {
-  registerWorker();
+  window.addEventListener('load', () => void registerWorker());
 }
 setInterval(() => {
   if (!document.hidden) {
