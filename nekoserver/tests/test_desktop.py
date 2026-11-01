@@ -1,5 +1,6 @@
 """Desktop shortcuts: the dashboard, the browser, Steam and the installed apps, and no
 Steam Big Picture at login."""
+
 import os
 import pwd
 import sys
@@ -19,8 +20,11 @@ class DesktopShortcutTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.data = self.root / 'ssd'
-        self.config = {'data_mount': str(self.data), 'dashboard': {'port': 8787},
-                       'media': {'services': ['jellyfin', 'navidrome', 'sonarr']}}
+        self.config = {
+            'data_mount': str(self.data),
+            'dashboard': {'port': 8787},
+            'media': {'services': ['jellyfin', 'navidrome', 'sonarr']},
+        }
 
     def files(self, which=lambda name: None, launcher=None):
         return desktop.shortcuts(self.config, which, launcher or self.root / 'no-launcher')
@@ -29,9 +33,16 @@ class DesktopShortcutTests(unittest.TestCase):
         (self.data / 'compose/immich').mkdir(parents=True)
         (self.data / 'compose/immich/compose.yaml').write_text('services: {}\n')
         names = self.files()
-        self.assertEqual(sorted(names), ['nekoserver-dashboard.desktop', 'nekoserver-immich.desktop',
-                                         'nekoserver-jellyfin.desktop', 'nekoserver-navidrome.desktop',
-                                         'nekoserver-sonarr.desktop'])
+        self.assertEqual(
+            sorted(names),
+            [
+                'nekoserver-dashboard.desktop',
+                'nekoserver-immich.desktop',
+                'nekoserver-jellyfin.desktop',
+                'nekoserver-navidrome.desktop',
+                'nekoserver-sonarr.desktop',
+            ],
+        )
         self.assertIn('Exec=xdg-open http://127.0.0.1:8096/', names['nekoserver-jellyfin.desktop'])
         self.assertIn('Name=Immich', names['nekoserver-immich.desktop'])
         # Nextcloud was not set up here: no shortcut that leads nowhere.
@@ -55,11 +66,13 @@ class DesktopShortcutTests(unittest.TestCase):
         me = pwd.getpwuid(os.getuid())
         user = mock.Mock(pw_uid=me.pw_uid, pw_gid=me.pw_gid, pw_name=me.pw_name)
         ctx = mock.Mock(apply=True, config=self.config, log=lambda message: None)
-        with mock.patch('os.geteuid', return_value=0), \
-                mock.patch.object(tv, 'desktop_user', return_value=(user, home)), \
-                mock.patch.object(tv, 'desktop_folder', return_value=home / 'Desktop'), \
-                mock.patch.object(tv, 'has_desktop', return_value=True), \
-                mock.patch('shutil.which', return_value=None):
+        with (
+            mock.patch('os.geteuid', return_value=0),
+            mock.patch.object(tv, 'desktop_user', return_value=(user, home)),
+            mock.patch.object(tv, 'desktop_folder', return_value=home / 'Desktop'),
+            mock.patch.object(tv, 'has_desktop', return_value=True),
+            mock.patch('shutil.which', return_value=None),
+        ):
             return desktop.run(ctx)
 
     def test_a_desktop_set_to_the_home_folder_gets_menu_entries_only(self):
@@ -69,14 +82,18 @@ class DesktopShortcutTests(unittest.TestCase):
         home.mkdir()
         me = pwd.getpwuid(os.getuid())
         user = mock.Mock(pw_uid=me.pw_uid, pw_gid=me.pw_gid, pw_name=me.pw_name)
-        with mock.patch('shutil.which', return_value='/usr/bin/xdg-user-dir'), \
-                mock.patch.object(tv, 'command', return_value=mock.Mock(returncode=0, stdout=str(home) + '\n')):
+        with (
+            mock.patch('shutil.which', return_value='/usr/bin/xdg-user-dir'),
+            mock.patch.object(tv, 'command', return_value=mock.Mock(returncode=0, stdout=str(home) + '\n')),
+        ):
             self.assertIsNone(tv.desktop_folder(user, home))
-        with mock.patch('os.geteuid', return_value=0), \
-                mock.patch.object(tv, 'desktop_user', return_value=(user, home)), \
-                mock.patch.object(tv, 'desktop_folder', return_value=None), \
-                mock.patch.object(tv, 'has_desktop', return_value=True), \
-                mock.patch('shutil.which', return_value=None):
+        with (
+            mock.patch('os.geteuid', return_value=0),
+            mock.patch.object(tv, 'desktop_user', return_value=(user, home)),
+            mock.patch.object(tv, 'desktop_folder', return_value=None),
+            mock.patch.object(tv, 'has_desktop', return_value=True),
+            mock.patch('shutil.which', return_value=None),
+        ):
             desktop.run(mock.Mock(apply=True, config=self.config, log=lambda message: None))
         self.assertTrue((home / '.local/share/applications/nekoserver-navidrome.desktop').is_file())
         self.assertFalse(any(p.suffix == '.desktop' for p in home.iterdir()))
@@ -89,7 +106,8 @@ class DesktopShortcutTests(unittest.TestCase):
         (home / 'Desktop').mkdir()
         # Written by the TV step before 0.28.7, and one the user made.
         (home / 'Desktop/nekoserver-jellyfin.desktop').write_text(
-            tv.desktop_entry('Jellyfin', '/usr/bin/firefox --new-window http://127.0.0.1:8096/', 'x'))
+            tv.desktop_entry('Jellyfin', '/usr/bin/firefox --new-window http://127.0.0.1:8096/', 'x')
+        )
         (home / 'Desktop/nekoserver-sonarr.desktop').write_text('[Desktop Entry]\nName=My Sonarr\n')
         self.run_step(home)
         self.assertFalse(autostart.exists())
@@ -110,6 +128,7 @@ class DesktopShortcutTests(unittest.TestCase):
 class TvSleepTests(unittest.TestCase):
     """KDE or XFCE on the TV: no GNOME setting to change, and none needed once the
     server-OS step has blocked sleep system-wide."""
+
     def test_blocked_system_wide_passes_on_any_desktop(self):
         masked = mock.Mock(stdout='masked\n' * 5, returncode=0)
         with mock.patch('shutil.which', return_value=None):
@@ -166,6 +185,7 @@ class TvLauncherUpdateTests(unittest.TestCase):
 
     def test_the_recorded_checksum_also_makes_it_ours(self):
         import hashlib
+
         text = '[Desktop Entry]\nName=NekoServer YouTube\nExec=/usr/bin/chromium\n'
         self.path.write_text(text)
         self.path.chmod(0o755)
@@ -177,6 +197,9 @@ class DebianFirefoxTests(unittest.TestCase):
     def test_debians_firefox_esr_counts_as_the_browser(self):
         found = {'firefox-esr': '/usr/bin/firefox-esr'}
         # A folder of its own: this PC's /srv/nekoserver may hold a server (and be closed to this user).
-        files = desktop.shortcuts({'data_mount': '/nonexistent/nekoserver-test', 'dashboard': {'port': 8787}, 'media': {'services': []}},
-                                  which=found.get, launcher=Path('/nonexistent'))
+        files = desktop.shortcuts(
+            {'data_mount': '/nonexistent/nekoserver-test', 'dashboard': {'port': 8787}, 'media': {'services': []}},
+            which=found.get,
+            launcher=Path('/nonexistent'),
+        )
         self.assertIn('Exec=/usr/bin/firefox-esr\n', files['nekoserver-browser.desktop'])

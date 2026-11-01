@@ -1,5 +1,6 @@
 """v0.23.0: re-runs do not repeat finished steps, optional extras can be skipped,
 and recovery never shares the USB drive with a running backup."""
+
 import fcntl
 import json
 import os
@@ -41,8 +42,9 @@ class OptionalExtrasTests(unittest.TestCase):
         ctx = Ctx({})
         with mock.patch.object(guided_setup, 'interactive', return_value=True):
             out = []
-            self.assertFalse(guided_setup.wanted(ctx, 'tv', 'Use a TV', prompt=answers('maybe', 'no'),
-                                                 output=out.append))
+            self.assertFalse(
+                guided_setup.wanted(ctx, 'tv', 'Use a TV', prompt=answers('maybe', 'no'), output=out.append)
+            )
             self.assertFalse(ctx.config['tv']['wanted'])
             self.assertEqual(ctx.saved, 1)
             self.assertTrue(any('"wanted" to true' in line for line in out))
@@ -58,9 +60,11 @@ class OptionalExtrasTests(unittest.TestCase):
 
 
 class TvTests(unittest.TestCase):
-    LSPCI = ('00:02.0 "VGA compatible controller" "Intel Corporation" "UHD Graphics 630"\n'
-             '03:00.0 "VGA compatible controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Navi 23"\n'
-             '00:1f.3 "Audio device" "Intel Corporation" "Cannon Lake PCH cAVS"\n')
+    LSPCI = (
+        '00:02.0 "VGA compatible controller" "Intel Corporation" "UHD Graphics 630"\n'
+        '03:00.0 "VGA compatible controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Navi 23"\n'
+        '00:1f.3 "Audio device" "Intel Corporation" "Cannon Lake PCH cAVS"\n'
+    )
 
     def test_vulkan_driver_matches_the_graphics(self):
         self.assertEqual(tv.graphics(self.LSPCI), ['intel', 'amd'])
@@ -72,9 +76,16 @@ class TvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             report = Path(folder) / 'reports/tv-setup.json'
             report.parent.mkdir()
-            report.write_text(json.dumps({'checks': [
-                {'check': 'tv:controller', 'status': 'user_confirmed'},
-                {'check': 'tv:display_audio_playback', 'status': 'needs_setup'}]}))
+            report.write_text(
+                json.dumps(
+                    {
+                        'checks': [
+                            {'check': 'tv:controller', 'status': 'user_confirmed'},
+                            {'check': 'tv:display_audio_playback', 'status': 'needs_setup'},
+                        ]
+                    }
+                )
+            )
             self.assertEqual(tv.previous_checks(folder), {'tv:controller'})
             self.assertEqual(tv.previous_checks(Path(folder) / 'missing'), set())
 
@@ -83,6 +94,7 @@ class TvOnEveryFamilyTests(unittest.TestCase):
     """The TV step on Debian/Ubuntu, Fedora and openSUSE Tumbleweed, not Arch alone:
     each family's own package names, what to switch on for Steam, and the two systems
     without a Steam package."""
+
     @staticmethod
     def family(kind, **release):
         return kind(run=lambda *args, **kwargs: None, release=release)
@@ -97,13 +109,21 @@ class TvOnEveryFamilyTests(unittest.TestCase):
         self.assertIn('non-oss', tv.steam_source(self.family(host.Suse, ID='opensuse-tumbleweed')))
 
     def test_systems_without_a_steam_package_are_unavailable_with_the_reason(self):
-        for kind, release in ((host.Arch, {'ID': 'arch'}), (host.Debian, {'ID': 'debian'}), (host.Fedora, {'ID': 'fedora'}),
-                              (host.Suse, {'ID': 'opensuse-tumbleweed'}), (host.Suse, {'ID': 'opensuse-slowroll'})):
+        for kind, release in (
+            (host.Arch, {'ID': 'arch'}),
+            (host.Debian, {'ID': 'debian'}),
+            (host.Fedora, {'ID': 'fedora'}),
+            (host.Suse, {'ID': 'opensuse-tumbleweed'}),
+            (host.Suse, {'ID': 'opensuse-slowroll'}),
+        ):
             self.assertIsNone(tv.unavailable_reason(self.family(kind, **release)), release)
         rhel = tv.unavailable_reason(self.family(host.Rhel, ID='almalinux', ID_LIKE='rhel', VERSION_ID='10.2'))
         self.assertIn('AlmaLinux', rhel)
         self.assertIn('Flatpak', rhel)
-        self.assertIn('openSUSE Leap has no Steam package', tv.unavailable_reason(self.family(host.Suse, ID='opensuse-leap', VERSION_ID='16.0')))
+        self.assertIn(
+            'openSUSE Leap has no Steam package',
+            tv.unavailable_reason(self.family(host.Suse, ID='opensuse-leap', VERSION_ID='16.0')),
+        )
 
     def test_each_family_names_the_tv_packages_its_own_way(self):
         debian = self.family(host.Debian, ID='debian')
@@ -111,39 +131,58 @@ class TvOnEveryFamilyTests(unittest.TestCase):
         self.assertEqual(debian.names('lib32-vulkan-intel'), ['mesa-vulkan-drivers:i386'])
         self.assertEqual(debian.names('firefox'), ['firefox-esr'])
         self.assertEqual(self.family(host.Debian, ID='ubuntu', ID_LIKE='debian').names('firefox'), ['firefox'])
-        self.assertEqual(self.family(host.Fedora, ID='fedora').names('lib32-vulkan-radeon'), ['mesa-vulkan-drivers.i686'])
+        self.assertEqual(
+            self.family(host.Fedora, ID='fedora').names('lib32-vulkan-radeon'), ['mesa-vulkan-drivers.i686']
+        )
         suse = self.family(host.Suse, ID='opensuse-tumbleweed')
         self.assertEqual(suse.names('firefox'), ['MozillaFirefox'])
         self.assertEqual(suse.names('lib32-vulkan-intel'), ['libvulkan_intel-32bit'])
-        for kind, release in ((host.Debian, {'ID': 'debian'}), (host.Fedora, {'ID': 'fedora'}), (host.Suse, {'ID': 'opensuse-tumbleweed'})):
-            self.assertEqual(self.family(kind, **release).names('bluez-utils'), ['bluez'], release)   # bluetoothctl is inside bluez
+        for kind, release in (
+            (host.Debian, {'ID': 'debian'}),
+            (host.Fedora, {'ID': 'fedora'}),
+            (host.Suse, {'ID': 'opensuse-tumbleweed'}),
+        ):
+            self.assertEqual(
+                self.family(kind, **release).names('bluez-utils'), ['bluez'], release
+            )  # bluetoothctl is inside bluez
         self.assertEqual(self.family(host.Arch, ID='arch').names('bluez-utils'), ['bluez-utils'])
 
     def test_debian_needs_the_i386_architecture_before_steam_counts_as_offered(self):
         # apt lists steam-installer without i386, then fails on its 32-bit libraries.
         def dpkg(architectures):
-            return lambda argv, **kwargs: mock.Mock(returncode=0, stdout=architectures if argv[:2] == ['dpkg', '--print-foreign-architectures'] else '')
+            return lambda argv, **kwargs: mock.Mock(
+                returncode=0, stdout=architectures if argv[:2] == ['dpkg', '--print-foreign-architectures'] else ''
+            )
+
         self.assertFalse(tv.steam_ready(host.Debian(dpkg(''), {'ID': 'ubuntu'}, fetch=lambda url: b'')))
         self.assertTrue(tv.steam_ready(host.Debian(dpkg('i386\n'), {'ID': 'ubuntu'}, fetch=lambda url: b'')))
-        self.assertTrue(tv.steam_ready(self.family(host.Fedora, ID='fedora')))     # one package for both sides there
+        self.assertTrue(tv.steam_ready(self.family(host.Fedora, ID='fedora')))  # one package for both sides there
 
     def test_launchers_name_the_programs_where_this_linux_keeps_them(self):
-        files = tv.launchers('/usr/games/steam', '/usr/bin/firefox-esr')   # Debian
+        files = tv.launchers('/usr/games/steam', '/usr/bin/firefox-esr')  # Debian
         self.assertIn('Exec=/usr/games/steam -gamepadui\n', files['nekoserver-steam.desktop'])
-        self.assertIn('Exec=/usr/bin/firefox-esr --new-window https://www.youtube.com/\n', files['nekoserver-youtube.desktop'])
-        self.assertIn('Exec=/usr/bin/steam -gamepadui\n', tv.launchers()['nekoserver-steam.desktop'])   # Arch, as before
+        self.assertIn(
+            'Exec=/usr/bin/firefox-esr --new-window https://www.youtube.com/\n', files['nekoserver-youtube.desktop']
+        )
+        self.assertIn('Exec=/usr/bin/steam -gamepadui\n', tv.launchers()['nekoserver-steam.desktop'])  # Arch, as before
 
     def test_steam_is_found_in_the_games_folder(self):
         with tempfile.TemporaryDirectory() as folder:
             games = Path(folder) / 'usr/games'
             games.mkdir(parents=True)
-            (Path(folder) / 'usr/sbin').symlink_to('bin')      # Fedora: root's PATH says sbin, the real folder is bin
+            (Path(folder) / 'usr/sbin').symlink_to('bin')  # Fedora: root's PATH says sbin, the real folder is bin
             (Path(folder) / 'usr/bin').mkdir()
 
             def which(name, path=None):
-                return {('steam', '/usr/games'): str(games / 'steam'), ('firefox', None): str(Path(folder) / 'usr/sbin/firefox')}.get((name, path))
+                return {
+                    ('steam', '/usr/games'): str(games / 'steam'),
+                    ('firefox', None): str(Path(folder) / 'usr/sbin/firefox'),
+                }.get((name, path))
+
             self.assertEqual(find_program('steam', which), str(games / 'steam'))
-            self.assertEqual(find_program('firefox', which), str(Path(folder) / 'usr/bin/firefox'))   # named by its real folder
+            self.assertEqual(
+                find_program('firefox', which), str(Path(folder) / 'usr/bin/firefox')
+            )  # named by its real folder
             self.assertIsNone(find_program('chromium', which))
 
 
@@ -177,8 +216,7 @@ class PhoneGuidePathTests(unittest.TestCase):
         tool = '/mnt/fastssd/installer/releases/v' + phone_guide.VERSION + '/account-setup.py show jellyfin'
         with mock.patch.object(phone_guide, 'username', return_value=None):
             steps = phone_guide.instructions(config, 'jellyfin', 'https://neko.tail1.ts.net:8443/')
-            page = phone_guide.page_html(config, {'jellyfin': 'https://neko.tail1.ts.net:8443/'},
-                                         qr=lambda text: '')
+            page = phone_guide.page_html(config, {'jellyfin': 'https://neko.tail1.ts.net:8443/'}, qr=lambda text: '')
         self.assertTrue(any(tool in s for s in steps))
         self.assertIn(tool, page)
         self.assertNotIn('/srv/nekoserver', page)
@@ -195,12 +233,12 @@ class RecoverySafetyTests(unittest.TestCase):
         source.mkdir()
         (source / 'a.jpg').write_bytes(b'x' * 1000)
         target = self.root / 'new'
-        full = mock.Mock(total=100 * 1024 ** 3, free=1024 ** 3)
+        full = mock.Mock(total=100 * 1024**3, free=1024**3)
         with mock.patch.object(recovery_wizard.shutil, 'disk_usage', return_value=full):
             with self.assertRaisesRegex(RuntimeError, 'not enough free space'):
                 recovery_wizard.copy_new([('upload', source)], target)
         self.assertFalse(target.exists())
-        roomy = mock.Mock(total=100 * 1024 ** 3, free=50 * 1024 ** 3)
+        roomy = mock.Mock(total=100 * 1024**3, free=50 * 1024**3)
         with mock.patch.object(recovery_wizard.shutil, 'disk_usage', return_value=roomy):
             self.assertEqual(recovery_wizard.copy_new([('upload', source)], target), 1)
 
@@ -214,9 +252,10 @@ class RecoverySafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'weekly backup is using the USB drive'):
                 usb.__enter__()
             fcntl.flock(holder, fcntl.LOCK_UN)
-            with mock.patch.object(recovery_wizard.subprocess, 'run',
-                                   return_value=mock.Mock(returncode=1, stdout='')), \
-                    mock.patch.object(Path, 'exists', return_value=False):
+            with (
+                mock.patch.object(recovery_wizard.subprocess, 'run', return_value=mock.Mock(returncode=1, stdout='')),
+                mock.patch.object(Path, 'exists', return_value=False),
+            ):
                 with usb as mounted:
                     self.assertIsNone(mounted)
             # Released afterwards: the weekly job can take it again.

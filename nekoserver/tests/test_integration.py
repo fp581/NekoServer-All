@@ -1,6 +1,7 @@
 """How the pieces connect: the real install.sh preflight (real df), and every runtime
 command the installer writes into a systemd unit, checked against the Rust program's
 own option table and, when it matches its sources, the bundled binary itself."""
+
 import hashlib
 import json
 import os
@@ -21,9 +22,20 @@ sys.path.insert(0, str(ROOT))
 
 import gateway_tools  # noqa: E402
 import host  # noqa: E402
-from modules import (app_backup, dashboard, docker, heartbeat, host_backup, maintenance,  # noqa: E402
-                     media_monitor, music_backup, notifications, photo_backup,
-                     photo_preservation, server_os)
+from modules import (
+    app_backup,
+    dashboard,
+    docker,
+    heartbeat,
+    host_backup,
+    maintenance,  # noqa: E402
+    media_monitor,
+    music_backup,
+    notifications,
+    photo_backup,
+    photo_preservation,
+    server_os,
+)
 
 BIN = Path('/usr/local/lib/nekoserver/nekoserver-runtime')
 RUNTIME = ROOT / 'runtime'
@@ -31,8 +43,10 @@ RUNTIME = ROOT / 'runtime'
 
 def config():
     cfg = json.loads((ROOT / 'config.json').read_text())
-    cfg['storage'] = {'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'},
-                      'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'}}
+    cfg['storage'] = {
+        'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'},
+        'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'},
+    }
     cfg['timezone'] = 'UTC'
     return cfg
 
@@ -57,16 +71,29 @@ def unit_texts():
     texts['server_os'] = server_os.unit(BIN, etc, cfg)
     texts['gateway'] = gateway_tools.unit(cfg, BIN.parent, Path('/srv/nekoserver/gateway/state'))
     texts['docker'] = docker.guard_contents(cfg, BIN.parent)
-    texts['photo_preservation'] = 'ExecStart=' + photo_preservation.command_line(
-        BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8) + ' --db-backup'
+    texts['photo_preservation'] = (
+        'ExecStart='
+        + photo_preservation.command_line(
+            BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8
+        )
+        + ' --db-backup'
+    )
     texts['photo_preservation_resume'] = photo_preservation.resume_unit(BIN, etc, '/srv/nekoserver')
     texts['photo_preservation_service'] = photo_preservation.service_text(
-        'nekoserver-immich-db-backup', photo_preservation.command_line(
-            BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8) + ' --db-backup',
-        '/srv/nekoserver', '/mnt/nekoserver-media', BIN, etc)
+        'nekoserver-immich-db-backup',
+        photo_preservation.command_line(BIN, etc, '/srv/nekoserver', '/mnt/nekoserver-media', 600, 'photos/archive', 8)
+        + ' --db-backup',
+        '/srv/nekoserver',
+        '/mnt/nekoserver-media',
+        BIN,
+        etc,
+    )
     texts['photo_backup'] = 'ExecStart=' + photo_backup.command_line(
-        cfg, BIN, etc, 'cccc-3333', 'exfat', '/mnt/nekoserver-media/photos/archive', '/mnt/nekoserver-photos')
-    texts['media_monitor'] = 'ExecStart=' + media_monitor.command_line(BIN, etc, '/srv/nekoserver/reports/media/latest.json')
+        cfg, BIN, etc, 'cccc-3333', 'exfat', '/mnt/nekoserver-media/photos/archive', '/mnt/nekoserver-photos'
+    )
+    texts['media_monitor'] = 'ExecStart=' + media_monitor.command_line(
+        BIN, etc, '/srv/nekoserver/reports/media/latest.json'
+    )
     return texts
 
 
@@ -89,7 +116,11 @@ def runtime_commands():
 def option_table():
     """The runtime's own {command: allowed options}, read from main.rs."""
     source = (RUNTIME / 'src/main.rs').read_text()
-    block = source[source.index('let allowed = match mode.as_str() {'):source.index('_ => return Err(Error::new("Unknown command"))')]
+    block = source[
+        source.index('let allowed = match mode.as_str() {') : source.index(
+            '_ => return Err(Error::new("Unknown command"))'
+        )
+    ]
     table = {}
     for names, options in re.findall(r'((?:"[a-z-]+"\s*\|?\s*)+)=>\s*\{?\s*vec!\[([^\]]*)\]', block):
         for name in re.findall(r'"([a-z-]+)"', names):
@@ -101,13 +132,16 @@ def bundled_binary_current():
     """The bundled binary, if build.json says it was built from these exact sources."""
     binary = RUNTIME / 'bin/nekoserver-runtime'
     if not (RUNTIME / 'build.json').is_file():
-        return None            # not built here (install.sh or runtime/build.py builds it)
+        return None  # not built here (install.sh or runtime/build.py builds it)
     manifest = json.loads((RUNTIME / 'build.json').read_text())
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()  # noqa: E731
     sources = {str(p.relative_to(RUNTIME)) for p in (RUNTIME / 'src').glob('*.rs')}
-    if (not binary.is_file() or digest(binary) != manifest.get('binary_sha256')
-            or sources - set(manifest.get('source_sha256', {}))
-            or any(digest(RUNTIME / rel) != sha for rel, sha in manifest.get('source_sha256', {}).items())):
+    if (
+        not binary.is_file()
+        or digest(binary) != manifest.get('binary_sha256')
+        or sources - set(manifest.get('source_sha256', {}))
+        or any(digest(RUNTIME / rel) != sha for rel, sha in manifest.get('source_sha256', {}).items())
+    ):
         return None
     return binary
 
@@ -118,14 +152,17 @@ class GeneratedCommandTests(unittest.TestCase):
         # same second the resume service runs with the same job lock; the backup failed
         # ("Job already running or unsafe lock") unless it is ordered after the resume.
         texts = unit_texts()
-        for backup, resume in (('app_backup:nekoserver-app-backup.service', 'nekoserver-app-resume.service'),
-                               ('host_backup:nekoserver-host-backup.service', 'nekoserver-host-resume.service')):
+        for backup, resume in (
+            ('app_backup:nekoserver-app-backup.service', 'nekoserver-app-resume.service'),
+            ('host_backup:nekoserver-host-backup.service', 'nekoserver-host-resume.service'),
+        ):
             with self.subTest(backup=backup):
-                after = ' '.join(line.split('=', 1)[1] for line in texts[backup].splitlines()
-                                 if line.startswith('After='))
+                after = ' '.join(
+                    line.split('=', 1)[1] for line in texts[backup].splitlines() if line.startswith('After=')
+                )
                 self.assertIn(resume, after.split())
                 timer = texts[backup.replace('.service', '.timer')]
-                self.assertIn('Persistent=true', timer)       # why the catch-up happens at boot
+                self.assertIn('Persistent=true', timer)  # why the catch-up happens at boot
 
     def test_immich_is_started_again_however_its_weekly_backup_ends(self):
         # The weekly run pauses Immich: its unit's ExecStopPost and a boot-time service
@@ -142,10 +179,23 @@ class GeneratedCommandTests(unittest.TestCase):
     def test_every_generated_runtime_command_uses_known_options(self):
         table = option_table()
         commands = runtime_commands()
-        self.assertGreaterEqual({c for _, c, _, _ in commands},
-                                {'serve', 'collect', 'weekly', 'preservation', 'app-snapshot', 'maintenance',
-                                 'host-snapshot', 'hdd-policy', 'gateway-guard', 'storage-guard', 'media-health',
-                                 'immich-resume'})
+        self.assertGreaterEqual(
+            {c for _, c, _, _ in commands},
+            {
+                'serve',
+                'collect',
+                'weekly',
+                'preservation',
+                'app-snapshot',
+                'maintenance',
+                'host-snapshot',
+                'hdd-policy',
+                'gateway-guard',
+                'storage-guard',
+                'media-health',
+                'immich-resume',
+            },
+        )
         for where, command, options, _ in commands:
             with self.subTest(unit=where, command=command):
                 self.assertIn(command, table)
@@ -169,7 +219,10 @@ class GeneratedCommandTests(unittest.TestCase):
 RELEASES = (
     ('debian', 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nVERSION_ID="13"\nVERSION_CODENAME=trixie\nID=debian\n'),
     ('debian', 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\nID=debian\n'),
-    ('debian', 'PRETTY_NAME="Ubuntu 24.04.3 LTS"\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\n'),
+    (
+        'debian',
+        'PRETTY_NAME="Ubuntu 24.04.3 LTS"\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\n',
+    ),
     ('debian', 'PRETTY_NAME="Ubuntu 26.04 LTS"\nVERSION_ID="26.04"\nID=ubuntu\nID_LIKE=debian\n'),
     ('debian', 'NAME="Linux Mint"\nID=linuxmint\nID_LIKE="ubuntu debian"\nVERSION_ID="22"\nUBUNTU_CODENAME=noble\n'),
     ('debian', 'NAME="LMDE"\nID=linuxmint\nID_LIKE=debian\nVERSION_ID="6"\n'),
@@ -183,9 +236,15 @@ RELEASES = (
     ('arch', 'NAME="EndeavourOS"\nID=endeavouros\nID_LIKE=arch\nBUILD_ID=rolling\n'),
     ('arch', 'NAME="CachyOS Linux"\nID=cachyos\nID_LIKE=arch\nBUILD_ID=rolling\n'),
     ('arch', 'NAME="Garuda Linux"\nID=garuda\nID_LIKE=arch\n'),
-    ('fedora', 'NAME="Fedora Linux"\nVERSION="44 (Workstation Edition)"\nID=fedora\nVERSION_ID=44\nVARIANT_ID=workstation\n'),
+    (
+        'fedora',
+        'NAME="Fedora Linux"\nVERSION="44 (Workstation Edition)"\nID=fedora\nVERSION_ID=44\nVARIANT_ID=workstation\n',
+    ),
     ('fedora', 'NAME="Fedora Linux"\nVERSION="43 (Server Edition)"\nID=fedora\nVERSION_ID=43\nVARIANT_ID=server\n'),
-    ('fedora', 'NAME="Fedora Linux"\nVERSION="42 (KDE Plasma Desktop Edition)"\nID=fedora\nVERSION_ID=42\nVARIANT_ID=kde\n'),
+    (
+        'fedora',
+        'NAME="Fedora Linux"\nVERSION="42 (KDE Plasma Desktop Edition)"\nID=fedora\nVERSION_ID=42\nVARIANT_ID=kde\n',
+    ),
     ('rhel', 'NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\nVERSION_ID="10.0"\n'),
     ('rhel', 'NAME="AlmaLinux"\nID="almalinux"\nID_LIKE="rhel centos fedora"\nVERSION_ID="10.2"\n'),
     ('rhel', 'NAME="Red Hat Enterprise Linux"\nID="rhel"\nID_LIKE="fedora"\nVERSION_ID="10.0"\n'),
@@ -215,10 +274,15 @@ class InstallScriptTests(unittest.TestCase):
         (root / 'modules' / os.uname().release).mkdir(parents=True)
         (root / 'etc/os-release').write_text('ID=arch\n')
         (root / 'stat').write_text('cpu  1 2 3 4\nbtime 1000000000\nprocesses 5\n')
-        for name, body in (('pacman', 'echo "PACMAN $*" >> "$LOG"\nexit 0'), ('ip', 'exit 0'), ('lspci', 'exit 0'),
-                           ('lslocks', 'exit 0'),   # no lock held, whatever this machine's apt is doing
-                           ('openssl', 'exit 0'),   # a prerequisite a minimal system lacks (AlmaLinux)
-                           ('systemctl', 'exit 0'), ('uname', 'if [ "$1" = -m ]; then echo x86_64; else /bin/uname "$@"; fi')):
+        for name, body in (
+            ('pacman', 'echo "PACMAN $*" >> "$LOG"\nexit 0'),
+            ('ip', 'exit 0'),
+            ('lspci', 'exit 0'),
+            ('lslocks', 'exit 0'),  # no lock held, whatever this machine's apt is doing
+            ('openssl', 'exit 0'),  # a prerequisite a minimal system lacks (AlmaLinux)
+            ('systemctl', 'exit 0'),
+            ('uname', 'if [ "$1" = -m ]; then echo x86_64; else /bin/uname "$@"; fi'),
+        ):
             path = root / 'bin' / name
             path.write_text('#!/bin/sh\n' + body + '\n')
             path.chmod(0o755)
@@ -231,29 +295,34 @@ class InstallScriptTests(unittest.TestCase):
         # pacman's lock and the boot time as this test's own.
         text = text.replace('/var/lib/pacman/db.lck', str(self.root / 'db.lck'))
         text = text.replace('/proc/stat', str(self.root / 'stat'))
-        text = text.replace('(( EUID != 0 ))', '(( 0 != 0 ))')
+        text = text.replace('((EUID != 0))', '((0 != 0))')
         text = text.replace('/etc/os-release', str(self.root / 'etc/os-release'))
         text = text.replace('/usr/lib/modules/', str(self.root / 'modules') + '/')
         text = text.replace('system_path=/var/cache/pacman', 'system_path=' + str(system_path))
         text = re.sub(r'(?m)^exec python3 .*$', 'echo "START $*" >> "$LOG"', text)
-        text = re.sub(r'(?m)^    python3 "\$ROOT/host.py" bootstrap$', '    echo BOOTSTRAP >> "$LOG"', text)
+        text = re.sub(r'(?m)^(\s*)python3 "\$ROOT/host.py" bootstrap$', r'\1echo BOOTSTRAP >> "$LOG"', text)
         # The system check reads this machine; logged instead (capabilities' own tests check it).
         text = text.replace('python3 "$ROOT/capabilities.py" preflight || exit 1', 'echo PREFLIGHT >> "$LOG"')
         text = text.replace('/run/reboot-required', str(self.root / 'reboot-required'))
         text = text.replace('/run/ostree-booted', str(self.root / 'ostree-booted'))
         text = text.replace('/run/nekoserver-setup.lock', str(self.root / 'setup.lock'))
-        text = re.sub(r'(?m)^        python3 "\$ROOT/host.py" repair$', '        echo REPAIR >> "$LOG"', text)
+        text = re.sub(r'(?m)^(\s*)python3 "\$ROOT/host.py" repair$', r'\1echo REPAIR >> "$LOG"', text)
         # The runtime build: asked for with NEEDS_BUILD=1, and logged instead of run.
         text = text.replace('python3 "$ROOT/native_runtime.py" needs-build', '[ -n "${NEEDS_BUILD:-}" ]')
-        text = text.replace('    python3 "$ROOT/host.py" toolchain', '    echo TOOLCHAIN >> "$LOG"')
-        text = re.sub(r'(?m)^(\s*)(runuser -u "\$builder" -- env HOME="[^"]*" |NEKOSERVER_BUILD_AS_ROOT=1 )python3 "\$ROOT/runtime/build.py"$',
-                      r'\1echo "BUILD \2" >> "$LOG"', text)
+        text = re.sub(r'(?m)^(\s*)python3 "\$ROOT/host.py" toolchain$', r'\1echo TOOLCHAIN >> "$LOG"', text)
+        text = re.sub(
+            r'(?m)^(\s*)(runuser -u "\$builder" -- env HOME="[^"]*" |NEKOSERVER_BUILD_AS_ROOT=1 )python3 "\$ROOT/runtime/build.py"$',
+            r'\1echo "BUILD \2" >> "$LOG"',
+            text,
+        )
         text = text.replace('system_path=/var/cache/apt', 'system_path=' + str(system_path))
         text = text.replace('system_path=/var/cache/libdnf5', 'system_path=' + str(system_path))
         text = text.replace('system_path=/var/cache/dnf\n', 'system_path=' + str(system_path) + '\n')
         text = text.replace('system_path=/var/cache/zypp\n', 'system_path=' + str(system_path) + '\n')
         # No unfinished monthly update, whatever this test machine is running right now.
-        text = text.replace('/etc/nekoserver-backups/maintenance-resume.json', str(self.root / 'maintenance-resume.json'))
+        text = text.replace(
+            '/etc/nekoserver-backups/maintenance-resume.json', str(self.root / 'maintenance-resume.json')
+        )
         # The certificate bundle as present, whatever this test machine has.
         bundle = self.root / 'ca-bundle.pem'
         bundle.write_text('-----BEGIN CERTIFICATE-----\n')
@@ -265,15 +334,20 @@ class InstallScriptTests(unittest.TestCase):
         self.log.write_text('')
         # Without a terminal, as in CI: with one, the script's "started as root" pause (10 s,
         # for a person to read the note) would make the suite take minutes from a terminal.
-        result = subprocess.run(['bash', str(script), *args], capture_output=True, text=True, timeout=60,
-                                stdin=subprocess.DEVNULL, env={**os.environ, 'PATH': path, 'LOG': str(self.log)})
+        result = subprocess.run(
+            ['bash', str(script), *args],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, 'PATH': path, 'LOG': str(self.log)},
+        )
         return result, self.log.read_text()
 
     def test_finish_update_builds_and_finishes_only_the_unfinished_update(self):
         # Setup refuses to run while a monthly update is unfinished; --finish-update is
         # the one way for a newer release's fix to finish it: no system update, no steps.
-        finish = ('python3 "$ROOT/installer.py" --finish-update',
-                  'echo "START --finish-update" >> "$LOG"')
+        finish = ('python3 "$ROOT/installer.py" --finish-update', 'echo "START --finish-update" >> "$LOG"')
         (self.root / 'maintenance-resume.json').write_text('{"version": "0.39.4", "phase": "restoring"}')
         result, log = self.run_script(self.root, args=('--finish-update',), replace=(finish,))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -321,7 +395,10 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update', log)
         self.assertNotIn('upgrade', log)
         self.assertNotIn('PACMAN', log)
-        self.assertLess(log.index('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update'), log.index('BOOTSTRAP'))
+        self.assertLess(
+            log.index('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update'),
+            log.index('BOOTSTRAP'),
+        )
         self.assertLess(log.index('BOOTSTRAP'), log.index('START --wizard'))
 
     def flaky_apt(self, message, failures='1'):
@@ -330,14 +407,19 @@ class InstallScriptTests(unittest.TestCase):
         counter.write_text(failures)
         (self.root / 'bin/apt-get').write_text(
             '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\nn=$(cat "$APT_FAILURES")\n'
-            'case "$*" in *update) if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$APT_FAILURES"; echo "' + message + '" >&2; exit 100; fi;; esac\nexit 0\n')
+            'case "$*" in *update) if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$APT_FAILURES"; echo "'
+            + message
+            + '" >&2; exit 100; fi;; esac\nexit 0\n'
+        )
         os.environ['APT_FAILURES'] = str(counter)
         self.addCleanup(os.environ.pop, 'APT_FAILURES', None)
         return counter
 
     def test_a_package_source_that_did_not_answer_is_tried_again(self):
         self.use_debian()
-        counter = self.flaky_apt('E: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Temporary failure resolving archive.ubuntu.com')
+        counter = self.flaky_apt(
+            'E: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Temporary failure resolving archive.ubuntu.com'
+        )
         result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count('did not answer; trying again in 20 seconds (2 of 3)'), 1)
@@ -354,7 +436,9 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_any_other_apt_failure_stops_at_once(self):
         self.use_debian()
-        self.flaky_apt('E: The repository http://example.invalid/debian trixie Release does not have a Release file.', failures='9')
+        self.flaky_apt(
+            'E: The repository http://example.invalid/debian trixie Release does not have a Release file.', failures='9'
+        )
         result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
         self.assertEqual(result.returncode, 100)
         self.assertNotIn('trying again', result.stdout)
@@ -367,10 +451,10 @@ class InstallScriptTests(unittest.TestCase):
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Building NekoServer's background program for this PC", result.stdout)
-        self.assertLess(log.index('BOOTSTRAP'), log.index('TOOLCHAIN'))      # Rust after the apps' packages
+        self.assertLess(log.index('BOOTSTRAP'), log.index('TOOLCHAIN'))  # Rust after the apps' packages
         self.assertLess(log.index('TOOLCHAIN'), log.index('BUILD'))
         self.assertLess(log.index('BUILD'), log.index('START --wizard'))
-        self.assertIn('BUILD NEKOSERVER_BUILD_AS_ROOT=1', log)               # no sudo user in this test
+        self.assertIn('BUILD NEKOSERVER_BUILD_AS_ROOT=1', log)  # no sudo user in this test
         # With a runtime already built from these sources: nothing to build.
         os.environ.pop('NEEDS_BUILD')
         result, log = self.run_script(self.root)
@@ -386,21 +470,25 @@ class InstallScriptTests(unittest.TestCase):
         busy.write_text('2')
         (self.root / 'bin/lslocks').write_text(
             '#!/bin/sh\nn=$(cat "$BUSY")\nif [ "$n" -gt 0 ]; then echo $((n - 1)) > "$BUSY"; '
-            'echo /var/lib/apt/lists/lock; fi\necho /run/other.lock\n')
+            'echo /var/lib/apt/lists/lock; fi\necho /run/other.lock\n'
+        )
         (self.root / 'bin/lslocks').chmod(0o755)
         os.environ['BUSY'] = str(busy)
         self.addCleanup(os.environ.pop, 'BUSY', None)
         result, log = self.run_script(self.root, replace=[('sleep 5', 'sleep 0')])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count('refreshing its package lists itself'), 1)
-        self.assertEqual(busy.read_text().strip(), '0')                # asked until it was free
+        self.assertEqual(busy.read_text().strip(), '0')  # asked until it was free
         self.assertIn('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update', log)
 
     def test_debian_repairs_repositories_before_apt_first_runs(self):
         self.use_debian()
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(log.index('REPAIR'), log.index('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update'))
+        self.assertLess(
+            log.index('REPAIR'),
+            log.index('APT-GET -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confold update'),
+        )
 
     def test_recovery_never_needs_the_network_for_repositories(self):
         self.use_debian()
@@ -444,7 +532,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(log, '')
 
     def test_other_distributions_are_refused(self):
-        (self.root / 'etc/os-release').write_text('ID=sles\nID_LIKE=suse\n')   # SUSE's enterprise system
+        (self.root / 'etc/os-release').write_text('ID=sles\nID_LIKE=suse\n')  # SUSE's enterprise system
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 1)
         self.assertIn('Debian / Ubuntu', result.stderr)
@@ -468,7 +556,7 @@ class InstallScriptTests(unittest.TestCase):
 
     def use_suse(self, release='ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="16.0"\n'):
         (self.root / 'etc/os-release').write_text(release)
-        (self.root / 'bin/pacman').unlink(missing_ok=True)     # called once per release in a loop
+        (self.root / 'bin/pacman').unlink(missing_ok=True)  # called once per release in a loop
         path = self.root / 'bin/zypper'
         path.write_text('#!/bin/sh\necho "ZYPPER $*" >> "$LOG"\nexit 0\n')
         path.chmod(0o755)
@@ -486,7 +574,12 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_without_sudo_it_says_how_to_get_it_or_how_to_run_as_root(self):
         # Debian set up with a root password: no sudo, so "Run it with sudo" led nowhere.
-        no_sudo = (('if (( EUID != 0 )); then\n        if command -v sudo', 'if (( 1 != 0 )); then\n        if command -v no-such-sudo'),)
+        no_sudo = (
+            (
+                'if ((EUID != 0)); then\n    if command -v sudo',
+                'if ((1 != 0)); then\n    if command -v no-such-sudo',
+            ),
+        )
         result, log = self.run_script(self.root, replace=no_sudo)
         self.assertEqual(result.returncode, 1)
         self.assertIn('this PC has no sudo yet', result.stderr)
@@ -506,24 +599,32 @@ class InstallScriptTests(unittest.TestCase):
         # setup before it started; a refresh where no repository answered still stops it.
         self.use_suse()
         zypper = self.root / 'bin/zypper'
-        for code, last, ok in ((4, 'Some of the repositories have not been refreshed because of an error.', True),
-                               (106, '', True),
-                               (4, 'Could not refresh the repositories because of errors.', False)):
+        for code, last, ok in (
+            (4, 'Some of the repositories have not been refreshed because of an error.', True),
+            (106, '', True),
+            (4, 'Could not refresh the repositories because of errors.', False),
+        ):
             with self.subTest(code=code, last=last):
-                zypper.write_text('#!/bin/sh\necho "ZYPPER $*" >> "$LOG"\ncase "$*" in *refresh*) '
-                                  "echo \"Skipping repository 'Packman' because of the above error.\" >&2; "
-                                  f'echo "{last}" >&2; exit {code};; esac\nexit 0\n')
+                zypper.write_text(
+                    '#!/bin/sh\necho "ZYPPER $*" >> "$LOG"\ncase "$*" in *refresh*) '
+                    "echo \"Skipping repository 'Packman' because of the above error.\" >&2; "
+                    f'echo "{last}" >&2; exit {code};; esac\nexit 0\n'
+                )
                 result, log = self.run_script(self.root)
                 self.assertEqual(result.returncode == 0, ok, result.stderr)
                 self.assertEqual('BOOTSTRAP' in log, ok)
-                self.assertEqual("The repository 'Packman' could not be reached and was skipped" in result.stderr, ok)   # warnings go to stderr
+                self.assertEqual(
+                    "The repository 'Packman' could not be reached and was skipped" in result.stderr, ok
+                )  # warnings go to stderr
 
     def test_suse_updates_the_system_when_pythons_own_modules_do_not_load(self):
         # Seen on Leap 16: a fresh Python met a libexpat too old for it (openSUSE's
         # packages name the library, not its version), so xml.etree did not load.
         imports = "import ssl, sqlite3, pyexpat, xml.etree.ElementTree, zlib, lzma, bz2, ctypes, hashlib'"
-        for release, command in (('ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="16.0"\n', 'update'),
-                                 ('ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\nVERSION_ID="20261020"\n', 'dist-upgrade')):
+        for release, command in (
+            ('ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="16.0"\n', 'update'),
+            ('ID=opensuse-tumbleweed\nID_LIKE="opensuse suse"\nVERSION_ID="20261020"\n', 'dist-upgrade'),
+        ):
             with self.subTest(command=command):
                 self.use_suse(release)
                 result, log = self.run_script(self.root, replace=[(imports, "import no_such_module_for_this_test'")])
@@ -534,7 +635,9 @@ class InstallScriptTests(unittest.TestCase):
                 self.assertNotIn('BOOTSTRAP', log)
 
     def test_leap_15_stops_before_zypper_runs(self):
-        self.use_suse('ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="15.6"\nPRETTY_NAME="openSUSE Leap 15.6"\n')
+        self.use_suse(
+            'ID=opensuse-leap\nID_LIKE="suse opensuse"\nVERSION_ID="15.6"\nPRETTY_NAME="openSUSE Leap 15.6"\n'
+        )
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 1)
         self.assertIn('needs openSUSE Leap 16 or newer; this is openSUSE Leap 15.6', result.stderr)
@@ -542,8 +645,10 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_version_9_of_the_rhel_family_stops_before_dnf_runs(self):
         # Its Python is 3.9: NekoServer needs 3.11, which version 10 brings.
-        self.use_fedora('NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\nVERSION_ID="9.6"\n'
-                        'PRETTY_NAME="Rocky Linux 9.6 (Blue Onyx)"\n')
+        self.use_fedora(
+            'NAME="Rocky Linux"\nID="rocky"\nID_LIKE="rhel centos fedora"\nVERSION_ID="9.6"\n'
+            'PRETTY_NAME="Rocky Linux 9.6 (Blue Onyx)"\n'
+        )
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 1)
         self.assertIn('needs version 10 or newer of Rocky Linux; this is Rocky Linux 9.6 (Blue Onyx)', result.stderr)
@@ -559,7 +664,7 @@ class InstallScriptTests(unittest.TestCase):
     def test_a_pacman_lock_from_before_the_last_restart_is_removed_and_the_update_runs(self):
         lock = self.root / 'db.lck'
         lock.write_text('')
-        os.utime(lock, (999_999_000, 999_999_000))          # before btime 1000000000
+        os.utime(lock, (999_999_000, 999_999_000))  # before btime 1000000000
         result, log = self.run_script(self.root)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(lock.exists())
@@ -569,14 +674,14 @@ class InstallScriptTests(unittest.TestCase):
     def test_a_pacman_lock_held_since_this_boot_is_waited_for_then_explained(self):
         lock = self.root / 'db.lck'
         lock.write_text('')
-        os.utime(lock, (1_000_000_500, 1_000_000_500))      # after this boot: someone holds it
+        os.utime(lock, (1_000_000_500, 1_000_000_500))  # after this boot: someone holds it
         # Without the ten-minute wait.
-        result, log = self.run_script(self.root, replace=[('(( waited < 600 ))', '(( waited < 0 ))')])
+        result, log = self.run_script(self.root, replace=[('waited < 600', 'waited < 0')])
         self.assertEqual(result.returncode, 1)
         self.assertIn('pacman is still locked', result.stderr)
         self.assertIn('sudo rm ' + str(lock), result.stderr)
         self.assertTrue(lock.exists())
-        self.assertEqual(log, 'PREFLIGHT\n')      # the system check only: pacman never ran
+        self.assertEqual(log, 'PREFLIGHT\n')  # the system check only: pacman never ran
 
     def processes(self, *targets):
         """Stand-ins for /proc/<pid>/fd: one process with these files open."""
@@ -590,7 +695,7 @@ class InstallScriptTests(unittest.TestCase):
         # Left by a pacman killed since this boot (a timeout, say): nothing would ever remove it.
         lock = self.root / 'db.lck'
         lock.write_text('')
-        os.utime(lock, (1_000_000_500, 1_000_000_500))      # after this boot
+        os.utime(lock, (1_000_000_500, 1_000_000_500))  # after this boot
         result, log = self.run_script(self.root, replace=self.processes('/dev/null'))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(lock.exists())
@@ -607,7 +712,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertTrue(lock.exists())
         self.assertIn('waiting for it to finish (up to 10 minutes)', result.stdout)
         self.assertIn('pacman is still locked', result.stderr)
-        self.assertEqual(log, 'PREFLIGHT\n')      # the system check only: pacman never ran
+        self.assertEqual(log, 'PREFLIGHT\n')  # the system check only: pacman never ran
 
     def test_a_source_apt_only_warned_about_is_tried_again(self):
         # apt-get update exits 0 when a source did not answer; its lists from before are used.
@@ -618,7 +723,8 @@ class InstallScriptTests(unittest.TestCase):
             '#!/bin/sh\necho "APT-GET $*" >> "$LOG"\nn=$(cat "$APT_WARNINGS")\n'
             'case "$*" in *update) if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$APT_WARNINGS"; '
             'echo "W: Failed to fetch https://download.docker.com/linux/ubuntu/dists/noble/InRelease  Could not resolve"; '
-            'echo "W: Some index files failed to download. They have been ignored, or old ones used instead."; fi;; esac\nexit 0\n')
+            'echo "W: Some index files failed to download. They have been ignored, or old ones used instead."; fi;; esac\nexit 0\n'
+        )
         os.environ['APT_WARNINGS'] = str(counter)
         self.addCleanup(os.environ.pop, 'APT_WARNINGS', None)
         result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
@@ -636,17 +742,22 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_a_lock_another_program_holds_is_waited_out(self):
         self.use_debian()
-        self.flaky_apt('E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242 (packagekitd)', failures='4')
+        self.flaky_apt(
+            'E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242 (packagekitd)', failures='4'
+        )
         result, log = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(log.count('update'), 5)          # more than three attempts: waiting is not failing
+        self.assertEqual(log.count('update'), 5)  # more than three attempts: waiting is not failing
         self.assertEqual(result.stdout.count('waiting for it to finish (up to 10 minutes)'), 1)
         self.assertNotIn('did not answer', result.stdout)
 
     def test_a_wrong_clock_is_named(self):
         self.use_debian()
-        self.flaky_apt('E: Release file for http://archive.ubuntu.com/ubuntu/dists/noble/InRelease is not valid yet '
-                       '(invalid for another 5h 2min 3s). Updates for this repository will not be applied.', failures='9')
+        self.flaky_apt(
+            'E: Release file for http://archive.ubuntu.com/ubuntu/dists/noble/InRelease is not valid yet '
+            '(invalid for another 5h 2min 3s). Updates for this repository will not be applied.',
+            failures='9',
+        )
         result, _ = self.run_script(self.root, replace=[('sleep 20', 'sleep 0')])
         self.assertEqual(result.returncode, 100)
         self.assertIn("clock looks wrong", result.stderr)
@@ -720,7 +831,7 @@ class InstallScriptTests(unittest.TestCase):
     def test_low_space_stops_before_any_change(self):
         fake = self.root / 'lowdf'
         fake.mkdir()
-        (fake / 'df').write_text('#!/bin/sh\necho Avail\necho 3500M\n')   # 3.4 GB: df -BM prints MB
+        (fake / 'df').write_text('#!/bin/sh\necho Avail\necho 3500M\n')  # 3.4 GB: df -BM prints MB
         (fake / 'df').chmod(0o755)
         result, log = self.run_script(self.root, str(fake))
         self.assertEqual(result.returncode, 1)
@@ -736,9 +847,14 @@ if __name__ == '__main__':
 class TimerTimezoneTests(unittest.TestCase):
     def test_every_calendar_timer_uses_the_configured_timezone(self):
         from neko_common import host_timezone
+
         zone = host_timezone(config())
-        calendars = [(where, line) for where, text in unit_texts().items()
-                     for line in text.splitlines() if line.startswith('OnCalendar=')]
+        calendars = [
+            (where, line)
+            for where, text in unit_texts().items()
+            for line in text.splitlines()
+            if line.startswith('OnCalendar=')
+        ]
         self.assertGreaterEqual(len(calendars), 4)
         for where, line in calendars:
             with self.subTest(unit=where):
@@ -750,6 +866,7 @@ class TailnetAcceptanceTests(unittest.TestCase):
         # A dashboard is installed (the route is offered only then).
         import gateway_tools
         from unittest import mock
+
         unit = tempfile.NamedTemporaryFile(suffix='.service')
         self.addCleanup(unit.close)
         patcher = mock.patch.object(gateway_tools, 'DASHBOARD_UNIT', Path(unit.name))
@@ -759,6 +876,7 @@ class TailnetAcceptanceTests(unittest.TestCase):
     def test_check_accepts_exactly_what_the_installer_configures(self):
         from unittest import mock
         import gateway_checks
+
         cfg = config()
         cfg['nextcloud']['enabled'] = True
         cfg['photos']['deploy_immich'] = True
@@ -766,9 +884,11 @@ class TailnetAcceptanceTests(unittest.TestCase):
         installed = gateway_tools.tailnet_routes(cfg, host)
         self.assertIn(str(gateway_tools.DASHBOARD_PORT), installed['TCP'])
         journal = {'format': 'neko-tailnet-owned-v1', 'host': host, 'status': 'configured', 'owned': installed}
-        with mock.patch.object(gateway_checks.g, 'tailnode', return_value=host), \
-                mock.patch.object(gateway_checks.g, 'serve_state', return_value=installed), \
-                mock.patch.object(gateway_checks.health, 'read_json', return_value=journal):
+        with (
+            mock.patch.object(gateway_checks.g, 'tailnode', return_value=host),
+            mock.patch.object(gateway_checks.g, 'serve_state', return_value=installed),
+            mock.patch.object(gateway_checks.health, 'read_json', return_value=journal),
+        ):
             self.assertEqual(gateway_checks.check(cfg, 'tailnet')[0]['status'], 'pass')
             # A route set missing the dashboard (or anything else) is still a failure.
             partial = gateway_tools.desired(host, gateway_tools.selected(cfg))
@@ -807,6 +927,7 @@ class QbitMusicCategoryTests(unittest.TestCase):
 
     def test_wrong_music_path_is_corrected_when_empty(self):
         import qbit_setup
+
         fake = self.Fake('/data/downloads', [])
         qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
         self.assertEqual(fake.edits, [{'category': 'music', 'savePath': '/data/downloads/music'}])
@@ -814,6 +935,7 @@ class QbitMusicCategoryTests(unittest.TestCase):
 
     def test_wrong_music_path_with_torrents_needs_a_person(self):
         import qbit_setup
+
         fake = self.Fake('/data/downloads', [{'name': 'album'}])
         with self.assertRaisesRegex(RuntimeError, 'not /data/downloads/music'):
             qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
@@ -823,6 +945,7 @@ class QbitMusicCategoryTests(unittest.TestCase):
         # Manual mode (qBittorrent's default) ignores the category's folder: albums then
         # land on the HDD, where Lidarr cannot see them.
         import qbit_setup
+
         fake = self.Fake('/data/downloads/music', [{'name': 'a show'}])
         fake.preferences = {'save_path': '/data/downloads'}
         qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
@@ -830,6 +953,7 @@ class QbitMusicCategoryTests(unittest.TestCase):
 
     def test_a_qbittorrent_that_does_not_keep_automatic_mode_stops_setup(self):
         import qbit_setup
+
         fake = self.Fake('/data/downloads/music', [])
         fake.preferences = {'save_path': '/data/downloads'}
         real = fake.call
@@ -838,12 +962,14 @@ class QbitMusicCategoryTests(unittest.TestCase):
             if endpoint == '/app/setPreferences':
                 return {}
             return real(endpoint, form, json_result)
+
         fake.call = forgetful
         with self.assertRaisesRegex(RuntimeError, 'did not retain'):
             qbit_setup.configure('u', 'p', apply=True, client=fake, output=lambda *_: None)
 
     def test_shared_folder_is_fine_for_tv_and_movies(self):
         import qbit_setup
+
         self.assertTrue(qbit_setup.category_ok('tv', '/data/downloads'))
         self.assertFalse(qbit_setup.category_ok('music', '/data/downloads'))
         self.assertTrue(qbit_setup.category_ok('music', ''))
@@ -860,6 +986,7 @@ class NextcloudOffTests(unittest.TestCase):
 
             def log(self, m):
                 self.logs.append(m)
+
         with tempfile.TemporaryDirectory() as data:
             calls = []
             ctx = Ctx(data)
@@ -867,20 +994,21 @@ class NextcloudOffTests(unittest.TestCase):
             self.assertEqual(calls, [])  # never installed: nothing to stop
             folder = Path(data) / 'compose/nextcloud'
             folder.mkdir(parents=True)
-            (Path(data) / 'installer').mkdir()     # as on a set-up SSD
+            (Path(data) / 'installer').mkdir()  # as on a set-up SSD
             (folder / 'compose.yaml').write_text('{}')
             (folder / '.env').write_text('DB_PASSWORD=x\n')
-            with mock.patch.object(nextcloud, 'compose_image_override', return_value=[]), \
-                    mock.patch.object(nextcloud, 'MAINTENANCE_JOURNAL', Path(data) / 'no-journal.json'), \
-                    mock.patch.object(nextcloud.neko_common, 'MAINTENANCE_JOURNAL', Path(data) / 'no-journal.json'), \
-                    mock.patch.object(nextcloud, 'command', calls.append):
+            with (
+                mock.patch.object(nextcloud, 'compose_image_override', return_value=[]),
+                mock.patch.object(nextcloud, 'MAINTENANCE_JOURNAL', Path(data) / 'no-journal.json'),
+                mock.patch.object(nextcloud.neko_common, 'MAINTENANCE_JOURNAL', Path(data) / 'no-journal.json'),
+                mock.patch.object(nextcloud, 'command', calls.append),
+            ):
                 self.assertIsNone(nextcloud.run(ctx))
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][-1], 'stop')
             self.assertIn('neko-nextcloud', calls[0])
             self.assertNotIn('down', calls[0])  # containers stopped, never removed with their data
             self.assertTrue(any('files and database are kept' in m for m in ctx.logs))
-
 
     def test_it_is_stopped_only_under_the_maintenance_lock(self):
         from contextlib import contextmanager
@@ -895,6 +1023,7 @@ class NextcloudOffTests(unittest.TestCase):
 
             def log(self, m):
                 self.logs.append(m)
+
         with tempfile.TemporaryDirectory() as data:
             folder = Path(data) / 'compose/nextcloud'
             folder.mkdir(parents=True)
@@ -908,6 +1037,7 @@ class NextcloudOffTests(unittest.TestCase):
                     yield
                 finally:
                     events.append('released')
+
             journal = Path(data) / 'maintenance-resume.json'
             with mock.patch.object(nextcloud, 'compose_image_override', return_value=[]):
                 nextcloud.stop_installed(Ctx(data), lambda args: events.append(args[-1]), hold, journal)
@@ -923,6 +1053,7 @@ class NextcloudOffTests(unittest.TestCase):
 class LedgerFormatTests(unittest.TestCase):
     def test_python_checksums_are_sha256(self):
         import neko_common
+
         with tempfile.TemporaryDirectory() as d:
             source, target = Path(d) / 'abc', Path(d) / 'copy'
             source.write_bytes(b'abc')
@@ -932,14 +1063,23 @@ class LedgerFormatTests(unittest.TestCase):
 
     def test_python_reads_the_ledger_the_runtime_writes(self):
         import neko_common
+
         source = (RUNTIME / 'src/ledger.rs').read_text()
         self.assertIn(f'pub const LEDGER: &str = "{neko_common.LEDGER_NAME}";', source)
         self.assertIn('const FORMAT: &str = "neko-ledger-v1";', source)
         self.assertIn(f'const QUARANTINE: &str = "{neko_common.QUARANTINE}";', (RUNTIME / 'src/backup.rs').read_text())
         with tempfile.TemporaryDirectory() as d:
             # Exactly what Ledger::save writes.
-            (Path(d) / '.neko-ledger.json').write_text(json.dumps({'format': 'neko-ledger-v1', 'entries': {
-                'upload/u/a.jpg': {'sha256': 'ab' * 32, 'size': 4, 'verified_at': 1.5, 'how': 'copied'}}}))
+            (Path(d) / '.neko-ledger.json').write_text(
+                json.dumps(
+                    {
+                        'format': 'neko-ledger-v1',
+                        'entries': {
+                            'upload/u/a.jpg': {'sha256': 'ab' * 32, 'size': 4, 'verified_at': 1.5, 'how': 'copied'}
+                        },
+                    }
+                )
+            )
             self.assertEqual(neko_common.read_ledger(d), {'upload/u/a.jpg': 'ab' * 32})
 
 
@@ -962,8 +1102,13 @@ class InterruptedSetupTests(unittest.TestCase):
         from contextlib import ExitStack
         from unittest import mock
         from modules import photos
-        cfg = {'data_mount': str(data / 'ssd'), 'media_mount': str(data / 'hdd'), 'timezone': 'UTC',
-               'photos': {'deploy_immich': True, 'immich_version': 'v1.2.3'}}
+
+        cfg = {
+            'data_mount': str(data / 'ssd'),
+            'media_mount': str(data / 'hdd'),
+            'timezone': 'UTC',
+            'photos': {'deploy_immich': True, 'immich_version': 'v1.2.3'},
+        }
         urls, calls = [], []
 
         class Response:
@@ -978,6 +1123,7 @@ class InterruptedSetupTests(unittest.TestCase):
 
             def read(self, n):
                 return InterruptedSetupTests.MANIFEST
+
         writes = []
         real = photos.atomic_write
 
@@ -986,6 +1132,7 @@ class InterruptedSetupTests(unittest.TestCase):
             if interrupt and len(writes) == 2:
                 raise KeyboardInterrupt
             return real(path, *a)
+
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(photos.os, 'geteuid', return_value=0))
             stack.enter_context(mock.patch.object(photos, 'ROOT_UID', os.getuid()))
@@ -993,9 +1140,17 @@ class InterruptedSetupTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(photos, 'checked_mount', side_effect=str))
             stack.enter_context(mock.patch.object(photos.shutil, 'which', return_value='/usr/bin/docker'))
             stack.enter_context(mock.patch.object(photos.subprocess, 'run', side_effect=lambda a, **k: calls.append(a)))
-            stack.enter_context(mock.patch.object(photos, 'checked_run', side_effect=lambda a, *r, **k: calls.append(a)))
-            stack.enter_context(mock.patch.object(photos, 'compose_up', side_effect=lambda base, *r, **k: calls.append([*base, 'up', '-d'])))
-            stack.enter_context(mock.patch('neko_common.urllib.request.urlopen', side_effect=lambda u, **k: Response(u)))
+            stack.enter_context(
+                mock.patch.object(photos, 'checked_run', side_effect=lambda a, *r, **k: calls.append(a))
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    photos, 'compose_up', side_effect=lambda base, *r, **k: calls.append([*base, 'up', '-d'])
+                )
+            )
+            stack.enter_context(
+                mock.patch('neko_common.urllib.request.urlopen', side_effect=lambda u, **k: Response(u))
+            )
             stack.enter_context(mock.patch.object(photos, 'compose_image_override', return_value=[]))
             stack.enter_context(mock.patch.object(photos, 'atomic_write', side_effect=write))
             photos._run(self.Ctx(cfg))
@@ -1007,13 +1162,15 @@ class InterruptedSetupTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.immich(data, interrupt=True)
             folder = data / 'ssd/compose/immich'
-            self.assertTrue((folder / '.env').exists())          # .env goes first ...
+            self.assertTrue((folder / '.env').exists())  # .env goes first ...
             self.assertFalse((folder / 'compose.yaml').exists())  # ... compose.yaml marks a finished step
             password = [x for x in (folder / '.env').read_text().splitlines() if x.startswith('DB_PASSWORD=')]
             urls, calls, _ = self.immich(data)
             self.assertTrue((folder / 'compose.yaml').exists())
             self.assertIn('/v1.2.3/', urls[0])
-            self.assertEqual(password, [x for x in (folder / '.env').read_text().splitlines() if x.startswith('DB_PASSWORD=')])
+            self.assertEqual(
+                password, [x for x in (folder / '.env').read_text().splitlines() if x.startswith('DB_PASSWORD=')]
+            )
             self.assertEqual(calls[-1][-2:], ['up', '-d'])
 
     def test_immich_left_by_an_older_release_with_only_compose_yaml(self):
@@ -1036,7 +1193,12 @@ class InterruptedSetupTests(unittest.TestCase):
         from contextlib import ExitStack, nullcontext
         from unittest import mock
         from modules import nextcloud
-        cfg = {'data_mount': str(data / 'ssd'), 'media_mount': str(data / 'hdd'), 'nextcloud': {'image': 'nextcloud:30-apache'}}
+
+        cfg = {
+            'data_mount': str(data / 'ssd'),
+            'media_mount': str(data / 'hdd'),
+            'nextcloud': {'image': 'nextcloud:30-apache'},
+        }
         calls, writes = [], []
         real_write, real_json = nextcloud.atomic_write, nextcloud.atomic_json
 
@@ -1046,7 +1208,9 @@ class InterruptedSetupTests(unittest.TestCase):
                 if interrupt_at and Path(path).name == interrupt_at:
                     raise KeyboardInterrupt
                 return real(path, *a)
+
             return write
+
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(nextcloud.os, 'geteuid', return_value=0))
             stack.enter_context(mock.patch.object(nextcloud, 'ROOT_UID', os.getuid()))
@@ -1056,7 +1220,11 @@ class InterruptedSetupTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(nextcloud.account_store, 'enabled', return_value=False))
             stack.enter_context(mock.patch.object(nextcloud, 'compose_image_override', return_value=[]))
             stack.enter_context(mock.patch.object(nextcloud, 'command', side_effect=calls.append))
-            stack.enter_context(mock.patch.object(nextcloud, 'compose_up', side_effect=lambda base, *r, **k: calls.append(base + ['up', '-d'])))
+            stack.enter_context(
+                mock.patch.object(
+                    nextcloud, 'compose_up', side_effect=lambda base, *r, **k: calls.append(base + ['up', '-d'])
+                )
+            )
             stack.enter_context(mock.patch.object(nextcloud, 'finish_install'))
             stack.enter_context(mock.patch.object(nextcloud, 'atomic_write', side_effect=track(real_write)))
             stack.enter_context(mock.patch.object(nextcloud, 'atomic_json', side_effect=track(real_json)))
@@ -1072,8 +1240,10 @@ class InterruptedSetupTests(unittest.TestCase):
                 calls, writes = self.nextcloud(data)
                 self.assertEqual(writes[-1], 'compose.yaml')  # written last
                 self.assertEqual(calls[-1][-2:], ['up', '-d'])
-                self.assertEqual(sorted(p.name for p in (data / 'ssd/compose/nextcloud').iterdir()),
-                                 ['.env', 'compose.yaml', 'managed.json'])
+                self.assertEqual(
+                    sorted(p.name for p in (data / 'ssd/compose/nextcloud').iterdir()),
+                    ['.env', 'compose.yaml', 'managed.json'],
+                )
 
     def test_nextcloud_left_by_an_older_release_without_managed_json(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1096,6 +1266,7 @@ class ConfigArgumentTests(unittest.TestCase):
         import installer
         import recovery_wizard
         from neko_common import settings_path
+
         with tempfile.TemporaryDirectory() as d:
             good = Path(d) / 'mine.json'
             good.write_text('{"data_mount": "/x"}')
@@ -1114,8 +1285,11 @@ class ConfigArgumentTests(unittest.TestCase):
     def test_wizard_and_recovery_use_the_chosen_settings_file(self):
         from unittest import mock
         import installer
-        with mock.patch('wizard.run', return_value=0) as wizard_run, \
-                mock.patch('recovery_wizard.run', return_value=0) as recovery_run:
+
+        with (
+            mock.patch('wizard.run', return_value=0) as wizard_run,
+            mock.patch('recovery_wizard.run', return_value=0) as recovery_run,
+        ):
             installer.main(['--wizard', '--config', '/srv/custom/settings.json'])
             installer.main(['--recover', '--config', '/srv/custom/settings.json'])
             installer.main(['--recover'])
@@ -1125,6 +1299,7 @@ class ConfigArgumentTests(unittest.TestCase):
 
     def test_recovery_reads_that_file(self):
         import recovery_wizard
+
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'settings.json'
             path.write_text(json.dumps({'media_mount': '/mnt/custom-hdd'}))
@@ -1140,11 +1315,12 @@ class AcceptanceReportCompatibilityTests(unittest.TestCase):
     def rust_manual_ids(self):
         source = (RUNTIME / 'src/collect.rs').read_text()
         start = source.index('fn manual(key: &str)')
-        return set(re.findall(r'"([a-z_]+)" =>', source[start:source.index('_ => None', start)]))
+        return set(re.findall(r'"([a-z_]+)" =>', source[start : source.index('_ => None', start)]))
 
     def test_every_manual_check_python_writes_is_known_to_the_dashboard(self):
         import acceptance
         import acceptance_summary
+
         every_module = set(installer_modules())
         written = {row['id'] for row in acceptance.manual_tests(every_module, {'photos': {'deploy_immich': True}})}
         self.assertIn('cloud_client', written)
@@ -1154,6 +1330,7 @@ class AcceptanceReportCompatibilityTests(unittest.TestCase):
 
 def installer_modules():
     import installer
+
     return installer.load_modules(ROOT / 'modules')
 
 
@@ -1161,32 +1338,69 @@ class AccountCorrectionTests(unittest.TestCase):
     def test_pending_new_account_can_switch_to_the_login_you_set_yourself(self):
         from unittest import mock
         import account_store
-        value = {'format': 1, 'mode': 'per-app', 'apps': {
-            'jellyfin': {'username': 'neko_ab12', 'password': 'x' * 32, 'state': 'needs_setup',
-                         'allow_create': True, 'source': 'generate'}}}
+
+        value = {
+            'format': 1,
+            'mode': 'per-app',
+            'apps': {
+                'jellyfin': {
+                    'username': 'neko_ab12',
+                    'password': 'x' * 32,
+                    'state': 'needs_setup',
+                    'allow_create': True,
+                    'source': 'generate',
+                }
+            },
+        }
         saved, out = [], []
         answers = iter(['c', 'dana'])
         passwords = iter(['my-own-password', 'my-own-password'])
-        with mock.patch.object(account_store, 'load', return_value=value), \
-                mock.patch.object(account_store, 'save', lambda config, v: saved.append(json.loads(json.dumps(v)))):
-            account_store.collect({'data_mount': '/srv/nekoserver'}, ['jellyfin'],
-                                  prompt=lambda q='': next(answers), password_prompt=lambda q='': next(passwords),
-                                  output=out.append)
+        with (
+            mock.patch.object(account_store, 'load', return_value=value),
+            mock.patch.object(account_store, 'save', lambda config, v: saved.append(json.loads(json.dumps(v)))),
+        ):
+            account_store.collect(
+                {'data_mount': '/srv/nekoserver'},
+                ['jellyfin'],
+                prompt=lambda q='': next(answers),
+                password_prompt=lambda q='': next(passwords),
+                output=out.append,
+            )
         entry = saved[-1]['apps']['jellyfin']
         self.assertEqual((entry['username'], entry['password']), ('dana', 'my-own-password'))
-        self.assertEqual((entry['state'], entry['allow_create'], entry['source']), ('planned', False, 'custom-existing'))
+        self.assertEqual(
+            (entry['state'], entry['allow_create'], entry['source']), ('planned', False, 'custom-existing')
+        )
         self.assertTrue(any('not changed or reset' in line for line in out))
 
     def test_enter_keeps_retrying_the_saved_login(self):
         from unittest import mock
         import account_store
-        value = {'format': 1, 'mode': 'per-app', 'apps': {
-            'jellyfin': {'username': 'neko_ab12', 'password': 'x' * 32, 'state': 'needs_setup',
-                         'allow_create': True, 'source': 'generate'}}}
-        with mock.patch.object(account_store, 'load', return_value=value), \
-                mock.patch.object(account_store, 'save', return_value=None):
-            account_store.collect({'data_mount': '/srv/nekoserver'}, ['jellyfin'], prompt=lambda q='': '',
-                                  password_prompt=lambda q='': '', output=lambda s: None)
+
+        value = {
+            'format': 1,
+            'mode': 'per-app',
+            'apps': {
+                'jellyfin': {
+                    'username': 'neko_ab12',
+                    'password': 'x' * 32,
+                    'state': 'needs_setup',
+                    'allow_create': True,
+                    'source': 'generate',
+                }
+            },
+        }
+        with (
+            mock.patch.object(account_store, 'load', return_value=value),
+            mock.patch.object(account_store, 'save', return_value=None),
+        ):
+            account_store.collect(
+                {'data_mount': '/srv/nekoserver'},
+                ['jellyfin'],
+                prompt=lambda q='': '',
+                password_prompt=lambda q='': '',
+                output=lambda s: None,
+            )
         self.assertTrue(value['apps']['jellyfin']['allow_create'])
         self.assertEqual(value['apps']['jellyfin']['username'], 'neko_ab12')
 
@@ -1196,18 +1410,42 @@ class RootUnitSandboxTests(unittest.TestCase):
     return unmounts a dead mount itself, so it gets nothing that makes a mount namespace
     of its own (the unmount would then never reach the real mount); nothing closes /dev
     (hdparm, blkid) or makes /etc read-only (the jobs' records)."""
-    BASE = ('NoNewPrivileges=yes', 'RestrictRealtime=yes', 'RestrictSUIDSGID=yes', 'LockPersonality=yes',
-            'SystemCallArchitectures=native')
+
+    BASE = (
+        'NoNewPrivileges=yes',
+        'RestrictRealtime=yes',
+        'RestrictSUIDSGID=yes',
+        'LockPersonality=yes',
+        'SystemCallArchitectures=native',
+    )
     NAMESPACED = ('PrivateTmp=', 'ProtectHome=', 'ProtectKernelTunables=', 'ProtectControlGroups=')
-    NEVER = ('ProtectSystem=', 'PrivateDevices=', 'ProtectClock=', 'DevicePolicy=', 'DeviceAllow=', 'CapabilityBoundingSet=',
-             'PrivateMounts=', 'ProtectKernelModules=', 'ReadOnlyPaths=', 'InaccessiblePaths=', 'TemporaryFileSystem=',
-             'BindPaths=', 'BindReadOnlyPaths=', 'RootDirectory=', 'MountFlags=', 'PrivateNetwork=')
+    NEVER = (
+        'ProtectSystem=',
+        'PrivateDevices=',
+        'ProtectClock=',
+        'DevicePolicy=',
+        'DeviceAllow=',
+        'CapabilityBoundingSet=',
+        'PrivateMounts=',
+        'ProtectKernelModules=',
+        'ReadOnlyPaths=',
+        'InaccessiblePaths=',
+        'TemporaryFileSystem=',
+        'BindPaths=',
+        'BindReadOnlyPaths=',
+        'RootDirectory=',
+        'MountFlags=',
+        'PrivateNetwork=',
+    )
 
     def units(self):
         texts = unit_texts()
-        return {'drive-return': server_os.drive_unit(BIN, ['dev-disk-by\\x2duuid-aaaa.device']), 'hdd-policy': texts['server_os'],
-                'host-backup': texts['host_backup:' + host_backup.BACKUP_UNIT],
-                'host-resume': texts['host_backup:' + host_backup.RESUME_UNIT]}
+        return {
+            'drive-return': server_os.drive_unit(BIN, ['dev-disk-by\\x2duuid-aaaa.device']),
+            'hdd-policy': texts['server_os'],
+            'host-backup': texts['host_backup:' + host_backup.BACKUP_UNIT],
+            'host-resume': texts['host_backup:' + host_backup.RESUME_UNIT],
+        }
 
     def service_lines(self, text):
         return text.split('[Service]\n', 1)[1].split('[Install]', 1)[0].splitlines()
@@ -1216,15 +1454,23 @@ class RootUnitSandboxTests(unittest.TestCase):
         for name, text in self.units().items():
             lines = self.service_lines(text)
             with self.subTest(unit=name):
-                self.assertEqual(len(lines), len(set(lines)), lines)   # nothing set twice
+                self.assertEqual(len(lines), len(set(lines)), lines)  # nothing set twice
                 for option in self.BASE:
                     self.assertIn(option, lines)
                 for option in self.NEVER:
                     self.assertFalse(any(line.startswith(option) for line in lines), option)
                 namespaced = [line for line in lines if line.startswith(self.NAMESPACED)]
-                self.assertEqual(namespaced, [] if name == 'drive-return' else
-                                 ['PrivateTmp=yes', 'ProtectHome=' + ('yes' if name == 'hdd-policy' else 'read-only'),
-                                  'ProtectKernelTunables=yes', 'ProtectControlGroups=yes'])
+                self.assertEqual(
+                    namespaced,
+                    []
+                    if name == 'drive-return'
+                    else [
+                        'PrivateTmp=yes',
+                        'ProtectHome=' + ('yes' if name == 'hdd-policy' else 'read-only'),
+                        'ProtectKernelTunables=yes',
+                        'ProtectControlGroups=yes',
+                    ],
+                )
 
     def test_the_snapshot_may_still_read_the_home_it_backs_up(self):
         # Steam's files are in the chosen account's home: read-only, never hidden.

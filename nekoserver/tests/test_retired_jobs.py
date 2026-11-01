@@ -1,6 +1,7 @@
 """A backup whose app is switched off (Immich, say) is shown as switched off, never as
 overdue; a schedule that stops while its app is still set up is still flagged
 (collect.rs has the same rules: jobs_of_a_switched_off_app_are_retired_not_overdue)."""
+
 import json
 import sys
 import tempfile
@@ -30,7 +31,12 @@ class RetiredJobTests(unittest.TestCase):
     def rows(self, config):
         def systemctl(args, timeout=8):
             state = self.timers.get(args[2], 'not-found')
-            return 0, ('LoadState=loaded\nActiveState=' + state if state != 'not-found' else 'LoadState=not-found\nActiveState=inactive')
+            return 0, (
+                'LoadState=loaded\nActiveState=' + state
+                if state != 'not-found'
+                else 'LoadState=not-found\nActiveState=inactive'
+            )
+
         with mock.patch.object(status_checks, 'run', side_effect=systemctl):
             return {r['id']: r for r in status_checks.backups({'data_mount': str(self.data), **config}, NOW, True)}
 
@@ -39,7 +45,7 @@ class RetiredJobTests(unittest.TestCase):
         for key in ('archive', 'database'):
             self.assertEqual(rows[key]['status'], 'disabled', key)
             self.assertIn('Immich is not set up', rows[key]['reason'])
-        self.assertEqual(rows['external']['status'], 'stale')       # Nextcloud still wants it
+        self.assertEqual(rows['external']['status'], 'stale')  # Nextcloud still wants it
         self.assertEqual(rows['host']['status'], 'stale')
 
     def test_music_off_is_switched_off_not_left_out(self):
@@ -54,12 +60,14 @@ class RetiredJobTests(unittest.TestCase):
         rows = self.rows({'photos': {'deploy_immich': True}})
         self.assertEqual(rows['host']['status'], 'stale')
         self.assertIn('switch its schedule back on', rows['host']['reason'])
-        self.assertEqual(rows['external']['status'], 'stale')      # ran before, timer gone
+        self.assertEqual(rows['external']['status'], 'stale')  # ran before, timer gone
         self.assertIn('schedule is gone', rows['external']['reason'])
-        self.assertEqual(rows['applications']['status'], 'unknown')   # never set up: no evidence
+        self.assertEqual(rows['applications']['status'], 'unknown')  # never set up: no evidence
 
     def test_a_backup_that_keeps_failing_stays_a_failure_when_overdue(self):
-        (self.data / 'reports/jobs/host.json').write_text(json.dumps({'status': 'fail', 'last_success': NOW - 30 * 86400}))
+        (self.data / 'reports/jobs/host.json').write_text(
+            json.dumps({'status': 'fail', 'last_success': NOW - 30 * 86400})
+        )
         self.timers['nekoserver-host-backup.timer'] = 'active'
         rows = self.rows({'photos': {'deploy_immich': True}})
         self.assertEqual(rows['host']['status'], 'fail')
@@ -74,14 +82,21 @@ class RetiredJobTests(unittest.TestCase):
 class ResumeTimeoutTests(unittest.TestCase):
     """A snapshot's recovery may wait 3 hours for the shared recovery lock: systemd gives
     its resume service, and its ExecStopPost, at least that long."""
+
     def test_resume_services_allow_for_the_recovery_lock_wait(self):
         from modules import app_backup, host_backup
         from neko_common import RESUME_TIMEOUT
+
         cfg = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/m', 'timezone': 'UTC'}
-        with mock.patch.object(app_backup, 'host_timezone', return_value='UTC'), \
-                mock.patch.object(host_backup, 'host_timezone', return_value='UTC'), \
-                mock.patch.object(app_backup, 'keep_snapshots'):
-            units = {**app_backup.definitions(cfg, '/bin/r', '/etc/g.json'), **host_backup.definitions(cfg, '/bin/r', '/etc/g.json')}
+        with (
+            mock.patch.object(app_backup, 'host_timezone', return_value='UTC'),
+            mock.patch.object(host_backup, 'host_timezone', return_value='UTC'),
+            mock.patch.object(app_backup, 'keep_snapshots'),
+        ):
+            units = {
+                **app_backup.definitions(cfg, '/bin/r', '/etc/g.json'),
+                **host_backup.definitions(cfg, '/bin/r', '/etc/g.json'),
+            }
         self.assertEqual(RESUME_TIMEOUT, '3h30min')
         for name in ('nekoserver-app-resume.service', host_backup.RESUME_UNIT):
             self.assertIn('TimeoutStartSec=' + RESUME_TIMEOUT, units[name], name)

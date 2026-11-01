@@ -3,6 +3,7 @@
 A menu over the existing restore tools. Everything is restored into a NEW folder;
 live data is never overwritten. Each restore ends with what to do next.
 """
+
 import contextlib
 import datetime as dt
 import errno
@@ -22,15 +23,34 @@ import sys
 import zlib
 
 import guided_setup
-from neko_common import (LEDGER_NAME, QUARANTINE, BackupDamaged, atomic_json, backup_files, copy_checked, copy_checked_into,
-                         ensure_room, findmnt, identity_matches, mounted_identity, read_ledger,
-                         record_ledger, settings_path, sha256_file, valid_ledger_path, usb_mount_options,
-                         private_mount_options, latest_note, saved_names, saved_versions)
+from neko_common import (
+    LEDGER_NAME,
+    QUARANTINE,
+    BackupDamaged,
+    atomic_json,
+    backup_files,
+    copy_checked,
+    copy_checked_into,
+    ensure_room,
+    findmnt,
+    identity_matches,
+    mounted_identity,
+    read_ledger,
+    record_ledger,
+    settings_path,
+    sha256_file,
+    valid_ledger_path,
+    usb_mount_options,
+    private_mount_options,
+    latest_note,
+    saved_names,
+    saved_versions,
+)
 
 ROOT = Path(__file__).resolve().parent
 # The weekly USB backup holds this lock while it mounts, copies and unmounts the drive.
 USB_LOCK = Path('/run/nekoserver-photo-backup.lock')
-RESTORE = 'The restore'   # how the room check names a restore in its message
+RESTORE = 'The restore'  # how the room check names a restore in its message
 SNAPSHOT = re.compile(r'^snapshot-(\d+)-\d+$')
 MONTHLY = re.compile(r'^(\d+)-\d+$')
 
@@ -47,10 +67,10 @@ MENU = [
 ]
 
 
-MONTHLY_DIR = 'backups/monthly'    # monthly snapshots, on the HDD (and old ones on the USB drive)
-MANIFEST = 'manifest.json'      # what every monthly snapshot folder must contain
-SEALED = 'secrets.tar.cms'          # a monthly snapshot's encrypted password list
-ARCHIVE_DIR = 'photos/archive'      # the photo archive's default folder on the HDD
+MONTHLY_DIR = 'backups/monthly'  # monthly snapshots, on the HDD (and old ones on the USB drive)
+MANIFEST = 'manifest.json'  # what every monthly snapshot folder must contain
+SEALED = 'secrets.tar.cms'  # a monthly snapshot's encrypted password list
+ARCHIVE_DIR = 'photos/archive'  # the photo archive's default folder on the HDD
 
 
 def say(output, *lines):
@@ -119,8 +139,13 @@ def monthly_snapshots(folder, need=None):
     found = []
     for path in folder.iterdir() if folder.is_dir() else ():
         match = MONTHLY.match(path.name)
-        if (match and path.is_dir() and not path.is_symlink() and (path / MANIFEST).is_file()
-                and (need is None or (path / need).is_file())):
+        if (
+            match
+            and path.is_dir()
+            and not path.is_symlink()
+            and (path / MANIFEST).is_file()
+            and (need is None or (path / need).is_file())
+        ):
             found.append((int(match[1]), path))
     return [(path, when(stamp)) for stamp, path in sorted(found, reverse=True)]
 
@@ -144,7 +169,9 @@ def folder_problem(path, avoid=(), refuse=()):
     for tree in avoid:
         tree = Path(tree)
         if path == tree or tree in path.parents or path in tree.parents:
-            return f'That folder is inside (or around) a backup ({tree}); a restore there would mix with it. Pick another.'
+            return (
+                f'That folder is inside (or around) a backup ({tree}); a restore there would mix with it. Pick another.'
+            )
     if path.exists():
         return 'That folder already exists; restoring never overwrites anything. Pick another.'
     if not path.parent.is_dir():
@@ -201,7 +228,7 @@ def tree_bytes(folder):
 
 
 def file_count(count):
-    """"1 file", "2 files"."""
+    """ "1 file", "2 files"."""
     return f'{count} file' + ('' if count == 1 else 's')
 
 
@@ -220,8 +247,11 @@ def retired_copies(root):
         return {}
     if not isinstance(retired, dict):
         return {}
-    return {key: row['why'] for key, row in retired.items()
-            if valid_ledger_path(key) and isinstance(row, dict) and isinstance(row.get('why'), str)}
+    return {
+        key: row['why']
+        for key, row in retired.items()
+        if valid_ledger_path(key) and isinstance(row, dict) and isinstance(row.get('why'), str)
+    }
 
 
 class Checked:
@@ -311,26 +341,35 @@ class Checked:
                 prefix = Path(folder).relative_to(self.root).as_posix() + '/'
             except ValueError:
                 continue
-            here = {path.relative_to(self.root).as_posix() for path, _ in backup_files(folder)} \
-                if Path(folder).is_dir() else set()
+            here = (
+                {path.relative_to(self.root).as_posix() for path, _ in backup_files(folder)}
+                if Path(folder).is_dir()
+                else set()
+            )
             missing += sorted(k for k in self.sums if k.startswith(prefix) and k not in here)
         return missing
 
     def where_else(self):
         """What to do about files this backup can't give back."""
         if self.reported:
-            fix = ('They are now listed for this menu\'s "Repair damaged backup copies", '
-                   'which fixes them from a copy that still matches.')
+            fix = (
+                'They are now listed for this menu\'s "Repair damaged backup copies", '
+                'which fixes them from a copy that still matches.'
+            )
         else:
-            fix = ('This menu\'s "Repair damaged backup copies" fixes damaged or missing ones from a copy that '
-                   'still matches.')
+            fix = (
+                'This menu\'s "Repair damaged backup copies" fixes damaged or missing ones from a copy that '
+                'still matches.'
+            )
         return (f'Get them from {self.other}, if it has them. ' if self.other else '') + fix
 
     def summary(self, destination=None):
         text = f'Checksums matched for {file_count(self.verified)}'
         if self.unverified:
-            text += (f'; {file_count(self.unverified)} had no recorded checksum yet (the backup that copied it did '
-                     'not finish, or it was backed up before checksums were kept) and could not be checked')
+            text += (
+                f'; {file_count(self.unverified)} had no recorded checksum yet (the backup that copied it did '
+                'not finish, or it was backed up before checksums were kept) and could not be checked'
+            )
         text += '.'
         if self.ledger_problem:
             text += f' This backup\'s checksum list could not be used ({self.ledger_problem}), so no file was checked.'
@@ -340,11 +379,15 @@ class Checked:
             text += f' Not restored ({file_count(len(self.accepted))}): you accepted them as lost in the repair menu.'
         left = self.damaged + self.missing
         if left:
-            text += (f' NOT restored ({file_count(len(left))}), because this backup has them damaged ({len(self.damaged)}) '
-                     f'or no longer has them ({len(self.missing)}). {self.where_else()}')
+            text += (
+                f' NOT restored ({file_count(len(left))}), because this backup has them damaged ({len(self.damaged)}) '
+                f'or no longer has them ({len(self.missing)}). {self.where_else()}'
+            )
             if self.damaged and destination is not None:
-                text += (f' The damaged copies are kept as they are in {Path(destination) / DAMAGED_AS_IS} (they may '
-                         'still open in part; nothing checked them).')
+                text += (
+                    f' The damaged copies are kept as they are in {Path(destination) / DAMAGED_AS_IS} (they may '
+                    'still open in part; nothing checked them).'
+                )
         if (left or self.accepted) and destination is not None and Path(destination).is_dir():
             listed = Path(destination) / 'NOT-RESTORED.txt'
             listed.write_text(self.not_restored())
@@ -352,16 +395,23 @@ class Checked:
         return text
 
     def not_restored(self):
-        return (''.join(f'damaged: {k}\n' for k in self.damaged) + ''.join(f'missing: {k}\n' for k in self.missing)
-                + ''.join(f'accepted as lost: {k} ({why})\n' for k, why in self.accepted))
+        return (
+            ''.join(f'damaged: {k}\n' for k in self.damaged)
+            + ''.join(f'missing: {k}\n' for k in self.missing)
+            + ''.join(f'accepted as lost: {k} ({why})\n' for k, why in self.accepted)
+        )
 
 
 def copy_new(sources, destination, checked=None):
     """Copy every file (every version) into a new destination. A missing or unreadable
     file, or one that fails its checksum, stops the restore. Returns file count."""
     checked = checked or Checked(None)
-    files = [(name, Path(source), path) for name, source in sources if Path(source).is_dir()
-             for path, _ in backup_files(source)]
+    files = [
+        (name, Path(source), path)
+        for name, source in sources
+        if Path(source).is_dir()
+        for path, _ in backup_files(source)
+    ]
     ensure_room(destination.parent, sum(p.stat().st_size for _, _, p in files), RESTORE)
     checked.begin(destination)
     for name, source, path in files:
@@ -392,6 +442,7 @@ class Versions:
     before the record began, is restored as a file of its own: two files are never
     merged into one on a guess, so nothing is lost (at worst an older version comes back
     as an extra file)."""
+
     def __init__(self, folder):
         self.folder = Path(folder)
         self.names = saved_names(folder)
@@ -430,7 +481,9 @@ def version_of(name, record=None):
 
 def readable(stamp):
     try:
-        return dt.datetime.strptime(stamp, '%Y%m%dT%H%M%SZ').replace(tzinfo=dt.timezone.utc).astimezone().strftime(SHOWN)
+        return (
+            dt.datetime.strptime(stamp, '%Y%m%dT%H%M%SZ').replace(tzinfo=dt.timezone.utc).astimezone().strftime(SHOWN)
+        )
     except ValueError:
         return 'first backup'
 
@@ -503,7 +556,7 @@ def copy_latest(sources, destination, output=print, checked=None):
 # its old name, so the checksum, not the name, says which content the list meant.
 INVENTORY_DIR = '.neko-inventory'
 INVENTORY_NAME = re.compile(r'^(\d{8}T\d{6}Z)(?:-(\d{1,9}))?\.json\.gz$')
-INVENTORY_LIMIT = 1 << 30   # unpacked; a list this big is not trusted
+INVENTORY_LIMIT = 1 << 30  # unpacked; a list this big is not trusted
 
 
 def inventories(root):
@@ -518,7 +571,7 @@ def inventories(root):
     return [(path, readable(key[0])) for key, path in sorted(found, reverse=True)]
 
 
-LAST_RUN = 'last-run.json'   # which list stands for the newest run (runtime inventory.rs LAST_RUN)
+LAST_RUN = 'last-run.json'  # which list stands for the newest run (runtime inventory.rs LAST_RUN)
 STAMP = re.compile(r'^\d{8}T\d{6}Z$')
 
 
@@ -593,7 +646,7 @@ def plain_file(root, key):
     return path.is_file()
 
 
-REPLACED = 'neko-replaced'   # <user>/neko-replaced/<when>/<path in files> (runtime backup.rs)
+REPLACED = 'neko-replaced'  # <user>/neko-replaced/<when>/<path in files> (runtime backup.rs)
 
 
 def replaced_since(key, sums):
@@ -603,7 +656,7 @@ def replaced_since(key, sums):
     user, _, rest = key.partition('/')
     if not rest.startswith('files/'):
         return False
-    inside = rest[len('files/'):]
+    inside = rest[len('files/') :]
     aside = re.compile(re.escape(user) + '/' + REPLACED + r'/[^/]+/(.+)$')
     for saved in sums:
         moved = aside.match(saved)
@@ -617,6 +670,7 @@ class Located:
     saved copy beside the file when it still holds that content, else any saved copy the
     checksum list records with that checksum (a copy moved into neko-replaced, say). Never
     a copy whose content differs, even under the same name."""
+
     def __init__(self, root, sums):
         self.root, self.sums = Path(root), sums
         self.by_sum = {}
@@ -657,9 +711,11 @@ def listed_place(located, key, copy, sha):
 
 
 UNCERTAIN = object()
-UNCERTAIN_WHY = ('they became a folder (or a folder became a file) after that backup, and its list is from before '
-                 '0.39.7, which keeps no checksums, so which saved copy is theirs can\'t be told. "Everything ever '
-                 'kept" brings back every saved copy of them.')
+UNCERTAIN_WHY = (
+    'they became a folder (or a folder became a file) after that backup, and its list is from before '
+    '0.39.7, which keeps no checksums, so which saved copy is theirs can\'t be told. "Everything ever '
+    'kept" brings back every saved copy of them.'
+)
 
 
 def listed_versions(sources, root, files, sums=None):
@@ -682,7 +738,7 @@ def listed_versions(sources, root, files, sums=None):
             elif saved is None:
                 missing.append(key)
             else:
-                chosen.append((Path(root) / saved, Path(name) / key[len(prefix):], sha))
+                chosen.append((Path(root) / saved, Path(name) / key[len(prefix) :], sha))
     return chosen, missing, uncertain
 
 
@@ -696,19 +752,30 @@ def copy_listed(chosen, destination, checked):
     return len(chosen)
 
 
-NO_INVENTORY = ('This backup has no list yet of which files you had at each backup (it is written by each '
-                'weekly copy since 0.39.6), so files you deleted or renamed come back too.')
+NO_INVENTORY = (
+    'This backup has no list yet of which files you had at each backup (it is written by each '
+    'weekly copy since 0.39.6), so files you deleted or renamed come back too.'
+)
 
 
 def stale_list_options(listed, newest_run, output):
     """The choices when the newest backup has no list of its own: everything ever kept
     first (it has that backup's files), the older list named by its date."""
-    output(f'\nThe newest backup ({newest_run}) did not finish: it was cut off part-way (a power cut, a '
-           'restart), or its list of the files you had then could not be written. So it has no such list. '
-           f'The newest complete list is from {listed[0][1]} and leaves out every file backed up after it.')
-    return [('everything', ('Everything ever kept, also files you deleted or renamed (recommended: it has '
-                            'the newest backup\'s files)')),
-            ('last', f'As of {listed[0][1]} (an older list: files backed up after it are left out)')]
+    output(
+        f'\nThe newest backup ({newest_run}) did not finish: it was cut off part-way (a power cut, a '
+        'restart), or its list of the files you had then could not be written. So it has no such list. '
+        f'The newest complete list is from {listed[0][1]} and leaves out every file backed up after it.'
+    )
+    return [
+        (
+            'everything',
+            (
+                'Everything ever kept, also files you deleted or renamed (recommended: it has '
+                'the newest backup\'s files)'
+            ),
+        ),
+        ('last', f'As of {listed[0][1]} (an older list: files backed up after it are left out)'),
+    ]
 
 
 def restore_scope(listed, prompt, output, newest_run=None):
@@ -744,12 +811,17 @@ def missing_check(missing, checked, prompt, output, copies):
     checked.missing = missing
     checked.publish(MISSING, copies)
     if missing:
-        output(f'Missing from this backup, though backed up and checked before: {file_count(len(missing))} '
-               f'(for example {", ".join(missing[:5])}).' + (f' {checked.other.capitalize()} may have them.'
-                                                             if checked.other else ''))
+        output(
+            f'Missing from this backup, though backed up and checked before: {file_count(len(missing))} '
+            f'(for example {", ".join(missing[:5])}).'
+            + (f' {checked.other.capitalize()} may have them.' if checked.other else '')
+        )
         if not ask('Restore everything else from this backup now? ("no" stops, with nothing restored)', prompt, output):
-            raise RuntimeError('Nothing was restored.' + (f' Use {checked.other} instead, or choose' if checked.other
-                                                          else ' Choose') + ' "Repair damaged backup copies" in this menu.')
+            raise RuntimeError(
+                'Nothing was restored.'
+                + (f' Use {checked.other} instead, or choose' if checked.other else ' Choose')
+                + ' "Repair damaged backup copies" in this menu.'
+            )
 
 
 def recorded_copy(key, copy, sha, sums):
@@ -771,7 +843,7 @@ def missing_copies(missing, files_listed, sums):
     return {copy: sha for copy, sha in pairs if copy is not None}
 
 
-ACCEPTED = ', accepted as lost in the recovery menu'   # how accept_lost ends its reason
+ACCEPTED = ', accepted as lost in the recovery menu'  # how accept_lost ends its reason
 KEPT_ASIDE = re.compile(r'kept in ' + re.escape(QUARANTINE) + r'/([0-9TZ]+)')
 
 
@@ -796,8 +868,10 @@ def accepted_check(missing, checked, files_listed, output):
             saved = key.rsplit('/', 1)[0] + '/' + copy
             accepted.append((key, why.removesuffix(ACCEPTED) + '; ' + lost_note(checked.root, saved, why)))
     if accepted:
-        output(f'Not restored, as you accepted them as lost in the repair menu: {file_count(len(accepted))} '
-               f'(for example {accepted[0][0]}: {accepted[0][1]}).')
+        output(
+            f'Not restored, as you accepted them as lost in the repair menu: {file_count(len(accepted))} '
+            f'(for example {accepted[0][0]}: {accepted[0][1]}).'
+        )
     checked.accepted = accepted
     return rest
 
@@ -837,17 +911,20 @@ def copy_choice(sources, target, prompt, output, ledger_root=None, other=None, r
         return count - len(checked.damaged), True, checked
     missing = checked.require_present(sources)
     missing_check(missing, checked, prompt, output, {key: checked.sums[key] for key in missing})
-    latest = ask('Restore only the NEWEST version of each file? (recommended; "no" copies every version)',
-                 prompt, output)
+    latest = ask(
+        'Restore only the NEWEST version of each file? (recommended; "no" copies every version)', prompt, output
+    )
     output(COPYING)
     count = copy_latest(sources, target, output, checked) if latest else copy_new(sources, target, checked)
     return count - len(checked.damaged), latest, checked
 
 
-VERSIONS_EXPLAINED = ('Every version was copied. A file\'s own name is its FIRST backed-up version; '
-                      'copies named ".neko-<date>" are LATER edits, saved on the date in the name. '
-                      'An edit can be undone later, so the latest date is not always the current '
-                      'file: "newest only" restores the one the backup last saw.')
+VERSIONS_EXPLAINED = (
+    'Every version was copied. A file\'s own name is its FIRST backed-up version; '
+    'copies named ".neko-<date>" are LATER edits, saved on the date in the name. '
+    'An edit can be undone later, so the latest date is not always the current '
+    'file: "newest only" restores the one the backup last saw.'
+)
 
 
 def restored(config):
@@ -863,9 +940,11 @@ def hdd_ready(config):
     return identity_matches(Path(config['media_mount']), config.get('storage', {}).get('media_hdd', {}))
 
 
-HDD_MISSING = ('The HDD is not mounted at {mount} (or another drive is there), so the usual restore folder '
-               'there would be on the system disk and could fill it up. Connect the HDD (or restart) and '
-               'try again, or type a folder on another drive with enough room.')
+HDD_MISSING = (
+    'The HDD is not mounted at {mount} (or another drive is there), so the usual restore folder '
+    'there would be on the system disk and could fill it up. Connect the HDD (or restart) and '
+    'try again, or type a folder on another drive with enough room.'
+)
 
 
 def restore_target(config, name, prompt, output, usb=None):
@@ -888,7 +967,7 @@ def unused(path):
     after (one file was missing, say) is offered a folder of its own, not a refusal."""
     path = candidate = Path(path)
     number = 1
-    while os.path.lexists(candidate):   # False when it can't be looked at: new_folder then says so
+    while os.path.lexists(candidate):  # False when it can't be looked at: new_folder then says so
         number += 1
         candidate = path.with_name(f'{path.name}-{number}')
     return candidate
@@ -915,8 +994,10 @@ class Usb:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             os.close(fd)
-            raise RuntimeError('the weekly backup is using the USB drive right now. '
-                               'Try again when it has finished (usually within an hour)') from None
+            raise RuntimeError(
+                'the weekly backup is using the USB drive right now. '
+                'Try again when it has finished (usually within an hour)'
+            ) from None
         self.lock = fd
         try:
             return self.open()
@@ -926,22 +1007,35 @@ class Usb:
             raise
 
     def open(self):
-        if subprocess.run(['findmnt', '-n', '--mountpoint', str(self.mount)],
-                          capture_output=True, check=False).returncode != 0:
+        if (
+            subprocess.run(
+                ['findmnt', '-n', '--mountpoint', str(self.mount)], capture_output=True, check=False
+            ).returncode
+            != 0
+        ):
             if not (Path('/dev/disk/by-uuid') / self.uuid).exists():
                 return None
             self.mount.mkdir(parents=True, exist_ok=True)
             options = usb_mount_options(self.fstype, self.writable)
-            if subprocess.run(['mount', '-o', options, f'UUID={self.uuid}', str(self.mount)],
-                              capture_output=True, timeout=60, check=False).returncode != 0:
+            if (
+                subprocess.run(
+                    ['mount', '-o', options, f'UUID={self.uuid}', str(self.mount)],
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                ).returncode
+                != 0
+            ):
                 return None
             self.mounted_here = True
         found = (findmnt('UUID,OPTIONS', self.mount) or '').split()
         if len(found) != 2 or found[0].lower() != self.uuid.lower():
             return None
         if not private_mount_options(found[1], self.fstype):
-            raise RuntimeError('the USB drive is mounted so that other accounts on this computer could read '
-                               'it. Unmount it (sudo umount ' + str(self.mount) + ') and try again: it is then mounted privately')
+            raise RuntimeError(
+                'the USB drive is mounted so that other accounts on this computer could read '
+                'it. Unmount it (sudo umount ' + str(self.mount) + ') and try again: it is then mounted privately'
+            )
         return self.mount
 
     def __exit__(self, *exc):
@@ -982,17 +1076,26 @@ def restore_photos(config, prompt, output):
         if (base / REPLACED).is_dir() and not (base / REPLACED).is_symlink():
             sources.append((REPLACED_FOLDER, base / REPLACED))
         section = 'archive' if where == 'hdd' else 'usb_photos'
-        count, latest, checked = copy_choice(sources, target, prompt, output, ledger_root=base,
-                                             other='the USB drive' if where == 'hdd' else 'the HDD',
-                                             report=functools.partial(note_findings, config, section))
+        count, latest, checked = copy_choice(
+            sources,
+            target,
+            prompt,
+            output,
+            ledger_root=base,
+            other='the USB drive' if where == 'hdd' else 'the HDD',
+            report=functools.partial(note_findings, config, section),
+        )
         report_restore(checked, target, output)
-    say(output, f'\nDone: {file_count(count)} copied to {target}',
+    say(
+        output,
+        f'\nDone: {file_count(count)} copied to {target}',
         *(() if latest else (VERSIONS_EXPLAINED,)),
         *handed_over(config, target),
         'To get them back into Immich: open Immich in a browser, click "Upload" and choose',
         'files from that folder (for thousands of files, the Immich command-line uploader is',
         'faster: see https://immich.app/docs/features/command-line-interface).',
-        f'Your current Immich library ({data / "photos/immich-library"}) was not touched.')
+        f'Your current Immich library ({data / "photos/immich-library"}) was not touched.',
+    )
 
 
 def report_restore(checked, target, output):
@@ -1028,7 +1131,7 @@ def note_findings(config, section, kind, copies):
     try:
         value = json.loads(path.read_text()) if path.exists() else {'format': INTEGRITY_FORMAT, 'sections': {}}
     except (OSError, ValueError):
-        return False   # never written over: the runtime may be the one that can read it
+        return False  # never written over: the runtime may be the one that can read it
     sections = value.get('sections') if isinstance(value, dict) and value.get('format') == INTEGRITY_FORMAT else None
     if not isinstance(sections, dict):
         return False
@@ -1041,7 +1144,9 @@ def note_findings(config, section, kind, copies):
     counts = entry.setdefault('counts', {})
     counts[kind] = max(counts.get(kind, 0), len(rows)) + len(added)
     sums = entry[CHECKSUMS] if isinstance(entry.get(CHECKSUMS), dict) else {}
-    sums.update((k, sha) for k, sha in copies.items() if valid_ledger_path(k) and isinstance(sha, str) and SHA256.match(sha))
+    sums.update(
+        (k, sha) for k, sha in copies.items() if valid_ledger_path(k) and isinstance(sha, str) and SHA256.match(sha)
+    )
     entry[CHECKSUMS] = sums
     entry['found_by_restore_at'] = dt.datetime.now(dt.timezone.utc).timestamp()
     atomic_json(path, value)
@@ -1104,11 +1209,15 @@ def handed_over(config, target):
             os.chown(Path(target).parent, 0, gid)
             os.chmod(Path(target).parent, 0o750)
     except OSError as exc:
-        return [f'They belong to root ({exc.strerror}), so your account can\'t open them yet. Run:',
-                f'  sudo chown -R {name}: "{target}"']
+        return [
+            f'They belong to root ({exc.strerror}), so your account can\'t open them yet. Run:',
+            f'  sudo chown -R {name}: "{target}"',
+        ]
     if not reachable(target, uid, gid):
-        return [f'The folder now belongs to {name}, but that account can\'t get to where it is. Move it home:',
-                f'  sudo mv "{target}" "{home}/"']
+        return [
+            f'The folder now belongs to {name}, but that account can\'t get to where it is. Move it home:',
+            f'  sudo mv "{target}" "{home}/"',
+        ]
     return [f'The folder and its files now belong to {name}, so you can open them from your desktop.']
 
 
@@ -1116,7 +1225,7 @@ def handed_over(config, target):
 # became a folder, or a folder that became a file), under the date it was set aside and
 # its own path (backup.rs REPLACED).
 REPLACED = 'neko-replaced'
-REPLACED_FOLDER = 'replaced earlier'   # its name in a restore
+REPLACED_FOLDER = 'replaced earlier'  # its name in a restore
 
 
 def cloud_sources(usb, user):
@@ -1142,25 +1251,42 @@ def restore_cloud(config, prompt, output):
             return
         sources = cloud_sources(usb, user)
         # The USB drive holds the only copy of Nextcloud files: no "other backup".
-        count, latest, checked = copy_choice(sources, target, prompt, output, ledger_root=usb / 'nextcloud',
-                                             report=functools.partial(note_findings, config, 'usb_nextcloud'))
+        count, latest, checked = copy_choice(
+            sources,
+            target,
+            prompt,
+            output,
+            ledger_root=usb / 'nextcloud',
+            report=functools.partial(note_findings, config, 'usb_nextcloud'),
+        )
         report_restore(checked, target, output)
     ready = handed_over(config, target)
     if encrypted_by_nextcloud(target):
-        say(output, f'\nDone: {file_count(count)} copied to {target}, but they are ENCRYPTED by Nextcloud\'s',
+        say(
+            output,
+            f'\nDone: {file_count(count)} copied to {target}, but they are ENCRYPTED by Nextcloud\'s',
             'server-side encryption, and the keys to read them are not in this backup.',
             'Uploading them would not make them readable. They open only on the Nextcloud',
             'server that encrypted them (with its data folder and keys). Your current Nextcloud',
-            'files were not touched.')
+            'files were not touched.',
+        )
         return
-    say(output, f'\nDone: {file_count(count)} copied to {target}',
+    say(
+        output,
+        f'\nDone: {file_count(count)} copied to {target}',
         *(() if latest else (VERSIONS_EXPLAINED,)),
-        *(() if not (target / REPLACED_FOLDER).is_dir() else (
-            '"replaced earlier" holds what was in the way when a file became a folder (or a folder',
-            'a file), in a folder named after the date it was set aside.',)),
+        *(
+            ()
+            if not (target / REPLACED_FOLDER).is_dir()
+            else (
+                '"replaced earlier" holds what was in the way when a file became a folder (or a folder',
+                'a file), in a folder named after the date it was set aside.',
+            )
+        ),
         *ready,
         'To put them back: open Nextcloud in a browser (or the desktop app) and upload the',
-        'files you need. Your current Nextcloud files were not touched.')
+        'files you need. Your current Nextcloud files were not touched.',
+    )
 
 
 def encrypted_by_nextcloud(folder, sample=200):
@@ -1182,8 +1308,12 @@ def plain_password_list(run):
         manifest = json.loads((Path(run) / MANIFEST).read_text())
     except (OSError, ValueError):
         return False
-    return isinstance(manifest, dict) and manifest.get('password_files') == 'unencrypted_in_data_tar' \
-        and 'secrets/accounts' in (manifest.get('paths') or {}).get('data', []) and (Path(run) / 'data.tar').is_file()
+    return (
+        isinstance(manifest, dict)
+        and manifest.get('password_files') == 'unencrypted_in_data_tar'
+        and 'secrets/accounts' in (manifest.get('paths') or {}).get('data', [])
+        and (Path(run) / 'data.tar').is_file()
+    )
 
 
 def archive_problem(run, name):
@@ -1204,8 +1334,11 @@ def archive_problem(run, name):
 def password_snapshots(config):
     """(path, label) of monthly snapshots holding the password list, newest first."""
     runs = monthly_snapshots(Path(config['media_mount']) / MONTHLY_DIR)
-    return [(p, d + ('' if (p / SEALED).is_file() else ' (not encrypted: made without a backup key)'))
-            for p, d in runs if (p / SEALED).is_file() or plain_password_list(p)]
+    return [
+        (p, d + ('' if (p / SEALED).is_file() else ' (not encrypted: made without a backup key)'))
+        for p, d in runs
+        if (p / SEALED).is_file() or plain_password_list(p)
+    ]
 
 
 def restore_passwords(config, prompt, output):
@@ -1213,8 +1346,7 @@ def restore_passwords(config, prompt, output):
     if not runs:
         output('No monthly snapshot with a password list on the HDD yet.')
         return
-    run = choose('Restore the password list from which monthly snapshot?',
-                 [(p, d) for p, d in runs], prompt, output)
+    run = choose('Restore the password list from which monthly snapshot?', [(p, d) for p, d in runs], prompt, output)
     if run is None:
         return
     target = new_folder(unused(Path('/root') / f'nekoserver-passwords-{stamp()}'), prompt, output, backup_trees(config))
@@ -1228,29 +1360,52 @@ def restore_passwords(config, prompt, output):
             output(problem + ' Nothing was restored. Use another monthly snapshot.')
             return
         target.mkdir(mode=0o700)
-        result = subprocess.run(['tar', '--extract', '--file', str(run / 'data.tar'), '--directory', str(target),
-                                 '--no-same-owner', 'secrets/accounts'], capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            [
+                'tar',
+                '--extract',
+                '--file',
+                str(run / 'data.tar'),
+                '--directory',
+                str(target),
+                '--no-same-owner',
+                'secrets/accounts',
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if result.returncode:
             output('Could not take the password list out of that snapshot: ' + (result.stderr.strip() or 'tar failed'))
             return
         say(output, f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt')
         return
-    output('It will ask for the backup password chosen during setup (for backups made before 0.28.5: the sudo password you had then).')
+    output(
+        'It will ask for the backup password chosen during setup (for backups made before 0.28.5: the sudo password you had then).'
+    )
     if tool('backup_secrets.py', '--restore', str(run), '--to', str(target)):
-        say(output, f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
+        say(
+            output,
+            f'\nDone. Open it with:  sudo cat {target}/secrets/accounts/APP-CREDENTIALS.txt',
             f'The apps\' own password files are there too: {target}/compose/<app>/.env and',
-            f'{target}/appdata/nextcloud/html/config/config.php (for rebuilding from a monthly snapshot).')
+            f'{target}/appdata/nextcloud/html/config/config.php (for rebuilding from a monthly snapshot).',
+        )
 
 
 def restore_nightly(config, kind, prompt, output):
-    folder, script, label = (('backups/media-applications', 'app-recovery.py', 'app settings') if kind == 'apps'
-                             else ('backups/host-user', 'host-recovery.py', 'Steam and Samba settings'))
+    folder, script, label = (
+        ('backups/media-applications', 'app-recovery.py', 'app settings')
+        if kind == 'apps'
+        else ('backups/host-user', 'host-recovery.py', 'Steam and Samba settings')
+    )
     runs = snapshots(Path(config['media_mount']) / folder)
     if not runs:
         output(f'No nightly backup of {label} found on the HDD yet.')
         return
     # A night Steam was open has no Steam files: said in the list, not found out later.
-    shown = [(p, d + (' (no Steam files: Steam was open)' if kind == 'host' and steam_left_out(p) else '')) for p, d in runs]
+    shown = [
+        (p, d + (' (no Steam files: Steam was open)' if kind == 'host' and steam_left_out(p) else '')) for p, d in runs
+    ]
     run = choose(f'Restore {label} from which night?', shown, prompt, output)
     if run is None:
         return
@@ -1259,15 +1414,26 @@ def restore_nightly(config, kind, prompt, output):
         return
     # With their owners and permissions, so a file copied back works for its app.
     if tool(script, 'restore', '--snapshot', str(run), '--destination', str(target), '--preserve-owners'):
-        say(output, f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.',
-            *(('This night has no Steam files (Steam was open then): choose another night for those.',)
-              if kind == 'host' and steam_left_out(run) else ()),
-            *(('Its folders are named source0, source1 and so on, one for each folder that was backed up;',
-               f'{target / "restore-report.json"} says which original folder each one is.')
-              if kind == 'host' else ()),
+        say(
+            output,
+            f'\nDone: restored into {target} (checksums verified), with each file\'s owner and permissions.',
+            *(
+                ('This night has no Steam files (Steam was open then): choose another night for those.',)
+                if kind == 'host' and steam_left_out(run)
+                else ()
+            ),
+            *(
+                (
+                    'Its folders are named source0, source1 and so on, one for each folder that was backed up;',
+                    f'{target / "restore-report.json"} says which original folder each one is.',
+                )
+                if kind == 'host'
+                else ()
+            ),
             'To use a file from it, stop the app first, copy the file back keeping its owner',
             '(sudo cp -a <file> <where it belongs>), then start the app.',
-            'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.')
+            'See APP-BACKUPS.md or HOST-BACKUPS.md for the exact steps.',
+        )
 
 
 def restore_monthly(config, prompt, output):
@@ -1288,12 +1454,22 @@ def restore_monthly(config, prompt, output):
             sealed = json.loads((Path(run) / MANIFEST).read_text()).get('password_files') != 'unencrypted_in_data_tar'
         except (OSError, ValueError, AttributeError):
             sealed = True
-        say(output, f'\nDone: checked and unpacked into {target}.',
-            *(('Nothing live was replaced. The app password files (.env files and Nextcloud\'s',
-               'config.php) are not in it: get them with "App password list" in this menu.') if sealed else
-              ('Nothing live was replaced. This snapshot was made without a backup key, so the app',
-               'password files (.env files and Nextcloud\'s config.php) are in it, unencrypted.')),
-            'To rebuild a server from it, follow "disaster recovery" in MONTHLY-MAINTENANCE.md.')
+        say(
+            output,
+            f'\nDone: checked and unpacked into {target}.',
+            *(
+                (
+                    'Nothing live was replaced. The app password files (.env files and Nextcloud\'s',
+                    'config.php) are not in it: get them with "App password list" in this menu.',
+                )
+                if sealed
+                else (
+                    'Nothing live was replaced. This snapshot was made without a backup key, so the app',
+                    'password files (.env files and Nextcloud\'s config.php) are in it, unencrypted.',
+                )
+            ),
+            'To rebuild a server from it, follow "disaster recovery" in MONTHLY-MAINTENANCE.md.',
+        )
 
 
 def legacy_usb_snapshots(usb):
@@ -1322,8 +1498,14 @@ def integrity_sections(config):
 
 def listed(section):
     """Files a check reported as damaged or mismatched (only plain relative paths)."""
-    return sorted({key for name in PROBLEM_LISTS for key in section.get(name, [])
-                   if isinstance(key, str) and valid_ledger_path(key)})
+    return sorted(
+        {
+            key
+            for name in PROBLEM_LISTS
+            for key in section.get(name, [])
+            if isinstance(key, str) and valid_ledger_path(key)
+        }
+    )
 
 
 FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -1350,8 +1532,13 @@ class Tree:
         self.parts = rel.split('/') if rel else []
         self.root = self.mount.joinpath(*self.parts)
         self.fd = self.dev = None
-        self.gone = None if rel is not None else (f'the {self.drive()}\'s backup folder in the settings ("archive_dir") '
-                                                  'is not a plain folder inside it')
+        self.gone = (
+            None
+            if rel is not None
+            else (
+                f'the {self.drive()}\'s backup folder in the settings ("archive_dir") is not a plain folder inside it'
+            )
+        )
 
     def drive(self):
         return DRIVE_NAMES[self.label]
@@ -1361,7 +1548,7 @@ class Tree:
         if self.gone is None and self.ready():
             self.fd = os.open(self.mount, FOLDER_FLAGS)
             self.dev = os.fstat(self.fd).st_dev
-            if self.same():     # still the drive that was checked, now that it is open
+            if self.same():  # still the drive that was checked, now that it is open
                 return True
             self.close()
         self.gone = self.gone or f'the {self.drive()} is not mounted at {self.mount} (or another drive is there)'
@@ -1488,7 +1675,7 @@ class Saved:
             self.set_aside(aside)
         folder = self.tree.folder(self.dirs, create=True)
         try:
-            with (good.reader() if isinstance(good, Saved) else open(good, 'rb')) as source:
+            with good.reader() if isinstance(good, Saved) else open(good, 'rb') as source:
                 copy_checked_into(source, folder, self.name, expected, str(good))
         finally:
             os.close(folder)
@@ -1510,8 +1697,7 @@ def settle_unrecorded(key, present, sums, live, prompt, output):
     if chosen is None:
         output(f'\n{key} differs between the backups and has no recorded checksum:')
         options = [(c, describe(c[0], c[1])) for c in candidates]
-        chosen = choose('Which copy is the right one?', options + [(None, 'Keep both as they are')],
-                        prompt, output)
+        chosen = choose('Which copy is the right one?', options + [(None, 'Keep both as they are')], prompt, output)
         if chosen is None:
             return None, 'kept both as they are'
     return chosen[2], chosen[1]
@@ -1529,7 +1715,9 @@ def settle_conflict(key, present, sums, recorded, live, original, prompt, output
         return None, 'the backups record different checksums and no copy matches either; every copy was kept untouched'
     output(f'\n{key}: the backups disagree about this file. Each one\'s checksum list records a')
     output('different version, so neither can be trusted to decide. Choose the right one, or keep both.')
-    options = [(c, describe(c[0], c[1]) + ' (matches the ' + ' and '.join(matches[c[2]]) + ' list)') for c in candidates]
+    options = [
+        (c, describe(c[0], c[1]) + ' (matches the ' + ' and '.join(matches[c[2]]) + ' list)') for c in candidates
+    ]
     chosen = choose('Which copy is the right one?', options + [(None, 'Keep both as they are')], prompt, output)
     if chosen is None:
         return None, 'the backups disagree; both copies were kept as they are'
@@ -1537,8 +1725,10 @@ def settle_conflict(key, present, sums, recorded, live, original, prompt, output
 
 
 NO_GOOD_COPY = 'no copy matches its recorded checksum any more; every copy was kept untouched'
-LOST_OPTION = ('Accept that this saved copy is lost: move it to the "neko-damaged" folder (kept, never '
-               'deleted) and stop checking it, so the monthly snapshot and updates go on')
+LOST_OPTION = (
+    'Accept that this saved copy is lost: move it to the "neko-damaged" folder (kept, never '
+    'deleted) and stop checking it, so the monthly snapshot and updates go on'
+)
 
 
 def decide(key, present, sums, recorded, expected, live, original, prompt, output):
@@ -1571,15 +1761,20 @@ def accept_lost(key, present, ledgers, prompt, output, aside):
     the saved copy is lost: it goes to <tree>/neko-damaged/<time>/ (kept, never
     deleted), and its checksum entry is retired, with why, so the checks pass again."""
     gone = not any(saved.lexists() for _, _, saved in present)
-    say(output, f'\n{key}: the saved copy ' + ('is missing' if gone else 'no longer matches its recorded checksum')
+    say(
+        output,
+        f'\n{key}: the saved copy '
+        + ('is missing' if gone else 'no longer matches its recorded checksum')
         + ', and no other copy (nor the original, which changed or is gone) holds what was saved,'
         ' so it cannot be repaired. Until you decide, the monthly check finds it again and the'
-        ' monthly snapshot and updates wait.')
-    pick = choose('What do you want to do?', [('keep', 'Keep it as it is for now'), ('lost', LOST_OPTION)],
-                  prompt, output)
+        ' monthly snapshot and updates wait.',
+    )
+    pick = choose(
+        'What do you want to do?', [('keep', 'Keep it as it is for now'), ('lost', LOST_OPTION)], prompt, output
+    )
     if pick != 'lost':
         return NO_GOOD_COPY, set()
-    if not all(tree.usable() for _, tree, _ in present):   # a drive went away while you chose
+    if not all(tree.usable() for _, tree, _ in present):  # a drive went away while you chose
         return 'nothing was changed: ' + '; '.join(t.gone for _, t, _ in present if t.gone), set()
     for _, _, saved in present:
         if saved.lexists():
@@ -1589,8 +1784,10 @@ def accept_lost(key, present, ledgers, prompt, output, aside):
         if key in known and tree.usable():
             record_ledger(tree.root, {}, 'lost', retire={key: why})
             del known[key]
-    return ('accepted as lost' + ('' if gone else f' (the damaged copy is kept in {QUARANTINE}/{aside})'),
-            {label for label, _, _ in present})
+    return (
+        'accepted as lost' + ('' if gone else f' (the damaged copy is kept in {QUARANTINE}/{aside})'),
+        {label for label, _, _ in present},
+    )
 
 
 def put_copies(present, sums, good, expected, aside):
@@ -1629,8 +1826,10 @@ def repair_said(fixed, failed, unrecorded):
     done = [label for label in fixed if label not in unrecorded]
     said = ['repaired the ' + ' and '.join(done) + ' copy'] if done else []
     said += [f'the {label} copy was NOT repaired: {why}' for label, why in failed.items()]
-    said += [f'the {label} copy was written, but its checksum was NOT recorded ({why}), so it stays listed'
-             for label, why in unrecorded.items()]
+    said += [
+        f'the {label} copy was written, but its checksum was NOT recorded ({why}), so it stays listed'
+        for label, why in unrecorded.items()
+    ]
     return '; '.join(said) or 'already intact'
 
 
@@ -1664,7 +1863,7 @@ INTEGRITY_SECTIONS = ('archive', 'usb_photos', 'usb_nextcloud')
 # A warning is cleared only for the copies it is about, once each was checked: the
 # archive check is about the HDD copy, the USB checks about the USB copies.
 NEEDS = {'archive': {'HDD'}, 'usb_photos': {'HDD', 'USB'}, 'usb_nextcloud': {'USB'}}
-CHECKSUMS = 'checksums'   # {saved copy: recorded SHA-256} beside a restore's findings (note_findings)
+CHECKSUMS = 'checksums'  # {saved copy: recorded SHA-256} beside a restore's findings (note_findings)
 
 
 def usb_ready(config, mount):
@@ -1672,24 +1871,33 @@ def usb_ready(config, mount):
     filesystem, the whole filesystem (as the weekly backup and Usb mount it)."""
     photos = config.get('photos', {})
     found = mounted_identity(Path(mount))
-    return (found is not None and found[0].lower() == str(photos.get('external_backup_uuid', '')).lower()
-            and found[1] == photos.get('external_backup_fstype', 'ext4') and found[2] == '')
+    return (
+        found is not None
+        and found[0].lower() == str(photos.get('external_backup_uuid', '')).lower()
+        and found[1] == photos.get('external_backup_fstype', 'ext4')
+        and found[2] == ''
+    )
 
 
 def open_trees(config, usb, output):
     """{'hdd', 'usb', 'cloud'}: the backup trees the repair works on, each opened only when
     its drive is the one the settings name. One that can't be used is said, once."""
     rel = str(config.get('photos', {}).get('archive_dir', ARCHIVE_DIR)).rstrip('/')
-    trees = {'hdd': Tree('HDD', config['media_mount'], rel if valid_ledger_path(rel) else None,
-                         functools.partial(hdd_ready, config))}
+    trees = {
+        'hdd': Tree(
+            'HDD', config['media_mount'], rel if valid_ledger_path(rel) else None, functools.partial(hdd_ready, config)
+        )
+    }
     if usb:
         ready = functools.partial(usb_ready, config, usb)
         trees.update(usb=Tree('USB', usb, '', ready), cloud=Tree('USB', usb, 'nextcloud', ready))
     for tree in trees.values():
         tree.open()
     for tree in {tree.label: tree for tree in trees.values() if tree.gone}.values():
-        output(f'  Not used: {tree.gone}. Its copies were NOT repaired, and their warnings stay listed. '
-               f'Connect the right drive (or restart the computer), then choose this again.')
+        output(
+            f'  Not used: {tree.gone}. Its copies were NOT repaired, and their warnings stay listed. '
+            f'Connect the right drive (or restart the computer), then choose this again.'
+        )
     return trees
 
 
@@ -1705,8 +1913,16 @@ def repair_jobs(config, work, trees, output):
     jobs = []
     if keys and photos:
         # A photo copy is given up as lost only when both of its copies were looked at.
-        jobs.append((keys, photos, data / 'photos/immich-library' if ssd_ready(config) else None,
-                     ('archive', 'usb_photos'), len(photos) == 2, away))
+        jobs.append(
+            (
+                keys,
+                photos,
+                data / 'photos/immich-library' if ssd_ready(config) else None,
+                ('archive', 'usb_photos'),
+                len(photos) == 2,
+                away,
+            )
+        )
     jobs += cloud_job(work, trees, media, output)
     return jobs
 
@@ -1716,8 +1932,9 @@ def cloud_job(work, trees, media, output):
     read only from the HDD the settings name."""
     hdd, usb, cloud = trees['hdd'], trees.get('usb'), trees.get('cloud')
     if cloud is not None and not cloud.gone:
-        return [(work['usb_nextcloud'], [cloud], None if hdd.gone else media / 'cloud/files', ('usb_nextcloud',),
-                 True, [])]
+        return [
+            (work['usb_nextcloud'], [cloud], None if hdd.gone else media / 'cloud/files', ('usb_nextcloud',), True, [])
+        ]
     if usb is None and (work['usb_nextcloud'] or work['usb_photos']):
         output('  The USB drive is not plugged in: its copies were not checked and stay listed.')
     return []
@@ -1728,7 +1945,7 @@ def reported_sums(sections):
     sums = {}
     for name in INTEGRITY_SECTIONS:
         found = sections.get(name, {}).get(CHECKSUMS)
-        for key, sha in (found.items() if isinstance(found, dict) else ()):
+        for key, sha in found.items() if isinstance(found, dict) else ():
             if valid_ledger_path(key) and isinstance(sha, str) and SHA256.match(sha):
                 sums[key] = sha if sums.get(key, sha) == sha else None
     return {key: sha for key, sha in sums.items() if sha}
@@ -1753,15 +1970,19 @@ def repair_backups(config, prompt, output):
     """Fix the files the checksum checks reported, from a copy that still matches. Only
     drives that are the ones the settings name are read or written (see Tree)."""
     from recovery_tools import lock
+
     sections = integrity_sections(config)
     work = {name: listed(sections.get(name, {})) for name in INTEGRITY_SECTIONS}
     if not any(work.values()):
         output('The last checksum checks found nothing to repair.')
         return
     aside = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    say(output, '\nRepair damaged backup copies',
+    say(
+        output,
+        '\nRepair damaged backup copies',
         'Each file is compared with its recorded SHA-256 checksum and fixed from a copy that',
-        'still matches it. Damaged copies are moved to a "neko-damaged" folder, never deleted.')
+        'still matches it. Damaged copies are moved to a "neko-damaged" folder, never deleted.',
+    )
     resolved = {name: [] for name in work}
     hints = reported_sums(sections)
     with lock(config, changes_apps=False), Usb(config, writable=True) as usb:
@@ -1813,12 +2034,15 @@ def review_old_usb(config, prompt, output):
         if not runs:
             output('No old full snapshots on the USB drive (or it is not plugged in).')
             return
-        gb = 1024 ** 3
+        gb = 1024**3
         output(f'\n{len(runs)} old full snapshots on the USB drive:')
         for path, label in runs:
             output(f'  {label}  {tree_bytes(path) / gb:.1f} GB')
-        say(output, 'They were made before v0.21.1 and hold everything at that time, including photos and',
-            'Nextcloud files. A file deleted from the server since then may exist only in them.')
+        say(
+            output,
+            'They were made before v0.21.1 and hold everything at that time, including photos and',
+            'Nextcloud files. A file deleted from the server since then may exist only in them.',
+        )
         if ask('Keep a copy of them on the HDD first? (recommended)', prompt, output):
             target = restore_target(config, f'old-usb-snapshots-{stamp()}', prompt, output, usb)
             if target is None:
@@ -1841,6 +2065,7 @@ def settings(config_path=None, output=None):
     candidates = [settings_path(config_path)] if config_path else [ROOT / 'my-config.json']
     if not config_path and not candidates[0].is_file():
         import wizard
+
         earlier = wizard.earlier_settings(ROOT)
         if earlier is not None:
             if output:
@@ -1858,10 +2083,11 @@ def run(prompt=input, output=print, config_path=None):
         output('Run it with sudo:  sudo bash install.sh --recover')
         return 2
     config = settings(config_path, output)
-    say(output, '\nNekoServer recovery',
-        'Everything is restored into a NEW folder. Nothing you have now is changed.')
+    say(output, '\nNekoServer recovery', 'Everything is restored into a NEW folder. Nothing you have now is changed.')
     handlers = {
-        'photos': restore_photos, 'cloud': restore_cloud, 'passwords': restore_passwords,
+        'photos': restore_photos,
+        'cloud': restore_cloud,
+        'passwords': restore_passwords,
         'apps': lambda c, p, o: restore_nightly(c, 'apps', p, o),
         'host': lambda c, p, o: restore_nightly(c, 'host', p, o),
         'monthly': restore_monthly,
@@ -1882,6 +2108,12 @@ def run(prompt=input, output=print, config_path=None):
                 output(f'That restore did not finish: {exc}')
     except (EOFError, KeyboardInterrupt):
         # Restores and repairs finished before this stay as they are.
-        output('\nStopped. ' + ('Nothing more was changed; what was already restored or repaired stays as it is.'
-                               if started else 'Nothing was changed.'))
+        output(
+            '\nStopped. '
+            + (
+                'Nothing more was changed; what was already restored or repaired stays as it is.'
+                if started
+                else 'Nothing was changed.'
+            )
+        )
         return 1

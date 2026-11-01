@@ -1,5 +1,6 @@
 """The setup driver: stopping with Ctrl+C, a settings file missing what it needs, and
 the log kept from before the SSD was mounted; the boot-time drive lines."""
+
 import argparse
 import json
 import sys
@@ -37,9 +38,20 @@ class InstallerFlowTests(unittest.TestCase):
         self.state = self.root / 'state'
 
     def args(self, **extra):
-        return argparse.Namespace(**{'all': False, 'profile': None, 'module': 'stopper', 'retry_failed': False,
-                                     'apply': True, 'check': False, 'dry_run': False,
-                                     'config': str(self.config), 'state_dir': str(self.state), **extra})
+        return argparse.Namespace(
+            **{
+                'all': False,
+                'profile': None,
+                'module': 'stopper',
+                'retry_failed': False,
+                'apply': True,
+                'check': False,
+                'dry_run': False,
+                'config': str(self.config),
+                'state_dir': str(self.state),
+                **extra,
+            }
+        )
 
     def test_ctrl_c_records_the_step_and_ends_without_a_traceback(self):
         args = self.args()
@@ -49,21 +61,26 @@ class InstallerFlowTests(unittest.TestCase):
         self.assertEqual(state['stopper'], {'status': 'failed', 'reason': 'Stopped with Ctrl+C'})
         # The next run (or --retry-failed) starts that step again.
         printed = []
-        with mock.patch.object(installer, 'execute', side_effect=KeyboardInterrupt), \
-                mock.patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))):
+        with (
+            mock.patch.object(installer, 'execute', side_effect=KeyboardInterrupt),
+            mock.patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))),
+        ):
             code = installer.main(['--module', 'stopper', '--config', str(self.config)])
         self.assertEqual(code, 130)
         self.assertIn('continues where it stopped', printed[-1])
         self.assertNotIn('--recover', printed[-1])
         # Stopped during recovery: the way back in is recovery, not setup.
         recovery = mock.Mock(run=mock.Mock(side_effect=KeyboardInterrupt))
-        with mock.patch.dict(sys.modules, recovery_wizard=recovery), \
-                mock.patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))):
+        with (
+            mock.patch.dict(sys.modules, recovery_wizard=recovery),
+            mock.patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))),
+        ):
             self.assertEqual(installer.main(['--recover', '--config', str(self.config)]), 130)
         self.assertIn('sudo bash install.sh --recover', printed[-1])
 
     def test_a_drive_under_home_is_refused_before_anything_is_installed(self):
         import neko_common
+
         # ProtectHome=yes in the services' units hides /home, /root and /run/user.
         for bad in ('/home/neko/app-ssd', '/run/user/1000/ssd'):
             with self.assertRaisesRegex(RuntimeError, 'cannot see those folders'):
@@ -86,8 +103,12 @@ class InstallerFlowTests(unittest.TestCase):
         (self.root / 'modules' / 'storage.py').write_text(STEP_OK)
         default = self.root / 'default-state'
         data = self.root / 'data_mount'
-        with mock.patch.object(installer, 'DEFAULT_STATE', default), mock.patch('config_checks.validate'), \
-                mock.patch.object(installer.os.path, 'ismount', return_value=False), mock.patch('builtins.print'):
+        with (
+            mock.patch.object(installer, 'DEFAULT_STATE', default),
+            mock.patch('config_checks.validate'),
+            mock.patch.object(installer.os.path, 'ismount', return_value=False),
+            mock.patch('builtins.print'),
+        ):
             for _ in range(2):
                 installer._execute(self.args(module='storage', state_dir=str(default)), self.root)
         log = (data / 'installer/state/install.log').read_text()
@@ -99,8 +120,15 @@ class InstallerFlowTests(unittest.TestCase):
         # before). An earlier settings file holds 14 and 8, which may be someone's choice:
         # without anyone at the keyboard they stay, run after run.
         template = json.loads((ROOT / 'config.json').read_text())
-        self.assertEqual((template['app_backup']['keep_snapshots'], template['host_backup']['keep_snapshots'],
-                          template['photos']['database_keep'], template['maintenance']['keep_snapshots']), (7, 7, 4, 3))
+        self.assertEqual(
+            (
+                template['app_backup']['keep_snapshots'],
+                template['host_backup']['keep_snapshots'],
+                template['photos']['database_keep'],
+                template['maintenance']['keep_snapshots'],
+            ),
+            (7, 7, 4, 3),
+        )
         config = json.loads(self.config.read_text())
         config['app_backup']['keep_snapshots'] = 14
         config['host_backup']['keep_snapshots'] = 14
@@ -110,22 +138,41 @@ class InstallerFlowTests(unittest.TestCase):
         logged = []
         for _ in range(2):
             # Nobody at the keyboard, also when the suite itself runs in a terminal.
-            with mock.patch('config_checks.validate'), mock.patch.object(installer.os.path, 'ismount', return_value=False), \
-                    mock.patch.object(installer.sys.stdin, 'isatty', return_value=False), \
-                    mock.patch('builtins.print', side_effect=lambda *a, **k: logged.append(' '.join(map(str, a)))):
+            with (
+                mock.patch('config_checks.validate'),
+                mock.patch.object(installer.os.path, 'ismount', return_value=False),
+                mock.patch.object(installer.sys.stdin, 'isatty', return_value=False),
+                mock.patch('builtins.print', side_effect=lambda *a, **k: logged.append(' '.join(map(str, a)))),
+            ):
                 installer._execute(self.args(module='storage'), self.root)
             saved = json.loads(self.config.read_text())
-            self.assertEqual((saved['app_backup']['keep_snapshots'], saved['host_backup']['keep_snapshots'],
-                              saved['photos']['database_keep']), (14, 14, 8))
+            self.assertEqual(
+                (
+                    saved['app_backup']['keep_snapshots'],
+                    saved['host_backup']['keep_snapshots'],
+                    saved['photos']['database_keep'],
+                ),
+                (14, 14, 8),
+            )
         self.assertIn('the newest 14 nightly app backups stay kept', '\n'.join(logged))
 
     def test_the_earlier_defaults_are_asked_about_once_and_the_answer_kept(self):
-        config = {'app_backup': {'keep_snapshots': 14}, 'host_backup': {'keep_snapshots': 14}, 'photos': {'database_keep': 8}}
-        answers = iter([True, False, True])      # fewer app backups and copies, keep 14 host backups
+        config = {
+            'app_backup': {'keep_snapshots': 14},
+            'host_backup': {'keep_snapshots': 14},
+            'photos': {'database_keep': 8},
+        }
+        answers = iter([True, False, True])  # fewer app backups and copies, keep 14 host backups
         _, changed = installer.retire_old_defaults(config, ask=lambda question: next(answers))
         self.assertTrue(changed)
-        self.assertEqual((config['app_backup']['keep_snapshots'], config['host_backup']['keep_snapshots'],
-                          config['photos']['database_keep']), (7, 14, 4))
+        self.assertEqual(
+            (
+                config['app_backup']['keep_snapshots'],
+                config['host_backup']['keep_snapshots'],
+                config['photos']['database_keep'],
+            ),
+            (7, 14, 4),
+        )
         self.assertTrue(config[installer.RETENTION_REVIEWED])
         # Reviewed: a 14 seen later is a choice, never asked about or changed again.
         config['app_backup']['keep_snapshots'] = 14
@@ -173,28 +220,43 @@ class FstabTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn('    UUID=bbb /mnt/films ext4 defaults 0 2', message)
         self.assertIn('Take that line out of /etc/fstab', message)
-        self.assertEqual(self.fstab.read_text().count('\n'), 2)   # nothing written
+        self.assertEqual(self.fstab.read_text().count('\n'), 2)  # nothing written
 
     def test_a_btrfs_subvolume_is_kept_so_a_restart_mounts_the_same_tree(self):
         self.fstab.write_text('UUID=root / ext4 defaults 0 1\n')
-        specs = [('data_ssd', 'aaa', 'btrfs', '/srv/nekoserver', '/@data'), ('media_hdd', 'bbb', 'btrfs', '/srv/media', None)]
+        specs = [
+            ('data_ssd', 'aaa', 'btrfs', '/srv/nekoserver', '/@data'),
+            ('media_hdd', 'bbb', 'btrfs', '/srv/media', None),
+        ]
         storage.install_fstab(specs, self.fstab)
         lines = self.fstab.read_text().splitlines()
-        self.assertEqual(lines[1], 'UUID=aaa /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=90s,subvol=/@data 0 2')
-        self.assertNotIn('subvol', lines[2])   # the filesystem's default tree
+        self.assertEqual(
+            lines[1], 'UUID=aaa /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=90s,subvol=/@data 0 2'
+        )
+        self.assertNotIn('subvol', lines[2])  # the filesystem's default tree
         # Unchanged on the next run; a line from before 0.28.7 for that drive is upgraded.
         self.assertFalse(storage.install_fstab(specs, self.fstab))
-        self.fstab.write_text('UUID=aaa /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=15s,subvol=/@data 0 2\n')
+        self.fstab.write_text(
+            'UUID=aaa /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=15s,subvol=/@data 0 2\n'
+        )
         self.assertTrue(storage.install_fstab(specs[:1], self.fstab))
         self.assertIn('90s,subvol=/@data', self.fstab.read_text())
         # A line for the same drive with another subvolume is someone else's choice.
-        self.fstab.write_text('UUID=aaa /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=90s,subvol=/@other 0 2\n')
+        self.fstab.write_text(
+            'UUID=aaa /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=90s,subvol=/@other 0 2\n'
+        )
         with self.assertRaisesRegex(RuntimeError, 'did not write'):
             storage.install_fstab(specs[:1], self.fstab)
 
     def test_an_already_mounted_subvolume_is_remembered(self):
-        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/srv/media',
-                  'storage': {'data_ssd': {'uuid': 'ssd-uuid-0001', 'fstype': 'btrfs'}, 'media_hdd': {'uuid': 'hdd-uuid-0001', 'fstype': 'ext4'}}}
+        config = {
+            'data_mount': '/srv/nekoserver',
+            'media_mount': '/srv/media',
+            'storage': {
+                'data_ssd': {'uuid': 'ssd-uuid-0001', 'fstype': 'btrfs'},
+                'media_hdd': {'uuid': 'hdd-uuid-0001', 'fstype': 'ext4'},
+            },
+        }
         answers = {'/srv/nekoserver': '/dev/sdb1[/@data]\n', '/srv/media': '/dev/sdc1\n'}
         storage.remember_subvolumes(config, run=lambda argv, **_: mock.Mock(returncode=0, stdout=answers[argv[-1]]))
         self.assertEqual(config['storage']['data_ssd']['subvolume'], '/@data')
@@ -211,9 +273,14 @@ class FstabTests(unittest.TestCase):
     def test_a_btrfs_default_subvolume_is_saved_on_the_first_mount_and_kept_on_a_retry(self):
         # The drive's default subvolume is /@data (btrfs subvolume set-default); nothing saved.
         self.fstab.write_text('UUID=root / ext4 defaults 0 1\n')
-        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/srv/media',
-                  'storage': {'data_ssd': {'uuid': 'ssd-uuid-0001', 'fstype': 'btrfs'},
-                              'media_hdd': {'uuid': 'hdd-uuid-0001', 'fstype': 'ext4'}}}
+        config = {
+            'data_mount': '/srv/nekoserver',
+            'media_mount': '/srv/media',
+            'storage': {
+                'data_ssd': {'uuid': 'ssd-uuid-0001', 'fstype': 'btrfs'},
+                'media_hdd': {'uuid': 'hdd-uuid-0001', 'fstype': 'ext4'},
+            },
+        }
         mounted, logged, saved = {}, [], []
         sources = {'/srv/nekoserver': '/dev/sdb1[/@data]', '/srv/media': '/dev/sdc1'}
 
@@ -226,14 +293,17 @@ class FstabTests(unittest.TestCase):
             if argv[0] == 'mount':
                 mounted[argv[1]] = True
             return ''
+
         context = mock.Mock(config=config, log=logged.append, persist_config=lambda: saved.append(json.dumps(config)))
         devices = {'/srv/nekoserver': ('ssd-uuid-0001', 'btrfs'), '/srv/media': ('hdd-uuid-0001', 'ext4')}
-        with mock.patch.object(storage, 'findmnt', side_effect=findmnt), \
-                mock.patch.object(storage, 'call', side_effect=call), \
-                mock.patch.object(storage, 'mounted_filesystem', side_effect=devices.get), \
-                mock.patch.object(storage.Path, 'mkdir'), \
-                mock.patch.object(storage.Path, 'exists', return_value=True), \
-                mock.patch.object(storage.Path, 'resolve', lambda self: self):
+        with (
+            mock.patch.object(storage, 'findmnt', side_effect=findmnt),
+            mock.patch.object(storage, 'call', side_effect=call),
+            mock.patch.object(storage, 'mounted_filesystem', side_effect=devices.get),
+            mock.patch.object(storage.Path, 'mkdir'),
+            mock.patch.object(storage.Path, 'exists', return_value=True),
+            mock.patch.object(storage.Path, 'resolve', lambda self: self),
+        ):
             storage.mount_all(context, storage.mount_specs(config), self.fstab)
             self.assertEqual(config['storage']['data_ssd']['subvolume'], '/@data')
             self.assertIn('/@data', saved[-1])
@@ -243,9 +313,13 @@ class FstabTests(unittest.TestCase):
             self.assertNotIn('subvol', lines[2])
             # A retry from scratch: the drive mounted from the earlier run's line without
             # subvol= (as a run cut off before pinning it would leave it) is still ours.
-            self.fstab.write_text('UUID=root / ext4 defaults 0 1\n'
-                                  'UUID=ssd-uuid-0001 /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=90s 0 2\n')
-            storage.remember_subvolumes(config, run=lambda argv, **_: mock.Mock(returncode=0, stdout=sources[argv[-1]] + '\n'))
+            self.fstab.write_text(
+                'UUID=root / ext4 defaults 0 1\n'
+                'UUID=ssd-uuid-0001 /srv/nekoserver btrfs defaults,nofail,x-systemd.device-timeout=90s 0 2\n'
+            )
+            storage.remember_subvolumes(
+                config, run=lambda argv, **_: mock.Mock(returncode=0, stdout=sources[argv[-1]] + '\n')
+            )
             storage.mount_all(context, storage.mount_specs(config), self.fstab)
             self.assertIn('device-timeout=90s,subvol=/@data 0 2', self.fstab.read_text())
             self.assertEqual(self.fstab.read_text().count('ssd-uuid-0001'), 1)
@@ -258,17 +332,14 @@ class FstabTests(unittest.TestCase):
         self.assertEqual(self.fstab.read_text(), original)
 
 
-
 class PrivateEntryTests(unittest.TestCase):
     def entry(self, answers, valid):
         typed, shown = iter(answers), []
-        value = guided_setup.private_entry('URL: ', valid, 'try again', ask=lambda _: next(typed),
-                                           output=shown.append)
+        value = guided_setup.private_entry('URL: ', valid, 'try again', ask=lambda _: next(typed), output=shown.append)
         return value, shown
 
     def test_a_typo_is_asked_again_and_a_copied_slash_dropped(self):
-        value, shown = self.entry(['htps://hc-ping.com/abc', ' https://hc-ping.com/abc-123/ '],
-                                  heartbeat.endpoint)
+        value, shown = self.entry(['htps://hc-ping.com/abc', ' https://hc-ping.com/abc-123/ '], heartbeat.endpoint)
         self.assertEqual(value, 'https://hc-ping.com/abc-123')
         self.assertEqual(shown, ['try again'])
 
@@ -281,6 +352,7 @@ class PrivateEntryTests(unittest.TestCase):
 
         def eof(_):
             raise EOFError
+
         self.assertEqual(guided_setup.private_entry('URL: ', notifications.endpoint, '', ask=eof), '')
 
     def test_tokens(self):
@@ -290,10 +362,10 @@ class PrivateEntryTests(unittest.TestCase):
         self.assertFalse(notifications.valid_token('a' * 513))
 
 
-
 class SettingsFollowTheAppsTests(unittest.TestCase):
     """An app added later (setup run again with  --module media ) reaches the backups
     that are already installed, not only the dashboard."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -323,18 +395,21 @@ class SettingsFollowTheAppsTests(unittest.TestCase):
         self.assertIn('maintenance', installer.REFRESHED)
 
 
-
 class SteamLeftOpenTests(unittest.TestCase):
     """Steam's folders are marked, so a night Steam is open saves everything else."""
+
     def test_only_steam_folders_are_marked(self):
         from modules import host_backup
+
         config = json.loads((ROOT / 'config.json').read_text())
         user = mock.Mock(pw_uid=1000, pw_name='neko')
         steam = [Path('/home/neko/.local/share/Steam') / n for n in ('config', 'userdata', 'steamapps/compatdata')]
-        with mock.patch.object(host_backup, 'choose_user', return_value=user), \
-                mock.patch.object(host_backup, 'owned_home', return_value=Path('/home/neko')), \
-                mock.patch.object(host_backup, 'steam_paths', return_value=steam), \
-                mock.patch.object(host_backup.native_runtime, 'storage_config', return_value={}):
+        with (
+            mock.patch.object(host_backup, 'choose_user', return_value=user),
+            mock.patch.object(host_backup, 'owned_home', return_value=Path('/home/neko')),
+            mock.patch.object(host_backup, 'steam_paths', return_value=steam),
+            mock.patch.object(host_backup.native_runtime, 'storage_config', return_value={}),
+        ):
             rows = host_backup.guard(config)['host_backup']['sources']
         marked = [r['path'] for r in rows if r.get('steam')]
         self.assertEqual(marked, [str(p) for p in steam])
@@ -349,20 +424,26 @@ class SteamLeftOpenTests(unittest.TestCase):
 class TimezoneTests(unittest.TestCase):
     def test_a_copied_localtime_falls_back_to_etc_timezone(self):
         import neko_common
+
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / 'zoneinfo/Asia').mkdir(parents=True)
             (root / 'zoneinfo/Asia/Jerusalem').write_bytes(b'TZif2')
-            (root / 'localtime').write_bytes(b'TZif2')   # a copy, not a link
+            (root / 'localtime').write_bytes(b'TZif2')  # a copy, not a link
             (root / 'timezone').write_text('Asia/Jerusalem\n')
-            self.assertEqual(neko_common.local_timezone(root / 'localtime', root / 'timezone', root / 'zoneinfo'), 'Asia/Jerusalem')
-            (root / 'timezone').write_text('Mars/Olympus\n')   # not installed: not trusted
+            self.assertEqual(
+                neko_common.local_timezone(root / 'localtime', root / 'timezone', root / 'zoneinfo'), 'Asia/Jerusalem'
+            )
+            (root / 'timezone').write_text('Mars/Olympus\n')  # not installed: not trusted
             self.assertIsNone(neko_common.local_timezone(root / 'localtime', root / 'timezone', root / 'zoneinfo'))
             (root / 'link').symlink_to(root / 'zoneinfo/Asia/Jerusalem')
-            self.assertEqual(neko_common.local_timezone(root / 'link', root / 'missing', root / 'zoneinfo'), 'Asia/Jerusalem')
+            self.assertEqual(
+                neko_common.local_timezone(root / 'link', root / 'missing', root / 'zoneinfo'), 'Asia/Jerusalem'
+            )
 
     def test_one_word_zones_are_accepted(self):
         import neko_common
+
         for zone in ('Japan', 'CET', 'UTC', 'Europe/London', 'America/Argentina/Buenos_Aires'):
             self.assertTrue(neko_common.TIMEZONE_PATTERN.fullmatch(zone), zone)
         for zone in ('', '../etc', 'Europe/Lon don'):
@@ -372,31 +453,51 @@ class TimezoneTests(unittest.TestCase):
 class UsbDriveSkipTests(unittest.TestCase):
     def test_enter_skips_for_now_as_offered(self):
         from modules import photo_backup
-        inventory = {'blockdevices': [{'name': 'sdd', 'type': 'disk', 'children': [
-            {'name': 'sdd1', 'type': 'part', 'uuid': 'usb-uuid-0001', 'fstype': 'ext4', 'mountpoint': None}]}]}
+
+        inventory = {
+            'blockdevices': [
+                {
+                    'name': 'sdd',
+                    'type': 'disk',
+                    'children': [
+                        {'name': 'sdd1', 'type': 'part', 'uuid': 'usb-uuid-0001', 'fstype': 'ext4', 'mountpoint': None}
+                    ],
+                }
+            ]
+        }
         config = {'external_backup_mount': '/mnt/nekoserver-photos', 'storage': {}}
         self.assertIsNone(photo_backup.select_external(config, inventory, input_fn=lambda q: '', out_fn=lambda s: None))
         self.assertNotIn('external_backup_uuid', config.get('photos', {}))
 
         def eof(q):
             raise EOFError
+
         self.assertIsNone(photo_backup.select_external(config, inventory, input_fn=eof, out_fn=lambda s: None))
 
 
 class ReasonsReachTheLogTests(unittest.TestCase):
     def test_a_failed_command_says_why(self):
         import neko_common
+
         with self.assertRaisesRegex(RuntimeError, r'Immich \(docker compose up\) failed: port is already allocated'):
-            neko_common.checked_run(['sh', '-c', 'echo "port is already allocated" >&2; exit 1'], 10, 'Immich (docker compose up)')
+            neko_common.checked_run(
+                ['sh', '-c', 'echo "port is already allocated" >&2; exit 1'], 10, 'Immich (docker compose up)'
+            )
         self.assertEqual(neko_common.checked_run(['true'], 10).returncode, 0)
 
     def test_a_command_that_failed_with_check_true_says_its_own_words(self):
         import subprocess
-        failed = subprocess.CalledProcessError(1, ['systemctl', 'enable', '--now', 'smbd.service'],
-                                               stderr='Failed to enable unit: Unit file smbd.service does not exist.\n')
-        self.assertEqual(installer.failure_reason(failed),
-                         'systemctl enable --now smbd.service failed: Failed to enable unit: Unit file smbd.service does not exist.')
-        quiet = subprocess.CalledProcessError(2, ['docker', 'info'])   # output not captured
+
+        failed = subprocess.CalledProcessError(
+            1,
+            ['systemctl', 'enable', '--now', 'smbd.service'],
+            stderr='Failed to enable unit: Unit file smbd.service does not exist.\n',
+        )
+        self.assertEqual(
+            installer.failure_reason(failed),
+            'systemctl enable --now smbd.service failed: Failed to enable unit: Unit file smbd.service does not exist.',
+        )
+        quiet = subprocess.CalledProcessError(2, ['docker', 'info'])  # output not captured
         self.assertEqual(installer.failure_reason(quiet), 'docker info failed (exit status 2, no details)')
         slow = subprocess.TimeoutExpired(['docker', 'compose', 'up'], 900)
         self.assertEqual(installer.failure_reason(slow), 'docker compose up did not finish within 900 seconds')
@@ -407,7 +508,10 @@ class ReasonsReachTheLogTests(unittest.TestCase):
             path.write_text('{}')
             ctx = installer.Context({'a': 1}, lambda m: None, apply=True, config_path=path)
             chowned = []
-            with mock.patch('os.geteuid', return_value=0), mock.patch('os.chown', side_effect=lambda p, u, g: chowned.append((u, g))):
+            with (
+                mock.patch('os.geteuid', return_value=0),
+                mock.patch('os.chown', side_effect=lambda p, u, g: chowned.append((u, g))),
+            ):
                 ctx.persist_config()
             self.assertEqual(chowned, [(path.stat().st_uid, path.stat().st_gid)])
             self.assertEqual(json.loads(path.read_text()), {'a': 1})

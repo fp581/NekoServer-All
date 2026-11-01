@@ -1,0 +1,6 @@
+# How the Python here is laid out: `ruff format .` in this folder (any ruff since 0.4 gives
+# the same result). The CI's `ruff check` is configured on its command line, not here.
+line-length = 120
+
+[format]
+quote-style = "preserve"

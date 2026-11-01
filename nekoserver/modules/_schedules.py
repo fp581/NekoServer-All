@@ -1,4 +1,5 @@
 """Retire only recognized NekoServer units, preserving custom administrator units."""
+
 import subprocess
 
 from neko_common import SYSTEMD_UNITS, safe_path
@@ -14,9 +15,12 @@ def retire(paths, run):
             continue
         lines = path.read_text().splitlines()
         owner = path.name.rsplit('.', 1)[0]
-        if not any(line.startswith('Description=NekoServer ') or line in (
-            'Description='+owner, 'Description='+owner+' timer') for line in lines):
-            raise RuntimeError('Unmanaged schedule preserved: '+path.name)
+        if not any(
+            line.startswith('Description=NekoServer ')
+            or line in ('Description=' + owner, 'Description=' + owner + ' timer')
+            for line in lines
+        ):
+            raise RuntimeError('Unmanaged schedule preserved: ' + path.name)
         existing.append(path)
     # Validate every file before stopping any service or timer.
     for path in sorted(existing, key=lambda p: p.suffix != TIMER):
@@ -52,4 +56,3 @@ def switched_off(config, section, name, log, run=None):
         retire(units, run or subprocess.run)
         log(name + ': switched off by choice; its schedule no longer runs')
     return True
-

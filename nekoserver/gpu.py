@@ -3,6 +3,7 @@
 Shared by the TV step (Vulkan for Steam) and the hardware video step (Jellyfin and
 Immich transcoding).
 """
+
 from pathlib import Path
 import re
 import subprocess
@@ -38,8 +39,15 @@ def lspci_vendors(lspci):
         if not re.search(r'"(VGA compatible controller|3D controller|Display controller)"', line):
             continue
         lower = line.lower()
-        out += [vendor for vendor, marks in (('intel', ('intel',)), ('amd', ('advanced micro devices', 'amd/ati', 'ati technologies')),
-                                             ('nvidia', ('nvidia',))) if any(mark in lower for mark in marks)]
+        out += [
+            vendor
+            for vendor, marks in (
+                ('intel', ('intel',)),
+                ('amd', ('advanced micro devices', 'amd/ati', 'ati technologies')),
+                ('nvidia', ('nvidia',)),
+            )
+            if any(mark in lower for mark in marks)
+        ]
     return out
 
 
@@ -79,6 +87,9 @@ def video_choices(nodes):
     preferred first: a machine with Intel and AMD graphics tries Intel, then AMD, and each
     vendor's chips in device order. Intel uses Quick Sync; AMD uses VA-API. NVIDIA needs
     the proprietary driver and container toolkit, which are not installed automatically."""
-    return [(vendor, node, jellyfin, immich)
-            for vendor, jellyfin, immich in (('intel', 'qsv', 'qsv'), ('amd', 'vaapi', 'vaapi'))
-            for found, node in nodes if found == vendor]
+    return [
+        (vendor, node, jellyfin, immich)
+        for vendor, jellyfin, immich in (('intel', 'qsv', 'qsv'), ('amd', 'vaapi', 'vaapi'))
+        for found, node in nodes
+        if found == vendor
+    ]

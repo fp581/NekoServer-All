@@ -1,4 +1,5 @@
 """The app password list in backups opens only with the backup password."""
+
 import hashlib
 import json
 import shutil
@@ -40,16 +41,35 @@ class BackupSecretsTests(unittest.TestCase):
         snap = self.root / 'snapshot'
         snap.mkdir()
         (snap / 'manifest.json').write_text('{"format": "neko-maintenance-v1"}')
-        archive = subprocess.run(['tar', '--create', '--file', '-', '-C', str(data), 'secrets/accounts'],
-                                 capture_output=True, check=True).stdout
-        subprocess.run(['openssl', 'cms', '-encrypt', '-binary', '-aes256', '-outform', 'DER',
-                        '-out', str(snap / backup_secrets.ARCHIVE_NAME), str(self.keys / backup_secrets.CERT_NAME)],
-                       input=archive, check=True)
+        archive = subprocess.run(
+            ['tar', '--create', '--file', '-', '-C', str(data), 'secrets/accounts'], capture_output=True, check=True
+        ).stdout
+        subprocess.run(
+            [
+                'openssl',
+                'cms',
+                '-encrypt',
+                '-binary',
+                '-aes256',
+                '-outform',
+                'DER',
+                '-out',
+                str(snap / backup_secrets.ARCHIVE_NAME),
+                str(self.keys / backup_secrets.CERT_NAME),
+            ],
+            input=archive,
+            check=True,
+        )
         for name in (backup_secrets.KEY_NAME, backup_secrets.CERT_NAME):
             (snap / name).write_bytes((self.keys / name).read_bytes())
-        sums = {key: hashlib.sha256((snap / name).read_bytes()).hexdigest() for key, name in (
-            ('secrets', backup_secrets.ARCHIVE_NAME), ('secrets_key', backup_secrets.KEY_NAME),
-            ('secrets_cert', backup_secrets.CERT_NAME))}
+        sums = {
+            key: hashlib.sha256((snap / name).read_bytes()).hexdigest()
+            for key, name in (
+                ('secrets', backup_secrets.ARCHIVE_NAME),
+                ('secrets_key', backup_secrets.KEY_NAME),
+                ('secrets_cert', backup_secrets.CERT_NAME),
+            )
+        }
         (snap / 'manifest.json').write_text(json.dumps({'format': 'neko-maintenance-v1', 'sha256': sums}))
         return snap
 
@@ -78,8 +98,10 @@ class BackupSecretsTests(unittest.TestCase):
         # Typed twice and compared: sudo is not asked at all, so a passwordless sudo
         # rule can't let any text through.
         answers = iter(['correct horse', 'correct hrose', 'short', 'battery staple', 'battery stapel'])
-        with mock.patch.object(backup_secrets.subprocess, 'run', wraps=subprocess.run) as run, \
-                self.assertRaisesRegex(RuntimeError, 'no backup password was confirmed'):
+        with (
+            mock.patch.object(backup_secrets.subprocess, 'run', wraps=subprocess.run) as run,
+            self.assertRaisesRegex(RuntimeError, 'no backup password was confirmed'),
+        ):
             backup_secrets.setup(ask=lambda prompt: next(answers), out=self.log.append, key_dir=self.keys)
         self.assertFalse(backup_secrets.configured(self.keys))
         self.assertFalse(any('sudo' in call.args[0] for call in run.call_args_list))
@@ -111,6 +133,7 @@ class BackupSecretsTests(unittest.TestCase):
 
     def test_a_failed_unpack_says_why_and_leaves_nothing_behind(self):
         from unittest import mock
+
         self.make_key()
         snap = self.seal_snapshot()
         real = backup_secrets.subprocess.run
@@ -119,8 +142,11 @@ class BackupSecretsTests(unittest.TestCase):
             if argv[0] == 'tar':
                 return mock.Mock(returncode=2, stderr=b'tar: secrets: Cannot write: No space left on device\n')
             return real(argv, **kw)
-        with mock.patch.object(backup_secrets.subprocess, 'run', side_effect=run), \
-                self.assertRaisesRegex(RuntimeError, 'No space left on device.*nothing was restored'):
+
+        with (
+            mock.patch.object(backup_secrets.subprocess, 'run', side_effect=run),
+            self.assertRaisesRegex(RuntimeError, 'No space left on device.*nothing was restored'),
+        ):
             backup_secrets.restore(snap, self.root / 'out', 'correct horse')
         self.assertFalse((self.root / 'out').exists())
 
@@ -135,6 +161,7 @@ class BackupSecretsTests(unittest.TestCase):
             if argv[0] == 'tar':
                 seen.append((argv, kw.get('cwd')))
             return real(argv, **kw)
+
         target = self.root / '--to-command=sh'
         with mock.patch.object(backup_secrets.subprocess, 'run', side_effect=run):
             out = backup_secrets.restore(snap, target, 'correct horse')
@@ -181,6 +208,7 @@ class BackupSecretsTests(unittest.TestCase):
 
     def test_a_damaged_key_copy_fails_the_snapshot_check(self):
         import importlib.util
+
         spec = importlib.util.spec_from_file_location('monthly_recovery', ROOT / 'monthly-recovery.py')
         monthly = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(monthly)
@@ -208,8 +236,8 @@ class BackupSecretsTests(unittest.TestCase):
         snap = self.seal_snapshot()
         out = str(self.root / 'out')
         cases = [
-            ('-snapshot', out),                       # would look like an option
-            ('snapshot', out),                        # relative
+            ('-snapshot', out),  # would look like an option
+            ('snapshot', out),  # relative
             (str(self.root / 'snapshot/../snapshot'), out),
             (str(snap), '-out'),
             (str(snap), str(self.root / 'missing-parent/out')),
@@ -232,6 +260,7 @@ class BackupSecretsTests(unittest.TestCase):
         def spy(args, *a, **k):
             seen.append(args)
             return real(args, *a, **k)
+
         with mock.patch.object(backup_secrets.subprocess, 'run', spy):
             self.make_key()
         self.assertTrue(seen)

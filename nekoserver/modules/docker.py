@@ -1,4 +1,5 @@
 """Docker foundation with guarded, non-migrating data-root configuration."""
+
 import native_runtime
 import json
 import os
@@ -8,9 +9,9 @@ from pathlib import Path
 import host
 from neko_common import safe_path, mount_path, atomic_write, atomic_json, findmnt, VERSION, DOCKER_STORAGE_DROPIN
 
-DEPENDENCIES = ['storage','recovery']
+DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Verify dedicated SSD and Docker data-root; --apply configures fresh daemon and mount guard'
-DAEMON_FILE = Path('/etc/docker/daemon.json')   # Docker's own settings (tests point it elsewhere)
+DAEMON_FILE = Path('/etc/docker/daemon.json')  # Docker's own settings (tests point it elsewhere)
 
 
 def call(args, timeout=120):
@@ -23,7 +24,9 @@ def call(args, timeout=120):
 def mounted_data_root(root):
     root = safe_path(root)
     if not root.is_absolute() or str(root) in ('/', '/home', '/var', '/tmp', '/mnt', '/srv'):
-        raise RuntimeError('Persistent root must be a dedicated absolute directory under a separately mounted filesystem')
+        raise RuntimeError(
+            'Persistent root must be a dedicated absolute directory under a separately mounted filesystem'
+        )
     if not shutil.which('findmnt'):
         raise RuntimeError('findmnt required to verify mounted storage')
     if not root.is_dir():
@@ -38,9 +41,11 @@ def mounted_data_root(root):
 
 def already_used(where, target):
     """Docker was already set up on this PC: NekoServer never moves or deletes its data."""
-    return RuntimeError(f'Docker is already set up on this PC and keeps its data in {where}. NekoServer runs Docker '
-                        f'from the SSD ({target}) and never moves or deletes existing Docker data by itself: see '
-                        f'"If Docker is already used on this PC" in STORAGE.md, then run setup again')
+    return RuntimeError(
+        f'Docker is already set up on this PC and keeps its data in {where}. NekoServer runs Docker '
+        f'from the SSD ({target}) and never moves or deletes existing Docker data by itself: see '
+        f'"If Docker is already used on this PC" in STORAGE.md, then run setup again'
+    )
 
 
 def prepare_daemon_config(path, target):
@@ -51,10 +56,14 @@ def prepare_daemon_config(path, target):
     existing = content.get('data-root')
     if existing and existing != str(target):
         raise already_used(existing, target)
-    features=content.setdefault('features',{})
-    if not isinstance(features,dict) or features.get('containerd-snapshotter') is True or features.get('containerd-migration') is True:
+    features = content.setdefault('features', {})
+    if (
+        not isinstance(features, dict)
+        or features.get('containerd-snapshotter') is True
+        or features.get('containerd-migration') is True
+    ):
         raise RuntimeError('containerd image store requires separate verified migration; refusing backend switch')
-    features['containerd-snapshotter']=False
+    features['containerd-snapshotter'] = False
     content['data-root'] = str(target)
     bound_logs(content)
     return content
@@ -67,16 +76,27 @@ DOCKER_SOCKET = 'docker.socket'
 # Settings that daemon.json and a flag on Docker's service command line can both set:
 # set in both, Docker refuses to start ("specified both as a flag and in the
 # configuration file").
-FLAG_KEYS = {'--data-root': 'data-root', '-g': 'data-root', '--graph': 'data-root',
-             '--log-driver': 'log-driver', '--log-opt': 'log-opts', '--storage-driver': 'storage-driver',
-             '-s': 'storage-driver'}
+FLAG_KEYS = {
+    '--data-root': 'data-root',
+    '-g': 'data-root',
+    '--graph': 'data-root',
+    '--log-driver': 'log-driver',
+    '--log-opt': 'log-opts',
+    '--storage-driver': 'storage-driver',
+    '-s': 'storage-driver',
+}
 
 
 def service_flags(run=subprocess.run):
     """The command line Docker's service starts it with (its ExecStart, drop-ins included)."""
     try:
-        shown = run(['systemctl', 'show', DOCKER_SERVICE, '-p', 'ExecStart', '--value'],
-                    capture_output=True, text=True, timeout=30, check=False)
+        shown = run(
+            ['systemctl', 'show', DOCKER_SERVICE, '-p', 'ExecStart', '--value'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return ''
     return shown.stdout if shown.returncode == 0 else ''
@@ -93,18 +113,26 @@ def validate_daemon(content, run=subprocess.run):
     Docker refuses would leave it unable to start. Docker before 23 has no such check."""
     conflicts = flag_conflicts(content, service_flags(run))
     if conflicts:
-        raise RuntimeError('Docker\'s service already sets ' + ', '.join(conflicts) + ' on its command line (a drop-in '
-                           'in /etc/systemd/system/docker.service.d, say), and NekoServer sets it in /etc/docker/daemon.json: '
-                           'Docker refuses to start with both. Take the flag out of the service, then run setup again')
+        raise RuntimeError(
+            'Docker\'s service already sets ' + ', '.join(conflicts) + ' on its command line (a drop-in '
+            'in /etc/systemd/system/docker.service.d, say), and NekoServer sets it in /etc/docker/daemon.json: '
+            'Docker refuses to start with both. Take the flag out of the service, then run setup again'
+        )
     dockerd = shutil.which('dockerd')
     if not dockerd:
         return
     import tempfile
-    with tempfile.NamedTemporaryFile('w', suffix='.json') as draft:   # no secrets in it
+
+    with tempfile.NamedTemporaryFile('w', suffix='.json') as draft:  # no secrets in it
         json.dump(content, draft)
         draft.flush()
-        checked = run([dockerd, '--validate', '--config-file', draft.name], capture_output=True, text=True,
-                      timeout=60, check=False)
+        checked = run(
+            [dockerd, '--validate', '--config-file', draft.name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
     said = (checked.stdout + checked.stderr).strip()
     if checked.returncode and 'unknown flag' not in said:
         raise RuntimeError(f'Docker refuses the new /etc/docker/daemon.json ({said[-300:]}); nothing was changed')
@@ -144,7 +172,10 @@ def store_in_use(default):
     the package was installed, or after NekoServer was uninstalled) proves nothing."""
     default = Path(default)
     places = [default / 'containers', default / 'volumes', *default.glob('image/*/imagedb/content/sha256')]
-    return any(place.is_dir() and any(p.name not in ('metadata.db', 'backingFsBlockDev') for p in place.iterdir()) for place in places)
+    return any(
+        place.is_dir() and any(p.name not in ('metadata.db', 'backingFsBlockDev') for p in place.iterdir())
+        for place in places
+    )
 
 
 def active_store_in_use(call=None):
@@ -164,12 +195,16 @@ def check_existing_docker(target):
         # Safe to reuse a target only when Docker already points to it.
         if (target.parent / 'installer/host-checkpoint.json').is_file():
             # The usual reason: Linux was reinstalled and the SSD put back. Name the way out.
-            raise RuntimeError(f'The SSD already holds the apps of an earlier NekoServer install ({target}); after '
-                               f'reinstalling Linux they are taken over with a check of the Docker version first, not by '
-                               f'setup itself. Follow "Replace the OS and reattach the existing store" in RECOVERY.md '
-                               f'(sudo python3 {target.parent}/installer/releases/v{VERSION}/recover.py reattach), '
-                               f'then run setup again')
-        raise RuntimeError(f'{target} is not empty; refusing to adopt existing Docker data without migration verification')
+            raise RuntimeError(
+                f'The SSD already holds the apps of an earlier NekoServer install ({target}); after '
+                f'reinstalling Linux they are taken over with a check of the Docker version first, not by '
+                f'setup itself. Follow "Replace the OS and reattach the existing store" in RECOVERY.md '
+                f'(sudo python3 {target.parent}/installer/releases/v{VERSION}/recover.py reattach), '
+                f'then run setup again'
+            )
+        raise RuntimeError(
+            f'{target} is not empty; refusing to adopt existing Docker data without migration verification'
+        )
 
 
 def write_atomic(path, payload):
@@ -177,46 +212,51 @@ def write_atomic(path, payload):
 
 
 def verify_classic_store():
-    status=call(['docker','info','--format','{{json .DriverStatus}}'])
+    status = call(['docker', 'info', '--format', '{{json .DriverStatus}}'])
     if 'io.containerd.snapshotter' in status:
         raise RuntimeError('Docker containerd image store is outside this data-root plan; separate migration required')
-    try: json.loads(status)
-    except ValueError: raise RuntimeError('Cannot verify Docker storage backend') from None
+    try:
+        json.loads(status)
+    except ValueError:
+        raise RuntimeError('Cannot verify Docker storage backend') from None
 
 
 def guard_contents(config, runtime):
-    paths = [str(mount_path(config[k])) for k in ('data_mount','media_mount')]
-    units = [call(['systemd-escape','--path','--suffix=mount',p]) for p in paths]
-    guard=str(runtime/'nekoserver-runtime')+' storage-guard'
-    return ('# Managed by NekoServer\n[Unit]\nRequiresMountsFor='+' '.join(paths)+'\n'
-            'BindsTo='+' '.join(units)+'\nAfter='+' '.join(units)+'\n'
-            '[Service]\nExecStartPre='+guard+
-            ' --config '+str(runtime/'storage.json')+'\n')
+    paths = [str(mount_path(config[k])) for k in ('data_mount', 'media_mount')]
+    units = [call(['systemd-escape', '--path', '--suffix=mount', p]) for p in paths]
+    guard = str(runtime / 'nekoserver-runtime') + ' storage-guard'
+    return (
+        '# Managed by NekoServer\n[Unit]\nRequiresMountsFor=' + ' '.join(paths) + '\n'
+        'BindsTo=' + ' '.join(units) + '\nAfter=' + ' '.join(units) + '\n'
+        '[Service]\nExecStartPre=' + guard + ' --config ' + str(runtime / 'storage.json') + '\n'
+    )
 
 
 def install_storage_guard(config):
     root = mount_path(config['data_mount'])
-    runtime = safe_path(root/'installer'/'guards'/('v'+VERSION))
-    runtime.mkdir(parents=True,exist_ok=True)
+    runtime = safe_path(root / 'installer' / 'guards' / ('v' + VERSION))
+    runtime.mkdir(parents=True, exist_ok=True)
     project = Path(__file__).resolve().parents[1]
-    atomic_json(runtime/'storage.json',{k:config[k] for k in ('data_mount','media_mount','storage')})
-    guard = native_runtime.deploy(project,config,runtime)
+    atomic_json(runtime / 'storage.json', {k: config[k] for k in ('data_mount', 'media_mount', 'storage')})
+    guard = native_runtime.deploy(project, config, runtime)
     # Docker's start guard must run on this Linux, or Docker never starts: a copy built on
     # a newer Linux (kept on the SSD through a reinstall) may not. Checked before Docker's
     # settings are touched.
     if not native_runtime.runs_here(guard):
-        raise RuntimeError(f'The NekoServer program at {guard} does not start on this Linux (it was built on another '
-                           'one), so Docker could not start with it. Run  sudo bash install.sh  first: it builds the '
-                           'program for this Linux. Docker\'s settings were not changed.')
+        raise RuntimeError(
+            f'The NekoServer program at {guard} does not start on this Linux (it was built on another '
+            'one), so Docker could not start with it. Run  sudo bash install.sh  first: it builds the '
+            'program for this Linux. Docker\'s settings were not changed.'
+        )
     override = DOCKER_STORAGE_DROPIN
-    desired = guard_contents(config,runtime)
+    desired = guard_contents(config, runtime)
     if override.exists():
         old = safe_path(override).read_text()
         legacy = f'[Unit]\nRequiresMountsFor={root}\n'
         if old != legacy and not old.startswith('# Managed by NekoServer\n'):
             raise RuntimeError('Unmanaged Docker storage override; refusing overwrite')
-    write_atomic(override,desired)
-    call(['systemctl','daemon-reload'])
+    write_atomic(override, desired)
+    call(['systemctl', 'daemon-reload'])
 
 
 def ensure_active_compose(settings):
@@ -235,7 +275,7 @@ def run(context):
     root = settings.get('persistent_root', context.config.get('data_mount', '/srv/nekoserver'))
     if root != context.config.get('data_mount'):
         raise RuntimeError('docker.persistent_root must equal data_mount')
-    root = str(mount_path(root))   # the same spelling the drop-in uses (no trailing slash)
+    root = str(mount_path(root))  # the same spelling the drop-in uses (no trailing slash)
     mount, source = mounted_data_root(root)
     target = Path(root) / 'docker-engine'
     context.log(f'SSD mounted at {mount} from {source}; Docker data-root requested: {target}')
@@ -257,7 +297,9 @@ def run(context):
         if active_store_in_use():
             raise already_used(actual, target)
         # Nothing in it (just installed, or NekoServer uninstalled): it runs from the SSD from now on.
-        context.log(f'Docker runs from {actual} with nothing in it (no container, image or volume): stopped, to run from the SSD')
+        context.log(
+            f'Docker runs from {actual} with nothing in it (no container, image or volume): stopped, to run from the SSD'
+        )
         subprocess.run(['systemctl', 'stop', DOCKER_SOCKET, DOCKER_SERVICE], check=True, timeout=300)
         active = False
     if active:
@@ -271,17 +313,26 @@ def run(context):
         verify_classic_store()
         install_storage_guard(context.config)
         validate_daemon(daemon)
-        write_atomic(daemon_file,json.dumps(daemon,indent=2)+'\n')
+        write_atomic(daemon_file, json.dumps(daemon, indent=2) + '\n')
         context.log('Verified SSD/HDD startup guard installed; running containers were not restarted')
         return
     already_configured = daemon_file.exists() and json.loads(daemon_file.read_text()).get('data-root') == str(target)
     if not already_configured:
         check_existing_docker(target)
-    elif target.exists() and any(target.iterdir()) and json.loads(daemon_file.read_text()).get('features',{}).get('containerd-snapshotter') is not False:
-        raise RuntimeError('Stopped existing Docker backend is unverified; start and inspect it before changing storage settings')
+    elif (
+        target.exists()
+        and any(target.iterdir())
+        and json.loads(daemon_file.read_text()).get('features', {}).get('containerd-snapshotter') is not False
+    ):
+        raise RuntimeError(
+            'Stopped existing Docker backend is unverified; start and inspect it before changing storage settings'
+        )
     has_docker = shutil.which('docker') is not None
-    has_compose = has_docker and subprocess.run(['docker', 'compose', 'version'], capture_output=True, check=False,
-                                                timeout=60).returncode == 0
+    has_compose = (
+        has_docker
+        and subprocess.run(['docker', 'compose', 'version'], capture_output=True, check=False, timeout=60).returncode
+        == 0
+    )
     if not (has_docker and has_compose):
         if not settings.get('install_engine', False):
             raise RuntimeError('Docker missing; set docker.install_engine=true before --apply')
@@ -298,7 +349,9 @@ def run(context):
     if settings.get('enable_service', True):
         # Earlier failed starts (the guard missing after a drive problem, say) make systemd
         # refuse a start with "attempted too often"; that count is cleared first.
-        subprocess.run(['systemctl', 'reset-failed', DOCKER_SERVICE, DOCKER_SOCKET], capture_output=True, timeout=30, check=False)
+        subprocess.run(
+            ['systemctl', 'reset-failed', DOCKER_SERVICE, DOCKER_SOCKET], capture_output=True, timeout=30, check=False
+        )
         call(['systemctl', 'enable', '--now', 'docker'], timeout=90)
         actual = call(['docker', 'info', '--format', '{{.DockerRootDir}}'])
         if actual != str(target):

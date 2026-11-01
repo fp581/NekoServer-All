@@ -1,4 +1,5 @@
 """One-time, interactive desktop handoffs. Never run a browser as root."""
+
 import getpass
 import os
 from pathlib import Path
@@ -36,8 +37,9 @@ def yes_no(question, prompt=None, output=None):
 
 
 def interactive(ctx):
-    return bool(getattr(ctx, 'apply', False) and
-                ctx.config.get('guided_setup', {}).get('enabled', True) and sys.stdin.isatty())
+    return bool(
+        getattr(ctx, 'apply', False) and ctx.config.get('guided_setup', {}).get('enabled', True) and sys.stdin.isatty()
+    )
 
 
 def desktop_command(config, argv):
@@ -49,38 +51,48 @@ def desktop_command(config, argv):
             raise RuntimeError('Desktop identity does not match sudo user')
     else:
         selected = config.get('tv', {}).get('user', 'auto')
-        user = (pwd.getpwnam(selected) if selected != 'auto' else
-                pwd.getpwuid(config.get('media', {}).get('uid', 1000)))
+        user = pwd.getpwnam(selected) if selected != 'auto' else pwd.getpwuid(config.get('media', {}).get('uid', 1000))
     home = safe_path(user.pw_dir)
-    if (user.pw_uid < 1000 or user.pw_name == 'root' or
-            user.pw_shell.endswith(('nologin', 'false')) or not home.is_dir() or
-            home.stat().st_uid != user.pw_uid):
+    if (
+        user.pw_uid < 1000
+        or user.pw_name == 'root'
+        or user.pw_shell.endswith(('nologin', 'false'))
+        or not home.is_dir()
+        or home.stat().st_uid != user.pw_uid
+    ):
         raise RuntimeError('An existing, logged-in non-root desktop user is required')
     runtime = safe_path(Path('/run/user') / str(user.pw_uid))
     if not runtime.is_dir() or runtime.stat().st_uid != user.pw_uid:
         raise RuntimeError('No active desktop runtime for the selected user')
-    env = ['HOME=' + str(home), 'USER=' + user.pw_name, 'LOGNAME=' + user.pw_name,
-           'PATH=/usr/local/bin:/usr/bin:/bin', 'XDG_RUNTIME_DIR=' + str(runtime)]
+    env = [
+        'HOME=' + str(home),
+        'USER=' + user.pw_name,
+        'LOGNAME=' + user.pw_name,
+        'PATH=/usr/local/bin:/usr/bin:/bin',
+        'XDG_RUNTIME_DIR=' + str(runtime),
+    ]
     bus = runtime / 'bus'
     if bus.exists():
         env.append('DBUS_SESSION_BUS_ADDRESS=unix:path=' + str(bus))
     display = os.environ.get('DISPLAY', '')
     wayland = os.environ.get('WAYLAND_DISPLAY', '')
-    if re.fullmatch(r':[0-9]+(?:\.[0-9]+)?', display):
+    if re.fullmatch(r':\d+(?:\.\d+)?', display):
         env.append('DISPLAY=' + display)
-    if re.fullmatch(r'wayland-[0-9]+', wayland) and (runtime / wayland).exists():
+    if re.fullmatch(r'wayland-\d+', wayland) and (runtime / wayland).exists():
         env.append('WAYLAND_DISPLAY=' + wayland)
     elif not wayland:
         # sudo may strip WAYLAND_DISPLAY; use an actual socket in this user's runtime.
-        sockets = sorted(p for p in runtime.glob('wayland-*')
-                         if re.fullmatch(r'wayland-[0-9]+', p.name) and p.is_socket())
+        sockets = sorted(p for p in runtime.glob('wayland-*') if re.fullmatch(r'wayland-\d+', p.name) and p.is_socket())
         if len(sockets) == 1:
             env.append('WAYLAND_DISPLAY=' + sockets[0].name)
     auth = os.environ.get('XAUTHORITY', '')
     if auth:
         candidate = safe_path(auth)
-        if (candidate.is_file() and candidate.stat().st_uid == user.pw_uid and
-                (home in candidate.parents or runtime in candidate.parents)):
+        if (
+            candidate.is_file()
+            and candidate.stat().st_uid == user.pw_uid
+            and (home in candidate.parents or runtime in candidate.parents)
+        ):
             env.append('XAUTHORITY=' + str(candidate))
     return ['runuser', '-u', user.pw_name, '--', 'env', '-i', *env, *argv]
 
@@ -88,11 +100,17 @@ def desktop_command(config, argv):
 def valid_url(url):
     try:
         parsed = urlsplit(url)
-        return (isinstance(url, str) and len(url) < 4096 and
-                not any(ord(ch) < 33 or ord(ch) == 127 for ch in url) and
-                not parsed.username and not parsed.password and bool(parsed.hostname) and
-                (parsed.scheme == 'https' or
-                 (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost'))))
+        return (
+            isinstance(url, str)
+            and len(url) < 4096
+            and not any(ord(ch) < 33 or ord(ch) == 127 for ch in url)
+            and not parsed.username
+            and not parsed.password
+            and bool(parsed.hostname)
+            and (
+                parsed.scheme == 'https' or (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost'))
+            )
+        )
     except (TypeError, ValueError):
         return False
 
@@ -105,10 +123,20 @@ def valid_page(path, root=None):
     root = Path(root or PAGE_ROOT)
     try:
         path = Path(path)
-        return (path.is_absolute() and path.parent == root and path.suffix == '.html'
-                and not path.is_symlink() and not root.is_symlink() and path.is_file())
+        return (
+            path.is_absolute()
+            and path.parent == root
+            and path.suffix == '.html'
+            and not path.is_symlink()
+            and not root.is_symlink()
+            and path.is_file()
+        )
     except (TypeError, ValueError, OSError):
         return False
+
+
+# GNOME's settings window, which also has the Bluetooth page.
+SETTINGS_APP = '/usr/bin/gnome-control-center'
 
 
 def launch(ctx, target, kind='url'):
@@ -141,21 +169,28 @@ def launch(ctx, target, kind='url'):
             return False
     else:
         # Steam lives in /usr/games on Debian and Ubuntu, in /usr/bin elsewhere.
-        commands = {'steam': [find_program('steam') or '/usr/bin/steam', '-gamepadui'],
-                    'bluetooth': ['/usr/bin/blueman-manager'],
-                    'settings': ['/usr/bin/gnome-control-center', 'display']}
+        commands = {
+            'steam': [find_program('steam') or '/usr/bin/steam', '-gamepadui'],
+            'bluetooth': ['/usr/bin/blueman-manager'],
+            'settings': [SETTINGS_APP, 'display'],
+        }
         if kind not in commands:
             raise ValueError('Unsupported desktop application')
         argv = commands[kind]
-        if kind == 'bluetooth' and Path('/usr/bin/gnome-control-center').is_file():
-            argv = ['/usr/bin/gnome-control-center', 'bluetooth']
+        if kind == 'bluetooth' and Path(SETTINGS_APP).is_file():
+            argv = [SETTINGS_APP, 'bluetooth']
         if not Path(argv[0]).is_file():
             return False
     try:
         command = desktop_command(ctx.config, argv)
-        child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True, cwd='/')
+        child = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd='/',
+        )
         try:
             return child.wait(timeout=2) == 0
         except subprocess.TimeoutExpired:
@@ -164,8 +199,51 @@ def launch(ctx, target, kind='url'):
         return False
 
 
-def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None,
-               prompt=None, output=None):
+def show_step(output, title, instructions):
+    output('\n=== ' + title + ' ===')
+    for number, instruction in enumerate(instructions, 1):
+        output(str(number) + '. ' + instruction)
+    output('Return to the terminal afterward. No reopens this step; Ctrl+C leaves it pending.')
+
+
+def prepared_targets(targets, prepare, output):
+    """The step's targets and what `prepare` adds to them (nothing when it fails, said)."""
+    current = list(targets)
+    if prepare:
+        try:
+            current.extend(prepare() or ())
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            output('The launch preparation did not complete. Follow the instructions manually or answer no to retry.')
+    return current
+
+
+def open_targets(ctx, targets, output):
+    for kind, target in targets:
+        opened = launch(ctx, target, kind)
+        if kind in ('url', 'page'):
+            # Print only to the user's console, not the durable installer logger.
+            output(('Opened: ' if opened else 'Open this address manually: ') + target)
+        elif not opened:
+            output('Automatic launch unavailable. Open ' + kind + ' from your desktop menu.')
+
+
+def check_passed(verify, output):
+    """Whether the step's own check passes (no check: yes); a failure is said with its reason."""
+    if not verify:
+        return True
+    why = ''
+    try:
+        passed = verify()
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        passed, why = False, str(exc)
+    if not passed:
+        output(
+            'The automatic check has not passed' + (': ' + why if why else '') + '. Review the step, then try again.'
+        )
+    return passed
+
+
+def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, prompt=None, output=None):
     """No repeats instructions/opening; yes must also pass any supplied verifier.
 
     EOF/Ctrl+C leaves this step pending. Background/read-only runs never launch or
@@ -177,41 +255,15 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None,
     output = output or print
     try:
         while True:
-            output('\n=== ' + title + ' ===')
-            for number, instruction in enumerate(instructions, 1):
-                output(str(number) + '. ' + instruction)
-            output('Return to the terminal afterward. No reopens this step; Ctrl+C leaves it pending.')
-            current = list(targets)
-            if prepare:
-                try:
-                    extra = prepare()
-                    if extra:
-                        current.extend(extra)
-                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-                    output('The launch preparation did not complete. Follow the instructions manually or answer no to retry.')
-            for kind, target in current:
-                opened = launch(ctx, target, kind)
-                if kind in ('url', 'page'):
-                    # Print only to the user's console, not the durable installer logger.
-                    output(('Opened: ' if opened else 'Open this address manually: ') + target)
-                elif not opened:
-                    output('Automatic launch unavailable. Open ' + kind + ' from your desktop menu.')
+            show_step(output, title, instructions)
+            open_targets(ctx, prepared_targets(targets, prepare, output), output)
             answer = yes_no('Have you completed this step successfully?', prompt, output)
             if answer is None:
                 raise EOFError
             if not answer:
                 output('Reopening this step and repeating its instructions.')
-                continue
-            if verify:
-                why = ''
-                try:
-                    verified = verify()
-                except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-                    verified, why = False, str(exc)
-                if not verified:
-                    output('The automatic check has not passed' + (': ' + why if why else '') + '. Review the step, then try again.')
-                    continue
-            return True
+            elif check_passed(verify, output):
+                return True
     except EOFError:
         output('\nStep remains pending. Reapply this profile to resume; saved choices are kept.')
         return False
@@ -268,8 +320,11 @@ def wanted(ctx, section, question, explain=(), prompt=None, output=None):
     options['wanted'] = answer
     save_settings(ctx)
     if not options['wanted']:
-        output('Skipped. To set it up later, change "wanted" to true under "' + section +
-               '" in my-config.json and run  sudo bash install.sh  again.')
+        output(
+            'Skipped. To set it up later, change "wanted" to true under "'
+            + section
+            + '" in my-config.json and run  sudo bash install.sh  again.'
+        )
     return options['wanted']
 
 
@@ -277,17 +332,26 @@ def app_security(ctx, apps, ports):
     def verify_accounts():
         import account_setup
         from recovery_tools import lock
+
         with lock(ctx.config):
             return not account_setup.provision(ctx.config, apps, output=ctx.log)
+
     import account_store
+
     verify = verify_accounts if account_store.enabled(ctx.config) else None
-    return checkpoint(ctx, 'Check application logins and access permissions', [
-        'Sign into each opened app using its own saved username/email and password.',
-        'See an app\'s login (with a QR code) in a terminal on the server:  ' + login_command(ctx.config) + '  '
-        'Email-shaped local logins do not sign you into an external mail provider.',
-        'If an app explicitly requests email verification, open your own email app, '
-        'follow its verification link, then return. Enter external passwords only on the provider page.',
-        'Verify administrator access, disable unwanted public registration where available, '
-        'and check that personal files are not shared with unintended users.',
-        'Do not confirm until every selected app can be signed into.'
-    ], [('url', 'http://127.0.0.1:' + str(ports[app]) + '/') for app in apps], verify=verify)
+    return checkpoint(
+        ctx,
+        'Check application logins and access permissions',
+        [
+            'Sign into each opened app using its own saved username/email and password.',
+            'See an app\'s login (with a QR code) in a terminal on the server:  ' + login_command(ctx.config) + '  '
+            'Email-shaped local logins do not sign you into an external mail provider.',
+            'If an app explicitly requests email verification, open your own email app, '
+            'follow its verification link, then return. Enter external passwords only on the provider page.',
+            'Verify administrator access, disable unwanted public registration where available, '
+            'and check that personal files are not shared with unintended users.',
+            'Do not confirm until every selected app can be signed into.',
+        ],
+        [('url', 'http://127.0.0.1:' + str(ports[app]) + '/') for app in apps],
+        verify=verify,
+    )

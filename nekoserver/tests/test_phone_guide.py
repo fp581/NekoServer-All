@@ -1,4 +1,5 @@
 """Phone setup steps and the QR page."""
+
 import sys
 import tempfile
 import unittest
@@ -18,8 +19,11 @@ LINKS = {
     'navidrome': 'https://neko.tail1234.ts.net:8446/',
     'nextcloud': 'https://neko.tail1234.ts.net:8447/',
 }
-USERS = {'jellyfin': {'username': 'neko_ab12'}, 'navidrome_listener': {'username': 'listener'},
-         'immich': {'username': 'me@example.org', 'password': 'SECRET-PW'}}
+USERS = {
+    'jellyfin': {'username': 'neko_ab12'},
+    'navidrome_listener': {'username': 'listener'},
+    'immich': {'username': 'me@example.org', 'password': 'SECRET-PW'},
+}
 
 
 def fake_get(config, app, verified=False):
@@ -75,8 +79,10 @@ class PhoneGuideTests(unittest.TestCase):
         """It must still work after the downloaded folder is deleted, and a folder name
         with a space must stay one argument when pasted."""
         command = phone_guide.show_command({'data_mount': '/srv/my ssd'}, 'jellyfin')
-        self.assertEqual(command, "sudo python3 '/srv/my ssd/installer/releases/v" + phone_guide.VERSION +
-                         "/account-setup.py' show jellyfin")
+        self.assertEqual(
+            command,
+            "sudo python3 '/srv/my ssd/installer/releases/v" + phone_guide.VERSION + "/account-setup.py' show jellyfin",
+        )
         self.assertTrue((ROOT / phone_guide.SHOW_TOOL).is_file())
 
     def test_page_lists_phone_apps_apart_from_the_numbered_steps(self):
@@ -124,8 +130,14 @@ class LocalPageRuleTests(unittest.TestCase):
             (root / 'notes.txt').write_text('x')
             (root / 'link.html').symlink_to(good)
             self.assertTrue(guided_setup.valid_page(good, root=root))
-            for bad in (root / 'sub/x.html', root / 'notes.txt', root / 'link.html',
-                        root / 'missing.html', 'relative.html', Path('/etc/passwd')):
+            for bad in (
+                root / 'sub/x.html',
+                root / 'notes.txt',
+                root / 'link.html',
+                root / 'missing.html',
+                'relative.html',
+                Path('/etc/passwd'),
+            ):
                 with self.subTest(bad=bad):
                     self.assertFalse(guided_setup.valid_page(bad, root=root))
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Fail Docker startup unless the configured SSD and HDD are actually mounted."""
+
 import argparse
 import json
 import subprocess

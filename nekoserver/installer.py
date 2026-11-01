@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """NekoServer modular, standard-library-only orchestration framework."""
+
 import argparse
 import fcntl
 import stat
@@ -14,17 +15,31 @@ import capabilities
 import guided_setup
 import host
 import setup_progress
-from neko_common import atomic_json, mount_path, relative_path, VERSION, safe_path, ensure_directory, settings_path, pending_maintenance, default_settings, NO_SETTINGS, BUNDLE_MANIFEST
+from neko_common import (
+    atomic_json,
+    mount_path,
+    relative_path,
+    VERSION,
+    safe_path,
+    ensure_directory,
+    settings_path,
+    pending_maintenance,
+    default_settings,
+    NO_SETTINGS,
+    BUNDLE_MANIFEST,
+)
 
 # The installer's own log lines (a step's status), as against a step's own words.
 MARKERS = ('START ', 'PASS ', 'FAILED ', 'NEEDS SETUP ', 'UNAVAILABLE ', 'BLOCKED ', 'Finished:')
 
 ROOT = Path(__file__).resolve().parent
-SETTINGS_FILE = 'config.json'   # the example settings that come with NekoServer
+SETTINGS_FILE = 'config.json'  # the example settings that come with NekoServer
 DEFAULT_STATE = Path.home() / '.local' / 'state' / 'nekoserver'
+
 
 class InstallerError(Exception):
     pass
+
 
 class Context:
     def __init__(self, config, logger, apply=False, config_path=None):
@@ -37,11 +52,12 @@ class Context:
     def persist_config(self):
         """Save the settings (drives chosen, say) to the settings file. The file keeps its
         owner: the wizard makes my-config.json yours to edit, and setup runs as root."""
-        for path in dict.fromkeys(p for p in (self.original_config_path,self.config_path) if p is not None):
+        for path in dict.fromkeys(p for p in (self.original_config_path, self.config_path) if p is not None):
             owner = (path.stat().st_uid, path.stat().st_gid) if path.exists() else None
-            atomic_json(path,self.config)
+            atomic_json(path, self.config)
             if owner is not None and os.geteuid() == 0:
                 os.chown(path, *owner)
+
 
 def read_json(path):
     """A settings or state file (.json): absolute, no '..', no symlinks along the way."""
@@ -51,6 +67,7 @@ def read_json(path):
         raise InstallerError(str(exc)) from None
     with checked.open(encoding='utf-8') as f:
         return json.load(f)
+
 
 def load_modules(directory):
     modules = {}
@@ -66,8 +83,10 @@ def load_modules(directory):
         modules[path.stem] = {'object': obj, 'deps': deps}
     return modules
 
+
 def ordered(modules, selected):
     result, visited = [], {}
+
     def visit(name):
         if name not in modules:
             raise InstallerError(f'Unknown module or dependency: {name}')
@@ -80,17 +99,22 @@ def ordered(modules, selected):
             visit(dep)
         visited[name] = 'done'
         result.append(name)
+
     for name in selected:
         visit(name)
     return result
+
 
 def failure_reason(exc):
     """What a failed step says. An error with no words of its own (Ctrl+D at a
     question, say) still gets a reason."""
     if isinstance(exc, subprocess.CalledProcessError):
         # The command's own last words, not "returned non-zero exit status 1".
-        said = ((exc.stderr or exc.stdout or '') if isinstance(exc.stderr or exc.stdout, str)
-                else (exc.stderr or exc.stdout or b'').decode(errors='replace')).strip()
+        said = (
+            (exc.stderr or exc.stdout or '')
+            if isinstance(exc.stderr or exc.stdout, str)
+            else (exc.stderr or exc.stdout or b'').decode(errors='replace')
+        ).strip()
         command = ' '.join(exc.cmd) if isinstance(exc.cmd, (list, tuple)) else str(exc.cmd)
         return f'{command} failed' + (f': {said[-500:]}' if said else f' (exit status {exc.returncode}, no details)')
     if isinstance(exc, subprocess.TimeoutExpired):
@@ -106,38 +130,46 @@ def failure_reason(exc):
 def stopped_by_hand(states, name, state_path, log):
     """Stopped with Ctrl+C: recorded as such (not "running"), so the next run starts this
     step again; the setup then ends without a traceback."""
-    states[name]={'status':'failed','reason':'Stopped with Ctrl+C'}
-    atomic_json_write(state_path,states)
+    states[name] = {'status': 'failed', 'reason': 'Stopped with Ctrl+C'}
+    atomic_json_write(state_path, states)
     log(f'STOPPED {name}: Ctrl+C')
 
 
 def move_log(old_log, log_path):
     """The log kept before the SSD was mounted goes on to the SSD's log: moved, not
     copied, or a later run would copy the same lines again."""
-    if old_log!=log_path and old_log.exists():
+    if old_log != log_path and old_log.exists():
         with safe_path(log_path).open('a') as stream:
-            os.fchmod(stream.fileno(),0o600)
+            os.fchmod(stream.fileno(), 0o600)
             stream.write(old_log.read_text())
         old_log.unlink()
-    os.chmod(log_path,0o600)
+    os.chmod(log_path, 0o600)
 
 
 def atomic_json_write(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_json(path,data)
+    atomic_json(path, data)
+
 
 # Settings every installation needs, with what they are for (shown when one is missing).
-REQUIRED = {'data_mount': 'where the app SSD is mounted', 'media_mount': 'where the media HDD is mounted',
-            'external_backup_mount': 'where the USB backup drive is mounted'}
+REQUIRED = {
+    'data_mount': 'where the app SSD is mounted',
+    'media_mount': 'where the media HDD is mounted',
+    'external_backup_mount': 'where the USB backup drive is mounted',
+}
+
 
 def require_settings(config):
     """The settings every installation needs are there, or which one is missing and how
     to get it back."""
-    if not isinstance(config,dict):raise InstallerError('Configuration must be an object')
+    if not isinstance(config, dict):
+        raise InstallerError('Configuration must be an object')
     missing = next((key for key in REQUIRED if not isinstance(config.get(key), str) or not config[key]), None)
     if missing:
-        raise InstallerError(f'The settings file has no "{missing}" ({REQUIRED[missing]}). Copy it from config.json in this folder, '
-                             'or delete my-config.json and run  sudo bash install.sh  to make a new one')
+        raise InstallerError(
+            f'The settings file has no "{missing}" ({REQUIRED[missing]}). Copy it from config.json in this folder, '
+            'or delete my-config.json and run  sudo bash install.sh  to make a new one'
+        )
 
 
 # Backup counts whose template default changed in v0.30.0. A settings file from an earlier
@@ -155,6 +187,7 @@ RETIRED_DEFAULTS = (
 # someone's choice, also when it equals an earlier default.
 RETENTION_REVIEWED = 'retention_reviewed'
 
+
 def retire_old_defaults(config, ask=None):
     """Backup counts still at an earlier template default, reviewed once: with `ask` (a
     yes/no question to the person at the keyboard) each one moves to the current default
@@ -167,17 +200,26 @@ def retire_old_defaults(config, ask=None):
         options = config.get(group)
         if not (isinstance(options, dict) and type(options.get(key)) is int and options[key] == old):
             continue
-        if ask is not None and ask(f'Your settings keep the newest {old} {what}, the default before v0.30.0 '
-                                   f'(now {new}). Keep fewer from now on, the newest {new}?') is True:
+        if (
+            ask is not None
+            and ask(
+                f'Your settings keep the newest {old} {what}, the default before v0.30.0 '
+                f'(now {new}). Keep fewer from now on, the newest {new}?'
+            )
+            is True
+        ):
             options[key] = new
             lines.append(f'Backups: the newest {new} {what} are kept from now on, not {old}')
         else:
-            lines.append(f'Backups: the newest {old} {what} stay kept (the default is {new} now; '
-                         f'set "{key}" under "{group}" in my-config.json to change it)')
+            lines.append(
+                f'Backups: the newest {old} {what} stay kept (the default is {new} now; '
+                f'set "{key}" under "{group}" in my-config.json to change it)'
+            )
     if ask is None and lines:
-        return lines, False      # asked when someone is at the keyboard
+        return lines, False  # asked when someone is at the keyboard
     config[RETENTION_REVIEWED] = True
     return lines, True
+
 
 def review_retention(ctx, apply):
     """The earlier default backup counts reviewed (retire_old_defaults), asking only
@@ -188,10 +230,12 @@ def review_retention(ctx, apply):
     if changed and apply:
         ctx.persist_config()
 
+
 def validate_config(config):
     require_settings(config)
-    for group in ('runtime','modules','profiles','storage','media','photos','docker'):
-        if not isinstance(config.get(group,{}),dict):raise InstallerError(group+' must be an object')
+    for group in ('runtime', 'modules', 'profiles', 'storage', 'media', 'photos', 'docker'):
+        if not isinstance(config.get(group, {}), dict):
+            raise InstallerError(group + ' must be an object')
     # Saved pre-v0.18 configurations lack these switches. Apply current defaults
     # in memory so reusing confirmed disk settings cannot revive retired jobs.
     for group, defaults in (
@@ -200,41 +244,57 @@ def validate_config(config):
         ('photos', {'backup_schedule': 'weekly'}),
     ):
         options = config.setdefault(group, {})
-        if not isinstance(options, dict):raise InstallerError(group+' must be an object')
-        for key, value in defaults.items():options.setdefault(key, value)
-    for entry in config.get('modules',{}).values():
-        if not isinstance(entry,dict) or type(entry.get('enabled',False)) is not bool:raise InstallerError('Module enable switches must be booleans')
-    for names in config.get('profiles',{}).values():
-        if not isinstance(names,list) or any(not isinstance(name,str) for name in names) or len(set(names))!=len(names):raise InstallerError('Profiles must contain unique module names')
-    runtime=config.get("runtime",{})
+        if not isinstance(options, dict):
+            raise InstallerError(group + ' must be an object')
+        for key, value in defaults.items():
+            options.setdefault(key, value)
+    for entry in config.get('modules', {}).values():
+        if not isinstance(entry, dict) or type(entry.get('enabled', False)) is not bool:
+            raise InstallerError('Module enable switches must be booleans')
+    for names in config.get('profiles', {}).values():
+        if (
+            not isinstance(names, list)
+            or any(not isinstance(name, str) for name in names)
+            or len(set(names)) != len(names)
+        ):
+            raise InstallerError('Profiles must contain unique module names')
+    runtime = config.get("runtime", {})
     # "python" is accepted only so older configs still load; it now means Rust.
-    if not isinstance(runtime,dict) or runtime.get("backend","rust") not in ("python","rust"):
+    if not isinstance(runtime, dict) or runtime.get("backend", "rust") not in ("python", "rust"):
         raise InstallerError("runtime.backend must be rust")
     data, media = mount_path(config['data_mount']), mount_path(config['media_mount'])
     if data == media or data in media.parents or media in data.parents:
         raise InstallerError('Data and media mounts must be separate and non-nested')
     backup = mount_path(config['external_backup_mount'])
-    if any(backup == p or backup in p.parents or p in backup.parents for p in (data,media)):
+    if any(backup == p or backup in p.parents or p in backup.parents for p in (data, media)):
         raise InstallerError('External backup mount must be separate from data and media')
     # Older settings files carry docker.persistent_root; it can only be the app SSD.
-    if config.get('docker',{}).get('persistent_root',str(data)) != str(data):
-        raise InstallerError('"persistent_root" under "docker" must be the same as "data_mount" (or delete that line: Docker always uses the app SSD)')
-    for key, default in [('archive_dir','photos/archive'),('inbox_dir','photos/inbox')]:
-        relative_path(config.get('photos',{}).get(key,default))
-    archive = media/relative_path(config.get('photos',{}).get('archive_dir','photos/archive'))
+    if config.get('docker', {}).get('persistent_root', str(data)) != str(data):
+        raise InstallerError(
+            '"persistent_root" under "docker" must be the same as "data_mount" (or delete that line: Docker always uses the app SSD)'
+        )
+    for key, default in [('archive_dir', 'photos/archive'), ('inbox_dir', 'photos/inbox')]:
+        relative_path(config.get('photos', {}).get(key, default))
+    archive = media / relative_path(config.get('photos', {}).get('archive_dir', 'photos/archive'))
     # Reserve the former HDD live tree too: never adopt it as an archive on upgrade.
-    managed = media/'photos'/'immich-library'
+    managed = media / 'photos' / 'immich-library'
     if archive == managed or archive in managed.parents or managed in archive.parents:
         raise InstallerError('Photo archive must be separate from the Immich upload tree')
-    selected = config.get('media',{}).get('services',[])
-    allowed = {'jellyfin','navidrome','sonarr','radarr','lidarr','prowlarr','seerr','qbittorrent'}
-    if not isinstance(selected,list) or not selected or len(selected)!=len(set(selected)) or not set(selected)<=allowed:
+    selected = config.get('media', {}).get('services', [])
+    allowed = {'jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'seerr', 'qbittorrent'}
+    if (
+        not isinstance(selected, list)
+        or not selected
+        or len(selected) != len(set(selected))
+        or not set(selected) <= allowed
+    ):
         raise InstallerError('media.services must contain unique known services')
 
 
 def template_steps(config):
     """config_checks.merge_profiles with the template next to the installer."""
     from config_checks import merge_profiles
+
     return merge_profiles(config, template_settings(ROOT))
 
 
@@ -271,30 +331,50 @@ def _execute(args, root=ROOT):
     if not state_dir.is_absolute() or '..' in state_dir.parts:
         raise InstallerError('--state-dir must be an absolute path without ".."')
     state_dir = safe_path(state_dir)
-    if state_dir==DEFAULT_STATE and os.path.ismount(config['data_mount']):
-        state_dir=Path(config['data_mount'])/'installer'/'state'
+    if state_dir == DEFAULT_STATE and os.path.ismount(config['data_mount']):
+        state_dir = Path(config['data_mount']) / 'installer' / 'state'
     state_path = safe_path(state_dir / 'state.json')
     safe_path(state_dir / 'install.log')
     previous = read_json(state_path) if state_path.exists() else {}
-    if not isinstance(previous,dict) or any(not isinstance(value,dict) for value in previous.values()):
+    if not isinstance(previous, dict) or any(not isinstance(value, dict) for value in previous.values()):
         raise InstallerError('Installer state must map module names to state objects')
     if args.retry_failed and not previous:
         raise InstallerError('No prior installer state; mount the data SSD with the foundation profile before retrying')
     if args.profile:
-        if args.profile not in config.get('profiles', {}):raise InstallerError('Unknown profile: '+args.profile)
+        if args.profile not in config.get('profiles', {}):
+            raise InstallerError('Unknown profile: ' + args.profile)
         selected = config['profiles'][args.profile]
     elif args.module:
         selected = [args.module]
     elif args.retry_failed:
-        selected = [name for name in modules if previous.get(name, {}).get('status') in ('failed', 'blocked','needs_setup','running')]
+        selected = [
+            name
+            for name in modules
+            if previous.get(name, {}).get('status') in ('failed', 'blocked', 'needs_setup', 'running')
+        ]
     else:
         selected = enabled
     plan = ordered(modules, selected)
     from config_checks import validate
-    validate(config,plan)
-    if args.apply and set(plan)&{'docker','server_os','dashboard','gateway_lan','media_monitor','photo_preservation','photo_backup','app_backup','host_backup','notifications','heartbeat','maintenance'}:
+
+    validate(config, plan)
+    if args.apply and set(plan) & {
+        'docker',
+        'server_os',
+        'dashboard',
+        'gateway_lan',
+        'media_monitor',
+        'photo_preservation',
+        'photo_backup',
+        'app_backup',
+        'host_backup',
+        'notifications',
+        'heartbeat',
+        'maintenance',
+    }:
         from native_runtime import payload
-        payload(ROOT,config)
+
+        payload(ROOT, config)
     if args.check or args.dry_run:
         save_profiles(None, added, False, False)
         print(f'NekoServer v{VERSION} — read-only plan (no changes):')
@@ -303,23 +383,25 @@ def _execute(args, root=ROOT):
         if args.check:
             print('Configuration and dependency graph valid.')
         return 0
-    ensure_directory(state_dir,0o700)
+    ensure_directory(state_dir, 0o700)
     if not args.apply:
-        state_path=safe_path(state_dir/'inspection-state.json')
+        state_path = safe_path(state_dir / 'inspection-state.json')
     log_path = safe_path(state_dir / ('install.log' if args.apply else 'inspection.log'))
     states = dict(previous) if args.apply else {}
-    complete_status='success' if args.apply else 'inspected'
+    complete_status = 'success' if args.apply else 'inspected'
     failures = []
     unavailable = []
+
     def log(message):
         stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
         text = f'[{stamp}] {message}'
         print(text)
         with safe_path(log_path).open('a', encoding='utf-8') as handle:
-            os.fchmod(handle.fileno(),0o600)
+            os.fchmod(handle.fileno(), 0o600)
             handle.write(text + '\n')
         if not message.startswith(MARKERS):
-            setup_progress.note(message)   # a step's own words, for the setup window
+            setup_progress.note(message)  # a step's own words, for the setup window
+
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan
     save_profiles(ctx, added, profiles_changed, args.apply)
@@ -336,12 +418,16 @@ def _execute(args, root=ROOT):
             failures.append(name)
             atomic_json_write(state_path, states)
             continue
-        states[name]={'status':'running','version':VERSION,'started_at':dt.datetime.now(dt.timezone.utc).isoformat()}
-        atomic_json_write(state_path,states)
+        states[name] = {
+            'status': 'running',
+            'version': VERSION,
+            'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        atomic_json_write(state_path, states)
         log(f'START {name}')
         setup_progress.step(name, 'running')
         try:
-            result=modules[name]['object'].run(ctx)
+            result = modules[name]['object'].run(ctx)
         except KeyboardInterrupt:
             stopped_by_hand(states, name, state_path, log)
             raise
@@ -354,21 +440,30 @@ def _execute(args, root=ROOT):
         else:
             states[name] = outcome(result, complete_status)
             if states[name]['status'] == 'needs_setup':
-                failures.append(name);log(f'NEEDS SETUP {name}: {states[name]["reason"]}')
+                failures.append(name)
+                log(f'NEEDS SETUP {name}: {states[name]["reason"]}')
             elif states[name]['status'] == UNAVAILABLE:
-                unavailable.append(name);log(f'UNAVAILABLE {name}: {states[name]["reason"]}')
+                unavailable.append(name)
+                log(f'UNAVAILABLE {name}: {states[name]["reason"]}')
             else:
                 log(f'PASS {name}')
         setup_progress.step(name, states[name]['status'], states[name].get('reason', ''))
-        if name=='storage' and states[name]['status']=='success' and args.apply and Path(args.state_dir).expanduser()==DEFAULT_STATE:
-            persistent=Path(config['data_mount'])/'installer'/'state'
-            ensure_directory(persistent,0o700)
-            next_state=persistent/'state.json'
-            previous_persistent=read_json(next_state) if next_state.exists() else {}
-            states=moved_states(previous_persistent,states,plan[:plan.index(name)+1])
-            old_log,old_state=log_path,state_path
-            state_dir=persistent;state_path=next_state;log_path=persistent/'install.log'
-            move_log(old_log,log_path)
+        if (
+            name == 'storage'
+            and states[name]['status'] == 'success'
+            and args.apply
+            and Path(args.state_dir).expanduser() == DEFAULT_STATE
+        ):
+            persistent = Path(config['data_mount']) / 'installer' / 'state'
+            ensure_directory(persistent, 0o700)
+            next_state = persistent / 'state.json'
+            previous_persistent = read_json(next_state) if next_state.exists() else {}
+            states = moved_states(previous_persistent, states, plan[: plan.index(name) + 1])
+            old_log, old_state = log_path, state_path
+            state_dir = persistent
+            state_path = next_state
+            log_path = persistent / 'install.log'
+            move_log(old_log, log_path)
             retire(old_state)
         atomic_json_write(state_path, states)
     for name in REFRESHED:
@@ -387,9 +482,11 @@ def _execute(args, root=ROOT):
     # Counted as the finishing screen and the setup window count: steps done, out of the
     # steps this PC can have.
     here = len(plan) - len(unavailable)
-    log(f'Finished: {here - len(failures)} of {here} steps done; '
+    log(
+        f'Finished: {here - len(failures)} of {here} steps done; '
         + (f'{len(unavailable)} not available on this system; ' if unavailable else '')
-        + f'{len(failures)} failed, waiting or unfinished; log={log_path}')
+        + f'{len(failures)} failed, waiting or unfinished; log={log_path}'
+    )
     return 1 if failures else 0
 
 
@@ -410,8 +507,13 @@ def waiting_for(name, modules, states, complete_status):
 def blocked(held):
     """A waiting step's record: what it waits for, in the steps' titles."""
     from wizard import title
-    return {'status': 'blocked', 'waiting_for': held,
-            'reason': 'Waits for ' + ', '.join(title(n) for n in held) + ' to finish first'}
+
+    return {
+        'status': 'blocked',
+        'waiting_for': held,
+        'reason': 'Waits for ' + ', '.join(title(n) for n in held) + ' to finish first',
+    }
+
 
 def outcome(result, complete_status):
     """A step's recorded state from what its run() returned: a needs_setup or unavailable
@@ -434,16 +536,27 @@ def tidy_old_releases(config, states, log):
     if not data.startswith(('/srv/', '/mnt/')) or not os.path.ismount(data):
         return
     from native_runtime import retire_old
+
     try:
         retire_old(data, log)
     except (OSError, RuntimeError, KeyError) as exc:
         log(f'Earlier releases\' files not tidied: {exc}')
 
+
 # What an optional step returns when this Linux can't have it (yet).
 UNAVAILABLE = 'unavailable'
 
 # Steps whose saved settings are brought up to date after every run.
-REFRESHED = ('dashboard', 'host_backup', 'app_backup', 'maintenance', 'photo_backup', 'media_monitor', 'gateway_tailnet')
+REFRESHED = (
+    'dashboard',
+    'host_backup',
+    'app_backup',
+    'maintenance',
+    'photo_backup',
+    'media_monitor',
+    'gateway_tailnet',
+)
+
 
 def moved_states(on_ssd, here, ran):
     """The step records once they move to the SSD: the SSD's (the newer ones, from the
@@ -464,28 +577,31 @@ def retire(old_state):
 def execute(args, root=ROOT):
     if not args.apply:
         return _execute(args, root)
-    if os.geteuid()!=0:
+    if os.geteuid() != 0:
         raise InstallerError('--apply requires root')
-    blocked=pending_maintenance()
+    blocked = pending_maintenance()
     if blocked:
         raise InstallerError(blocked)
-    found=capabilities.detect()
+    found = capabilities.detect()
     capabilities.report(found)
     capabilities.require(found)
-    path=safe_path('/run/nekoserver-install.lock')
-    fd=os.open(path,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+    path = safe_path('/run/nekoserver-install.lock')
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
-        metadata=os.fstat(fd)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid!=0 or metadata.st_mode&0o077:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
             raise InstallerError('Installer lock must be a private root-owned regular file')
-        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:raise InstallerError('Another NekoServer installation is active') from None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise InstallerError('Another NekoServer installation is active') from None
         # Packages an earlier installation left half-done are tidied before any step runs
         # (under the package lock, so never another setup's installation in progress).
         host.current().reconcile()
         return _execute(args, root)
     finally:
         os.close(fd)
+
 
 def settings_for(args, parser):
     """The settings file a command without --wizard/--recover uses (those two default to
@@ -500,11 +616,15 @@ def settings_for(args, parser):
     if args.apply and not kept_copy and Path(chosen).resolve() == (ROOT / SETTINGS_FILE).resolve():
         if has_drives(ROOT / SETTINGS_FILE):
             # Older docs had people edit the template itself.
-            parser.error('config.json holds your drives, but it is the template that git updates. Keep your settings '
-                         'as my-config.json instead: in this folder run  cp config.json my-config.json  and then '
-                         'git checkout config.json, and run the command again')
-        parser.error('config.json is the template, not your settings. Run  sudo bash install.sh  first '
-                     '(it makes my-config.json with your drives and choices), or name a settings file with --config')
+            parser.error(
+                'config.json holds your drives, but it is the template that git updates. Keep your settings '
+                'as my-config.json instead: in this folder run  cp config.json my-config.json  and then '
+                'git checkout config.json, and run the command again'
+            )
+        parser.error(
+            'config.json is the template, not your settings. Run  sudo bash install.sh  first '
+            '(it makes my-config.json with your drives and choices), or name a settings file with --config'
+        )
     return chosen
 
 
@@ -516,12 +636,14 @@ def has_drives(path):
         return False
     return isinstance(storage, dict) and any(isinstance(v, dict) and v.get('uuid') for v in storage.values())
 
+
 def finish_update():
     """Only the unfinished monthly update, finished by this release (no other step runs)."""
     if os.geteuid() != 0:
         print('Run it with sudo:  sudo bash install.sh --finish-update', file=sys.stderr)
         return 1
     from modules import maintenance
+
     try:
         maintenance.finish_update()
     except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
@@ -529,19 +651,33 @@ def finish_update():
         return 2
     return 0
 
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='NekoServer safe phase-one installer framework')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--all', action='store_true', help='Run all enabled modules (default)')
     mode.add_argument('--profile', metavar='NAME', help='Run named module profile')
     mode.add_argument('--module', metavar='NAME', help='Run a module and its dependencies')
-    mode.add_argument('--retry-failed', action='store_true', help='Retry failed or blocked modules and their dependencies')
-    mode.add_argument('--wizard', action='store_true', help='Guided setup of everything (what `sudo bash install.sh` runs)')
+    mode.add_argument(
+        '--retry-failed', action='store_true', help='Retry failed or blocked modules and their dependencies'
+    )
+    mode.add_argument(
+        '--wizard', action='store_true', help='Guided setup of everything (what `sudo bash install.sh` runs)'
+    )
     mode.add_argument('--recover', action='store_true', help='Guided recovery from your backups')
-    mode.add_argument('--finish-update', action='store_true',
-                      help='Finish a monthly update an earlier release left unfinished, with this release (sudo bash install.sh --finish-update)')
-    parser.add_argument('--apply', action='store_true', help='Allow explicitly supported system changes (requires root for Docker install)')
-    parser.add_argument('--check', action='store_true', help='Validate configuration and dependency graph without running')
+    mode.add_argument(
+        '--finish-update',
+        action='store_true',
+        help='Finish a monthly update an earlier release left unfinished, with this release (sudo bash install.sh --finish-update)',
+    )
+    parser.add_argument(
+        '--apply',
+        action='store_true',
+        help='Allow explicitly supported system changes (requires root for Docker install)',
+    )
+    parser.add_argument(
+        '--check', action='store_true', help='Validate configuration and dependency graph without running'
+    )
     parser.add_argument('--dry-run', action='store_true', help='Preview execution; writes nothing')
     parser.add_argument('--config', help='Settings file (default: my-config.json here, the one the wizard made)')
     parser.add_argument('--state-dir', default=str(DEFAULT_STATE))
@@ -560,19 +696,25 @@ def main(argv=None):
     try:
         if args.wizard:
             import wizard
+
             return wizard.run(execute, Path(args.state_dir), config=args.config)
         if args.recover:
             import recovery_wizard
+
             return recovery_wizard.run(config_path=args.config)
         return execute(args)
     except KeyboardInterrupt:
         again = 'sudo bash install.sh --recover' if args.recover else 'sudo bash install.sh'
-        print(f'\nStopped. Nothing that was finished is undone. Run  {again}  again '
-              'when you are ready: it continues where it stopped.', file=sys.stderr)
+        print(
+            f'\nStopped. Nothing that was finished is undone. Run  {again}  again '
+            'when you are ready: it continues where it stopped.',
+            file=sys.stderr,
+        )
         return 130
     except (InstallerError, RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 2
+
 
 if __name__ == '__main__':
     sys.exit(main())

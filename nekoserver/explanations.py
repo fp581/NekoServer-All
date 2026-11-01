@@ -68,26 +68,50 @@ PACKAGES = {
 # The parts a person can leave out. `section`/`key` is where the choice is saved in
 # my-config.json; `on_default` is what setup assumes when nothing was chosen.
 EXTRAS = (
-    {'id': 'tv', 'section': 'tv', 'key': 'wanted', 'on_default': True, 'step': 'tv',
-     'title': 'A TV connected to this PC',
-     'explanation': 'Steam Big Picture for Remote Play from your gaming PC, a YouTube shortcut and Bluetooth for a '
-                    'controller. Skip it if this PC has no TV; your apps work on your other devices either way.',
-     'installs': ('steam', 'steam-devices', 'vulkan-intel', 'lib32-vulkan-intel', 'firefox', 'bluez')},
-    {'id': 'notifications', 'section': 'notifications', 'key': 'wanted', 'on_default': True, 'step': 'notifications',
-     'title': 'Phone alerts when something fails',
-     'explanation': 'A message on your phone through the free ntfy app when a backup or an app fails. '
-                    'You set up the ntfy app on your phone during setup.',
-     'installs': ()},
-    {'id': 'heartbeat', 'section': 'heartbeat', 'key': 'wanted', 'on_default': True, 'step': 'heartbeat',
-     'title': 'Outage alerts if the server goes offline',
-     'explanation': 'The server checks in with an outside service you choose (Healthchecks.io, say); when it stops '
-                    'checking in, that service tells you.',
-     'installs': ()},
-    {'id': 'nextcloud', 'section': 'nextcloud', 'key': 'enabled', 'on_default': True, 'step': 'nextcloud',
-     'title': 'Nextcloud, your private cloud drive',
-     'explanation': 'Your files on your own server, from the phone and the browser, with sharing. '
-                    'Photos go to Immich either way.',
-     'installs': ()},
+    {
+        'id': 'tv',
+        'section': 'tv',
+        'key': 'wanted',
+        'on_default': True,
+        'step': 'tv',
+        'title': 'A TV connected to this PC',
+        'explanation': 'Steam Big Picture for Remote Play from your gaming PC, a YouTube shortcut and Bluetooth for a '
+        'controller. Skip it if this PC has no TV; your apps work on your other devices either way.',
+        'installs': ('steam', 'steam-devices', 'vulkan-intel', 'lib32-vulkan-intel', 'firefox', 'bluez'),
+    },
+    {
+        'id': 'notifications',
+        'section': 'notifications',
+        'key': 'wanted',
+        'on_default': True,
+        'step': 'notifications',
+        'title': 'Phone alerts when something fails',
+        'explanation': 'A message on your phone through the free ntfy app when a backup or an app fails. '
+        'You set up the ntfy app on your phone during setup.',
+        'installs': (),
+    },
+    {
+        'id': 'heartbeat',
+        'section': 'heartbeat',
+        'key': 'wanted',
+        'on_default': True,
+        'step': 'heartbeat',
+        'title': 'Outage alerts if the server goes offline',
+        'explanation': 'The server checks in with an outside service you choose (Healthchecks.io, say); when it stops '
+        'checking in, that service tells you.',
+        'installs': (),
+    },
+    {
+        'id': 'nextcloud',
+        'section': 'nextcloud',
+        'key': 'enabled',
+        'on_default': True,
+        'step': 'nextcloud',
+        'title': 'Nextcloud, your private cloud drive',
+        'explanation': 'Your files on your own server, from the phone and the browser, with sharing. '
+        'Photos go to Immich either way.',
+        'installs': (),
+    },
 )
 
 

@@ -4,6 +4,7 @@ Creates the settings file on first run, explains what will happen, runs the full
 installation (with every guided pause, including Tailscale and the phone), then
 shows a finishing screen. Running it again continues where it stopped.
 """
+
 import argparse
 import builtins
 import json
@@ -22,23 +23,39 @@ from neko_common import VERSION, atomic_json, dashboard_port, mount_path, safe_p
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
-TEMPLATE = 'config.json'   # the settings template; also the name of the copy on the SSD
+TEMPLATE = 'config.json'  # the settings template; also the name of the copy on the SSD
 RELEASE = re.compile(r'v(\d{1,9})\.(\d{1,9})\.(\d{1,9})')
 
 STEPS = {
-    'system': 'System check', 'storage': 'Drives', 'capacity': 'Drive space',
-    'recovery': 'Recovery copy of NekoServer', 'account_credentials': 'App passwords',
-    'server_os': 'No-sleep and log limits', 'docker': 'Docker',
-    'recovery_checkpoint': 'Recovery checkpoint', 'media': 'Movie, TV and music apps',
-    'photos': 'Immich (photos)', 'photo_preservation': 'Weekly photo backup to the HDD',
-    'photo_backup': 'Weekly backup to the USB drive', 'nextcloud': 'Nextcloud (files)',
-    'accounts': 'App accounts', 'hardware_video': 'Video using the graphics chip', 'onboarding': 'Connecting the apps together',
-    'music': 'Music', 'gateway_lan': 'Access at home', 'tailscale': 'Tailscale',
-    'gateway_tailnet': 'Access from anywhere and phone setup', 'samba': 'Shared folders',
-    'media_monitor': 'App health checks', 'dashboard': 'Dashboard', 'tv': 'TV setup',
+    'system': 'System check',
+    'storage': 'Drives',
+    'capacity': 'Drive space',
+    'recovery': 'Recovery copy of NekoServer',
+    'account_credentials': 'App passwords',
+    'server_os': 'No-sleep and log limits',
+    'docker': 'Docker',
+    'recovery_checkpoint': 'Recovery checkpoint',
+    'media': 'Movie, TV and music apps',
+    'photos': 'Immich (photos)',
+    'photo_preservation': 'Weekly photo backup to the HDD',
+    'photo_backup': 'Weekly backup to the USB drive',
+    'nextcloud': 'Nextcloud (files)',
+    'accounts': 'App accounts',
+    'hardware_video': 'Video using the graphics chip',
+    'onboarding': 'Connecting the apps together',
+    'music': 'Music',
+    'gateway_lan': 'Access at home',
+    'tailscale': 'Tailscale',
+    'gateway_tailnet': 'Access from anywhere and phone setup',
+    'samba': 'Shared folders',
+    'media_monitor': 'App health checks',
+    'dashboard': 'Dashboard',
+    'tv': 'TV setup',
     'desktop': 'Desktop shortcuts',
-    'app_backup': 'Nightly app backup', 'notifications': 'Phone alerts',
-    'heartbeat': 'Server heartbeat', 'host_backup': 'Nightly settings backup',
+    'app_backup': 'Nightly app backup',
+    'notifications': 'Phone alerts',
+    'heartbeat': 'Server heartbeat',
+    'host_backup': 'Nightly settings backup',
     'maintenance': 'Monthly updates',
 }
 
@@ -90,10 +107,12 @@ def prepare_settings(root=ROOT, account=None):
         try:
             pwd.getpwuid(int(uid))
         except (KeyError, TypeError, ValueError):
-            raise RuntimeError('Setup does not know whose account this server is for: it was started as root, not with sudo '
-                               'from your own account, and this PC has no account with user ID ' + str(uid) + '. Run it from '
-                               'your own account with  sudo bash install.sh , or as root name your account:  SUDO_USER=<your '
-                               'account name> bash install.sh') from None
+            raise RuntimeError(
+                'Setup does not know whose account this server is for: it was started as root, not with sudo '
+                'from your own account, and this PC has no account with user ID ' + str(uid) + '. Run it from '
+                'your own account with  sudo bash install.sh , or as root name your account:  SUDO_USER=<your '
+                'account name> bash install.sh'
+            ) from None
     atomic_json(path, settings)
     if account is not None:
         # Readable and editable by the person who ran sudo, nobody else.
@@ -104,7 +123,7 @@ def prepare_settings(root=ROOT, account=None):
 
 def release_version(name, prefix=''):
     """(major, minor, patch) of a folder named prefix + 'v1.2.3', else None."""
-    match = RELEASE.fullmatch(name[len(prefix):]) if name.startswith(prefix) else None
+    match = RELEASE.fullmatch(name[len(prefix) :]) if name.startswith(prefix) else None
     return tuple(int(n) for n in match.groups()) if match else None
 
 
@@ -135,7 +154,11 @@ def earlier_settings(root=ROOT, output=None):
         if read_json(path):
             return path
         if output is not None:
-            output('The settings at ' + str(path) + ' cannot be read (not a settings file, or damaged), so they are not used.')
+            output(
+                'The settings at '
+                + str(path)
+                + ' cannot be read (not a settings file, or damaged), so they are not used.'
+            )
     return None
 
 
@@ -178,8 +201,10 @@ def setup_window(path, output):
     except (OSError, RuntimeError, ValueError):
         return None
     if setup_gui.open_window(config, window.url):
-        output('\nA setup window opened in your browser: it explains each step as it happens. Put it where you like.'
-               '\nClosed it by mistake? Open  ' + window.url + '  again in a browser on this PC, from this account.')
+        output(
+            '\nA setup window opened in your browser: it explains each step as it happens. Put it where you like.'
+            '\nClosed it by mistake? Open  ' + window.url + '  again in a browser on this PC, from this account.'
+        )
     else:
         output('\nTo follow along in a window, open  ' + window.url + '  in a browser on this PC.')
     return window
@@ -189,7 +214,7 @@ def _typed(stdin, output):
     """One line typed at "Ready to start?": True, False, or None when it was neither yes
     nor no (the question is put again)."""
     line = stdin.readline()
-    if not line:            # Ctrl+D
+    if not line:  # Ctrl+D
         output('')
         return False
     answer = line.strip().lower()
@@ -203,7 +228,7 @@ def _typed(stdin, output):
 
 
 def wait_to_start(prompt, output, window, stdin=None):
-    """"Ready to start?": yes in the terminal, or Start pressed in the setup window."""
+    """ "Ready to start?": yes in the terminal, or Start pressed in the setup window."""
     if window is None or prompt is not builtins.input:
         return ask('\nReady to start?', prompt, output)
     stdin = sys.stdin if stdin is None else stdin
@@ -287,8 +312,12 @@ def causes(name, states, seen=()):
     named = record.get('waiting_for')
     named = named if isinstance(named, list) else WAITED_FOR.findall(str(record.get('reason', '')))
     # (A step finished since, in a later run, holds nothing up any more.)
-    found = [cause for dep in named if (states.get(dep) or {}).get('status') not in ('success', 'unavailable')
-             for cause in causes(dep, states, (*seen, name))]
+    found = [
+        cause
+        for dep in named
+        if (states.get(dep) or {}).get('status') not in ('success', 'unavailable')
+        for cause in causes(dep, states, (*seen, name))
+    ]
     return list(dict.fromkeys(found)) or [name]
 
 
@@ -328,9 +357,14 @@ def show_dashboard(config, output, pin_file=PIN_FILE):
             # The PIN's folder is root-only; without root the answer is unknown, and
             # the finishing screen is still shown.
             pin = 'unknown (only root can see it: sudo bash install.sh)'
-        output('Dashboard PIN:      ' + (pin or
-               'not set: phones can only look, and apps can\'t be restarted from it. '
-               'Run  sudo bash install.sh  again to choose one.'))
+        output(
+            'Dashboard PIN:      '
+            + (
+                pin
+                or 'not set: phones can only look, and apps can\'t be restarted from it. '
+                'Run  sudo bash install.sh  again to choose one.'
+            )
+        )
 
 
 def show_addresses(data, output):
@@ -347,10 +381,14 @@ def show_addresses(data, output):
             output(f'    {app.capitalize():<10} {url}')
 
 
-NEXT_DONE = ['  Everything is set up. Backups and monthly updates run on their own;',
-             '  the dashboard shows how they are doing.']
-NEXT_PENDING = ['  1. Fix the first item under "What needs you" (its line says how).',
-                '  2. Then run  sudo bash install.sh  again: it continues where it stopped and keeps everything done.']
+NEXT_DONE = [
+    '  Everything is set up. Backups and monthly updates run on their own;',
+    '  the dashboard shows how they are doing.',
+]
+NEXT_PENDING = [
+    '  1. Fix the first item under "What needs you" (its line says how).',
+    '  2. Then run  sudo bash install.sh  again: it continues where it stopped and keeps everything done.',
+]
 
 
 def finished(plan, by_status, checkup):
@@ -367,10 +405,16 @@ def show_checkup(checkup, output):
 def sorted_steps(plan, states):
     """The steps by how they ended: done, waiting for you, not available here, did not
     finish (failed, stopped, or never ran), and waiting for another step."""
-    by_status = {status: [n for n in plan if states[n].get('status') in group]
-                 for status, group in (('done', ('success',)), ('waiting', ('needs_setup',)),
-                                       ('unavailable', ('unavailable',)), ('blocked', ('blocked',)),
-                                       ('broken', ('failed', 'running', 'missing')))}
+    by_status = {
+        status: [n for n in plan if states[n].get('status') in group]
+        for status, group in (
+            ('done', ('success',)),
+            ('waiting', ('needs_setup',)),
+            ('unavailable', ('unavailable',)),
+            ('blocked', ('blocked',)),
+            ('broken', ('failed', 'running', 'missing')),
+        )
+    }
     sorted_out = {n for names in by_status.values() for n in names}
     by_status['broken'] += [n for n in plan if n not in sorted_out]
     return by_status
@@ -386,22 +430,34 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     # The template's full profile (a settings file from an earlier release may lack steps
     # added since), without the steps you took out, plus your own.
     from config_checks import expected_steps
+
     expected = [n for n in expected_steps(config, read_json(ROOT / TEMPLATE)) if n in STEPS]
     plan = list(dict.fromkeys([*ran, *expected])) or [name for name in STEPS if name in states]
-    states = {n: states.get(n) if isinstance(states.get(n), dict) else
-              {'status': 'missing', 'reason': 'did not run (no record of this step)'} for n in plan}
+    states = {
+        n: states.get(n)
+        if isinstance(states.get(n), dict)
+        else {'status': 'missing', 'reason': 'did not run (no record of this step)'}
+        for n in plan
+    }
     by_status = sorted_steps(plan, states)
-    by_status['waiting'] += [n for n in by_status['blocked'] if causes(n, states) == [n]]   # waits for nothing known
+    by_status['waiting'] += [n for n in by_status['blocked'] if causes(n, states) == [n]]  # waits for nothing known
     blocked = [n for n in by_status['blocked'] if n not in by_status['waiting']]
     complete = finished(plan, {'waiting': by_status['waiting'], 'broken': by_status['broken'] + blocked}, checkup)
     total = len(plan) - len(by_status['unavailable'])
     line = '=' * 64
     output('\n' + line)
-    output('  ' + headline(complete, len(by_status['done']), total, len(by_status['broken']) + len(by_status['waiting'])))
+    output(
+        '  ' + headline(complete, len(by_status['done']), total, len(by_status['broken']) + len(by_status['waiting']))
+    )
     output(line)
     output(f'\nDone: {len(by_status["done"])} of {total} steps.')
-    show_steps('What needs you (fix these first; the steps after them then run by themselves):',
-               by_status['broken'] + by_status['waiting'], states, 'stopped before finishing', output)
+    show_steps(
+        'What needs you (fix these first; the steps after them then run by themselves):',
+        by_status['broken'] + by_status['waiting'],
+        states,
+        'stopped before finishing',
+        output,
+    )
     show_waiting(blocked, states, output)
     show_steps('Not available on this system:', by_status['unavailable'], states, 'not available', output)
     show_checkup(checkup, output)
@@ -417,12 +473,19 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
 def show_end(config, data, plan, states, page, output):
     """Where everything is: the apps' addresses, the passwords, the phone page, the dashboard."""
     show_addresses(data, output)
-    output('\nPasswords:          ' + guided_setup.login_command({'data_mount': str(data)}) + '  (an app\'s login, with a QR code)')
+    output(
+        '\nPasswords:          '
+        + guided_setup.login_command({'data_mount': str(data)})
+        + '  (an app\'s login, with a QR code)'
+    )
     if page and Path(page).exists():
         output('Phone setup page:   ' + str(page) + '  (open it in a browser on this PC)')
     show_dashboard(config, output)
-    if 'onboarding' in plan and states['onboarding'].get('status') == 'success' \
-            and not (data / 'reports/onboarding/playback.json').exists():
+    if (
+        'onboarding' in plan
+        and states['onboarding'].get('status') == 'success'
+        and not (data / 'reports/onboarding/playback.json').exists()
+    ):
         output('\nPlayback verification pending: the apps are set up and their automatic checks')
         output('passed, but no real playback was tested yet. Play something once to be sure.')
 
@@ -450,9 +513,11 @@ def after_setup(code, path, default_state, output, window):
     if code == 0 and config:
         # Every step finished: back up and check now rather than waiting for the night.
         import first_checkup
+
         checkup = first_checkup.run(config, output)
     try:
         import phone_guide
+
         page = phone_guide.PAGE
     except ImportError:
         page = None
@@ -461,11 +526,12 @@ def after_setup(code, path, default_state, output, window):
     def shown(line=''):
         lines.append(str(line))
         output(line)
+
     ran = setup_progress.last('plan')
     complete = finishing_screen(config, states, page, shown, checkup, ran['steps'] if ran else ())
     if window is not None:
         # The window shows the same summary; give it a moment to fetch it.
-        heading = next((text.strip() for text in lines[1:2]), '')   # under the first ruled line
+        heading = next((text.strip() for text in lines[1:2]), '')  # under the first ruled line
         setup_progress.event('finished', lines=lines, complete=complete, title=heading)
         window.delivered.wait(3)
     return 0 if complete and code == 0 else 1
@@ -483,8 +549,11 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     path, created = settings
     for line in WELCOME:
         output(line)
-    output('\nYour settings are in ' + str(path) +
-           (' (just created for you; you do not need to edit it).' if created else '.'))
+    output(
+        '\nYour settings are in '
+        + str(path)
+        + (' (just created for you; you do not need to edit it).' if created else '.')
+    )
     setup_progress.enable()
     window = setup_window(path, output) if prompt is builtins.input else None
     try:
@@ -492,19 +561,28 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
             if window is not None:
                 window.freeze()
             default_state = checked_path(default_state)
-            args = argparse.Namespace(all=False, profile='full', module=None, retry_failed=False,
-                                      apply=True, check=False, dry_run=False, config=str(path),
-                                      state_dir=str(default_state))
+            args = argparse.Namespace(
+                all=False,
+                profile='full',
+                module=None,
+                retry_failed=False,
+                apply=True,
+                check=False,
+                dry_run=False,
+                config=str(path),
+                state_dir=str(default_state),
+            )
             with setup_progress.watching_prompts():
                 code = execute(args)
             exit_code = after_setup(code, path, default_state, output, window)
         else:
-            output('No apps were set up. (The system update and the packages NekoServer needs are '
-                   'already installed; that is all.) Run  sudo bash install.sh  when you are ready.')
+            output(
+                'No apps were set up. (The system update and the packages NekoServer needs are '
+                'already installed; that is all.) Run  sudo bash install.sh  when you are ready.'
+            )
             exit_code = 0
     finally:
         if window is not None:
             window.stop()
         setup_progress.disable()
     return exit_code
-

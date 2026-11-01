@@ -1,4 +1,5 @@
 """Collect account choices once before app deployment; never print passwords."""
+
 import sys
 import account_store
 from neko_common import verify_storage
@@ -21,7 +22,10 @@ def run(ctx):
         apps = account_store.selected(ctx.config, ('media', 'photos', 'nextcloud'))
     missing = set(apps) - account_store.load(ctx.config)['apps'].keys()
     if missing and not sys.stdin.isatty():
-        return {'status': 'needs_setup', 'reason': 'Run  sudo bash install.sh  in a terminal window to choose each app\'s login and password'}
+        return {
+            'status': 'needs_setup',
+            'reason': 'Run  sudo bash install.sh  in a terminal window to choose each app\'s login and password',
+        }
     with lock(ctx.config):
         account_store.collect(ctx.config, apps, allow_corrections=sys.stdin.isatty())
     ctx.log('Account choices saved under the private SSD secrets/accounts directory')

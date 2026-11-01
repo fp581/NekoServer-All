@@ -1,4 +1,5 @@
 """The shared nightly-snapshot verify/restore used by app-recovery.py and host-recovery.py."""
+
 import hashlib
 import json
 import os
@@ -20,8 +21,17 @@ def make(snapshot, kind, files, extra_rows=()):
         path = snapshot / 'payload' / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(body)
-        rows.append({'path': rel, 'kind': 'file', 'uid': 0, 'gid': 0, 'mode': 0o644,
-                     'size': len(body), 'sha256': hashlib.sha256(body).hexdigest()})
+        rows.append(
+            {
+                'path': rel,
+                'kind': 'file',
+                'uid': 0,
+                'gid': 0,
+                'mode': 0o644,
+                'size': len(body),
+                'sha256': hashlib.sha256(body).hexdigest(),
+            }
+        )
     rows.extend(extra_rows)
     for rel in sorted({str(Path(r).parent) for r in files} - {'.'}):
         if rel.split('/')[0] in kind.roots and '/' not in rel:
@@ -51,8 +61,16 @@ class SnapshotRestoreTests(unittest.TestCase):
 
     def test_host_snapshot_keeps_links_as_text_and_rejects_foreign_roots(self):
         snap = self.root / 'snap'
-        link = {'path': 'source0/link', 'kind': 'symlink', 'uid': 0, 'gid': 0, 'mode': 0o777,
-                'size': 9, 'sha256': hashlib.sha256(b'/etc/xyz').hexdigest(), 'link_target': '/etc/xyz'}
+        link = {
+            'path': 'source0/link',
+            'kind': 'symlink',
+            'uid': 0,
+            'gid': 0,
+            'mode': 0o777,
+            'size': 9,
+            'sha256': hashlib.sha256(b'/etc/xyz').hexdigest(),
+            'link_target': '/etc/xyz',
+        }
         (snap / 'payload/source0').mkdir(parents=True)
         (snap / 'payload/source0/link').write_text('/etc/xyz')
         link['size'] = 8
@@ -77,11 +95,14 @@ class SnapshotRestoreTests(unittest.TestCase):
 
     def test_the_report_says_owners_were_restored_only_when_they_were(self):
         from unittest import mock
+
         snap = self.root / 'snap'
         make(snap, sr.APPS, {'appdata/sonarr/config.xml': b'<x/>'})
         report = lambda out: json.loads((out / 'restore-report.json').read_text())
-        with mock.patch.object(sr.os, 'geteuid', return_value=0), \
-                mock.patch.object(sr.os, 'chown', side_effect=PermissionError(1, 'Operation not permitted')):
+        with (
+            mock.patch.object(sr.os, 'geteuid', return_value=0),
+            mock.patch.object(sr.os, 'chown', side_effect=PermissionError(1, 'Operation not permitted')),
+        ):
             with self.assertRaises(PermissionError):
                 sr.restore(sr.APPS, snap, self.root / 'failed', preserve_owners=True)
         failed = report(self.root / 'failed')
@@ -99,8 +120,11 @@ class SnapshotRestoreTests(unittest.TestCase):
         top = {'path': 'source0', 'kind': 'directory', 'uid': 0, 'gid': 0, 'mode': 0o755, 'size': 0}
         make(snap, sr.HOST, {'source0/docs/old.txt': b'2020', 'source0/docs/deep/new.txt': b'x'}, [top])
         manifest = json.loads((snap / 'manifest.json').read_text())
-        when = {'source0/docs/old.txt': (1_580_000_000, 123_456_789), 'source0/docs': (1_590_000_000, 5),
-                'source0/docs/deep': (1_600_000_000, 0)}
+        when = {
+            'source0/docs/old.txt': (1_580_000_000, 123_456_789),
+            'source0/docs': (1_590_000_000, 5),
+            'source0/docs/deep': (1_600_000_000, 0),
+        }
         for row in manifest['files']:
             if row['path'] in when:
                 row['mtime'], row['mtime_nsec'] = when[row['path']]
@@ -113,6 +137,7 @@ class SnapshotRestoreTests(unittest.TestCase):
         self.assertTrue(json.loads((out / 'restore-report.json').read_text())['times_restored'])
         # A filesystem that refuses the time: the files are still restored, and the report says so.
         from unittest import mock
+
         with mock.patch.object(sr.os, 'utime', side_effect=PermissionError(1, 'Operation not permitted')):
             again = sr.restore(sr.HOST, snap, self.root / 'again')
         self.assertEqual((again / 'source0/docs/old.txt').read_bytes(), b'2020')
@@ -142,8 +167,12 @@ class SnapshotRestoreTests(unittest.TestCase):
         snap = self.root / 'snap'
         make(snap, sr.APPS, {'installer/x.json': b'{}'})
         for tool, ok in (('app-recovery.py', 0), ('host-recovery.py', 1)):
-            result = subprocess.run([sys.executable, str(ROOT / tool), 'verify', '--snapshot', str(snap)],
-                                    capture_output=True, text=True, env={**os.environ, 'PYTHONPATH': str(ROOT)})
+            result = subprocess.run(
+                [sys.executable, str(ROOT / tool), 'verify', '--snapshot', str(snap)],
+                capture_output=True,
+                text=True,
+                env={**os.environ, 'PYTHONPATH': str(ROOT)},
+            )
             self.assertEqual(result.returncode, ok, tool + result.stderr)
 
 

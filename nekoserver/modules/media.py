@@ -1,4 +1,5 @@
 """Deploy isolated media Compose projects with guarded SSD/HDD mounts."""
+
 from neko_common import compose_image_override
 import hashlib
 import os
@@ -7,7 +8,17 @@ import time
 import shutil
 import subprocess
 from pathlib import Path
-from neko_common import APP_PORTS, DASHBOARD_DEFAULT_PORT, compose_up, findmnt, safe_path, ensure_directory, verify_storage, atomic_write, host_timezone
+from neko_common import (
+    APP_PORTS,
+    DASHBOARD_DEFAULT_PORT,
+    compose_up,
+    findmnt,
+    safe_path,
+    ensure_directory,
+    verify_storage,
+    atomic_write,
+    host_timezone,
+)
 
 
 DEPENDENCIES = ['docker', 'account_credentials']  # its logins are chosen before it first starts
@@ -102,7 +113,10 @@ def adapt_to_host(name, text, gpu_present=None, peer_port=None):
         if QBIT_WEBUI_LINE not in text or QBIT_ENV_LINE not in text:
             raise RuntimeError('qBittorrent template changed; cannot add the peer port')
         text = text.replace(QBIT_ENV_LINE, QBIT_ENV_LINE + f'      TORRENTING_PORT: "{peer_port}"\n')
-        text = text.replace(QBIT_WEBUI_LINE, QBIT_WEBUI_LINE + f'      - "{peer_port}:{peer_port}/tcp"\n      - "{peer_port}:{peer_port}/udp"\n')
+        text = text.replace(
+            QBIT_WEBUI_LINE,
+            QBIT_WEBUI_LINE + f'      - "{peer_port}:{peer_port}/tcp"\n      - "{peer_port}:{peer_port}/udp"\n',
+        )
     return text
 
 
@@ -146,16 +160,20 @@ def same_user(current, rendered):
     belong to someone else, so another user is never switched to on a rerun."""
     before, after = app_user(current), app_user(rendered)
     if before != after:
-        raise RuntimeError(f'media.uid/gid changed from {before} to {after}, but the apps\' settings and library '
-                           f'files belong to {before}. Put media.uid and media.gid back in my-config.json')
+        raise RuntimeError(
+            f'media.uid/gid changed from {before} to {after}, but the apps\' settings and library '
+            f'files belong to {before}. Put media.uid and media.gid back in my-config.json'
+        )
 
 
 def same_but_host(current, rendered):
     """Our own output for this template before a host, option or timezone change (the
     GPU appeared or vanished, the peer port opened or closed, the PC's timezone was
     set). Servers set up before the checksum record are recognised this way."""
+
     def plain(text):
         return TIMEZONE_LINE.sub(r'\1""', without_host_adaptations(text))
+
     return plain(current) == plain(rendered)
 
 
@@ -171,9 +189,11 @@ def replacement(name, dest, template, rendered, values):
         candidates.append((current, f'compose.before-{int(time.time())}.yaml'))
     previous = next((backup for text, backup in candidates if text == current), None)
     if previous is None:
-        raise RuntimeError(f'{dest} was changed by hand, so setup leaves it alone. To let setup write a fresh one '
-                           f'(with your current settings), rename it, for example to compose.mine.yaml, and run '
-                           f'setup again; your copy stays next to it')
+        raise RuntimeError(
+            f'{dest} was changed by hand, so setup leaves it alone. To let setup write a fresh one '
+            f'(with your current settings), rename it, for example to compose.mine.yaml, and run '
+            f'setup again; your copy stays next to it'
+        )
     backup = safe_path(dest.parent / previous)
     if backup.exists() and backup.read_text() != current:
         raise RuntimeError(f'Template backup {backup} differs; preserved for review')
@@ -276,22 +296,42 @@ def _run(context):
             raise RuntimeError(f'Refusing symlink appdata: {target}')
         if name == 'seerr':
             adopt_seerr_folder(target, uid, gid, context.log)
-    run_cmd(['docker', 'network', 'inspect', 'nekoserver-media'], timeout=15) if network_exists() else run_cmd(['docker', 'network', 'create', 'nekoserver-media'], timeout=20)
+    run_cmd(['docker', 'network', 'inspect', 'nekoserver-media'], timeout=15) if network_exists() else run_cmd(
+        ['docker', 'network', 'create', 'nekoserver-media'], timeout=20
+    )
     failed = []
     for name, (dest, content) in manifests.items():
         ensure_directory(dest.parent, 0o750)
         # Rerun is permitted only for identical manifests. Never overwrite local edits.
         if name in migrations:
-            backup,previous=migrations[name]
-            if not backup.exists():atomic_write(backup,previous,0o640)
-            atomic_write(dest,content,0o640)
+            backup, previous = migrations[name]
+            if not backup.exists():
+                atomic_write(backup, previous, 0o640)
+            atomic_write(dest, content, 0o640)
         elif not dest.exists():
             atomic_write(dest, content, 0o640)
         remember(dest, content)
         try:
-            run_cmd(['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest), 'config', '-q'], timeout=30)
+            run_cmd(
+                [
+                    'docker',
+                    'compose',
+                    '-f',
+                    str(dest),
+                    '-p',
+                    f'neko-{name}',
+                    *compose_image_override(dest),
+                    'config',
+                    '-q',
+                ],
+                timeout=30,
+            )
             verify_storage(context.config)
-            compose_up(['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)], name, context.log)
+            compose_up(
+                ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest)],
+                name,
+                context.log,
+            )
             context.log(f'Deployed {name} (localhost only); project neko-{name}')
         except Exception as exc:
             context.log(f'{name} failed: {exc}. Manifest preserved: {dest}; others will continue.')
@@ -303,7 +343,9 @@ def _run(context):
         if 'run setup again' not in reasons:
             reasons += '. Fix that, then run setup again'
         raise RuntimeError(f'Some apps did not start. {reasons} (the apps that started are kept)')
-    context.log('Media stack deployed. Run the onboarding module to connect accounts, libraries and API keys; verify actual playback.')
+    context.log(
+        'Media stack deployed. Run the onboarding module to connect accounts, libraries and API keys; verify actual playback.'
+    )
 
 
 def stop_unselected(compose_dir, selected, log, run=None):
@@ -317,9 +359,14 @@ def stop_unselected(compose_dir, selected, log, run=None):
         dest = compose_dir / name / 'compose.yaml'
         if name in selected or not dest.is_file() or dest.is_symlink():
             continue
-        run(['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest), 'down'], timeout=300)
-        log(f'{name}: not in media.services any more, so it is stopped; its settings and data stay '
-            f'(add it back to start it again)')
+        run(
+            ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest), 'down'],
+            timeout=300,
+        )
+        log(
+            f'{name}: not in media.services any more, so it is stopped; its settings and data stay '
+            f'(add it back to start it again)'
+        )
 
 
 def adopt_seerr_folder(folder, uid, gid, log=print):
@@ -341,11 +388,19 @@ def adopt_seerr_folder(folder, uid, gid, log=print):
 
 
 def network_exists():
-    return subprocess.run(['docker', 'network', 'inspect', 'nekoserver-media'], capture_output=True, timeout=15, check=False).returncode == 0
+    return (
+        subprocess.run(
+            ['docker', 'network', 'inspect', 'nekoserver-media'], capture_output=True, timeout=15, check=False
+        ).returncode
+        == 0
+    )
 
 
 def run(context):
-    if not context.apply:return _run(context)
+    if not context.apply:
+        return _run(context)
     from recovery_tools import mounts, lock
+
     mounts(context.config)
-    with lock(context.config):return _run(context)
+    with lock(context.config):
+        return _run(context)

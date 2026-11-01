@@ -355,7 +355,7 @@ mod tests {
         // resume it names is run here with the others (QA-01).
         assert!(RESUMES.contains(&"nekoserver-immich-resume.service"));
         assert!(include_str!("../../modules/photo_preservation.py")
-            .contains("RESUME='nekoserver-immich-resume'"));
+            .contains("RESUME = 'nekoserver-immich-resume'"));
     }
     #[test]
     fn a_live_btrfs_drive_is_not_taken_for_a_dead_one() {

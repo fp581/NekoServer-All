@@ -1,4 +1,5 @@
 """Authenticated local qBittorrent setup; cookie and password stay in memory."""
+
 import http.cookiejar
 import json
 import urllib.error
@@ -8,39 +9,52 @@ import urllib.request
 from neko_common import app_port, local_opener
 
 
-QBITTORRENT_PORT=app_port('qbittorrent')
+QBITTORRENT_PORT = app_port('qbittorrent')
 # The qBittorrent download-client field that holds the category, per app: each app
 # names it after its own media (there is no field called "category"). Shared by the
 # connector (media-connect.py) and the health audit (media-health.py).
-CATEGORY_FIELDS={'sonarr':'tvCategory','radarr':'movieCategory','lidarr':'musicCategory'}
+CATEGORY_FIELDS = {'sonarr': 'tvCategory', 'radarr': 'movieCategory', 'lidarr': 'musicCategory'}
 
 
 class Client:
-    def __init__(self,port=QBITTORRENT_PORT):
-        self.base=f'http://127.0.0.1:{port}'
-        self.jar=http.cookiejar.CookieJar()
-        self.opener=local_opener(urllib.request.HTTPCookieProcessor(self.jar))
-    def call(self,endpoint,form=None,json_result=False):
-        if not endpoint.startswith('/') or '://' in endpoint:raise ValueError('Invalid local API endpoint')
-        body=None if form is None else urllib.parse.urlencode(form).encode()
-        req=urllib.request.Request(self.base+'/api/v2'+endpoint,data=body,headers={'Referer':self.base,'Content-Type':'application/x-www-form-urlencoded'})
+    def __init__(self, port=QBITTORRENT_PORT):
+        self.base = f'http://127.0.0.1:{port}'
+        self.jar = http.cookiejar.CookieJar()
+        self.opener = local_opener(urllib.request.HTTPCookieProcessor(self.jar))
+
+    def call(self, endpoint, form=None, json_result=False):
+        if not endpoint.startswith('/') or '://' in endpoint:
+            raise ValueError('Invalid local API endpoint')
+        body = None if form is None else urllib.parse.urlencode(form).encode()
+        req = urllib.request.Request(
+            self.base + '/api/v2' + endpoint,
+            data=body,
+            headers={'Referer': self.base, 'Content-Type': 'application/x-www-form-urlencoded'},
+        )
         try:
-            with self.opener.open(req,timeout=10) as response:payload=response.read(3_000_000).decode()
-        except (OSError,urllib.error.URLError) as exc:
-            if isinstance(exc,urllib.error.HTTPError):exc.close()
+            with self.opener.open(req, timeout=10) as response:
+                payload = response.read(3_000_000).decode()
+        except (OSError, urllib.error.URLError) as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                exc.close()
             raise RuntimeError('qBittorrent API request failed; inspect local WebUI') from None
         return json.loads(payload) if json_result else payload.strip()
-    def login(self,username,password):
-        reply=self.call('/auth/login',{'username':username,'password':password})
+
+    def login(self, username, password):
+        reply = self.call('/auth/login', {'username': username, 'password': password})
         # qBittorrent 4 answers a good login with "Ok." and a cookie named SID,
         # qBittorrent 5 with an empty reply and QBT_SID_<port>; the cookie is the proof.
-        if reply.strip() not in ('Ok.','') or not any(c.name=='SID' or c.name.startswith('QBT_SID') for c in self.jar):
+        if reply.strip() not in ('Ok.', '') or not any(
+            c.name == 'SID' or c.name.startswith('QBT_SID') for c in self.jar
+        ):
             raise RuntimeError('qBittorrent authentication failed')
-    def close(self):
-        try:self.call('/auth/logout',{})
-        except RuntimeError:pass
-        self.jar.clear()
 
+    def close(self):
+        try:
+            self.call('/auth/logout', {})
+        except RuntimeError:
+            pass
+        self.jar.clear()
 
 
 def category_ok(category, path, desired='/data/downloads'):
@@ -51,85 +65,110 @@ def category_ok(category, path, desired='/data/downloads'):
         return path in ('', desired + '/music')
     return path in ('', desired, desired + '/' + category)
 
-def automatic_mode(preferences,categories=('music',)):
+
+def automatic_mode(preferences, categories=('music',)):
     """The preference change that makes new torrents start in automatic mode, where each
     category's own folder is used ({} when they already do, or when nothing needs it).
     Only Lidarr's music needs it: in manual mode TV and films still land in
     /data/downloads, where Sonarr and Radarr find them, but an album would not reach the
     SSD's /data/downloads/music, the only place Lidarr sees. Without Lidarr, a choice of
     manual mode made in qBittorrent is left alone."""
-    if 'music' not in categories or preferences.get('auto_tmm_enabled') is True:return {}
-    return {'auto_tmm_enabled':True}
+    if 'music' not in categories or preferences.get('auto_tmm_enabled') is True:
+        return {}
+    return {'auto_tmm_enabled': True}
 
-def retained(verified,actual,changes,categories,desired):
+
+def retained(verified, actual, changes, categories, desired):
     """qBittorrent kept what setup asked for: the download folders, automatic mode (when
     Lidarr needs it) and each category's folder."""
-    path=lambda value:str(value).rstrip('/')
-    return (path(verified.get('save_path',''))==desired
-            and ('temp_path' not in changes or path(verified.get('temp_path',''))==changes['temp_path'])
-            and ('music' not in categories or verified.get('auto_tmm_enabled') is True)
-            and all(c in actual and category_ok(c,path(actual[c].get('savePath','')),desired) for c in categories))
+    path = lambda value: str(value).rstrip('/')
+    return (
+        path(verified.get('save_path', '')) == desired
+        and ('temp_path' not in changes or path(verified.get('temp_path', '')) == changes['temp_path'])
+        and ('music' not in categories or verified.get('auto_tmm_enabled') is True)
+        and all(c in actual and category_ok(c, path(actual[c].get('savePath', '')), desired) for c in categories)
+    )
 
-def save_preferences(client,changes,output):
+
+def save_preferences(client, changes, output):
     """Save the preference changes (if any). Switching automatic mode on is said, once:
     only the run that switches it says so (later runs find it on). It is also said when
     it switches it back on after someone chose manual mode in qBittorrent."""
     if changes.get('auto_tmm_enabled'):
-        output('qBittorrent: new torrents now start in automatic mode (again, if you had chosen manual mode). '
-               "Lidarr needs it: each torrent is then saved in its category's folder, and music on the SSD, "
-               'where Lidarr finds it. Torrents you already have keep their mode. Without Lidarr in '
-               'media.services, setup leaves this setting as you choose')
-    if changes:client.call('/app/setPreferences',{'json':json.dumps(changes)})
+        output(
+            'qBittorrent: new torrents now start in automatic mode (again, if you had chosen manual mode). '
+            "Lidarr needs it: each torrent is then saved in its category's folder, and music on the SSD, "
+            'where Lidarr finds it. Torrents you already have keep their mode. Without Lidarr in '
+            'media.services, setup leaves this setting as you choose'
+        )
+    if changes:
+        client.call('/app/setPreferences', {'json': json.dumps(changes)})
 
-def configure(username,password,apply=False,categories=('tv','movies','music'),client=None,output=print):
-    client=client or Client()
+
+def configure(username, password, apply=False, categories=('tv', 'movies', 'music'), client=None, output=print):
+    client = client or Client()
     try:
-        client.login(username,password)
-        preferences=client.call('/app/preferences',json_result=True)
-        existing=client.call('/torrents/categories',json_result=True)
-        desired='/data/downloads'
-        current=str(preferences.get('save_path','')).rstrip('/')
-        changes={}
-        if current!=desired:
-            if current not in ('','/downloads','/downloads/complete'):
+        client.login(username, password)
+        preferences = client.call('/app/preferences', json_result=True)
+        existing = client.call('/torrents/categories', json_result=True)
+        desired = '/data/downloads'
+        current = str(preferences.get('save_path', '')).rstrip('/')
+        changes = {}
+        if current != desired:
+            if current not in ('', '/downloads', '/downloads/complete'):
                 raise RuntimeError('qBittorrent has a custom save path; preserve it and review manually')
-            if client.call('/torrents/info',json_result=True):
+            if client.call('/torrents/info', json_result=True):
                 raise RuntimeError('Existing torrents prevent changing the default save path automatically')
-            changes['save_path']=desired
+            changes['save_path'] = desired
         if preferences.get('temp_path_enabled'):
-            temp=str(preferences.get('temp_path','')).rstrip('/')
-            if temp!='/data/downloads/incomplete':
+            temp = str(preferences.get('temp_path', '')).rstrip('/')
+            if temp != '/data/downloads/incomplete':
                 if not temp.startswith('/downloads/'):
                     raise RuntimeError('qBittorrent has a custom incomplete path; review manually')
-                if client.call('/torrents/info',json_result=True):raise RuntimeError('Existing torrents prevent changing the incomplete path')
-                changes['temp_path']='/data/downloads/incomplete'
+                if client.call('/torrents/info', json_result=True):
+                    raise RuntimeError('Existing torrents prevent changing the incomplete path')
+                changes['temp_path'] = '/data/downloads/incomplete'
         # Each category's own folder is used only in Automatic Torrent Management mode,
         # and qBittorrent starts new torrents in Manual mode unless told otherwise: the
         # Arr apps send only the category, so in Manual mode an album would land in the
         # HDD's /data/downloads, where Lidarr (which sees only the SSD) cannot find it.
         # So it is switched on only with Lidarr (the music category), and said each time.
         # This changes only how new torrents start; existing torrents keep their mode.
-        changes.update(automatic_mode(preferences,categories))
-        fix={}
+        changes.update(automatic_mode(preferences, categories))
+        fix = {}
         for category in categories:
-            if category not in existing:continue
-            path=str(existing[category].get('savePath','')).rstrip('/')
-            if category_ok(category,path,desired):continue
+            if category not in existing:
+                continue
+            path = str(existing[category].get('savePath', '')).rstrip('/')
+            if category_ok(category, path, desired):
+                continue
             # Only music has a single right place (/data/downloads/music, on the SSD that
             # Lidarr sees). A wrong but empty music category is corrected; anything else
             # with torrents in it, or another category's custom path, needs a person.
-            if category=='music' and path in (desired,'/downloads','/downloads/complete') and not client.call('/torrents/info?category=music',json_result=True):
-                fix[category]=desired+'/'+category;continue
-            raise RuntimeError(f'qBittorrent category {category} saves to {path or "the default folder"}, not {desired}/{category}; '
-                               'change it in qBittorrent (right-click the category, Edit) and run setup again')
-        output('qBittorrent: login verified; download paths/categories '+('APPLY' if apply else 'PREVIEW'))
+            if (
+                category == 'music'
+                and path in (desired, '/downloads', '/downloads/complete')
+                and not client.call('/torrents/info?category=music', json_result=True)
+            ):
+                fix[category] = desired + '/' + category
+                continue
+            raise RuntimeError(
+                f'qBittorrent category {category} saves to {path or "the default folder"}, not {desired}/{category}; '
+                'change it in qBittorrent (right-click the category, Edit) and run setup again'
+            )
+        output('qBittorrent: login verified; download paths/categories ' + ('APPLY' if apply else 'PREVIEW'))
         if apply:
-            save_preferences(client,changes,output)
+            save_preferences(client, changes, output)
             for category in categories:
-                if category not in existing:client.call('/torrents/createCategory',{'category':category,'savePath':desired+'/'+category})
-            for category,path in fix.items():client.call('/torrents/editCategory',{'category':category,'savePath':path})
-            verified=client.call('/app/preferences',json_result=True)
-            actual=client.call('/torrents/categories',json_result=True)
-            if not retained(verified,actual,changes,categories,desired):
+                if category not in existing:
+                    client.call(
+                        '/torrents/createCategory', {'category': category, 'savePath': desired + '/' + category}
+                    )
+            for category, path in fix.items():
+                client.call('/torrents/editCategory', {'category': category, 'savePath': path})
+            verified = client.call('/app/preferences', json_result=True)
+            actual = client.call('/torrents/categories', json_result=True)
+            if not retained(verified, actual, changes, categories, desired):
                 raise RuntimeError('qBittorrent did not retain expected download configuration')
-    finally:client.close()
+    finally:
+        client.close()

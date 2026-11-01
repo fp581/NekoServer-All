@@ -1,4 +1,5 @@
 """Check drive space right after the drives are chosen, before anything is installed."""
+
 import datetime as dt
 import fcntl
 import glob
@@ -17,11 +18,11 @@ from neko_common import regular_files, usb_mount_options, version_parts
 DEPENDENCIES = ['storage']
 DESCRIPTION = 'Check there is enough space on the SSD, HDD and USB drive before installing'
 
-GIB = 1024 ** 3
+GIB = 1024**3
 # (hard minimum, recommended) free space in GiB.
-SSD = (20, 100)   # Docker images (~20 GB), app data, photos and music live here.
-HDD = (50, 500)   # Movies, shows, Nextcloud files and every HDD backup.
-USB_MIN = 16      # The USB copy must at least fit photos + Nextcloud files.
+SSD = (20, 100)  # Docker images (~20 GB), app data, photos and music live here.
+HDD = (50, 500)  # Movies, shows, Nextcloud files and every HDD backup.
+USB_MIN = 16  # The USB copy must at least fit photos + Nextcloud files.
 
 
 def free_bytes(path):
@@ -34,8 +35,13 @@ def used_bytes(path):
     if not path.is_dir():
         return 0
     try:
-        result = subprocess.run(['du', '-s', '-B1', '--apparent-size', '--', str(path)],
-                                capture_output=True, text=True, timeout=900, check=False)
+        result = subprocess.run(
+            ['du', '-s', '-B1', '--apparent-size', '--', str(path)],
+            capture_output=True,
+            text=True,
+            timeout=900,
+            check=False,
+        )
         return int(result.stdout.split()[0]) if result.returncode == 0 else 0
     except (OSError, ValueError, IndexError, subprocess.SubprocessError):
         return 0
@@ -86,8 +92,12 @@ def usb_sources(config):
     except OSError:
         users = []
     for user in users:
-        if nextcloud_internal(user.name, internal) or user.name.startswith('.') or user.is_symlink() \
-                or not (user / 'files').is_dir():
+        if (
+            nextcloud_internal(user.name, internal)
+            or user.name.startswith('.')
+            or user.is_symlink()
+            or not (user / 'files').is_dir()
+        ):
             continue
         pairs.append((user / 'files', f'nextcloud/{user.name}/files'))
     return pairs
@@ -116,7 +126,9 @@ def newest_dump_bytes(config, now=None):
     folder = Path(config['media_mount']) / 'backups/immich-database'
     now = time.time() if now is None else now
     try:
-        newest = max((f for f in folder.glob('immich-*.sql') if f.is_file() and not dated_in_future(f.name, now)), default=None)
+        newest = max(
+            (f for f in folder.glob('immich-*.sql') if f.is_file() and not dated_in_future(f.name, now)), default=None
+        )
         return newest.stat().st_size if newest else 0
     except OSError:
         return 0
@@ -136,8 +148,7 @@ def pending_bytes(root, pairs, mirror=()):
             if path.name.endswith('.neko-part') or NEXTCLOUD_UPLOAD.search(path.name):
                 continue
             target = root / name / path.relative_to(source)
-            done = (mirrored(path, target, path in noted) if name in mirror
-                    else copied(path, target))
+            done = mirrored(path, target, path in noted) if name in mirror else copied(path, target)
             if not done:
                 total += size
     return total
@@ -188,11 +199,14 @@ def copied(source, target):
         return False
     if copy.st_size == info.st_size and copy.st_mtime_ns >= info.st_ctime_ns:
         return True
-    plain = target.name.rpartition('.')[0] or target.name   # versions before 0.28.5
+    plain = target.name.rpartition('.')[0] or target.name  # versions before 0.28.5
     stem, ext = version_parts(target.name)
-    versions = [v for s in dict.fromkeys((stem, plain))
-                for v in target.parent.glob(glob.escape(s) + '.neko-*' + glob.escape(ext))
-                if not v.name.endswith('.neko-part')]
+    versions = [
+        v
+        for s in dict.fromkeys((stem, plain))
+        for v in target.parent.glob(glob.escape(s) + '.neko-*' + glob.escape(ext))
+        if not v.name.endswith('.neko-part')
+    ]
     wanted = None
     for saved in [target, *versions]:
         try:
@@ -242,14 +256,23 @@ def usb_room(uuid, pairs, fstype='ext4', lock=USB_LOCK):
 def measure_usb(uuid, pairs, fstype):
     """usb_room's measurement, with the USB lock held."""
     try:
-        found = subprocess.run(['findmnt', '-n', '-o', 'TARGET', '--source', 'UUID=' + uuid],
-                               capture_output=True, text=True, timeout=20, check=False)
+        found = subprocess.run(
+            ['findmnt', '-n', '-o', 'TARGET', '--source', 'UUID=' + uuid],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
         targets = found.stdout.split('\n') if found.returncode == 0 else []
         if targets and targets[0].strip():
             return measure(Path(targets[0].strip()), pairs)
         with tempfile.TemporaryDirectory(prefix='neko-usb-') as folder:
-            opened = subprocess.run(['mount', '-o', usb_mount_options(fstype), 'UUID=' + uuid, folder],
-                                    capture_output=True, timeout=60, check=False)
+            opened = subprocess.run(
+                ['mount', '-o', usb_mount_options(fstype), 'UUID=' + uuid, folder],
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
             if opened.returncode:
                 return None
             try:
@@ -268,8 +291,9 @@ def gib(value):
     return f'{value / GIB:.0f} GB'
 
 
-def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=newest_dump_bytes,
-           unarchived=awaiting_archive):
+def assess(
+    config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=newest_dump_bytes, unarchived=awaiting_archive
+):
     """Return (problems that stop the install, warnings worth confirming). The USB copies
     are compared by size and date, as the weekly copy does; reading every photo on both
     drives is the monthly checksum check's job."""
@@ -281,16 +305,23 @@ def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=ne
     ):
         space = free(path)
         if space < minimum * GIB:
-            stop.append(f'The {name} has only {gib(space)} free. NekoServer needs at least '
-                        f'{minimum} GB there for {purpose}. Free up space or choose a bigger drive.')
+            stop.append(
+                f'The {name} has only {gib(space)} free. NekoServer needs at least '
+                f'{minimum} GB there for {purpose}. Free up space or choose a bigger drive.'
+            )
         elif space < recommended * GIB:
-            warn.append(f'The {name} has {gib(space)} free. {recommended} GB or more is recommended '
-                        f'for {purpose}; it will fill up sooner.')
+            warn.append(
+                f'The {name} has {gib(space)} free. {recommended} GB or more is recommended '
+                f'for {purpose}; it will fill up sooner.'
+            )
     # The archive also keeps photos deleted from Immich and earlier versions.
     photos = max(used(data / 'photos/immich-library'), used(archive_folder(config)))
     cloud = used(media / 'cloud/files')
-    room = usb_space(config.get('photos', {}).get('external_backup_uuid', ''), usb_sources(config),
-                     fstype=config.get('photos', {}).get('external_backup_fstype', 'ext4'))
+    room = usb_space(
+        config.get('photos', {}).get('external_backup_uuid', ''),
+        usb_sources(config),
+        fstype=config.get('photos', {}).get('external_backup_fstype', 'ext4'),
+    )
     if room is not None:
         # What the next copy must write (new files, changed files, this week's database
         # copy) plus room to grow. Old versions already on the drive are never reused.
@@ -298,10 +329,12 @@ def assess(config, free=free_bytes, used=used_bytes, usb_space=usb_room, dump=ne
         pending += unarchived(config) + dump(config)
         needed = max(USB_MIN * GIB, pending + int((photos + cloud) * 0.2))
         if free_now < needed:
-            warn.append(f'The USB drive has {gib(free_now)} free. The next weekly copy still has to add '
-                        f'{gib(pending)} (photos and versions from the HDD archive, photos not archived yet, Nextcloud files and a database copy); '
-                        f'{gib(needed)} or more free is recommended so it fits and has room to grow. '
-                        'Free up space on it or use a bigger one.')
+            warn.append(
+                f'The USB drive has {gib(free_now)} free. The next weekly copy still has to add '
+                f'{gib(pending)} (photos and versions from the HDD archive, photos not archived yet, Nextcloud files and a database copy); '
+                f'{gib(needed)} or more free is recommended so it fits and has room to grow. '
+                'Free up space on it or use a bigger one.'
+            )
     return stop, warn
 
 
@@ -343,6 +376,8 @@ def run(ctx, prompt=input, output=print):
         output(f'{number}. {line}')
     if ask('Continue with these drives anyway?', prompt, output):
         return
-    return {'status': 'needs_setup', 'reason': 'Stopped at the drive space check; free up space or '
-            'choose bigger drives, then run the installer again'}
-
+    return {
+        'status': 'needs_setup',
+        'reason': 'Stopped at the drive space check; free up space or '
+        'choose bigger drives, then run the installer again',
+    }

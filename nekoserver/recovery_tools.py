@@ -1,4 +1,5 @@
 """Explicit, local Docker recovery and isolated Immich restore rehearsal."""
+
 import copy
 import datetime as dt
 import fcntl
@@ -19,101 +20,167 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 import neko_common
-from neko_common import VERSION, systemd_arg, safe_path, mount_path, atomic_json, atomic_write, local_opener, DOCKER_STORAGE_DROPIN
+from neko_common import (
+    VERSION,
+    systemd_arg,
+    safe_path,
+    mount_path,
+    atomic_json,
+    atomic_write,
+    local_opener,
+    DOCKER_STORAGE_DROPIN,
+)
 from installer import validate_config
 from modules import docker as docker_module
 import native_runtime
 
 # The settings file, next to the installer and in its preserved copy on the SSD.
-CONFIG_NAME='config.json'
-RECOVER_TOOL='recover.py'
-DOCKER=['docker','--host','unix:///var/run/docker.sock']
-SERVICES={'database','redis','immich-server','immich-machine-learning'}
-FORMAT='neko-immich-snapshot-v1'
+CONFIG_NAME = 'config.json'
+RECOVER_TOOL = 'recover.py'
+DOCKER = ['docker', '--host', 'unix:///var/run/docker.sock']
+SERVICES = {'database', 'redis', 'immich-server', 'immich-machine-learning'}
+FORMAT = 'neko-immich-snapshot-v1'
 
 # Where to look when a program a recovery step uses fails, named in its message.
-LOOK_AT={'docker':'sudo systemctl status docker  and  sudo journalctl -u docker -n 50',
-         'systemctl':'sudo systemctl --failed'}
+LOOK_AT = {
+    'docker': 'sudo systemctl status docker  and  sudo journalctl -u docker -n 50',
+    'systemctl': 'sudo systemctl --failed',
+}
 
-def command_problem(name,why,timeout=60):
+
+def command_problem(name, why, timeout=60):
     """A failed recovery command said plainly: what happened and what to do next. Only
     the program's name: its output is never shown (see command)."""
-    look=LOOK_AT.get(name,'sudo journalctl -n 50')
-    if why=='missing':
-        return (f'The program "{name}" is not installed on this PC, so this step cannot run yet. '
-                + ('Setup installs Docker:  sudo bash install.sh  (after replacing Linux, install it with '
-                   'recover.py install-docker --apply instead: RECOVERY.md, step 4). ' if name=='docker' else '')
-                +'Then run this command again.')
-    if why=='timeout':
-        return (f'"{name}" did not answer within {timeout} seconds. It may be busy (a backup or an update, say): '
-                f'wait a few minutes and run this command again. If it keeps happening, check it with  {look}')
-    return (f'"{name}" reported an error, so this step stopped. See what is wrong with  {look}  '
-            'then run this command again.')
+    look = LOOK_AT.get(name, 'sudo journalctl -n 50')
+    if why == 'missing':
+        return (
+            f'The program "{name}" is not installed on this PC, so this step cannot run yet. '
+            + (
+                'Setup installs Docker:  sudo bash install.sh  (after replacing Linux, install it with '
+                'recover.py install-docker --apply instead: RECOVERY.md, step 4). '
+                if name == 'docker'
+                else ''
+            )
+            + 'Then run this command again.'
+        )
+    if why == 'timeout':
+        return (
+            f'"{name}" did not answer within {timeout} seconds. It may be busy (a backup or an update, say): '
+            f'wait a few minutes and run this command again. If it keeps happening, check it with  {look}'
+        )
+    return (
+        f'"{name}" reported an error, so this step stopped. See what is wrong with  {look}  '
+        'then run this command again.'
+    )
+
 
 def command(argv, timeout=60, stdin=None, stdout=None):
     # Never print command output: Compose can render passwords, SQL can contain personal data.
-    try:result=subprocess.run(argv,stdin=stdin,stdout=stdout if stdout is not None else subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout, check=False)
-    except FileNotFoundError:raise RuntimeError(command_problem(argv[0],'missing')) from None
-    except subprocess.TimeoutExpired:raise RuntimeError(command_problem(argv[0],'timeout',timeout)) from None
-    except OSError:raise RuntimeError(command_problem(argv[0],'error')) from None
-    if result.returncode:raise RuntimeError(command_problem(argv[0],'error'))
-    if stdout is not None:return ''
-    value=result.stdout
-    return value.decode() if isinstance(value,bytes) else value
+    try:
+        result = subprocess.run(
+            argv,
+            stdin=stdin,
+            stdout=stdout if stdout is not None else subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        raise RuntimeError(command_problem(argv[0], 'missing')) from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(command_problem(argv[0], 'timeout', timeout)) from None
+    except OSError:
+        raise RuntimeError(command_problem(argv[0], 'error')) from None
+    if result.returncode:
+        raise RuntimeError(command_problem(argv[0], 'error'))
+    if stdout is not None:
+        return ''
+    value = result.stdout
+    return value.decode() if isinstance(value, bytes) else value
 
-def json_command(argv):return json.loads(command(argv))
+
+def json_command(argv):
+    return json.loads(command(argv))
+
 
 def digest(path):
-    h=hashlib.sha256()
+    h = hashlib.sha256()
     with safe_path(path).open('rb') as stream:
-        for block in iter(lambda:stream.read(1024*1024),b''):h.update(block)
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            h.update(block)
     return h.hexdigest()
 
-RECOVERY_PATH=re.compile(r'/[\w ./,()+@~-]+')
+
+RECOVERY_PATH = re.compile(r'/[\w ./,()+@~-]+')
+
 
 def regular_files(root):
     """Every file under root, sorted, listed strictly: a folder or file that can't be read,
     a symlink or a special file stops the job (neko_common.UnreadableEntries) instead of
     being left out. Planning, copying and verifying a snapshot all use this one listing,
     so a file missing from the copy can't also be missing from its manifest."""
-    text=str(root)
+    text = str(root)
     # Absolute, without '..' (and, below, without links), in letters (any language),
     # digits, spaces and . _ - , ( ) + @ ~: a copy on a desktop-mounted drive sits under
     # a name such as /run/media/you/My Passport (2). Anything else is refused unread.
-    if not RECOVERY_PATH.fullmatch(text) or '..' in Path(text).parts:raise RuntimeError('Recovery folder path is not a plain absolute path: '+text)
-    root=neko_common.plain_folder(text)
-    if not root.is_dir():raise RuntimeError('Recovery source directory missing')
-    return sorted(path for path,_size in neko_common.strict_files(root))
+    if not RECOVERY_PATH.fullmatch(text) or '..' in Path(text).parts:
+        raise RuntimeError('Recovery folder path is not a plain absolute path: ' + text)
+    root = neko_common.plain_folder(text)
+    if not root.is_dir():
+        raise RuntimeError('Recovery source directory missing')
+    return sorted(path for path, _size in neko_common.strict_files(root))
 
-def stopped_cleanly(base,services):
+
+def stopped_cleanly(base, services):
     """After `compose stop`: each stopped service's container exists, no longer runs, and
     was not killed (exit 137 or out of memory). A forced stop can leave half-written app
     data, which a snapshot would copy faithfully. Same rule as the nightly app snapshot."""
-    ids=command(base+['ps','-a','-q',*services]).split()
-    if len(ids)<len(services):raise RuntimeError('A stopped Immich service has no container; snapshot not taken')
-    for row in json.loads(command(DOCKER+['inspect',*ids])):
-        state=row.get('State',{}) if isinstance(row,dict) else {}
-        if state.get('Running') is not False:raise RuntimeError('Immich is still running after being stopped; snapshot not taken')
-        if state.get('ExitCode')==137 or state.get('OOMKilled'):
-            raise RuntimeError('Immich did not shut down cleanly (it was killed); snapshot not taken. Let it start and settle, then try again')
+    ids = command(base + ['ps', '-a', '-q', *services]).split()
+    if len(ids) < len(services):
+        raise RuntimeError('A stopped Immich service has no container; snapshot not taken')
+    for row in json.loads(command(DOCKER + ['inspect', *ids])):
+        state = row.get('State', {}) if isinstance(row, dict) else {}
+        if state.get('Running') is not False:
+            raise RuntimeError('Immich is still running after being stopped; snapshot not taken')
+        if state.get('ExitCode') == 137 or state.get('OOMKilled'):
+            raise RuntimeError(
+                'Immich did not shut down cleanly (it was killed); snapshot not taken. Let it start and settle, then try again'
+            )
 
-def copy_verified(source,target):
-    source=safe_path(source);target=safe_path(target);before=source.stat()
-    if target.exists():raise RuntimeError('Recovery destination already exists; never overwrite')
-    target.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
-    with source.open('rb') as inp,target.open('xb') as out:
-        os.fchmod(out.fileno(),0o600);shutil.copyfileobj(inp,out,1024*1024);out.flush();os.fsync(out.fileno())
-    after=source.stat()
-    if (before.st_size,before.st_mtime_ns,before.st_ino)!=(after.st_size,after.st_mtime_ns,after.st_ino) or digest(source)!=digest(target):
+
+def copy_verified(source, target):
+    source = safe_path(source)
+    target = safe_path(target)
+    before = source.stat()
+    if target.exists():
+        raise RuntimeError('Recovery destination already exists; never overwrite')
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with source.open('rb') as inp, target.open('xb') as out:
+        os.fchmod(out.fileno(), 0o600)
+        shutil.copyfileobj(inp, out, 1024 * 1024)
+        out.flush()
+        os.fsync(out.fileno())
+    after = source.stat()
+    if (before.st_size, before.st_mtime_ns, before.st_ino) != (
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ino,
+    ) or digest(source) != digest(target):
         raise RuntimeError('Recovery source changed or copy checksum failed; incomplete copy retained')
+
 
 def mounts(config):
     validate_config(config)
-    spec=importlib.util.spec_from_file_location('recovery_storage_guard',Path(__file__).with_name('storage-guard.py'))
-    guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard);guard.verify(config)
+    spec = importlib.util.spec_from_file_location(
+        'recovery_storage_guard', Path(__file__).with_name('storage-guard.py')
+    )
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    guard.verify(config)
+
 
 @contextmanager
-def lock(config,changes_apps=True):
+def lock(config, changes_apps=True):
     """The shared lock that backups and monthly updates hold too. A monthly update can
     start (and fail, keeping its journal) while this waits, so whatever changes or starts
     apps checks for an unfinished update again once the lock is held, right before it
@@ -121,565 +188,992 @@ def lock(config,changes_apps=True):
     they may be what lets a stuck update finish."""
     # The SSD folder comes from the settings file, so it is checked first (a plain absolute
     # path, no symlinks, not a system folder) and only the checked path is looked at.
-    mount=neko_common.plain_folder(config['data_mount'])
-    path=safe_path(mount/'installer/recovery.lock')
+    mount = neko_common.plain_folder(config['data_mount'])
+    path = safe_path(mount / 'installer/recovery.lock')
     # The installer folder is made only on the mounted SSD: with the SSD missing it would
     # be made on the system disk underneath (a lock the backups never see, and a folder
     # that later stops the SSD's own mount there).
     if not path.parent.is_dir() and not os.path.ismount(mount):
         raise RuntimeError(f'The data SSD is not mounted at {mount}; connect it (or restart) and try again')
-    path.parent.mkdir(parents=True,exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('a') as stream:
-        os.fchmod(stream.fileno(),0o600)
-        wait_for(stream,sys.stdin.isatty())
+        os.fchmod(stream.fileno(), 0o600)
+        wait_for(stream, sys.stdin.isatty())
         if changes_apps:
-            blocked=neko_common.pending_maintenance(neko_common.MAINTENANCE_JOURNAL,'Setup stopped before changing anything else.')
-            if blocked:raise RuntimeError(blocked)
+            blocked = neko_common.pending_maintenance(
+                neko_common.MAINTENANCE_JOURNAL, 'Setup stopped before changing anything else.'
+            )
+            if blocked:
+                raise RuntimeError(blocked)
         yield
 
-BUSY='A NekoServer backup or monthly update is running right now. Wait for it to finish (usually under an hour), then run  sudo bash install.sh  again.'
 
-def wait_for(stream,patient,limit=1800,sleep=None):
+BUSY = 'A NekoServer backup or monthly update is running right now. Wait for it to finish (usually under an hour), then run  sudo bash install.sh  again.'
+
+
+def wait_for(stream, patient, limit=1800, sleep=None):
     """Take the shared lock. Night-time backups hold it too: an interactive run waits
     for them (up to 30 minutes, saying so) instead of failing with a puzzling error."""
     import time
-    sleep=sleep or time.sleep
-    waited=0
+
+    sleep = sleep or time.sleep
+    waited = 0
     while True:
         try:
-            fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB);return
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
         except BlockingIOError:
-            if not patient or waited>=limit:raise RuntimeError(BUSY) from None
-            if waited==0:print('Waiting for a NekoServer backup that is running right now to finish (up to 30 minutes)...',flush=True)
-            sleep(5);waited+=5
+            if not patient or waited >= limit:
+                raise RuntimeError(BUSY) from None
+            if waited == 0:
+                print(
+                    'Waiting for a NekoServer backup that is running right now to finish (up to 30 minutes)...',
+                    flush=True,
+                )
+            sleep(5)
+            waited += 5
+
 
 def require_root():
-    if os.geteuid()!=0:raise RuntimeError('This change needs the administrator: run the same command again with  sudo  in front')
+    if os.geteuid() != 0:
+        raise RuntimeError('This change needs the administrator: run the same command again with  sudo  in front')
+
 
 def host_supported():
     import host
-    return platform.machine()=='x86_64' and host.supported()
 
-def checkpoint(config,apply=False):
+    return platform.machine() == 'x86_64' and host.supported()
+
+
+def checkpoint(config, apply=False):
     mounts(config)
-    info=json_command(DOCKER+['info','--format','{{json .}}'])
-    target=str(Path(config['data_mount'])/'docker-engine')
-    version=info.get('ServerVersion','')
+    info = json_command(DOCKER + ['info', '--format', '{{json .}}'])
+    target = str(Path(config['data_mount']) / 'docker-engine')
+    version = info.get('ServerVersion', '')
     # The version may carry a package suffix (openSUSE's Docker says "29.7.2_ce"): read as
     # the reattach reads it, by its leading numbers.
-    if info.get('DockerRootDir')!=target or info.get('Driver')!='overlay2' or 'io.containerd.snapshotter' in json.dumps(info.get('DriverStatus')) or docker_release(version) is None:
-        raise RuntimeError('Checkpoint supports verified classic overlay2 Docker at the application SSD only'
-                           f' (found: driver {info.get("Driver")}, root {info.get("DockerRootDir")}, version {version or "unknown"})')
-    result={'format':'neko-host-checkpoint-v1','created_at':dt.datetime.now(dt.timezone.utc).isoformat(),'version':VERSION,'architecture':platform.machine(),'docker_version':version,'driver':'overlay2','docker_root':target,'storage':copy.deepcopy(config['storage']),'data_mount':config['data_mount'],'media_mount':config['media_mount'],'uid':config.get('media',{}).get('uid',1000),'gid':config.get('media',{}).get('gid',1000)}
+    if (
+        info.get('DockerRootDir') != target
+        or info.get('Driver') != 'overlay2'
+        or 'io.containerd.snapshotter' in json.dumps(info.get('DriverStatus'))
+        or docker_release(version) is None
+    ):
+        raise RuntimeError(
+            'Checkpoint supports verified classic overlay2 Docker at the application SSD only'
+            f' (found: driver {info.get("Driver")}, root {info.get("DockerRootDir")}, version {version or "unknown"})'
+        )
+    result = {
+        'format': 'neko-host-checkpoint-v1',
+        'created_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+        'version': VERSION,
+        'architecture': platform.machine(),
+        'docker_version': version,
+        'driver': 'overlay2',
+        'docker_root': target,
+        'storage': copy.deepcopy(config['storage']),
+        'data_mount': config['data_mount'],
+        'media_mount': config['media_mount'],
+        'uid': config.get('media', {}).get('uid', 1000),
+        'gid': config.get('media', {}).get('gid', 1000),
+    }
     if apply:
-        require_root();atomic_json(Path(config['data_mount'])/'installer/host-checkpoint.json',result)
+        require_root()
+        atomic_json(Path(config['data_mount']) / 'installer/host-checkpoint.json', result)
     return result
 
-def verify_bundle(bundle,config):
-    bundle=safe_path(bundle);manifest=json.loads(safe_path(bundle/'release-manifest.json').read_text())
-    entries=manifest.get('sha256')
-    if not isinstance(entries,dict) or not entries or not all(x in entries for x in ('installer.py','neko_common.py','storage-guard.py','modules/docker.py')):raise RuntimeError('Incomplete preserved installer manifest')
-    for name,expected in entries.items():
-        rel=Path(name)
-        if rel.is_absolute() or '..' in rel.parts or not re.fullmatch(r'[0-9a-f]{64}',expected):raise RuntimeError('Invalid preserved installer checksum entry')
-        if digest(bundle/rel)!=expected:raise RuntimeError('Preserved installer checksum mismatch')
-    saved=json.loads(safe_path(bundle/CONFIG_NAME).read_text())
-    for key in ('data_mount','media_mount','storage'):
-        if saved.get(key)!=config.get(key):raise RuntimeError('Preserved installer storage configuration differs')
+
+def verify_bundle(bundle, config):
+    bundle = safe_path(bundle)
+    manifest = json.loads(safe_path(bundle / 'release-manifest.json').read_text())
+    entries = manifest.get('sha256')
+    if (
+        not isinstance(entries, dict)
+        or not entries
+        or not all(x in entries for x in ('installer.py', 'neko_common.py', 'storage-guard.py', 'modules/docker.py'))
+    ):
+        raise RuntimeError('Incomplete preserved installer manifest')
+    for name, expected in entries.items():
+        rel = Path(name)
+        if rel.is_absolute() or '..' in rel.parts or not re.fullmatch(r'[0-9a-f]{64}', expected):
+            raise RuntimeError('Invalid preserved installer checksum entry')
+        if digest(bundle / rel) != expected:
+            raise RuntimeError('Preserved installer checksum mismatch')
+    saved = json.loads(safe_path(bundle / CONFIG_NAME).read_text())
+    for key in ('data_mount', 'media_mount', 'storage'):
+        if saved.get(key) != config.get(key):
+            raise RuntimeError('Preserved installer storage configuration differs')
     return manifest['version']
+
 
 def docker_release(text):
     """(major, minor, patch) from 'Docker version 29.9.2, build x' or '29.9.2', else None."""
-    match=re.search(r'(\d{1,9})\.(\d{1,9})\.(\d{1,9})',text or '')   # bounded: no backtracking blow-up
+    match = re.search(r'(\d{1,9})\.(\d{1,9})\.(\d{1,9})', text or '')  # bounded: no backtracking blow-up
     return tuple(int(n) for n in match.groups()) if match else None
 
-def docker_new_enough(found,saved):
+
+def docker_new_enough(found, saved):
     """This Docker can take the store over: the version that last ran it (recorded in the
     host checkpoint), or a newer one, as the OS's own updates move Docker on over the same
     store; never an older one, which may not read it."""
-    have,want=docker_release(found),docker_release(saved)
-    if have is None or want is None:return found==saved or found.startswith('Docker version '+saved+',')
-    return have>=want
+    have, want = docker_release(found), docker_release(saved)
+    if have is None or want is None:
+        return found == saved or found.startswith('Docker version ' + saved + ',')
+    return have >= want
 
-def tool_path(config,name=RECOVER_TOOL):
+
+def tool_path(config, name=RECOVER_TOOL):
     """This release's recovery tool as the person types it: the copy kept on the SSD."""
-    return f"{config.get('data_mount','/srv/nekoserver')}/installer/releases/v{VERSION}/{name}"
+    return f"{config.get('data_mount', '/srv/nekoserver')}/installer/releases/v{VERSION}/{name}"
 
-def runtime_problem(bundle,runs=None):
+
+def runtime_problem(bundle, runs=None):
     """Why the NekoServer program kept with this release on the SSD cannot be Docker's
     start guard on this Linux, or None. It was built on the PC that set the server up: one
     built on a newer Linux (Arch, Ubuntu 24.04, Fedora) may not start on an older one
     (Debian 12), and Docker would then never start."""
-    binary=Path(bundle)/'runtime/bin'/native_runtime.NAME
-    if (runs or native_runtime.runs_here)(binary):return None
-    return ('The NekoServer program kept on the SSD ('+str(binary)+') was built on the earlier Linux and does not start '
-            'on this one, so Docker could not be started with it. Run  sudo bash install.sh  with your settings first: it '
-            'builds the program for this Linux and puts it in place of the kept copy (it stops at the Docker step, '
-            'which is expected). Then run reattach again. Nothing was changed.')
+    binary = Path(bundle) / 'runtime/bin' / native_runtime.NAME
+    if (runs or native_runtime.runs_here)(binary):
+        return None
+    return (
+        'The NekoServer program kept on the SSD ('
+        + str(binary)
+        + ') was built on the earlier Linux and does not start '
+        'on this one, so Docker could not be started with it. Run  sudo bash install.sh  with your settings first: it '
+        'builds the program for this Linux and puts it in place of the kept copy (it stops at the Docker step, '
+        'which is expected). Then run reattach again. Nothing was changed.'
+    )
+
 
 # Docker's two systemd units: the service, and the socket that would start it again on demand.
-DOCKER_UNITS=('docker.service','docker.socket')
+DOCKER_UNITS = ('docker.service', 'docker.socket')
 
-def install_docker(config,apply=False,family=None):
+
+def install_docker(config, apply=False, family=None):
     """Docker's packages for this Linux, installed the way setup installs them (Docker's
     own repository on Debian, Ubuntu, Fedora and RHEL; the system's on Arch and openSUSE),
     and left stopped: a fresh Docker that starts would make its own empty store, and the
     reattach step starts Docker itself, from the SSD."""
     import host
-    family=family or host.current()
+
+    family = family or host.current()
     if not apply:
-        return {'status':'needs_setup','reason':f'Preview: installs Docker and its Compose plugin for {family.label} and keeps them '
-                'stopped. Run again with --apply to install them'}
+        return {
+            'status': 'needs_setup',
+            'reason': f'Preview: installs Docker and its Compose plugin for {family.label} and keeps them '
+            'stopped. Run again with --apply to install them',
+        }
     require_root()
-    installed=family.install(['docker','docker-compose'])
-    still=[unit for unit in DOCKER_UNITS
-           if subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False).returncode==0]
+    installed = family.install(['docker', 'docker-compose'])
+    still = [
+        unit
+        for unit in DOCKER_UNITS
+        if subprocess.run(
+            ['systemctl', 'is-active', '--quiet', unit], capture_output=True, timeout=15, check=False
+        ).returncode
+        == 0
+    ]
     if still:
-        raise RuntimeError('Docker is running ('+', '.join(still)+'). Stop it before reattaching:  sudo systemctl stop '
-                           +' '.join(DOCKER_UNITS))
-    return {'status':'needs_setup','installed':installed,
-            'reason':'Docker is installed and stopped. Next:  sudo python3 '+tool_path(config)+' reattach'}
+        raise RuntimeError(
+            'Docker is running ('
+            + ', '.join(still)
+            + '). Stop it before reattaching:  sudo systemctl stop '
+            + ' '.join(DOCKER_UNITS)
+        )
+    return {
+        'status': 'needs_setup',
+        'installed': installed,
+        'reason': 'Docker is installed and stopped. Next:  sudo python3 ' + tool_path(config) + ' reattach',
+    }
+
 
 def docker_installed(config):
     """The Docker client and daemon programs are there."""
     if not (shutil.which('docker') and shutil.which('dockerd')):
-        raise RuntimeError('Docker is not installed on this Linux yet. Install it (kept stopped) with  sudo python3 '
-                           +tool_path(config)+' install-docker --apply  and run this again')
+        raise RuntimeError(
+            'Docker is not installed on this Linux yet. Install it (kept stopped) with  sudo python3 '
+            + tool_path(config)
+            + ' install-docker --apply  and run this again'
+        )
 
-def docker_ready(config,wanted):
+
+def docker_ready(config, wanted):
     """Docker is installed, the version that last ran the store (`wanted`) or newer, and
     stopped: reattach starts it itself, from the SSD."""
     docker_installed(config)
-    for argv in (DOCKER+['--version'],['dockerd','--version']):
-        installed=command(argv).strip()
-        if not docker_new_enough(installed,wanted):
-            raise RuntimeError(f'Install Docker {wanted} or newer (client and daemon) before reattachment: the apps last '
-                               f'ran with Docker {wanted}, and an older one may not read their store. This PC has: {installed}. '
-                               'A Docker from the system\'s own packages (docker.io on Debian) is often older: remove it '
-                               '(sudo apt remove docker.io) and install Docker\'s own with  sudo python3 '
-                               +tool_path(config)+' install-docker --apply')
+    for argv in (DOCKER + ['--version'], ['dockerd', '--version']):
+        installed = command(argv).strip()
+        if not docker_new_enough(installed, wanted):
+            raise RuntimeError(
+                f'Install Docker {wanted} or newer (client and daemon) before reattachment: the apps last '
+                f'ran with Docker {wanted}, and an older one may not read their store. This PC has: {installed}. '
+                'A Docker from the system\'s own packages (docker.io on Debian) is often older: remove it '
+                '(sudo apt remove docker.io) and install Docker\'s own with  sudo python3 '
+                + tool_path(config)
+                + ' install-docker --apply'
+            )
     for unit in DOCKER_UNITS:
-        result=subprocess.run(['systemctl','is-active','--quiet',unit],capture_output=True,timeout=15,check=False)
-        if result.returncode==0:raise RuntimeError('Stop Docker service and socket before reattachment:  sudo systemctl stop '+' '.join(DOCKER_UNITS))
+        result = subprocess.run(
+            ['systemctl', 'is-active', '--quiet', unit], capture_output=True, timeout=15, check=False
+        )
+        if result.returncode == 0:
+            raise RuntimeError(
+                'Stop Docker service and socket before reattachment:  sudo systemctl stop ' + ' '.join(DOCKER_UNITS)
+            )
 
-def reattach(config,bundle,apply=False,confirm=''):
-    mounts(config);verify_bundle(bundle,config)
-    problem=runtime_problem(bundle)
-    if problem:raise RuntimeError(problem)
-    saved=json.loads(safe_path(Path(config['data_mount'])/'installer/host-checkpoint.json').read_text())
-    if saved.get('format')!='neko-host-checkpoint-v1' or saved.get('architecture')!=platform.machine() or saved.get('driver')!='overlay2':raise RuntimeError('Host checkpoint is incompatible')
-    for key in ('storage','data_mount','media_mount'):
-        if saved.get(key)!=config.get(key):raise RuntimeError('Recovery checkpoint storage differs')
-    if saved.get('uid')!=config.get('media',{}).get('uid',1000) or saved.get('gid')!=config.get('media',{}).get('gid',1000):raise RuntimeError('Recovery media UID/GID differs; no automatic ownership changes')
-    target=Path(config['data_mount'])/'docker-engine'
-    if saved.get('docker_root')!=str(target) or not target.is_dir() or not any(target.iterdir()):raise RuntimeError('Expected persistent Docker store is missing or empty')
-    if not host_supported():import host;raise RuntimeError('Automatic reattachment supports x86_64 '+', '.join(f.label for f in host.FAMILIES)+' (this PC runs something else, so the steps in RECOVERY.md cannot be done automatically here)')
-    docker_ready(config,saved['docker_version'])
-    daemon=safe_path(Path('/etc/docker/daemon.json'))
-    desired=docker_module.prepare_daemon_config(daemon,target)
-    default=safe_path(Path('/var/lib/docker'))
+
+def reattach(config, bundle, apply=False, confirm=''):
+    mounts(config)
+    verify_bundle(bundle, config)
+    problem = runtime_problem(bundle)
+    if problem:
+        raise RuntimeError(problem)
+    saved = json.loads(safe_path(Path(config['data_mount']) / 'installer/host-checkpoint.json').read_text())
+    if (
+        saved.get('format') != 'neko-host-checkpoint-v1'
+        or saved.get('architecture') != platform.machine()
+        or saved.get('driver') != 'overlay2'
+    ):
+        raise RuntimeError('Host checkpoint is incompatible')
+    for key in ('storage', 'data_mount', 'media_mount'):
+        if saved.get(key) != config.get(key):
+            raise RuntimeError('Recovery checkpoint storage differs')
+    if saved.get('uid') != config.get('media', {}).get('uid', 1000) or saved.get('gid') != config.get('media', {}).get(
+        'gid', 1000
+    ):
+        raise RuntimeError('Recovery media UID/GID differs; no automatic ownership changes')
+    target = Path(config['data_mount']) / 'docker-engine'
+    if saved.get('docker_root') != str(target) or not target.is_dir() or not any(target.iterdir()):
+        raise RuntimeError('Expected persistent Docker store is missing or empty')
+    if not host_supported():
+        import host
+
+        raise RuntimeError(
+            'Automatic reattachment supports x86_64 '
+            + ', '.join(f.label for f in host.FAMILIES)
+            + ' (this PC runs something else, so the steps in RECOVERY.md cannot be done automatically here)'
+        )
+    docker_ready(config, saved['docker_version'])
+    daemon = safe_path(Path('/etc/docker/daemon.json'))
+    desired = docker_module.prepare_daemon_config(daemon, target)
+    default = safe_path(Path('/var/lib/docker'))
     # Docker's own empty folder tree (made on its first start) is no data: the same test as setup.
-    if default.exists() and docker_module.store_in_use(default):raise RuntimeError('Default Docker store contains data; manual migration required')
-    override=safe_path(DOCKER_STORAGE_DROPIN)
-    if override.exists() and not override.read_text().startswith('# Managed by NekoServer\n'):raise RuntimeError('Unmanaged Docker guard preserved; review it first')
-    if not apply:return {'status':'needs_setup','reason':'Preview passed; nothing was changed. To reattach for real, run:  sudo python3 '
-                         +tool_path(config)+' reattach --apply --confirm '+config['storage']['data_ssd']['uuid'],'docker_version':saved['docker_version']}
+    if default.exists() and docker_module.store_in_use(default):
+        raise RuntimeError('Default Docker store contains data; manual migration required')
+    override = safe_path(DOCKER_STORAGE_DROPIN)
+    if override.exists() and not override.read_text().startswith('# Managed by NekoServer\n'):
+        raise RuntimeError('Unmanaged Docker guard preserved; review it first')
+    if not apply:
+        return {
+            'status': 'needs_setup',
+            'reason': 'Preview passed; nothing was changed. To reattach for real, run:  sudo python3 '
+            + tool_path(config)
+            + ' reattach --apply --confirm '
+            + config['storage']['data_ssd']['uuid'],
+            'docker_version': saved['docker_version'],
+        }
     require_root()
-    if confirm!=config['storage']['data_ssd']['uuid']:raise RuntimeError('Nothing was changed: reattaching needs your SSD\'s UUID after --confirm, '
-                                                              'as a check that it is the right drive. Run:  sudo python3 '+tool_path(config)
-                                                              +' reattach --apply --confirm '+config['storage']['data_ssd']['uuid'])
-    with lock(config,changes_apps=False):
+    if confirm != config['storage']['data_ssd']['uuid']:
+        raise RuntimeError(
+            'Nothing was changed: reattaching needs your SSD\'s UUID after --confirm, '
+            'as a check that it is the right drive. Run:  sudo python3 '
+            + tool_path(config)
+            + ' reattach --apply --confirm '
+            + config['storage']['data_ssd']['uuid']
+        )
+    with lock(config, changes_apps=False):
         # Recheck disk identities immediately before writing OS configuration.
         mounts(config)
         docker_module.install_storage_guard(config)
-        atomic_write(daemon,json.dumps(desired,indent=2)+'\n',0o644)
+        atomic_write(daemon, json.dumps(desired, indent=2) + '\n', 0o644)
         try:
             # A start tried by hand earlier (and refused) leaves systemd's "started too
             # often" count behind, which would refuse this start too.
-            subprocess.run(['systemctl','reset-failed',*DOCKER_UNITS],capture_output=True,timeout=30,check=False)
-            command(['systemctl','enable','--now','docker'],90)
-            actual=checkpoint(config)
-            if not docker_new_enough(actual['docker_version'],saved['docker_version']):raise RuntimeError('Running Docker is older than the checkpoint')
+            subprocess.run(['systemctl', 'reset-failed', *DOCKER_UNITS], capture_output=True, timeout=30, check=False)
+            command(['systemctl', 'enable', '--now', 'docker'], 90)
+            actual = checkpoint(config)
+            if not docker_new_enough(actual['docker_version'], saved['docker_version']):
+                raise RuntimeError('Running Docker is older than the checkpoint')
             # The store runs with this Docker now: the record names it from here on.
-            checkpoint(config,apply=True)
+            checkpoint(config, apply=True)
         except BaseException:
             # A failed adoption must not keep a mismatched daemon running.
-            stopped=subprocess.run(['systemctl','stop',*DOCKER_UNITS],capture_output=True,timeout=30,check=False)
-            if stopped.returncode:raise RuntimeError('Post-start verification failed and Docker could not be stopped; inspect service/socket locally') from None
+            stopped = subprocess.run(['systemctl', 'stop', *DOCKER_UNITS], capture_output=True, timeout=30, check=False)
+            if stopped.returncode:
+                raise RuntimeError(
+                    'Post-start verification failed and Docker could not be stopped; inspect service/socket locally'
+                ) from None
             raise
-    return {'status':'needs_setup','reason':'Docker store reattached and running. Next: run  sudo bash install.sh  to set up the rest '
-            'of this Linux again (timers, network, TV), then open each app and check your photos, music and videos (RECOVERY.md, step 6)'}
+    return {
+        'status': 'needs_setup',
+        'reason': 'Docker store reattached and running. Next: run  sudo bash install.sh  to set up the rest '
+        'of this Linux again (timers, network, TV), then open each app and check your photos, music and videos (RECOVERY.md, step 6)',
+    }
+
 
 def compose_args(config):
-    root=Path(config['data_mount'])/'compose/immich'
-    compose=safe_path(root/'compose.yaml');env=safe_path(root/'.env')
-    if not compose.is_file() or not env.is_file():raise RuntimeError('Existing Immich manifest and environment required')
-    return DOCKER+['compose','-p','neko-immich','-f',str(compose),'--env-file',str(env)]
+    root = Path(config['data_mount']) / 'compose/immich'
+    compose = safe_path(root / 'compose.yaml')
+    env = safe_path(root / '.env')
+    if not compose.is_file() or not env.is_file():
+        raise RuntimeError('Existing Immich manifest and environment required')
+    return DOCKER + ['compose', '-p', 'neko-immich', '-f', str(compose), '--env-file', str(env)]
 
-def validate_model(model,upload,database):
-    services=model.get('services',{})
-    if set(services)!=SERVICES:raise RuntimeError('Restore currently supports the four standard Immich services; custom services require review')
-    for name,svc in services.items():
-        if not isinstance(svc,dict) or not isinstance(svc.get('image'),str):raise RuntimeError('Invalid Immich service')
-        if any(key in svc for key in ('build','privileged','devices','cap_add','network_mode','pid','ipc','user','secrets','configs','volumes_from','extends')):raise RuntimeError('Custom Immich runtime settings require manual isolated recovery')
-        seen=set()
-        for volume in svc.get('volumes',[]):
-            if not isinstance(volume,dict):raise RuntimeError('Canonical Compose volume definitions required')
-            target=volume.get('target');source=volume.get('source')
-            if not isinstance(target,str) or target in seen:raise RuntimeError('Invalid/duplicate Immich volume target')
+
+# Where Immich's containers see the photo library (older and newer image) and the database.
+IMMICH_BINDINGS = {'immich-server': ('/data', '/usr/src/app/upload'), 'database': ('/var/lib/postgresql/data',)}
+
+
+def validate_model(model, upload, database):
+    services = model.get('services', {})
+    if set(services) != SERVICES:
+        raise RuntimeError(
+            'Restore currently supports the four standard Immich services; custom services require review'
+        )
+    for name, svc in services.items():
+        if not isinstance(svc, dict) or not isinstance(svc.get('image'), str):
+            raise RuntimeError('Invalid Immich service')
+        if any(
+            key in svc
+            for key in (
+                'build',
+                'privileged',
+                'devices',
+                'cap_add',
+                'network_mode',
+                'pid',
+                'ipc',
+                'user',
+                'secrets',
+                'configs',
+                'volumes_from',
+                'extends',
+            )
+        ):
+            raise RuntimeError('Custom Immich runtime settings require manual isolated recovery')
+        seen = set()
+        for volume in svc.get('volumes', []):
+            if not isinstance(volume, dict):
+                raise RuntimeError('Canonical Compose volume definitions required')
+            target = volume.get('target')
+            source = volume.get('source')
+            if not isinstance(target, str) or target in seen:
+                raise RuntimeError('Invalid/duplicate Immich volume target')
             seen.add(target)
-            if volume.get('type')=='bind':
-                if source=='/etc/localtime' and volume.get('read_only'):continue
-                expected=upload if name=='immich-server' else database if name=='database' else None
-                expected_target=('/data','/usr/src/app/upload') if name=='immich-server' else ('/var/lib/postgresql/data',)
-                if expected is None or source!=str(expected) or target not in expected_target:raise RuntimeError('External/custom Immich mounts are not covered; no incomplete snapshot allowed')
-            elif volume.get('type')=='volume' and name=='immich-machine-learning' and isinstance(source,str) and re.fullmatch(r'[A-Za-z0-9_-]+',source):pass
-            else:raise RuntimeError('Unsupported Immich persistent volume')
-        required=('/data','/usr/src/app/upload') if name=='immich-server' else ('/var/lib/postgresql/data',) if name=='database' else ()
-        if required and not any(x in seen for x in required):raise RuntimeError('Required Immich storage binding is missing')
-    server_env=services['immich-server'].get('environment',{});db_env=services['database'].get('environment',{})
-    if not isinstance(server_env,dict) or not isinstance(db_env,dict):raise RuntimeError('Canonical Immich environment required')
-    if server_env.get('DB_URL') or server_env.get('REDIS_URL') or server_env.get('DB_HOSTNAME','database')!='database' or server_env.get('REDIS_HOSTNAME','redis')!='redis':raise RuntimeError('Custom database/cache routing requires manual isolated recovery')
-    for key,dbkey,default in [('DB_USERNAME','POSTGRES_USER','postgres'),('DB_DATABASE_NAME','POSTGRES_DB','immich'),('DB_PASSWORD','POSTGRES_PASSWORD',None)]:
-        if server_env.get(key,default)!=db_env.get(dbkey,default):raise RuntimeError('Immich database credentials/name do not match its database service')
+            if volume.get('type') == 'bind':
+                if source == '/etc/localtime' and volume.get('read_only'):
+                    continue
+                expected = upload if name == 'immich-server' else database if name == 'database' else None
+                expected_target = IMMICH_BINDINGS.get(name, ())
+                if expected is None or source != str(expected) or target not in expected_target:
+                    raise RuntimeError('External/custom Immich mounts are not covered; no incomplete snapshot allowed')
+            elif not (
+                volume.get('type') == 'volume'
+                and name == 'immich-machine-learning'
+                and isinstance(source, str)
+                and re.fullmatch(r'[A-Za-z0-9_-]+', source)
+            ):
+                raise RuntimeError('Unsupported Immich persistent volume')
+        required = IMMICH_BINDINGS.get(name, ())
+        if required and not any(x in seen for x in required):
+            raise RuntimeError('Required Immich storage binding is missing')
+    server_env = services['immich-server'].get('environment', {})
+    db_env = services['database'].get('environment', {})
+    if not isinstance(server_env, dict) or not isinstance(db_env, dict):
+        raise RuntimeError('Canonical Immich environment required')
+    if (
+        server_env.get('DB_URL')
+        or server_env.get('REDIS_URL')
+        or server_env.get('DB_HOSTNAME', 'database') != 'database'
+        or server_env.get('REDIS_HOSTNAME', 'redis') != 'redis'
+    ):
+        raise RuntimeError('Custom database/cache routing requires manual isolated recovery')
+    for key, dbkey, default in [
+        ('DB_USERNAME', 'POSTGRES_USER', 'postgres'),
+        ('DB_DATABASE_NAME', 'POSTGRES_DB', 'immich'),
+        ('DB_PASSWORD', 'POSTGRES_PASSWORD', None),
+    ]:
+        if server_env.get(key, default) != db_env.get(dbkey, default):
+            raise RuntimeError('Immich database credentials/name do not match its database service')
     return services
 
-def freeze_images(base,model):
-    model=copy.deepcopy(model)
-    for name,service in model['services'].items():
-        ids=command(base+['ps','-a','-q',name]).split()
-        if len(ids)!=1:raise RuntimeError('Exactly one existing Immich container per service is required')
-        image=command(DOCKER+['inspect','--format','{{.Image}}',ids[0]]).strip()
-        user=command(DOCKER+['image','inspect','--format','{{.Config.User}}',image]).strip()
-        if user not in ('','0','root','0:0','root:root'):raise RuntimeError('Non-root image permissions require manual isolated recovery')
-        values=json_command(DOCKER+['image','inspect','--format','{{json .RepoDigests}}',image])
-        if not isinstance(values,list) or not values or not re.fullmatch(r'[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}',values[0]):raise RuntimeError('Immich image lacks an immutable repository digest')
-        service['image']=values[0]
+
+def freeze_images(base, model):
+    model = copy.deepcopy(model)
+    for name, service in model['services'].items():
+        ids = command(base + ['ps', '-a', '-q', name]).split()
+        if len(ids) != 1:
+            raise RuntimeError('Exactly one existing Immich container per service is required')
+        image = command(DOCKER + ['inspect', '--format', '{{.Image}}', ids[0]]).strip()
+        user = command(DOCKER + ['image', 'inspect', '--format', '{{.Config.User}}', image]).strip()
+        if user not in ('', '0', 'root', '0:0', 'root:root'):
+            raise RuntimeError('Non-root image permissions require manual isolated recovery')
+        values = json_command(DOCKER + ['image', 'inspect', '--format', '{{json .RepoDigests}}', image])
+        if (
+            not isinstance(values, list)
+            or not values
+            or not re.fullmatch(r'[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}', values[0])
+        ):
+            raise RuntimeError('Immich image lacks an immutable repository digest')
+        service['image'] = values[0]
     return model
 
-def within(path,parent):return path==parent or parent in path.parents
 
-def new_folder(config,path,kind):
-    path=mount_path(path)
-    parents=[Path(config['data_mount'])/kind,Path(config['media_mount'])/kind]
-    if not any(path.parent==p for p in parents):raise RuntimeError('Use a new named directory directly inside '+kind+' on the SSD or HDD')
-    if path.exists():raise RuntimeError('Recovery destination exists; use a new empty name')
+def within(path, parent):
+    return path == parent or parent in path.parents
+
+
+def new_folder(config, path, kind):
+    path = mount_path(path)
+    parents = [Path(config['data_mount']) / kind, Path(config['media_mount']) / kind]
+    if not any(path.parent == p for p in parents):
+        raise RuntimeError('Use a new named directory directly inside ' + kind + ' on the SSD or HDD')
+    if path.exists():
+        raise RuntimeError('Recovery destination exists; use a new empty name')
     return path
 
-def enough_space(path,required):
-    ancestor=path
-    while not ancestor.exists():ancestor=ancestor.parent
-    if shutil.disk_usage(ancestor).free<required+100*1024*1024:raise RuntimeError('Insufficient free space for recovery copy plus reserve')
+
+def enough_space(path, required):
+    ancestor = path
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    if shutil.disk_usage(ancestor).free < required + 100 * 1024 * 1024:
+        raise RuntimeError('Insufficient free space for recovery copy plus reserve')
+
 
 def dump_complete(path):
     """A disk that fills up mid-dump can leave a cut-off file even when every program
     reports success; pg_dump ends a finished plain dump with this line."""
-    with open(path,'rb') as stream:
-        stream.seek(max(0,os.fstat(stream.fileno()).st_size-4096))
+    with open(path, 'rb') as stream:
+        stream.seek(max(0, os.fstat(stream.fileno()).st_size - 4096))
         return b'-- PostgreSQL database dump complete' in stream.read()
 
-def snapshot_plan(config,destination):
+
+def snapshot_plan(config, destination):
     """Read what the snapshot records: Compose settings, the pinned Immich version, the
     exact images and the running services. On --apply this runs only while holding the
     shared lock, so a monthly update cannot change any of it before the copy is made."""
-    mounts(config);base=compose_args(config);model=json_command(base+['config','--format','json'])
-    upload=safe_path(Path(config['data_mount'])/'photos/immich-library');database=safe_path(Path(config['data_mount'])/'appdata/immich/postgres')
-    validate_model(model,upload,database)
-    version=None
-    for line in safe_path(Path(config['data_mount'])/'compose/immich/.env').read_text().splitlines():
-        if line.startswith('IMMICH_VERSION='):version=line.split('=',1)[1]
-    if not isinstance(version,str) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',version):raise RuntimeError('A pinned Immich version is required')
-    destination=new_folder(config,destination,'recovery-snapshots')
-    files=regular_files(upload);dbfiles=regular_files(database)
-    enough_space(destination,sum(p.stat().st_size for p in files)+2*sum(p.stat().st_size for p in dbfiles))
-    model=freeze_images(base,model)
-    running=command(base+['ps','--status','running','--services']).split()
-    if 'database' not in running or any(x not in SERVICES for x in running):raise RuntimeError('Immich database must be running with only standard services')
-    resume=sorted(set(running)-{'database'})
-    return base,model,upload,database,version,destination,files,resume
+    mounts(config)
+    base = compose_args(config)
+    model = json_command(base + ['config', '--format', 'json'])
+    upload = safe_path(Path(config['data_mount']) / 'photos/immich-library')
+    database = safe_path(Path(config['data_mount']) / 'appdata/immich/postgres')
+    validate_model(model, upload, database)
+    version = None
+    for line in safe_path(Path(config['data_mount']) / 'compose/immich/.env').read_text().splitlines():
+        if line.startswith('IMMICH_VERSION='):
+            version = line.split('=', 1)[1]
+    if not isinstance(version, str) or not re.fullmatch(r'v\d+\.\d+\.\d+', version):
+        raise RuntimeError('A pinned Immich version is required')
+    destination = new_folder(config, destination, 'recovery-snapshots')
+    files = regular_files(upload)
+    dbfiles = regular_files(database)
+    enough_space(destination, sum(p.stat().st_size for p in files) + 2 * sum(p.stat().st_size for p in dbfiles))
+    model = freeze_images(base, model)
+    running = command(base + ['ps', '--status', 'running', '--services']).split()
+    if 'database' not in running or any(x not in SERVICES for x in running):
+        raise RuntimeError('Immich database must be running with only standard services')
+    resume = sorted(set(running) - {'database'})
+    return base, model, upload, database, version, destination, files, resume
+
 
 # A manual snapshot stops Immich's services; this record (and a boot hook while it
 # exists) restarts them if the machine stopped before the snapshot could, such as after
 # a power cut or a killed process, where no `finally` runs.
-SNAPSHOT_RESUME=Path('/etc/nekoserver-backups/immich-snapshot-resume.json')
-SNAPSHOT_HOOK=neko_common.SYSTEMD_UNITS/'nekoserver-immich-snapshot-resume.service'
+SNAPSHOT_RESUME = Path('/etc/nekoserver-backups/immich-snapshot-resume.json')
+SNAPSHOT_HOOK = neko_common.SYSTEMD_UNITS / 'nekoserver-immich-snapshot-resume.service'
 
-def hook_command(config,config_path):
+
+def hook_command(config, config_path):
     """What the boot hook runs. The installer bundle that setup preserved on the app SSD
     (with its configuration copy) is preferred: it stays where it is, while the folder
     setup was run from may be moved, renamed or deleted before the next boot."""
-    bundle=Path(config['data_mount'])/'installer/releases'/('v'+VERSION)
-    script,settings=bundle/RECOVER_TOOL,bundle/CONFIG_NAME
+    bundle = Path(config['data_mount']) / 'installer/releases' / ('v' + VERSION)
+    script, settings = bundle / RECOVER_TOOL, bundle / CONFIG_NAME
     if not (script.is_file() and settings.is_file()):
-        script,settings=Path(__file__).resolve().with_name(RECOVER_TOOL),Path(config_path).resolve()
-    return ' '.join(systemd_arg(a) for a in ('/usr/bin/python3',script,'--config',settings,'resume'))
+        script, settings = Path(__file__).resolve().with_name(RECOVER_TOOL), Path(config_path).resolve()
+    return ' '.join(systemd_arg(a) for a in ('/usr/bin/python3', script, '--config', settings, 'resume'))
 
-def snapshot_hook(config,config_path):
+
+def snapshot_hook(config, config_path):
     """Runs once at boot, only while a restart is still owed."""
-    return ('[Unit]\nDescription=NekoServer: restart Immich after an interrupted manual snapshot\n'
-            'Wants=docker.service\nAfter=docker.service\nRequiresMountsFor='+systemd_arg(mount_path(config['data_mount']))+'\n'
-            'ConditionPathExists='+str(SNAPSHOT_RESUME)+'\n[Service]\nType=oneshot\n'
-            'ExecStart='+hook_command(config,config_path)+'\n'
-            '[Install]\nWantedBy=multi-user.target\n')
+    return (
+        '[Unit]\nDescription=NekoServer: restart Immich after an interrupted manual snapshot\n'
+        'Wants=docker.service\nAfter=docker.service\nRequiresMountsFor='
+        + systemd_arg(mount_path(config['data_mount']))
+        + '\n'
+        'ConditionPathExists=' + str(SNAPSHOT_RESUME) + '\n[Service]\nType=oneshot\n'
+        'ExecStart=' + hook_command(config, config_path) + '\n'
+        '[Install]\nWantedBy=multi-user.target\n'
+    )
 
-def owe_restart(config,config_path,services):
+
+def owe_restart(config, config_path, services):
     """Record the services to restart, and the boot hook, before any of them stops."""
-    neko_common.ensure_directory(SNAPSHOT_RESUME.parent,0o700)
-    atomic_json(SNAPSHOT_RESUME,{'format':'neko-immich-snapshot-resume-v1','project':'neko-immich','services':services})
-    atomic_write(SNAPSHOT_HOOK,snapshot_hook(config,config_path),0o644)
-    command(['systemctl','daemon-reload']);command(['systemctl','enable','--quiet',SNAPSHOT_HOOK.name])
+    neko_common.ensure_directory(SNAPSHOT_RESUME.parent, 0o700)
+    atomic_json(
+        SNAPSHOT_RESUME, {'format': 'neko-immich-snapshot-resume-v1', 'project': 'neko-immich', 'services': services}
+    )
+    atomic_write(SNAPSHOT_HOOK, snapshot_hook(config, config_path), 0o644)
+    command(['systemctl', 'daemon-reload'])
+    command(['systemctl', 'enable', '--quiet', SNAPSHOT_HOOK.name])
 
-def restart_owed(config,base=None):
+
+def restart_owed(config, base=None):
     """Start the recorded services again and check that they run; only then is the
     record (and the boot hook) removed. Otherwise both stay for the next boot or
     `recover.py resume`."""
-    if not SNAPSHOT_RESUME.exists():return []
+    if not SNAPSHOT_RESUME.exists():
+        return []
     try:
-        saved=json.loads(SNAPSHOT_RESUME.read_text());listed=saved['services']
-        if saved.get('format')!='neko-immich-snapshot-resume-v1' or not isinstance(listed,list) or not set(listed)<=SERVICES-{'database'}:raise ValueError
+        saved = json.loads(SNAPSHOT_RESUME.read_text())
+        listed = saved['services']
+        if (
+            saved.get('format') != 'neko-immich-snapshot-resume-v1'
+            or not isinstance(listed, list)
+            or not set(listed) <= SERVICES - {'database'}
+        ):
+            raise ValueError
         # Names taken from Immich's fixed service list, not from the file's own text.
-        services=[name for name in sorted(SERVICES) if name in listed]
-    except (OSError,ValueError,KeyError,TypeError):raise RuntimeError('Unreadable record of Immich services to restart: '+str(SNAPSHOT_RESUME)) from None
-    base=base or compose_args(config)
-    if services:command(base+['start',*services],180)
-    running=set(command(base+['ps','--status','running','--services']).split())
-    if not set(services)<=running:raise RuntimeError('Immich did not start again ('+', '.join(sorted(set(services)-running))+'); it is retried at the next boot, or run  sudo python3 '+str(Path(config['data_mount'])/'installer/releases'/('v'+VERSION)/RECOVER_TOOL)+' resume')
+        services = [name for name in sorted(SERVICES) if name in listed]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise RuntimeError('Unreadable record of Immich services to restart: ' + str(SNAPSHOT_RESUME)) from None
+    base = base or compose_args(config)
+    if services:
+        command(base + ['start', *services], 180)
+    running = set(command(base + ['ps', '--status', 'running', '--services']).split())
+    if not set(services) <= running:
+        raise RuntimeError(
+            'Immich did not start again ('
+            + ', '.join(sorted(set(services) - running))
+            + '); it is retried at the next boot, or run  sudo python3 '
+            + str(Path(config['data_mount']) / 'installer/releases' / ('v' + VERSION) / RECOVER_TOOL)
+            + ' resume'
+        )
     if SNAPSHOT_HOOK.exists():
-        command(['systemctl','disable','--quiet',SNAPSHOT_HOOK.name]);SNAPSHOT_HOOK.unlink();command(['systemctl','daemon-reload'])
+        command(['systemctl', 'disable', '--quiet', SNAPSHOT_HOOK.name])
+        SNAPSHOT_HOOK.unlink()
+        command(['systemctl', 'daemon-reload'])
     SNAPSHOT_RESUME.unlink()
     return services
+
 
 def resume(config):
     """Restart Immich after a manual snapshot that was cut off (boot hook / recover.py resume)."""
     require_root()
     with lock(config):
         mounts(config)
-        return {'status':'pass','reason':'Immich services running','restarted':restart_owed(config)}
+        return {'status': 'pass', 'reason': 'Immich services running', 'restarted': restart_owed(config)}
+
 
 @contextmanager
-def restarted_after(config,base,resume):
+def restarted_after(config, base, resume):
     """Whatever was running runs again afterwards, also when stopping failed half-way. If
     that fails too, the snapshot's own reason stays the one reported, with this beside it."""
-    failed=False
+    failed = False
     try:
         yield
     except BaseException:
-        failed=True
+        failed = True
         raise
     finally:
-        if resume:restart_again(config,base,failed)
+        if resume:
+            restart_again(config, base, failed)
 
-def restart_again(config,base,failed):
+
+def restart_again(config, base, failed):
     """Immich started again after a snapshot. When the snapshot itself failed, a failed
     restart is said (with how to retry it) instead of hiding why the snapshot failed."""
     try:
-        restart_owed(config,base)
+        restart_owed(config, base)
     except Exception as exc:
-        if not failed:raise
-        print(f'Immich could not be started again ({exc}); start it with:  sudo python3 recover.py resume',file=sys.stderr)
+        if not failed:
+            raise
+        print(
+            f'Immich could not be started again ({exc}); start it with:  sudo python3 recover.py resume',
+            file=sys.stderr,
+        )
 
-def snapshot(config,destination,apply=False,config_path=None):
+
+# Marks a snapshot or a rehearsal that is not usable yet.
+INCOMPLETE = '.incomplete'
+
+
+def snapshot(config, destination, apply=False, config_path=None):
     if not apply:
-        plan=snapshot_plan(config,destination);version,files=plan[4],plan[6]
-        return {'status':'needs_setup','reason':'Preview only; nothing was changed. With --apply it pauses Immich, copies every photo and '
-                'video and its database into the new folder, then starts Immich again. Run the same command with  --apply  added',
-                'files':len(files),'immich_version':version}
+        plan = snapshot_plan(config, destination)
+        version, files = plan[4], plan[6]
+        return {
+            'status': 'needs_setup',
+            'reason': 'Preview only; nothing was changed. With --apply it pauses Immich, copies every photo and '
+            'video and its database into the new folder, then starts Immich again. Run the same command with  --apply  added',
+            'files': len(files),
+            'immich_version': version,
+        }
     require_root()
     with lock(config):
-        restart_owed(config)   # one cut off earlier: Immich runs again before anything else
+        restart_owed(config)  # one cut off earlier: Immich runs again before anything else
         # Everything recorded is read (and the drives re-checked) only now, under the lock.
-        base,model,upload,database,version,destination,files,resume=snapshot_plan(config,destination)
-        destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700);destination.mkdir(mode=0o700)
-        atomic_json(destination/'.incomplete',{'reason':'Snapshot is not usable until manifest publication','source_project':'neko-immich','resume_services':resume})
-        with restarted_after(config,base,resume):
+        base, model, upload, database, version, destination, files, resume = snapshot_plan(config, destination)
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination.mkdir(mode=0o700)
+        atomic_json(
+            destination / INCOMPLETE,
+            {
+                'reason': 'Snapshot is not usable until manifest publication',
+                'source_project': 'neko-immich',
+                'resume_services': resume,
+            },
+        )
+        with restarted_after(config, base, resume):
             if resume:
-                owe_restart(config,config_path or Path(__file__).with_name(CONFIG_NAME),resume)
-                command(base+['stop','-t','60',*resume],180)
-                stopped_cleanly(base,resume)
+                owe_restart(config, config_path or Path(__file__).with_name(CONFIG_NAME), resume)
+                command(base + ['stop', '-t', '60', *resume], 180)
+                stopped_cleanly(base, resume)
             # Rescan after writers stop, including all original/generated/profile/marker files.
-            files=regular_files(upload)
-            database_bytes=sum(p.stat().st_size for p in regular_files(database))
-            enough_space(destination,sum(p.stat().st_size for p in files)+2*database_bytes)
-            photo=destination/'upload';photo.mkdir(mode=0o700)
+            files = regular_files(upload)
+            database_bytes = sum(p.stat().st_size for p in regular_files(database))
+            enough_space(destination, sum(p.stat().st_size for p in files) + 2 * database_bytes)
+            photo = destination / 'upload'
+            photo.mkdir(mode=0o700)
             for directory in sorted(p for p in upload.rglob('*') if p.is_dir()):
-                safe_path(directory);(photo/directory.relative_to(upload)).mkdir(parents=True,exist_ok=True,mode=0o700)
-            for source in files:copy_verified(source,photo/source.relative_to(upload))
-            sql=destination/'database.sql'
+                safe_path(directory)
+                (photo / directory.relative_to(upload)).mkdir(parents=True, exist_ok=True, mode=0o700)
+            for source in files:
+                copy_verified(source, photo / source.relative_to(upload))
+            sql = destination / 'database.sql'
             with sql.open('xb') as output:
-                os.fchmod(output.fileno(),0o600)
-                command(base+['exec','-T','database','sh','-ec','exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl'],1800,stdout=output)
-                output.flush();os.fsync(output.fileno())
-            if sql.stat().st_size<100:raise RuntimeError('Database dump unexpectedly small')
-            if not dump_complete(sql):raise RuntimeError('Database dump is incomplete (no end marker); the disk may be full')
-            atomic_json(destination/'compose-resolved.json',model)
-            entries={str(p.relative_to(destination)):digest(p) for p in regular_files(destination) if p!=destination/'.incomplete'}
-            metadata={'format':FORMAT,'created_at':dt.datetime.now(dt.timezone.utc).isoformat(),'immich_version':version,'source_upload':str(upload),'source_database':str(database),'database_bytes':database_bytes,'sha256':entries,'empty_directories':[str(p.relative_to(photo)) for p in sorted(photo.rglob('*')) if p.is_dir()]}
-            atomic_json(destination/'snapshot.json',metadata)
-            (destination/'.incomplete').unlink()
-    return {'status':'pass','reason':'Matched full-upload/database snapshot created; restore acceptance still required','snapshot':str(destination),'files':len(files)}
+                os.fchmod(output.fileno(), 0o600)
+                command(
+                    base
+                    + [
+                        'exec',
+                        '-T',
+                        'database',
+                        'sh',
+                        '-ec',
+                        'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl',
+                    ],
+                    1800,
+                    stdout=output,
+                )
+                output.flush()
+                os.fsync(output.fileno())
+            if sql.stat().st_size < 100:
+                raise RuntimeError('Database dump unexpectedly small')
+            if not dump_complete(sql):
+                raise RuntimeError('Database dump is incomplete (no end marker); the disk may be full')
+            atomic_json(destination / 'compose-resolved.json', model)
+            entries = {
+                str(p.relative_to(destination)): digest(p)
+                for p in regular_files(destination)
+                if p != destination / INCOMPLETE
+            }
+            metadata = {
+                'format': FORMAT,
+                'created_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+                'immich_version': version,
+                'source_upload': str(upload),
+                'source_database': str(database),
+                'database_bytes': database_bytes,
+                'sha256': entries,
+                'empty_directories': [str(p.relative_to(photo)) for p in sorted(photo.rglob('*')) if p.is_dir()],
+            }
+            atomic_json(destination / 'snapshot.json', metadata)
+            (destination / INCOMPLETE).unlink()
+    return {
+        'status': 'pass',
+        'reason': 'Matched full-upload/database snapshot created; restore acceptance still required',
+        'snapshot': str(destination),
+        'files': len(files),
+    }
+
 
 def verify_snapshot(path):
-    path=safe_path(path)
-    if (path/'.incomplete').exists():raise RuntimeError('Incomplete snapshot cannot be restored')
-    meta=json.loads(safe_path(path/'snapshot.json').read_text())
-    if meta.get('format')!=FORMAT or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',meta.get('immich_version','')):raise RuntimeError('Unsupported snapshot format/version')
-    entries=meta.get('sha256')
-    if not isinstance(entries,dict) or not {'database.sql','compose-resolved.json'}<=set(entries):raise RuntimeError('Snapshot lacks database/Compose checksums')
-    actual={str(p.relative_to(path)) for p in regular_files(path)}-{'snapshot.json'}
-    if actual!=set(entries):raise RuntimeError('Snapshot file inventory differs')
-    for name,expected in entries.items():
-        rel=Path(name)
-        if rel.is_absolute() or '..' in rel.parts or not re.fullmatch(r'[0-9a-f]{64}',expected):raise RuntimeError('Invalid snapshot checksum entry')
-        if digest(path/rel)!=expected:raise RuntimeError('Snapshot checksum mismatch')
-    payload=(path/'compose-resolved.json').read_bytes()
-    if hashlib.sha256(payload).hexdigest()!=entries['compose-resolved.json']:raise RuntimeError('Snapshot Compose changed during verification')
-    model=json.loads(payload)
-    if type(meta.get('database_bytes')) is not int or meta['database_bytes']<1:raise RuntimeError('Snapshot database size estimate missing')
-    validate_model(model,Path(meta['source_upload']),Path(meta['source_database']))
-    if not all(re.fullmatch(r'[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}',s['image']) for s in model['services'].values()):raise RuntimeError('Snapshot images are not pinned by digest')
-    dirs=meta.get('empty_directories',[])
-    if not isinstance(dirs,list) or any(not isinstance(x,str) or Path(x).is_absolute() or '..' in Path(x).parts for x in dirs):raise RuntimeError('Invalid snapshot directory inventory')
-    return meta,model
+    path = safe_path(path)
+    if (path / INCOMPLETE).exists():
+        raise RuntimeError('Incomplete snapshot cannot be restored')
+    meta = json.loads(safe_path(path / 'snapshot.json').read_text())
+    if meta.get('format') != FORMAT or not re.fullmatch(r'v\d+\.\d+\.\d+', meta.get('immich_version', '')):
+        raise RuntimeError('Unsupported snapshot format/version')
+    entries = meta.get('sha256')
+    if not isinstance(entries, dict) or not {'database.sql', 'compose-resolved.json'} <= set(entries):
+        raise RuntimeError('Snapshot lacks database/Compose checksums')
+    actual = {str(p.relative_to(path)) for p in regular_files(path)} - {'snapshot.json'}
+    if actual != set(entries):
+        raise RuntimeError('Snapshot file inventory differs')
+    for name, expected in entries.items():
+        rel = Path(name)
+        if rel.is_absolute() or '..' in rel.parts or not re.fullmatch(r'[0-9a-f]{64}', expected):
+            raise RuntimeError('Invalid snapshot checksum entry')
+        if digest(path / rel) != expected:
+            raise RuntimeError('Snapshot checksum mismatch')
+    payload = (path / 'compose-resolved.json').read_bytes()
+    if hashlib.sha256(payload).hexdigest() != entries['compose-resolved.json']:
+        raise RuntimeError('Snapshot Compose changed during verification')
+    model = json.loads(payload)
+    if type(meta.get('database_bytes')) is not int or meta['database_bytes'] < 1:
+        raise RuntimeError('Snapshot database size estimate missing')
+    validate_model(model, Path(meta['source_upload']), Path(meta['source_database']))
+    if not all(re.fullmatch(r'[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}', s['image']) for s in model['services'].values()):
+        raise RuntimeError('Snapshot images are not pinned by digest')
+    dirs = meta.get('empty_directories', [])
+    if not isinstance(dirs, list) or any(
+        not isinstance(x, str) or Path(x).is_absolute() or '..' in Path(x).parts for x in dirs
+    ):
+        raise RuntimeError('Invalid snapshot directory inventory')
+    return meta, model
 
-def isolated_model(model,meta,workspace,port):
+
+def isolated_model(model, meta, workspace, port):
     # The restored app must not call out (no internet, no other app), but the person
     # has to open it from this PC. Docker publishes no port at all for a container on
     # an "internal" network, so the test network is an ordinary bridge without IP
     # masquerading instead: the published port works, and packets to the outside get
     # no way back.
-    result={'services':{},'networks':{'default':{'driver_opts':{'com.docker.network.bridge.enable_ip_masquerade':'false'}}}}
-    validate_model(model,Path(meta['source_upload']),Path(meta['source_database']))
-    allowed=('image','command','entrypoint','environment','healthcheck','shm_size','stop_grace_period','init')
-    for name,source in model['services'].items():
-        service={k:copy.deepcopy(source[k]) for k in allowed if k in source}
-        service['restart']='no';service['volumes']=[]
-        env=service.get('environment',{})
-        if not isinstance(env,dict):raise RuntimeError('Canonical service environment required')
-        for key in ('UPLOAD_LOCATION','DB_DATA_LOCATION'):env.pop(key,None)
-        if name=='immich-server':
-            env['DB_HOSTNAME']='database';env['REDIS_HOSTNAME']='redis';env['IMMICH_MACHINE_LEARNING_URL']='http://immich-machine-learning:3003'
-            service['environment']=env
+    result = {
+        'services': {},
+        'networks': {'default': {'driver_opts': {'com.docker.network.bridge.enable_ip_masquerade': 'false'}}},
+    }
+    validate_model(model, Path(meta['source_upload']), Path(meta['source_database']))
+    allowed = ('image', 'command', 'entrypoint', 'environment', 'healthcheck', 'shm_size', 'stop_grace_period', 'init')
+    for name, source in model['services'].items():
+        service = {k: copy.deepcopy(source[k]) for k in allowed if k in source}
+        service['restart'] = 'no'
+        service['volumes'] = []
+        env = service.get('environment', {})
+        if not isinstance(env, dict):
+            raise RuntimeError('Canonical service environment required')
+        for key in ('UPLOAD_LOCATION', 'DB_DATA_LOCATION'):
+            env.pop(key, None)
+        if name == 'immich-server':
+            env['DB_HOSTNAME'] = 'database'
+            env['REDIS_HOSTNAME'] = 'redis'
+            env['IMMICH_MACHINE_LEARNING_URL'] = 'http://immich-machine-learning:3003'
+            service['environment'] = env
         # Self-hosted integrations cannot call out through the internal test network.
         for value in env.values():
-            if value is not None and '$' in str(value):raise RuntimeError('Unresolved environment interpolation in snapshot')
-        for volume in source.get('volumes',[]):
-            if volume.get('source')=='/etc/localtime':continue
-            folder=workspace/'upload' if name=='immich-server' else workspace/'postgres' if name=='database' else workspace/'cache'/volume['source']
-            service['volumes'].append({'type':'bind','source':str(folder),'target':volume['target'],'bind':{'create_host_path':False}})
-        if name=='immich-server':service['ports']=[{'target':2283,'published':str(port),'host_ip':'127.0.0.1','protocol':'tcp'}]
+            if value is not None and '$' in str(value):
+                raise RuntimeError('Unresolved environment interpolation in snapshot')
+        for volume in source.get('volumes', []):
+            if volume.get('source') == '/etc/localtime':
+                continue
+            if name == 'immich-server':
+                folder = workspace / 'upload'
+            elif name == 'database':
+                folder = workspace / 'postgres'
+            else:
+                folder = workspace / 'cache' / volume['source']
+            service['volumes'].append(
+                {'type': 'bind', 'source': str(folder), 'target': volume['target'], 'bind': {'create_host_path': False}}
+            )
+        if name == 'immich-server':
+            service['ports'] = [{'target': 2283, 'published': str(port), 'host_ip': '127.0.0.1', 'protocol': 'tcp'}]
         if 'depends_on' in source:
-            if not isinstance(source['depends_on'],dict) or not set(source['depends_on'])<=SERVICES:raise RuntimeError('Unsupported service dependency')
-            service['depends_on']=copy.deepcopy(source['depends_on'])
-        result['services'][name]=service
+            if not isinstance(source['depends_on'], dict) or not set(source['depends_on']) <= SERVICES:
+                raise RuntimeError('Unsupported service dependency')
+            service['depends_on'] = copy.deepcopy(source['depends_on'])
+        result['services'][name] = service
     return result
 
-def ready_database(base,attempts=60):
+
+def ready_database(base, attempts=60):
     for _ in range(attempts):
         try:
-            command(base+['exec','-T','database','sh','-ec','exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'],10);return
-        except RuntimeError:time.sleep(2)
+            command(
+                base + ['exec', '-T', 'database', 'sh', '-ec', 'exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'],
+                10,
+            )
+            return
+        except RuntimeError:
+            time.sleep(2)
     raise RuntimeError('Isolated database did not become ready')
 
+
 def restored_tables(base):
-    value=command(base+['exec','-T','database','sh','-ec',"exec psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -Atc \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'\""],30).strip()
-    if not value.isdecimal() or int(value)<1:raise RuntimeError('Restored database contains no verified application tables')
+    value = command(
+        base
+        + [
+            'exec',
+            '-T',
+            'database',
+            'sh',
+            '-ec',
+            "exec psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -Atc \"SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'\"",
+        ],
+        30,
+    ).strip()
+    if not value.isdecimal() or int(value) < 1:
+        raise RuntimeError('Restored database contains no verified application tables')
     return int(value)
 
-def http_ready(port,seconds=600,clock=time.monotonic,sleep=time.sleep):
+
+def http_ready(port, seconds=600, clock=time.monotonic, sleep=time.sleep):
     """The isolated app answers its front page. A freshly imported Immich starts next to
     every app of the server, which can take several minutes; the wait is bounded by
     `seconds` (10 minutes), not by a number of tries."""
-    opener=local_opener()
-    deadline=clock()+seconds
+    opener = local_opener()
+    deadline = clock() + seconds
     while True:
         try:
-            with opener.open(f'http://127.0.0.1:{port}/',timeout=3) as response:
-                if response.status==200:return True
-        except urllib.error.HTTPError as exc:exc.close()
-        except OSError:pass
-        if clock()>=deadline:return False
+            with opener.open(f'http://127.0.0.1:{port}/', timeout=3) as response:
+                if response.status == 200:
+                    return True
+        except urllib.error.HTTPError as exc:
+            exc.close()
+        except OSError:
+            pass
+        if clock() >= deadline:
+            return False
         sleep(2)
 
-def port_in_use(config,port,run=subprocess.run):
+
+def port_in_use(config, port, run=subprocess.run):
     """Why the restore-test port is taken. A restore test is left running for a person to
     check, so the usual holder is an earlier one: name it and say how to stop it."""
     try:
-        shown=run([*DOCKER,'ps','--filter',f'publish={port}','--format','{{.Label "com.docker.compose.project"}}'],
-                  capture_output=True,text=True,timeout=30,check=False).stdout.split()
-    except (OSError,subprocess.SubprocessError):
-        shown=[]
-    project=next((p for p in shown if re.fullmatch(r'neko-restore-[0-9a-f]{12}',p)),None)
+        shown = run(
+            [*DOCKER, 'ps', '--filter', f'publish={port}', '--format', '{{.Label "com.docker.compose.project"}}'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        ).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        shown = []
+    project = next((p for p in shown if re.fullmatch(r'neko-restore-[0-9a-f]{12}', p)), None)
     if not project:
         return f'Restore-test port {port} is already in use by another program; choose another with --port'
-    for root in (config.get('data_mount'),config.get('media_mount')):
+    for root in (config.get('data_mount'), config.get('media_mount')):
         for report in sorted(Path(root or '/nonexistent').glob('recovery-tests/*/restore-report.json')):
             try:
-                if json.loads(report.read_text()).get('project')==project:
-                    return (f'An earlier restore test ({project}) is still running on port {port}, left for you to check. '
-                            f'Stop it with  sudo docker --host unix:///var/run/docker.sock compose -p {project} -f {report.parent}/compose.json stop  '
-                            'and run this again, or choose another port with --port')
-            except (OSError,ValueError):
+                if json.loads(report.read_text()).get('project') == project:
+                    return (
+                        f'An earlier restore test ({project}) is still running on port {port}, left for you to check. '
+                        f'Stop it with  sudo docker --host unix:///var/run/docker.sock compose -p {project} -f {report.parent}/compose.json stop  '
+                        'and run this again, or choose another port with --port'
+                    )
+            except (OSError, ValueError):
                 continue
-    return (f'An earlier restore test ({project}) is still running on port {port}. Stop it with  '
-            f'sudo docker stop $(sudo docker ps -q --filter label=com.docker.compose.project={project})  and run this again, or choose another port with --port')
+    return (
+        f'An earlier restore test ({project}) is still running on port {port}. Stop it with  '
+        f'sudo docker stop $(sudo docker ps -q --filter label=com.docker.compose.project={project})  and run this again, or choose another port with --port'
+    )
 
-def restore_test(config,snapshot_path,workspace,port=2284,apply=False,confirm=''):
-    mounts(config);snapshot_path=safe_path(snapshot_path);meta,model=verify_snapshot(snapshot_path)
-    workspace=new_folder(config,workspace,'recovery-tests')
-    if within(workspace,snapshot_path) or within(snapshot_path,workspace):raise RuntimeError('Restore workspace and backup must be separate')
-    if type(port) is not int or not 1024<=port<=65535 or port==2283:raise RuntimeError('Use a distinct unprivileged restore-test port')
+
+def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confirm=''):
+    mounts(config)
+    snapshot_path = safe_path(snapshot_path)
+    meta, model = verify_snapshot(snapshot_path)
+    workspace = new_folder(config, workspace, 'recovery-tests')
+    if within(workspace, snapshot_path) or within(snapshot_path, workspace):
+        raise RuntimeError('Restore workspace and backup must be separate')
+    if type(port) is not int or not 1024 <= port <= 65535 or port == 2283:
+        raise RuntimeError('Use a distinct unprivileged restore-test port')
     with socket.socket() as sock:
-        try:sock.bind(('127.0.0.1',port))
-        except OSError:raise RuntimeError(port_in_use(config,port)) from None
-    enough_space(workspace,sum(p.stat().st_size for p in regular_files(snapshot_path))+2*meta['database_bytes'])
-    isolated=isolated_model(model,meta,workspace,port)
-    if not apply:return {'status':'needs_setup','reason':'The snapshot checked out; nothing was changed. To build the separate test copy, run the same '
-                         'command again with  --apply --confirm RESTORE-ISOLATED  added','immich_version':meta['immich_version'],'url':f'http://127.0.0.1:{port}/'}
-    require_root()
-    if confirm!='RESTORE-ISOLATED':raise RuntimeError('Nothing was changed: add  --confirm RESTORE-ISOLATED  to the command to build the separate test copy '
-                                                       '(it never touches your real Immich)')
-    project='neko-restore-'+uuid.uuid4().hex[:12]
-    for argv in (DOCKER+['ps','-a','--filter','label=com.docker.compose.project='+project,'-q'],DOCKER+['network','ls','--filter','label=com.docker.compose.project='+project,'-q']):
-        if command(argv).strip():raise RuntimeError('Restore project identity already exists')
-    with lock(config):
-        workspace.parent.mkdir(parents=True,exist_ok=True,mode=0o700);workspace.mkdir(mode=0o700)
-        atomic_write(workspace/'.incomplete','Restore rehearsal incomplete\n')
-        base=DOCKER+['compose','-p',project,'-f',str(workspace/'compose.json')]
-        started=False
         try:
-            (workspace/'upload').mkdir(mode=0o700)
-            for name in meta.get('empty_directories',[]):(workspace/'upload'/name).mkdir(parents=True,exist_ok=True,mode=0o700)
-            for source in regular_files(snapshot_path/'upload'):
-                target=workspace/'upload'/source.relative_to(snapshot_path/'upload');copy_verified(source,target)
-                if digest(target)!=meta['sha256'][str(source.relative_to(snapshot_path))]:raise RuntimeError('Snapshot photo changed after verification')
+            sock.bind(('127.0.0.1', port))
+        except OSError:
+            raise RuntimeError(port_in_use(config, port)) from None
+    enough_space(workspace, sum(p.stat().st_size for p in regular_files(snapshot_path)) + 2 * meta['database_bytes'])
+    isolated = isolated_model(model, meta, workspace, port)
+    if not apply:
+        return {
+            'status': 'needs_setup',
+            'reason': 'The snapshot checked out; nothing was changed. To build the separate test copy, run the same '
+            'command again with  --apply --confirm RESTORE-ISOLATED  added',
+            'immich_version': meta['immich_version'],
+            'url': f'http://127.0.0.1:{port}/',
+        }
+    require_root()
+    if confirm != 'RESTORE-ISOLATED':
+        raise RuntimeError(
+            'Nothing was changed: add  --confirm RESTORE-ISOLATED  to the command to build the separate test copy '
+            '(it never touches your real Immich)'
+        )
+    project = 'neko-restore-' + uuid.uuid4().hex[:12]
+    for argv in (
+        DOCKER + ['ps', '-a', '--filter', 'label=com.docker.compose.project=' + project, '-q'],
+        DOCKER + ['network', 'ls', '--filter', 'label=com.docker.compose.project=' + project, '-q'],
+    ):
+        if command(argv).strip():
+            raise RuntimeError('Restore project identity already exists')
+    with lock(config):
+        workspace.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        workspace.mkdir(mode=0o700)
+        atomic_write(workspace / INCOMPLETE, 'Restore rehearsal incomplete\n')
+        base = DOCKER + ['compose', '-p', project, '-f', str(workspace / 'compose.json')]
+        started = False
+        try:
+            (workspace / 'upload').mkdir(mode=0o700)
+            for name in meta.get('empty_directories', []):
+                (workspace / 'upload' / name).mkdir(parents=True, exist_ok=True, mode=0o700)
+            for source in regular_files(snapshot_path / 'upload'):
+                target = workspace / 'upload' / source.relative_to(snapshot_path / 'upload')
+                copy_verified(source, target)
+                if digest(target) != meta['sha256'][str(source.relative_to(snapshot_path))]:
+                    raise RuntimeError('Snapshot photo changed after verification')
             for service in isolated['services'].values():
-                for volume in service['volumes']:safe_path(volume['source']).mkdir(parents=True,exist_ok=True,mode=0o700)
-            sql=workspace/'restore.sql'
-            if digest(snapshot_path/'database.sql')!=meta['sha256']['database.sql']:raise RuntimeError('Snapshot SQL changed after verification')
-            with (snapshot_path/'database.sql').open('rb') as inp,sql.open('xb') as out:
-                os.fchmod(out.fileno(),0o600)
-                old=b"SELECT pg_catalog.set_config('search_path', '', false);";new=b"SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);"
-                for line in inp:out.write(line.replace(old,new))
-                out.flush();os.fsync(out.fileno())
-            if digest(snapshot_path/'database.sql')!=meta['sha256']['database.sql']:raise RuntimeError('Snapshot SQL changed during restore staging')
-            atomic_json(workspace/'compose.json',isolated)
-            command(base+['config','-q'])
+                for volume in service['volumes']:
+                    safe_path(volume['source']).mkdir(parents=True, exist_ok=True, mode=0o700)
+            sql = workspace / 'restore.sql'
+            if digest(snapshot_path / 'database.sql') != meta['sha256']['database.sql']:
+                raise RuntimeError('Snapshot SQL changed after verification')
+            with (snapshot_path / 'database.sql').open('rb') as inp, sql.open('xb') as out:
+                os.fchmod(out.fileno(), 0o600)
+                old = b"SELECT pg_catalog.set_config('search_path', '', false);"
+                new = b"SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);"
+                for line in inp:
+                    out.write(line.replace(old, new))
+                out.flush()
+                os.fsync(out.fileno())
+            if digest(snapshot_path / 'database.sql') != meta['sha256']['database.sql']:
+                raise RuntimeError('Snapshot SQL changed during restore staging')
+            atomic_json(workspace / 'compose.json', isolated)
+            command(base + ['config', '-q'])
             # Only fresh isolated Postgres starts before import; Immich cannot migrate it first.
-            started=True;command(base+['up','-d','--no-deps','--pull','missing','database'],900)
+            started = True
+            command(base + ['up', '-d', '--no-deps', '--pull', 'missing', 'database'], 900)
             ready_database(base)
             with sql.open('rb') as inp:
-                command(base+['exec','-T','database','sh','-ec','exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction --set ON_ERROR_STOP=on -f -'],1800,stdin=inp)
-            tables=restored_tables(base)
-            command(base+['up','-d','--pull','missing'],900)
-            healthy=http_ready(port)
-            result={'status':'needs_setup','project':project,'immich_version':meta['immich_version'],'database_tables':tables,'http_ready':healthy,'url':f'http://127.0.0.1:{port}/','reason':'Isolated import completed; sign in, check original files/albums/video and deletion behavior before accepting recovery'}
-            atomic_json(workspace/'restore-report.json',result)
-            if not healthy:raise RuntimeError(f'The restored app did not answer at {result["url"]} within 10 minutes; its report is kept. '
-                                              f'See what it is doing with  sudo docker compose -p {project} ps  and  sudo docker compose -p {project} logs --tail 50')
-            (workspace/'.incomplete').unlink()
+                command(
+                    base
+                    + [
+                        'exec',
+                        '-T',
+                        'database',
+                        'sh',
+                        '-ec',
+                        'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" --single-transaction --set ON_ERROR_STOP=on -f -',
+                    ],
+                    1800,
+                    stdin=inp,
+                )
+            tables = restored_tables(base)
+            command(base + ['up', '-d', '--pull', 'missing'], 900)
+            healthy = http_ready(port)
+            result = {
+                'status': 'needs_setup',
+                'project': project,
+                'immich_version': meta['immich_version'],
+                'database_tables': tables,
+                'http_ready': healthy,
+                'url': f'http://127.0.0.1:{port}/',
+                'reason': 'Isolated import completed; sign in, check original files/albums/video and deletion behavior before accepting recovery',
+            }
+            atomic_json(workspace / 'restore-report.json', result)
+            if not healthy:
+                raise RuntimeError(
+                    f'The restored app did not answer at {result["url"]} within 10 minutes; its report is kept. '
+                    f'See what it is doing with  sudo docker compose -p {project} ps  and  sudo docker compose -p {project} logs --tail 50'
+                )
+            (workspace / INCOMPLETE).unlink()
             return result
         except BaseException:
             if started:
-                try:command(base+['stop'],180)
-                except Exception:raise RuntimeError('Isolated restore failed and its test services could not be stopped; inspect the workspace project') from None
+                try:
+                    command(base + ['stop'], 180)
+                except Exception:
+                    raise RuntimeError(
+                        'Isolated restore failed and its test services could not be stopped; inspect the workspace project'
+                    ) from None
             raise

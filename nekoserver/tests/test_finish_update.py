@@ -1,4 +1,5 @@
 """An unfinished monthly update: finished by a later release, and tried again every hour."""
+
 import json
 import sys
 import tempfile
@@ -16,8 +17,10 @@ from modules import maintenance
 
 def config(d):
     cfg = json.loads((ROOT / 'config.json').read_text())
-    cfg['storage'] = {'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'},
-                      'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'}}
+    cfg['storage'] = {
+        'data_ssd': {'uuid': 'aaaa-1111', 'fstype': 'ext4'},
+        'media_hdd': {'uuid': 'bbbb-2222', 'fstype': 'ext4'},
+    }
     cfg['timezone'] = 'UTC'
     cfg['data_mount'] = str(Path(d) / 'ssd')
     return cfg
@@ -31,8 +34,9 @@ class HourlyRetryTests(unittest.TestCase):
         # It never waits for the shared lock (the runtime reads this; maintenance.rs RETRY_ENV).
         self.assertIn('Environment=NEKOSERVER_MAINTENANCE_RETRY=1\n', service)
         self.assertIn('ExecStart=/srv/x/nekoserver-runtime maintenance-resume --config /etc/g.json\n', service)
-        self.assertIn('RETRY_ENV: &str = "NEKOSERVER_MAINTENANCE_RETRY"',
-                      (ROOT / 'runtime/src/maintenance.rs').read_text())
+        self.assertIn(
+            'RETRY_ENV: &str = "NEKOSERVER_MAINTENANCE_RETRY"', (ROOT / 'runtime/src/maintenance.rs').read_text()
+        )
         timer = units[maintenance.RETRY_TIMER]
         self.assertIn('OnCalendar=*-*-* *:17:00 UTC\n', timer)  # every hour
         self.assertIn('Persistent=false\n', timer)
@@ -57,12 +61,21 @@ class FinishUpdateTests(unittest.TestCase):
             if args[:2] == ['systemctl', 'start'] and removes_journal:
                 self.journal.unlink()
             return mock.Mock(returncode=code if args[:2] == ['systemctl', 'start'] else 0)
+
         deploy = mock.Mock(return_value=Path('/srv/x/installer/runtime/vNEW/nekoserver-runtime'))
-        with mock.patch.object(maintenance, 'verify_storage'), \
-                mock.patch.object(maintenance, 'check_units'), \
-                mock.patch.object(maintenance, 'write_units', side_effect=self.written.update):
-            result = maintenance.finish_update(log=lambda *_: None, run=run, guard=self.guard, journal=self.journal,
-                                               deploy=deploy, running=lambda: running)
+        with (
+            mock.patch.object(maintenance, 'verify_storage'),
+            mock.patch.object(maintenance, 'check_units'),
+            mock.patch.object(maintenance, 'write_units', side_effect=self.written.update),
+        ):
+            result = maintenance.finish_update(
+                log=lambda *_: None,
+                run=run,
+                guard=self.guard,
+                journal=self.journal,
+                deploy=deploy,
+                running=lambda: running,
+            )
         return result, deploy
 
     def test_nothing_to_finish_changes_nothing(self):
@@ -78,8 +91,10 @@ class FinishUpdateTests(unittest.TestCase):
         deploy.assert_called_once()
         # Only the services that finish the update are pointed at the new program.
         self.assertEqual(set(self.written), set(maintenance.FINISHING))
-        self.assertIn('/srv/x/installer/runtime/vNEW/nekoserver-runtime maintenance-resume',
-                      self.written[maintenance.RESUME_SERVICE])
+        self.assertIn(
+            '/srv/x/installer/runtime/vNEW/nekoserver-runtime maintenance-resume',
+            self.written[maintenance.RESUME_SERVICE],
+        )
         self.assertNotIn('nekoserver-maintenance.service', self.written)
         self.assertIn(['systemctl', 'start', maintenance.RESUME_SERVICE], self.calls)
 
@@ -91,10 +106,12 @@ class FinishUpdateTests(unittest.TestCase):
             self.run_finish(running=True)
 
     def test_installer_runs_only_the_finish(self):
-        with mock.patch.object(installer.os, 'geteuid', return_value=0), \
-                mock.patch.object(maintenance, 'finish_update') as finish, \
-                mock.patch.object(installer, 'settings_for') as settings, \
-                mock.patch.object(installer, 'execute') as execute:
+        with (
+            mock.patch.object(installer.os, 'geteuid', return_value=0),
+            mock.patch.object(maintenance, 'finish_update') as finish,
+            mock.patch.object(installer, 'settings_for') as settings,
+            mock.patch.object(installer, 'execute') as execute,
+        ):
             self.assertEqual(installer.main(['--finish-update']), 0)
         finish.assert_called_once()
         settings.assert_not_called()

@@ -1,4 +1,5 @@
 """Safe existing-filesystem mounting by explicitly configured UUID; never formats."""
+
 import json
 import os
 import re
@@ -21,30 +22,32 @@ def call(argv, timeout=30):
 
 def inventory_now():
     """Every disk and partition, as lsblk JSON (one command, used by all drive pickers)."""
-    return json.loads(call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MOUNTPOINTS,MODEL,RM,TRAN,LABEL']))
+    return json.loads(
+        call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MOUNTPOINTS,MODEL,RM,TRAN,LABEL'])
+    )
 
 
 # What can hold a filesystem: a disk or partition, an opened encrypted drive (LUKS), an
 # LVM volume or a software RAID array. The last three sit on top of one or more disks.
-VOLUME_KINDS=('part','disk','crypt','lvm','raid0','raid1','raid4','raid5','raid6','raid10','md')
-DEV = '/dev/'                       # where Linux shows drives
-BY_UUID = DEV + 'disk/by-uuid/'    # each filesystem by its UUID
+VOLUME_KINDS = ('part', 'disk', 'crypt', 'lvm', 'raid0', 'raid1', 'raid4', 'raid5', 'raid6', 'raid10', 'md')
+DEV = '/dev/'  # where Linux shows drives
+BY_UUID = DEV + 'disk/by-uuid/'  # each filesystem by its UUID
 # Where Linux keeps itself: the root and the boot folders (Arch often mounts the EFI
 # partition at /efi). A disk holding any of them is the system disk.
-SYSTEM_MOUNTS=('/','/boot','/boot/efi','/efi')
+SYSTEM_MOUNTS = ('/', '/boot', '/boot/efi', '/efi')
 
 
 def mount_points(dev):
     """Every folder an lsblk row is mounted at. MOUNTPOINT names only one of them: a
     Btrfs system partition mounted as several subvolumes (/, /home, /.snapshots) may
     show /home there, so MOUNTPOINTS (util-linux 2.37 and newer) is read too."""
-    found={dev.get('mountpoint')}|set(dev.get('mountpoints') or ())
+    found = {dev.get('mountpoint')} | set(dev.get('mountpoints') or ())
     return {m for m in found if m}
 
 
 def holds_system(dev):
     """This lsblk row, or anything under it, holds the system (SYSTEM_MOUNTS)."""
-    return bool(mount_points(dev)&set(SYSTEM_MOUNTS)) or any(holds_system(c) for c in dev.get('children',[]))
+    return bool(mount_points(dev) & set(SYSTEM_MOUNTS)) or any(holds_system(c) for c in dev.get('children', []))
 
 
 def device_sub_uuid(name):
@@ -64,62 +67,69 @@ def merged(rows, sub_uuid=device_sub_uuid):
     an LVM volume or RAID array under each disk it spans (same name), or a Btrfs pool
     over several drives (one UUID, a device each, each device with its own UUID_SUB). Two
     other devices with one UUID are clones, which mounting by UUID can't tell apart."""
-    by_uuid={}
-    for row in rows:by_uuid.setdefault(row['uuid'],[]).append(row)
+    by_uuid = {}
+    for row in rows:
+        by_uuid.setdefault(row['uuid'], []).append(row)
     return [one_filesystem(group, sub_uuid) for group in by_uuid.values()]
 
 
-CLONED='Duplicate filesystem UUID detected; identify cloned drives before continuing'
+CLONED = 'Duplicate filesystem UUID detected; identify cloned drives before continuing'
 
 
 def one_filesystem(group, sub_uuid=device_sub_uuid):
     """The lsblk rows of one UUID as one candidate, on every disk they span. Btrfs rows are
     one pool only when each device has a UUID_SUB of its own: a copy of a Btrfs drive (dd,
     a disk cloner) has the same one, and the kernel could then write to either drive."""
-    names=sorted({r['name'] for r in group})
-    mountpoint=next((r['mountpoint'] for r in group if r['mountpoint']),None)
-    sized={}
-    if len(names)>1:
-        if not all(r['fstype']=='btrfs' for r in group):
+    names = sorted({r['name'] for r in group})
+    mountpoint = next((r['mountpoint'] for r in group if r['mountpoint']), None)
+    sized = {}
+    if len(names) > 1:
+        if not all(r['fstype'] == 'btrfs' for r in group):
             raise RuntimeError(CLONED)
         pool_members(names, sub_uuid)
-        sized=pool_size(group, mountpoint)
-    disks=sorted({d for r in group for d in r['physical_disks'] if d})
-    return {**group[0],'physical_disks':disks,'physical_disk':disks[0] if disks else None,
-            'mountpoint':mountpoint,'unlocks':sorted({n for r in group for n in r.get('unlocks',())}),**sized}
+        sized = pool_size(group, mountpoint)
+    disks = sorted({d for r in group for d in r['physical_disks'] if d})
+    return {
+        **group[0],
+        'physical_disks': disks,
+        'physical_disk': disks[0] if disks else None,
+        'mountpoint': mountpoint,
+        'unlocks': sorted({n for r in group for n in r.get('unlocks', ())}),
+        **sized,
+    }
 
 
 # How many copies of the data a Btrfs data profile keeps, for working out how much of a
 # pool over several drives is usable. RAID5 and RAID6 are counted as 2 and 3 copies,
 # which is never more than they really hold (their parity takes less), so they are safe.
-PROFILE_COPIES={'SINGLE':1,'DUP':2,'RAID1':2,'RAID10':2,'RAID1C3':3,'RAID1C4':4,'RAID5':2,'RAID6':3}
+PROFILE_COPIES = {'SINGLE': 1, 'DUP': 2, 'RAID1': 2, 'RAID10': 2, 'RAID1C3': 3, 'RAID1C4': 4, 'RAID5': 2, 'RAID6': 3}
 
 
 def kept_copies(sizes, copies):
     """Bytes usable on drives of these sizes when every piece of data is kept on `copies`
     different drives (RAID1 and the like): the most x with sum(min(size, x)) >= copies * x.
     A 32 GB drive mirrored with a 4 TB one holds 32 GB, not 2 TB."""
-    if len(sizes)<copies:
+    if len(sizes) < copies:
         return 0
-    low,high=0,sum(sizes)//copies
-    while low<high:
-        middle=(low+high+1)//2
-        if sum(min(s,middle) for s in sizes)>=copies*middle:
-            low=middle
+    low, high = 0, sum(sizes) // copies
+    while low < high:
+        middle = (low + high + 1) // 2
+        if sum(min(s, middle) for s in sizes) >= copies * middle:
+            low = middle
         else:
-            high=middle-1
+            high = middle - 1
     return low
 
 
 def profile_capacity(profile, sizes):
     """Usable bytes of a Btrfs pool of drives of `sizes` keeping its data as `profile`."""
-    if profile=='SINGLE':
+    if profile == 'SINGLE':
         return sum(sizes)
-    if profile=='DUP':        # both copies on the same drive
-        return sum(sizes)//2
-    if profile=='RAID0':      # striped over at least two drives
-        return min(sum(sizes),2*(sum(sizes)-max(sizes)))
-    return kept_copies(sizes, PROFILE_COPIES.get(profile,len(sizes)))
+    if profile == 'DUP':  # both copies on the same drive
+        return sum(sizes) // 2
+    if profile == 'RAID0':  # striped over at least two drives
+        return min(sum(sizes), 2 * (sum(sizes) - max(sizes)))
+    return kept_copies(sizes, PROFILE_COPIES.get(profile, len(sizes)))
 
 
 def data_profiles(names):
@@ -127,15 +137,18 @@ def data_profiles(names):
     (`btrfs inspect-internal dump-tree -t chunk`, which needs root and the btrfs tool),
     or None when they can't be read. More than one while a conversion is unfinished."""
     for name in names:
-        path=DEV+name if os.path.exists(DEV+name) else DEV+'mapper/'+name
+        path = DEV + name if os.path.exists(DEV + name) else DEV + 'mapper/' + name
         if not os.path.exists(path):
             continue
         try:
-            text=call(['btrfs','inspect-internal','dump-tree','-t','chunk',path],timeout=60)
-        except (RuntimeError,OSError,subprocess.SubprocessError):
+            text = call(['btrfs', 'inspect-internal', 'dump-tree', '-t', 'chunk', path], timeout=60)
+        except (RuntimeError, OSError, subprocess.SubprocessError):
             continue
-        found={(set(kind.split('|'))-{'DATA','METADATA','SYSTEM'} or {'SINGLE'}).pop()
-               for kind in re.findall(r'\btype ([A-Z0-9|]+)',text) if 'DATA' in kind.split('|')}
+        found = {
+            (set(kind.split('|')) - {'DATA', 'METADATA', 'SYSTEM'} or {'SINGLE'}).pop()
+            for kind in re.findall(r'\btype ([A-Z0-9|]+)', text)
+            if 'DATA' in kind.split('|')
+        }
         if found:
             return found
     return None
@@ -145,10 +158,10 @@ def mounted_capacity(folder):
     """Usable bytes of the filesystem mounted at `folder`, as it reports them (used and
     still free: Btrfs works out the free space by its data profile), or None."""
     try:
-        found=os.statvfs(folder)
+        found = os.statvfs(folder)
     except OSError:
         return None
-    return (found.f_blocks-found.f_bfree+found.f_bavail)*found.f_frsize
+    return (found.f_blocks - found.f_bfree + found.f_bavail) * found.f_frsize
 
 
 def pool_size(group, mountpoint):
@@ -156,77 +169,97 @@ def pool_size(group, mountpoint):
     first drive's size (that made the answer depend on the order lsblk lists them): the
     pool's own figure when it is mounted, else what its data profile makes usable, else,
     when the profile can't be read, only its smallest drive, to be safe (and said so)."""
-    members={r['name']:size_bytes(r.get('size')) for r in group}
-    sizes=sorted(s for s in members.values() if s)
-    shown=f"a Btrfs pool of {len(members)} drives ({' + '.join(size_words(f'{s}B') for s in sizes)})"
-    usable=mounted_capacity(mountpoint) if mountpoint else None
+    members = {r['name']: size_bytes(r.get('size')) for r in group}
+    sizes = sorted(s for s in members.values() if s)
+    shown = f"a Btrfs pool of {len(members)} drives ({' + '.join(size_words(f'{s}B') for s in sizes)})"
+    usable = mounted_capacity(mountpoint) if mountpoint else None
     if usable is not None:
-        return {'size':f'{usable}B','size_note':f'{shown}, usable space as the pool itself reports it'}
-    profiles=data_profiles(sorted(members)) if sizes else None
+        return {'size': f'{usable}B', 'size_note': f'{shown}, usable space as the pool itself reports it'}
+    profiles = data_profiles(sorted(members)) if sizes else None
     if profiles:
-        return {'size':f'{min(profile_capacity(p,sizes) for p in profiles)}B',
-                'size_note':f"{shown} keeping its data as {' and '.join(sorted(profiles))}: this much is usable"}
-    return {'size':f'{sizes[0]}B' if sizes else None,
-            'size_note':f'{shown} whose layout (RAID1 or not) could not be read, so only its smallest drive is '
-                        'counted, to be safe. Run setup with sudo, with the btrfs tool installed, to read it'}
+        return {
+            'size': f'{min(profile_capacity(p, sizes) for p in profiles)}B',
+            'size_note': f"{shown} keeping its data as {' and '.join(sorted(profiles))}: this much is usable",
+        }
+    return {
+        'size': f'{sizes[0]}B' if sizes else None,
+        'size_note': f'{shown} whose layout (RAID1 or not) could not be read, so only its smallest drive is '
+        'counted, to be safe. Run setup with sudo, with the btrfs tool installed, to read it',
+    }
 
 
 def pool_members(names, sub_uuid=device_sub_uuid):
     """Several devices with one Btrfs UUID are one pool only when each has a UUID_SUB of
     its own. One that can't be read (blkid needs root to read a device that is not in its
     cache) fails closed too, but says so: the drives are not known to be copies."""
-    subs=[sub_uuid(n) for n in names]
-    unread=[n for n, sub in zip(names, subs) if sub is None]
+    subs = [sub_uuid(n) for n in names]
+    unread = [n for n, sub in zip(names, subs) if sub is None]
     if unread:
-        raise RuntimeError(f'Could not read the Btrfs device ID of /dev/{unread[0]}, which tells the drives of a Btrfs '
-                           'pool apart from copies of one drive. Run setup with sudo (sudo bash install.sh) so it can '
-                           'read it; if it still can\'t, check that the drive is connected and working.')
-    if len(set(subs))!=len(subs):
+        raise RuntimeError(
+            f'Could not read the Btrfs device ID of /dev/{unread[0]}, which tells the drives of a Btrfs '
+            'pool apart from copies of one drive. Run setup with sudo (sudo bash install.sh) so it can '
+            'read it; if it still can\'t, check that the drive is connected and working.'
+        )
+    if len(set(subs)) != len(subs):
         raise RuntimeError(CLONED)
 
 
-CRYPTTAB=Path('/etc/crypttab')
+CRYPTTAB = Path('/etc/crypttab')
 
 
-def unlocked_at_boot(name,crypttab=CRYPTTAB):
+def unlocked_at_boot(name, crypttab=CRYPTTAB):
     """An opened encrypted drive (`name` as lsblk shows it) that Linux unlocks at every
     start, so it can be mounted then: it is listed in /etc/crypttab, without `noauto`
     (a line with it is only unlocked by hand)."""
     try:
-        lines=crypttab.read_text().splitlines()
+        lines = crypttab.read_text().splitlines()
     except OSError:
         return False
-    rows=[line.split() for line in lines if line.strip() and not line.lstrip().startswith('#')]
-    return any(row[0]==name and 'noauto' not in (row[3].split(',') if len(row)>3 else ()) for row in rows)
+    rows = [line.split() for line in lines if line.strip() and not line.lstrip().startswith('#')]
+    return any(row[0] == name and 'noauto' not in (row[3].split(',') if len(row) > 3 else ()) for row in rows)
 
 
-def boot_unlock_problem(device,crypttab=CRYPTTAB):
+def boot_unlock_problem(device, crypttab=CRYPTTAB):
     """Why an encrypted drive can't be used yet, or None. That is the drive itself, or the
     encrypted drives under it (an LVM volume or RAID array on top of encrypted drives)."""
-    names=[*(device.get('unlocks') or ()),*([device['name']] if device.get('kind')=='crypt' else [])]
-    locked=[n for n in names if not unlocked_at_boot(n,crypttab)]
+    names = [*(device.get('unlocks') or ()), *([device['name']] if device.get('kind') == 'crypt' else [])]
+    locked = [n for n in names if not unlocked_at_boot(n, crypttab)]
     if not locked:
         return None
-    return (f"/dev/mapper/{locked[0]} is an encrypted drive that you opened by hand. Setup mounts it at every "
-            'start, so Linux must unlock it then: add it to /etc/crypttab (with a key file, or a password asked '
-            'at start-up), restart, and run setup again.')
+    return (
+        f"/dev/mapper/{locked[0]} is an encrypted drive that you opened by hand. Setup mounts it at every "
+        'start, so Linux must unlock it then: add it to /etc/crypttab (with a key file, or a password asked '
+        'at start-up), restart, and run setup again.'
+    )
 
 
 def candidate(dev, parent, physical, unlocks=()):
     """One lsblk row as a filesystem setup could use, or None. `unlocks`: the encrypted
     drives it sits on, which Linux must open before it can be mounted."""
-    uuid=dev.get('uuid'); fs=dev.get('fstype'); kind=dev.get('type','')
-    if kind not in VOLUME_KINDS or not uuid or fs not in ('ext4','xfs','btrfs'):
+    uuid = dev.get('uuid')
+    fs = dev.get('fstype')
+    kind = dev.get('type', '')
+    if kind not in VOLUME_KINDS or not uuid or fs not in ('ext4', 'xfs', 'btrfs'):
         return None
-    return {'uuid':uuid,'fstype':fs,'name':dev.get('name',''),'size':dev.get('size'),'label':dev.get('label'),'model':dev.get('model') or parent,
-            'mountpoint':dev.get('mountpoint') or next(iter(sorted(mount_points(dev))),None),'physical_disks':[physical],'kind':kind,
-            'unlocks':list(unlocks)}
+    return {
+        'uuid': uuid,
+        'fstype': fs,
+        'name': dev.get('name', ''),
+        'size': dev.get('size'),
+        'label': dev.get('label'),
+        'model': dev.get('model') or parent,
+        'mountpoint': dev.get('mountpoint') or next(iter(sorted(mount_points(dev))), None),
+        'physical_disks': [physical],
+        'kind': kind,
+        'unlocks': list(unlocks),
+    }
 
 
 def unlocked(device):
     """The chosen drive, unless it is an encrypted one Linux doesn't unlock at start."""
-    problem=boot_unlock_problem(device)
-    if problem:raise RuntimeError(problem)
+    problem = boot_unlock_problem(device)
+    if problem:
+        raise RuntimeError(problem)
     return device
 
 
@@ -252,7 +285,7 @@ def raid_lost(name, sys_block=None):
         except OSError:
             continue
         if any(s.strip() == 'faulty' for s in states):
-            failed.append(member.name[len('dev-'):])
+            failed.append(member.name[len('dev-') :])
     if not missing and not failed:
         return None
     return ('the drive ' + ', '.join(failed) + ' failed') if failed else 'a drive is missing'
@@ -265,37 +298,44 @@ def whole(device, sys_block=None):
         return device
     lost = raid_lost(device.get('name', ''), sys_block)
     if lost:
-        raise RuntimeError(f"The RAID array {device['name']} has lost a drive ({lost}), so what you put on it "
-                           'would have no second copy. Replace or reconnect the drive and let the array rebuild '
-                           '(cat /proc/mdstat shows the progress), then run setup again.')
+        raise RuntimeError(
+            f"The RAID array {device['name']} has lost a drive ({lost}), so what you put on it "
+            'would have no second copy. Replace or reconnect the drive and let the array rebuild '
+            '(cat /proc/mdstat shows the progress), then run setup again.'
+        )
     return device
 
 
 def discover_filesystems(inventory, sub_uuid=device_sub_uuid):
     """Return candidates, never auto-select a device on model/size alone."""
-    rows,placed=[],[]
+    rows, placed = [], []
+
     def walk(dev, parent='', disk=None, unlocks=()):
-        physical=dev.get('name','') if dev.get('type')=='disk' else disk
-        placed.append((dev,physical))
-        row=candidate(dev,parent,physical,unlocks)
-        if row:rows.append(row)
-        below=(*unlocks,dev.get('name','')) if dev.get('type')=='crypt' else unlocks
-        for child in dev.get('children',[]): walk(child,dev.get('model') or parent,physical,below)
-    for device in inventory.get('blockdevices',[]): walk(device)
-    os_disks,system_ids=system_disks(placed)
+        physical = dev.get('name', '') if dev.get('type') == 'disk' else disk
+        placed.append((dev, physical))
+        row = candidate(dev, parent, physical, unlocks)
+        if row:
+            rows.append(row)
+        below = (*unlocks, dev.get('name', '')) if dev.get('type') == 'crypt' else unlocks
+        for child in dev.get('children', []):
+            walk(child, dev.get('model') or parent, physical, below)
+
+    for device in inventory.get('blockdevices', []):
+        walk(device)
+    os_disks, system_ids = system_disks(placed)
     # The system's own filesystems (and anything sharing a disk with them) are never offered.
-    mine=[r for r in rows if r['uuid'] not in system_ids]
-    return [v for v in merged(mine, sub_uuid) if not set(v['physical_disks'])&os_disks]
+    mine = [r for r in rows if r['uuid'] not in system_ids]
+    return [v for v in merged(mine, sub_uuid) if not set(v['physical_disks']) & os_disks]
 
 
 def system_disks(placed):
     """The disks and filesystem UUIDs of the system, from (lsblk row, its disk) pairs. A
     Btrfs system pool over two drives shows as mounted on one of them only (lsblk names
     one member): every disk with a device of a system filesystem is a system disk."""
-    system_ids={dev.get('uuid') for dev, _ in placed if mount_points(dev)&set(SYSTEM_MOUNTS)}
-    os_disks={disk for dev, disk in placed if mount_points(dev)&set(SYSTEM_MOUNTS)}
-    os_disks|={disk for dev, disk in placed if dev.get('uuid') and dev.get('uuid') in system_ids}
-    return os_disks,system_ids
+    system_ids = {dev.get('uuid') for dev, _ in placed if mount_points(dev) & set(SYSTEM_MOUNTS)}
+    os_disks = {disk for dev, disk in placed if mount_points(dev) & set(SYSTEM_MOUNTS)}
+    os_disks |= {disk for dev, disk in placed if dev.get('uuid') and dev.get('uuid') in system_ids}
+    return os_disks, system_ids
 
 
 NOT_LINUX = {'ntfs': 'NTFS (Windows)', 'exfat': 'exFAT', 'vfat': 'FAT'}
@@ -305,43 +345,63 @@ def empty_disk(dev):
     """A whole disk with nothing on it yet (a new drive straight from the box): no
     filesystem, no partitions, not in use. Not RAM disks, eMMC boot areas or empty slots;
     a partition without a filesystem may be one Windows keeps for itself, so never those."""
-    return (dev.get('type') == 'disk' and not dev.get('fstype') and not dev.get('children')
-            and not dev.get('mountpoint') and dev.get('size') not in (None, '0B')
-            and not re.match(r'(zram|ram|nbd)\d|mmcblk\d+(boot|rpmb)', dev.get('name', '')))
+    return (
+        dev.get('type') == 'disk'
+        and not dev.get('fstype')
+        and not dev.get('children')
+        and not dev.get('mountpoint')
+        and dev.get('size') not in (None, '0B')
+        and not re.match(r'(zram|ram|nbd)\d|mmcblk\d+(boot|rpmb)', dev.get('name', ''))
+    )
 
 
 def nothing_eligible(inventory, items, selected, label):
     """Why no drive can be picked for `label`, drive by drive, and what to do."""
     lines = []
+
     def walk(dev):
         if dev.get('type') in ('part', 'disk') and dev.get('fstype') in NOT_LINUX:
             fs = dev['fstype']
-            lines.append(f"/dev/{dev.get('name')} is formatted {NOT_LINUX[fs]}, which Linux apps can't keep their files "
-                         'on. To use it, copy its files elsewhere first, then format it as ext4 (this erases it) with '
-                         'the Disks app (GNOME) or KDE Partition Manager.')
+            lines.append(
+                f"/dev/{dev.get('name')} is formatted {NOT_LINUX[fs]}, which Linux apps can't keep their files "
+                'on. To use it, copy its files elsewhere first, then format it as ext4 (this erases it) with '
+                'the Disks app (GNOME) or KDE Partition Manager.'
+            )
         elif empty_disk(dev):
-            lines.append(f"/dev/{dev.get('name')} ({dev['size']}) has no filesystem yet. To use it, format it as "
-                         'ext4 (this erases it) with the Disks app (GNOME) or KDE Partition Manager.')
+            lines.append(
+                f"/dev/{dev.get('name')} ({dev['size']}) has no filesystem yet. To use it, format it as "
+                'ext4 (this erases it) with the Disks app (GNOME) or KDE Partition Manager.'
+            )
         for child in dev.get('children', []):
             walk(child)
+
     for device in inventory.get('blockdevices', []):
-        if not holds_system(device):   # its boot partition (FAT) is never a choice
+        if not holds_system(device):  # its boot partition (FAT) is never a choice
             walk(device)
     for v in items:
         if v['uuid'] in selected:
             continue
-        lines.append(f"/dev/{v['name']} is already in use at {v['mountpoint']}. To use it, unmount it first "
-                     f"(sudo umount {v['mountpoint']}, and take out its line in /etc/fstab if you added one).")
-    found = ('\n'.join('  - ' + line for line in lines) + '\n') if lines else \
-        '  No other drive was found: check that it is connected and shows up in the Disks app.\n'
-    return (f'No drive can be used for {label}. NekoServer never formats a drive by itself, and never uses the '
-            f'system disk or a drive already in use.\n{found}Then run  sudo bash install.sh  again.')
+        lines.append(
+            f"/dev/{v['name']} is already in use at {v['mountpoint']}. To use it, unmount it first "
+            f"(sudo umount {v['mountpoint']}, and take out its line in /etc/fstab if you added one)."
+        )
+    found = (
+        ('\n'.join('  - ' + line for line in lines) + '\n')
+        if lines
+        else '  No other drive was found: check that it is connected and shows up in the Disks app.\n'
+    )
+    return (
+        f'No drive can be used for {label}. NekoServer never formats a drive by itself, and never uses the '
+        f'system disk or a drive already in use.\n{found}Then run  sudo bash install.sh  again.'
+    )
 
 
 # The drives setup asks for: (settings key, what it is for, its short name).
-DRIVES = (('data_ssd', 'the SSD (apps, photos and music)', 'the SSD'),
-          ('media_hdd', 'the HDD (movies, shows, Nextcloud files and backups)', 'the HDD'))
-GIB = 1024 ** 3
+DRIVES = (
+    ('data_ssd', 'the SSD (apps, photos and music)', 'the SSD'),
+    ('media_hdd', 'the HDD (movies, shows, Nextcloud files and backups)', 'the HDD'),
+)
+GIB = 1024**3
 UNITS = {'B': 0, 'K': 1, 'M': 2, 'G': 3, 'T': 4, 'P': 5}
 
 
@@ -365,7 +425,7 @@ def size_words(text):
         return str(text or 'size unknown')
     gib = found / GIB
     if gib < 1:
-        return f'{found / 1024 ** 2:.0f} MB'
+        return f'{found / 1024**2:.0f} MB'
     return f'{gib / 1024:.1f} TB' if gib >= 1024 else f'{gib:.0f} GB'
 
 
@@ -373,6 +433,7 @@ def sizes(key):
     """(smallest, recommended) free space in GB for this drive: the drive space step's own
     numbers (capacity.py), so the two never disagree."""
     from modules import capacity
+
     return capacity.SSD if key == 'data_ssd' else capacity.HDD
 
 
@@ -418,9 +479,11 @@ def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
     smallest, recommended = sizes(key)
     if not any(big_enough(v, smallest) for v in options):
         found = ', '.join(describe(v) for v in options)
-        raise RuntimeError(f'No drive here is big enough for {label}: it needs at least {smallest} GB ({recommended} GB '
-                           f'or more is recommended), and these are smaller: {found}. Connect a bigger one (formatted '
-                           'ext4), then run  sudo bash install.sh  again. Nothing was changed.')
+        raise RuntimeError(
+            f'No drive here is big enough for {label}: it needs at least {smallest} GB ({recommended} GB '
+            f'or more is recommended), and these are smaller: {found}. Connect a bigger one (formatted '
+            'ext4), then run  sudo bash install.sh  again. Nothing was changed.'
+        )
     out_fn(f'Now choose {label}. It needs at least {smallest} GB free ({recommended} GB or more is recommended).')
     for n, v in enumerate(options, 1):
         out_fn(f'  {n}) {describe(v)}' + ('' if big_enough(v, smallest) else f'  - too small, needs {smallest} GB'))
@@ -438,33 +501,50 @@ def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
         device = options[int(choice) - 1]
         if big_enough(device, smallest):
             return confirmed(device, f"{short} ({size_words(device.get('size'))})", input_fn, out_fn, attempts)
-        out_fn(f"{device['name']} is {size_said(device)}, too small for {short}: it needs at least "
-               f'{smallest} GB. Choose another one from the list.')
-    raise RuntimeError(f'No drive was chosen for {label}. Run  sudo bash install.sh  again to choose it; nothing was changed.')
+        out_fn(
+            f"{device['name']} is {size_said(device)}, too small for {short}: it needs at least "
+            f'{smallest} GB. Choose another one from the list.'
+        )
+    raise RuntimeError(
+        f'No drive was chosen for {label}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
+    )
 
 
 def resolve_storage_identity(config, inventory, apply=False, interactive=False, input_fn=input, out_fn=print):
     """Identify disks by verified UUID. Explicit confirmation is required for unknown devices."""
-    items=discover_filesystems(inventory)
-    configured=config.setdefault('storage',{})
-    selected=set()
-    selected_disks=set()
+    items = discover_filesystems(inventory)
+    configured = config.setdefault('storage', {})
+    selected = set()
+    selected_disks = set()
     for key, label, _ in DRIVES:
-        record=configured.setdefault(key,{})
-        uuid=record.get('uuid','').strip()
+        record = configured.setdefault(key, {})
+        uuid = record.get('uuid', '').strip()
         if uuid:
-            uuid=saved_choice(record, uuid, items, key, label, apply, inventory=inventory, config=config,
-                              interactive=interactive, out_fn=out_fn)
+            uuid = saved_choice(
+                record,
+                uuid,
+                items,
+                key,
+                label,
+                apply,
+                inventory=inventory,
+                config=config,
+                interactive=interactive,
+                out_fn=out_fn,
+            )
         if not uuid and apply:
-            if not interactive: raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
-            device=whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
-            record['uuid']=device['uuid']; record['fstype']=device['fstype']
-            uuid=device['uuid']
+            if not interactive:
+                raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
+            device = whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
+            record['uuid'] = device['uuid']
+            record['fstype'] = device['fstype']
+            uuid = device['uuid']
         elif not uuid:
             out_fn(f'{key} is not configured; {len(items)} formatted candidates discovered (dry-run only)')
             continue
-        if uuid in selected: raise RuntimeError('SSD and HDD cannot use the same filesystem')
-        selected_disks|=own_disks(uuid,items,selected_disks,apply)
+        if uuid in selected:
+            raise RuntimeError('SSD and HDD cannot use the same filesystem')
+        selected_disks |= own_disks(uuid, items, selected_disks, apply)
         selected.add(uuid)
     return configured
 
@@ -473,19 +553,31 @@ def choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)
     """The drive for `key`, asked for among those not chosen yet and not in use elsewhere."""
     # A drive the desktop opened by itself (/run/media/...) is still eligible.
     folder = config.get('data_mount' if key == 'data_ssd' else 'media_mount')
-    options=[v for v in items if v['uuid'] not in selected and (not v['mountpoint'] or v['mountpoint']==folder or str(v['mountpoint']).startswith(('/run/media/','/media/')))]
-    if not options: raise RuntimeError(nothing_eligible(inventory, items, selected, label))
+    options = [
+        v
+        for v in items
+        if v['uuid'] not in selected
+        and (
+            not v['mountpoint']
+            or v['mountpoint'] == folder
+            or str(v['mountpoint']).startswith(('/run/media/', '/media/'))
+        )
+    ]
+    if not options:
+        raise RuntimeError(nothing_eligible(inventory, items, selected, label))
     return ask_drive(options, key, label, input_fn, out_fn)
 
 
 def not_offered(inventory, uuid):
     """Why a connected filesystem with this UUID is not one setup offers (a loop device, a
     filesystem Linux apps can't use, the system disk), or None when none is connected."""
+
     def walk(dev, system):
         here = system or holds_system(dev)
         if dev.get('uuid') == uuid:
             return why_not(dev, here)
         return next((found for child in dev.get('children', []) if (found := walk(child, here))), None)
+
     return next((found for dev in inventory.get('blockdevices', []) if (found := walk(dev, False))), None)
 
 
@@ -496,8 +588,10 @@ def why_not(dev, system):
         return f'{name} is on the disk Linux runs from, which NekoServer never uses for your files'
     if kind not in VOLUME_KINDS:
         what = 'a loop device (a file attached as a disk)' if kind == 'loop' else f'a "{kind}" device'
-        return (f'{name} is {what}, which NekoServer does not use for its drives: they must be real drives (or their '
-                'partitions, LVM volumes, RAID arrays or encrypted drives)')
+        return (
+            f'{name} is {what}, which NekoServer does not use for its drives: they must be real drives (or their '
+            'partitions, LVM volumes, RAID arrays or encrypted drives)'
+        )
     if fs not in ('ext4', 'xfs', 'btrfs'):
         return f'{name} is formatted {NOT_LINUX.get(fs, fs or "with nothing yet")}, not ext4, XFS or Btrfs'
     return None
@@ -508,25 +602,29 @@ def saved_choice(record, uuid, items, key, label, apply, inventory=None, config=
     setup goes on to mount it, unlocked by Linux at every start as a newly chosen one must
     be (settings reused after a reinstall may name an encrypted drive opened by hand).
     Returns its UUID, or '' when it is too small and setup asks for the drive again."""
-    matches=[d for d in items if d['uuid']==uuid]
-    if len(matches)!=1:
+    matches = [d for d in items if d['uuid'] == uuid]
+    if len(matches) != 1:
         reason = not_offered(inventory or {}, uuid) if len(matches) == 0 else None
         if reason:
-            raise RuntimeError(f'The drive chosen as {label} (UUID {uuid}) is connected, but {reason}. Choose another: '
-                               f'take "uuid" out of "{key}" under "storage" in my-config.json (next to the installer) and run '
-                               'setup again: it asks for the drive anew. Nothing is formatted.')
-        raise RuntimeError(f'The drive chosen as {label} (UUID {uuid}) is not connected, or is not formatted ext4, xfs or btrfs. '
-                           f'Connect it and run setup again. If you replaced that drive, take "uuid" out of "{key}" under "storage" in '
-                           'my-config.json (next to the installer) and run setup again: it asks for the drive anew. Nothing is formatted.')
+            raise RuntimeError(
+                f'The drive chosen as {label} (UUID {uuid}) is connected, but {reason}. Choose another: '
+                f'take "uuid" out of "{key}" under "storage" in my-config.json (next to the installer) and run '
+                'setup again: it asks for the drive anew. Nothing is formatted.'
+            )
+        raise RuntimeError(
+            f'The drive chosen as {label} (UUID {uuid}) is not connected, or is not formatted ext4, xfs or btrfs. '
+            f'Connect it and run setup again. If you replaced that drive, take "uuid" out of "{key}" under "storage" in '
+            'my-config.json (next to the installer) and run setup again: it asks for the drive anew. Nothing is formatted.'
+        )
     if apply and too_small(matches[0], key, label, config or {}, interactive, out_fn):
         record.pop('uuid', None)
         record.pop('fstype', None)
         return ''
-    if record.get('fstype') and record['fstype']!=matches[0]['fstype']:
+    if record.get('fstype') and record['fstype'] != matches[0]['fstype']:
         raise RuntimeError(f'Filesystem type mismatch for {key}')
     if apply:
         unlocked(matches[0])
-    record['fstype']=matches[0]['fstype']
+    record['fstype'] = matches[0]['fstype']
     return uuid
 
 
@@ -541,29 +639,36 @@ def too_small(device, key, label, config, interactive, out_fn):
     if big_enough(device, smallest) or (Path(str(config.get('data_mount', ''))) / 'docker-engine').is_dir():
         return False
     short = short_name(key)
-    said = (f"{device['name']} ({size_said(device)}), the drive saved as {short}, is too small: it needs at "
-            f'least {smallest} GB.')
+    said = (
+        f"{device['name']} ({size_said(device)}), the drive saved as {short}, is too small: it needs at "
+        f'least {smallest} GB.'
+    )
     if device.get('mountpoint') and device['mountpoint'] == folder:
-        raise RuntimeError(f'{said} To choose another, take it out first:  sudo umount {folder} , take the line with '
-                           f"UUID={device['uuid']} out of /etc/fstab (sudo nano /etc/fstab), take \"uuid\" out of \"{key}\" "
-                           'under "storage" in my-config.json, then run  sudo bash install.sh  again: it asks for the '
-                           'drive anew. Nothing on the drive is changed.')
+        raise RuntimeError(
+            f'{said} To choose another, take it out first:  sudo umount {folder} , take the line with '
+            f"UUID={device['uuid']} out of /etc/fstab (sudo nano /etc/fstab), take \"uuid\" out of \"{key}\" "
+            'under "storage" in my-config.json, then run  sudo bash install.sh  again: it asks for the '
+            'drive anew. Nothing on the drive is changed.'
+        )
     if not interactive:
         raise RuntimeError(f'{said} Run  sudo bash install.sh  in a terminal to choose another one.')
     out_fn(f'{said} Choose {label} again:')
     return True
 
 
-def own_disks(uuid,items,taken,apply):
+def own_disks(uuid, items, taken, apply):
     """The physical disks the chosen filesystem is on (all of them, for a pool or an
     array), none of which the other drive may share."""
-    physical=set(next(v['physical_disks'] for v in items if v['uuid']==uuid))
-    if physical&taken:raise RuntimeError('SSD and HDD must be on different physical disks')
+    physical = set(next(v['physical_disks'] for v in items if v['uuid'] == uuid))
+    if physical & taken:
+        raise RuntimeError('SSD and HDD must be on different physical disks')
     if not physical and apply:
         name = next((v['name'] for v in items if v['uuid'] == uuid), uuid)
-        raise RuntimeError(f'Setup cannot tell which physical drive /dev/{name} is on (it sits on something Linux does not '
-                           'list as a disk, such as a loop device or a disk image), so it cannot make sure the SSD and the '
-                           'HDD are two different drives. Choose a partition of a real drive instead.')
+        raise RuntimeError(
+            f'Setup cannot tell which physical drive /dev/{name} is on (it sits on something Linux does not '
+            'list as a disk, such as a loop device or a disk image), so it cannot make sure the SSD and the '
+            'HDD are two different drives. Choose a partition of a real drive instead.'
+        )
     return physical
 
 
@@ -596,8 +701,13 @@ def subvolume_of(record):
     value = record.get('subvolume')
     if value in (None, '', '/'):
         return None
-    if record.get('fstype') != 'btrfs' or not isinstance(value, str) or not value.startswith('/') \
-            or '..' in value.split('/') or any(c.isspace() or c == ',' for c in value):
+    if (
+        record.get('fstype') != 'btrfs'
+        or not isinstance(value, str)
+        or not value.startswith('/')
+        or '..' in value.split('/')
+        or any(c.isspace() or c == ',' for c in value)
+    ):
         raise RuntimeError('storage subvolume must be a Btrfs subvolume path such as /@data')
     return value.rstrip('/')
 
@@ -693,8 +803,7 @@ def own_line(found):
     then 0 2), for whatever drive."""
     options = found[3].split(',') if len(found) == 6 else []
     base = ','.join(o for o in options if not o.startswith('subvol='))
-    return (found[0].startswith('UUID=') and found[4:] == ['0', '2']
-            and base in (MOUNT_OPTIONS, *OLDER_OPTIONS))
+    return found[0].startswith('UUID=') and found[4:] == ['0', '2'] and base in (MOUNT_OPTIONS, *OLDER_OPTIONS)
 
 
 def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of, connected=drive_connected, notes=None):
@@ -706,30 +815,44 @@ def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of, connected=dri
     for one folder would mount whichever comes first."""
     wanted = entry.split()
     folder = fstab_folder(mountpoint)
-    matches = [(i, s.split()) for i, s in enumerate(lines)
-               if s.strip() and not s.lstrip().startswith('#') and len(s.split()) >= 2
-               and (fstab_folder(s.split()[1]) == folder or same_drive(s.split()[0], uuid, resolve))]
+    matches = [
+        (i, s.split())
+        for i, s in enumerate(lines)
+        if s.strip()
+        and not s.lstrip().startswith('#')
+        and len(s.split()) >= 2
+        and (fstab_folder(s.split()[1]) == folder or same_drive(s.split()[0], uuid, resolve))
+    ]
     if not matches:
         return None
     index, found = matches[0]
-    if len(matches) == 1 and own_line(found) and fstab_folder(found[1]) == folder and found[0] != wanted[0] \
-            and not connected(found[0][len('UUID='):]):
+    if (
+        len(matches) == 1
+        and own_line(found)
+        and fstab_folder(found[1]) == folder
+        and found[0] != wanted[0]
+        and not connected(found[0][len('UUID=') :])
+    ):
         if notes is not None:
-            notes.append(f'{mountpoint}: the earlier drive ({found[0]}) is not connected; its line in /etc/fstab '
-                         f'is replaced by one for the new drive (UUID {uuid})')
+            notes.append(
+                f'{mountpoint}: the earlier drive ({found[0]}) is not connected; its line in /etc/fstab '
+                f'is replaced by one for the new drive (UUID {uuid})'
+            )
         return index
     # Older options are upgraded; with a subvolume the line must carry the same one. A
     # line of NekoServer's without one mounted the filesystem's default tree: once that
     # tree is known (and saved as the subvolume), the line is pinned to it.
-    older = tuple(o + wanted[3][len(MOUNT_OPTIONS):] for o in OLDER_OPTIONS)
+    older = tuple(o + wanted[3][len(MOUNT_OPTIONS) :] for o in OLDER_OPTIONS)
     default = (MOUNT_OPTIONS, *OLDER_OPTIONS) if wanted[3] != MOUNT_OPTIONS else ()
     if len(matches) != 1 or found[:3] != wanted[:3] or len(found) < 4 or found[3] not in (wanted[3], *older, *default):
         theirs = '\n'.join('    ' + lines[i].strip() for i, _ in matches)
-        raise RuntimeError(f'/etc/fstab already has a line for this drive (UUID {uuid}) or for {mountpoint}, '
-                           f'which NekoServer did not write:\n{theirs}\nNekoServer mounts the drive itself at '
-                           f'{mountpoint} (with options that let the PC start even when the drive is missing). '
-                           f'Take that line out of /etc/fstab, unmount the drive if it is mounted there '
-                           f'(sudo umount <folder>), and run  sudo bash install.sh  again.')
+        raise RuntimeError(
+            f'/etc/fstab already has a line for this drive (UUID {uuid}) or for {mountpoint}, '
+            f'which NekoServer did not write:\n{theirs}\nNekoServer mounts the drive itself at '
+            f'{mountpoint} (with options that let the PC start even when the drive is missing). '
+            f'Take that line out of /etc/fstab, unmount the drive if it is mounted there '
+            f'(sudo umount <folder>), and run  sudo bash install.sh  again.'
+        )
     return index
 
 
@@ -781,7 +904,7 @@ def install_fstab(specs, path=Path('/etc/fstab'), log=None):
     if path.exists() and not backup.exists():
         keep_first(path, backup)
     payload = '\n'.join(lines).rstrip('\n') + '\n' + ''.join(a + '\n' for a in additions)
-    atomic_write(path,payload,0o644)
+    atomic_write(path, payload, 0o644)
     return True
 
 
@@ -793,10 +916,13 @@ NOT_DRIVES = re.compile(r'(loop|zram|ram|nbd|sr)\d')
 def disk_line(inventory):
     """One line naming this PC's drives (for the log), without loop devices, swap in
     memory and anything under 1 GB, which only push the drive question off the screen."""
-    found = [f"{d.get('name')} {size_words(d.get('size'))}" + (f" {str(d['model']).strip()}" if d.get('model') else '')
-             + (' (Linux runs from it)' if holds_system(d) else '')
-             for d in inventory.get('blockdevices', [])
-             if not NOT_DRIVES.match(str(d.get('name', ''))) and (size_bytes(d.get('size')) or 0) >= GIB]
+    found = [
+        f"{d.get('name')} {size_words(d.get('size'))}"
+        + (f" {str(d['model']).strip()}" if d.get('model') else '')
+        + (' (Linux runs from it)' if holds_system(d) else '')
+        for d in inventory.get('blockdevices', [])
+        if not NOT_DRIVES.match(str(d.get('name', ''))) and (size_bytes(d.get('size')) or 0) >= GIB
+    ]
     return 'Drives on this PC: ' + ('; '.join(found) if found else 'none found')
 
 
@@ -824,8 +950,10 @@ def run(context):
                 raise RuntimeError(f'Wrong filesystem already mounted at {target}: {mounted}')
             only_a_folder(target, fstype, mounted_subvolume(target))
         elif Path(target).exists() and any(Path(target).iterdir()):
-            raise RuntimeError(f'Refusing mount over nonempty directory {target}: something is already in that folder '
-                               f'(on the system disk). Move it elsewhere, or pick another drive, and run setup again')
+            raise RuntimeError(
+                f'Refusing mount over nonempty directory {target}: something is already in that folder '
+                f'(on the system disk). Move it elsewhere, or pick another drive, and run setup again'
+            )
     # Saved for unattended reruns only once the choice passed these checks: a wrong pick
     # is asked again on the next run instead of being kept.
     save_storage(context)
@@ -881,8 +1009,10 @@ def raid_note(target, sys_block=None):
     lost = raid_lost(name, sys_block) if name.startswith('md') else None
     if not lost:
         return None
-    return (f'{target}: the RAID array {name} has lost a drive ({lost}), so your data there has one copy fewer. '
-            "Replace the failed drive and let the array rebuild; the dashboard's Drives page shows the state.")
+    return (
+        f'{target}: the RAID array {name} has lost a drive ({lost}), so your data there has one copy fewer. '
+        "Replace the failed drive and let the array rebuild; the dashboard's Drives page shows the state."
+    )
 
 
 def only_a_folder(target, fstype, inside):
@@ -891,9 +1021,11 @@ def only_a_folder(target, fstype, inside):
     the whole drive: the apps would see only that folder, and a restart would mount the
     whole drive instead. Setup stops and says so."""
     if fstype != 'btrfs' and inside:
-        raise RuntimeError(f'Only the folder {inside} of the drive is mounted at {target}, not the whole drive. '
-                           f'Unmount it (sudo umount {target}, and take out its line in /etc/fstab if you added one), '
-                           'then run  sudo bash install.sh  again: setup mounts the whole drive there itself')
+        raise RuntimeError(
+            f'Only the folder {inside} of the drive is mounted at {target}, not the whole drive. '
+            f'Unmount it (sudo umount {target}, and take out its line in /etc/fstab if you added one), '
+            'then run  sudo bash install.sh  again: setup mounts the whole drive there itself'
+        )
 
 
 def mount_and_check(uuid, target, subvolume, fstype='btrfs'):
@@ -907,16 +1039,20 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs'):
             # A big drive replaying its journal after a power cut can take minutes.
             call(['mount', target], timeout=MOUNT_WAIT)
         except subprocess.TimeoutExpired:
-            if findmnt('TARGET', target) is None:   # the kernel may still have finished it
-                raise RuntimeError(f'Mounting {target} took longer than {MOUNT_WAIT // 60} minutes; check the drive '
-                                   '(sudo dmesg shows what it is doing) and run setup again') from None
+            if findmnt('TARGET', target) is None:  # the kernel may still have finished it
+                raise RuntimeError(
+                    f'Mounting {target} took longer than {MOUNT_WAIT // 60} minutes; check the drive '
+                    '(sudo dmesg shows what it is doing) and run setup again'
+                ) from None
     if mounted_filesystem(target) != (uuid, fstype):
         raise RuntimeError(f'Post-mount validation failed for {target}')
     found = mounted_subvolume(target)
     only_a_folder(target, fstype, found)
     if subvolume is not None and found != subvolume:
-        raise RuntimeError(f'{target} is mounted with Btrfs subvolume {found or "(default)"}, but the settings say '
-                           f'{subvolume}; a restart would mount a different tree')
+        raise RuntimeError(
+            f'{target} is mounted with Btrfs subvolume {found or "(default)"}, but the settings say '
+            f'{subvolume}; a restart would mount a different tree'
+        )
     return found
 
 
@@ -926,6 +1062,7 @@ def choose_usb(context):
     if photos.get('external_backup_uuid') or not sys.stdin.isatty():
         return
     from modules.photo_backup import select_external
+
     inventory = inventory_now()
     context.log('Now the USB backup drive (it gets a weekly copy of your photos and Nextcloud files):')
     try:

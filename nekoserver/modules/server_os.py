@@ -1,4 +1,5 @@
 """Install OS-wide no-sleep policy, bounded journal and guarded HDD boot policy."""
+
 import os
 import re
 from pathlib import Path
@@ -7,7 +8,16 @@ import subprocess
 
 import native_runtime
 import host
-from neko_common import SYSTEMD_UNITS, VERSION, atomic_json, atomic_write, check_units, safe_path, verify_storage, write_units
+from neko_common import (
+    SYSTEMD_UNITS,
+    VERSION,
+    atomic_json,
+    atomic_write,
+    check_units,
+    safe_path,
+    verify_storage,
+    write_units,
+)
 
 HDD_UNIT = 'nekoserver-hdd-policy.service'
 # Brings the apps back when the SSD or HDD returns after a drop-out (see runtime drive_return.rs).
@@ -22,8 +32,10 @@ DESCRIPTION = 'Disable OS sleep, bound system logs and configure verified media 
 # Left out, as each would break a service here: ProtectSystem (the jobs write to /etc),
 # ProtectClock and PrivateDevices (both close /dev: hdparm, and blkid reading a drive),
 # and a smaller capability set (umount, hdparm and reading the drives need root's).
-SANDBOX = ('NoNewPrivileges=yes\nRestrictRealtime=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n'
-           'SystemCallArchitectures=native\nUMask=0077\n')
+SANDBOX = (
+    'NoNewPrivileges=yes\nRestrictRealtime=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\n'
+    'SystemCallArchitectures=native\nUMask=0077\n'
+)
 # The HDD power service only reads the mounts and drives (findmnt, lsblk, blkid) and sets
 # the drive's timer (hdparm): it also gets a /tmp of its own, no home folders, and the
 # kernel's settings and control groups read-only.
@@ -44,7 +56,9 @@ def settings(config):
         raise RuntimeError('hdd_idle_minutes must be 30..330 in 30-minute steps')
     values = {}
     for key, default, low, high in (
-        ('journal_disk_mb', 512, 64, 4096), ('journal_ram_mb', 64, 16, 256), ('journal_retention_days', 14, 1, 90),
+        ('journal_disk_mb', 512, 64, 4096),
+        ('journal_ram_mb', 64, 16, 256),
+        ('journal_retention_days', 14, 1, 90),
     ):
         value = opts.get(key, default)
         if type(value) is not int or not low <= value <= high:
@@ -55,7 +69,13 @@ def settings(config):
 
 def hdd_guard(config):
     policy, _ = settings(config)
-    return {**native_runtime.storage_config(config), 'server_os': {'hdd_policy':policy, 'hdd_idle_minutes':config.get('server_os',{}).get('hdd_idle_minutes',60)}}
+    return {
+        **native_runtime.storage_config(config),
+        'server_os': {
+            'hdd_policy': policy,
+            'hdd_idle_minutes': config.get('server_os', {}).get('hdd_idle_minutes', 60),
+        },
+    }
 
 
 # The sleep targets that were masked before NekoServer masked them: the uninstaller
@@ -86,7 +106,8 @@ def files(config, journald=JOURNALD):
     _, values = settings(config)
     wanted, _ = journal_limits(values, journald)
     return {
-        '/etc/systemd/sleep.conf.d/90-nekoserver.conf': MARKER + '[Sleep]\nAllowSuspend=no\nAllowHibernation=no\nAllowHybridSleep=no\nAllowSuspendThenHibernate=no\n',
+        '/etc/systemd/sleep.conf.d/90-nekoserver.conf': MARKER
+        + '[Sleep]\nAllowSuspend=no\nAllowHibernation=no\nAllowHybridSleep=no\nAllowSuspendThenHibernate=no\n',
         '/etc/systemd/logind.conf.d/90-nekoserver.conf': MARKER + '[Login]\nIdleAction=ignore\n',
         JOURNAL_DROPIN: MARKER + '[Journal]\n' + ''.join(key + '=' + value + '\n' for key, value in wanted.items()),
     }
@@ -94,11 +115,37 @@ def files(config, journald=JOURNALD):
 
 # The journal limits NekoServer sets, and which way is stricter: a smaller disk or RAM
 # limit or a shorter keeping time, but more disk kept free.
-SIZE_UNITS = {'': 1, 'K': 1024, 'M': 1024 ** 2, 'G': 1024 ** 3, 'T': 1024 ** 4, 'P': 1024 ** 5, 'E': 1024 ** 6}
-TIME_UNITS = {'us': 1e-6, 'usec': 1e-6, 'ms': 1e-3, 'msec': 1e-3, 's': 1, 'sec': 1, 'second': 1, 'seconds': 1,
-              'm': 60, 'min': 60, 'minute': 60, 'minutes': 60, 'h': 3600, 'hr': 3600, 'hour': 3600, 'hours': 3600,
-              'd': 86400, 'day': 86400, 'days': 86400, 'w': 604800, 'week': 604800, 'weeks': 604800,
-              'M': 2629800, 'month': 2629800, 'months': 2629800, 'y': 31557600, 'year': 31557600, 'years': 31557600}
+SIZE_UNITS = {'': 1, 'K': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4, 'P': 1024**5, 'E': 1024**6}
+TIME_UNITS = {
+    'us': 1e-6,
+    'usec': 1e-6,
+    'ms': 1e-3,
+    'msec': 1e-3,
+    's': 1,
+    'sec': 1,
+    'second': 1,
+    'seconds': 1,
+    'm': 60,
+    'min': 60,
+    'minute': 60,
+    'minutes': 60,
+    'h': 3600,
+    'hr': 3600,
+    'hour': 3600,
+    'hours': 3600,
+    'd': 86400,
+    'day': 86400,
+    'days': 86400,
+    'w': 604800,
+    'week': 604800,
+    'weeks': 604800,
+    'M': 2629800,
+    'month': 2629800,
+    'months': 2629800,
+    'y': 31557600,
+    'year': 31557600,
+    'years': 31557600,
+}
 
 
 def size_bytes(text):
@@ -135,7 +182,9 @@ def journald_files(journald=JOURNALD):
     in the order journald reads them: the main file first, then the drop-ins by name."""
     folder = Path(str(journald) + '.d')
     try:
-        dropins = sorted((p for p in folder.glob('*.conf') if p.name != Path(JOURNAL_DROPIN).name), key=lambda p: p.name)
+        dropins = sorted(
+            (p for p in folder.glob('*.conf') if p.name != Path(JOURNAL_DROPIN).name), key=lambda p: p.name
+        )
     except OSError:
         dropins = []
     return [Path(journald)] + dropins
@@ -158,7 +207,11 @@ def journal_settings(path):
 
 
 # The my-config.json setting (under "server_os") for each limit you can choose.
-JOURNAL_OPTIONS = {'SystemMaxUse': 'journal_disk_mb', 'RuntimeMaxUse': 'journal_ram_mb', 'MaxRetentionSec': 'journal_retention_days'}
+JOURNAL_OPTIONS = {
+    'SystemMaxUse': 'journal_disk_mb',
+    'RuntimeMaxUse': 'journal_ram_mb',
+    'MaxRetentionSec': 'journal_retention_days',
+}
 
 
 def admin_journal(ours, journald=JOURNALD):
@@ -179,8 +232,12 @@ def journal_limits(values, journald=JOURNALD):
     A drop-in wins over journald.conf, so a limit set there would be overridden silently:
     a stricter one is kept (NekoServer leaves that key out), a looser one is replaced and
     said. A drop-in of yours named after 90-nekoserver.conf wins anyway, and is said too."""
-    ours = {'SystemMaxUse': f'{values["journal_disk_mb"]}M', 'RuntimeMaxUse': f'{values["journal_ram_mb"]}M',
-            'MaxRetentionSec': f'{values["journal_retention_days"]}day', 'SystemKeepFree': '1G'}
+    ours = {
+        'SystemMaxUse': f'{values["journal_disk_mb"]}M',
+        'RuntimeMaxUse': f'{values["journal_ram_mb"]}M',
+        'MaxRetentionSec': f'{values["journal_retention_days"]}day',
+        'SystemKeepFree': '1G',
+    }
     wanted, notes = dict(ours), []
     before, after = admin_journal(ours, journald)
     for key, (theirs, path) in before.items():
@@ -191,13 +248,31 @@ def journal_limits(values, journald=JOURNALD):
             del wanted[key]
             notes.append('Journal: ' + setting + " is stricter than NekoServer's " + ours[key] + ', so yours is kept')
         else:
-            hint = ('; to keep yours, set "' + JOURNAL_OPTIONS[key] + '" under "server_os" in my-config.json') if key in JOURNAL_OPTIONS else ''
-            notes.append('Journal: ' + setting + " is replaced by NekoServer's " + ours[key]
-                         + ' (its drop-in wins over journald.conf)' + hint)
+            hint = (
+                ('; to keep yours, set "' + JOURNAL_OPTIONS[key] + '" under "server_os" in my-config.json')
+                if key in JOURNAL_OPTIONS
+                else ''
+            )
+            notes.append(
+                'Journal: '
+                + setting
+                + " is replaced by NekoServer's "
+                + ours[key]
+                + ' (its drop-in wins over journald.conf)'
+                + hint
+            )
     for key, (theirs, path) in after.items():
         if theirs != ours[key]:
-            notes.append('Journal: your ' + key + '=' + theirs + ' (' + str(path) + ") is read after NekoServer's drop-in, so it wins over "
-                         + ours[key])
+            notes.append(
+                'Journal: your '
+                + key
+                + '='
+                + theirs
+                + ' ('
+                + str(path)
+                + ") is read after NekoServer's drop-in, so it wins over "
+                + ours[key]
+            )
     return wanted, notes
 
 
@@ -211,8 +286,13 @@ def drive_devices(config, run=subprocess.run):
     names = []
     for key in ('data_ssd', 'media_hdd'):
         uuid = config['storage'][key]['uuid']
-        shown = run(['systemd-escape', '--path', '--suffix=device', '/dev/disk/by-uuid/' + uuid],
-                    capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        shown = run(
+            ['systemd-escape', '--path', '--suffix=device', '/dev/disk/by-uuid/' + uuid],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout.strip()
         names.append(shown)
     return names
 
@@ -228,8 +308,7 @@ def drive_unit(binary, devices):
         f'ExecStart={binary} drive-return --config {DRIVE_SETTINGS}\n'
         # It waits up to 10 minutes for a drive, then finishes any job the drive cut off
         # (a monthly update's rollback included), which must never be cut off itself.
-        'TimeoutStartSec=infinity\n' + SANDBOX +
-        '[Install]\nWantedBy=' + ' '.join(devices) + '\n'
+        'TimeoutStartSec=infinity\n' + SANDBOX + '[Install]\nWantedBy=' + ' '.join(devices) + '\n'
     )
 
 
@@ -248,8 +327,9 @@ def unit(binary, guard, config):
         '[Unit]\nDescription=NekoServer verified media HDD standby policy\n'
         f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\n'
         '[Service]\nType=oneshot\nRemainAfterExit=yes\n'
-        f'ExecStart={binary} hdd-policy --config {guard}\nTimeoutStartSec=180\n' + SANDBOX_NAMESPACED +
-        '[Install]\nWantedBy=multi-user.target\n'
+        f'ExecStart={binary} hdd-policy --config {guard}\nTimeoutStartSec=180\n'
+        + SANDBOX_NAMESPACED
+        + '[Install]\nWantedBy=multi-user.target\n'
     )
 
 
@@ -257,7 +337,11 @@ def run(context):
     policy, _ = settings(context.config)
     definitions = files(context.config)
     if not context.apply:
-        context.log('Server OS: disable suspend/hibernate, cap journal; HDD policy=' + policy + '. Linux memory cache stays managed by the kernel.')
+        context.log(
+            'Server OS: disable suspend/hibernate, cap journal; HDD policy='
+            + policy
+            + '. Linux memory cache stays managed by the kernel.'
+        )
         return
     if os.geteuid() != 0 or not shutil.which('systemctl'):
         raise RuntimeError('Server OS setup requires root and systemd')
@@ -285,21 +369,32 @@ def run(context):
     # IdleAction is also loaded on the next normal reboot.
     context.log('OS sleep/hibernation blocked; journal bounds installed. Display blanking may remain enabled.')
     install_drive_return(context.config, Path(__file__).resolve().parents[1])
-    context.log('Drive return: when the SSD or HDD comes back after it disappeared, its mount is renewed and the apps start again by themselves')
+    context.log(
+        'Drive return: when the SSD or HDD comes back after it disappeared, its mount is renewed and the apps start again by themselves'
+    )
     if policy == 'unchanged':
-        previous=safe_path(SYSTEMD_UNITS/HDD_UNIT)
+        previous = safe_path(SYSTEMD_UNITS / HDD_UNIT)
         if previous.exists():
-            if 'Description=NekoServer verified media HDD standby policy\n' not in previous.read_text():raise RuntimeError('Unmanaged HDD unit preserved')
-            subprocess.run(['systemctl','disable','--now',HDD_UNIT],check=True,capture_output=True,timeout=30)
-        context.log('No HDD command issued; earlier managed boot policy disabled. Restore previously changed hardware settings explicitly if needed.')
+            if 'Description=NekoServer verified media HDD standby policy\n' not in previous.read_text():
+                raise RuntimeError('Unmanaged HDD unit preserved')
+            subprocess.run(['systemctl', 'disable', '--now', HDD_UNIT], check=True, capture_output=True, timeout=30)
+        context.log(
+            'No HDD command issued; earlier managed boot policy disabled. Restore previously changed hardware settings explicitly if needed.'
+        )
         return
     verify_storage(context.config)
     if not shutil.which('hdparm'):
-        family=host.current()
-        if family.available('hdparm'):family.install(['hdparm'])
+        family = host.current()
+        if family.available('hdparm'):
+            family.install(['hdparm'])
     if not shutil.which('hdparm'):
-        return {'status': 'needs_setup', 'reason': 'No-sleep/log limits installed; install hdparm then reapply server_os for the SATA HDD policy'}
-    binary = native_runtime.deploy(Path(__file__).resolve().parents[1], context.config, Path('/usr/local/lib/nekoserver-os') / ('v' + VERSION))
+        return {
+            'status': 'needs_setup',
+            'reason': 'No-sleep/log limits installed; install hdparm then reapply server_os for the SATA HDD policy',
+        }
+    binary = native_runtime.deploy(
+        Path(__file__).resolve().parents[1], context.config, Path('/usr/local/lib/nekoserver-os') / ('v' + VERSION)
+    )
     guard = safe_path('/etc/nekoserver-os/storage.json')
     check_units([HDD_UNIT], 'HDD policy')
     atomic_json(guard, hdd_guard(context.config))
@@ -307,23 +402,37 @@ def run(context):
     subprocess.run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
     result = subprocess.run(['systemctl', 'enable', HDD_UNIT], capture_output=True, timeout=190, check=False)
     if result.returncode:
-        return {'status': 'needs_setup', 'reason': 'No-sleep/log limits installed; HDD command failed or hardware is unsupported. Inspect the policy service; no blanket drive setting was used'}
-    repeated=subprocess.run(['systemctl','restart',HDD_UNIT],capture_output=True,timeout=190,check=False)
+        return {
+            'status': 'needs_setup',
+            'reason': 'No-sleep/log limits installed; HDD command failed or hardware is unsupported. Inspect the policy service; no blanket drive setting was used',
+        }
+    repeated = subprocess.run(['systemctl', 'restart', HDD_UNIT], capture_output=True, timeout=190, check=False)
     if repeated.returncode:
-        return {'status':'needs_setup','reason':'The HDD power-saving service did not start: '+(hdd_service_said('runtime failed') or 'no reason recorded')+
-                '. Setup goes on without it (the drive keeps its own power settings); the log is  sudo journalctl -u '+HDD_UNIT}
+        return {
+            'status': 'needs_setup',
+            'reason': 'The HDD power-saving service did not start: '
+            + (hdd_service_said('runtime failed') or 'no reason recorded')
+            + '. Setup goes on without it (the drive keeps its own power settings); the log is  sudo journalctl -u '
+            + HDD_UNIT,
+        }
     # What the service did: the timer it set, or why the drive keeps its own settings
     # (in a USB case, an SSD, encrypted): nothing for anyone to do then.
     said = hdd_service_said('Drive power settings:')
-    context.log('HDD power settings: '+said if said else 'Verified SATA media HDD policy applied at boot: '+policy)
+    context.log('HDD power settings: ' + said if said else 'Verified SATA media HDD policy applied at boot: ' + policy)
 
 
 def hdd_service_said(marker, run=subprocess.run):
     """The HDD policy service's own last line with ``marker`` in its log, after the marker
     ('' if there is none): why it failed, or what it set."""
     try:
-        shown=run(['journalctl','-u',HDD_UNIT,'-n','20','-o','cat','--no-pager'],capture_output=True,text=True,timeout=20,check=False).stdout
-    except (OSError,subprocess.SubprocessError):
-        shown=''
-    lines=[line.strip() for line in shown.splitlines() if marker in line]
-    return lines[-1].split(marker,1)[-1].lstrip(' :').rstrip('.') if lines else ''
+        shown = run(
+            ['journalctl', '-u', HDD_UNIT, '-n', '20', '-o', 'cat', '--no-pager'],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        shown = ''
+    lines = [line.strip() for line in shown.splitlines() if marker in line]
+    return lines[-1].split(marker, 1)[-1].lstrip(' :').rstrip('.') if lines else ''

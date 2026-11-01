@@ -1,4 +1,5 @@
 """Install Tailscale and guide browser authorization without storing auth secrets."""
+
 import json
 import os
 import shutil
@@ -22,8 +23,9 @@ def run_cmd(args, timeout=240):
 
 def connected():
     try:
-        result = subprocess.run(['tailscale', 'status', '--json'], text=True,
-                                capture_output=True, timeout=20, check=False)
+        result = subprocess.run(
+            ['tailscale', 'status', '--json'], text=True, capture_output=True, timeout=20, check=False
+        )
         return result.returncode == 0 and json.loads(result.stdout).get('BackendState') == 'Running'
     except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
         return False
@@ -34,8 +36,9 @@ def login_targets():
     # The link comes from Tailscale's control server, which takes a few seconds on
     # the first contact (3 s was too short: the CLI gave up before printing it).
     # Bound its wait; the daemon retains the approval flow after this CLI exits.
-    result = subprocess.run(['tailscale', 'up', '--json', '--timeout=15s'],
-                            text=True, capture_output=True, timeout=30, check=False)
+    result = subprocess.run(
+        ['tailscale', 'up', '--json', '--timeout=15s'], text=True, capture_output=True, timeout=30, check=False
+    )
     remaining = result.stdout.strip()
     decoder = json.JSONDecoder()
     while remaining:
@@ -48,13 +51,20 @@ def login_targets():
             continue
         url = value.get('AuthURL', '')
         parsed = urlsplit(url) if isinstance(url, str) else None
-        if (parsed and guided_setup.valid_url(url) and parsed.scheme == 'https' and
-                parsed.hostname == 'login.tailscale.com' and parsed.port in (None, 443)):
+        if (
+            parsed
+            and guided_setup.valid_url(url)
+            and parsed.scheme == 'https'
+            and parsed.hostname == 'login.tailscale.com'
+            and parsed.port in (None, 443)
+        ):
             return [('url', url)]
     if connected():
         return [('url', 'https://console.tailscale.com/admin/machines')]
-    print('No authorization link available. Run sudo tailscale up in another terminal window, '
-          'follow its sign-in link, then return. Existing preferences were not reset.')
+    print(
+        'No authorization link available. Run sudo tailscale up in another terminal window, '
+        'follow its sign-in link, then return. Existing preferences were not reset.'
+    )
     return [('url', 'https://console.tailscale.com/admin/machines')]
 
 
@@ -69,21 +79,32 @@ def run(context):
         family.install(['tailscale'])
     run_cmd(['systemctl', 'enable', '--now', family.service('tailscale')], timeout=45)
     if not connected():
-        done = guided_setup.checkpoint(context, 'Tailscale: connect this server', [
-            'What this is: Tailscale lets your phone and other devices reach this server '
-            'from anywhere, as if you were at home, without opening your router to the '
-            'internet. It is free for personal use.',
-            'A Tailscale sign-in page opened in the browser. Sign in (or create a free '
-            'account) with Google, Microsoft, Apple or GitHub. Use the account you will '
-            'also use on your phone.',
-            'Click "Connect" (or "Authorize") to add this server to your account.',
-            'If no page opened: open a second terminal, run  sudo tailscale up , open the '
-            'link it prints, and come back here.',
-            ('Then keep it signed in: in the Tailscale admin console (login.tailscale.com, Machines), '
-             'open this server\'s menu and choose "Disable key expiry". Otherwise Tailscale signs it out '
-             'after 180 days and the app addresses on your phone stop working.'),
-            'Answer yes. The installer checks that this server is connected.',
-        ], prepare=login_targets, verify=connected)
+        done = guided_setup.checkpoint(
+            context,
+            'Tailscale: connect this server',
+            [
+                'What this is: Tailscale lets your phone and other devices reach this server '
+                'from anywhere, as if you were at home, without opening your router to the '
+                'internet. It is free for personal use.',
+                'A Tailscale sign-in page opened in the browser. Sign in (or create a free '
+                'account) with Google, Microsoft, Apple or GitHub. Use the account you will '
+                'also use on your phone.',
+                'Click "Connect" (or "Authorize") to add this server to your account.',
+                'If no page opened: open a second terminal, run  sudo tailscale up , open the '
+                'link it prints, and come back here.',
+                (
+                    'Then keep it signed in: in the Tailscale admin console (login.tailscale.com, Machines), '
+                    'open this server\'s menu and choose "Disable key expiry". Otherwise Tailscale signs it out '
+                    'after 180 days and the app addresses on your phone stop working.'
+                ),
+                'Answer yes. The installer checks that this server is connected.',
+            ],
+            prepare=login_targets,
+            verify=connected,
+        )
         if not done:
-            return {'status': 'needs_setup', 'reason': 'Tailscale authorization pending; reapply interactively or run sudo tailscale up'}
+            return {
+                'status': 'needs_setup',
+                'reason': 'Tailscale authorization pending; reapply interactively or run sudo tailscale up',
+            }
     context.log('Tailscale local backend connected; client access still needs a real phone test')

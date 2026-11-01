@@ -1,6 +1,7 @@
 """Without --config, every command uses your settings: my-config.json beside it, or
 config.json in the copy kept on the SSD. The template config.json (no drives in it) is
 refused with a sentence that names --config, instead of a puzzling failure later."""
+
 import argparse
 import contextlib
 import io
@@ -17,8 +18,18 @@ sys.path.insert(0, str(ROOT))
 
 import neko_common
 
-CLIS = ('acceptance.py', 'account-setup.py', 'music-setup.py', 'media-health.py', 'media-connect.py', 'onboard.py',
-        'recover.py', 'gateway_cert.py', 'source-wizard.py', 'source_import.py')
+CLIS = (
+    'acceptance.py',
+    'account-setup.py',
+    'music-setup.py',
+    'media-health.py',
+    'media-connect.py',
+    'onboard.py',
+    'recover.py',
+    'gateway_cert.py',
+    'source-wizard.py',
+    'source_import.py',
+)
 
 
 class DefaultSettingsTests(unittest.TestCase):
@@ -52,18 +63,27 @@ class DefaultSettingsTests(unittest.TestCase):
 
     def test_acceptance_in_the_release_folder_uses_my_config(self):
         import acceptance
+
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             (folder / 'config.json').write_text(json.dumps({'storage': {}}))
             err = io.StringIO()
-            with mock.patch.object(acceptance, 'ROOT', folder), contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            with (
+                mock.patch.object(acceptance, 'ROOT', folder),
+                contextlib.redirect_stderr(err),
+                self.assertRaises(SystemExit),
+            ):
                 acceptance.main([])
             self.assertIn('my-config.json', err.getvalue())
             (folder / 'my-config.json').write_text('{}')
             seen = []
-            with mock.patch.object(acceptance, 'ROOT', folder), mock.patch.object(acceptance.os, 'geteuid', return_value=0), \
-                    mock.patch.object(acceptance, 'load_json', side_effect=lambda p: seen.append(str(p)) or {}), \
-                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with (
+                mock.patch.object(acceptance, 'ROOT', folder),
+                mock.patch.object(acceptance.os, 'geteuid', return_value=0),
+                mock.patch.object(acceptance, 'load_json', side_effect=lambda p: seen.append(str(p)) or {}),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 acceptance.main([])
             self.assertEqual(seen[0], str(folder / 'my-config.json'))
 
@@ -71,6 +91,7 @@ class DefaultSettingsTests(unittest.TestCase):
 class InstallerSettingsTests(unittest.TestCase):
     def settings(self, folder, apply=True):
         import installer
+
         parser = argparse.ArgumentParser()
         with mock.patch.object(installer, 'ROOT', folder):
             return installer.settings_for(argparse.Namespace(config=None, apply=apply), parser)

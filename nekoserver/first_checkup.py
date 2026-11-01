@@ -6,6 +6,7 @@ whole. Each backup runs through its own scheduled service, exactly as it will at
 only the backups whose schedules are switched on run. Then the read-only acceptance
 inspection checks the apps, backups and drives, and saves its report for the dashboard.
 """
+
 import json
 import subprocess
 from pathlib import Path
@@ -24,8 +25,7 @@ JOBS = (
 
 def scheduled(unit, run=subprocess.run):
     """This backup's schedule is switched on (a feature you skipped has none)."""
-    result = run(['systemctl', 'is-enabled', unit + '.timer'], capture_output=True, text=True,
-                 timeout=30, check=False)
+    result = run(['systemctl', 'is-enabled', unit + '.timer'], capture_output=True, text=True, timeout=30, check=False)
     return result.returncode == 0 and result.stdout.strip() == 'enabled'
 
 
@@ -57,12 +57,16 @@ def outcome(config, report):
 def inspect(config):
     """The acceptance checks that run by themselves: (passed, the names of the others)."""
     import acceptance
+
     report = acceptance.inspect(config, 'full')
     acceptance.save(config, report)
     checks = report.get('automatic', [])
     # Anything not passed needs a look, a check still waiting for setup included.
-    problems = [c.get('name', c.get('id', '?')) + (' (still to set up)' if c.get('status') == 'needs_setup' else '')
-                for c in checks if c.get('status') != 'pass']
+    problems = [
+        c.get('name', c.get('id', '?')) + (' (still to set up)' if c.get('status') == 'needs_setup' else '')
+        for c in checks
+        if c.get('status') != 'pass'
+    ]
     return sum(c.get('status') == 'pass' for c in checks), problems
 
 
