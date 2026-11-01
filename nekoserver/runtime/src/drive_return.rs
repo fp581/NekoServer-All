@@ -146,18 +146,56 @@ fn failure_detail(code: i32, stderr: &str, out: &str) -> String {
         .map_or_else(|| format!("exit code {code}"), str::to_string)
 }
 
+/// A Btrfs pool over several drives with one of them gone refuses an ordinary mount
+/// (only `-o degraded` opens it on the drives left), so at boot its fstab line fails and
+/// the drive-return service finds nothing mounted. `btrfs filesystem show <uuid>` lists
+/// the pool's drives and ends with "*** Some devices missing" when one is gone.
+fn pool_lacks_a_drive(shown: &str) -> bool {
+    shown
+        .lines()
+        .any(|line| line.trim().starts_with("***") && line.contains("missing"))
+}
+
+/// What to say once a pool was opened on the drives left: the data there has one copy
+/// fewer until the missing drive is replaced (RECOVERY.md shows how).
+fn degraded_notice(path: &str) -> String {
+    format!(
+        "Drive return: a drive of the Btrfs pool for {path} is missing, so the pool was mounted on the drives left (degraded). Your data there has one copy fewer until the drive is replaced; the dashboard's Drives page shows the pool, and RECOVERY.md how to replace the drive"
+    )
+}
+
+/// The mount unit started; a Btrfs pool missing a drive, which the unit cannot open, is
+/// mounted on its remaining drives instead (fstab's options plus `degraded`), so the apps
+/// and the backups keep running on the mirror's other half.
+fn mount_again(path: &str, uuid: &str, fstype: &str) -> Result<()> {
+    let unit = run_ok(&["systemd-escape", "--path", "--suffix=mount", path], 10)?;
+    match run_ok(&["systemctl", "start", unit.trim()], 120) {
+        Ok(_) => println!("Drive return: mounted {path} again"),
+        Err(e) => {
+            let (_, shown) = common::probe(&["btrfs", "filesystem", "show", uuid], 30);
+            if fstype != "btrfs" || !pool_lacks_a_drive(&shown) {
+                return Err(e);
+            }
+            run_ok(&["mount", "-o", "degraded", path], 120)?;
+            println!("{}", degraded_notice(path));
+        }
+    }
+    Ok(())
+}
+
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
     let cfgpath = a.path("config")?;
     let cfg = common::json(&cfgpath, 64000);
-    let mut drives: Vec<(PathBuf, String)> = vec![];
+    let mut drives: Vec<(PathBuf, String, String)> = vec![];
     for (key, drive) in [("data_mount", "data_ssd"), ("media_mount", "media_hdd")] {
         let path = common::mount_path(cfg[key].as_str().unwrap_or(""))?;
         let uuid = cfg["storage"][drive]["uuid"].as_str().unwrap_or("");
         if uuid.is_empty() || !uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             return Err(Error::new("Drive identity missing from the settings"));
         }
-        drives.push((path, uuid.to_string()));
+        let fstype = cfg["storage"][drive]["fstype"].as_str().unwrap_or("");
+        drives.push((path, uuid.to_string(), fstype.to_string()));
     }
     // systemd can start this before the drive is back: anything that asks for the drive
     // (Docker woken by a command, say) pulls this in at once. A drive still missing is
@@ -168,7 +206,7 @@ pub fn run(a: &Args) -> Result<()> {
     let mut told = false;
     loop {
         let mut waiting = false;
-        for (path, uuid) in &drives {
+        for (path, uuid, fstype) in &drives {
             let present = Path::new("/dev/disk/by-uuid").join(uuid).exists();
             let found = mounted(path)?;
             let alive = found
@@ -192,9 +230,7 @@ pub fn run(a: &Args) -> Result<()> {
                         println!("Drive return: the drive for {shown} is back; releasing the mount it left behind");
                         run_ok(&["umount", "-l", &shown], 60)?;
                     }
-                    let unit = run_ok(&["systemd-escape", "--path", "--suffix=mount", &shown], 10)?;
-                    run_ok(&["systemctl", "start", unit.trim()], 120)?;
-                    println!("Drive return: mounted {shown} again");
+                    mount_again(&shown, uuid, fstype)?;
                     recovering = true;
                 }
             }
@@ -211,7 +247,7 @@ pub fn run(a: &Args) -> Result<()> {
     if !recovering {
         return Ok(());
     }
-    let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _)| p).collect();
+    let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _, _)| p).collect();
     // Anything is started again only with both drives in place and the right ones.
     backup::guard(&cfgpath, &paths[0], &paths[1])?;
     for unit in SERVICES {
@@ -369,6 +405,22 @@ mod tests {
         // ext4 and XFS: the drive's own device number, as before.
         assert!(alive("8:17", "/dev/sdb1", here));
         assert!(!alive("8:33", "/dev/sdb1", here));
+    }
+    #[test]
+    fn a_btrfs_pool_missing_a_drive_is_told_apart_from_a_whole_one() {
+        let whole = "Label: none  uuid: 6d1e-aaaa\n\tTotal devices 2 FS bytes used 1.00GiB\n\
+                     \tdevid    1 size 50.00GiB used 3.00GiB path /dev/sdb1\n\
+                     \tdevid    2 size 50.00GiB used 3.00GiB path /dev/sdc1\n";
+        assert!(!pool_lacks_a_drive(whole));
+        let short = "Label: none  uuid: 6d1e-aaaa\n\tTotal devices 2 FS bytes used 1.00GiB\n\
+                     \tdevid    1 size 50.00GiB used 3.00GiB path /dev/sdb1\n\
+                     \t*** Some devices missing\n";
+        assert!(pool_lacks_a_drive(short));
+        // A pool the tool cannot find at all (nothing said) is not mounted degraded.
+        assert!(!pool_lacks_a_drive(""));
+        let said = degraded_notice("/mnt/nekoserver-media");
+        assert!(said.contains("mounted on the drives left (degraded)"));
+        assert!(said.contains("one copy fewer"));
     }
     #[test]
     fn a_dead_mount_is_released_only_once_the_drive_is_back() {

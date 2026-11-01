@@ -47,6 +47,10 @@ def peer_bindings(peer, config):
     return {f'{peer}/tcp', f'{peer}/udp'}
 
 
+# A container whose health check has not finished yet (Docker started it a moment ago).
+STARTING = 'Still starting: its health check has not finished yet.'
+
+
 def item(key, name, status, detail):
     if status not in STATES:
         raise ValueError('Invalid acceptance state')
@@ -200,6 +204,7 @@ def containers(config, photos=False):
         state = 'fail'
         mounts = False
         ports = False
+        starting = False
         if rc == 0 and len(ids) == 1 and re.fullmatch(r'[a-f0-9]{12,64}', ids[0]):
             rc, out = health.run(recovery_tools.DOCKER + ['inspect', ids[0]], 15)
             try:
@@ -207,10 +212,8 @@ def containers(config, photos=False):
                 v = values[0] if rc == 0 and isinstance(values, list) and len(values) == 1 else {}
                 labels = v.get('Config', {}).get('Labels', {})
                 running = v.get('State', {}).get('Status') == 'running'
-                healthy = v.get('State', {}).get('Health', {}).get('Status', 'not_defined') not in (
-                    'unhealthy',
-                    'starting',
-                )
+                health_state = v.get('State', {}).get('Health', {}).get('Status', 'not_defined')
+                healthy = health_state not in ('unhealthy', 'starting')
                 exact = (
                     labels.get('com.docker.compose.project') == 'neko-' + app
                     and labels.get('com.docker.compose.service') == svc
@@ -269,18 +272,18 @@ def containers(config, photos=False):
                 if not photos:
                     mounts = mounts and 'nekoserver-media' in network.get('Networks', {})
                 state = 'pass' if exact and running and healthy and mounts and ports else 'fail'
+                # Right after Docker (re)started it: everything in place, the health check
+                # not through yet. The gateway step waits for such a container.
+                starting = exact and running and mounts and ports and health_state == 'starting'
             except (ValueError, TypeError, KeyError, AttributeError, IndexError):
                 pass
-        results.append(
-            item(
-                'container:' + svc,
-                health.APPS[app][0] + ' / ' + svc,
-                state,
-                'Running state, persistent source mounts, network and localhost published ports verified.'
-                if state == 'pass'
-                else 'Inspect container health, bind mounts, network and published ports locally.',
-            )
-        )
+        if state == 'pass':
+            detail = 'Running state, persistent source mounts, network and localhost published ports verified.'
+        elif starting:
+            detail = STARTING
+        else:
+            detail = 'Inspect container health, bind mounts, network and published ports locally.'
+        results.append(item('container:' + svc, health.APPS[app][0] + ' / ' + svc, state, detail))
     return results
 
 

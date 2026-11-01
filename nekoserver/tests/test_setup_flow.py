@@ -674,6 +674,38 @@ class FstabTests(unittest.TestCase):
             storage.mount_and_check('abcd-1234', '/srv/nekoserver', None)
         self.assertEqual(seen, [storage.MOUNT_WAIT])
 
+    def test_a_btrfs_pool_missing_a_drive_is_mounted_on_the_drives_left(self):
+        from modules import storage
+
+        short = 'Label: none  uuid: p-1\n\tTotal devices 2 FS bytes used 1.00GiB\n\tdevid 1 size 50.00GiB path /dev/sdb1\n\t*** Some devices missing\n'
+        whole = short.replace('\t*** Some devices missing\n', '\tdevid 2 size 50.00GiB path /dev/sdc1\n')
+
+        def call(argv, timeout=30):
+            seen.append(argv)
+            if argv[:2] == ['btrfs', 'filesystem']:
+                return answers['show']
+            if argv == ['mount', '/mnt/nekoserver-media']:
+                raise RuntimeError('mount failed: wrong fs type, bad option, bad superblock')
+            return ''
+
+        said = []
+        # A drive gone: mounted with `degraded`, and setup says so.
+        seen, answers = [], {'show': short}
+        with mock.patch.object(storage, 'call', call):
+            storage.mount_target('/mnt/nekoserver-media', 'p-1', 'btrfs', said.append)
+        self.assertEqual(seen[-1], ['mount', '-o', 'degraded', '/mnt/nekoserver-media'])
+        self.assertIn('mounted on the drives left (degraded)', said[0])
+        # A whole pool that still fails to mount: the failure stands, nothing is forced.
+        seen, answers = [], {'show': whole}
+        with mock.patch.object(storage, 'call', call), self.assertRaises(RuntimeError):
+            storage.mount_target('/mnt/nekoserver-media', 'p-1', 'btrfs')
+        self.assertNotIn(['mount', '-o', 'degraded', '/mnt/nekoserver-media'], seen)
+        # Not Btrfs: the tool is not even asked.
+        seen = []
+        with mock.patch.object(storage, 'call', call), self.assertRaises(RuntimeError):
+            storage.mount_target('/mnt/nekoserver-media', 'p-1', 'ext4')
+        self.assertEqual(seen, [['mount', '/mnt/nekoserver-media']])
+
 
 class DockerSettingsTests(unittest.TestCase):
     def test_a_setting_dockers_service_already_sets_stops_before_anything_changes(self):

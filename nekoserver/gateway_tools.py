@@ -290,8 +290,8 @@ def navidrome_onboarded(opener):
 
 
 def unverified_containers(config, apps):
-    """The names of the selected apps' containers whose mounts, networks or ports are not
-    the ones setup made."""
+    """The check rows (acceptance.item) of the selected apps' containers whose mounts,
+    networks or ports are not the ones setup made, or that are still starting."""
     from acceptance import containers
 
     scoped = dict(config)
@@ -303,10 +303,16 @@ def unverified_containers(config, apps):
         from cloud_checks import check
 
         checked += check(config)
-    return [r.get('name') or r.get('id', '?') for r in checked if r['status'] != 'pass']
+    return [r for r in checked if r['status'] != 'pass']
 
 
-def readiness(config):
+# How long the gateway step waits for a container whose health check is still running.
+STARTING_WAIT = 120
+
+
+def readiness(config, sleep=time.sleep, clock=time.monotonic):
+    from acceptance import STARTING
+
     apps = selected(config)
     if config.get('gateway', {}).get('confirmed_services') != apps:
         raise RuntimeError('Explicit secured-account confirmation required for selected applications')
@@ -319,11 +325,21 @@ def readiness(config):
     # A snap's Docker takes over Docker's socket: every container would look missing.
     if host.snap_docker():
         raise RuntimeError(host.SNAP_DOCKER)
-    failed = unverified_containers(config, apps)
+    # Docker started the apps a moment ago (a drive came back, a step before this one):
+    # a container's health check says "starting" for a minute or two, and the step
+    # failed on it at once. Such containers are waited for; anything else wrong is said.
+    deadline = clock() + STARTING_WAIT
+    while True:
+        failed = unverified_containers(config, apps)
+        if not failed or clock() >= deadline or any(r.get('detail') != STARTING for r in failed):
+            break
+        sleep(10)
     if failed:
         raise RuntimeError(
             'Selected containers must use the verified persistent mounts, networks and localhost ports; '
-            'not verified: ' + ', '.join(failed) + ' (sudo docker ps -a shows their state)'
+            'not verified: '
+            + ', '.join(r.get('name') or r.get('id', '?') for r in failed)
+            + ' (sudo docker ps -a shows their state)'
         )
     states = health.applications(config)
     if any(
