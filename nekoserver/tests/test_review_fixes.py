@@ -2541,8 +2541,9 @@ class RecoveryMenuStopTests(unittest.TestCase):
         try:
             recovery_wizard.stop_on_sigterm()
             for s in before:
+                handler = signal.getsignal(s)
                 with self.assertRaises(KeyboardInterrupt):
-                    signal.getsignal(s)(s, None)
+                    handler(s, None)
         finally:
             for s, handler in before.items():
                 signal.signal(s, handler)

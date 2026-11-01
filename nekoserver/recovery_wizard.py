@@ -809,7 +809,7 @@ def restore_scope(listed, prompt, output, newest_run=None):
         return None if path is None else ('as_of', path, dict(listed)[path])
     if pick == 'last':
         return 'as_of', listed[0][0], listed[0][1]
-    if pick == 'earlier':
+    if pick == 'earlier' and earlier:
         return 'as_of', earlier[0], earlier[1]
     return None if pick is None else ('everything', None, None)
 
