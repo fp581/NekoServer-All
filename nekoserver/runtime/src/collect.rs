@@ -1224,7 +1224,14 @@ fn rolled_back(saved: &Value) -> bool {
 fn undone_reason(saved: &Value) -> String {
     let said = text(&saved["reason"]);
     let why = said.split(". ").next().unwrap_or("").trim_end_matches('.');
-    let mut out = "The update was undone: your apps are back on their previous version and work as before. It is tried again next month.".to_string();
+    // A failed run that was set to try again says when (the next night, a few nights).
+    let again = match saved["retry_at"].as_str() {
+        Some(when) if !when.trim().is_empty() => format!("{}.", capitalised(&whole(when, 200))),
+        _ => "It is tried again next month.".to_string(),
+    };
+    let mut out = format!(
+        "The update was undone: your apps are back on their previous version and work as before. {again}"
+    );
     if !why.trim().is_empty() {
         out += &format!(" Why: {}.", capitalised(&whole(why, 200)));
     }
@@ -3086,6 +3093,13 @@ mod user_panel_tests {
         let said = undone_reason(&saved);
         assert_eq!(said, "The update was undone: your apps are back on their previous version and work as before. It is tried again next month. Why: Jellyfin was not ready after 5 minutes (Container not healthy).");
         assert!(!said.contains("health_wait_seconds"));
+        // A run set to try again the next night says so instead of "next month".
+        let mut soon = saved.clone();
+        soon["retry_at"] =
+            json!("the monthly update tries again on 2026-11-03 02:30:00 Europe/Lisbon");
+        assert!(undone_reason(&soon).contains(
+            "work as before. The monthly update tries again on 2026-11-03 02:30:00 Europe/Lisbon. Why:"
+        ));
         let mut worse = saved.clone();
         worse["reason"] = json!("jellyfin was not ready; then: Rollback state incomplete");
         assert!(!rolled_back(&worse));

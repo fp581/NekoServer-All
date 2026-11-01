@@ -1334,7 +1334,7 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('named source0, source1 and so on', said)
         self.assertIn('restore-report.json says which original folder each one is', said)
 
-    def test_the_top_menu_quits_and_keeps_the_old_usb_review_last_as_advanced(self):
+    def test_the_top_menu_quits_and_ends_with_the_repair_choice(self):
         out = []
         with (
             mock.patch.object(os, 'geteuid', return_value=0),
@@ -1344,8 +1344,8 @@ class RecoveryWizardTests(unittest.TestCase):
         said = '\n'.join(out)
         self.assertIn('  0. Quit', said)
         self.assertNotIn('0. Back', said)
-        self.assertEqual(recovery_wizard.MENU[-1][0], 'old-usb')
-        self.assertTrue(recovery_wizard.MENU[-1][1].startswith('Advanced: '))
+        self.assertEqual(recovery_wizard.MENU[-1][0], 'repair')
+        self.assertNotIn('v0.21.1', said)  # the old USB snapshots' review is gone
 
     def test_the_monthly_restore_says_where_the_password_files_are(self):
         import json as json_module
@@ -1633,25 +1633,46 @@ class RecoveryWizardTests(unittest.TestCase):
         recovery_wizard.repair_backups(self.config, answers(), out.append)
         self.assertIn('nothing to repair', out[0])
 
-    def test_old_usb_snapshots_are_kept_unless_you_type_delete(self):
+    def test_the_password_list_comes_from_the_usb_drive_when_the_hdd_has_none(self):
+        # The SSD and the HDD both broke: the weekly copy's password list on the USB drive
+        # (the newest sealed snapshot's files) is offered, and opened the usual way.
         usb = self.root / 'usb'
-        self.write('usb/backups/monthly/100-1/manifest.json', b'{"format":"neko-maintenance-v1"}')
-        self.write('usb/backups/monthly/100-1/media.tar', b'old photos')
-        self.write('usb/backups/monthly/200-1/manifest.json', b'{"format":"other"}')
+        self.write('usb/passwords/100-1/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('usb/passwords/100-1/secrets.tar.cms', b'sealed')
+        restored = []
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=usb),
             mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
         ):
             out = []
-            recovery_wizard.review_old_usb(self.config, answers('no', 'delete'), out.append)
-            self.assertTrue((usb / 'backups/monthly/100-1/media.tar').exists())
-            self.assertIn('Kept. Nothing was removed.', out)
-            # Copy to the HDD first, then remove only the old-format snapshot.
-            recovery_wizard.review_old_usb(self.config, answers('yes', 'yes', 'DELETE'), out.append)
-        self.assertFalse((usb / 'backups/monthly/100-1').exists())
-        self.assertTrue((usb / 'backups/monthly/200-1').exists())
-        kept = next((self.media / 'restored').iterdir())
-        self.assertEqual((kept / '100-1/media.tar').read_bytes(), b'old photos')
+            recovery_wizard.restore_passwords(self.config, answers('1'), out.append)
+        said = '\n'.join(out)
+        self.assertIn('looking on the USB drive', said)
+        self.assertIn('(copy on the USB drive)', said)
+        self.assertEqual(restored[0][:3], ('backup_secrets.py', '--restore', str(usb / 'passwords/100-1')))
+
+    def test_no_password_list_anywhere_is_said(self):
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
+            out = []
+            recovery_wizard.restore_passwords(self.config, answers(), out.append)
+        self.assertIn('No password list on the USB drive either', out[-1])
+
+    def test_a_drive_that_fills_up_mid_restore_says_what_is_there(self):
+        import errno
+
+        self.write('src/a.txt', b'a')
+        self.write('src/b.txt', b'b')
+        full = OSError(errno.ENOSPC, 'No space left on device')
+        checked = recovery_wizard.Checked(None)
+        with mock.patch.object(recovery_wizard, 'copy_checked', side_effect=[None, full]):
+            with self.assertRaisesRegex(RuntimeError, 'filled up after 1 of 2 files') as caught:
+                recovery_wizard.copy_new([('src', self.root / 'src')], self.root / 'restored', checked)
+        self.assertIn('run the restore again', str(caught.exception))
 
     def test_a_password_list_from_a_snapshot_without_a_backup_key(self):
         import tarfile
@@ -1691,11 +1712,6 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('not encrypted', '\n'.join(out))
         self.assertEqual((target / 'secrets/accounts/APP-CREDENTIALS.txt').read_bytes(), b'jellyfin: admin / pw')
         self.assertFalse((target / 'appdata').exists())  # only the password list
-
-    def test_nothing_found_is_explained(self):
-        out = []
-        recovery_wizard.restore_passwords(self.config, answers(), out.append)
-        self.assertIn('No monthly snapshot', out[-1])
 
     def test_menu_back_and_needs_sudo(self):
         with mock.patch('os.geteuid', return_value=1000):

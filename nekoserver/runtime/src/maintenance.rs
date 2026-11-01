@@ -541,9 +541,9 @@ fn tar(root: &Path, paths: &[String], output: &Path, exclude: &[&str]) -> Result
     Ok(())
 }
 const SECRETS_KEY_DIR: &str = "/etc/nekoserver-backups";
-const SECRETS_KEY: &str = "secrets-key.p8";
-const SECRETS_CERT: &str = "secrets-recipient.pem";
-const SECRETS_ARCHIVE: &str = "secrets.tar.cms";
+pub(crate) const SECRETS_KEY: &str = "secrets-key.p8";
+pub(crate) const SECRETS_CERT: &str = "secrets-recipient.pem";
+pub(crate) const SECRETS_ARCHIVE: &str = "secrets.tar.cms";
 /// Store secrets/accounts only as a CMS envelope for the backup certificate. The tar
 /// stream is piped straight into openssl, so no plain-text copy reaches the backup
 /// drive. The password-protected key travels with the snapshot for restores.
@@ -869,6 +869,25 @@ const MIGRATING: [&str; 7] = [
     "prowlarr",
 ];
 const MIGRATION_WAIT: u64 = 3600;
+/// How a Nextcloud health check that got an answer, but could not write its test file,
+/// begins: an exception inside Nextcloud (its files folder not its own any more, say),
+/// never a migration still running, so the hour's wait for one would be for nothing.
+const PROBE_FAILED: &str = "Nextcloud could not write a test file: ";
+/// Seconds a failed test file gets before the health check gives up on it: time enough
+/// for Nextcloud's own start (Redis, the first request), far short of the hour.
+const PROBE_GRACE: u64 = 120;
+/// Whether the health check stops waiting now: the test file failed again after PROBE_GRACE.
+fn probe_gave_up(error: &str, elapsed: u64) -> bool {
+    error.starts_with(PROBE_FAILED) && elapsed >= PROBE_GRACE
+}
+/// What the health check says when it gives up on the test file.
+fn probe_advice(error: &str, elapsed: u64) -> String {
+    format!(
+        "{} after {elapsed} seconds, though Nextcloud answers ({}). Its files folder on the HDD may not be Nextcloud's own any more (a new HDD, say): run  sudo bash install.sh  so setup gives it back, or look in Nextcloud's log",
+        PROBE_FAILED.trim_end_matches(": "),
+        error.trim_start_matches(PROBE_FAILED)
+    )
+}
 /// Whether the health check goes on waiting after `wait` seconds (`elapsed` now): for an
 /// app that can migrate for long, not in a restore test, up to MIGRATION_WAIT, and only
 /// while `working` says its container is still running and doing something.
@@ -1018,7 +1037,8 @@ fn health(
                         "-r",
                         &script,
                     ],
-                )?;
+                )
+                .map_err(|e| Error::new(&format!("{PROBE_FAILED}{e}")))?;
             }
             if name == "immich" {
                 let result = compose(
@@ -1049,6 +1069,12 @@ fn health(
             return Ok(());
         }
         let elapsed = start.elapsed().as_secs();
+        if let Err(e) = &attempt {
+            // Nextcloud answers but cannot write: not a migration, so no hour's wait.
+            if probe_gave_up(&e.to_string(), elapsed) {
+                return Err(Error::new(&probe_advice(&e.to_string(), elapsed)));
+            }
+        }
         if elapsed >= wait {
             if keep_waiting(name, elapsed, wait, rehearsal, || {
                 still_working(file, project, service, &mut seen)
@@ -3114,6 +3140,11 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
             "Maintenance runs only within the configured night window",
         ));
     }
+    // Read before the run writes its own report: how many nights running it failed.
+    let tried = retries_made(&common::json(
+        &data.join("reports/jobs/maintenance.json"),
+        64000,
+    ));
     let undone = std::cell::Cell::new(false);
     let result = backup::execute_with(Some(&data), "maintenance", &cfgpath, || {
         let failure = match transaction(&cfgpath, &cfg) {
@@ -3152,8 +3183,9 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
             } else {
                 format!("app updates: {said}")
             };
+            // What the night left undone is taken up again the next night, not next month.
             return Ok(backup::Outcome {
-                partial: Some(json!([said])),
+                partial: Some(json!([format!("{said}; {}", again_next_night(&cfg))])),
             });
         }
         undone.set(rolled_back(phase.as_deref()));
@@ -3164,7 +3196,38 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         let _ =
             backup::note_failed_report(&cfgpath, &data, "maintenance", "rolled_back", json!(true));
     }
-    result
+    match result {
+        // A failed run comes back the next night (a few nights), not next month: a month
+        // without a verified snapshot and the updates is too long for a passing trouble.
+        Err(failure) if !common::postponed(&failure) && tried < RETRY_NIGHTS => {
+            let again = again_next_night(&cfg);
+            let note = |key: &str, value: Value| {
+                backup::note_failed_report(&cfgpath, &data, "maintenance", key, value)
+            };
+            let _ = note("retries", json!(tried + 1));
+            let _ = note("retry_at", json!(again));
+            Err(Error::new(&format!(
+                "{failure}; {again} (night {} of {RETRY_NIGHTS})",
+                tried + 1
+            )))
+        }
+        Err(failure) if !common::postponed(&failure) => Err(Error::new(&format!(
+            "{failure}; it failed {RETRY_NIGHTS} nights running, so it runs again next month"
+        ))),
+        other => other,
+    }
+}
+/// How many nights running a failed monthly run is tried again before it is left to the
+/// next month.
+const RETRY_NIGHTS: u64 = 3;
+/// How many nights running the last run failed and was set to try again (its report
+/// says, "retries" with "retry_at"); 0 after a success, a partial run or a first failure.
+fn retries_made(report: &Value) -> u64 {
+    if report["status"] == "fail" && report["retry_at"].is_string() {
+        report["retries"].as_u64().unwrap_or(0)
+    } else {
+        0
+    }
 }
 /// Whether a failed run undid an update: its journal had got as far as installing it
 /// (or putting it back). Before that nothing was changed; the apps were only stopped
@@ -4394,6 +4457,54 @@ mod tests {
         assert!(cut_off_reason(None).contains("before it took the snapshot"));
         assert!(cut_off_reason(Some("odd")).contains("restart) part-way"));
         assert!(cut_off_reason(Some("updating")).contains("the next monthly run tries again"));
+    }
+    /// A failed run is tried again the next night, three nights running, then left to
+    /// next month: the count carries over through the report of the failed run only
+    /// while that run was set to try again.
+    #[test]
+    fn a_failed_run_is_tried_again_a_few_nights_before_next_month() {
+        assert_eq!(retries_made(&json!({"status": "pass"})), 0);
+        assert_eq!(
+            retries_made(&json!({"status": "fail"})),
+            0,
+            "a first failure"
+        );
+        assert_eq!(
+            retries_made(
+                &json!({"status": "fail", "retries": 2, "retry_at": "the monthly update tries again on 2026-11-03 02:30:00"})
+            ),
+            2
+        );
+        assert_eq!(
+            retries_made(&json!({"status": "partial", "retries": 2, "retry_at": "x"})),
+            0,
+            "a run that got through in part starts the count anew"
+        );
+        let source = include_str!("maintenance.rs");
+        let run = &source[source.find("pub fn run(a: &Args, recover: bool)").unwrap()..];
+        let run = &run[..run.find("\n}\n").unwrap()];
+        assert!(
+            run.contains("tried < RETRY_NIGHTS => {") && run.contains("again_next_night(&cfg)")
+        );
+        assert!(
+            run.contains("!common::postponed(&failure)"),
+            "a postponed run already has its night"
+        );
+    }
+    /// Nextcloud answering but unable to write its test file is no migration: the health
+    /// check gives up after a short grace, not after the hour a migration may take.
+    #[test]
+    fn a_test_file_nextcloud_cannot_write_ends_the_wait_early() {
+        let probe = format!("{PROBE_FAILED}docker exited with 255 (thrown in /var/www/html/lib/private/Files/Node/Folder.php on line 180)");
+        assert!(!probe_gave_up(&probe, PROBE_GRACE - 1));
+        assert!(probe_gave_up(&probe, PROBE_GRACE));
+        assert!(
+            !probe_gave_up("Container not healthy", MIGRATION_WAIT),
+            "not the test file"
+        );
+        let said = probe_advice(&probe, 130);
+        assert!(said.starts_with("Nextcloud could not write a test file after 130 seconds, though Nextcloud answers (docker exited with 255"), "{said}");
+        assert!(said.contains("sudo bash install.sh"));
     }
     /// Immich's redis has no volumes: the rehearsal copy must not gain "volumes": null
     /// (Compose refused the whole file with "services.redis.volumes must be a array").

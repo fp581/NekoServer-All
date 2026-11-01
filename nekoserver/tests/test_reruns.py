@@ -234,12 +234,12 @@ class RecoverySafetyTests(unittest.TestCase):
         (source / 'a.jpg').write_bytes(b'x' * 1000)
         target = self.root / 'new'
         full = mock.Mock(total=100 * 1024**3, free=1024**3)
-        with mock.patch.object(recovery_wizard.shutil, 'disk_usage', return_value=full):
+        with mock.patch('neko_common.shutil.disk_usage', return_value=full):
             with self.assertRaisesRegex(RuntimeError, 'not enough free space'):
                 recovery_wizard.copy_new([('upload', source)], target)
         self.assertFalse(target.exists())
         roomy = mock.Mock(total=100 * 1024**3, free=50 * 1024**3)
-        with mock.patch.object(recovery_wizard.shutil, 'disk_usage', return_value=roomy):
+        with mock.patch('neko_common.shutil.disk_usage', return_value=roomy):
             self.assertEqual(recovery_wizard.copy_new([('upload', source)], target), 1)
 
     def test_usb_is_not_used_while_the_weekly_backup_runs(self):

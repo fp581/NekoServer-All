@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 import pwd
 import re
-import shutil
 import signal
 import stat
 import subprocess
@@ -63,12 +62,11 @@ MENU = [
     ('host', 'Steam and Samba settings (nightly backup)'),
     ('monthly', 'Everything from a monthly snapshot (for rebuilding a server)'),
     ('repair', 'Repair damaged backup copies (found by the checksum checks)'),
-    # Only for a USB drive used before v0.21.1: last, and said to be advanced.
-    ('old-usb', 'Advanced: old full snapshots on the USB drive (from before v0.21.1): review or remove'),
 ]
 
 
-MONTHLY_DIR = 'backups/monthly'  # monthly snapshots, on the HDD (and old ones on the USB drive)
+MONTHLY_DIR = 'backups/monthly'  # monthly snapshots, on the HDD
+USB_PASSWORDS = 'passwords'  # the weekly copy's folder on the USB drive for the newest password lists
 MANIFEST = 'manifest.json'  # what every monthly snapshot folder must contain
 SEALED = 'secrets.tar.cms'  # a monthly snapshot's encrypted password list
 ARCHIVE_DIR = 'photos/archive'  # the photo archive's default folder on the HDD
@@ -214,18 +212,6 @@ def new_folder(suggested, prompt=input, output=print, avoid=(), refuse=()):
             output(problem)
         path = typed_folder(prompt, output)
     return None
-
-
-def tree_bytes(folder):
-    """Total size of the regular files in a folder (symlinks are not followed)."""
-    total = 0
-    for path in Path(folder).rglob('*'):
-        try:
-            if path.is_file() and not path.is_symlink():
-                total += path.stat().st_size
-        except OSError:
-            continue
-    return total
 
 
 def file_count(count):
@@ -415,9 +401,25 @@ def copy_new(sources, destination, checked=None):
     ]
     ensure_room(destination.parent, sum(p.stat().st_size for _, _, p in files), RESTORE)
     checked.begin(destination)
-    for name, source, path in files:
-        checked.copy(path, destination / name / path.relative_to(source))
+    for done, (name, source, path) in enumerate(files):
+        try:
+            checked.copy(path, destination / name / path.relative_to(source))
+        except OSError as exc:
+            if exc.errno != errno.ENOSPC:
+                raise
+            raise RuntimeError(out_of_room(destination, done, len(files))) from None
     return len(files)
+
+
+def out_of_room(destination, done, total):
+    """The drive filled up while the restore was copying (something else wrote to it, or
+    the room checked at the start was taken meanwhile): what is there stays, and the
+    way to go on is said."""
+    return (
+        f'the drive filled up after {done} of {total} files were copied to {destination}. Those files are '
+        f'there as they are. Free space on that drive (or remove {destination}) and run the restore again, '
+        'or restore into a folder on another drive.'
+    )
 
 
 # The weekly backup never overwrites: the first copy keeps the file's own name, and
@@ -1363,11 +1365,30 @@ def password_snapshots(config):
     ]
 
 
+def usb_password_lists(usb):
+    """(path, label) of the password lists the weekly copy keeps on the USB drive (the
+    newest monthly snapshots' encrypted lists, with what opens them), newest first."""
+    if not usb:
+        return []
+    return [(p, d + ' (copy on the USB drive)') for p, d in monthly_snapshots(Path(usb) / USB_PASSWORDS, need=SEALED)]
+
+
 def restore_passwords(config, prompt, output):
+    """From the HDD's monthly snapshots; with none there (the HDD broke too, say), from
+    the USB drive's copies of the newest lists."""
     runs = password_snapshots(config)
-    if not runs:
-        output('No monthly snapshot with a password list on the HDD yet.')
-        return
+    if runs:
+        return restore_password_list(config, runs, prompt, output)
+    output('No monthly snapshot with a password list on the HDD; looking on the USB drive.')
+    with Usb(config) as usb:
+        runs = usb_password_lists(usb)
+        if not runs:
+            output('No password list on the USB drive either (or it is not plugged in).')
+            return
+        return restore_password_list(config, runs, prompt, output)
+
+
+def restore_password_list(config, runs, prompt, output):
     run = choose('Restore the password list from which monthly snapshot?', [(p, d) for p, d in runs], prompt, output)
     if run is None:
         return
@@ -1492,18 +1513,6 @@ def restore_monthly(config, prompt, output):
             ),
             'To rebuild a server from it, follow "disaster recovery" in MONTHLY-MAINTENANCE.md.',
         )
-
-
-def legacy_usb_snapshots(usb):
-    """Full monthly snapshots releases before v0.21.1 wrote to the USB drive, oldest first."""
-    found = []
-    for path in monthly_snapshots(Path(usb) / MONTHLY_DIR):
-        try:
-            if json.loads((path[0] / MANIFEST).read_text()).get('format') == 'neko-maintenance-v1':
-                found.append(path)
-        except (OSError, ValueError):
-            continue
-    return list(reversed(found))
 
 
 PROBLEM_LISTS = (DAMAGED, 'both_damaged', 'disagree', MISSING)
@@ -2048,39 +2057,6 @@ def drop_resolved(section, keys):
         section[CHECKSUMS] = {k: v for k, v in section[CHECKSUMS].items() if k not in keys}
 
 
-def review_old_usb(config, prompt, output):
-    """List the old snapshots; optionally keep a copy on the HDD; remove only on 'DELETE'.
-    They may be the only place a long-deleted file still exists, so nothing is automatic."""
-    with Usb(config, writable=True) as usb:
-        runs = legacy_usb_snapshots(usb) if usb else []
-        if not runs:
-            output('No old full snapshots on the USB drive (or it is not plugged in).')
-            return
-        gb = 1024**3
-        output(f'\n{len(runs)} old full snapshots on the USB drive:')
-        for path, label in runs:
-            output(f'  {label}  {tree_bytes(path) / gb:.1f} GB')
-        say(
-            output,
-            'They were made before v0.21.1 and hold everything at that time, including photos and',
-            'Nextcloud files. A file deleted from the server since then may exist only in them.',
-        )
-        if ask('Keep a copy of them on the HDD first? (recommended)', prompt, output):
-            target = restore_target(config, f'old-usb-snapshots-{stamp()}', prompt, output, usb)
-            if target is None:
-                return
-            output('Copying...')
-            count = copy_new([(path.name, path) for path, _ in runs], target)
-            output(f'Copied {count} files to {target}.')
-        answer = prompt('Type DELETE to remove them from the USB drive (anything else keeps them): ').strip()
-        if answer != 'DELETE':
-            output('Kept. Nothing was removed.')
-            return
-        for path, _ in runs:
-            shutil.rmtree(path)
-        output(f'Removed {len(runs)} old snapshots from the USB drive.')
-
-
 def settings(config_path=None, output=None):
     """The chosen settings file (--config), else my-config.json, else the settings of the
     server set up here (a release folder fresh from git pull has none), else config.json."""
@@ -2125,7 +2101,6 @@ def run(prompt=input, output=print, config_path=None):
         'apps': lambda c, p, o: restore_nightly(c, 'apps', p, o),
         'host': lambda c, p, o: restore_nightly(c, 'host', p, o),
         'monthly': restore_monthly,
-        'old-usb': review_old_usb,
         'repair': repair_backups,
     }
     started = False

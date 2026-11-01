@@ -990,36 +990,36 @@ class DebianTest(unittest.TestCase):
         self.assertTrue((self.root / 'etc/apt/sources.list.d/docker.list').exists())  # the only one: kept
         self.assertEqual(apt.calls, [])  # no apt command needed
 
-    def test_upgrade_with_everything_installed_moves_the_tailscale_key(self):
-        legacy_key = self.file('usr/share/keyrings/tailscale-archive-keyring.gpg', 'old key')
-        self.file(
-            'etc/apt/sources.list.d/tailscale.list',
+    def test_an_unmarked_definition_is_someone_elses_and_left_alone(self):
+        # Only a definition that carries setup's marker is NekoServer's (0.28.0's unmarked
+        # form, with its key under /usr/share/keyrings, is no longer taken over).
+        old_key = self.file('usr/share/keyrings/tailscale-archive-keyring.gpg', 'old key')
+        theirs = (
             'deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] '
-            'https://pkgs.tailscale.com/stable/ubuntu noble main\n',
+            'https://pkgs.tailscale.com/stable/ubuntu noble main\n'
         )
+        listing = self.file('etc/apt/sources.list.d/tailscale.list', theirs)
         apt = FakeApt(installed={real for name in host.APP_PACKAGES for real in self.family().names(name)})
         family = self.family(apt)
         host.bootstrap(family, log=lambda line: None)
         self.assertFalse(any(argv[:2] == ['apt-get', 'install'] for argv in apt.calls))  # nothing to install
-        self.assertIn(
-            'signed-by=/etc/apt/keyrings/tailscale-archive-keyring.gpg',
-            (self.root / 'etc/apt/sources.list.d/tailscale.list').read_text(),
-        )
-        self.assertEqual((self.root / 'etc/apt/keyrings/tailscale-archive-keyring.gpg').read_bytes(), KEY)
-        self.assertTrue(legacy_key.exists())  # not ours to delete: apt simply stops using it
+        self.assertEqual(listing.read_text(), theirs)
+        self.assertTrue(old_key.exists())
+        self.assertFalse((self.root / 'etc/apt/keyrings/tailscale-archive-keyring.gpg').exists())
 
     def test_offline_upgrade_keeps_a_working_definition(self):
-        self.file('usr/share/keyrings/tailscale-archive-keyring.gpg', KEY.decode())
-        legacy = (
-            'deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] '
+        self.file('etc/apt/keyrings/tailscale-archive-keyring.gpg', KEY.decode())
+        # NekoServer's own, in an earlier form (so it would be rewritten), with a working key.
+        ours = (
+            host.Repository.MARKER + 'deb [arch=amd64 signed-by=/etc/apt/keyrings/tailscale-archive-keyring.gpg] '
             'https://pkgs.tailscale.com/stable/ubuntu noble main\n'
         )
-        listing = self.file('etc/apt/sources.list.d/tailscale.list', legacy)
+        listing = self.file('etc/apt/sources.list.d/tailscale.list', ours)
         family = self.family()
         family.fetch = mock.Mock(side_effect=OSError('network unreachable'))
         logged = []
         family.repair(logged.append)
-        self.assertEqual(listing.read_text(), legacy)
+        self.assertEqual(listing.read_text(), ours)
         self.assertIn('network unreachable', logged[0])
 
     def test_restored_definition_without_its_key_needs_the_network(self):
@@ -1074,19 +1074,6 @@ class DebianTest(unittest.TestCase):
         self.assertTrue(self.family().add_repository(host.DOCKER))
         self.assertEqual((self.root / 'etc/apt/keyrings/docker.asc').read_bytes(), KEY)
         self.assertFalse(self.family().add_repository(host.DOCKER))  # nothing left to do
-
-    def test_list_from_0_28_0_moves_its_key_into_the_backup(self):
-        self.file(
-            'etc/apt/sources.list.d/tailscale.list',
-            'deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] '
-            'https://pkgs.tailscale.com/stable/ubuntu noble main\n',
-        )
-        self.assertTrue(self.family().add_repository(host.TAILSCALE))
-        self.assertIn(
-            '/etc/apt/keyrings/tailscale-archive-keyring.gpg',
-            (self.root / 'etc/apt/sources.list.d/tailscale.list').read_text(),
-        )
-        self.assertTrue((self.root / 'etc/apt/keyrings/tailscale-archive-keyring.gpg').is_file())
 
     def test_keys_only_over_https(self):
         with self.assertRaisesRegex(RuntimeError, 'https'):
