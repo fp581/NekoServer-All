@@ -387,8 +387,14 @@ def back(settings, out=print, fstab=FSTAB):
         previous = config['storage'].get(drive, {}).get('previous_drive')
         if not previous:
             continue
-        mountpoint = config[mount_key]
+        mountpoint = str(mount_path(config[mount_key]))
         current = config['storage'][drive]
+        if (
+            not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (previous, current))
+            or previous.get('fstype') not in FILESYSTEMS
+        ):
+            out(f'The settings\' record of the {label} is not valid; nothing was changed')
+            return 2
         if not os.path.exists('/dev/disk/by-uuid/' + previous['uuid']):
             out(f'The old {label} ({previous["uuid"]}) is not connected')
             return 2
