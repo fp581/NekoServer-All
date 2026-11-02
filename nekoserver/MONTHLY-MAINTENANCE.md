@@ -57,7 +57,15 @@ A release is never installed by itself. The **Updates** page, **NekoServer** tab
 
 Putting the previous release back re-runs its setup over the settings and app data as the new release left them. A release that changed the format of its own settings may need you then; the tab and the log say so.
 
-The **System** tab explains what it will cover: maintaining the Linux system from the dashboard comes in a later release. Running `sudo bash install.sh` in a terminal also installs the packages NekoServer needs. On Arch that updates the whole system; on Debian and Ubuntu it refreshes the package lists and installs what is missing. The app snapshots cannot undo a Linux, kernel or Docker upgrade.
+## System updates
+
+The **System** tab shows the Linux system's side, read once a day by `nekoserver-system-check.timer` (13:51). That job runs `system_updates.py`, which only reads: it never installs, removes or refreshes a package. The tab shows:
+- **The package updates waiting**, counted and listed. Each is marked when it is a security fix, when it needs a restart of the computer (a new kernel, systemd, the C library), or when it restarts a service the apps depend on (Docker restarts every app; Samba, Tailscale, SSH).
+  - On Debian and Ubuntu it asks `apt-get -s dist-upgrade` (a simulation), on Fedora and RHEL `dnf check-update`, on openSUSE `zypper list-updates`.
+  - On Arch it uses `checkupdates`, from pacman-contrib, which reads a copy of the package lists. Without it the tab says how to install it.
+- **Whether the computer needs a restart now**: the running kernel was replaced by an update, or the system says so (`/run/reboot-required`, `needs-restarting -r`, `zypper needs-rebooting`).
+
+Installing system updates from the dashboard comes in a later release, with a recovery backup of the system disk first. Until then, update the system as you do now. A major distribution upgrade (a new Ubuntu release, say) is a separate job. Running `sudo bash install.sh` in a terminal also installs the packages NekoServer needs. On Arch that updates the whole system; on Debian and Ubuntu it refreshes the package lists and installs what is missing. The app snapshots cannot undo a Linux, kernel or Docker upgrade.
 
 ## What the monthly snapshot holds
 

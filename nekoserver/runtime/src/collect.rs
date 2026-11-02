@@ -1727,6 +1727,35 @@ fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
     });
     r
 }
+/// What the System tab shows (system_updates.py writes it daily, as root): names,
+/// versions, counts and reasons only, each shortened.
+fn system_updates(path: &Path) -> Value {
+    let saved = common::json(path, 4_000_000);
+    if saved["format"] != "neko-system-check-v1" {
+        return json!({});
+    }
+    let word = |v: &Value| json!(chars(&common::sanitize(text(v)), 120));
+    let updates: Vec<Value> = saved["updates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(300)
+        .map(|u| {
+            json!({"name": word(&u["name"]), "from": word(&u["from"]), "to": word(&u["to"]),
+                "security": u["security"] == true, "reboot": u["reboot"] == true,
+                "restarts": u["restarts"].as_array().into_iter().flatten().take(4).map(&word).collect::<Vec<_>>()})
+        })
+        .collect();
+    json!({
+        "checked_at": saved["checked_at"].as_f64(),
+        "system": word(&saved["system"]),
+        "count": saved["count"].as_u64(),
+        "updates": if saved["updates"].is_array() { json!(updates) } else { Value::Null },
+        "note": saved["note"].as_str().map(|n| chars(&common::sanitize(n), 300)),
+        "restart_needed": saved["restart_needed"] == true,
+        "restart_reasons": saved["restart_reasons"].as_array().into_iter().flatten().take(5).map(&word).collect::<Vec<_>>(),
+    })
+}
 /// Major app updates the daily update check found but leaves for you to approve (its
 /// notes on the SSD, written again at every check).
 fn updates(cfg: &Value, data_ok: bool) -> Value {
@@ -2286,6 +2315,11 @@ pub fn run(a: &Args) -> Result<()> {
         .unwrap_or(60));
     result["updates"] = updates(&cfg, ok);
     // NekoServer's own release: this one, the newest offered, an upgrade at work.
+    result["system_updates"] = if ok {
+        system_updates(&data.join(crate::updates::FOLDER).join("system.json"))
+    } else {
+        json!({})
+    };
     result["nekoserver_release"] = if ok {
         let mut shown = crate::updates::release_for_dashboard(data);
         shown["upgrading"] = json!(Path::new(crate::maintenance::UPGRADE_JOURNAL).exists());

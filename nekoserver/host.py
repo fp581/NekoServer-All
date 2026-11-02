@@ -71,6 +71,68 @@ def _words(release, key):
     return release.get(key, '').lower().split()
 
 
+# ---------- the updates waiting, read-only (the Updates page, System tab) ----------
+
+
+def apt_updates(text):
+    """`apt-get -s dist-upgrade`: "Inst libc6 [2.36-9] (2.36-9+deb12u4 Debian-Security:12/...)"."""
+    found = []
+    for line in text.splitlines():
+        match = re.match(r'^Inst (\S+) (?:\[([^\]]+)\] )?\((\S+) ([^)]*)\)', line)
+        if match:
+            found.append(
+                {'name': match[1], 'from': match[2] or '', 'to': match[3], 'security': 'security' in match[4].lower()}
+            )
+    return found
+
+
+def dnf_updates(text):
+    """`dnf -q check-update`: "kernel.x86_64   6.11.4-301.fc41   updates" (no current version)."""
+    found = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and '.' in parts[0] and not line.startswith(' ') and parts[0] != 'Obsoleting':
+            found.append({'name': parts[0].rsplit('.', 1)[0], 'from': '', 'to': parts[1], 'security': False})
+    return found
+
+
+def zypper_updates(text):
+    """`zypper list-updates`: "v | repo | name | current | available | arch"."""
+    found = []
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.split('|')]
+        if len(cells) >= 6 and cells[0] == 'v':
+            found.append({'name': cells[2], 'from': cells[3], 'to': cells[4], 'security': False})
+    return found
+
+
+def pacman_updates(text):
+    """`checkupdates` (pacman-contrib, which reads a copy of the package lists): "pkg 1.0-1 -> 1.1-1"."""
+    found = []
+    for line in text.splitlines():
+        match = re.match(r'^(\S+) (\S+) -> (\S+)$', line.strip())
+        if match:
+            found.append({'name': match[1], 'from': match[2], 'to': match[3], 'security': False})
+    return found
+
+
+# Per family: the read-only query of the updates waiting (the System tab,
+# system_updates.py), the exit codes that mean "it answered", how to read it, and what
+# to say when the query tool is missing. Never an install, a removal or a refresh.
+UPDATE_QUERIES = {
+    'debian': (['apt-get', '-s', '-o', 'Debug::NoLocking=true', 'dist-upgrade'], (0,), apt_updates, None),
+    'fedora': (['dnf', '-q', 'check-update'], (0, 100), dnf_updates, None),
+    'rhel': (['dnf', '-q', 'check-update'], (0, 100), dnf_updates, None),
+    'suse': (['zypper', '--non-interactive', '--no-refresh', 'list-updates'], (0,), zypper_updates, None),
+    'arch': (
+        ['checkupdates'],
+        (0, 2),
+        pacman_updates,
+        'install pacman-contrib to see the waiting updates (sudo pacman -S pacman-contrib)',
+    ),
+}
+
+
 # A package being set up together with this one: it meets any version asked of it.
 ANY_VERSION = object()
 

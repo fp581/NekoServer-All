@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.45.0 — 2026-11-02
+
+The Updates page's System tab, first step: it shows, it changes nothing. Also two faults in 0.44.0's drive move, found by trying it for real.
+
+**Tried for real** (the lab: Ubuntu 24.04 with systemd, two loop-device drives):
+- The System check on real apt: 122 updates waiting, the same count as apt's own.
+- A full drive move: a 1 GB ext4 media drive moved to a 2 GB one while a NekoServer service kept writing to it.
+  - Owners, permissions, hard links and extended attributes came across.
+  - The checksum comparison passed.
+  - `/etc/fstab` and the settings named the new drive, and the old fstab was kept aside.
+  - The writing service ran again on the new drive.
+- `migrate.py back` went back to the old drive. NekoServer's setup run at the end of each was left out: the lab machine has no NekoServer set up.
+
+### Added
+- **The System tab** shows:
+  - the Linux package updates waiting (from `apt-get -s`, `dnf check-update`, `zypper list-updates`, or `checkupdates` on Arch), each marked when it is a security fix, needs a restart of the computer, or restarts Docker (every app), Samba, Tailscale or SSH;
+  - whether the computer needs a restart now;
+  - the system's release.
+  
+  A daily, read-only job (`nekoserver-system-check.timer`, `system_updates.py`) reads them; it never installs, removes or refreshes a package. Installing system updates from the dashboard comes later, with a recovery backup of the system first.
+
+### Fixed
+- **0.44.0's drive move always stopped before its last copy.** It asks systemd for NekoServer's running units by the pattern `nekoserver-*`, and its own argument check refused the `*`. The move then stopped as designed, with nothing changed and the apps on the old drive, but it never got through. The pattern is allowed now.
+- **`migrate.py list` stopped with an error** when one of the two drives' folders could not be read (not mounted). It now says so for that drive and lists the other.
+- **The System check no longer marks `systemd-dev` (or `libc6-dev`) as needing a restart.** Only the packages themselves (systemd, the C library, the kernel, microcode, firmware) do.
+
 ## v0.44.0 — 2026-11-02
 
 Moving a working server to bigger drives, from the project owner's review of 0.41.5.
