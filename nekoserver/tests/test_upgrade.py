@@ -186,9 +186,10 @@ class UpgradeTests(unittest.TestCase):
         self.assertLess(script.index('NEKOSERVER_KEEP_SYSTEM'), script.index('pacman -Syu --noconfirm'))
         import host
 
+        arch = host.Arch()
         with mock.patch.dict(upgrade.os.environ, {'NEKOSERVER_KEEP_SYSTEM': '1'}):
             with self.assertRaisesRegex(RuntimeError, 'full system update'):
-                host.Arch()._install(['samba'], 60)
+                arch._install(['samba'], 60)
 
 
 if __name__ == '__main__':

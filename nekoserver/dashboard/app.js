@@ -3542,7 +3542,7 @@ function nekoserverTab(s) {
     );
     const actions = el('div', 'update-actions');
     actions.append(button('Upgrade NekoServer', () => confirmUpgrade(text(next.tag))));
-    if (/^https:\/\/github\.com\/fp581\/NekoServer-All\/releases\//.test(text(next.notes))) {
+    if (text(next.notes).startsWith('https://github.com/fp581/NekoServer-All/releases/')) {
       const link = el('a', 'text-button', 'What changed');
       link.href = text(next.notes);
       link.target = '_blank';

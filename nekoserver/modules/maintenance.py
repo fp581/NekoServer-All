@@ -74,6 +74,10 @@ def options(config):
     return opts
 
 
+# A one-off job that may take as long as it needs (finishing or undoing a run).
+ONESHOT = '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
+
+
 def night_job(description, shared, zone, limit, start, finish):
     """A job that stops apps and runs in the household's time zone: the monthly check, the
     update night, Update now. Its stop step (`finish`) finishes or undoes a run cut off,
@@ -110,7 +114,7 @@ def definitions(config, binary, guard):
         + f'OnCalendar=*-*-01 {start}:00 {zone}\nPersistent=false\nRandomizedDelaySec=0\n[Install]\nWantedBy=timers.target\n',
         'nekoserver-maintenance-resume.service': '[Unit]\nDescription=NekoServer recover interrupted monthly maintenance\n'
         + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
+        + ONESHOT
         + f'ExecStart={command}\n[Install]\nWantedBy=multi-user.target\n',
         # An update whose finishing failed (Immich not ready in time, say) keeps its journal,
         # and the nightly app backups wait for it: tried again every hour, not only at the
@@ -145,14 +149,14 @@ def definitions(config, binary, guard):
         # ends by itself, either upgraded or put back on this release.
         'nekoserver-upgrade@.service': '[Unit]\nDescription=NekoServer upgrade to %i\n'
         + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
+        + ONESHOT
         + f'ExecStart=/usr/bin/python3 -Es {bundle}/upgrade.py run --tag %i --config {bundle}/config.json\n',
         # After a restart that cut an upgrade off: put the server back on the release it
         # had (only while the upgrade's record is there).
         UPGRADE_RESUME: '[Unit]\nDescription=NekoServer finish an interrupted upgrade\n'
         + shared
         + f'ConditionPathExists={UPGRADE_JOURNAL}\n'
-        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
+        + ONESHOT
         + f'ExecStart=/usr/bin/python3 -Es {bundle}/upgrade.py resume --config {bundle}/config.json\n'
         + '[Install]\nWantedBy=multi-user.target\n',
         UPDATES_TIMER: '[Unit]\nDescription=NekoServer weekly app update night\n[Timer]\n'

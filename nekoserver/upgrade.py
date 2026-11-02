@@ -39,6 +39,7 @@ from neko_common import (
     default_settings,
     ensure_directory,
     fetch,
+    mount_path,
     safe_path,
     settings_path,
 )
@@ -139,11 +140,25 @@ def download(tag, work, get=fetch):
     return project
 
 
+def ssd(config):
+    """The application SSD the settings name, checked to be a safe mount folder."""
+    return mount_path(config['data_mount'])
+
+
+def kept_release(config, folder):
+    """A release's copy on the SSD (installer/releases/v<numbers>), checked to be one."""
+    releases = ssd(config) / 'installer/releases'
+    path = safe_path(Path(folder))
+    if path.parent != releases or not re.fullmatch(r'v\d+\.\d+\.\d+', path.name):
+        raise RuntimeError(f'Not a kept NekoServer release: {folder}')
+    return path
+
+
 def steps_done(config):
     """The setup steps recorded as done (the record on the SSD)."""
     try:
-        states = json.loads((Path(config['data_mount']) / 'installer/state/state.json').read_text())
-    except (OSError, ValueError, KeyError):
+        states = json.loads((ssd(config) / 'installer/state/state.json').read_text())
+    except (OSError, ValueError, KeyError, RuntimeError):
         return set()
     return {name for name, state in states.items() if isinstance(state, dict) and state.get('status') == DONE}
 
@@ -218,9 +233,8 @@ def upgrade(
     if busy:
         out(busy + '; the upgrade did not start, nothing was changed. Try again later.')
         return 2
-    data = Path(config['data_mount'])
-    work = data / 'installer/upgrades'
-    previous = data / 'installer/releases' / ('v' + VERSION)
+    work = ssd(config) / 'installer/upgrades'
+    previous = kept_release(config, ssd(config) / 'installer/releases' / ('v' + VERSION))
     if not (previous / 'install.sh').is_file():
         out(
             f'This release\'s files are not kept on the SSD ({previous}), so there would be no way back; run  sudo bash install.sh  first'
@@ -280,10 +294,10 @@ def resume(settings, out=print, setup=run_setup, journal=JOURNAL):
         journal.unlink(missing_ok=True)
         out('An upgrade was cut off while it downloaded; nothing had changed')
         return 0
-    previous = safe_path(Path(saved.get('previous', '')))
     config = json.loads(settings_path(settings).read_text())
+    previous = kept_release(config, saved.get('previous', ''))
     out('An upgrade was cut off before it was checked; putting ' + previous.name + ' back')
-    log_file = Path(saved.get('log') or (Path(config['data_mount']) / 'installer/upgrades/resume.log'))
+    log_file = ssd(config) / 'installer/upgrades' / ((saved.get('to') or 'resume') + '.log')
     return go_back(previous, settings, owner(config), log_file, out, setup, journal)
 
 
@@ -302,7 +316,7 @@ def main():
     if not args.tag:
         parser.error('run needs --tag')
     config = json.loads(settings_path(args.config).read_text())
-    return upgrade(args.tag, args.config, recovery=Path(config['data_mount']) / 'installer/recovery.lock')
+    return upgrade(args.tag, args.config, recovery=ssd(config) / 'installer/recovery.lock')
 
 
 if __name__ == '__main__':
