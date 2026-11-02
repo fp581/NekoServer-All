@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+The sixth round: RECOVERY.md's two drive-replacement rows followed word for word, the 0.41.3 update on a second family, and the application SSD mirrored.
+
+### Fixed
+- **After a new HDD, Nextcloud takes uploads again.** Since 0.41.1 setup gives Nextcloud an empty files folder back on a replaced HDD, but Nextcloud's database still listed what the old drive held: it took each account's `files` folder for present, never made it again, and refused every upload ("Could not create path"), the monthly run's test file with it ("Nextcloud could not write a test file after 120 seconds, though Nextcloud answers", so no verified snapshot and no app updates until the folder was made by hand). Setup now makes the folder of every account Nextcloud names on the new drive and refreshes Nextcloud's file list, so the old drive's listing is gone and uploads work; the log says so.
+
+### Changed
+- **RECOVERY.md's RAID row names the whole drive or its partition**, whichever the array's other drive is (`mdadm /dev/md0 --add /dev/sdX`, or `sdX1`), and says a restart mid-rebuild is fine: the rebuild goes on by itself. Tried: the WSL rig's kernel went down in the middle of the rebuild, and on the next start the array resumed it and finished, the dashboard showing it whole.
+
 ## v0.41.3 — 2026-11-02
 
 The fifth round: a mirror (RAID-1) that lost a drive, tried for real. The backups keep going on the half of the mirror that is left, and a Btrfs pool missing a drive is opened on the drives left instead of staying unmounted.
