@@ -382,6 +382,7 @@ function validStatus(raw) {
     startup: rows(raw.startup, 40),
     updates: rows(raw.updates, 20),
     waiting_updates: { ...object(raw.waiting_updates), apps: rows(raw.waiting_updates?.apps, 20) },
+    nekoserver_release: object(raw.nekoserver_release),
     media: { ...object(raw.media), checks: rows(raw.media?.checks) },
     acceptance: object(raw.acceptance),
     heartbeat: object(raw.heartbeat),
@@ -3433,12 +3434,12 @@ function lastUpdate(last) {
   const said = { installed: 'last update installed ', undone: 'last update undone ' }[last.result];
   return said ? said + ago(last.at) : '';
 }
-function updateNightLine(job) {
+function jobLine(label, job) {
   if (!job) {
     return '';
   }
   const why = job.reason ? ' (' + text(job.reason) + ')' : '';
-  return 'Update night: ' + text(job.status, 'unknown') + why;
+  return label + ': ' + text(job.status, 'unknown') + why;
 }
 function updateCard(u) {
   const app = text(u.app),
@@ -3481,7 +3482,7 @@ function appsTab(s) {
   const status = el(
     'p',
     'section-note',
-    joined([updateNightLine(job), check ? 'last check ' + ago(check.last_success) : ''])
+    joined([jobLine('Update night', job), check ? 'last check ' + ago(check.last_success) : ''])
   );
   const cards = found.apps.length
     ? found.apps.map(updateCard)
@@ -3490,15 +3491,77 @@ function appsTab(s) {
   grid.append(...cards);
   return [intro, actions, status, ...(s.updates.length ? [updatesBox(s.updates)] : []), grid];
 }
+function confirmUpgrade(tag) {
+  withPin(() =>
+    confirmDialog(
+      'UPGRADE NEKOSERVER',
+      'Upgrade NekoServer to ' + tag + '?',
+      'NekoServer downloads ' +
+        tag +
+        ' and runs its setup with your saved settings (it builds the background program, so it takes a while). Your apps may restart. The system packages are not updated. If the new release does not pass its checks, the release you have now is put back. It goes on if you close this page.',
+      'Upgrade',
+      () => appAction('upgrade-nekoserver', { tag }, 'Upgrading NekoServer to ' + tag + '…')
+    )
+  );
+}
 function nekoserverTab(s) {
-  return [
+  const r = s.nekoserver_release,
+    job = s.backups.find(b => b.id === 'upgrade'),
+    next = object(r.available);
+  const nodes = [
     el('p', '', 'This server runs NekoServer ' + s.version + '.'),
     el(
       'p',
       'section-note',
-      'Upgrading NekoServer itself from here (with your approval, through the same safe steps) comes in a later release. For now: in the NekoServer folder, run  git pull  then  sudo bash install.sh . Your settings stay.'
+      joined([
+        'Channel: ' + text(r.channel, 'beta'),
+        numeric(r.checked_at) ? 'checked ' + ago(r.checked_at) : 'not checked yet',
+        jobLine('last upgrade', job)
+      ])
     )
   ];
+  if (r.upgrading) {
+    nodes.push(
+      el(
+        'p',
+        'callout',
+        'An upgrade is at work (or one that was cut off is being put right). App updates and the monthly check wait for it.'
+      )
+    );
+  } else if (next.tag) {
+    const card = el('div', 'card');
+    card.append(
+      el('strong', '', text(next.name, next.tag)),
+      el(
+        'p',
+        '',
+        'Available: ' +
+          text(next.tag) +
+          (next.published_at ? ' · published ' + text(next.published_at).slice(0, 10) : '')
+      )
+    );
+    const actions = el('div', 'update-actions');
+    actions.append(button('Upgrade NekoServer', () => confirmUpgrade(text(next.tag))));
+    if (text(next.notes).startsWith('https://github.com/fp581/NekoServer-All/releases/')) {
+      const link = el('a', 'text-button', 'What changed');
+      link.href = text(next.notes);
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      actions.append(link);
+    }
+    card.append(actions);
+    nodes.push(card);
+  } else {
+    nodes.push(el('p', '', 'Up to date.'));
+  }
+  nodes.push(
+    el(
+      'p',
+      'section-note',
+      'An upgrade never updates the system packages: on Arch, a release that needs a new package stops and asks you to run  sudo bash install.sh  in a terminal (that updates the system first).'
+    )
+  );
+  return nodes;
 }
 function systemTab() {
   return [

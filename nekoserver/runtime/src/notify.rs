@@ -78,6 +78,7 @@ fn label(id: &str) -> Option<String> {
             "maintenance" => "Monthly check and snapshot",
             "updates" => "Weekly app updates",
             "update_check" => "Daily update check",
+            "upgrade" => "NekoServer upgrade",
             _ => return None,
         },
         "app" => match key {

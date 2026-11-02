@@ -194,6 +194,7 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
         "pid",
         "start",
         "sig",
+        "tag",
     ] {
         if let Some(v) = body.get(key) {
             request[key] = v.clone();
@@ -616,6 +617,7 @@ fn control(
             "update-now" => "app_update_now",
             "update-run" => "app_update_run",
             "update-check" => "app_update_check",
+            "upgrade-nekoserver" => "app_upgrade_nekoserver",
             "desktop-close" => "desktop_close",
             "desktop-force" => "desktop_force",
             _ => return Err("E40"),

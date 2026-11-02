@@ -32,6 +32,8 @@ RETRY_SERVICE = 'nekoserver-maintenance-retry.service'
 RETRY_TIMER = 'nekoserver-maintenance-retry.timer'
 UPDATES_TIMER = 'nekoserver-updates.timer'
 CHECK_TIMER = 'nekoserver-update-check.timer'
+UPGRADE_RESUME = 'nekoserver-upgrade-resume.service'
+UPGRADE_JOURNAL = '/etc/nekoserver-backups/upgrade.json'  # upgrade.py JOURNAL
 DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 
 
@@ -63,11 +65,17 @@ def options(config):
             raise RuntimeError(
                 'Invalid maintenance.' + key + ': leave it empty, or use the version the dashboard shows'
             )
+    if opts.get('nekoserver_channel', 'beta') not in ('beta', 'stable'):
+        raise RuntimeError('Invalid maintenance.nekoserver_channel: use "beta" or "stable"')
     if opts.get('update_day', 'Wed') not in DAYS:
         raise RuntimeError('Invalid maintenance.update_day: use Mon, Tue, Wed, Thu, Fri, Sat or Sun')
     if int(time[:2]) >= opts.get('night_end_hour', 6):
         raise RuntimeError('Maintenance starts after its allowed night window')
     return opts
+
+
+# A one-off job that may take as long as it needs (finishing or undoing a run).
+ONESHOT = '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
 
 
 def night_job(description, shared, zone, limit, start, finish):
@@ -87,6 +95,8 @@ def definitions(config, binary, guard):
     start = opts.get('time', '02:30')
     zone = host_timezone(config)
     command = f'{binary} maintenance-resume --config {guard}'
+    # This release's files on the SSD (modules/recovery.py keeps them there).
+    bundle = Path(config['data_mount']) / 'installer/releases' / ('v' + VERSION)
     shared = f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\nAfter=docker.service\nRequires=docker.service\n'
     # A rollback is never cut off part-way (that would leave the apps stopped): it may
     # take as long as it needs. Each step inside it has its own time limit.
@@ -104,7 +114,7 @@ def definitions(config, binary, guard):
         + f'OnCalendar=*-*-01 {start}:00 {zone}\nPersistent=false\nRandomizedDelaySec=0\n[Install]\nWantedBy=timers.target\n',
         'nekoserver-maintenance-resume.service': '[Unit]\nDescription=NekoServer recover interrupted monthly maintenance\n'
         + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=infinity\n'
+        + ONESHOT
         + f'ExecStart={command}\n[Install]\nWantedBy=multi-user.target\n',
         # An update whose finishing failed (Immich not ready in time, say) keeps its journal,
         # and the nightly app backups wait for it: tried again every hour, not only at the
@@ -134,6 +144,21 @@ def definitions(config, binary, guard):
         'nekoserver-update-now@.service': night_job(
             'NekoServer update %i now', shared, zone, '6h', f'{binary} update-apps --config {guard} --app %i', command
         ),
+        # "Upgrade NekoServer" on the dashboard: this release's upgrade.py, kept on the SSD
+        # with the settings it runs with. Never stopped part-way by a time limit: it
+        # ends by itself, either upgraded or put back on this release.
+        'nekoserver-upgrade@.service': '[Unit]\nDescription=NekoServer upgrade to %i\n'
+        + shared
+        + ONESHOT
+        + f'ExecStart=/usr/bin/python3 -Es {bundle}/upgrade.py run --tag %i --config {bundle}/config.json\n',
+        # After a restart that cut an upgrade off: put the server back on the release it
+        # had (only while the upgrade's record is there).
+        UPGRADE_RESUME: '[Unit]\nDescription=NekoServer finish an interrupted upgrade\n'
+        + shared
+        + f'ConditionPathExists={UPGRADE_JOURNAL}\n'
+        + ONESHOT
+        + f'ExecStart=/usr/bin/python3 -Es {bundle}/upgrade.py resume --config {bundle}/config.json\n'
+        + '[Install]\nWantedBy=multi-user.target\n',
         UPDATES_TIMER: '[Unit]\nDescription=NekoServer weekly app update night\n[Timer]\n'
         + f'OnCalendar={opts.get("update_day", "Wed")} *-*-02..31 {start}:00 {zone}\nPersistent=false\nRandomizedDelaySec=0\n'
         '[Install]\nWantedBy=timers.target\n',
@@ -209,6 +234,7 @@ def run(ctx):
         ['systemctl', 'enable', '--now', RETRY_TIMER],
         ['systemctl', 'enable', '--now', UPDATES_TIMER],
         ['systemctl', 'enable', '--now', CHECK_TIMER],
+        ['systemctl', 'enable', UPGRADE_RESUME],
     ):
         subprocess.run(args, check=True, capture_output=True, timeout=1200)
     opts = options(ctx.config)

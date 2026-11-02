@@ -352,6 +352,11 @@ if "$apply"; then
       # minutes, instead of failing at once).
       echo 'Refreshing the package lists (zypper refresh).'
       zypper_run --quiet refresh
+    elif [[ -n "${NEKOSERVER_KEEP_SYSTEM:-}" ]]; then
+      # An upgrade of NekoServer started from the dashboard (upgrade.py) leaves the
+      # system alone: Arch updates only as a whole, and that is a system update of its
+      # own, which you start yourself. A missing package then stops setup (below).
+      echo 'Leaving the system packages as they are (a NekoServer upgrade from the dashboard).'
     else
       # Arch supports only full upgrades: refresh and upgrade everything first, so the
       # apps and their dependencies install at their current versions and match each
@@ -460,6 +465,9 @@ if "$apply"; then
       retrying dnf install -y --setopt=install_weak_deps=False "${packages[@]}"
     elif [[ "$family" == suse ]]; then
       zypper_run install --no-recommends "${packages[@]}"
+    elif [[ -n "${NEKOSERVER_KEEP_SYSTEM:-}" ]]; then
+      echo "This release needs packages this system does not have yet (${packages[*]}). On Arch they come only with a full system update, which a NekoServer upgrade from the dashboard does not do. Run  sudo bash install.sh  in a terminal: it updates the system first." >&2
+      exit 4
     else
       pacman -Si -- "${packages[@]}" >/dev/null
       retrying pacman -S --needed --noconfirm --noprogressbar -- "${packages[@]}"

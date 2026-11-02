@@ -684,6 +684,15 @@ class Arch(Family):
         return [pid for pid, files in seen.items() if PACMAN_LOCK in files] if seen else None
 
     def _install(self, names, timeout):
+        if os.environ.get('NEKOSERVER_KEEP_SYSTEM'):
+            # A NekoServer upgrade from the dashboard never updates the system, and Arch
+            # installs new packages safely only with a full update (install.sh says the same).
+            raise RuntimeError(
+                'This release needs packages this system does not have yet ('
+                + ', '.join(names)
+                + '). On Arch they come only with a full system update, which a NekoServer upgrade from the '
+                'dashboard does not do. Run  sudo bash install.sh  in a terminal: it updates the system first.'
+            )
         self.wait_until_idle()
         return self._call(['pacman', '-S', '--needed', '--noconfirm', *names], timeout)
 
