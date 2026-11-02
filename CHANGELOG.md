@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.41.7 — 2026-11-02
+
+The project owner's second review of 0.41.5.
+
+### Fixed
+- **Nextcloud's weekly database copy and files agree.** The weekly USB copy made Nextcloud's database copy first and copied the files later, with Nextcloud running: a file renamed or deleted in between left a database copy naming a file the USB drive did not have, and the checksums could not tell. The copy now works in two passes like Immich's: the files first, with Nextcloud running, then Nextcloud paused (its web app and cron job; the database keeps running), the database copy made and the files that changed meanwhile copied, then Nextcloud started again, whatever happens. A note (`/etc/nekoserver-backups/nextcloud-resume.json`), the job's own stop step and the new `nekoserver-nextcloud-resume.service` at boot start it again after a stop or a power cut; the drive-return service runs it too. When the monthly update is under way, or another job holds the backups' lock for 30 minutes, that week's files are still copied and the backup says incomplete (no database copy).
+- **The USB drive gets the app passwords from the first week on.** Its copy of the encrypted password list came only from a monthly snapshot, so for the weeks before the first monthly run the USB backup said it was done without one. Setup now makes an encrypted list of its own on the HDD after every run (`backups/password-lists/`, only when a password or the backup key changed; the newest 3 kept), and the weekly copy takes the newest list, setup's or a monthly snapshot's. Until the HDD has one, the USB backup says it is incomplete.
+- **The monthly update's retry the next night survives a restart.** It was a one-off `systemd-run` timer, which a restart forgot while the report still promised the retry. It is now a timer file of its own (`nekoserver-maintenance-next-night.timer`), and the report also gives the time as `next_attempt`.
+
+### Added
+- **Release channels.** A tag `vX.Y.Z` is a stable release and `vX.Y.ZBeta` a beta (README.md, "Release channels"). A new GitHub job marks each release as its tag says (a beta as Pre-release, so GitHub's latest release is never a beta), and fails on a tag that is neither.
+
 ## v0.41.6 — 2026-11-02
 
 Fixes for the project owner's review of 0.41.5.

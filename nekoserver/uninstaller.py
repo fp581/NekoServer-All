@@ -1195,6 +1195,7 @@ RECOVERY_RECORDS = (
     ('/etc/nekoserver-backups/app-resume.json', 'nekoserver-app-resume.service'),
     ('/etc/nekoserver-backups/host-resume.json', 'nekoserver-host-resume.service'),
     ('/etc/nekoserver-backups/immich-resume.json', 'nekoserver-immich-resume.service'),
+    ('/etc/nekoserver-backups/nextcloud-resume.json', 'nekoserver-nextcloud-resume.service'),
     ('/etc/nekoserver-backups/immich-snapshot-resume.json', 'nekoserver-immich-snapshot-resume.service'),
 )
 

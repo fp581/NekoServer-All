@@ -46,7 +46,7 @@ The text file has a heading for each app/account, its local URL, setup status, u
 **To see one app's login** (to type it on a phone, say), show it on the screen, one app at a time, with a QR code of the password to scan:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.41.6/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.41.7/account-setup.py show
 ```
 
 It lists the saved logins: type a number to show one, Enter to hide it again (the screen is cleared). `show jellyfin` (or `immich`, `seerr`, `nextcloud`, `navidrome_listener`…) goes straight to one. It runs only with sudo and only in a terminal: it refuses to print into a file or another program, so a password never lands in a log. The QR code is drawn by `qrencode`, which gets the password on its input, not its command line (other accounts can read command lines).
@@ -59,7 +59,7 @@ sudo less /srv/nekoserver/secrets/accounts/APP-CREDENTIALS.txt
 
 This is an unencrypted plaintext inventory requested for setup. Keep any offline copy private. PLANNED, STARTED and NEEDS_SETUP are not successful logins; only VERIFIED entries have passed their checks. Reruns preserve passwords and regenerate a missing text export from the saved JSON. They do not rotate passwords. The inventory records choices known to this installer; it does not watch password changes made later in app interfaces.
 
-The private inventory is included, encrypted, in monthly HDD snapshots when it exists (it opens with the backup password chosen during setup; see MONTHLY-MAINTENANCE.md). The weekly USB copy also keeps the newest 3 of those encrypted lists on the USB drive (`passwords/`), so they survive the loss of the HDD; they still open only with the backup password, and are never written there unencrypted (STORAGE.md, "Private account inventory"). Keep an independent secure copy before relying on the server's restoration. The release ZIP contains no credentials generated on your future server.
+The private inventory is included, encrypted, in monthly HDD snapshots when it exists (it opens with the backup password chosen during setup; see MONTHLY-MAINTENANCE.md). Setup also makes such an encrypted list on the HDD after each run, so there is one before the first monthly snapshot. The weekly USB copy keeps the newest 3 encrypted lists on the USB drive (`passwords/`), so they survive the loss of the HDD; they still open only with the backup password, and are never written there unencrypted (STORAGE.md, "Private account inventory"). Keep an independent secure copy before relying on the server's restoration. The release ZIP contains no credentials generated on your future server.
 
 ## Install and resume
 

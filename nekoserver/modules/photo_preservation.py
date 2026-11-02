@@ -21,17 +21,18 @@ def command_line(binary, guard, data, media, age, archive, keep):
 RESUME = 'nekoserver-immich-resume'
 
 
-def resume_command(binary, guard):
-    return f'{binary} immich-resume --config {guard}'
+def resume_command(binary, guard, command='immich-resume'):
+    return f'{binary} {command} --config {guard}'
 
 
-def resume_unit(binary, guard, data):
+def resume_unit(binary, guard, data, name=RESUME, command='immich-resume'):
     """Immich lives on the SSD only, so its resume needs only that drive (not the HDD):
     a HDD that dropped out mid-run must not keep Immich stopped. The drive-return
-    service runs it again once a missing drive is back."""
+    service runs it again once a missing drive is back. Nextcloud's resume after the
+    weekly USB copy (`name`, `command`) is the same."""
     return (
-        f'[Unit]\nDescription={RESUME}\nRequiresMountsFor={data}\nAfter=docker.service\nRequires=docker.service\n'
-        f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\nExecStart={resume_command(binary, guard)}\n'
+        f'[Unit]\nDescription={name}\nRequiresMountsFor={data}\nAfter=docker.service\nRequires=docker.service\n'
+        f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\nExecStart={resume_command(binary, guard, command)}\n'
         '[Install]\nWantedBy=multi-user.target\n'
     )
 

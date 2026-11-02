@@ -1,0 +1,41 @@
+# Release channels (README.md "Release channels"): a tag vX.Y.Z is a stable release and
+# vX.Y.ZBeta a beta. GitHub's own "pre-release" mark has to agree, because anything that
+# asks GitHub for the latest release (an updater, say) gets the newest one not marked
+# pre-release: a beta left unmarked would be handed out as stable. This job marks each
+# release as its tag says, and fails on a tag that is neither (a typo such as "V0.41.0Beta"
+# or "v0.38.1Bata"), so the release is fixed before anyone takes it.
+name: Release channel
+
+on:
+  release:
+    types: [published, edited]
+
+permissions:
+  contents: write
+
+jobs:
+  channel:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark the release as its tag says
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          ID: ${{ github.event.release.id }}
+          MARKED: ${{ github.event.release.prerelease }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+Beta$ ]]; then
+            want=true
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            want=false
+          else
+            echo "::error::Tag $TAG is neither a stable release (vX.Y.Z) nor a beta (vX.Y.ZBeta); fix the tag (README.md, Release channels)"
+            exit 1
+          fi
+          if [ "$MARKED" != "$want" ]; then
+            gh api --method PATCH "repos/$REPO/releases/$ID" -F prerelease="$want" --silent
+            echo "Release $TAG marked prerelease=$want"
+          else
+            echo "Release $TAG is already marked prerelease=$want"
+          fi

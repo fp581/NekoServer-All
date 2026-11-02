@@ -540,7 +540,7 @@ fn tar(root: &Path, paths: &[String], output: &Path, exclude: &[&str]) -> Result
     fs::File::open(Path::new(output.as_ref()))?.sync_all()?;
     Ok(())
 }
-const SECRETS_KEY_DIR: &str = "/etc/nekoserver-backups";
+pub(crate) const SECRETS_KEY_DIR: &str = "/etc/nekoserver-backups";
 pub(crate) const SECRETS_KEY: &str = "secrets-key.p8";
 pub(crate) const SECRETS_CERT: &str = "secrets-recipient.pem";
 pub(crate) const SECRETS_ARCHIVE: &str = "secrets.tar.cms";
@@ -555,7 +555,7 @@ pub(crate) const SECRETS_ARCHIVE: &str = "secrets.tar.cms";
 /// config.php (database password, secret). With a backup key they are kept only in the
 /// encrypted archive; data.tar leaves them out.
 const SEALED_EXCLUDES: [&str; 2] = ["compose/*/.env", "appdata/nextcloud/html/config/config.php"];
-fn sealed_members(data: &Path) -> Vec<String> {
+pub(crate) fn sealed_members(data: &Path) -> Vec<String> {
     let mut out = vec![];
     if data.join("secrets/accounts").exists() {
         out.push("secrets/accounts".to_string());
@@ -640,13 +640,17 @@ fn clear_work(data: &Path) {
         }
     }
 }
-fn secrets_key_ready(key_dir: &Path) -> bool {
+pub(crate) fn secrets_key_ready(key_dir: &Path) -> bool {
     key_dir.join(SECRETS_KEY).is_file() && key_dir.join(SECRETS_CERT).is_file()
 }
 fn encrypt_secrets(data: &Path, snapshot: &Path) -> Result<&'static str> {
     encrypt_secrets_with(data, snapshot, Path::new(SECRETS_KEY_DIR))
 }
-fn encrypt_secrets_with(data: &Path, snapshot: &Path, key_dir: &Path) -> Result<&'static str> {
+pub(crate) fn encrypt_secrets_with(
+    data: &Path,
+    snapshot: &Path,
+    key_dir: &Path,
+) -> Result<&'static str> {
     let members = sealed_members(data);
     if members.is_empty() {
         return Ok("none");
@@ -3212,6 +3216,9 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
             };
             let _ = note("retries", json!(tried + 1));
             let _ = note("retry_at", json!(again));
+            // The time itself too, for programs (the dashboard), when it was arranged.
+            let next = again.strip_prefix(TRIES_AGAIN_ON);
+            let _ = note("next_attempt", json!(next));
             Err(Error::new(&format!(
                 "{failure}; {again} (night {} of {RETRY_NIGHTS})",
                 tried + 1
@@ -3422,9 +3429,12 @@ fn prune_images(
 const RETRY_ENV: &str = "NEKOSERVER_MAINTENANCE_RETRY";
 /// How long the monthly run waits for setup to let go of the shared lock.
 const SETUP_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-/// The monthly timer fires on the 1st only: a run that gave way to setup asks systemd
-/// for one more start at the same time the next night (a one-off timer, gone after a
-/// restart: then the update waits for the next month). Says what was arranged.
+/// The monthly timer fires on the 1st only: a run that gave way to setup, or failed,
+/// comes back at the same time the next night, through a timer file of its own in
+/// /etc/systemd/system. It used to be a one-off `systemd-run` timer, which a restart
+/// forgot while the report still promised the retry; an enabled timer file is set up
+/// again at every start. Each retry rewrites the same file; one whose night has passed
+/// never fires again. Says what was arranged.
 fn again_next_night(cfg: &Value) -> String {
     let time = cfg["maintenance"]["time"].as_str().unwrap_or("02:30");
     let Some(day) = next_night(time) else {
@@ -3433,28 +3443,29 @@ fn again_next_night(cfg: &Value) -> String {
     // The service runs with TZ set to the server's time zone, like the monthly timer.
     let zone = std::env::var("TZ").unwrap_or_default();
     let when = format!("{day} {time}:00 {zone}").trim().to_string();
-    let unit = format!("nekoserver-maintenance-postponed-{}", day.replace('-', ""));
-    let (code, _) = common::probe(
-        &[
-            "systemd-run",
-            "--quiet",
-            "--collect",
-            &format!("--unit={unit}"),
-            &format!("--on-calendar={when}"),
-            "--timer-property=AccuracySec=1min",
-            "--timer-property=RemainAfterElapse=no",
-            "systemctl",
-            "start",
-            "--no-block",
-            "nekoserver-maintenance.service",
-        ],
-        30,
-    );
-    if code == 0 {
-        format!("the monthly update tries again on {when}")
+    let systemctl = |args: &[&str]| {
+        let mut all = vec!["systemctl"];
+        all.extend_from_slice(args);
+        common::probe(&all, 60).0 == 0
+    };
+    if retry_timer(Path::new("/etc/systemd/system"), &when, &systemctl) {
+        format!("{TRIES_AGAIN_ON}{when}")
     } else {
         "it could not be set to try again tomorrow night, so it runs next month (or start it in a night yourself: sudo systemctl start nekoserver-maintenance.service)".to_string()
     }
+}
+const TRIES_AGAIN_ON: &str = "the monthly update tries again on ";
+pub(crate) const RETRY_NIGHT_TIMER: &str = "nekoserver-maintenance-next-night.timer";
+/// Write the next night's timer (`when`, a systemd calendar time) into `units` and switch
+/// it on; `systemctl` runs systemctl with the given arguments.
+fn retry_timer(units: &Path, when: &str, systemctl: &dyn Fn(&[&str]) -> bool) -> bool {
+    let text = format!(
+        "[Unit]\nDescription=NekoServer monthly update, tried again the next night\n[Timer]\nOnCalendar={when}\nAccuracySec=1min\nPersistent=false\nUnit=nekoserver-maintenance.service\n[Install]\nWantedBy=timers.target\n"
+    );
+    common::atomic(&units.join(RETRY_NIGHT_TIMER), text.as_bytes(), 0o644).is_ok()
+        && systemctl(&["daemon-reload"])
+        && systemctl(&["enable", RETRY_NIGHT_TIMER])
+        && systemctl(&["restart", RETRY_NIGHT_TIMER])
 }
 /// Tomorrow's date (local time, "YYYY-MM-DD") for a valid "HH:MM", else None.
 fn next_night(time: &str) -> Option<String> {
@@ -3506,6 +3517,46 @@ fn committed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_next_night_retry_is_kept_across_a_restart() {
+        // A timer file of its own, switched on (enabled): a restart before the next night
+        // keeps it, where the one-off systemd-run timer was forgotten.
+        let units = std::env::temp_dir().join(format!("neko-retry-{}", std::process::id()));
+        fs::create_dir_all(&units).unwrap();
+        let ran = std::cell::RefCell::new(vec![]);
+        let systemctl = |args: &[&str]| {
+            ran.borrow_mut().push(args.join(" "));
+            true
+        };
+        assert!(retry_timer(
+            &units,
+            "2026-11-03 02:30:00 Europe/Lisbon",
+            &systemctl
+        ));
+        let text = fs::read_to_string(units.join(RETRY_NIGHT_TIMER)).unwrap();
+        assert!(
+            text.contains("OnCalendar=2026-11-03 02:30:00 Europe/Lisbon\n"),
+            "{text}"
+        );
+        assert!(text.contains("Unit=nekoserver-maintenance.service\n"));
+        assert!(text.contains("WantedBy=timers.target\n"));
+        assert_eq!(
+            *ran.borrow(),
+            [
+                "daemon-reload".to_string(),
+                format!("enable {RETRY_NIGHT_TIMER}"),
+                format!("restart {RETRY_NIGHT_TIMER}")
+            ]
+        );
+        // systemd refusing it is said (the report then promises no retry).
+        assert!(!retry_timer(&units, "x", &|_: &[&str]| false));
+        let source = include_str!("maintenance.rs");
+        let body = &source[source.find("fn again_next_night(").unwrap()..];
+        assert!(!body[..body.find("\n}\n").unwrap()].contains("systemd-run"));
+        // The report has the time for programs too.
+        assert!(source.contains("note(\"next_attempt\", json!(next))"));
+        let _ = fs::remove_dir_all(units);
+    }
     #[test]
     fn the_monthly_check_covers_the_copies_that_are_set_up() {
         let cfgpath = Path::new("/etc/nekoserver-backups/maintenance.json");

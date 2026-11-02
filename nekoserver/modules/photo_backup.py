@@ -9,8 +9,10 @@ import sys
 from pathlib import Path
 
 import native_runtime
+from modules.photo_preservation import resume_command, resume_unit
 from neko_common import (
     MANAGED_UNIT,
+    RESUME_TIMEOUT,
     SYSTEMD_UNITS,
     VERSION,
     atomic_json,
@@ -249,11 +251,26 @@ def schedule(opts):
     return day, when
 
 
+# The weekly copy pauses Nextcloud for its last files and its database copy (backup.rs
+# paused_cloud). Its resume starts Nextcloud again: when the run ends in any way
+# (ExecStopPost), and at boot after a power cut.
+CLOUD_RESUME = 'nekoserver-nextcloud-resume'
+
+
+def runtime_of(cmd):
+    """The program and the settings guard the weekly command (command_line) names."""
+    binary, _, rest = cmd.partition(' weekly --config ')
+    return binary, rest.split(' ', 1)[0]
+
+
 def install_units(config, cmd, photos, day, when, unit=None, timer=None):
     """Write the weekly service and timer and switch the timer on. Only a unit NekoServer
-    wrote is replaced (the timer's older wording included)."""
+    wrote is replaced (the timer's older wording included). With Nextcloud, also its
+    resume service, beside the weekly one."""
     unit = unit or SERVICE_UNIT
     timer = timer or TIMER_UNIT
+    cloud = ' --cloud ' in cmd
+    binary, guard = runtime_of(cmd)
     service = (
         '[Unit]\nDescription=NekoServer add-only USB backup of photos and Nextcloud files\nRequiresMountsFor='
         + config['media_mount']
@@ -262,6 +279,11 @@ def install_units(config, cmd, photos, day, when, unit=None, timer=None):
         + '[Service]\nType=oneshot\nExecStart='
         + cmd
         + '\n'
+        + (
+            f'ExecStopPost={resume_command(binary, guard, "cloud-resume")}\nTimeoutStopSec={RESUME_TIMEOUT}\n'
+            if cloud
+            else ''
+        )
     )
     schedule = (
         '[Unit]\nDescription=NekoServer weekly USB backup schedule\n[Timer]\nOnCalendar='
@@ -278,13 +300,20 @@ def install_units(config, cmd, photos, day, when, unit=None, timer=None):
             (MANAGED_UNIT, '[Unit]\nDescription=Weekly NekoServer photo backup\n')
         ):
             raise RuntimeError(f'Unmanaged systemd unit preserved: {path}')
+    resume = unit.parent / (CLOUD_RESUME + '.service')
+    if cloud and resume.exists() and f'Description={CLOUD_RESUME}\n' not in resume.read_text():
+        raise RuntimeError(f'Unmanaged systemd unit preserved: {resume}')
     forget_last_run(timer)  # a timer created again must not run every missed week at once
     atomic_write(unit, service, 0o644)
     atomic_write(timer, schedule, 0o644)
+    if cloud:
+        atomic_write(resume, resume_unit(binary, guard, config['data_mount'], CLOUD_RESUME, 'cloud-resume'), 0o644)
     subprocess.run(['systemctl', 'daemon-reload'], check=True, timeout=120)
     subprocess.run(
         ['systemctl', 'enable', '--now', timer.name], check=True, capture_output=True, text=True, timeout=120
     )  # (see photo_preservation)
+    if cloud:
+        subprocess.run(['systemctl', 'enable', resume.name], check=True, capture_output=True, text=True, timeout=120)
 
 
 def run(ctx):
@@ -326,11 +355,37 @@ def run(ctx):
     )
     cmd = command_line(ctx.config, binary, native_runtime.backup_guard(ctx.config), uuid, fstype, source, dest)
     install_units(ctx.config, cmd, photos, day, when)
+    seal_passwords(binary, native_runtime.backup_guard(ctx.config), ctx.log)
     ctx.log(
         'Enabled weekly USB copy of '
         + what_is_copied(photos, cloud)
         + '; when the USB drive is absent the run fails visibly instead of writing to the OS disk'
     )
+
+
+def seal_passwords(binary, guard, log):
+    """Setup's own encrypted password list on the HDD (backup.rs seal_passwords), made
+    again whenever a password or the backup key changed: the weekly USB copy takes it,
+    so the USB drive holds the app passwords from the first week on, not only after the
+    first monthly snapshot. A failure is said; the USB copy then reports itself
+    incomplete until a list is there."""
+    try:
+        done = subprocess.run(
+            [str(binary), 'seal-passwords', '--config', str(guard)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f'Password list: not made ({exc}); the USB copy says it is incomplete until there is one')
+        return
+    said = str(done.stdout or '').strip().splitlines()
+    if done.returncode == 0 and said:
+        log(said[-1])
+    else:
+        why = str(done.stderr or done.stdout or '').strip()[-300:]
+        log(f'Password list: not made ({why}); the USB copy says it is incomplete until there is one')
 
 
 def switch_off(log, unit=None, timer=None, run=None):
@@ -383,6 +438,8 @@ def refresh(config, log, unit=None, timer=None):
             source,
             destination(config),
         )
+        # After every setup run, which is where passwords are made and changed.
+        seal_passwords(found.group(1), native_runtime.backup_guard(config), log)
         if 'ExecStart=' + cmd + '\n' in current:
             return False
         day, when = schedule(opts)
