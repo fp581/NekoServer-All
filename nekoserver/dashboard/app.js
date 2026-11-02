@@ -242,6 +242,7 @@ const ROUTES = {
   cooling: 'Fans & lights',
   processes: 'Processes',
   health: 'Server health',
+  updates: 'Updates',
   attention: 'Needs attention',
   help: 'Help'
 };
@@ -380,6 +381,7 @@ function validStatus(raw) {
     history: rows(raw.history, 120),
     startup: rows(raw.startup, 40),
     updates: rows(raw.updates, 20),
+    waiting_updates: { ...object(raw.waiting_updates), apps: rows(raw.waiting_updates?.apps, 20) },
     media: { ...object(raw.media), checks: rows(raw.media?.checks) },
     acceptance: object(raw.acceptance),
     heartbeat: object(raw.heartbeat),
@@ -3350,6 +3352,178 @@ function updatesBox(updates) {
   box.append(button('About updates', () => showGuide('updates'), 'text-button'));
   return box;
 }
+/* ---------- updates ---------- */
+const APP_NAMES = {
+  immich: 'Immich',
+  nextcloud: 'Nextcloud',
+  jellyfin: 'Jellyfin',
+  navidrome: 'Navidrome',
+  sonarr: 'Sonarr',
+  radarr: 'Radarr',
+  lidarr: 'Lidarr',
+  prowlarr: 'Prowlarr',
+  seerr: 'Seerr',
+  qbittorrent: 'qBittorrent'
+};
+/* Where each app publishes what changed in a release (its own page, never ours). */
+function releaseNotes(app, version) {
+  const tag = /^v\d+\.\d+\.\d+$/.test(version) ? version : '';
+  const pages = {
+    immich: 'https://github.com/immich-app/immich/releases' + (tag ? '/tag/' + tag : ''),
+    nextcloud: 'https://nextcloud.com/changelog/',
+    jellyfin: 'https://github.com/jellyfin/jellyfin/releases',
+    navidrome: 'https://github.com/navidrome/navidrome/releases',
+    sonarr: 'https://github.com/Sonarr/Sonarr/releases',
+    radarr: 'https://github.com/Radarr/Radarr/releases',
+    lidarr: 'https://github.com/Lidarr/Lidarr/releases',
+    prowlarr: 'https://github.com/Prowlarr/Prowlarr/releases',
+    seerr: 'https://github.com/seerr-team/seerr/releases',
+    qbittorrent: 'https://www.qbittorrent.org/news'
+  };
+  return pages[app] || '';
+}
+function day(at) {
+  return numeric(at) ? new Date(at * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }) : '—';
+}
+function confirmUpdateNow(app, name, version) {
+  withPin(() =>
+    confirmDialog(
+      'UPDATE NOW',
+      'Update ' + name + ' to ' + version + ' now?',
+      'NekoServer first takes a snapshot of ' +
+        name +
+        ', then updates it and checks it works (signing in too). If anything fails, the update is undone. ' +
+        name +
+        ' is offline for a few minutes. It goes on if you close this page.',
+      'Update ' + name,
+      () => appAction('update-run', { app }, 'Updating ' + name + '…')
+    )
+  );
+}
+function waitingRow(app, name, w) {
+  const row = el('div', 'row');
+  const when = w.approved
+    ? 'installs at the next update night (you chose it)'
+    : 'installs from ' + day(w.installs_from);
+  row.append(el('span', '', text(w.version, 'new version') + ' · found ' + day(w.first_seen) + ' · ' + when));
+  const actions = el('div', 'update-actions');
+  actions.append(button('Update now', () => confirmUpdateNow(app, name, text(w.version, 'the new version'))));
+  if (!w.approved) {
+    actions.append(
+      button('Install at the next update night', () =>
+        withPin(() =>
+          appAction('update-now', { app, sig: text(w.sig) }, name + ' is installed at the next update night')
+        )
+      )
+    );
+  }
+  const notes = releaseNotes(app, text(w.version));
+  if (notes) {
+    const link = el('a', 'text-button', 'What changed');
+    link.href = notes;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    actions.append(link);
+  }
+  row.append(actions);
+  return row;
+}
+function updateCard(u) {
+  const app = text(u.app),
+    name = APP_NAMES[app] || app;
+  const card = el('div', 'card');
+  card.append(el('strong', '', name));
+  card.append(el('p', '', 'Installed: ' + text(u.installed, 'not checked yet')));
+  const history = object(u.history),
+    last = object(history.last_update);
+  card.append(
+    el(
+      'p',
+      'section-note',
+      joined([
+        'Last snapshot: ' + (numeric(history.last_snapshot) ? ago(history.last_snapshot) : 'none yet'),
+        last.result === 'installed'
+          ? 'last update installed ' + ago(last.at)
+          : last.result === 'undone'
+            ? 'last update undone ' + ago(last.at)
+            : ''
+      ])
+    )
+  );
+  const waiting = list(u.waiting);
+  card.append(...(waiting.length ? waiting.map(w => waitingRow(app, name, w)) : [el('p', '', 'Up to date.')]));
+  return card;
+}
+function appsTab(s) {
+  const found = s.waiting_updates,
+    job = s.backups.find(b => b.id === 'updates'),
+    check = s.backups.find(b => b.id === 'update_check');
+  const intro = el(
+    'p',
+    'section-note',
+    'NekoServer looks for new versions every day. Each one waits ' +
+      (numeric(found.settle_days) ? found.settle_days : 7) +
+      ' days (most bad releases are fixed or pulled by then), and is then installed on the weekly update night: one app at a time, a snapshot first, the app checked afterwards, and undone if it fails. Bigger version jumps wait for you.'
+  );
+  const actions = el('div', 'update-actions');
+  actions.append(
+    button('Check for updates', () => withPin(() => appAction('update-check', {}, 'Looking for new versions…'))),
+    button('View log', () => showGuide('updates'))
+  );
+  const status = el(
+    'p',
+    'section-note',
+    joined([
+      job ? 'Update night: ' + text(job.status, 'unknown') + (job.reason ? ' (' + text(job.reason) + ')' : '') : '',
+      check ? 'last check ' + ago(check.last_success) : ''
+    ])
+  );
+  const cards = found.apps.length
+    ? found.apps.map(updateCard)
+    : [empty('No check has run yet. The first one runs today; Check for updates runs it now.')];
+  const grid = el('div', 'card-grid two');
+  grid.append(...cards);
+  return [intro, actions, status, ...(s.updates.length ? [updatesBox(s.updates)] : []), grid];
+}
+function nekoserverTab(s) {
+  return [
+    el('p', '', 'This server runs NekoServer ' + s.version + '.'),
+    el(
+      'p',
+      'section-note',
+      'Upgrading NekoServer itself from here (with your approval, through the same safe steps) comes in a later release. For now: in the NekoServer folder, run  git pull  then  sudo bash install.sh . Your settings stay.'
+    )
+  ];
+}
+function systemTab() {
+  return [
+    el(
+      'p',
+      '',
+      'Linux packages, Docker and the kernel are not updated from here yet: a separate, approved system maintenance (with a recovery backup of the system disk first) comes in a later release.'
+    ),
+    el(
+      'p',
+      'section-note',
+      'The app snapshots cannot undo a Linux, kernel or Docker upgrade. Running  sudo bash install.sh  again also installs the packages NekoServer needs: on Arch that updates the whole system, on Debian and Ubuntu it only refreshes the package lists and installs what is missing.'
+    )
+  ];
+}
+function renderUpdates() {
+  const s = state.status;
+  if (!s) {
+    return;
+  }
+  const tab = ['apps', 'nekoserver', 'system'].includes(state.updatesTab) ? state.updatesTab : 'apps';
+  for (const b of document.querySelectorAll('[data-tab]')) {
+    b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    b.onclick = () => {
+      state.updatesTab = b.dataset.tab;
+      renderUpdates();
+    };
+  }
+  put('updates-tab', tab === 'apps' ? appsTab(s) : tab === 'nekoserver' ? nekoserverTab(s) : systemTab());
+}
 function renderHealth() {
   const s = state.status;
   if (!s) {
@@ -3525,15 +3699,18 @@ const GUIDES = {
     unit: 'nekoserver-notifications.service'
   },
   updates: {
-    title: 'Updates & monthly maintenance',
-    intro: 'Once a month, NekoServer backs up the apps, tests a restore, then updates them.',
+    title: 'App updates & the monthly check',
+    intro:
+      'Every day NekoServer looks for new app versions. Each waits a few days, then is installed on the weekly update night, one app at a time, with a snapshot of it first. On the 1st, the monthly check compares every backup copy and tests that a snapshot restores; it updates nothing.',
     steps: [
-      'Check its last result below. Apps are briefly offline during the update.',
-      'If an update was interrupted, let it finish before changing anything else.',
-      'An update that was undone needs nothing from you: your apps run their previous version, and next month tries again. If the same app is undone every month (a big update can keep it busy for longer), setup can give apps more time to start: “health_wait_seconds” under “maintenance”, up to 1800.',
-      'Big version jumps wait for you to approve them.'
+      'The Updates page shows each app’s version, what is waiting and when it installs. “Update now” and “Install at the next update night” use the same safe steps: snapshot, update, checks, undo on failure.',
+      'An app is offline for a few minutes while it updates. An update that fails is undone: the app runs its previous version, and it is tried again next week.',
+      'If an update was interrupted, let it finish before changing anything else: NekoServer finishes it by itself.',
+      'If the same app is undone every week (a big update can keep it busy for longer), setup can give apps more time to start: “health_wait_seconds” under “maintenance”, up to 1800.',
+      'Big version jumps wait for you to approve them.',
+      'The log of the update night: the command below. The daily check: nekoserver-update-check.service; the monthly check: nekoserver-maintenance.service.'
     ],
-    unit: 'nekoserver-maintenance.service'
+    unit: 'nekoserver-updates.service'
   },
   setup: {
     title: 'Finish setting up',
@@ -3670,7 +3847,7 @@ const HELP_CARDS = [
   ['fans', 'Fans don’t change', 'Find your fans and check fan control.'],
   ['lights', 'Lights don’t change', 'Check OpenRGB and the i2c driver.'],
   ['acceptance', 'Check it really works', 'Playback, backups and a test restore.'],
-  ['updates', 'About updates', 'Monthly updates and big versions.']
+  ['updates', 'About updates', 'Weekly app updates, the monthly check, big versions.']
 ];
 function helpCard([id, title, description]) {
   const card = el('article', 'card');
@@ -3985,6 +4162,7 @@ const PAGES = {
   cooling: renderCooling,
   processes: renderProcesses,
   health: renderHealth,
+  updates: renderUpdates,
   help: renderHelp
 };
 function render() {

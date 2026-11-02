@@ -75,7 +75,9 @@ fn label(id: &str) -> Option<String> {
             "applications" => "Media application backup",
             "host" => "Host and user backup",
             "music" => "Music library backup",
-            "maintenance" => "Monthly backup and updates",
+            "maintenance" => "Monthly check and snapshot",
+            "updates" => "Weekly app updates",
+            "update_check" => "Daily update check",
             _ => return None,
         },
         "app" => match key {
@@ -563,7 +565,7 @@ mod tests {
         }
         assert_eq!(
             label("backup:maintenance").unwrap(),
-            "Monthly backup and updates: backup needs attention"
+            "Monthly check and snapshot: backup needs attention"
         );
         assert_eq!(
             label("array-lost:md-md0").unwrap(),

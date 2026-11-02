@@ -171,7 +171,7 @@ pub fn unfinished_job(journals: &[&Path]) -> Option<&'static str> {
         .find(|(p, _)| p.exists())
         .map(|(_, w)| w)
 }
-fn journals() -> [&'static Path; 4] {
+pub fn journals() -> [&'static Path; 4] {
     // Unit tests never read this PC's own journals: on a PC running NekoServer, a real
     // unfinished job would answer before the check a test is about.
     if cfg!(test) {

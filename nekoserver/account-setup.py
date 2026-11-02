@@ -161,13 +161,41 @@ def show(settings, app=None, prompt=input, output=print, qr=terminal_qr, screen=
     return 0
 
 
+# What `signin` answers (the weekly update reads the exit code).
+SIGNED_IN, REFUSED, NO_LOGIN = 0, 1, 3
+
+
+def signin(settings, app, output=print):
+    """`account-setup.py signin APP`: whether the app takes its saved login now. The weekly
+    update asks before it installs a new version and again after: an update that breaks
+    signing in is undone. Nothing is made or changed, and no password is printed. Exit
+    code 0: signed in; 1: refused (the reason is printed); 3: no saved login to try."""
+    if os.geteuid() != 0:
+        output('Run it with sudo: only the administrator may use the saved logins')
+        return NO_LOGIN
+    try:
+        config = json.loads(settings_path(settings).read_text())
+        verify_storage(config, keys=('data_ssd',))
+        if not account_store.enabled(config) or app not in account_store.APPS:
+            return NO_LOGIN
+        answer = account_setup.signs_in(config, app)
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        output(app + ': the saved login was not accepted (' + (str(exc) or type(exc).__name__) + ')')
+        return REFUSED
+    if answer is None:
+        return NO_LOGIN
+    output(app + ': signed in with its saved login')
+    return SIGNED_IN
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog=SHOW_HELP)
     parser.add_argument(
         'action',
         nargs='?',
-        choices=('show',),
-        help='show: put one app\'s login on this screen (and as a QR code), one at a time',
+        choices=('show', 'signin'),
+        help='show: put one app\'s login on this screen (and as a QR code), one at a time; '
+        'signin: check that an app takes its saved login (nothing is changed or shown)',
     )
     parser.add_argument('app', nargs='?', help='with show: the app, such as jellyfin (leave out for a list)')
     parser.add_argument(
@@ -177,6 +205,10 @@ def main():
     args = parser.parse_args()
     if args.action == 'show':
         return show(args.config, args.app)
+    if args.action == 'signin':
+        if not args.app:
+            parser.error('signin needs the app, such as jellyfin')
+        return signin(args.config, args.app.strip().lower())
     if not args.apply:
         print('Read-only: use --apply interactively to choose and configure accounts. No secrets printed.')
         return 0

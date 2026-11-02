@@ -71,7 +71,7 @@ fn integrity(data: &Path, ok: bool, away: Option<&str>) -> Value {
     json!(rows)
 }
 /// Every monitored job; notify.rs names an alert for each (checked by a test).
-pub(crate) const JOBS: [(&str, &str, &str, f64); 7] = [
+pub(crate) const JOBS: [(&str, &str, &str, f64); 9] = [
     (
         "music",
         "Music library backup",
@@ -110,9 +110,21 @@ pub(crate) const JOBS: [(&str, &str, &str, f64); 7] = [
     ),
     (
         "maintenance",
-        "Monthly backup and updates",
+        "Monthly check and snapshot",
         "nekoserver-maintenance",
         3024000.0,
+    ),
+    (
+        "updates",
+        "Weekly app updates",
+        "nekoserver-updates",
+        777600.0,
+    ),
+    (
+        "update_check",
+        "Daily update check",
+        "nekoserver-update-check",
+        216000.0,
     ),
 ];
 fn text(v: &Value) -> &str {
@@ -888,7 +900,9 @@ pub(crate) const STARTUP: &[(&str, &str)] = &[
     ("nekoserver-host-backup.timer", "Nightly host backup"),
     ("nekoserver-music-backup.timer", "Music backup"),
     ("nekoserver-photo-backup.timer", "USB photo backup"),
-    ("nekoserver-maintenance.timer", "Monthly update"),
+    ("nekoserver-maintenance.timer", "Monthly check"),
+    ("nekoserver-updates.timer", "Weekly app updates"),
+    ("nekoserver-update-check.timer", "Daily update check"),
     ("nekoserver-media-health.timer", "App health checks"),
     ("nekoserver-heartbeat.timer", "Outside heartbeat"),
     ("nekoserver-notifications.timer", "Phone notifications"),
@@ -1706,22 +1720,31 @@ fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
     });
     r
 }
-/// Major app updates that monthly maintenance found but leaves for you to start
-/// (read from the newest complete monthly snapshot on the HDD).
+/// Major app updates the daily update check found but leaves for you to approve (its
+/// notes on the SSD; before 0.42.0 the monthly run left them in its newest snapshot on
+/// the HDD).
 fn updates(cfg: &Value, media_ok: bool) -> Value {
-    if !media_ok {
-        return json!([]);
-    }
-    let media = Path::new(text(&cfg["media_mount"]));
-    let folder = media.join("backups/monthly");
-    let newest = crate::maintenance::monthly_runs(media)
-        .unwrap_or_default()
-        .into_iter()
-        .rev()
-        .map(|run| folder.join(run))
-        .find(|path| path.join("manifest.json").is_file());
-    let Some(run) = newest else {
-        return json!([]);
+    let notes = Path::new(text(&cfg["data_mount"]))
+        .join(crate::updates::FOLDER)
+        .join("notes");
+    let run = if notes.is_dir() {
+        notes
+    } else {
+        if !media_ok {
+            return json!([]);
+        }
+        let media = Path::new(text(&cfg["media_mount"]));
+        let folder = media.join("backups/monthly");
+        let newest = crate::maintenance::monthly_runs(media)
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .map(|run| folder.join(run))
+            .find(|path| path.join("manifest.json").is_file());
+        let Some(run) = newest else {
+            return json!([]);
+        };
+        run
     };
     let mut out = vec![];
     for (app, name) in [("immich", "Immich"), ("nextcloud", "Nextcloud")] {
@@ -2272,6 +2295,19 @@ pub fn run(a: &Args) -> Result<()> {
         .filter(|s| (30..=300).contains(s))
         .unwrap_or(60));
     result["updates"] = updates(&cfg, media_ok);
+    // New app versions waiting to be installed, and when each installs by itself.
+    result["waiting_updates"] = if ok {
+        let mut shown = crate::updates::for_dashboard(data, crate::updates::settle_days(&cfg), now);
+        if media_ok {
+            let media = Path::new(text(&cfg["media_mount"]));
+            for app in shown["apps"].as_array_mut().into_iter().flatten() {
+                app["history"] = crate::maintenance::app_history(media, text(&app["app"]));
+            }
+        }
+        shown
+    } else {
+        json!({"apps": []})
+    };
     result["tv"] = tv(&cfg, ok.then_some(data));
     result["integrity"] = integrity(data, ok, away);
     result["backup_key"] = json!(backup_key_ready());

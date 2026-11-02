@@ -36,6 +36,25 @@ def status(**parts):
 
 @unittest.skipUnless(NODE, 'node is not installed')
 class DashboardPageTests(unittest.TestCase):
+    def test_the_updates_page_links_each_apps_own_release_notes(self):
+        answers = page(
+            ('releaseNotes', {'app': 'immich', 'version': 'v2.3.1'}),
+            ('releaseNotes', {'app': 'immich', 'version': 'new build of 2026-11-01'}),
+            ('releaseNotes', {'app': 'jellyfin', 'version': '10.11.2'}),
+            ('releaseNotes', {'app': 'unknown', 'version': 'x'}),
+        )
+        self.assertEqual(answers[0], 'https://github.com/immich-app/immich/releases/tag/v2.3.1')
+        self.assertEqual(answers[1], 'https://github.com/immich-app/immich/releases')
+        self.assertEqual(answers[2], 'https://github.com/jellyfin/jellyfin/releases')
+        self.assertEqual(answers[3], '')
+        # What the server sends is kept, the waiting versions listed per app.
+        shown = page(('validStatus', status(waiting_updates={'settle_days': 7, 'apps': [{'app': 'immich'}, 'bad']})))
+        self.assertEqual(shown[0]['waiting_updates'], {'settle_days': 7, 'apps': [{'app': 'immich'}]})
+        # The buttons call the background update service, never a pull of an image.
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn("appAction('update-run', { app }", source)
+        self.assertNotIn('docker pull', source)
+
     def test_app_states_come_from_health_checks_never_just_running(self):
         cases = [
             ({'state': 'exited'}, 'exited'),

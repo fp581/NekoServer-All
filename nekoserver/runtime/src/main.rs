@@ -20,6 +20,7 @@ mod openrgb;
 mod os_policy;
 mod serve;
 mod startup;
+mod updates;
 use common::{Error, Result};
 use std::{collections::BTreeMap, env, path::PathBuf};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -97,7 +98,7 @@ fn entry() -> Result<()> {
         return serve::hardware();
     }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, maintenance, maintenance-resume\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, maintenance, maintenance-resume, update-check, update-apps\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {
@@ -105,9 +106,9 @@ fn entry() -> Result<()> {
         | "host-snapshot" | "host-resume" | "immich-resume" | "cloud-resume" | "seal-passwords" => {
             vec!["config"]
         }
-        "music-backup" | "app-snapshot" | "app-resume" | "maintenance" | "maintenance-resume" => {
-            vec!["config"]
-        }
+        "music-backup" | "app-snapshot" | "app-resume" | "maintenance" | "maintenance-resume"
+        | "update-check" => vec!["config"],
+        "update-apps" => vec!["config", "app"],
         "notify" => vec!["config", "snapshot", "state", "runtime", "test"],
         "media-health" => vec!["config", "output", "checking"],
         "serve" => vec!["assets", "status", "port", "public-host", "control"],
@@ -180,6 +181,8 @@ fn entry() -> Result<()> {
     match mode.as_str() {
         "maintenance" => maintenance::run(&a, false),
         "maintenance-resume" => maintenance::run(&a, true),
+        "update-check" => maintenance::check_updates(&a),
+        "update-apps" => maintenance::update_apps(&a),
         "hdd-policy" => os_policy::run(&a),
         "music-backup" => music_backup::run(&a),
         "notify" => notify::run(&a),

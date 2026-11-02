@@ -23,10 +23,16 @@ from neko_common import MAINTENANCE_JOURNAL, maintenance_running
 # No photo_backup: since v0.21.1 the monthly snapshot stays on the HDD, so a missing
 # or unconfigured USB drive must not block monthly updates.
 DEPENDENCIES = ['docker', 'recovery', 'photos', 'nextcloud']
-DESCRIPTION = 'Monthly overnight app-state snapshot on the HDD, isolated restore tests and container updates'
+DESCRIPTION = (
+    'Daily check for app updates, weekly protected updates (each app on its own, after a snapshot of it), '
+    'and a monthly check of every backup copy with a restore test'
+)
 RESUME_SERVICE = 'nekoserver-maintenance-resume.service'
 RETRY_SERVICE = 'nekoserver-maintenance-retry.service'
 RETRY_TIMER = 'nekoserver-maintenance-retry.timer'
+UPDATES_TIMER = 'nekoserver-updates.timer'
+CHECK_TIMER = 'nekoserver-update-check.timer'
+DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 
 
 def options(config):
@@ -44,6 +50,8 @@ def options(config):
         ('health_wait_seconds', 300, 30, 1800),
         ('night_end_hour', 6, 1, 7),
         ('keep_snapshots', 3, 0, 120),
+        # How many days a new app version waits before the weekly update installs it.
+        ('settle_days', 7, 1, 30),
     ):
         value = opts.get(key, default)
         if type(value) is not int or not low <= value <= high:
@@ -55,6 +63,8 @@ def options(config):
             raise RuntimeError(
                 'Invalid maintenance.' + key + ': leave it empty, or use the version the dashboard shows'
             )
+    if opts.get('update_day', 'Wed') not in DAYS:
+        raise RuntimeError('Invalid maintenance.update_day: use Mon, Tue, Wed, Thu, Fri, Sat or Sun')
     if int(time[:2]) >= opts.get('night_end_hour', 6):
         raise RuntimeError('Maintenance starts after its allowed night window')
     return opts
@@ -69,7 +79,7 @@ def definitions(config, binary, guard):
     # A rollback is never cut off part-way (that would leave the apps stopped): it may
     # take as long as it needs. Each step inside it has its own time limit.
     return {
-        'nekoserver-maintenance.service': '[Unit]\nDescription=NekoServer monthly verified backup and container update\n'
+        'nekoserver-maintenance.service': '[Unit]\nDescription=NekoServer monthly check of every backup copy, snapshot and restore test\n'
         + shared
         + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
         + zone
@@ -93,6 +103,35 @@ def definitions(config, binary, guard):
         + f'ExecStart={command}\n',
         RETRY_TIMER: '[Unit]\nDescription=NekoServer hourly retry of an unfinished monthly update\n[Timer]\n'
         f'OnCalendar=*-*-* *:17:00 {zone}\nPersistent=false\n[Install]\nWantedBy=timers.target\n',
+        # The weekly protected app updates: each app with a version that has settled is
+        # updated on its own, after a snapshot of it, on the update night at the monthly
+        # time (never on the 1st: that night is the monthly check's). The same journal and
+        # resume service as the monthly run finish or undo one that was cut off.
+        'nekoserver-updates.service': '[Unit]\nDescription=NekoServer weekly protected app updates\n'
+        + shared
+        + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
+        + zone
+        + '\nTimeoutStartSec=18h\nTimeoutStopSec=infinity\n'
+        + f'ExecStart={binary} update-apps --config {guard}\nExecStopPost={command}\n',
+        # "Update now" on the dashboard (the control service starts it, for one app):
+        # the same steps, at any time of day; it goes on if the page is closed.
+        'nekoserver-update-now@.service': '[Unit]\nDescription=NekoServer update %i now\n'
+        + shared
+        + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
+        + zone
+        + '\nTimeoutStartSec=6h\nTimeoutStopSec=infinity\n'
+        + f'ExecStart={binary} update-apps --config {guard} --app %i\nExecStopPost={command}\n',
+        UPDATES_TIMER: '[Unit]\nDescription=NekoServer weekly app update night\n[Timer]\n'
+        + f'OnCalendar={opts.get("update_day", "Wed")} *-*-02..31 {start}:00 {zone}\nPersistent=false\nRandomizedDelaySec=0\n'
+        '[Install]\nWantedBy=timers.target\n',
+        # The daily look for new versions, while the apps run: it downloads them and notes
+        # the day each was first seen; it stops and changes nothing.
+        'nekoserver-update-check.service': '[Unit]\nDescription=NekoServer daily check for app updates\n'
+        + shared
+        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=4h\n'
+        + f'ExecStart={binary} update-check --config {guard}\n',
+        CHECK_TIMER: '[Unit]\nDescription=NekoServer daily check for app updates\n[Timer]\n'
+        f'OnCalendar=*-*-* 13:41:00 {zone}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
     }
 
 
@@ -155,12 +194,20 @@ def run(ctx):
         ['systemctl', 'enable', '--now', '--no-block', RESUME_SERVICE],
         ['systemctl', 'enable', '--now', 'nekoserver-maintenance.timer'],
         ['systemctl', 'enable', '--now', RETRY_TIMER],
+        ['systemctl', 'enable', '--now', UPDATES_TIMER],
+        ['systemctl', 'enable', '--now', CHECK_TIMER],
     ):
         subprocess.run(args, check=True, capture_output=True, timeout=1200)
+    opts = options(ctx.config)
     ctx.log(
-        'Monthly overnight maintenance enabled: app-state snapshot on the HDD, then updates. The newest '
-        + str(options(ctx.config).get('keep_snapshots', 3) or 'all')
-        + ' complete snapshots are kept.'
+        'App updates enabled: a daily check for new versions; on '
+        + opts.get('update_day', 'Wed')
+        + ' nights each app whose new version has waited '
+        + str(opts.get('settle_days', 7))
+        + ' days is updated on its own, after a snapshot of it; on the 1st, a check of every backup copy, a snapshot '
+        'of every app and a restore test. The newest '
+        + str(opts.get('keep_snapshots', 3) or 'all')
+        + ' complete monthly snapshots are kept.'
     )
 
 

@@ -2695,7 +2695,7 @@ pub(crate) fn note_failed_report(
 fn running_row(name: &str, now: f64, old: &Value) -> Value {
     json!({"job":name,"status":"running","started_at":now,"finished_at":null,"last_success":common::kept_time(&old["last_success"])})
 }
-fn guard_data(cfgpath: &Path, data: &Path) -> Result<()> {
+pub(crate) fn guard_data(cfgpath: &Path, data: &Path) -> Result<()> {
     let c = common::json(cfgpath, 64000);
     let uuid = c["storage"]["data_ssd"]["uuid"].as_str().unwrap_or("");
     let fstype = c["storage"]["data_ssd"]["fstype"].as_str().unwrap_or("");

@@ -1,4 +1,4 @@
-# NekoServer v0.41.8
+# NekoServer v0.42.0
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -237,7 +237,9 @@ Everything works without editing anything. If you want to change something, edit
 | `"user"` under `"tv"` | Which account is the TV user (below) | `"auto"`: you |
 | `"torrent_port"` under `"media"` | Lets other peers connect to qBittorrent for faster downloads. Set a port such as `51413`, then forward it on your router. | off |
 | `"keep_snapshots"` and `"database_keep"` | How many backups to keep (`0` keeps all) | 7 nightly, 4 weekly database copies, 3 monthly |
-| `"immich_major_update"`, `"nextcloud_major_update"` under `"maintenance"` | Approve a new major app version shown on the dashboard; the next monthly update installs it. See [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md#major-version-updates). | empty (not installed) |
+| `"immich_major_update"`, `"nextcloud_major_update"` under `"maintenance"` | Approve a new major app version shown on the dashboard; an update night installs it once it has settled. See [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md#major-version-updates). | empty (not installed) |
+| `"settle_days"` under `"maintenance"` | How many days a new app version waits before an update night installs it (1 to 30). See [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md#weekly-app-updates). | `7` |
+| `"update_day"` under `"maintenance"` | The night of the week app updates are installed: `Mon` to `Sun`. | `"Wed"` |
 | `"wanted"` under `"tv"`, `"notifications"` or `"heartbeat"` | Your answer to the optional extras (TV, phone alerts, outage alerts). Change `false` to `true` to set one up later. | asked once |
 | `"data_mount"`, `"media_mount"`, `"external_backup_mount"` | Where the SSD, HDD and USB drive are mounted. Anywhere under `/srv` or `/mnt`; not under `/home`, `/root` or `/run/user`, which NekoServer's services can't see. | `/srv/nekoserver`, `/mnt/nekoserver-media`, `/mnt/nekoserver-photos` |
 | `"enabled"` under `"nextcloud"` | Set to `false` if you don't want Nextcloud | on |
@@ -322,7 +324,7 @@ Good to know:
 | Home and remote access, certificates | [GATEWAY.md](GATEWAY.md) |
 | TV setup (Steam, controllers) | [TV-SETUP.md](TV-SETUP.md) |
 | Music | [MUSIC.md](MUSIC.md) |
-| Monthly updates | [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md) |
+| App updates and the monthly check | [MONTHLY-MAINTENANCE.md](MONTHLY-MAINTENANCE.md) |
 | Hardware video (graphics chip) | [HARDWARE-VIDEO.md](HARDWARE-VIDEO.md) |
 | Restoring from backup | [RECOVERY.md](RECOVERY.md) |
 | Phone alerts | [NOTIFICATIONS.md](NOTIFICATIONS.md) |

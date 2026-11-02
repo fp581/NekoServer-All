@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.42.0 — 2026-11-02
+
+App updates move out of the monthly run: a daily check, weekly protected updates of one app at a time, and a monthly check of every backup copy. The project owner's design for the Updates page.
+
+### Changed
+- **App updates are weekly, each app on its own, after a snapshot of it.**
+  - A daily check (`nekoserver-update-check`, while the apps run) finds and downloads new versions, and notes the day it first saw each.
+  - A version waits `maintenance.settle_days` days (7 by default) before an update night installs it. The update night is Wednesday by default (`maintenance.update_day`), at `maintenance.time`, never on the 1st.
+  - On that night each app with a settled version goes on its own: a snapshot of that app, checked against its checksums; the new version, whole stack at once; then its checks. If the app took its saved login before the update, it must take it after. A failure is undone from the snapshot: data, settings and the old images together, since Immich cannot downgrade a database.
+  - One app's failed update does not hold back the others. Each app keeps the snapshots of its newest two updates (`backups/updates/` on the HDD).
+- **The monthly run is now a check, not an update.** On the 1st it compares every backup copy with its checksum, takes a snapshot of every app, tests that it restores, and starts the apps again as they were. It no longer downloads or installs anything.
+- **Major versions** (Immich, Nextcloud) and releases with an unknown layout still wait for your approval. The daily check now finds them.
+
+### Added
+- **An Updates page on the dashboard, with Apps, NekoServer and System tabs.**
+  - **Apps** shows each app's version, the versions waiting and the day each installs, its last snapshot and how its last update ended. It has **Check for updates**, **Update now**, **Install at the next update night** (each with the PIN) and a link to each app's own release notes.
+  - Both update buttons start a background service (`nekoserver-update-now@<app>`) that goes through the same steps as the update night. Closing the page stops nothing, and reopening it shows the progress.
+  - **NekoServer** and **System** say what they will cover in later releases, and how to upgrade by hand until then.
+- `account-setup.py signin APP`: checks, read-only, that an app takes its saved login (exit code 0, 1, or 3 when there is none).
+
+### Not tried for real
+- The update night, Update now and the daily check were tested with stand-ins, not on a real server. The lab can't download app images (Docker Hub and ghcr.io are blocked there).
+
 ## v0.41.8 — 2026-11-02
 
 ### Changed

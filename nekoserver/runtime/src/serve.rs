@@ -193,6 +193,7 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
         "app",
         "pid",
         "start",
+        "sig",
     ] {
         if let Some(v) = body.get(key) {
             request[key] = v.clone();
@@ -612,6 +613,9 @@ fn control(
             op @ ("unlock" | "fan" | "light" | "detect") => op,
             "detect-cancel" => "detect_cancel",
             "app-restart" => "app_restart",
+            "update-now" => "app_update_now",
+            "update-run" => "app_update_run",
+            "update-check" => "app_update_check",
             "desktop-close" => "desktop_close",
             "desktop-force" => "desktop_force",
             _ => return Err("E40"),
