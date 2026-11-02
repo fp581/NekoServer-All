@@ -38,6 +38,9 @@ fn decide(mounted: Option<&str>, alive: bool, present: bool) -> Step {
 
 /// The services NekoServer keeps on its drives; each is started again only when it is
 /// switched on (enabled) and not running.
+/// Said when the drives came back under a running setup, which brings the apps back itself.
+const LEFT_TO_SETUP: &str = "Drive return: setup (sudo bash install.sh) is running and starts the apps itself once the drives are in place; nothing to do here";
+
 const SERVICES: [&str; 4] = [
     "docker.service",
     "smbd.service",
@@ -245,6 +248,14 @@ pub fn run(a: &Args) -> Result<()> {
         thread::sleep(Duration::from_secs(5));
     }
     if !recovering {
+        return Ok(());
+    }
+    // A drive that "returns" while setup runs is setup's doing (a replaced HDD given its
+    // fstab line, say): setup starts Docker, the gateway and the rest itself, with their
+    // records brought up to date first. Started from here in between, the gateway found
+    // its record naming the old drive and refused, and this run ended as a failure.
+    if common::setup_running() {
+        println!("{}", LEFT_TO_SETUP);
         return Ok(());
     }
     let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _, _)| p).collect();
