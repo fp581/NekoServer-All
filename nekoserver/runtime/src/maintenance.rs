@@ -1971,6 +1971,31 @@ fn immich_candidate(cfg: &Value, snapshot: &Path, work: &Path) -> Result<Option<
     Ok(Some(folder))
 }
 
+/// Whether the Immich release `tag` may be installed over the one the .env text names:
+/// the same major always; another major only while `immich_major_update` approves it.
+fn immich_release_allowed(cfg: &Value, env: &str, tag: &str) -> bool {
+    let major = |t: &str| {
+        t.strip_prefix('v')
+            .and_then(|r| r.split('.').next())
+            .filter(|m| !m.is_empty() && m.bytes().all(|b| b.is_ascii_digit()))
+            .map(str::to_string)
+    };
+    let installed = env
+        .lines()
+        .find_map(|line| line.strip_prefix("IMMICH_VERSION="))
+        .and_then(major);
+    let Some(next) = major(tag) else {
+        return false;
+    };
+    if installed.as_deref() == Some(next.as_str()) {
+        return true;
+    }
+    let wanted = cfg["maintenance"]["immich_major_update"]
+        .as_str()
+        .unwrap_or("")
+        .trim();
+    immich_major_approved(wanted, tag, &next)
+}
 /// You approve a new Immich major by naming it ("v3") or its exact release ("v3.0.1").
 /// Naming the major keeps working when a fix release comes out before the night it runs.
 fn immich_major_approved(wanted: &str, tag: &str, major: &str) -> bool {
@@ -3806,6 +3831,14 @@ fn load_candidate(
     let mut immich_files = None;
     let source = match saved["immich_release"].as_str() {
         Some(tag) => {
+            // A new major only while you still approve it: an approval taken back after
+            // the check downloaded it keeps the cached version from being installed.
+            let installed =
+                String::from_utf8_lossy(&common::bytes(&current.join(".env"), 64000)?).into_owned();
+            if !immich_release_allowed(cfg, &installed, tag) {
+                println!("Immich {tag}: a new major that is no longer approved (maintenance.immich_major_update); not installed");
+                return Ok(None);
+            }
             // The new release's compose file, with today's .env (and graphics file)
             // naming the new release.
             let files = work.join("immich-candidate");
@@ -3889,13 +3922,9 @@ pub fn update_apps(a: &Args) -> Result<()> {
     let cfg = load(&cfgpath)?;
     let data = common::mount_path(string(&cfg, "data_mount")?)?;
     mounts(&cfgpath, &cfg, false)?;
-    // "Update now" for one app (the dashboard starts nekoserver-update-now@<app>):
-    // its newest version found, whatever the time, through the same steps.
-    let only = match a.value("app", "").as_str() {
-        "" => None,
-        app if names(&cfg)?.iter().any(|n| n == app) => Some(app.to_string()),
-        _ => return Err(Error::new("That app is not set up on this server")),
-    };
+    // "Update now" for one app (the dashboard starts nekoserver-update-now@<app>:<sig>):
+    // exactly the version you chose there, whatever the time, through the same steps.
+    let only = update_now_target(&a.value("app", ""), &names(&cfg)?)?;
     let _lock = job_lock(&data)?;
     // Anything a cut-off run left is finished first (or undone).
     resume(&cfgpath, &cfg)?;
@@ -3907,33 +3936,54 @@ pub fn update_apps(a: &Args) -> Result<()> {
     let undone = std::cell::Cell::new(false);
     let result = backup::execute_with(Some(&data), "updates", &cfgpath, || {
         no_upgrade()?;
-        install_due(&cfgpath, &cfg, &data, &undone, only.as_deref())
+        install_due(
+            &cfgpath,
+            &cfg,
+            &data,
+            &undone,
+            only.as_ref().map(|(app, sig)| (app.as_str(), sig.as_str())),
+        )
     });
     if result.is_err() && undone.get() {
         let _ = backup::note_failed_report(&cfgpath, &data, "updates", "rolled_back", json!(true));
     }
     result
 }
-/// `only`: "Update now" for that one app, with its newest version found.
+/// "Update now"'s `<app>:<sig>`: the app (one set up here) and the version chosen. No
+/// value: the update night, every app.
+fn update_now_target(value: &str, apps: &[String]) -> Result<Option<(String, String)>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let Some((app, sig)) = value.split_once(':') else {
+        return Err(Error::new(
+            "Update now names the version to install (<app>:<version>); start it from the dashboard's Updates page",
+        ));
+    };
+    if !apps.iter().any(|n| n == app) {
+        return Err(Error::new("That app is not set up on this server"));
+    }
+    if !crate::updates::valid_signature(sig) {
+        return Err(Error::new("That is not a version the check found"));
+    }
+    Ok(Some((app.to_string(), sig.to_string())))
+}
+/// `only`: "Update now" for that one app, with exactly the version chosen.
 fn install_due(
     cfgpath: &Path,
     cfg: &Value,
     data: &Path,
     undone: &std::cell::Cell<bool>,
-    only: Option<&str>,
+    only: Option<(&str, &str)>,
 ) -> Result<backup::Outcome> {
     let pending = crate::updates::pending(data);
     let approved = crate::updates::approved(data);
-    let settle = if only.is_some() {
-        0
-    } else {
-        crate::updates::settle_days(cfg)
-    };
+    let settle = crate::updates::settle_days(cfg);
     let now = common::now();
     let work = data.join(crate::updates::FOLDER).join(WORK);
     let (mut done, mut failed) = (vec![], vec![]);
     let apps = match only {
-        Some(app) => vec![app.to_string()],
+        Some((app, _)) => vec![app.to_string()],
         None => names(cfg)?,
     };
     for app in apps {
@@ -3942,8 +3992,16 @@ fn install_due(
                 .join("candidate.json")
                 .is_file()
         };
-        let Some(found) = crate::updates::due(&pending, &approved, &app, now, settle, &ready)
-        else {
+        let found = match only {
+            Some((_, sig)) => crate::updates::exact(&pending, &app, sig, &ready),
+            None => crate::updates::due(&pending, &approved, &app, now, settle, &ready),
+        };
+        let Some(found) = found else {
+            if only.is_some() {
+                failed.push(format!(
+                    "{app}: the version you chose is not waiting any more (Check for updates looks again)"
+                ));
+            }
             continue;
         };
         if only.is_none() && !night(cfg) {
@@ -4015,11 +4073,6 @@ fn install_due(
         }
     }
     if done.is_empty() && failed.is_empty() {
-        if let Some(app) = only {
-            return Err(Error::new(&format!(
-                "{app}: no new version has been found to install; Check for updates looks again"
-            )));
-        }
         println!(
             "App updates: nothing has settled yet (or nothing new was found); nothing was stopped"
         );
@@ -5397,6 +5450,64 @@ mod tests {
     fn image_ids_are_immutable() {
         assert!(image_id(&format!("sha256:{}", "a".repeat(64))));
         assert!(!image_id("nextcloud:latest"));
+    }
+    #[test]
+    fn update_now_names_the_app_and_the_version() {
+        let apps = vec!["jellyfin".to_string()];
+        assert_eq!(update_now_target("", &apps).unwrap(), None);
+        assert_eq!(
+            update_now_target("jellyfin:0123abcd", &apps).unwrap(),
+            Some(("jellyfin".into(), "0123abcd".into()))
+        );
+        // Without the version (an older unit): refused, never "the newest found".
+        assert!(update_now_target("jellyfin", &apps).is_err());
+        assert!(update_now_target("immich:0123abcd", &apps).is_err());
+        assert!(update_now_target("jellyfin:../../x", &apps).is_err());
+    }
+    #[test]
+    fn a_cached_immich_major_needs_its_approval_still_when_installed() {
+        let root = std::env::temp_dir().join(format!("neko-immich-revoke-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("ssd");
+        fs::create_dir_all(data.join("compose/immich")).unwrap();
+        fs::write(
+            data.join("compose/immich/.env"),
+            "IMMICH_VERSION=v2.5.0\nDB_PASSWORD=x\n",
+        )
+        .unwrap();
+        let folder = crate::updates::candidate_folder(&data, "immich", "s1");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("compose.yaml"), "services: {}\n").unwrap();
+        fs::write(
+            folder.join("candidate.json"),
+            json!({"format": "neko-update-candidate-v1", "app": "immich", "images": {}, "immich_release": "v3.0.1"}).to_string(),
+        )
+        .unwrap();
+        let found = json!({"sig": "s1", "version": "v3.0.1"});
+        let cfg = |wanted: &str| json!({"media_mount": "/mnt/m", "maintenance": {"immich_major_update": wanted}});
+        // The approval was taken back after the check downloaded it: not installed.
+        let revoked = load_candidate(&cfg(""), &data, "immich", &found, &root.join("work"));
+        assert!(matches!(revoked, Ok(None)));
+        // Still approved: it goes on to be loaded (this fake one then fails its model).
+        let approved = load_candidate(&cfg("v3"), &data, "immich", &found, &root.join("work"));
+        assert!(!matches!(approved, Ok(None)));
+        // The same major needs no approval.
+        assert!(immich_release_allowed(
+            &cfg(""),
+            "IMMICH_VERSION=v2.5.0",
+            "v2.6.1"
+        ));
+        assert!(!immich_release_allowed(
+            &cfg(""),
+            "IMMICH_VERSION=v2.5.0",
+            "v3.0.1"
+        ));
+        assert!(!immich_release_allowed(
+            &cfg("v3"),
+            "IMMICH_VERSION=v2.5.0",
+            "nonsense"
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn nextcloud_major_notice_waits_for_early_fixes() {

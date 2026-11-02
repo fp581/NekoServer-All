@@ -2,15 +2,20 @@
 
 ## v0.45.2 — 2026-11-02
 
-Fixes for the project owner's review of 0.45.1: going back after a drive move, the settling of app updates, and the restart check on the System tab. Built on 0.45.1 (merge PR #54 first).
+Fixes for the project owner's two reviews of 0.45.1: going back after a drive move, the settling of app updates, the restart check on the System tab, an Immich major's approval, an upgrade's setup that runs out of time, and Update now's version. Built on 0.45.1 (merge PR #54 first).
+
+**Tried for real** (the lab: Ubuntu 24.04 with systemd, two loop-device drives): a drive move, then going back while setup held its lock (refused, nothing changed), then going back for real (fstab and the settings name the old drive again and remember the newer one, the service writing to the drive runs again, no record left). The app updates, the upgrade and the System tab were tested with the automated tests only.
 
 ### Fixed
 - **Going back after a drive move (`migrate.py back`) has the move's checks and a record that survives a restart.** It did not check that setup, an upgrade, an app update or the monthly check was at work, and the list of what to start again lived in `/run`, which a restart empties. Now it checks the same as a move (also the backups' shared lock), refuses to run from the drive it moves, and keeps its record in `/etc/nekoserver-backups/migrate.json`, so `sudo python3 migrate.py resume` finishes it after a restart, as for a move. It stops and starts the apps the same way, and remembers the newer drive, so you can switch again. A setup started by hand while a move is unfinished now stops and says to run `migrate.py resume` (the move's own setup runs are not affected).
 - **Daily app builds now become ready to install.** The daily check kept only the last four versions it found for an app, but a version must wait 7 days (the default) before it is installed. An image that publishes a build every day pushed each one out before it had waited long enough, so it was never updated. Now it keeps the newest version, the oldest one still settling, the newest one that has settled and one you approved (never more than four), so the oldest settling one becomes ready on time.
+- **Taking back an Immich major upgrade's approval now stops it.** The approval (`maintenance.immich_major_update`) was checked when the daily check downloaded the new major, but not again when it was installed. Removing it afterwards left the downloaded version to be installed anyway. Now it is checked again when it would be installed, as Nextcloud's already was.
+- **A NekoServer upgrade whose setup ran out of time is put back at once.** A setup that ran past its six hours (or could not be started) ended the upgrade with an error before the previous release was put back; the record stayed, so it was put back only at the next start. Now that is a failure like any other: it is noted in the record, and the previous release is set up again and checked straight away (the record stays when that fails too).
+- **Update now installs the version shown next to the button.** It used the update night's choice, which prefers a version you chose earlier for the night, so it could install an older version than the one you pressed it for. The dashboard now names the version, the control service checks it is still waiting, and the worker installs exactly that one (`nekoserver-update-now@<app>:<version>`).
 - **"Restart not needed" only when the system's check said so.** On Fedora, RHEL and openSUSE a missing `needs-restarting` or `zypper needs-rebooting`, or one that failed, showed as "no restart needed". The System tab now shows needed, not needed or **not known**, with the reason.
 
 ### Tests
-- Each fix has a test that fails on 0.45.1: going back while another job is at work, a going back cut off part-way and finished by `resume`; daily builds over 12 days with 7 days to settle; a restart check that is missing or fails.
+- Each fix has a test that fails on 0.45.1: going back while another job is at work, a going back cut off part-way and finished by `resume`; daily builds over 12 days with 7 days to settle; a restart check that is missing or fails; an Immich major whose approval was taken back after it was downloaded; an upgrade setup that times out or cannot start; Update now with an older version chosen for the night.
 
 ## v0.45.1 — 2026-11-02
 

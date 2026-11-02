@@ -223,6 +223,25 @@ pub(crate) fn due(
         .find(|c| ready(c["sig"].as_str().unwrap_or("")))
         .cloned()
 }
+/// "Update now": exactly the version `sig` you chose on the dashboard, whatever its
+/// settling or a version chosen earlier for the update night; None when it is not
+/// waiting (or its downloaded settings are gone).
+pub(crate) fn exact(
+    pending: &Value,
+    app: &str,
+    sig: &str,
+    ready: &dyn Fn(&str) -> bool,
+) -> Option<Value> {
+    pending["apps"][app]
+        .as_array()?
+        .iter()
+        .find(|c| c["sig"].as_str() == Some(sig) && ready(sig))
+        .cloned()
+}
+/// Whether `sig` looks like a version signature (as `signature` writes them).
+pub(crate) fn valid_signature(sig: &str) -> bool {
+    (8..=64).contains(&sig.len()) && sig.bytes().all(|c| c.is_ascii_hexdigit())
+}
 /// The image IDs of every version found and not installed yet: the clean-up after an
 /// update must not remove them (the daily check downloaded them for a later night).
 pub(crate) fn waiting_images(data: &Path) -> std::collections::BTreeSet<String> {
@@ -389,6 +408,28 @@ mod tests {
         p
     }
     const NOW: f64 = 1_800_000_000.0;
+    #[test]
+    fn update_now_installs_the_version_shown_not_one_chosen_earlier() {
+        let found = json!({"apps": {"jellyfin": [
+            {"sig": "bbbbbbbb", "version": "10.11.2", "first_seen": NOW},
+            {"sig": "aaaaaaaa", "version": "10.11.1", "first_seen": NOW - 8.0 * DAY},
+        ]}});
+        let chosen = json!({"apps": {"jellyfin": "aaaaaaaa"}});
+        let ready = |_: &str| true;
+        // The update night's selector prefers the one chosen for the night...
+        assert_eq!(
+            due(&found, &chosen, "jellyfin", NOW, 0, &ready).unwrap()["sig"],
+            "aaaaaaaa"
+        );
+        // ...but Update now installs exactly the newer one you pressed it for.
+        assert_eq!(
+            exact(&found, "jellyfin", "bbbbbbbb", &ready).unwrap()["version"],
+            "10.11.2"
+        );
+        assert!(exact(&found, "jellyfin", "cccccccc", &ready).is_none());
+        assert!(exact(&found, "jellyfin", "bbbbbbbb", &|s: &str| s != "bbbbbbbb").is_none());
+        assert!(valid_signature("0123abcd") && !valid_signature("../x") && !valid_signature("abc"));
+    }
     #[test]
     fn a_new_version_waits_its_settling_days_unless_you_choose_it() {
         let data = scratch("settle");

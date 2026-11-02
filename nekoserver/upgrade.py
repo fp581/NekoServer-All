@@ -189,6 +189,19 @@ def run_setup(project, settings, account, log_file, run=subprocess.run):
         ).returncode
 
 
+def setup_problem(setup, project, settings, account, log_file):
+    """Why a release's setup did not work, or None. Setup that could not be started or
+    that ran past its time (six hours) is a failure like any other, never an exception
+    that would skip putting the previous release back."""
+    try:
+        code = setup(project, settings, account, log_file)
+    except subprocess.TimeoutExpired:
+        return f'its setup ran for more than six hours and was stopped (the log: {log_file})'
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f'its setup could not run ({exc}; the log: {log_file})'
+    return f'its setup stopped (exit code {code}; the log says why: {log_file})' if code not in (0, 1) else None
+
+
 def works_on(config, tag, before, version_now, running_now):
     """Why the server does not pass its check for release `tag` (after the upgrade, or
     after the previous release was put back), or None: a step that worked before does not
@@ -278,8 +291,7 @@ def upgrade(
         return 1
     out(f'Setting up {tag} (this takes a while: it builds the background program). The log: {log_file}')
     record('installing', journal, project=str(project))
-    code = setup(project, settings, account, log_file)
-    problem = f'its setup stopped (exit code {code}; the log says why: {log_file})' if code not in (0, 1) else None
+    problem = setup_problem(setup, project, settings, account, log_file)
     if problem is None:
         record('verifying', journal)
         problem = (check or (lambda: verify(config, tag, before)))()
@@ -287,6 +299,7 @@ def upgrade(
         journal.unlink(missing_ok=True)
         out(f'NekoServer {tag} is installed and checked')
         return 0
+    record('failed', journal, problem=problem)
     out(f'The upgrade to {tag} did not pass: {problem}. Putting {VERSION} back...')
     return go_back(previous, settings, account, log_file, out, setup, journal, before)
 
@@ -304,8 +317,7 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
     finished it."""
     record('going_back', journal)
     config = json.loads(settings_path(settings).read_text())
-    code = setup(previous, settings, account, log_file)
-    problem = f'its setup stopped (exit code {code})' if code not in (0, 1) else None
+    problem = setup_problem(setup, previous, settings, account, log_file)
     if problem is None:
         problem = (check or (lambda: verify(config, previous.name, before)))()
     if problem is None:

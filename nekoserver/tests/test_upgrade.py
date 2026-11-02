@@ -4,6 +4,7 @@ the result, and puts the previous release back when anything fails."""
 
 import io
 import json
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -116,6 +117,26 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(self.upgrade(self.setup(2, 2)), 2)
         self.assertTrue(self.journal.exists())
         self.assertIn('sudo bash install.sh  in ' + str(self.previous), self.said[-1])
+
+    def test_a_setup_that_runs_out_of_time_is_put_back_at_once(self):
+        def timed_out(project, settings, account, log_file):
+            self.ran.append((Path(project).name, account, self.journal_phase()))
+            if len(self.ran) == 1:
+                raise subprocess.TimeoutExpired('install.sh', 6 * 3600)
+            return 0
+
+        self.assertEqual(self.upgrade(timed_out), 1)
+        self.assertEqual([r[0] for r in self.ran], ['nekoserver', 'v' + VERSION])
+        self.assertIn('more than six hours', ' '.join(self.said))
+        self.assertFalse(self.journal.exists())
+
+        # The way back failing the same way keeps the record, with why.
+        def never_starts(project, settings, account, log_file):
+            raise OSError('bash is not there')
+
+        self.assertEqual(self.upgrade(never_starts), 2)
+        saved = json.loads(self.journal.read_text())
+        self.assertEqual((saved['phase'], 'bash is not there' in saved['problem']), ('going_back', True))
 
     def test_a_download_that_is_not_that_release_changes_nothing(self):
         for payload in (release(NEWER, version='0.0.1'), b'not an archive', release('v0.0.1Beta')):

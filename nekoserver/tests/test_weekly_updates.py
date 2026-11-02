@@ -62,7 +62,7 @@ class ScheduleTests(unittest.TestCase):
         # The dashboard button starts that service through the control service: a background
         # job, so closing the page stops nothing.
         control = (ROOT / 'runtime/src/control.rs').read_text()
-        self.assertIn('format!("nekoserver-update-now@{app}.service")', control)
+        self.assertIn('format!("nekoserver-update-now@{app}:{sig}.service")', control)
         self.assertIn('"systemctl", "start", "--no-block"', control)
 
     def test_settling_days_and_the_update_day_are_checked(self):

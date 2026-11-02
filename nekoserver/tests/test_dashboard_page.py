@@ -52,7 +52,7 @@ class DashboardPageTests(unittest.TestCase):
         self.assertEqual(shown[0]['waiting_updates'], {'settle_days': 7, 'apps': [{'app': 'immich'}]})
         # The buttons call the background update service, never a pull of an image.
         source = (ROOT / 'dashboard/app.js').read_text()
-        self.assertIn("appAction('update-run', { app }", source)
+        self.assertIn("appAction('update-run', { app, sig }", source)
         self.assertNotIn('docker pull', source)
 
     def test_app_states_come_from_health_checks_never_just_running(self):

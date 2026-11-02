@@ -33,7 +33,7 @@ One app's failed update does not stop the others. The result then says "done in 
 
 The page has these buttons, each needing the dashboard PIN:
 - **Check for updates** runs the daily check now.
-- **Update now** installs the newest version found, at once, whatever the time of day. It goes through the same steps: snapshot, update, checks, undo on failure. It is never a shortcut that only downloads an image.
+- **Update now** installs the version shown next to the button (never another one, not even one you chose earlier for the update night), at once, whatever the time of day. It goes through the same steps: snapshot, update, checks, undo on failure. It is never a shortcut that only downloads an image.
 - **Install at the next update night** skips the settling days for one version, for an urgent fix, say.
 - **What changed** opens the app's own release notes.
 
@@ -53,7 +53,7 @@ A release is never installed by itself. The **Updates** page, **NekoServer** tab
 2. It downloads the release from GitHub (`installer/upgrades/` on the SSD) and checks it is that release.
 3. It runs that release's setup with your saved settings, without questions (the log is next to the download). It **never updates the system packages**. On Arch, a release that needs a new package stops there, because Arch installs packages safely only with a full system update. Run `sudo bash install.sh` in a terminal then: that does the system update first.
 4. It checks the result: every setup step that worked before works again, every NekoServer service and timer runs the new release (each release has its own folder), and the dashboard answers with the new version, on the port that release's setup uses.
-5. If setup stopped or the check failed, it runs the previous release's setup again from its copy on the SSD (`installer/releases/v<previous>/`), and checks it the same way. Only when that check passes is the upgrade's record removed. Otherwise it stays, and app updates and the monthly check keep waiting, until you finish it with `sudo bash install.sh` in that folder. A restart in the middle is put right at the next start (`nekoserver-upgrade-resume.service`): a download that was cut off changed nothing; a setup that was cut off puts the previous release back.
+5. If setup stopped, could not start or ran past its six hours, or the check failed, it runs the previous release's setup again from its copy on the SSD (`installer/releases/v<previous>/`), and checks it the same way. Only when that check passes is the upgrade's record removed. Otherwise it stays, and app updates and the monthly check keep waiting, until you finish it with `sudo bash install.sh` in that folder. A restart in the middle is put right at the next start (`nekoserver-upgrade-resume.service`): a download that was cut off changed nothing; a setup that was cut off puts the previous release back.
 
 Putting the previous release back re-runs its setup over the settings and app data as the new release left them. A release that changed the format of its own settings may need you then; the tab and the log say so.
 
@@ -160,7 +160,7 @@ To install it:
    - Nextcloud: `"nextcloud_major_update": "32"`. Nextcloud goes up **one major at a time**: from 30 to 32, approve 31 first, and 32 after that month's update.
 3. Run `sudo bash install.sh` again so the monthly job sees the change (finished steps are not repeated).
 
-The next monthly update installs it the same safe way as any other update: snapshot first, restore test, health checks, and an automatic return to the snapshot if anything fails. You can leave the setting as it is afterwards. A big Nextcloud can take more than 5 minutes to upgrade; if the update is rolled back for taking too long, raise `"health_wait_seconds"` under `"maintenance"` (up to 1800) and run `sudo bash install.sh` again.
+The next monthly update installs it the same safe way as any other update: snapshot first, restore test, health checks, and an automatic return to the snapshot if anything fails. You can leave the setting as it is afterwards. Taking it out (or naming another major) before the update night also stops a version already downloaded: the setting is checked again when it would be installed. A big Nextcloud can take more than 5 minutes to upgrade; if the update is rolled back for taking too long, raise `"health_wait_seconds"` under `"maintenance"` (up to 1800) and run `sudo bash install.sh` again.
 
 **Slow database updates.** A new release of Immich, Nextcloud, Jellyfin or an Arr app (Sonarr, Radarr, Lidarr, Prowlarr) may update its database on its first start, which can take much longer than `health_wait_seconds` on a big library. While such an app is still running (not restarted) and working (writing to its log or using the processor), the update waits for it, up to an hour in all, and the log says so, instead of rolling it back half-way. An app that stopped working, or is still not ready after that hour, is rolled back as before, and the reason says how long it was given.
 

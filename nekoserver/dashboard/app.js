@@ -3387,7 +3387,7 @@ function releaseNotes(app, version) {
 function day(at) {
   return numeric(at) ? new Date(at * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' }) : '—';
 }
-function confirmUpdateNow(app, name, version) {
+function confirmUpdateNow(app, name, version, sig) {
   withPin(() =>
     confirmDialog(
       'UPDATE NOW',
@@ -3398,7 +3398,7 @@ function confirmUpdateNow(app, name, version) {
         name +
         ' is offline for a few minutes. It goes on if you close this page.',
       'Update ' + name,
-      () => appAction('update-run', { app }, 'Updating ' + name + '…')
+      () => appAction('update-run', { app, sig }, 'Updating ' + name + '…')
     )
   );
 }
@@ -3409,7 +3409,9 @@ function waitingRow(app, name, w) {
     : 'installs from ' + day(w.installs_from);
   row.append(el('span', '', text(w.version, 'new version') + ' · found ' + day(w.first_seen) + ' · ' + when));
   const actions = el('div', 'update-actions');
-  actions.append(button('Update now', () => confirmUpdateNow(app, name, text(w.version, 'the new version'))));
+  actions.append(
+    button('Update now', () => confirmUpdateNow(app, name, text(w.version, 'the new version'), text(w.sig)))
+  );
   if (!w.approved) {
     actions.append(
       button('Install at the next update night', () =>
