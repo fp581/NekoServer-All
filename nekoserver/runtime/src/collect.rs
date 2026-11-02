@@ -1721,31 +1721,14 @@ fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
     r
 }
 /// Major app updates the daily update check found but leaves for you to approve (its
-/// notes on the SSD; before 0.42.0 the monthly run left them in its newest snapshot on
-/// the HDD).
-fn updates(cfg: &Value, media_ok: bool) -> Value {
-    let notes = Path::new(text(&cfg["data_mount"]))
+/// notes on the SSD, written again at every check).
+fn updates(cfg: &Value, data_ok: bool) -> Value {
+    let run = Path::new(text(&cfg["data_mount"]))
         .join(crate::updates::FOLDER)
         .join("notes");
-    let run = if notes.is_dir() {
-        notes
-    } else {
-        if !media_ok {
-            return json!([]);
-        }
-        let media = Path::new(text(&cfg["media_mount"]));
-        let folder = media.join("backups/monthly");
-        let newest = crate::maintenance::monthly_runs(media)
-            .unwrap_or_default()
-            .into_iter()
-            .rev()
-            .map(|run| folder.join(run))
-            .find(|path| path.join("manifest.json").is_file());
-        let Some(run) = newest else {
-            return json!([]);
-        };
-        run
-    };
+    if !data_ok {
+        return json!([]);
+    }
     let mut out = vec![];
     for (app, name) in [("immich", "Immich"), ("nextcloud", "Nextcloud")] {
         let pending = common::json(&run.join(format!("{app}-major-pending.json")), 64000);
@@ -2294,7 +2277,7 @@ pub fn run(a: &Args) -> Result<()> {
         .as_u64()
         .filter(|s| (30..=300).contains(s))
         .unwrap_or(60));
-    result["updates"] = updates(&cfg, media_ok);
+    result["updates"] = updates(&cfg, ok);
     // New app versions waiting to be installed, and when each installs by itself.
     result["waiting_updates"] = if ok {
         let mut shown = crate::updates::for_dashboard(data, crate::updates::settle_days(&cfg), now);
@@ -2746,29 +2729,18 @@ mod os_tests {
         let _ = std::fs::remove_dir_all(data);
     }
     #[test]
-    fn major_updates_found_by_maintenance_are_alerted() {
+    fn major_updates_found_by_the_daily_check_are_alerted() {
         let root = std::env::temp_dir().join(format!("neko-updates-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        for run in ["100-1", "200-1"] {
-            fs::create_dir_all(root.join("backups/monthly").join(run)).unwrap();
-            fs::write(
-                root.join("backups/monthly").join(run).join("manifest.json"),
-                "{}",
-            )
-            .unwrap();
-        }
+        let notes = root.join(crate::updates::FOLDER).join("notes");
+        fs::create_dir_all(&notes).unwrap();
         fs::write(
-            root.join("backups/monthly/100-1/immich-major-pending.json"),
-            r#"{"status":"manual_major_upgrade_required","current":"v1.9.0","available":"v2.0.1"}"#,
-        )
-        .unwrap();
-        fs::write(
-            root.join("backups/monthly/200-1/nextcloud-major-pending.json"),
+            notes.join("nextcloud-major-pending.json"),
             r#"{"status":"manual_major_upgrade_required","current":"31","available":"32"}"#,
         )
         .unwrap();
-        let cfg = json!({"media_mount": root.to_string_lossy()});
-        // Only the newest snapshot counts: the Immich notice is from an older month.
+        // The check writes its notes again each time: a notice it no longer finds is gone.
+        let cfg = json!({"data_mount": root.to_string_lossy()});
         let found = updates(&cfg, true);
         assert_eq!(found.as_array().unwrap().len(), 1);
         assert_eq!(found[0]["app"], "nextcloud");

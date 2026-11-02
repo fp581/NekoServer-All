@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.42.1 — 2026-11-02
+
+Follow-ups to 0.42.0: SonarCloud's findings, and superseded and duplicated code taken out.
+
+### Changed
+- **The update run's code is split into its steps** (SonarCloud: too complex to follow, at 67 where 30 is allowed): the checks first, room on the drives, the running apps, the snapshot, the new files, the image clean-up. What it does, and in which order, is unchanged.
+- **Major-update notices come only from the daily check.** The old way of reading them from the newest monthly snapshot is gone. The Health page no longer repeats the Updates page's box.
+- **Duplicated code merged:** one check, in four places, of whether an unfinished run still needs a snapshot folder; one way to write the three night jobs' service files; no nested conditions in the Updates page.
+- **Wording:** the next daily check, not "next month's run", looks again at a new Immich release it could not check. A run cut off by a power cut is "tried again at its next time": that covers the update night as well as the monthly check.
+
+### Fixed
+- **A cut-off update night is finished at the next start.** The resume service only looked at the monthly run's report when deciding whether there was anything to finish. It now looks at the update night's too.
+
 ## v0.42.0 — 2026-11-02
 
 App updates move out of the monthly run: a daily check, weekly protected updates of one app at a time, and a monthly check of every backup copy. The project owner's design for the Updates page.

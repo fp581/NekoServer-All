@@ -7303,7 +7303,11 @@ mod tests {
             .find(&["fn trans", "action("].concat())
             .unwrap()..];
         let wait = run.find("backup::no_weekly_copy()?").unwrap();
-        assert!(run.find("check_copies(cfgpath, cfg)?").unwrap() < wait);
+        assert!(
+            run.find("checks_first(cfgpath, cfg, audit, data_root)?")
+                .unwrap()
+                < wait
+        );
         assert!(wait < run.find("secrets_key_ready(").unwrap());
         let _ = fs::remove_dir_all(root);
     }

@@ -70,6 +70,18 @@ def options(config):
     return opts
 
 
+def night_job(description, shared, zone, limit, start, finish):
+    """A job that stops apps and runs in the household's time zone: the monthly check, the
+    update night, Update now. Its stop step (`finish`) finishes or undoes a run cut off,
+    and is never cut off itself (that would leave the apps stopped)."""
+    return (
+        f'[Unit]\nDescription={description}\n'
+        + shared
+        + f'[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ={zone}\nTimeoutStartSec={limit}\nTimeoutStopSec=infinity\n'
+        + f'ExecStart={start}\nExecStopPost={finish}\n'
+    )
+
+
 def definitions(config, binary, guard):
     opts = options(config)
     start = opts.get('time', '02:30')
@@ -79,12 +91,14 @@ def definitions(config, binary, guard):
     # A rollback is never cut off part-way (that would leave the apps stopped): it may
     # take as long as it needs. Each step inside it has its own time limit.
     return {
-        'nekoserver-maintenance.service': '[Unit]\nDescription=NekoServer monthly check of every backup copy, snapshot and restore test\n'
-        + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
-        + zone
-        + '\nTimeoutStartSec=18h\nTimeoutStopSec=infinity\n'
-        + f'ExecStart={binary} maintenance --config {guard}\nExecStopPost={command}\n',
+        'nekoserver-maintenance.service': night_job(
+            'NekoServer monthly check of every backup copy, snapshot and restore test',
+            shared,
+            zone,
+            '18h',
+            f'{binary} maintenance --config {guard}',
+            command,
+        ),
         # No daytime catch-up after a powered-off night. Native worker also checks the window.
         'nekoserver-maintenance.timer': '[Unit]\nDescription=NekoServer monthly night maintenance\n[Timer]\n'
         + f'OnCalendar=*-*-01 {start}:00 {zone}\nPersistent=false\nRandomizedDelaySec=0\n[Install]\nWantedBy=timers.target\n',
@@ -107,20 +121,19 @@ def definitions(config, binary, guard):
         # updated on its own, after a snapshot of it, on the update night at the monthly
         # time (never on the 1st: that night is the monthly check's). The same journal and
         # resume service as the monthly run finish or undo one that was cut off.
-        'nekoserver-updates.service': '[Unit]\nDescription=NekoServer weekly protected app updates\n'
-        + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
-        + zone
-        + '\nTimeoutStartSec=18h\nTimeoutStopSec=infinity\n'
-        + f'ExecStart={binary} update-apps --config {guard}\nExecStopPost={command}\n',
+        'nekoserver-updates.service': night_job(
+            'NekoServer weekly protected app updates',
+            shared,
+            zone,
+            '18h',
+            f'{binary} update-apps --config {guard}',
+            command,
+        ),
         # "Update now" on the dashboard (the control service starts it, for one app):
         # the same steps, at any time of day; it goes on if the page is closed.
-        'nekoserver-update-now@.service': '[Unit]\nDescription=NekoServer update %i now\n'
-        + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
-        + zone
-        + '\nTimeoutStartSec=6h\nTimeoutStopSec=infinity\n'
-        + f'ExecStart={binary} update-apps --config {guard} --app %i\nExecStopPost={command}\n',
+        'nekoserver-update-now@.service': night_job(
+            'NekoServer update %i now', shared, zone, '6h', f'{binary} update-apps --config {guard} --app %i', command
+        ),
         UPDATES_TIMER: '[Unit]\nDescription=NekoServer weekly app update night\n[Timer]\n'
         + f'OnCalendar={opts.get("update_day", "Wed")} *-*-02..31 {start}:00 {zone}\nPersistent=false\nRandomizedDelaySec=0\n'
         '[Install]\nWantedBy=timers.target\n',

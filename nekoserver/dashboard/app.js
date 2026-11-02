@@ -3428,6 +3428,18 @@ function waitingRow(app, name, w) {
   row.append(actions);
   return row;
 }
+/* How the app's last update ended: installed, or undone (its previous version runs). */
+function lastUpdate(last) {
+  const said = { installed: 'last update installed ', undone: 'last update undone ' }[last.result];
+  return said ? said + ago(last.at) : '';
+}
+function updateNightLine(job) {
+  if (!job) {
+    return '';
+  }
+  const why = job.reason ? ' (' + text(job.reason) + ')' : '';
+  return 'Update night: ' + text(job.status, 'unknown') + why;
+}
 function updateCard(u) {
   const app = text(u.app),
     name = APP_NAMES[app] || app;
@@ -3442,11 +3454,7 @@ function updateCard(u) {
       'section-note',
       joined([
         'Last snapshot: ' + (numeric(history.last_snapshot) ? ago(history.last_snapshot) : 'none yet'),
-        last.result === 'installed'
-          ? 'last update installed ' + ago(last.at)
-          : last.result === 'undone'
-            ? 'last update undone ' + ago(last.at)
-            : ''
+        lastUpdate(last)
       ])
     )
   );
@@ -3473,10 +3481,7 @@ function appsTab(s) {
   const status = el(
     'p',
     'section-note',
-    joined([
-      job ? 'Update night: ' + text(job.status, 'unknown') + (job.reason ? ' (' + text(job.reason) + ')' : '') : '',
-      check ? 'last check ' + ago(check.last_success) : ''
-    ])
+    joined([updateNightLine(job), check ? 'last check ' + ago(check.last_success) : ''])
   );
   const cards = found.apps.length
     ? found.apps.map(updateCard)
@@ -3522,7 +3527,8 @@ function renderUpdates() {
       renderUpdates();
     };
   }
-  put('updates-tab', tab === 'apps' ? appsTab(s) : tab === 'nekoserver' ? nekoserverTab(s) : systemTab());
+  const tabs = { apps: () => appsTab(s), nekoserver: () => nekoserverTab(s), system: systemTab };
+  put('updates-tab', tabs[tab]());
 }
 function renderHealth() {
   const s = state.status;
@@ -3546,7 +3552,6 @@ function renderHealth() {
     monitorCard('Phone notifications', s.notifications, 'notifications', old)
   ]);
   put('readiness', [el('p', 'section-note', readinessNote(media)), ...media.checks.map(c => readinessRow(c, trusted))]);
-  put('updates', s.updates.length ? [updatesBox(s.updates)] : []);
 }
 
 /* ---------- help ---------- */
