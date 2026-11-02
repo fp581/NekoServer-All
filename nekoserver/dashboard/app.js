@@ -3589,18 +3589,13 @@ function systemTab(s) {
       ])
     )
   ];
-  if (sys.restart_needed) {
-    nodes.push(
-      el(
-        'p',
-        'callout',
-        'The computer needs a restart: ' +
-          list(sys.restart_reasons)
-            .map(r => text(r))
-            .join('; ') +
-          '.'
-      )
-    );
+  const reasons = list(sys.restart_reasons)
+    .map(r => text(r))
+    .join('; ');
+  if (sys.restart === 'required') {
+    nodes.push(el('p', 'callout', 'The computer needs a restart: ' + reasons + '.'));
+  } else if (sys.restart === 'unknown' && numeric(sys.checked_at)) {
+    nodes.push(el('p', 'section-note', 'Whether the computer needs a restart is not known: ' + reasons + '.'));
   }
   if (numeric(sys.count)) {
     nodes.push(

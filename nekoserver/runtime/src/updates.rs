@@ -18,9 +18,6 @@ const PENDING: &str = "pending.json";
 const APPROVED: &str = "approved.json";
 const PENDING_FORMAT: &str = "neko-pending-updates-v1";
 const APPROVED_FORMAT: &str = "neko-approved-updates-v1";
-/// How many versions found are kept per app: a stream that publishes a new build every
-/// few days (most images do) still has an older one that has settled.
-const KEEP: usize = 4;
 pub(crate) const SETTLE_DAYS: u64 = 7;
 const DAY: f64 = 86_400.0;
 
@@ -89,32 +86,66 @@ pub(crate) fn approve(data: &Path, app: &str, sig: &str) -> Result<String> {
     Ok(version)
 }
 /// Note the version `sig` the check found for `app` (`version`: how it is shown), with
-/// when it was first seen; a version already noted keeps its first time. Only the newest
-/// KEEP are kept; a dropped one's settings folder goes with it.
+/// when it was first seen; a version already noted keeps its first time. Most images
+/// publish a new build every day or two, so keeping only the newest few would never let
+/// one wait `settle_days` (each would go before it had). Kept instead (`keeps`): the
+/// newest, the oldest one still settling (it is the next to be installed), the newest
+/// one that has settled, and the one you chose to install; the others go, with their
+/// downloaded settings. At most four sets of images per app stay on the SSD.
 pub(crate) fn record(
     data: &Path,
     pending: &mut Value,
     app: &str,
-    sig: &str,
-    version: &str,
+    found_now: (&str, &str),
     now: f64,
+    settle_days: u64,
 ) -> Result<bool> {
+    let (sig, version) = found_now;
     let mut found: Vec<Value> = pending["apps"][app].as_array().cloned().unwrap_or_default();
     let new = !found.iter().any(|c| c["sig"] == sig);
     if new {
         found.push(json!({"sig": sig, "version": version, "first_seen": now}));
     }
-    found.sort_by(|a, b| {
-        b["first_seen"]
-            .as_f64()
-            .unwrap_or(0.0)
-            .total_cmp(&a["first_seen"].as_f64().unwrap_or(0.0))
-    });
-    for dropped in found.split_off(KEEP.min(found.len())) {
-        remove_candidate(data, app, dropped["sig"].as_str().unwrap_or(""))?;
+    let chosen = approved(data)["apps"][app].as_str().map(str::to_string);
+    let (kept, dropped) = keeps(found, now, settle_days, chosen.as_deref());
+    for c in dropped {
+        remove_candidate(data, app, c["sig"].as_str().unwrap_or(""))?;
     }
-    pending["apps"][app] = json!(found);
+    pending["apps"][app] = json!(kept);
     Ok(new)
+}
+/// Which versions found stay (newest first) and which go (see `record`).
+fn keeps(
+    mut found: Vec<Value>,
+    now: f64,
+    settle_days: u64,
+    chosen: Option<&str>,
+) -> (Vec<Value>, Vec<Value>) {
+    let seen = |c: &Value| c["first_seen"].as_f64().unwrap_or(0.0);
+    found.sort_by(|a, b| seen(b).total_cmp(&seen(a)));
+    let settled = |c: &Value| now - seen(c) >= settle_days as f64 * DAY;
+    let mut wanted: Vec<usize> = vec![0];
+    if let Some(i) = found.iter().rposition(|c| !settled(c)) {
+        wanted.push(i); // the oldest still settling
+    }
+    if let Some(i) = found.iter().position(settled) {
+        wanted.push(i); // the newest that has settled
+    }
+    if let Some(i) = found
+        .iter()
+        .position(|c| chosen.is_some_and(|s| c["sig"] == s))
+    {
+        wanted.push(i);
+    }
+    let (mut kept, mut dropped) = (vec![], vec![]);
+    for (i, c) in found.into_iter().enumerate() {
+        if wanted.contains(&i) {
+            kept.push(c);
+        } else {
+            dropped.push(c);
+        }
+    }
+    (kept, dropped)
 }
 /// What `app` runs now, as the check last saw it (shown on the Updates page).
 pub(crate) fn note_installed(pending: &mut Value, app: &str, version: &str, now: f64) {
@@ -366,22 +397,22 @@ mod tests {
             &data,
             &mut found,
             "jellyfin",
-            "aaaa",
-            "10.11.1",
-            NOW - 8.0 * DAY
+            ("aaaa", "10.11.1"),
+            NOW - 8.0 * DAY,
+            7
         )
         .unwrap());
         assert!(record(
             &data,
             &mut found,
             "jellyfin",
-            "bbbb",
-            "10.11.2",
-            NOW - 2.0 * DAY
+            ("bbbb", "10.11.2"),
+            NOW - 2.0 * DAY,
+            7
         )
         .unwrap());
         // Seen again: it keeps the day it was first seen.
-        assert!(!record(&data, &mut found, "jellyfin", "bbbb", "10.11.2", NOW).unwrap());
+        assert!(!record(&data, &mut found, "jellyfin", ("bbbb", "10.11.2"), NOW, 7).unwrap());
         save_pending(&data, &found).unwrap();
         let ready = |_: &str| true;
         let none = json!({"apps": {}});
@@ -414,7 +445,7 @@ mod tests {
         let data = scratch("installed");
         let mut found = pending(&data);
         for (sig, at) in [("aaaa", 30.0), ("bbbb", 20.0), ("cccc", 10.0)] {
-            record(&data, &mut found, "immich", sig, sig, NOW - at * DAY).unwrap();
+            record(&data, &mut found, "immich", (sig, sig), NOW - at * DAY, 7).unwrap();
             fs::create_dir_all(candidate_folder(&data, "immich", sig)).unwrap();
         }
         save_pending(&data, &found).unwrap();
@@ -431,20 +462,40 @@ mod tests {
         assert!(!candidate_folder(&data, "immich", "aaaa").exists());
         assert!(candidate_folder(&data, "immich", "cccc").exists());
         assert!(approved(&data)["apps"]["immich"].is_null());
-        // Only the newest KEEP versions are kept.
+        // A new build every day (most images): the one waiting longest is kept until it
+        // has settled, so an update night always finds one (0.45.0 kept the newest four,
+        // all younger than the settling days, and never installed anything).
         let mut found = pending(&data);
-        for n in 0..6 {
+        let mut due_on = None;
+        for day in 0..12 {
+            let now = NOW + day as f64 * DAY;
             record(
                 &data,
                 &mut found,
                 "sonarr",
-                &format!("{n:04}"),
-                "x",
-                NOW + n as f64,
+                (&format!("{day:04}"), "x"),
+                now,
+                7,
             )
             .unwrap();
+            assert!(found["apps"]["sonarr"].as_array().unwrap().len() <= 4);
+            if due_on.is_none()
+                && due(
+                    &found,
+                    &json!({"apps": {}}),
+                    "sonarr",
+                    now,
+                    7,
+                    &|_: &str| true,
+                )
+                .is_some()
+            {
+                due_on = Some(day);
+            }
         }
-        assert_eq!(found["apps"]["sonarr"].as_array().unwrap().len(), KEEP);
+        assert_eq!(due_on, Some(7));
+        // The version you chose stays too, however old.
+        approve(&data, "sonarr", "0000").ok();
         forget(&data, &mut found, "sonarr").unwrap();
         assert!(found["apps"]["sonarr"].is_null());
         let _ = fs::remove_dir_all(data);
@@ -508,7 +559,15 @@ mod tests {
     fn the_dashboard_sees_names_and_dates_only() {
         let data = scratch("dashboard");
         let mut found = pending(&data);
-        record(&data, &mut found, "nextcloud", "abcd", "32.0.1", NOW - DAY).unwrap();
+        record(
+            &data,
+            &mut found,
+            "nextcloud",
+            ("abcd", "32.0.1"),
+            NOW - DAY,
+            7,
+        )
+        .unwrap();
         save_pending(&data, &found).unwrap();
         note_installed(&mut found, "nextcloud", "32.0.0", NOW);
         save_pending(&data, &found).unwrap();

@@ -3706,7 +3706,14 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
             release.as_deref(),
             step,
         )?;
-        if crate::updates::record(data, &mut pending, name, &sig, &version, common::now())? {
+        if crate::updates::record(
+            data,
+            &mut pending,
+            name,
+            (&sig, &version),
+            common::now(),
+            settle,
+        )? {
             println!("{name}: {version} found; it is installed on an update night once it has waited {settle} days, or at the next one if you choose \"Install at the next update night\" on the dashboard");
         }
     }

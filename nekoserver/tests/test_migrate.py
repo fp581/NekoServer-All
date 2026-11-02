@@ -121,11 +121,12 @@ class MoveTests(unittest.TestCase):
             str(self.staging): ('newbig-0001', 'ext4', ''),
         }
         self.start_fails = set()
+        self.busy = None
         for target, value in (
             ('mounted_identity', lambda folder: self.mounted.get(str(folder))),
             ('settings_path', lambda p: Path(p)),
             ('mount_path', lambda p: Path(p)),
-            ('nothing_at_work', lambda: None),
+            ('nothing_at_work', lambda **kwargs: self.busy),
             ('targets', lambda config, drive: ([('newbig-0001', 'ext4', 8000 * GB, '/dev/sdc1')], [])),
             ('mount_staging', lambda uuid, fstype, staging: staging),
             ('copy', lambda source, target, final=False, out=print: self.calls.append(('copy', final))),
@@ -267,15 +268,64 @@ class MoveTests(unittest.TestCase):
             mock.patch.object(migrate.os.path, 'exists', return_value=True),
             mock.patch.object(migrate, 'stop_writers', return_value=[]),
         ):
-            self.assertEqual(migrate.back(self.settings, self.said.append, self.fstab), 0)
+            self.assertEqual(migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
         self.assertIn(
             'UUID=hdd-0001 /mnt/nekoserver-media ext4 defaults,nofail,x-systemd.device-timeout=90s,subvol=/@media 0 2',
             self.fstab.read_text(),
         )
         self.assertEqual(
             json.loads(self.settings.read_text())['storage']['media_hdd'],
-            {'uuid': 'hdd-0001', 'fstype': 'ext4', 'subvolume': '/@media'},
+            # The newer drive is remembered in turn: `back` again goes to it.
+            {
+                'uuid': 'hdd-0001',
+                'fstype': 'ext4',
+                'subvolume': '/@media',
+                'previous_drive': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
+            },
         )
+
+    def test_going_back_has_the_moves_checks_and_its_record(self):
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 0)
+        self.mounted['/mnt/nekoserver-media'] = ('newbig-0001', 'ext4', '')
+
+        def go_back():
+            return migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab)
+
+        # Setup, an upgrade, an unfinished update or a backup at work: nothing is done.
+        self.busy = 'A backup or an app update is running'
+        self.calls.clear()
+        self.assertEqual(go_back(), 2)
+        self.assertEqual(self.calls, [])
+        self.assertIn('A backup or an app update is running', self.said[-1])
+        self.busy = None
+
+        # Cut off right after it switched /etc/fstab (a power cut): its record is on the OS
+        # disk (not in /run, which a restart empties), and resume finishes it.
+        def cut_off(*args, **kwargs):
+            raise SystemExit('power cut')
+
+        with (
+            mock.patch.object(migrate.os.path, 'exists', return_value=True),
+            mock.patch.object(migrate, 'setup_again', cut_off),
+            self.assertRaises(SystemExit),
+        ):
+            go_back()
+        saved = migrate.read(self.journal)
+        self.assertEqual((saved['direction'], saved['phase']), ('back', 'setup'))
+        self.assertEqual(saved['new']['uuid'], 'hdd-0001')
+        self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+        self.assertFalse(self.journal.exists())
+        self.assertIn('UUID=hdd-0001 /mnt/nekoserver-media', self.fstab.read_text())
+        self.assertEqual(json.loads(self.settings.read_text())['storage']['media_hdd']['uuid'], 'hdd-0001')
+        self.assertIn('is the old drive again', self.said[-1])
+        # A setup started by hand meanwhile stops (the move's own runs pass the flag).
+        script = (ROOT / 'install.sh').read_text()
+        self.assertIn('[[ -e /etc/nekoserver-backups/migrate.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]]', script)
+        self.assertIn("'NEKOSERVER_KEEP_SYSTEM': '1'", (ROOT / 'upgrade.py').read_text())
+        self.assertIn('migrate.py resume', (ROOT / 'install.sh').read_text())
+        # Nothing here writes to /run any more.
+        self.assertNotIn("'/run/neko-migrate", (ROOT / 'migrate.py').read_text())
 
     def test_the_fstab_line_is_switched_only_when_it_is_the_old_drives(self):
         self.fstab.write_text(self.fstab.read_text() + 'UUID=other /mnt/nekoserver-media ext4 defaults 0 2\n')

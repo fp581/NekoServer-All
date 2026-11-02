@@ -154,8 +154,10 @@ def why_not(row, need):
     return None
 
 
-def nothing_at_work(lock=SETUP_LOCK):
-    """Why the move cannot start now, or None."""
+def nothing_at_work(lock=SETUP_LOCK, recovery=None):
+    """Why a move (either way) cannot start now, or None: setup running, an unfinished app
+    update, monthly check, upgrade or move, or a backup or app update at work (the
+    backups' shared lock, `recovery`)."""
     for path, what in (
         (MAINTENANCE_JOURNAL, 'An app update or the monthly check is not finished yet'),
         (UPGRADE_JOURNAL, 'A NekoServer upgrade is at work'),
@@ -163,14 +165,37 @@ def nothing_at_work(lock=SETUP_LOCK):
     ):
         if Path(path).exists():
             return what
-    try:
-        with open(lock, 'a') as held:
-            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return 'Setup (sudo bash install.sh) is running'
-    except OSError:
-        pass
+    for path, what in (
+        (lock, 'Setup (sudo bash install.sh) is running'),
+        (recovery, 'A backup or an app update is running'),
+    ):
+        if path is None:
+            continue
+        try:
+            with open(path, 'a') as held:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return what
+        except OSError:
+            continue
     return None
+
+
+def recovery_lock(config):
+    return mount_path(config['data_mount']) / 'installer/recovery.lock'
+
+
+def on_the_moved_drive(path, mountpoint):
+    """This copy of migrate.py, or the settings, is on the drive being moved, which is
+    unmounted during the switch."""
+    here = Path(__file__).resolve()
+    return any(mountpoint == p or mountpoint in p.parents for p in (Path(path).resolve(), here))
+
+
+FROM_THE_DOWNLOAD = (
+    'Run this from the NekoServer folder you downloaded (on the system disk), with its my-config.json: '
+    'this copy or its settings are on the {label} itself, which is unmounted during the switch'
+)
 
 
 def empty(folder):
@@ -311,18 +336,14 @@ def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING,
     if drive not in DRIVES:
         out('Use --drive data_ssd (the application SSD) or --drive media_hdd (the media HDD)')
         return 2
-    busy = nothing_at_work()
+    busy = nothing_at_work(recovery=recovery_lock(config))
     if busy:
         out(busy + '; nothing was changed. Try again later.')
         return 2
     mount_key, label = DRIVES[drive]
     mountpoint = mount_path(config[mount_key])
-    here = Path(__file__).resolve()
-    if any(mountpoint == p or mountpoint in p.parents for p in (path.resolve(), here)):
-        out(
-            f'Run this from the NekoServer folder you downloaded (on the system disk), with its my-config.json: '
-            f'this copy or its settings are on the {label} itself, which is unmounted during the move'
-        )
+    if on_the_moved_drive(path, mountpoint):
+        out(FROM_THE_DOWNLOAD.format(label=label))
         return 2
     old = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
     # The drive as it is mounted now, its Btrfs subvolume included (the settings may not
@@ -399,7 +420,7 @@ def checked_move(saved, config, drive):
         str(mountpoint) != saved.get('mount')
         or not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (old, new))
         or new.get('fstype') not in FILESYSTEMS
-        or not SUBVOLUME.fullmatch(str(old.get('subvolume') or ''))
+        or not all(SUBVOLUME.fullmatch(str(d.get('subvolume') or '')) for d in (old, new))
     ):
         raise RuntimeError(f'The move\'s record ({JOURNAL}) does not match the settings; look at it, then remove it')
     return str(mountpoint), old, new
@@ -428,7 +449,7 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
         return 2
     lines = fstab.read_text()
     if f'UUID={new["uuid"]} ' not in lines:
-        switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab)
+        switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab, subvolume=new.get('subvolume'))
     set_drive(settings, config, drive, new, old)
     run(['mount', mountpoint], 120)
     record(journal, phase='setup')
@@ -436,29 +457,46 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
     try:
         setup_again(config, settings, log_file, out)
     except RuntimeError as exc:
+        out(f'The new drive is in place, but {exc}. Put that right, then finish with  sudo python3 migrate.py resume')
+        return 2
+    failed = start_again(read(journal).get('stopped'), out)
+    if failed:
+        record(journal, phase='restart_failed', stopped=failed)
         out(
-            f'The new drive is in place, but {exc}. Run  sudo bash install.sh  to finish; to go back: sudo python3 migrate.py back'
+            'The drives are switched, but these did not start again: '
+            + ', '.join(failed)
+            + '. Start them (sudo systemctl start <name>), then  sudo python3 migrate.py resume'
         )
         return 2
-    start_again(read(journal).get('stopped'), out)
+    going_back = read(journal).get('direction') == 'back'
     journal.unlink(missing_ok=True)
-    out(
-        f'Done: the {DRIVES[drive][1]} is the new drive, mounted at {mountpoint}. The old drive was not changed: '
-        'keep it until you are sure, then disconnect it. To go back to it: sudo python3 migrate.py back'
-    )
+    label = DRIVES[drive][1]
+    if going_back:
+        out(f'The {label} is the old drive again. Anything saved to the other one since the move is still on it.')
+    else:
+        out(
+            f'Done: the {label} is the new drive, mounted at {mountpoint}. The old drive was not changed: '
+            'keep it until you are sure, then disconnect it. To go back to it: sudo python3 migrate.py back'
+        )
     return 0
 
 
-def back(settings, out=print, fstab=FSTAB):
-    """Go back to the old drive: the settings and /etc/fstab name it again, and setup runs.
-    What was written to the new drive since the move is not on the old one."""
+def back(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
+    """Go back to the old drive: the settings and /etc/fstab name it again (its Btrfs
+    subvolume too), and setup runs. The same checks and the same durable record as a move,
+    so it never overlaps another job, and `resume` finishes it after a restart. What was
+    written to the newer drive since the move stays on it."""
     path, config = load_settings(settings)
     for drive, (mount_key, label) in DRIVES.items():
         previous = config['storage'].get(drive, {}).get('previous_drive')
         if not previous:
             continue
-        mountpoint = str(mount_path(config[mount_key]))
-        current = config['storage'][drive]
+        busy = nothing_at_work(recovery=recovery_lock(config))
+        if busy:
+            out(busy + '; nothing was changed. Try again later.')
+            return 2
+        mountpoint = mount_path(config[mount_key])
+        current = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
         if (
             not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (previous, current))
             or previous.get('fstype') not in FILESYSTEMS
@@ -466,25 +504,21 @@ def back(settings, out=print, fstab=FSTAB):
         ):
             out(f'The settings\' record of the {label} is not valid; nothing was changed')
             return 2
+        if on_the_moved_drive(path, mountpoint):
+            out(FROM_THE_DOWNLOAD.format(label=label))
+            return 2
         if not os.path.exists('/dev/disk/by-uuid/' + previous['uuid']):
             out(f'The old {label} ({previous["uuid"]}) is not connected')
             return 2
-        stopped = stop_writers(Path('/run/neko-migrate-back.json'))
-        run(['umount', mountpoint], 600, check=False)
-        switch_fstab(
-            mountpoint,
-            current['uuid'],
-            previous['uuid'],
-            previous['fstype'],
-            fstab,
-            subvolume=previous.get('subvolume'),
+        record(
+            journal, phase='stopping', direction='back', drive=drive, mount=str(mountpoint), old=current, new=previous
         )
-        set_drive(path, config, drive, previous)
-        run(['mount', mountpoint], 120)
-        setup_again(config, path, Path(config['data_mount']) / 'installer/migrate.log', out)
-        start_again(stopped, out)
-        out(f'The {label} is the old drive again. Anything saved to the new one since the move is still on it.')
-        return 0
+        try:
+            stop_writers(journal)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            return stopped_safely(exc, label, journal, staging, out)
+        record(journal, phase='switching')
+        return switch(path, config, drive, journal, staging, fstab, out)
     out('No drive was moved (the settings name no earlier drive)')
     return 1
 

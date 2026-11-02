@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.45.2 — 2026-11-02
+
+Fixes for the project owner's review of 0.45.1: going back after a drive move, the settling of app updates, and the restart check on the System tab. Built on 0.45.1 (merge PR #54 first).
+
+### Fixed
+- **Going back after a drive move (`migrate.py back`) has the move's checks and a record that survives a restart.** It did not check that setup, an upgrade, an app update or the monthly check was at work, and the list of what to start again lived in `/run`, which a restart empties. Now it checks the same as a move (also the backups' shared lock), refuses to run from the drive it moves, and keeps its record in `/etc/nekoserver-backups/migrate.json`, so `sudo python3 migrate.py resume` finishes it after a restart, as for a move. It stops and starts the apps the same way, and remembers the newer drive, so you can switch again. A setup started by hand while a move is unfinished now stops and says to run `migrate.py resume` (the move's own setup runs are not affected).
+- **Daily app builds now become ready to install.** The daily check kept only the last four versions it found for an app, but a version must wait 7 days (the default) before it is installed. An image that publishes a build every day pushed each one out before it had waited long enough, so it was never updated. Now it keeps the newest version, the oldest one still settling, the newest one that has settled and one you approved (never more than four), so the oldest settling one becomes ready on time.
+- **"Restart not needed" only when the system's check said so.** On Fedora, RHEL and openSUSE a missing `needs-restarting` or `zypper needs-rebooting`, or one that failed, showed as "no restart needed". The System tab now shows needed, not needed or **not known**, with the reason.
+
+### Tests
+- Each fix has a test that fails on 0.45.1: going back while another job is at work, a going back cut off part-way and finished by `resume`; daily builds over 12 days with 7 days to settle; a restart check that is missing or fails.
+
 ## v0.45.1 — 2026-11-02
 
 Fixes for the project owner's two reviews of 0.45.0: the NekoServer upgrade and the drive move.

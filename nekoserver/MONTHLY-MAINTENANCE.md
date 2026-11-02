@@ -14,7 +14,7 @@ These are timers installed on the server. They run without the dashboard or a ch
 
 ## Weekly app updates
 
-**Settling.** A new version waits `maintenance.settle_days` days after the daily check first saw it (7 by default, 1 to 30) before an update night installs it. By then a release with a bad bug has usually been fixed or pulled. Most images publish a new build every few days, so the check keeps the last four versions it found for each app and installs the newest one that has waited long enough. The day is set in `maintenance.update_day` (`Mon` to `Sun`, `Wed` by default).
+**Settling.** A new version waits `maintenance.settle_days` days after the daily check first saw it (7 by default, 1 to 30) before an update night installs it. By then a release with a bad bug has usually been fixed or pulled. Most images publish a new build every few days (some every day), so for each app the check keeps the newest version it found, the oldest one still settling (the next to become ready, so daily builds never push every version out before one has waited long enough), the newest one that has waited long enough, and one you approved; an update night installs the newest one that has waited long enough. The day is set in `maintenance.update_day` (`Mon` to `Sun`, `Wed` by default).
 
 **On the update night, each app with a settled version goes on its own, one after the other:**
 
@@ -63,7 +63,7 @@ The **System** tab shows the Linux system's side, read once a day by `nekoserver
 - **The package updates waiting**, counted and listed. Each is marked when it is a security fix, when it needs a restart of the computer (a new kernel, systemd, the C library), or when it restarts a service the apps depend on (Docker restarts every app; Samba, Tailscale, SSH).
   - On Debian and Ubuntu it asks `apt-get -s dist-upgrade` (a simulation), on Fedora and RHEL `dnf check-update`, on openSUSE `zypper list-updates`.
   - On Arch it uses `checkupdates`, from pacman-contrib, which reads a copy of the package lists. Without it the tab says how to install it.
-- **Whether the computer needs a restart now**: the running kernel was replaced by an update, or the system says so (`/run/reboot-required`, `needs-restarting -r`, `zypper needs-rebooting`).
+- **Whether the computer needs a restart now**: needed (the running kernel was replaced by an update, or the system says so: `/run/reboot-required`, `needs-restarting -r`, `zypper needs-rebooting`), not needed, or **not known**, with the reason (on Fedora or RHEL `needs-restarting` comes with `dnf-utils`; a check that is missing or fails is never taken as "not needed").
 
 Installing system updates from the dashboard comes in a later release, with a recovery backup of the system disk first. Until then, update the system as you do now. A major distribution upgrade (a new Ubuntu release, say) is a separate job. Running `sudo bash install.sh` in a terminal also installs the packages NekoServer needs. On Arch that updates the whole system; on Debian and Ubuntu it refreshes the package lists and installs what is missing. The app snapshots cannot undo a Linux, kernel or Docker upgrade.
 
