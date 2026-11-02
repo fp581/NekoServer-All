@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.41.5'
+VERSION = '0.41.6'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -960,28 +960,39 @@ def busy_ports(base, services, what):
     return taken
 
 
-def services_to_pull(base, what, services=None):
-    """The services whose image is named (lscr.io/...:latest, say) and so can be
-    downloaded. After a monthly update, maintenance pins each service to the exact image
-    it tested (sha256:...): such an image cannot be downloaded by its ID ("pull access
-    denied for sha256"), and must already be on this PC, which is checked instead."""
+def services_to_pull(base, what, services=None, present=None):
+    """The services whose image must be downloaded: only one not on this PC yet (an app
+    set up for the first time). Setup never downloads a newer image for an app that is
+    already there (a named one, lscr.io/...:latest, say): that would update the app
+    outside the monthly update, which first takes the snapshot it can roll back to and
+    tests the new version (MONTHLY-MAINTENANCE.md). After a monthly update, maintenance
+    pins each service to the exact image it tested (sha256:...): such an image cannot be
+    downloaded by its ID ("pull access denied for sha256"), and must already be on this
+    PC, which is checked instead. `present(image)`: whether Docker has it (tests)."""
     if services is None:
         services = compose_services(base, what)
     docker = list(base[: base.index('compose')]) if 'compose' in base else ['docker']
+    if present is None:
+
+        def present(image):
+            return (
+                subprocess.run(
+                    [*docker, 'image', 'inspect', image], capture_output=True, text=True, timeout=60, check=False
+                ).returncode
+                == 0
+            )
+
     named = []
     for name, service in sorted(services.items()):
         image = str(service.get('image') or '')
         if image.startswith('sha256:'):
-            present = subprocess.run(
-                [*docker, 'image', 'inspect', image], capture_output=True, text=True, timeout=60, check=False
-            )
-            if present.returncode:
+            if not present(image):
                 raise RuntimeError(
                     f'{what}: the image the monthly update pinned for {name} ({image[:19]}...) is not on this PC '
                     'any more. Run the monthly update again (sudo systemctl start nekoserver-maintenance.service), '
                     'or take the pin out of maintenance-images.json next to its compose.yaml'
                 )
-        else:
+        elif not image or not present(image):
             named.append(name)
     return named
 

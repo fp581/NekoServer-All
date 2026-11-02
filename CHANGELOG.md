@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.41.6 — 2026-11-02
+
+Fixes for the project owner's review of 0.41.5.
+
+### Fixed
+- **Setup run again no longer updates your apps.** Choosing the backup app (or any app that needs the media apps) runs the media step again, and that downloaded a newer image for every app on a moving tag (`lscr.io/...:latest`, say) and started it: an app update outside the monthly update, so without its snapshot, restore test or rollback. Setup now downloads only the images not on this PC yet (an app set up for the first time); an app already there starts again on the image it has. Only the monthly update updates apps. (A new NekoServer release whose app templates name a different version still downloads that version when setup runs.)
+- **A replacement drive keeps nothing of the drive it replaces.** RECOVERY.md says to take the old drive's `"uuid"` out of `my-config.json`; its Btrfs `"subvolume"` (`/@data`, say) stayed, so an ext4 replacement was refused and a new Btrfs one was looked for in a subvolume it may not have. Picking the new drive now clears the old drive's settings; a Btrfs drive's own subvolume is found when it is mounted.
+
 ## v0.41.5 — 2026-11-02
 
 Fixes for the project owner's review of 0.41.4.
