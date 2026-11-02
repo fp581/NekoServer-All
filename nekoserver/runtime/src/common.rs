@@ -1237,13 +1237,15 @@ mod lock_tests {
         let held = lock(&setup).unwrap();
         assert!(setup_held(&setup));
         // The same lock taken by a child that exits at once (flock -n 9 in install.sh):
-        // the descriptor, inherited by this process's shell, still holds it.
+        // the descriptor, inherited by this process's shell, still holds it. The sleep
+        // replaces the shell (exec), so killing that one process lets the lock go: a
+        // sleep forked by the shell would keep the descriptor, and the lock, after it.
         drop(held);
         assert!(!setup_held(&setup));
         let shell = std::process::Command::new("sh")
             .arg("-c")
             .arg(format!(
-                "exec 9>>'{}'; flock -n 9 || exit 9; sleep 30",
+                "exec 9>>'{}'; flock -n 9 || exit 9; exec sleep 30",
                 setup.display()
             ))
             .spawn()
