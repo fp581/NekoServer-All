@@ -17,6 +17,7 @@ from neko_common import (
     compose_up,
     ensure_directory,
     fetch,
+    mounted_identity,
     safe_path,
     verify_storage,
     compose_image_override,
@@ -129,16 +130,32 @@ DATA_MARKERS = ('.ncdata', '.ocdata')
 WWW_DATA = 33
 # Nextcloud's files folder, under the HDD's mount.
 FILES_FOLDER = 'cloud/files'
+# Setup's note, beside Nextcloud's settings on the SSD, that the files folder was given
+# back on a new HDD and its accounts' folders are still to be made. Written before the
+# folder is made and removed only once the accounts' folders exist and Nextcloud's file
+# list was refreshed, so a setup cut off in between (Docker slow to answer, the terminal
+# closed, a restart) finishes the job at its next run instead of skipping it.
+RECOVERY_NOTE = 'files-folder-given-back.json'
+RECOVERY_FORMAT = 'neko-nextcloud-files-given-back-v1'
 
 
-def files_folder_given_back(config, log):
+def files_folder_given_back(config, log, note=None):
     """A Nextcloud already set up whose files folder on the HDD is missing or empty (a new
     HDD after the old one broke, say): the folder is made, given to Nextcloud (www-data)
     and marked as its files folder, so Nextcloud starts again, with no files; the way to
-    get them back is said. True when that was done."""
-    files = safe_path(Path(config['media_mount']) / FILES_FOLDER)
+    get them back is said. `note` (RECOVERY_NOTE) is written first, naming the HDD, so
+    the accounts' folders are still made when this setup stops before them. True when
+    that was done."""
+    media = Path(config['media_mount'])
+    files = safe_path(media / FILES_FOLDER)
     if files.is_dir() and any(files.iterdir()):
         return False
+    if note is not None:
+        identity = mounted_identity(media)
+        atomic_json(
+            safe_path(note),
+            {'format': RECOVERY_FORMAT, 'filesystem': list(identity) if identity else None, 'at': time.time()},
+        )
     ensure_directory(safe_path(files.parent), 0o755)
     ensure_directory(files, 0o750)
     for marker in DATA_MARKERS:
@@ -153,8 +170,78 @@ def files_folder_given_back(config, log):
     return True
 
 
+def recovery_pending(config, note, log):
+    """Whether an earlier setup gave the files folder back on the HDD mounted now and
+    stopped before making its accounts' folders. A note about another drive (the HDD
+    replaced again since) is dropped: that drive's folder is given back on its own."""
+    note = safe_path(note)
+    if not note.exists():
+        return False
+    try:
+        recorded = json.loads(note.read_text())
+    except (OSError, ValueError):
+        recorded = None
+    identity = mounted_identity(Path(config['media_mount']))
+    if not isinstance(recorded, dict) or recorded.get('filesystem') != (list(identity) if identity else None):
+        note.unlink()
+        return False
+    log(
+        'Nextcloud: an earlier setup gave its files folder back on this HDD but stopped before making its '
+        'accounts\' folders; finishing that now'
+    )
+    return True
+
+
+def files_folder_to_give_back(config, folder, log):
+    """Whether this run gives the files folder back on a new HDD (files_folder_given_back),
+    or finishes an earlier run that did and stopped before the accounts' folders."""
+    note = folder / RECOVERY_NOTE
+    return files_folder_given_back(config, log, note) or recovery_pending(config, note, log)
+
+
+def finish_files_folder(base, config, folder, log):
+    """The accounts' folders made on the new HDD and the file list refreshed; the note
+    goes only then, so a failure in either leaves it for the next run."""
+    account_folders_given_back(base, safe_path(Path(config['media_mount']) / FILES_FOLDER), log)
+    safe_path(folder / RECOVERY_NOTE).unlink(missing_ok=True)
+
+
 # Nextcloud's own rule for an account name (lib/private/User/Manager.php).
 ACCOUNT_NAME = re.compile(r'[a-zA-Z0-9_.@-]+')
+# Said when Nextcloud can't be asked for its accounts: nothing is guessed, and the note
+# (RECOVERY_NOTE) stays, so the next setup run makes their folders.
+UNLISTED = (
+    'Nextcloud did not say which accounts it has ({why}), so their folders on the new HDD were not made yet '
+    'and uploads are still refused. Check that Nextcloud is running (sudo docker ps), then run  '
+    'sudo bash install.sh  again: it finishes this'
+)
+
+
+def listed_accounts(base, run=subprocess.run):
+    """The account names Nextcloud lists (occ user:list). A command that fails, does not
+    answer or answers with something other than a list of accounts is an error, never an
+    empty list: an empty list would make no folder and still say "uploads work again"."""
+    try:
+        listed = run(
+            base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'user:list', '--output=json'],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(UNLISTED.format(why='it did not answer within 2 minutes')) from None
+    if listed.returncode != 0:
+        raise RuntimeError(UNLISTED.format(why=f'occ user:list ended with error {listed.returncode}'))
+    text = listed.stdout or ''
+    try:
+        accounts = json.loads(text[text.index('{') :])
+    except ValueError:
+        accounts = None
+    names = [name for name in accounts if isinstance(name, str)] if isinstance(accounts, dict) else None
+    if names is None:
+        raise RuntimeError(UNLISTED.format(why='its answer was not a list of accounts'))
+    return [name for name in names if ACCOUNT_NAME.fullmatch(name)]
 
 
 def account_folders_given_back(base, files, log, run=subprocess.run):
@@ -162,20 +249,9 @@ def account_folders_given_back(base, files, log, run=subprocess.run):
     the old drive held: it takes each account's `files` folder for present, never makes
     it again, and refuses every upload ("Could not create path"; the monthly check's test
     file with it). Each account named by Nextcloud gets the folder on the new drive, and
-    a scan drops the old drive's listing. The number of accounts done."""
-    listed = run(
-        base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'user:list', '--output=json'],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    text = listed.stdout or ''
-    try:
-        accounts = json.loads(text[text.index('{') :]) if listed.returncode == 0 else {}
-    except ValueError:
-        accounts = {}
-    named = [name for name in accounts if isinstance(name, str) and ACCOUNT_NAME.fullmatch(name)]
+    a scan drops the old drive's listing. The number of accounts done; an error when
+    Nextcloud can't say which accounts it has (listed_accounts)."""
+    named = listed_accounts(base, run)
     for name in named:
         ensure_directory(safe_path(files / name / 'files'), 0o755, WWW_DATA, WWW_DATA)
     checked_run(
@@ -500,8 +576,9 @@ def run(ctx):
             # Written last: a compose.yaml means every setting file of this step is in place.
             atomic_write(manifest, payload, 0o600)
         # An install already made whose files folder is gone (a new HDD): given back, and
-        # its accounts' folders made again once Nextcloud answers.
-        given_back = not fresh and files_folder_given_back(config, ctx.log)
+        # its accounts' folders made again once Nextcloud answers; also when an earlier
+        # setup gave it back and stopped before that (its note on the SSD).
+        given_back = not fresh and files_folder_to_give_back(config, folder, ctx.log)
         safe_path(env)
         if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
             raise RuntimeError('Nextcloud credentials must be private and root-owned')
@@ -540,7 +617,7 @@ def run(ctx):
         compose_up(base, 'Nextcloud', ctx.log, 1800)
         finish_install(base, ctx.log)
         if given_back:
-            account_folders_given_back(base, safe_path(Path(config['media_mount']) / FILES_FOLDER), ctx.log)
+            finish_files_folder(base, config, folder, ctx.log)
         if opts.get('image', 'auto') == 'auto':
             config['nextcloud']['image'] = image
             ctx.persist_config()

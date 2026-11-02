@@ -122,4 +122,4 @@ A mirror that lost a drive keeps the server going. An mdadm array runs on its re
 
 ## Private account inventory
 
-The secrets/accounts directory is included in monthly snapshots on the HDD, encrypted, and opens with the backup password chosen during setup (see MONTHLY-MAINTENANCE.md, also for what happens without one). It is never written to the USB drive. See ACCOUNT-SETUP.md.
+The secrets/accounts directory (the app passwords) is included in monthly snapshots on the HDD, encrypted, and opens only with the backup password chosen during setup (see MONTHLY-MAINTENANCE.md, also for what happens without one). The weekly USB copy also takes the encrypted list from the newest monthly snapshot that has one, checked against its checksum, into `passwords/<snapshot>/` on the USB drive (the newest 3 are kept), so the passwords can come back even when the HDD is gone too (RECOVERY.md, recovery menu → **App password list**). That copy is the same encrypted archive: the backup password is still needed to open it, and without one no list is made at all, so there is nothing to copy. The list never goes to the USB drive unencrypted. See ACCOUNT-SETUP.md.

@@ -3,6 +3,7 @@
 import hashlib
 import http.cookiejar
 import json
+import subprocess
 import os
 import re
 import sys
@@ -2502,6 +2503,84 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
         self.assertEqual(scanned.call_args.args[0][-2:], ['files:scan', '--all'])
         self.assertIn('2 account(s)', said[0])
         self.assertIn('uploads work again', said[0])
+
+    def test_an_interrupted_recovery_finishes_at_the_next_setup_run(self):
+        # The owner's review of 0.41.4: setup stopped between giving the folder back and making
+        # the accounts' folders (occ timed out); the next run saw .ncdata/.ocdata, took the
+        # folder for one in use and never made the folders, so uploads stayed refused.
+        from modules import nextcloud
+
+        hdd = ('hdd-uuid', 'ext4', '')
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(nextcloud.os, 'chown'),
+            mock.patch.object(nextcloud, 'mounted_identity', return_value=hdd),
+        ):
+            config, note, said = {'media_mount': tmp}, Path(tmp) / 'ssd-note.json', []
+            self.assertTrue(nextcloud.files_folder_given_back(config, said.append, note))
+            self.assertEqual(json.loads(note.read_text())['filesystem'], list(hdd))
+            # Setup stops here. At the next run the folder is no longer empty, but the note says
+            # the accounts' folders are still to be made, on this same HDD.
+            self.assertFalse(nextcloud.files_folder_given_back(config, said.append, note))
+            self.assertTrue(nextcloud.recovery_pending(config, note, said.append))
+            self.assertIn("stopped before making its accounts' folders", said[-1])
+
+    def test_a_note_about_another_hdd_is_dropped(self):
+        from modules import nextcloud
+
+        with tempfile.TemporaryDirectory() as tmp:
+            note = Path(tmp) / 'note.json'
+            note.write_text(json.dumps({'format': nextcloud.RECOVERY_FORMAT, 'filesystem': ['old-uuid', 'ext4', '']}))
+            with mock.patch.object(nextcloud, 'mounted_identity', return_value=('new-uuid', 'ext4', '')):
+                self.assertFalse(nextcloud.recovery_pending({'media_mount': tmp}, note, self.fail))
+            self.assertFalse(note.exists())
+            self.assertFalse(nextcloud.recovery_pending({'media_mount': tmp}, note, self.fail))  # no note: nothing
+
+    def test_the_note_goes_only_once_the_folders_are_made_and_the_list_refreshed(self):
+        # The note is removed only after account_folders_given_back, which raises on any
+        # failure, so a failed listing or scan keeps it for the next run.
+        from modules import nextcloud
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / nextcloud.RECOVERY_NOTE).write_text('{}')
+            config = {'media_mount': tmp}
+            with (
+                mock.patch.object(nextcloud, 'account_folders_given_back', side_effect=RuntimeError('scan failed')),
+                self.assertRaises(RuntimeError),
+            ):
+                nextcloud.finish_files_folder(['compose'], config, folder, self.fail)
+            self.assertTrue((folder / nextcloud.RECOVERY_NOTE).exists())  # kept for the next run
+            with mock.patch.object(nextcloud, 'account_folders_given_back', return_value=1):
+                nextcloud.finish_files_folder(['compose'], config, folder, self.fail)
+            self.assertFalse((folder / nextcloud.RECOVERY_NOTE).exists())
+
+    def test_accounts_that_cannot_be_listed_are_an_error_never_none(self):
+        # The owner's review: a failed occ user:list became "no accounts", and setup said the
+        # folders of its 0 account(s) were made, so uploads work again.
+        from modules import nextcloud
+
+        def answering(code=0, out=''):
+            return lambda argv, **kw: mock.Mock(returncode=code, stdout=out, stderr='')
+
+        def timing_out(argv, **kw):
+            raise subprocess.TimeoutExpired('occ', 120)
+
+        cases = (
+            ('ended with error 1', answering(code=1)),
+            ('not a list of accounts', answering(out='PHP Fatal error: database is locked')),
+            ('not a list of accounts', answering(out='["alice"]')),
+            ('did not answer within 2 minutes', timing_out),
+        )
+        for why, run in cases:
+            with self.subTest(why), mock.patch.object(nextcloud, 'checked_run') as scanned:
+                said = []
+                with self.assertRaisesRegex(
+                    RuntimeError, f'did not say which accounts it has \\(.*{why}.*install\\.sh'
+                ):
+                    nextcloud.account_folders_given_back(['compose'], Path('/nonexistent'), said.append, run=run)
+                scanned.assert_not_called()
+                self.assertEqual(said, [])
 
     def test_the_refusal_names_what_differs(self):
         from modules import nextcloud

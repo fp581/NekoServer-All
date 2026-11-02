@@ -222,6 +222,62 @@ def file_count(count):
 # Inside a restore folder: the damaged copies a restore found, as they are on the backup
 # (a photo or PDF with a few bad bytes often still opens in part). Never checked.
 DAMAGED_AS_IS = 'damaged-as-is'
+NOT_RESTORED = 'NOT-RESTORED.txt'
+
+
+class DestinationGone(RuntimeError):
+    """The restore folder is not the one the restore began in any more: its drive was
+    unplugged, or another drive (or folder) is at its path now."""
+
+
+class Destination:
+    """A restore's new folder, opened once (as the repair's Tree opens a drive). Every
+    folder and file of the restore is made from that open folder, never by its path
+    again, and refused when it would be on another filesystem; before each file the path
+    is checked to still lead to the folder that was opened. So when the drive is
+    unplugged mid-restore, or another one is mounted there, the restore stops instead of
+    going on in the empty folder on the system disk or on the other drive."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.fd = os.open(self.path, FOLDER_FLAGS)
+        held = os.fstat(self.fd)
+        self.held = (held.st_dev, held.st_ino)
+
+    def same(self):
+        """The restore folder's path still leads to the folder that was opened."""
+        try:
+            now = os.stat(self.path, follow_symlinks=False)
+        except OSError:
+            return False
+        return (now.st_dev, now.st_ino) == self.held
+
+    def check(self, done):
+        """Before a write: DestinationGone, saying how far the restore got, once it moved."""
+        if not self.same():
+            raise DestinationGone(
+                f'The restore stopped after {file_count(done)}: {self.path} is not the folder it began in any more '
+                '(its drive was disconnected, or another drive is mounted there now). Nothing more was written. '
+                'The files restored so far stay on that drive; connect it again and restore into a new folder.'
+            )
+
+    def folder(self, parts):
+        """The open folder `parts` below the restore folder, made when missing, reached from
+        the restore folder's open folder without following a link. The caller closes it."""
+        fd = os.dup(self.fd)
+        try:
+            for part in parts:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                found = os.open(part, FOLDER_FLAGS, dir_fd=fd)
+                os.close(fd)
+                fd = found
+                if os.fstat(fd).st_dev != self.held[0]:
+                    raise DestinationGone(f'"{part}" in {self.path} is on another drive (one mounted there)')
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
 
 
 def retired_copies(root):
@@ -259,7 +315,10 @@ class Checked:
             # A checksum list the drive lost mid-write: the files are restored unchecked.
             self.sums, self.ledger_problem = {}, str(exc)
         self.lost = retired_copies(self.root) if self.root else {}
+        # The restore folder, opened once (begin) and written only through that open
+        # folder: its (device, inode) is checked again before every write (Destination).
         self.destination = None
+        self.target = None
         self.verified = 0
         self.unverified = 0
         self.damaged = []
@@ -278,18 +337,22 @@ class Checked:
             self.reported = True
 
     def begin(self, destination):
-        """The new restore folder is made; files are copied into it next."""
+        """The new restore folder is made and opened; files are copied into it next."""
         destination.mkdir(mode=0o700)
         self.destination = destination
+        self.target = Destination(destination)
 
-    def keep_damaged(self, target):
-        """Move a damaged copy just written to `target` into the damaged-as-is folder."""
-        if self.destination is None:
-            Path(target).unlink(missing_ok=True)
-            return
-        kept = self.destination / DAMAGED_AS_IS / Path(target).relative_to(self.destination)
-        kept.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.replace(target, kept)
+    def restored(self):
+        return self.verified + self.unverified + len(self.damaged)
+
+    def keep_damaged(self, folder, name, relative):
+        """Move a damaged copy just written as `name` in the open `folder` (at `relative` in
+        the restore) into the damaged-as-is folder."""
+        kept = self.target.folder((DAMAGED_AS_IS, *relative.parent.parts))
+        try:
+            os.rename(name, relative.name, src_dir_fd=folder, dst_dir_fd=kept)
+        finally:
+            os.close(kept)
 
     def copy(self, source, target, expected=None):
         """Copy one file, checked against `expected` (a list of the files you had names
@@ -302,15 +365,33 @@ class Checked:
                 key = None
         expected = expected or self.sums.get(key)
         try:
-            copy_checked(source, target, expected)
+            self.write(source, target, expected)
         except BackupDamaged:
-            self.keep_damaged(target)
             self.damaged.append(key or str(source))
             return
         if expected:
             self.verified += 1
         else:
             self.unverified += 1
+
+    def write(self, source, target, expected):
+        """Copy `source` to `target` through the restore folder's open folder (copy_checked
+        without a begun restore). Raises DestinationGone, with nothing written, once the
+        restore folder is no longer the one opened."""
+        if self.target is None:
+            copy_checked(source, target, expected)
+            return
+        relative = Path(target).relative_to(self.destination)
+        self.target.check(self.restored())
+        folder = self.target.folder(relative.parent.parts)
+        try:
+            with open(source, 'rb') as src:
+                copy_checked_into(src, folder, relative.name, expected, source)
+        except BackupDamaged:
+            self.keep_damaged(folder, relative.name, relative)
+            raise
+        finally:
+            os.close(folder)
 
     def accepted_as_lost(self, key, copy):
         """Why a listed file (`key`, kept as `copy` beside it) was accepted as lost in the
@@ -375,11 +456,24 @@ class Checked:
                     f' The damaged copies are kept as they are in {Path(destination) / DAMAGED_AS_IS} (they may '
                     'still open in part; nothing checked them).'
                 )
-        if (left or self.accepted) and destination is not None and Path(destination).is_dir():
-            listed = Path(destination) / 'NOT-RESTORED.txt'
-            listed.write_text(self.not_restored())
-            text += f' Their names are in {listed}.'
+        if (left or self.accepted) and destination is not None and self.write_list():
+            text += f' Their names are in {Path(destination) / NOT_RESTORED}.'
         return text
+
+    def write_list(self):
+        """NOT-RESTORED.txt, written into the restore folder through its open folder; False
+        when there is none or it is not the folder the restore began in any more."""
+        if self.target is None or not self.target.same():
+            return False
+        fd = os.open(
+            NOT_RESTORED,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=self.target.fd,
+        )
+        with os.fdopen(fd, 'w') as stream:
+            stream.write(self.not_restored())
+        return True
 
     def not_restored(self):
         return (
@@ -1114,7 +1208,7 @@ def restore_photos(config, prompt, output):
         output,
         f'\nDone: {file_count(count)} copied to {target}',
         *(() if latest else (VERSIONS_EXPLAINED,)),
-        *handed_over(config, target),
+        *handed_over(config, target, checked),
         'To get them back into Immich: open Immich in a browser, click "Upload" and choose',
         'files from that folder (for thousands of files, the Immich command-line uploader is',
         'faster: see https://immich.app/docs/features/command-line-interface).',
@@ -1187,10 +1281,16 @@ def owner(config):
     return int(media.get('uid', 1000)), int(media.get('gid', 1000))
 
 
-def give_to(folder, uid, gid):
+def give_to(folder, uid, gid, dir_fd=None):
     """Make a restore folder and everything in it belong to `uid`:`gid`. Walked through
-    open folders (os.fwalk), never through a link: nothing outside it changes owner."""
-    for _, dirs, names, fd in os.fwalk(folder, follow_symlinks=False):
+    open folders (os.fwalk), never through a link: nothing outside it changes owner.
+    `dir_fd`: the restore folder already open (Destination): walked from it, not its path."""
+    walk = (
+        os.fwalk('.', dir_fd=dir_fd, follow_symlinks=False)
+        if dir_fd is not None
+        else os.fwalk(folder, follow_symlinks=False)
+    )
+    for _, dirs, names, fd in walk:
         os.fchown(fd, uid, gid)
         for name in dirs + names:
             os.chown(name, uid, gid, dir_fd=fd, follow_symlinks=False)
@@ -1220,15 +1320,25 @@ def account(uid):
         return str(uid), '/home'
 
 
-def handed_over(config, target):
+def handed_over(config, target, checked=None):
     """Restored photos and files are for you to open (and upload) from your own account,
     which can't read root's private files: they are given to that account. The HDD's
     restore folder lets that account's group in (other restores in it stay private to
-    root). Returns the lines that say so, or how to get at them when that did not work."""
+    root). Returns the lines that say so, or how to get at them when that did not work.
+    `checked`: the restore (Checked), whose open folder is walked, and only while it is
+    still the folder the restore was made in."""
     uid, gid = owner(config)
     name, home = account(uid)
+    held = checked.target if checked is not None else None
+    if held is not None and not held.same():
+        return [
+            (
+                f'{target} is not the folder the restore was made in any more (its drive was disconnected or '
+                'changed), so nothing in it was handed over to your account.'
+            )
+        ]
     try:
-        give_to(target, uid, gid)
+        give_to(target, uid, gid, held.fd if held is not None else None)
         if Path(target).parent == Path(config['media_mount']) / 'restored':
             os.chown(Path(target).parent, 0, gid)
             os.chmod(Path(target).parent, 0o750)
@@ -1284,7 +1394,7 @@ def restore_cloud(config, prompt, output):
             report=functools.partial(note_findings, config, 'usb_nextcloud'),
         )
         report_restore(checked, target, output)
-    ready = handed_over(config, target)
+    ready = handed_over(config, target, checked)
     if encrypted_by_nextcloud(target):
         say(
             output,

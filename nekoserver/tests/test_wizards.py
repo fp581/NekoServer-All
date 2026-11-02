@@ -1669,7 +1669,8 @@ class RecoveryWizardTests(unittest.TestCase):
         self.write('src/b.txt', b'b')
         full = OSError(errno.ENOSPC, 'No space left on device')
         checked = recovery_wizard.Checked(None)
-        with mock.patch.object(recovery_wizard, 'copy_checked', side_effect=[None, full]):
+        # A restore writes through its folder's open folder (copy_checked_into).
+        with mock.patch.object(recovery_wizard, 'copy_checked_into', side_effect=[None, full]):
             with self.assertRaisesRegex(RuntimeError, 'filled up after 1 of 2 files') as caught:
                 recovery_wizard.copy_new([('src', self.root / 'src')], self.root / 'restored', checked)
         self.assertIn('run the restore again', str(caught.exception))
@@ -1723,6 +1724,68 @@ class RecoveryWizardTests(unittest.TestCase):
             out = []
             self.assertEqual(recovery_wizard.run(answers('0'), out.append), 0)
             self.assertTrue(any('NEW folder' in line for line in out))
+
+
+class RestoreDestinationTests(unittest.TestCase):
+    """The owner's review of 0.41.4: the restore folder checked once, then each file written
+    by its path again, so a destination unmounted or replaced mid-restore got the rest of
+    the files (the empty folder on the system disk, or the other drive), and the restore
+    still said they were all restored and verified."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.backup = root / 'backup'
+        for name in ('a.jpg', 'b.jpg', 'c.jpg'):
+            (self.backup / 'u').mkdir(parents=True, exist_ok=True)
+            (self.backup / 'u' / name).write_bytes(b'photo ' + name.encode())
+        self.mount = root / 'hdd'
+        self.mount.mkdir()
+        self.destination = self.mount / 'restored'
+        self.moved = root / 'the drive, moved away'
+
+    def restore_with_a_swap_after(self, files_before_swap):
+        """copy_new with the destination's drive swapped (its folder moved away, an empty one
+        put at its path) once `files_before_swap` files were written."""
+        checked = recovery_wizard.Checked(None)
+        real_copy = checked.copy
+
+        def copy(source, target, expected=None):
+            if checked.restored() == files_before_swap and not self.moved.exists():
+                self.mount.rename(self.moved)
+                self.mount.mkdir()
+            real_copy(source, target, expected)
+
+        checked.copy = copy
+        with mock.patch.object(recovery_wizard, 'ensure_room'):
+            with self.assertRaises(recovery_wizard.DestinationGone) as stopped:
+                recovery_wizard.copy_new([('photos', self.backup)], self.destination, checked)
+        return checked, str(stopped.exception)
+
+    def test_a_destination_replaced_between_two_files_stops_the_restore(self):
+        checked, said = self.restore_with_a_swap_after(1)
+        self.assertEqual(sorted(p.name for p in self.mount.rglob('*')), [])  # nothing under the new mount
+        self.assertEqual(len([p for p in self.moved.rglob('*.jpg')]), 1)  # the first file, on its own drive
+        self.assertEqual(checked.restored(), 1)
+        self.assertIn('stopped after 1 file', said)
+        self.assertIn('Nothing more was written', said)
+
+    def test_nothing_is_handed_over_or_listed_on_another_drive(self):
+        checked, _ = self.restore_with_a_swap_after(1)
+        checked.damaged.append('u/c.jpg')  # a summary with a list to write
+        checked.summary(self.destination)
+        self.assertFalse((self.mount / 'restored' / recovery_wizard.NOT_RESTORED).exists())
+        with mock.patch.object(recovery_wizard, 'owner', return_value=(os.getuid(), os.getgid())):
+            lines = recovery_wizard.handed_over({'media_mount': str(self.mount)}, self.destination, checked)
+        self.assertIn('not the folder the restore was made in any more', lines[0])
+
+    def test_a_restore_that_stays_put_writes_everything_through_its_folder(self):
+        checked = recovery_wizard.Checked(None)
+        with mock.patch.object(recovery_wizard, 'ensure_room'):
+            done = recovery_wizard.copy_new([('photos', self.backup)], self.destination, checked)
+        self.assertEqual(done, 3)
+        self.assertEqual(sorted(p.name for p in (self.destination / 'photos/u').iterdir()), ['a.jpg', 'b.jpg', 'c.jpg'])
 
 
 if __name__ == '__main__':

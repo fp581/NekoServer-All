@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.41.5 — 2026-11-02
+
+Fixes for the project owner's review of 0.41.4.
+
+### Fixed
+- **A restore stops if its folder's drive goes away or changes mid-copy.** The restore folder was checked once, then each file was written by its path again: with the drive unplugged or another one mounted there part-way, the rest of the files went to the empty folder on the system disk or onto the other drive, and the restore still counted them all as restored and verified. The restore folder is now opened once and every folder and file of the restore is made from that open folder (never on another filesystem); before each file the path is checked to still lead to it. If it doesn't, the restore stops, says after how many files, and writes nothing more; NOT-RESTORED.txt and handing the files over to your account are done only through that same folder. This covers photo and Nextcloud restores in every mode.
+- **An interrupted Nextcloud recovery finishes at the next setup run.** After a new HDD, setup gives Nextcloud its files folder back and, once Nextcloud answers, makes each account's folder again. If setup stopped in between (Docker slow to answer, the terminal closed, a restart), the next run saw the folder's marker files, took it for one in use and never made the accounts' folders, so uploads stayed refused. Setup now writes a note on the SSD, naming the new HDD, before it gives the folder back, and removes it only once the accounts' folders exist and Nextcloud's file list was refreshed; the next run finishes the job. A note about another HDD is dropped.
+- **Nextcloud's accounts that can't be listed are an error, not "no accounts".** A failed `occ user:list` (an error, an answer that is not a list of accounts, or no answer within 2 minutes) used to count as zero accounts, and setup said their folders were made "so uploads work again". It now stops with what went wrong and how to finish it, and the note above stays for the next run.
+- STORAGE.md and ACCOUNT-SETUP.md now say that the weekly USB copy keeps the newest 3 encrypted password lists on the USB drive (they still open only with the backup password); they said the list never went there.
+
 ## v0.41.4 — 2026-11-02
 
 The sixth round: RECOVERY.md's two drive-replacement rows followed word for word, the 0.41.3 update on a second family, and the application SSD mirrored.
