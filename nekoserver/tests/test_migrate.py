@@ -28,10 +28,10 @@ ROWS = [
     row('/dev/sda1', 'ssd-0001', 'ext4', 1000 * GB, '/dev/sda', ['/srv/nekoserver']),
     row('/dev/sdb1', 'hdd-0001', 'ext4', 4000 * GB, '/dev/sdb', ['/mnt/nekoserver-media']),
     row('/dev/sdb2', 'hdd-spare', 'ext4', 4000 * GB, '/dev/sdb'),  # the old HDD's own disk
-    row('/dev/sdc1', 'new-big', 'ext4', 8000 * GB, '/dev/sdc'),
-    row('/dev/sdd1', 'new-small', 'xfs', 2000 * GB, '/dev/sdd'),
-    row('/dev/sde1', 'new-busy', 'btrfs', 8000 * GB, '/dev/sde', ['/media/usb']),
-    row('/dev/sdf1', 'new-fat', 'vfat', 8000 * GB, '/dev/sdf'),
+    row('/dev/sdc1', 'newbig-0001', 'ext4', 8000 * GB, '/dev/sdc'),
+    row('/dev/sdd1', 'newsmall-0001', 'xfs', 2000 * GB, '/dev/sdd'),
+    row('/dev/sde1', 'newbusy-0001', 'btrfs', 8000 * GB, '/dev/sde', ['/media/usb']),
+    row('/dev/sdf1', 'newfat-0001', 'vfat', 8000 * GB, '/dev/sdf'),
 ]
 CONFIG = {
     'data_mount': '/srv/nekoserver',
@@ -46,7 +46,7 @@ CONFIG = {
 class TargetTests(unittest.TestCase):
     def test_only_an_empty_big_enough_filesystem_on_a_disk_of_its_own_is_offered(self):
         found, left_out = migrate.targets(CONFIG, 'media_hdd', ROWS, used=3000 * GB)
-        self.assertEqual([t[0] for t in found], ['new-big'])
+        self.assertEqual([t[0] for t in found], ['newbig-0001'])
         said = ' '.join(left_out)
         self.assertIn('/dev/sdd1: 2000 GB is less than the 3150 GB needed', said)
         self.assertIn('/dev/sde1: mounted at /media/usb', said)
@@ -54,7 +54,7 @@ class TargetTests(unittest.TestCase):
         for name in ('nvme0n1p2', 'sdb2', 'sda1', 'sdf1'):
             self.assertNotIn(name, said)
         found, _ = migrate.targets(CONFIG, 'media_hdd', ROWS, used=1500 * GB)
-        self.assertEqual([t[0] for t in found], ['new-big', 'new-small'])
+        self.assertEqual([t[0] for t in found], ['newbig-0001', 'newsmall-0001'])
 
 
 @unittest.skipUnless(shutil.which('rsync'), 'rsync is not installed')
@@ -107,7 +107,7 @@ class MoveTests(unittest.TestCase):
             ('settings_path', lambda p: Path(p)),
             ('mount_path', lambda p: Path(p)),
             ('nothing_at_work', lambda: None),
-            ('targets', lambda config, drive: ([('new-big', 'ext4', 8000 * GB, '/dev/sdc1')], [])),
+            ('targets', lambda config, drive: ([('newbig-0001', 'ext4', 8000 * GB, '/dev/sdc1')], [])),
             ('mount_staging', lambda uuid, fstype, staging: staging),
             ('copy', lambda source, target, final=False, out=print: self.calls.append(('copy', final))),
             ('stop_writers', self.stop),
@@ -129,7 +129,7 @@ class MoveTests(unittest.TestCase):
 
     def move(self):
         return migrate.move(
-            self.settings, 'media_hdd', 'new-big', self.said.append, self.journal, self.staging, self.fstab
+            self.settings, 'media_hdd', 'newbig-0001', self.said.append, self.journal, self.staging, self.fstab
         )
 
     def test_a_good_copy_switches_to_the_new_drive_and_keeps_the_old_one(self):
@@ -140,14 +140,14 @@ class MoveTests(unittest.TestCase):
         self.assertLess(kinds.index('stop'), self.calls.index(('copy', True)))
         self.assertLess(self.calls.index(('copy', True)), kinds.index('setup'))
         fstab = self.fstab.read_text()
-        self.assertIn('UUID=new-big /mnt/nekoserver-media ext4 defaults,nofail', fstab)
+        self.assertIn('UUID=newbig-0001 /mnt/nekoserver-media ext4 defaults,nofail', fstab)
         self.assertNotIn('UUID=hdd-0001', fstab)
         kept = list(self.dir.glob('fstab.neko-before-move-*'))
         self.assertEqual(len(kept), 1)
         self.assertIn('UUID=hdd-0001', kept[0].read_text())
         saved = json.loads(self.settings.read_text())['storage']['media_hdd']
         self.assertEqual(
-            saved, {'uuid': 'new-big', 'fstype': 'ext4', 'previous_drive': {'uuid': 'hdd-0001', 'fstype': 'ext4'}}
+            saved, {'uuid': 'newbig-0001', 'fstype': 'ext4', 'previous_drive': {'uuid': 'hdd-0001', 'fstype': 'ext4'}}
         )
         self.assertIn(('start', ('docker.service', 'nekoserver-app-backup.timer')), self.calls)
         self.assertFalse(self.journal.exists())
@@ -173,16 +173,16 @@ class MoveTests(unittest.TestCase):
             'drive': 'media_hdd',
             'mount': '/mnt/nekoserver-media',
             'old': {'uuid': 'hdd-0001', 'fstype': 'ext4'},
-            'new': {'uuid': 'new-big', 'fstype': 'ext4'},
+            'new': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
             'stopped': [],
         }
         migrate.record(self.journal, phase='switching', **cut_off)
         self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
-        self.assertIn('UUID=new-big', self.fstab.read_text())
+        self.assertIn('UUID=newbig-0001', self.fstab.read_text())
         # Cut off again after the fstab was switched: finishing it gives the same result.
         migrate.record(self.journal, phase='setup', **cut_off)
         self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
-        self.assertEqual(self.fstab.read_text().count('UUID=new-big'), 1)
+        self.assertEqual(self.fstab.read_text().count('UUID=newbig-0001'), 1)
 
     def test_the_settings_or_the_tool_on_the_drive_being_moved_are_refused(self):
         settings = Path(CONFIG['media_mount']) / 'my-config.json'
@@ -194,7 +194,7 @@ class MoveTests(unittest.TestCase):
     def test_the_fstab_line_is_switched_only_when_it_is_the_old_drives(self):
         self.fstab.write_text(self.fstab.read_text() + 'UUID=other /mnt/nekoserver-media ext4 defaults 0 2\n')
         with self.assertRaisesRegex(RuntimeError, 'exactly one line'):
-            migrate.switch_fstab('/mnt/nekoserver-media', 'hdd-0001', 'new-big', 'ext4', self.fstab)
+            migrate.switch_fstab('/mnt/nekoserver-media', 'hdd-0001', 'newbig-0001', 'ext4', self.fstab)
 
 
 if __name__ == '__main__':

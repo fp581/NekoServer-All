@@ -124,20 +124,24 @@ def targets(config, drive, rows=None, used=None):
     system = {r.get('pkname') or r.get('name') for r in rows if '/' in (r.get('mountpoints') or [])}
     found, left_out = [], []
     for row in rows:
-        uuid, fstype = row.get('uuid'), row.get('fstype')
-        if not uuid or fstype not in FILESYSTEMS:
-            continue
         disk = row.get('pkname') or row.get('name')
-        name = row.get('name')
-        if disk in taken or disk in system:
+        if not row.get('uuid') or row.get('fstype') not in FILESYSTEMS or disk in taken or disk in system:
             continue
-        if any(row.get('mountpoints') or []):
-            left_out.append(f'{name}: mounted at {", ".join(m for m in row["mountpoints"] if m)} (unmount it first)')
-        elif int(row.get('size') or 0) < need:
-            left_out.append(f'{name}: {int(row["size"]) / 1e9:.0f} GB is less than the {need / 1e9:.0f} GB needed')
+        why = why_not(row, need)
+        if why:
+            left_out.append(f'{row.get("name")}: {why}')
         else:
-            found.append((uuid, fstype, int(row['size']), name))
+            found.append((row['uuid'], row['fstype'], int(row['size']), row.get('name')))
     return found, left_out
+
+
+def why_not(row, need):
+    """Why a filesystem on a disk of its own still can't take the drive, or None."""
+    if any(row.get('mountpoints') or []):
+        return f'mounted at {", ".join(m for m in row["mountpoints"] if m)} (unmount it first)'
+    if int(row.get('size') or 0) < need:
+        return f'{int(row.get("size") or 0) / 1e9:.0f} GB is less than the {need / 1e9:.0f} GB needed'
+    return None
 
 
 def nothing_at_work(lock=SETUP_LOCK):
@@ -288,7 +292,7 @@ def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING,
     if target is None:
         out(f'The drive {new_uuid} cannot take the {label}. ' + '; '.join(left_out or ['it was not found']))
         return 2
-    _, fstype, size, name = target
+    _, fstype, _, name = target
     record(
         journal, phase='checking', drive=drive, mount=str(mountpoint), old=old, new={'uuid': new_uuid, 'fstype': fstype}
     )
@@ -316,11 +320,28 @@ def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING,
     return switch(path, config, drive, journal, staging, fstab, out)
 
 
+UUID = re.compile(r'[A-Za-z0-9-]{8,80}')
+
+
+def checked_move(saved, config, drive):
+    """The move's record, checked against the settings before anything is done with it:
+    the folder is the one the settings mount the drive at, both drives' UUIDs are UUIDs
+    and the filesystems ones NekoServer moves to."""
+    mountpoint = mount_path(config[DRIVES[drive][0]])
+    old, new = saved.get('old') or {}, saved.get('new') or {}
+    if (
+        str(mountpoint) != saved.get('mount')
+        or not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (old, new))
+        or new.get('fstype') not in FILESYSTEMS
+    ):
+        raise RuntimeError(f'The move\'s record ({JOURNAL}) does not match the settings; look at it, then remove it')
+    return str(mountpoint), old, new
+
+
 def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTAB, out=print):
     """The new drive takes the old one's place; idempotent, so a restart in the middle
     is finished by `resume`."""
-    saved = read(journal)
-    mountpoint, old, new = saved['mount'], saved['old'], saved['new']
+    mountpoint, old, new = checked_move(read(journal), config, drive)
     for folder in (staging, mountpoint):
         run(['umount', str(folder)], 600, check=False)
     if os.path.ismount(mountpoint):
@@ -340,7 +361,7 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
             f'The new drive is in place, but {exc}. Run  sudo bash install.sh  to finish; to go back: sudo python3 migrate.py back'
         )
         return 2
-    start_again(saved.get('stopped'), out)
+    start_again(read(journal).get('stopped'), out)
     journal.unlink(missing_ok=True)
     out(
         f'Done: the {DRIVES[drive][1]} is the new drive, mounted at {mountpoint}. The old drive was not changed: '
@@ -425,7 +446,7 @@ def main():
     if not shutil.which('rsync'):
         parser.error('rsync is needed: run  sudo bash install.sh  (it installs it), then try again')
     if args.action == 'move':
-        if not (args.drive and args.to and re.fullmatch(r'[A-Za-z0-9-]{8,80}', args.to)):
+        if not (args.drive and args.to and UUID.fullmatch(args.to)):
             parser.error('move needs --drive and --to (the UUID list shows)')
         return move(args.config, args.drive, args.to)
     return {'list': list_targets, 'back': back, 'resume': resume}[args.action](args.config)
