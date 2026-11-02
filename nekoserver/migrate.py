@@ -231,12 +231,39 @@ def stop_writers(journal=JOURNAL):
 
 
 def start_again(stopped, out=print):
+    """Start again what the move stopped; returns those that did not start."""
+    failed = []
     for unit in reversed([u for u in stopped or [] if isinstance(u, str) and UNIT.fullmatch(u)]):
         if run(['systemctl', 'start', unit], 600, check=False).returncode != 0:
             out(f'{unit} did not start again: sudo systemctl start {unit}')
+            failed.append(unit)
+    return failed
 
 
-def switch_fstab(mountpoint, old_uuid, new_uuid, fstype, fstab=FSTAB, now=None):
+def mounted_identity(folder):
+    """(UUID, filesystem, Btrfs subvolume or "") of what is mounted at `folder` now (the
+    last of mounts stacked there), or None when nothing is."""
+    shown = run(['findmnt', '-n', '-o', 'UUID,FSTYPE,SOURCE', '--mountpoint', str(folder)], 30, check=False)
+    lines = [line.split() for line in shown.stdout.splitlines() if line.split()] if shown.returncode == 0 else []
+    if not lines or len(lines[-1]) < 3:
+        return None
+    uuid, fstype, source = lines[-1][:3]
+    subvolume = source.split('[', 1)[1].rstrip(']') if '[' in source else ''
+    return uuid, fstype, '' if subvolume == '/' else subvolume
+
+
+def same_drives(mountpoint, old, staging, new):
+    """Both drives are still the ones the move began with, before each step: a drive that
+    dropped out would leave its folder an empty one on the system disk, and the last copy
+    (which deletes what is not on the old drive) and an empty-to-empty comparison would
+    then pass over nothing."""
+    if mounted_identity(mountpoint) != (old['uuid'], old['fstype'], old.get('subvolume') or ''):
+        raise RuntimeError(f'the old drive is no longer the one mounted at {mountpoint} (unplugged, or it failed)')
+    if (mounted_identity(staging) or ('',))[0] != new['uuid']:
+        raise RuntimeError(f'the new drive is no longer the one mounted at {staging}')
+
+
+def switch_fstab(mountpoint, old_uuid, new_uuid, fstype, fstab=FSTAB, now=None, subvolume=None):
     """The line that mounts `mountpoint` names the new drive; the fstab as it was is
     kept beside it (fstab.neko-before-move-<time>)."""
     from modules.storage import fstab_folder, fstab_line
@@ -248,17 +275,18 @@ def switch_fstab(mountpoint, old_uuid, new_uuid, fstype, fstab=FSTAB, now=None):
         raise RuntimeError(f'/etc/fstab does not have exactly one line mounting {mountpoint} from the old drive')
     kept = fstab.with_name(f'{fstab.name}.neko-before-move-{int(now or time.time())}')
     shutil.copy2(fstab, kept)
-    lines[found[0]] = fstab_line(new_uuid, fstype, mountpoint)
+    lines[found[0]] = fstab_line(new_uuid, fstype, mountpoint, subvolume or None)
     atomic_write(fstab, '\n'.join(lines) + '\n', 0o644)
     return kept
 
 
-def set_drive(settings, config, drive, uuid, fstype, previous=None):
-    """The settings name the new drive (and keep the old one under "previous_drive", to
-    go back): nothing of the old drive's record, its Btrfs subvolume say, is kept."""
-    record_ = {'uuid': uuid, 'fstype': fstype}
+def set_drive(settings, config, drive, record_, previous=None):
+    """The settings name the drive `record_` (its UUID, filesystem and Btrfs subvolume,
+    if any; nothing of the record it replaces), and keep the one it replaces, whole,
+    under "previous_drive", to go back to."""
+    record_ = {k: v for k, v in record_.items() if k != 'previous_drive'}
     if previous:
-        record_['previous_drive'] = previous
+        record_['previous_drive'] = {k: v for k, v in previous.items() if k != 'previous_drive'}
     config['storage'][drive] = record_
     atomic_json(settings, config)
 
@@ -296,7 +324,15 @@ def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING,
             f'this copy or its settings are on the {label} itself, which is unmounted during the move'
         )
         return 2
-    old = dict(config['storage'][drive])
+    old = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
+    # The drive as it is mounted now, its Btrfs subvolume included (the settings may not
+    # name it): the move checks it is still that one before each step, and `back` needs it.
+    mounted = mounted_identity(mountpoint)
+    if not mounted or mounted[:2] != (old.get('uuid'), old.get('fstype')):
+        out(f'The {label} in the settings is not the drive mounted at {mountpoint}; nothing was changed')
+        return 2
+    if mounted[2]:
+        old['subvolume'] = mounted[2]
     found, left_out = targets(config, drive)
     target = next((t for t in found if t[0] == new_uuid), None)
     if target is None:
@@ -306,31 +342,51 @@ def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING,
     record(
         journal, phase='checking', drive=drive, mount=str(mountpoint), old=old, new={'uuid': new_uuid, 'fstype': fstype}
     )
-    stopped = []
+    new = {'uuid': new_uuid, 'fstype': fstype}
     try:
         mount_staging(new_uuid, fstype, staging)
         if not empty(staging):
             raise RuntimeError(f'{name} is not empty; NekoServer only moves to an empty filesystem')
         record(journal, phase='copying')
+        same_drives(mountpoint, old, staging, new)
         copy(mountpoint, staging, out=out)
-        stopped = stop_writers(journal)
+        stop_writers(journal)
+        same_drives(mountpoint, old, staging, new)
         copy(mountpoint, staging, final=True, out=out)
         record(journal, phase='verifying')
         out('Comparing every file on both drives by checksum (this reads both drives once more)...')
+        same_drives(mountpoint, old, staging, new)
         differ = differences(mountpoint, staging)
         if differ:
             raise RuntimeError(f'{len(differ)} files differ after the copy (the first: {differ[0]})')
+        same_drives(mountpoint, old, staging, new)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-        run(['umount', str(staging)], 120, check=False)
-        start_again(stopped, out)
-        journal.unlink(missing_ok=True)
-        out(f'The move stopped: {exc}. The {label} is the old drive, unchanged; the apps run as before.')
-        return 1
+        return stopped_safely(exc, label, journal, staging, out)
     record(journal, phase='switching')
     return switch(path, config, drive, journal, staging, fstab, out)
 
 
 UUID = re.compile(r'[A-Za-z0-9-]{8,80}')
+SUBVOLUME = re.compile(r'(/[A-Za-z0-9@._-]+)*')
+
+
+def stopped_safely(exc, label, journal, staging, out=print):
+    """The move stopped before its switch: the new drive is unmounted and what the move
+    stopped (as its record says: also when stopping failed part-way) is started again.
+    The record goes only once all of it runs again; otherwise it stays, with what is left."""
+    run(['umount', str(staging)], 120, check=False)
+    failed = start_again((read(journal) or {}).get('stopped'), out)
+    if failed:
+        record(journal, phase='restart_failed', stopped=failed)
+        out(
+            f'The move stopped: {exc}. The {label} is the old drive, unchanged, but these did not start again: '
+            + ', '.join(failed)
+            + '. Start them (sudo systemctl start <name>), then  sudo python3 migrate.py resume'
+        )
+        return 2
+    journal.unlink(missing_ok=True)
+    out(f'The move stopped: {exc}. The {label} is the old drive, unchanged; the apps run as before.')
+    return 1
 
 
 def checked_move(saved, config, drive):
@@ -343,6 +399,7 @@ def checked_move(saved, config, drive):
         str(mountpoint) != saved.get('mount')
         or not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (old, new))
         or new.get('fstype') not in FILESYSTEMS
+        or not SUBVOLUME.fullmatch(str(old.get('subvolume') or ''))
     ):
         raise RuntimeError(f'The move\'s record ({JOURNAL}) does not match the settings; look at it, then remove it')
     return str(mountpoint), old, new
@@ -352,6 +409,18 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
     """The new drive takes the old one's place; idempotent, so a restart in the middle
     is finished by `resume`."""
     mountpoint, old, new = checked_move(read(journal), config, drive)
+    # Whatever is mounted at the folder must be one of the two drives (after a restart
+    # in the middle, fstab may already name the new one).
+    there = mounted_identity(mountpoint)
+    if (
+        there is not None
+        and there != (old['uuid'], old['fstype'], old.get('subvolume') or '')
+        and there[0] != new['uuid']
+    ):
+        out(
+            f'{mountpoint} has another drive mounted ({there[0]}), neither the old nor the new one; nothing was switched'
+        )
+        return 2
     for folder in (staging, mountpoint):
         run(['umount', str(folder)], 600, check=False)
     if os.path.ismount(mountpoint):
@@ -360,7 +429,7 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
     lines = fstab.read_text()
     if f'UUID={new["uuid"]} ' not in lines:
         switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab)
-    set_drive(settings, config, drive, new['uuid'], new['fstype'], {'uuid': old['uuid'], 'fstype': old['fstype']})
+    set_drive(settings, config, drive, new, old)
     run(['mount', mountpoint], 120)
     record(journal, phase='setup')
     log_file = Path(mountpoint if drive == 'data_ssd' else config['data_mount']) / 'installer/migrate.log'
@@ -393,6 +462,7 @@ def back(settings, out=print, fstab=FSTAB):
         if (
             not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (previous, current))
             or previous.get('fstype') not in FILESYSTEMS
+            or not SUBVOLUME.fullmatch(str(previous.get('subvolume') or ''))
         ):
             out(f'The settings\' record of the {label} is not valid; nothing was changed')
             return 2
@@ -401,8 +471,15 @@ def back(settings, out=print, fstab=FSTAB):
             return 2
         stopped = stop_writers(Path('/run/neko-migrate-back.json'))
         run(['umount', mountpoint], 600, check=False)
-        switch_fstab(mountpoint, current['uuid'], previous['uuid'], previous['fstype'], fstab)
-        set_drive(path, config, drive, previous['uuid'], previous['fstype'])
+        switch_fstab(
+            mountpoint,
+            current['uuid'],
+            previous['uuid'],
+            previous['fstype'],
+            fstab,
+            subvolume=previous.get('subvolume'),
+        )
+        set_drive(path, config, drive, previous)
         run(['mount', mountpoint], 120)
         setup_again(config, path, Path(config['data_mount']) / 'installer/migrate.log', out)
         start_again(stopped, out)
@@ -421,13 +498,7 @@ def resume(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
     if saved.get('phase') in ('switching', 'setup'):
         path, config = load_settings(settings)
         return switch(path, config, saved['drive'], journal, staging, fstab, out)
-    run(['umount', str(staging)], 120, check=False)
-    start_again(saved.get('stopped'), out)
-    journal.unlink(missing_ok=True)
-    out(
-        'A move to another drive was cut off before it switched: nothing changed, the old drive is in use. Run it again.'
-    )
-    return 1
+    return stopped_safely('it was cut off before it switched (a restart, say)', 'drive', journal, staging, out)
 
 
 def list_targets(settings, out=print):

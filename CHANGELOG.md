@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.45.1 — 2026-11-02
+
+Fixes for the project owner's two reviews of 0.45.0: the NekoServer upgrade and the drive move.
+
+**Tried for real** (the lab: Ubuntu 24.04 with systemd, two loop-device drives):
+- The drive move again, with its new checks: done, as in 0.45.0.
+- The old drive unmounted while the apps were being stopped: the move stopped before its last copy, and the new drive's copy was still there.
+
+### Fixed
+- **The upgrade now sees which setup steps worked before.** It looked for the status "complete", which the installer never writes ("success"). So the list of steps that worked before was always empty, and a step the new release broke went unnoticed. The tests used "complete" too, which hid it; they now check the installer's own word.
+- **Putting the previous release back is checked before it is called done.** Its setup ending with exit code 1 (which can mean a step failed) was taken as success, the record removed and "runs again as before" said. It now gets the same check as an upgrade: every step that worked before, the dashboard and every service on that release. Until that passes, the record stays, and app updates and the monthly check keep waiting. After a restart, the check uses the steps the upgrade noted when it began.
+- **The dashboard is asked on its own port.** The check always asked port 8787. Setup picks another port when 8787 is taken, so a good upgrade could be undone. It now uses the port that release's setup saved.
+- **A drive move checks both drives before each step.** It copied from the drive's folder without checking it was still the drive. A drive that dropped out would leave that folder an empty one on the system disk: the last copy (which deletes from the new drive what is not on the old one) would then erase the copy, and the empty-to-empty comparison would pass. Now, before each copy, before the comparison and before the switch, the old drive must still be the one mounted there (UUID, filesystem and Btrfs subvolume), and the new one at its own folder. Otherwise the move stops with nothing changed.
+- **A move whose stopping of the apps failed part-way starts again all it had stopped.** It started again an empty list and removed its record, while it said everything ran as before. It now starts again what its record lists. The record goes only once all of it runs; otherwise it stays, names what is left, and `migrate.py resume` finishes once you have started those.
+- **Going back to an old Btrfs drive mounts its own subvolume again.** The move remembered only the old drive's UUID and filesystem, so `back` could mount the drive's top level instead of `/@media`, say. It now keeps the whole record, the subvolume as mounted included, and `back` puts it in `/etc/fstab` and the settings again.
+- **Every NekoServer service must run the new release, not only the dashboard.** The check looked at the dashboard's service alone. Now any installed `nekoserver-*` service or timer whose definition names another release's folder fails the check: the backups, the monthly check, the updates and the rest.
+
 ## v0.45.0 — 2026-11-02
 
 The Updates page's System tab, first step: it shows, it changes nothing. Also two faults in 0.44.0's drive move, found by trying it for real.
