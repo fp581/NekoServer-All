@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.41.8 — 2026-11-02
+
+### Changed
+- **The weekly USB copy's code is split into parts** (SonarCloud: one function was far too complex to follow, at 85 where 30 is allowed). Checking the drive, the copy of the photos, of Nextcloud and of the password list, and the mounting are now each a part of their own; what the copy does, and in which order, is unchanged.
+
 ## v0.41.7 — 2026-11-02
 
 The project owner's second review of 0.41.5.

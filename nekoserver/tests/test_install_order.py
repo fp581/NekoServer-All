@@ -1609,7 +1609,9 @@ class UsbCopyWithoutImmichTests(unittest.TestCase):
 
     def test_the_runtime_accepts_a_copy_without_photos(self):
         source = (ROOT / 'runtime/src/backup.rs').read_text()
-        self.assertIn('let source = match a.value("source", "").as_str()', source)
+        # --source (the photos) is optional: an empty one is "no photos" (UsbRun::from_args).
+        self.assertIn('let source = inside_media("source", "Archive outside media mount")?;', source)
+        self.assertIn('"" => Ok(None),', source)
         self.assertIn('Nothing to copy: give --source, --cloud or both', source)
 
 

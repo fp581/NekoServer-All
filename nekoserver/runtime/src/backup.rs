@@ -3835,76 +3835,101 @@ pub(crate) const INTEGRITY: &str = "Backup copies failed their checksum check. "
 pub fn monthly_usb_check(a: &Args) -> Result<()> {
     usb_copy(a, Check::Full, false)
 }
-/// `weekly`: the weekly copy, which makes Nextcloud's database copy with Nextcloud
-/// paused (the monthly run's check of the drive does not: its snapshot has its own).
-fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
-    common::require_root()?;
-    let uuid = a.get("uuid")?;
-    let fstype = a.get("fstype")?;
-    if !(8..=80).contains(&uuid.len())
-        || !uuid.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-        || !["ext4", "xfs", "btrfs", "exfat"].contains(&fstype)
-    {
-        return Err(Error::new("Invalid external identity"));
-    }
-    // The photo archive (Immich) and the Nextcloud files are each optional: a server
-    // with only Nextcloud still gets its weekly USB copy.
-    let source = match a.value("source", "").as_str() {
-        "" => None,
-        value => Some(common::safe(Path::new(value))?),
-    };
-    let dest = common::mount_path(a.get("dest")?)?;
-    let media = common::mount_path(a.get("media-root")?)?;
-    let data = common::mount_path(a.get("data")?)?;
-    let cfg = a.path("config")?;
-    let cloud = match a.value("cloud", "").as_str() {
-        "" => None,
-        value => {
-            let path = common::safe(Path::new(value))?;
-            if !path.starts_with(&media) || path == media {
-                return Err(Error::new("Nextcloud folder outside media mount"));
+/// One weekly (or monthly) copy to the USB drive: where everything is, and how the
+/// drive is checked.
+struct UsbRun {
+    cfg: PathBuf,
+    data: PathBuf,
+    media: PathBuf,
+    dest: PathBuf,
+    uuid: String,
+    fstype: String,
+    check: Check,
+    /// The photo archive (Immich) and the Nextcloud files are each optional: a server
+    /// with only Nextcloud still gets its weekly USB copy.
+    source: Option<PathBuf>,
+    cloud: Option<PathBuf>,
+    /// The weekly copy, which makes Nextcloud's database copy with Nextcloud paused (the
+    /// monthly run's check of the drive does not: its snapshot has its own).
+    weekly: bool,
+}
+impl UsbRun {
+    fn from_args(a: &Args, check: Check, weekly: bool) -> Result<UsbRun> {
+        let uuid = a.get("uuid")?.to_string();
+        let fstype = a.get("fstype")?.to_string();
+        if !(8..=80).contains(&uuid.len())
+            || !uuid.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            || !["ext4", "xfs", "btrfs", "exfat"].contains(&fstype.as_str())
+        {
+            return Err(Error::new("Invalid external identity"));
+        }
+        let media = common::mount_path(a.get("media-root")?)?;
+        let inside_media = |key: &str, refused: &str| -> Result<Option<PathBuf>> {
+            match a.value(key, "").as_str() {
+                "" => Ok(None),
+                value => {
+                    let path = common::safe(Path::new(value))?;
+                    if !path.starts_with(&media) || path == media {
+                        return Err(Error::new(refused));
+                    }
+                    Ok(Some(path))
+                }
             }
-            Some(path)
-        }
-    };
-    guard(&cfg, &data, &media)?;
-    let identity = common::json(&cfg, 64000);
-    if ["data_ssd", "media_hdd"]
-        .iter()
-        .any(|k| identity["storage"][k]["uuid"].as_str() == Some(uuid))
-    {
-        return Err(Error::new("External UUID must differ from primary drives"));
+        };
+        let source = inside_media("source", "Archive outside media mount")?;
+        let cloud = inside_media("cloud", "Nextcloud folder outside media mount")?;
+        Ok(UsbRun {
+            cfg: a.path("config")?,
+            data: common::mount_path(a.get("data")?)?,
+            dest: common::mount_path(a.get("dest")?)?,
+            media,
+            uuid,
+            fstype,
+            check,
+            source,
+            cloud,
+            weekly,
+        })
     }
-    if source.is_none() && cloud.is_none() {
-        return Err(Error::new(
-            "Nothing to copy: give --source, --cloud or both",
-        ));
+    /// The SSD and HDD are still the right drives.
+    fn drives(&self) -> Result<()> {
+        guard(&self.cfg, &self.data, &self.media)
     }
-    if let Some(source) = &source {
-        if !source.starts_with(&media) || source == &media {
-            return Err(Error::new("Archive outside media mount"));
-        }
-        separate(source, &dest)?;
+    /// The USB drive is still the one mounted, and the SSD and HDD the right drives.
+    fn still(&self) -> Result<()> {
+        validate_external(&self.dest, &self.uuid)?;
+        self.drives()
     }
-    // A weekly copy, the monthly check of the same drive and a restore from it (the
-    // recovery menu holds this lock while it reads the drive) wait for each other.
-    let _lock = common::lock_wait(
-        Path::new(USB_LOCK),
-        std::time::Duration::from_secs(8 * 3600),
-    )?;
-    execute_with(Some(&data), "external", &cfg, || {
-        // A monthly run may have started while this waited for the drive (the shared
-        // lock was let go after the first check): checked again, now that it is held.
-        if check == Check::Quick {
-            monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+    /// What must hold before the USB drive is even looked at.
+    fn admissible(&self) -> Result<()> {
+        self.drives()?;
+        let identity = common::json(&self.cfg, 64000);
+        if ["data_ssd", "media_hdd"]
+            .iter()
+            .any(|k| identity["storage"][k]["uuid"].as_str() == Some(self.uuid.as_str()))
+        {
+            return Err(Error::new("External UUID must differ from primary drives"));
         }
+        if self.source.is_none() && self.cloud.is_none() {
+            return Err(Error::new(
+                "Nothing to copy: give --source, --cloud or both",
+            ));
+        }
+        if let Some(source) = &self.source {
+            separate(source, &self.dest)?;
+        }
+        Ok(())
+    }
+    /// The USB drive is plugged in, a disk of its own, of the filesystem saved, and its
+    /// folder ready. Returns whether it is mounted there already.
+    fn usb_ready(&self) -> Result<bool> {
         common::stage("checking the USB drive");
-        guard(&cfg, &data, &media)?;
-        let device = Path::new("/dev/disk/by-uuid").join(uuid);
+        self.drives()?;
+        let device = Path::new("/dev/disk/by-uuid").join(&self.uuid);
         if !device.exists() {
             return Err(Error::new("External drive missing"));
         }
-        own_disk(&device, &data, &media)?;
+        own_disk(&device, &self.data, &self.media)?;
         let (code, s) = common::command(
             &[
                 "blkid",
@@ -3916,14 +3941,14 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
             ],
             10,
         )?;
-        if code != 0 || s.trim() != fstype {
+        if code != 0 || s.trim() != self.fstype {
             return Err(Error::new("External filesystem mismatch"));
         }
-        fs::create_dir_all(&dest)?;
-        let already = common::mounted(&dest);
+        let dest = &self.dest;
+        fs::create_dir_all(dest)?;
+        let already = common::mounted(dest);
         if already {
-            let options =
-                common::findmnt("OPTIONS", "--mountpoint", &dest, 10)?.unwrap_or_default();
+            let options = common::findmnt("OPTIONS", "--mountpoint", dest, 10)?.unwrap_or_default();
             if read_only(&options) {
                 return Err(Error::new(&format!(
                     "The USB drive is mounted read-only at {} (a restore from the recovery menu that was cut off leaves it so): unmount it with  sudo umount {}  and the copy runs again",
@@ -3931,163 +3956,54 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
                     dest.display()
                 )));
             }
-        }
-        if !already && fs::read_dir(&dest)?.next().is_some() {
+        } else if fs::read_dir(dest)?.next().is_some() {
             return Err(Error::new("Nonempty mount destination refused"));
         }
+        Ok(already)
+    }
+    fn mount(&self) -> Result<()> {
+        success(
+            &[
+                "mount",
+                "-o",
+                &usb_mount_options(&self.fstype),
+                &format!("UUID={}", self.uuid),
+                &self.dest.to_string_lossy(),
+            ],
+            30,
+        )
+    }
+}
+fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
+    common::require_root()?;
+    let run = UsbRun::from_args(a, check, weekly)?;
+    run.admissible()?;
+    // A weekly copy, the monthly check of the same drive and a restore from it (the
+    // recovery menu holds this lock while it reads the drive) wait for each other.
+    let _lock = common::lock_wait(
+        Path::new(USB_LOCK),
+        std::time::Duration::from_secs(8 * 3600),
+    )?;
+    execute_with(Some(&run.data), "external", &run.cfg, || {
+        // A monthly run may have started while this waited for the drive (the shared
+        // lock was let go after the first check): checked again, now that it is held.
+        if check == Check::Quick {
+            monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+        }
+        let already = run.usb_ready()?;
         let mut mounted_here = false;
-        let result: Result<Option<Value>> = (|| {
+        let result = (|| {
             if !already {
-                success(
-                    &[
-                        "mount",
-                        "-o",
-                        &usb_mount_options(fstype),
-                        &format!("UUID={uuid}"),
-                        &dest.to_string_lossy(),
-                    ],
-                    30,
-                )?;
+                run.mount()?;
                 mounted_here = true;
             }
-            validate_external(&dest, uuid)?;
-            // Also when someone else mounted it: no private copy onto a readable drive.
-            require_private_mount(&dest, fstype)?;
-            guard(&cfg, &data, &media)?;
-            // From here every folder and file made on the USB drive first checks it is
-            // still mounted: unplugged mid-copy, the copy stops instead of filling the
-            // system disk through the empty folder it was mounted on.
-            let _usb = common::expect_drive(&dest)?;
-            let mut photos = None;
-            if let Some(source) = &source {
-                common::stage("copying photos and videos to the USB drive");
-                photos = Some(mirror(source, &dest, true, check)?.1);
-                validate_external(&dest, uuid)?;
-                guard(&cfg, &data, &media)?;
-            }
-            let mut database_problem: Option<String> = None;
-            if wants_database(source.is_some(), &data) {
-                common::stage("copying the Immich database to the USB drive");
-                database_problem = copy_newest_dump(&media.join("backups/immich-database"), &dest)?;
-            }
-            validate_external(&dest, uuid)?;
-            guard(&cfg, &data, &media)?;
-            let mut cloud_copy = None;
-            let mut cloud_problem = None;
-            if let Some(cloud) = &cloud {
-                if cloud.is_dir() {
-                    common::stage("copying Nextcloud files to the USB drive");
-                    let internal = nextcloud_internal(&data);
-                    let copy = || {
-                        copy_cloud(
-                            cloud,
-                            &dest,
-                            true,
-                            fstype == "exfat",
-                            check,
-                            internal.as_deref(),
-                        )
-                    };
-                    let mut copied = copy()?;
-                    validate_external(&dest, uuid)?;
-                    guard(&cfg, &data, &media)?;
-                    let mut dump_problem = None;
-                    if weekly && wants_cloud_database(true, &data) {
-                        let (second, problem) = paused_cloud(
-                            &AppDocker(&NEXTCLOUD),
-                            Path::new(CLOUD_JOURNAL),
-                            || pause_lock(&cfg, &data, &media),
-                            || nextcloud_dump(&cfg, &data, &media).map(drop),
-                            || {
-                                validate_external(&dest, uuid)?;
-                                guard(&cfg, &data, &media)?;
-                                copy()
-                            },
-                        );
-                        if let Some(second) = second? {
-                            copied = second.after(copied);
-                        }
-                        dump_problem = problem;
-                        validate_external(&dest, uuid)?;
-                        guard(&cfg, &data, &media)?;
-                    }
-                    cloud_copy = Some(copied);
-                    if cloud_encrypted(cloud) {
-                        println!("Nextcloud: {CLOUD_ENCRYPTED}; this backup is incomplete");
-                        cloud_problem = Some(CLOUD_ENCRYPTED.to_string());
-                    }
-                    if wants_cloud_database(true, &data) {
-                        common::stage("copying the Nextcloud database to the USB drive");
-                        let copied = copy_newest_of(
-                            &NEXTCLOUD_DUMPS,
-                            &media.join("backups").join(NEXTCLOUD_DUMPS.folder),
-                            &dest,
-                        )?;
-                        database_problem = joined(
-                            [database_problem.take(), dump_problem.clone(), copied]
-                                .into_iter()
-                                .flatten(),
-                        );
-                        validate_external(&dest, uuid)?;
-                    }
-                } else {
-                    println!("Nextcloud: {CLOUD_MISSING}; this backup is incomplete");
-                    cloud_problem = Some(CLOUD_MISSING.to_string());
-                }
-            }
-            common::stage("copying the password list to the USB drive");
-            let passwords_problem = copy_newest_secrets(
-                &[media.join(MONTHLY_SNAPSHOTS), media.join(PASSWORD_LISTS)],
-                &dest,
-            )?;
-            validate_external(&dest, uuid)?;
-            if let Some(photos) = &photos {
-                save_integrity(&data, "usb_photos", photos, check)?;
-            }
-            if let Some(cloud) = &cloud_copy {
-                save_integrity(&data, "usb_nextcloud", &cloud.integrity, check)?;
-            }
-            // Damage found by the checksum checks fails the job, after everything else
-            // was copied: nothing is lost by finishing the run first.
-            let damage: Vec<String> = [
-                photos.as_ref().and_then(|p| p.findings("HDD archive")),
-                cloud_copy
-                    .as_ref()
-                    .and_then(|c| c.integrity.findings("USB Nextcloud")),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            if !damage.is_empty() {
-                return Err(Error::new(&format!(
-                    "{INTEGRITY}{}",
-                    settle(&damage.join(". "))
-                )));
-            }
-            // A list of files that could not be written makes the backup incomplete too.
-            let source_problem = joined(
-                [
-                    cloud_problem,
-                    photos.and_then(|p| p.list_problem),
-                    cloud_copy
-                        .as_ref()
-                        .and_then(|c| c.integrity.list_problem.clone()),
-                ]
-                .into_iter()
-                .flatten(),
-            );
-            Ok(incomplete(
-                cloud_copy.and_then(|c| c.missing()),
-                database_problem,
-                source_problem,
-                passwords_problem,
-            ))
+            copy_to_usb(&run)
         })();
         // A drive that would not unmount is reported after the copy's own error, which
         // is the one that says what went wrong (and damage still reads as damage: the
         // monthly run stops only for an error that starts with INTEGRITY).
         let unmounted = if mounted_here {
-            success(&["umount", &dest.to_string_lossy()], 45)
+            success(&["umount", &run.dest.to_string_lossy()], 45)
         } else {
             Ok(())
         };
@@ -4102,6 +4018,153 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
         }
         Ok(Outcome { partial })
     })
+}
+/// The copy itself, onto the mounted USB drive: the photos and Immich's database copy,
+/// Nextcloud's files and database copy, the password list. Returns what makes the copy
+/// incomplete; damage found by the checksum checks fails it, after everything was copied.
+fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
+    let dest = &run.dest;
+    run.still()?;
+    // Also when someone else mounted it: no private copy onto a readable drive.
+    require_private_mount(dest, &run.fstype)?;
+    run.drives()?;
+    // From here every folder and file made on the USB drive first checks it is still
+    // mounted: unplugged mid-copy, the copy stops instead of filling the system disk
+    // through the empty folder it was mounted on.
+    let _usb = common::expect_drive(dest)?;
+    let mut photos = None;
+    if let Some(source) = &run.source {
+        common::stage("copying photos and videos to the USB drive");
+        photos = Some(mirror(source, dest, true, run.check)?.1);
+        run.still()?;
+    }
+    let mut database_problem: Option<String> = None;
+    if wants_database(run.source.is_some(), &run.data) {
+        common::stage("copying the Immich database to the USB drive");
+        database_problem = copy_newest_dump(&run.media.join("backups/immich-database"), dest)?;
+    }
+    run.still()?;
+    let cloud = match &run.cloud {
+        Some(cloud) => cloud_to_usb(run, cloud)?,
+        None => CloudPart::default(),
+    };
+    let database_problem = joined([database_problem, cloud.database].into_iter().flatten());
+    common::stage("copying the password list to the USB drive");
+    let passwords_problem = copy_newest_secrets(
+        &[
+            run.media.join(MONTHLY_SNAPSHOTS),
+            run.media.join(PASSWORD_LISTS),
+        ],
+        dest,
+    )?;
+    validate_external(dest, &run.uuid)?;
+    let cloud_copy = cloud.copy;
+    if let Some(photos) = &photos {
+        save_integrity(&run.data, "usb_photos", photos, run.check)?;
+    }
+    if let Some(cloud) = &cloud_copy {
+        save_integrity(&run.data, "usb_nextcloud", &cloud.integrity, run.check)?;
+    }
+    // Damage found by the checksum checks fails the job, after everything else was
+    // copied: nothing is lost by finishing the run first.
+    let damage: Vec<String> = [
+        photos.as_ref().and_then(|p| p.findings("HDD archive")),
+        cloud_copy
+            .as_ref()
+            .and_then(|c| c.integrity.findings("USB Nextcloud")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !damage.is_empty() {
+        return Err(Error::new(&format!(
+            "{INTEGRITY}{}",
+            settle(&damage.join(". "))
+        )));
+    }
+    // A list of files that could not be written makes the backup incomplete too.
+    let source_problem = joined(
+        [
+            cloud.problem,
+            photos.and_then(|p| p.list_problem),
+            cloud_copy
+                .as_ref()
+                .and_then(|c| c.integrity.list_problem.clone()),
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    Ok(incomplete(
+        cloud_copy.and_then(|c| c.missing()),
+        database_problem,
+        source_problem,
+        passwords_problem,
+    ))
+}
+/// What the Nextcloud part of the USB copy did: its files' copy, and what makes the
+/// backup incomplete (the files folder missing or encrypted; no database copy).
+#[derive(Default)]
+struct CloudPart {
+    copy: Option<CloudCopy>,
+    problem: Option<String>,
+    database: Option<String>,
+}
+/// Nextcloud's files and database copy to the USB drive: the files first, with
+/// Nextcloud running, then (weekly) the last pass and the database copy with Nextcloud
+/// paused (paused_cloud), then the newest database copy onto the drive.
+fn cloud_to_usb(run: &UsbRun, cloud: &Path) -> Result<CloudPart> {
+    if !cloud.is_dir() {
+        println!("Nextcloud: {CLOUD_MISSING}; this backup is incomplete");
+        return Ok(CloudPart {
+            problem: Some(CLOUD_MISSING.to_string()),
+            ..CloudPart::default()
+        });
+    }
+    let (cfg, data, media, dest) = (&run.cfg, &run.data, &run.media, &run.dest);
+    common::stage("copying Nextcloud files to the USB drive");
+    let internal = nextcloud_internal(data);
+    let exfat = run.fstype == "exfat";
+    let copy = || copy_cloud(cloud, dest, true, exfat, run.check, internal.as_deref());
+    let mut copied = copy()?;
+    run.still()?;
+    let with_database = wants_cloud_database(true, data);
+    let mut dump_problem = None;
+    if run.weekly && with_database {
+        let (second, problem) = paused_cloud(
+            &AppDocker(&NEXTCLOUD),
+            Path::new(CLOUD_JOURNAL),
+            || pause_lock(cfg, data, media),
+            || nextcloud_dump(cfg, data, media).map(drop),
+            || {
+                run.still()?;
+                copy()
+            },
+        );
+        if let Some(second) = second? {
+            copied = second.after(copied);
+        }
+        dump_problem = problem;
+        run.still()?;
+    }
+    let mut part = CloudPart {
+        copy: Some(copied),
+        ..CloudPart::default()
+    };
+    if cloud_encrypted(cloud) {
+        println!("Nextcloud: {CLOUD_ENCRYPTED}; this backup is incomplete");
+        part.problem = Some(CLOUD_ENCRYPTED.to_string());
+    }
+    if with_database {
+        common::stage("copying the Nextcloud database to the USB drive");
+        let newest = copy_newest_of(
+            &NEXTCLOUD_DUMPS,
+            &media.join("backups").join(NEXTCLOUD_DUMPS.folder),
+            dest,
+        )?;
+        part.database = joined([dump_problem, newest].into_iter().flatten());
+        validate_external(dest, &run.uuid)?;
+    }
+    Ok(part)
 }
 #[cfg(test)]
 mod tests {
@@ -5260,9 +5323,10 @@ mod tests {
         assert!(
             at("lock()") < at("pause_app(&NEXTCLOUD") && at("pause_app(&NEXTCLOUD") < at("dump()")
         );
-        let copy = &source[source.find("fn usb_copy(").unwrap()..];
-        assert!(copy.contains("|| pause_lock(&cfg, &data, &media)"));
-        assert!(copy.contains("copy_newest_of(\n                            &NEXTCLOUD_DUMPS"));
+        let copy = &source[source.find("fn cloud_to_usb(").unwrap()..];
+        let copy = &copy[..copy.find("\n}\n").unwrap()];
+        assert!(copy.contains("|| pause_lock(cfg, data, media)"));
+        assert!(copy.contains("copy_newest_of(\n            &NEXTCLOUD_DUMPS"));
     }
     /// The newest inventory of a tree, unpacked.
     fn newest_inventory(root: &Path) -> Value {
@@ -6920,7 +6984,7 @@ mod tests {
         let weekly = &source[source.find("pub fn weekly(").unwrap()..];
         let weekly = &weekly[..weekly.find("\n}\n").unwrap()];
         assert!(!weekly.contains("nextcloud_dump("), "{weekly}");
-        let copy = &source[source.find("fn usb_copy(").unwrap()..];
+        let copy = &source[source.find("fn cloud_to_usb(").unwrap()..];
         let copy = &copy[..copy.find("\n}\n").unwrap()];
         let paused = copy.find("paused_cloud(").unwrap();
         assert!(
