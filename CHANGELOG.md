@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.44.0 — 2026-11-02
+
+Moving a working server to bigger drives, from the project owner's review of 0.41.5.
+
+### Added
+- **`migrate.py`: the SSD or the HDD moved to a new drive while both are connected.**
+  - `list` shows where each drive can move.
+  - `move --drive data_ssd|media_hdd --to <UUID>`:
+    1. Copies everything while the apps run, keeping owners, permissions, hard links, ACLs and extended attributes.
+    2. Stops the apps, Docker, Samba and NekoServer's jobs, and copies what changed meanwhile.
+    3. Compares every file on both drives by checksum. Any difference stops the move, with the apps back on the old drive.
+    4. Switches: the new drive takes the old one's place in `/etc/fstab` (the old file is kept beside it) and in the settings, and setup runs again without questions or a system update.
+  - The old drive is never changed. `back` goes back to it, and `resume` puts a move cut off by a power cut right.
+  - App updates, the checks, the monthly check and app restarts wait while a move is at work.
+- `rsync` is among the packages setup installs (the move uses it).
+
+### Not tried for real
+- The move was tested with stand-ins for the drives, Docker and setup, and the copy and checksum comparison on real folders. It was not done on real drives.
+
 ## v0.43.0 — 2026-11-02
 
 The Updates page's NekoServer tab: NekoServer upgrades itself when you approve, as one coordinated operation.

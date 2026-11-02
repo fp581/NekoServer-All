@@ -159,12 +159,13 @@ fn app_port(app: &str) -> Option<u16> {
 /// An interrupted backup, snapshot or update that still has to be finished: until it
 /// is, it may start or stop these same apps.
 pub fn unfinished_job(journals: &[&Path]) -> Option<&'static str> {
-    const WHAT: [&str; 5] = [
+    const WHAT: [&str; 6] = [
         "An interrupted monthly update",
         "An interrupted app backup",
         "An interrupted host backup",
         "An interrupted Immich snapshot",
         "A NekoServer upgrade",
+        "A move to a new drive",
     ];
     journals
         .iter()
@@ -172,11 +173,11 @@ pub fn unfinished_job(journals: &[&Path]) -> Option<&'static str> {
         .find(|(p, _)| p.exists())
         .map(|(_, w)| w)
 }
-pub fn journals() -> [&'static Path; 5] {
+pub fn journals() -> [&'static Path; 6] {
     // Unit tests never read this PC's own journals: on a PC running NekoServer, a real
     // unfinished job would answer before the check a test is about.
     if cfg!(test) {
-        return [Path::new("/nonexistent/neko-tests/journal.json"); 5];
+        return [Path::new("/nonexistent/neko-tests/journal.json"); 6];
     }
     [
         Path::new(maintenance::JOURNAL),
@@ -184,6 +185,7 @@ pub fn journals() -> [&'static Path; 5] {
         Path::new(host_snapshot::JOURNAL),
         Path::new(IMMICH_SNAPSHOT_RESUME),
         Path::new(maintenance::UPGRADE_JOURNAL),
+        Path::new(maintenance::MIGRATE_JOURNAL),
     ]
 }
 

@@ -412,7 +412,7 @@ if "$apply"; then
   # same everywhere; the others differ by family.
   common_tools=(
     'coreutils:sha256sum du id install stat cp chmod chown df timeout'
-    'tar:tar' 'curl:curl' 'openssl:openssl' 'pciutils:lspci')
+    'tar:tar' 'curl:curl' 'openssl:openssl' 'pciutils:lspci' 'rsync:rsync')
   if [[ "$family" == debian ]]; then
     prerequisites=(
       'python3:python3'

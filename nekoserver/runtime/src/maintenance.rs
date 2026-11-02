@@ -3506,9 +3506,15 @@ const UNFINISHED_UPDATE: &str = "An update is not finished yet, so nothing else 
 /// check or monthly run starts until it is over, so the two never overlap.
 pub(crate) const UPGRADE_JOURNAL: &str = "/etc/nekoserver-backups/upgrade.json";
 const UPGRADING: &str = "NekoServer is being upgraded (or an upgrade was cut off and is being put right), so this waits for its next time; the Updates page, NekoServer tab, shows how far it is";
+/// A move of the SSD or the HDD to a new drive at work or cut off (migrate.py).
+pub(crate) const MIGRATE_JOURNAL: &str = "/etc/nekoserver-backups/migrate.json";
+const MOVING: &str = "A drive is being moved to a new one (or a move was cut off: sudo python3 migrate.py resume), so this waits for its next time";
 fn no_upgrade() -> Result<()> {
     if Path::new(UPGRADE_JOURNAL).exists() {
         return Err(Error::new(UPGRADING));
+    }
+    if Path::new(MIGRATE_JOURNAL).exists() {
+        return Err(Error::new(MOVING));
     }
     Ok(())
 }
@@ -4353,6 +4359,9 @@ mod tests {
         assert!(include_str!("../../upgrade.py")
             .contains("JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')"));
         assert!(UPGRADE_JOURNAL.ends_with("/upgrade.json"));
+        assert!(include_str!("../../migrate.py")
+            .contains("JOURNAL = Path('/etc/nekoserver-backups/migrate.json')"));
+        assert!(MIGRATE_JOURNAL.ends_with("/migrate.json"));
         assert!(include_str!("apps.rs").contains("Path::new(maintenance::UPGRADE_JOURNAL)"));
     }
     /// An update snapshot of `app` at `at`: installed (`done`) or not, as the weekly
