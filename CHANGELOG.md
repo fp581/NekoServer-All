@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.41.4 — 2026-11-02
 
 The sixth round: RECOVERY.md's two drive-replacement rows followed word for word, the 0.41.3 update on a second family, and the application SSD mirrored.
+
+**Tried for real** (WSL rig): on openSUSE Tumbleweed, RECOVERY.md's RAID row on the HDD mirror (`cat /proc/mdstat`, `mdadm --add`, the dashboard's Drives page showing the rebuild, then whole; the app backup ran on it) and its Btrfs row on a two-drive pool missing one (`btrfs replace`, the balance, the ordinary mount again, the dashboard healthy), then the 0.41.3 update (27 of 29 steps, the two left wait for the Tailscale sign-in). On Arch, the same update over a 0.41.2 server (27 of 29, feature check 47 of 47, the fault suite 30 of 30), then the HDD replaced by an empty one: setup refused with the gone drive named and the way out, the rerun rewrote fstab, made every Nextcloud account's folder and refreshed the file list, and the feature check was 47 of 47; the drive-return service run by hand under a lock held install.sh's way said setup was running and ended without an error. The application SSD made an mdadm RAID-1 mirror in place (the filesystem shrunk first, a second drive synced; Docker ran from the array), one drive failed and taken off the bus: writes landed, the storage guard restarted Docker, the drive-return service was fine, every backup and the monthly run passed, the dashboard said degraded with the critical alert; the drive replaced by the row (`mdadm /dev/md1 --add`), the dashboard showing the rebuild and then healthy; the SSD a plain drive again. The Python suite, the Rust suite (394) and clippy pass.
 
 ### Fixed
 - **After a new HDD, Nextcloud takes uploads again.** Since 0.41.1 setup gives Nextcloud an empty files folder back on a replaced HDD, but Nextcloud's database still listed what the old drive held: it took each account's `files` folder for present, never made it again, and refused every upload ("Could not create path"), the monthly run's test file with it ("Nextcloud could not write a test file after 120 seconds, though Nextcloud answers", so no verified snapshot and no app updates until the folder was made by hand). Setup now makes the folder of every account Nextcloud names on the new drive and refreshes Nextcloud's file list, so the old drive's listing is gone and uploads work; the log says so.
