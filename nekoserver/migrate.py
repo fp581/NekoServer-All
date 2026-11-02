@@ -63,8 +63,17 @@ MARGIN = 1.05
 WRITERS = ('docker.socket', 'docker.service', 'smb.service', 'smbd.service', 'nmb.service', 'nmbd.service')
 
 
+# What may be passed to a program: a plain word, path, option or UUID= name, never a
+# shell construct or a control character (the commands run without a shell anyway).
+ARGUMENT = re.compile(r'[A-Za-z0-9_@%+=:,./-]+')
+UNIT = re.compile(r'[A-Za-z0-9_@.-]+\.(?:service|timer|socket)')
+
+
 def run(argv, timeout=None, check=True, capture=True):
-    return subprocess.run(argv, capture_output=capture, text=True, timeout=timeout, check=check)
+    checked = [a for a in argv if ARGUMENT.fullmatch(a)]
+    if len(checked) != len(argv):
+        raise RuntimeError('A command was refused: one of its arguments is not a plain word or path')
+    return subprocess.run(checked, capture_output=capture, text=True, timeout=timeout, check=check)
 
 
 def read(journal=JOURNAL):
@@ -221,7 +230,7 @@ def stop_writers(journal=JOURNAL):
 
 
 def start_again(stopped, out=print):
-    for unit in reversed(stopped or []):
+    for unit in reversed([u for u in stopped or [] if isinstance(u, str) and UNIT.fullmatch(u)]):
         if run(['systemctl', 'start', unit], 600, check=False).returncode != 0:
             out(f'{unit} did not start again: sudo systemctl start {unit}')
 
