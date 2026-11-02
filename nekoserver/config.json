@@ -1,5 +1,5 @@
 {
-  "project_name": "NekoServer v0.41.8",
+  "project_name": "NekoServer v0.42.0",
   "timezone": "auto",
   "data_mount": "/srv/nekoserver",
   "media_mount": "/mnt/nekoserver-media",
@@ -432,6 +432,8 @@
     "keep_snapshots": 3,
     "night_end_hour": 6,
     "health_wait_seconds": 300,
+    "settle_days": 7,
+    "update_day": "Wed",
     "immich_major_update": "",
     "nextcloud_major_update": ""
   },

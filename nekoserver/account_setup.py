@@ -546,6 +546,35 @@ def verify_project(config, app):
     )
 
 
+def signs_in(config, app, client_factory=Client):
+    """Whether `app` takes its saved login now, for the weekly update (before and after it
+    installs a new version). Read-only: with `allow_create` off the app checks below never
+    make or change an account, and nothing is written to the saved logins. Returns None
+    when there is no saved login to try; raises with the reason (never a password) when
+    the app refuses it."""
+    entry = store.get(config, app)
+    if not entry:
+        return None
+    entry = {**entry, 'allow_create': False}
+    client = client_factory(app)
+    try:
+        verify_project(config, app)
+        wait(app, client, 60)
+        if app in ARR:
+            arr(client, entry, config, app)
+        elif app == 'seerr':
+            seerr(client, entry, None)
+        elif app == 'nextcloud':
+            nextcloud(client, entry, config)
+        else:
+            {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
+                client, entry
+            )
+        return True
+    finally:
+        client.close()
+
+
 def provision(config, apps, output=print, client_factory=Client):
     pending = []
     for app in apps:

@@ -1,10 +1,47 @@
-# Monthly overnight backup, restore test and update
+# App updates and the monthly check
 
-## What is scheduled
+Since 0.42.0 app updates no longer wait for the monthly run. Three jobs share the work:
 
-The full profile installs a Rust worker and a systemd timer for the **first of each month at 02:30** in your configured `timezone` (default Asia/Jerusalem). The timezone is explicit, including daylight saving changes. Persistent catch-up is disabled: a missed night will not trigger updates at lunchtime. The worker checks its night window before starting and again before activating updates. Recovery of an interrupted job can run outside that window to bring services back.
+| Job | When | What it does | What it stops |
+|---|---|---|---|
+| **Daily update check** (`nekoserver-update-check.timer`) | Every day at 13:41 (caught up after the PC was off) | Looks for a new version of each app and downloads it. Notes the day it first saw each version. | Nothing |
+| **Weekly app updates** (`nekoserver-updates.timer`) | Wednesday nights at `maintenance.time` (02:30), never on the 1st | Installs each version that has settled, one app at a time (see below). | Only the app being updated, for a few minutes |
+| **Monthly check** (`nekoserver-maintenance.timer`) | The 1st of each month at `maintenance.time` | Compares every backup copy with its checksum, takes a snapshot of every app and tests that it restores. It updates nothing. | Every app, while the snapshot is written |
 
-This is an installed server timer, not a ChatGPT reminder. It operates without the dashboard or a chat session. Apply the full profile to the actual PC to enable it. No production schedule has been activated in the development workspace.
+All three use your configured `timezone` (default Asia/Jerusalem), daylight saving included. The update nights and the monthly check never catch up a missed night in the daytime. They check the night window (`maintenance.night_end_hour`) before stopping anything and again before installing. They share one lock with the backups and setup, so no two of them ever run at once. A run that is cut off (a power cut) is finished or undone by `nekoserver-maintenance-resume.service`, from the same journal.
+
+These are timers installed on the server. They run without the dashboard or a chat session.
+
+## Weekly app updates
+
+**Settling.** A new version waits `maintenance.settle_days` days after the daily check first saw it (7 by default, 1 to 30) before an update night installs it. By then a release with a bad bug has usually been fixed or pulled. Most images publish a new build every few days, so the check keeps the last four versions it found for each app and installs the newest one that has waited long enough. The day is set in `maintenance.update_day` (`Mon` to `Sun`, `Wed` by default).
+
+**On the update night, each app with a settled version goes on its own, one after the other:**
+
+1. The checks before anything stops: the drives, free space, the app running and answering, and that the downloaded images are still there. It also tries the app's saved login (`account-setup.py signin`, read-only), when setup saved one.
+2. **A snapshot of that app alone**, on the HDD in `backups/updates/<run>/`. The app is stopped cleanly first, so its database and files are of one point in time. The snapshot has the same contents as a monthly one, for that app (see below). It is checked against its checksums. The isolated restore test is the monthly check's, so it is not run here, which keeps the downtime short.
+3. The new version is installed, the whole stack at once. For Immich, the server and machine-learning containers always come from the same release.
+4. The app is checked: its containers are healthy, it answers, and its own probe passes (Nextcloud writes a test file; Immich's database answers). If its saved login worked before the update, **it must work again after it**.
+5. If any check fails, **the update is undone**: the app's data, settings and old images all come back from the snapshot. Immich cannot downgrade an upgraded database, so switching back to the old images alone would not be enough. The app runs its previous version, and the update is tried again on the next update night.
+6. Once it passes, the version is kept. Each app keeps the snapshots of its newest two installed updates. Images from two updates ago, which nothing uses any more, are removed. Every other app's previous images, and the versions still waiting, stay.
+
+One app's failed update does not stop the others. The result then says "done in part" and names the app that was undone.
+
+**On the dashboard** (the **Updates** page, "Apps" tab), each app shows:
+- the version it runs and the versions waiting, with the day each installs by itself;
+- its last snapshot and how its last update ended.
+
+The page has these buttons, each needing the dashboard PIN:
+- **Check for updates** runs the daily check now.
+- **Update now** installs the newest version found, at once, whatever the time of day. It goes through the same steps: snapshot, update, checks, undo on failure. It is never a shortcut that only downloads an image.
+- **Install at the next update night** skips the settling days for one version, for an urgent fix, say.
+- **What changed** opens the app's own release notes.
+
+Both update buttons start a background service (`nekoserver-update-now@<app>.service`), so closing the browser stops nothing. Reopening the page shows how far it is.
+
+**Bigger version jumps** (a new Immich or Nextcloud major) are not installed until you approve them. See "Major version updates" below. Nor is a release whose files NekoServer does not recognise: an Immich release with an unknown Compose layout, say.
+
+The **NekoServer** and **System** tabs explain what they will cover. Upgrading NekoServer itself and maintaining the Linux system from the dashboard come in later releases. Until then, upgrade NekoServer with `git pull` and `sudo bash install.sh`. Running setup again also installs the packages it needs: on Arch that updates the whole system, on Debian and Ubuntu it refreshes the package lists and installs what is missing. The app snapshots cannot undo a Linux, kernel or Docker upgrade.
 
 ## What the monthly snapshot holds
 
@@ -22,7 +59,9 @@ Each snapshot's encrypted password list (with the key copy and certificate that 
 
 ## Transaction and live tests
 
-The monthly run does three things, always in this order: **check, back up, update**.
+The monthly check and each weekly update follow the same steps. The monthly check does all of them except installing (it starts the apps again as they were). A weekly update leaves out step 0 and the restore test, and downloads nothing: the daily check already did.
+
+The monthly run does three things, always in this order: **check, back up, update**. Since 0.42.0, "update" means starting the apps again; the new versions come on the update nights.
 
 0. **Checksum check of your photo and file copies.** Every copy in the HDD photo archive is read and compared with its recorded checksum, and so is every copy on the USB drive when it is plugged in (the weekly copy runs then, reading everything). This finds damage that leaves a file's size and date unchanged. If anything is damaged, the run stops here: nothing is backed up or updated, the job shows as failed on the dashboard, and the file names are in its log (`journalctl -u nekoserver-maintenance`). Repair with `sudo bash install.sh --recover`. A USB drive that is plugged in but can't be checked for another reason (it is full, or would not mount) does not stop the run: the snapshot and updates go on, and the result shows "done in part" with the reason. A USB drive that is not plugged in is checked in the next monthly run it is plugged in for. Each HDD copy is read once in this check (the USB check uses what the HDD check read), so it takes about as long as reading the photo library twice, plus the USB drive once. The hourly and weekly copies compare size and dates only, so they stay quick.
 1. Verify disks, free capacity, the running selected containers, persistent mounts and local application health. The existing native media audit must also show that selected app connections are configured and passing; incomplete onboarding blocks updates.

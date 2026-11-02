@@ -18,7 +18,9 @@ JOBS = {
     'external': ('USB copy (photos and files)', 'nekoserver-photo-backup', 864000),
     'applications': ('Media application snapshot', 'nekoserver-app-backup', 172800),
     'host': ('Host and user snapshot', 'nekoserver-host-backup', 172800),
-    'maintenance': ('Monthly backup and updates', 'nekoserver-maintenance', 3024000),
+    'maintenance': ('Monthly check and snapshot', 'nekoserver-maintenance', 3024000),
+    'updates': ('Weekly app updates', 'nekoserver-updates', 777600),
+    'update_check': ('Daily update check', 'nekoserver-update-check', 216000),
 }
 # Only these programs are run, with plain arguments (no shell, no control characters).
 PROGRAMS = {'systemctl', 'docker', 'findmnt', 'tailscale'}

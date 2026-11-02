@@ -643,6 +643,31 @@ h1 {
   background: var(--raised);
   min-width: 0;
 }
+.update-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+}
+.update-tabs button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: var(--raised);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.update-tabs button[aria-selected='true'] {
+  border-color: var(--accent, currentColor);
+  font-weight: 600;
+}
+.update-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
 .card p {
   font-size: 14px;
   margin: 6px 0;

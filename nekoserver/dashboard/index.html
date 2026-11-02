@@ -50,6 +50,9 @@
           <a class="nav" href="#health" data-route="health"
             ><span class="nav-icon" aria-hidden="true">◈</span><span class="nav-text">Server health</span></a
           >
+          <a class="nav" href="#updates" data-route="updates"
+            ><span class="nav-icon" aria-hidden="true">⇡</span><span class="nav-text">Updates</span></a
+          >
           <a class="nav" href="#attention" data-route="attention"
             ><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-text">Needs attention</span
             ><b class="count" data-count="issues">—</b></a
@@ -383,6 +386,25 @@
           <div id="monitoring" class="card-grid two"></div>
           <div id="readiness" class="row-list"></div>
           <div id="updates"></div>
+        </section>
+
+        <!-- UPDATES -->
+        <section class="panel" data-page="updates">
+          <header class="section-head">
+            <div>
+              <span class="eyebrow">KEPT SAFE BEFORE IT CHANGES</span>
+              <h2>Updates</h2>
+              <p>Every app update takes a snapshot first, checks the app afterwards, and is undone if it fails.</p>
+            </div>
+          </header>
+          <div class="update-tabs" role="tablist" aria-label="What to update">
+            <button type="button" role="tab" id="tab-apps" data-tab="apps" aria-selected="true">Apps</button>
+            <button type="button" role="tab" id="tab-nekoserver" data-tab="nekoserver" aria-selected="false">
+              NekoServer
+            </button>
+            <button type="button" role="tab" id="tab-system" data-tab="system" aria-selected="false">System</button>
+          </div>
+          <div id="updates-tab" role="tabpanel"></div>
         </section>
 
         <!-- HELP -->
