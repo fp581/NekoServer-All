@@ -620,6 +620,29 @@ fn held_by(path: &Path, setup: &Path) -> bool {
         holds_lock_on(pid, lock.dev(), lock.ino()) && has_open(pid, setup.dev(), setup.ino())
     })
 }
+/// Whether setup (`sudo bash install.sh`) is running: some process holds its lock.
+/// Read-only, like held_by: a setup starting this moment is never kept from its lock.
+pub fn setup_running() -> bool {
+    setup_held(Path::new(SETUP_LOCK))
+}
+/// install.sh takes its lock with the flock command on a descriptor bash keeps
+/// (`flock -n 9`): the lock's owner is that command, gone at once, so the kernel leaves
+/// the lock out of /proc/locks (a lock whose owner is no process is hidden there), and
+/// /proc/locks cannot tell. The descriptor can: bash and every setup program inherit it,
+/// and its fdinfo carries the lock for as long as it is held. So every process's open
+/// files are looked at for one on the lock file that holds a lock.
+fn setup_held(setup: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::metadata(setup) else {
+        return false;
+    };
+    fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .any(|pid| holds_lock_on(pid, meta.dev(), meta.ino()))
+}
 /// The processes holding a lock on a file with inode `ino`, from /proc/locks lines like
 /// "1: FLOCK  ADVISORY  WRITE 1234 08:02:5678 0 EOF" (a waiting one has "->"). Any
 /// device: see held_by.
@@ -1201,6 +1224,41 @@ mod lock_tests {
         drop(held);
         assert!(shared_lock_wait_with(&shared, &setup, short, short).is_ok());
         let _ = fs::remove_dir_all(root);
+    }
+    /// A running setup is told by its own lock being held, nothing else (drive-return
+    /// leaves the apps to it then), found through the descriptor that holds it, as
+    /// /proc/locks leaves out a lock whose owner (install.sh's flock command) is gone.
+    #[test]
+    fn a_running_setup_is_recognised_by_its_lock_alone() {
+        let setup = scratch("setup-running").join("setup.lock");
+        assert!(!setup_held(&setup), "no lock file yet");
+        fs::write(&setup, b"").unwrap();
+        assert!(!setup_held(&setup), "a lock file nobody holds");
+        let held = lock(&setup).unwrap();
+        assert!(setup_held(&setup));
+        // The same lock taken by a child that exits at once (flock -n 9 in install.sh):
+        // the descriptor, inherited by this process's shell, still holds it. The sleep
+        // replaces the shell (exec), so killing that one process lets the lock go: a
+        // sleep forked by the shell would keep the descriptor, and the lock, after it.
+        drop(held);
+        assert!(!setup_held(&setup));
+        let shell = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "exec 9>>'{}'; flock -n 9 || exit 9; exec sleep 30",
+                setup.display()
+            ))
+            .spawn()
+            .unwrap();
+        let waited = Instant::now();
+        while !setup_held(&setup) && waited.elapsed() < Duration::from_secs(5) {
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(setup_held(&setup), "held through an inherited descriptor");
+        let mut shell = shell;
+        shell.kill().unwrap();
+        shell.wait().unwrap();
+        assert!(!setup_held(&setup));
     }
     /// QA-02 on a real filesystem: the folder in NEKO_LOCKDIR (a Btrfs subvolume, say;
     /// skipped without it). This process holds the shared lock there and has setup's own

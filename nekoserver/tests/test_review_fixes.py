@@ -2472,6 +2472,37 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
             self.assertFalse(nextcloud.files_folder_given_back(config, said.append))
             chown.assert_not_called()
 
+    def test_the_accounts_get_their_folders_on_the_new_hdd_and_the_old_listing_is_dropped(self):
+        # Seen on the rig (round 6): the folder given back, Nextcloud's database still listed
+        # the old HDD's folders, so it never made the administrator's `files` folder again
+        # and refused every upload ("Could not create path"), the monthly check's test file too.
+        from modules import nextcloud
+
+        ran = []
+
+        listed = '{"neko_6d72bdeaa6a2":"neko_6d72bdeaa6a2","alice":"Alice","../evil":"x"}'
+
+        def run(argv, **kw):
+            ran.append(argv[-2:])
+            return mock.Mock(returncode=0, stdout=listed if 'user:list' in argv else '', stderr='')
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(nextcloud, 'ensure_directory') as made,
+            mock.patch.object(nextcloud, 'checked_run') as scanned,
+        ):
+            said = []
+            files = Path(tmp) / 'cloud/files'
+            done = nextcloud.account_folders_given_back(['compose'], files, said.append, run=run)
+        self.assertEqual(done, 2)
+        self.assertEqual(
+            [c.args for c in made.call_args_list],
+            [(files / 'neko_6d72bdeaa6a2/files', 0o755, 33, 33), (files / 'alice/files', 0o755, 33, 33)],
+        )
+        self.assertEqual(scanned.call_args.args[0][-2:], ['files:scan', '--all'])
+        self.assertIn('2 account(s)', said[0])
+        self.assertIn('uploads work again', said[0])
+
     def test_the_refusal_names_what_differs(self):
         from modules import nextcloud
 

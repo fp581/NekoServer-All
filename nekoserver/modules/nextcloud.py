@@ -153,6 +153,43 @@ def files_folder_given_back(config, log):
     return True
 
 
+# Nextcloud's own rule for an account name (lib/private/User/Manager.php).
+ACCOUNT_NAME = re.compile(r'[a-zA-Z0-9_.@-]+')
+
+
+def account_folders_given_back(base, files, log, run=subprocess.run):
+    """After the files folder was given back empty, Nextcloud's database still lists what
+    the old drive held: it takes each account's `files` folder for present, never makes
+    it again, and refuses every upload ("Could not create path"; the monthly check's test
+    file with it). Each account named by Nextcloud gets the folder on the new drive, and
+    a scan drops the old drive's listing. The number of accounts done."""
+    listed = run(
+        base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'user:list', '--output=json'],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    text = listed.stdout or ''
+    try:
+        accounts = json.loads(text[text.index('{') :]) if listed.returncode == 0 else {}
+    except ValueError:
+        accounts = {}
+    named = [name for name in accounts if isinstance(name, str) and ACCOUNT_NAME.fullmatch(name)]
+    for name in named:
+        ensure_directory(safe_path(files / name / 'files'), 0o755, WWW_DATA, WWW_DATA)
+    checked_run(
+        base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'files:scan', '--all'],
+        1800,
+        'Nextcloud (refreshing its file list)',
+    )
+    log(
+        f'Nextcloud: the folders of its {len(named)} account(s) were made on the new drive and its file list '
+        'refreshed, so uploads work again'
+    )
+    return len(named)
+
+
 def settings_changed(recorded, wanted):
     """What differs between the settings Nextcloud was installed with and the ones in
     my-config.json now, named for the refusal; '' when nothing does."""
@@ -416,7 +453,8 @@ def run(ctx):
         chosen = account_store.get(config, 'nextcloud') if account_store.enabled(config) else None
         if account_store.enabled(config) and chosen is None:
             raise RuntimeError('Complete the account_credentials prompts before Nextcloud setup')
-        if not manifest.exists():
+        fresh = not manifest.exists()
+        if fresh:
             if chosen:
                 opts['admin_user'] = chosen['username']
                 ctx.persist_config()
@@ -461,8 +499,9 @@ def run(ctx):
             )
             # Written last: a compose.yaml means every setting file of this step is in place.
             atomic_write(manifest, payload, 0o600)
-        else:
-            files_folder_given_back(config, ctx.log)
+        # An install already made whose files folder is gone (a new HDD): given back, and
+        # its accounts' folders made again once Nextcloud answers.
+        given_back = not fresh and files_folder_given_back(config, ctx.log)
         safe_path(env)
         if env.stat().st_uid != ROOT_UID or env.stat().st_mode & 0o077:
             raise RuntimeError('Nextcloud credentials must be private and root-owned')
@@ -500,6 +539,8 @@ def run(ctx):
         command(base + ['config', '-q'])
         compose_up(base, 'Nextcloud', ctx.log, 1800)
         finish_install(base, ctx.log)
+        if given_back:
+            account_folders_given_back(base, safe_path(Path(config['media_mount']) / FILES_FOLDER), ctx.log)
         if opts.get('image', 'auto') == 'auto':
             config['nextcloud']['image'] = image
             ctx.persist_config()
