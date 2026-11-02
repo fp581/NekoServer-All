@@ -2925,19 +2925,8 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
     let audit = matches!(plan, Plan::Audit);
     // The night window, except for an update you started yourself.
     let in_window = || matches!(plan, Plan::Update(c) if c.anytime) || night(cfg);
-    // First the checksum check, then the snapshot. When last month's night ran out
-    // before the apps could be stopped (checking every copy of a big library takes
-    // long), the check waits a month so the snapshot is taken this time.
     let data_root = Path::new(string(cfg, "data_mount")?);
-    let postponed = audit && night_ran_out(data_root);
-    let notes = if !audit {
-        vec![]
-    } else if postponed {
-        println!("Monthly check: last month's night ran out during the checksum check, so this month the snapshot goes first; the check runs next month");
-        vec!["checksum check of every copy: postponed to next month (last month's night ran out during it)".to_string()]
-    } else {
-        check_copies(cfgpath, cfg)?
-    };
+    let (notes, postponed) = checks_first(cfgpath, cfg, audit, data_root)?;
     // A weekly USB copy at work (also when the check above was left out, or the USB
     // drive was not checked) is waited for before any app stops; a later one sees this
     // run and does not start (backup::no_weekly_copy).
@@ -2955,56 +2944,7 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
     // without it they stay in data.tar so the snapshot can still be restored.
     let sealing = secrets_key_ready(Path::new(SECRETS_KEY_DIR));
     let paths = snapshot_paths(&names, data, sealing);
-    let setting = cfg["maintenance"]["minimum_free_gb"]
-        .as_u64()
-        .unwrap_or(20)
-        .saturating_mul(1 << 30);
-
-    let app_bytes = size(data, &paths.0)?;
-    let media_bytes = size(media, &paths.1)?;
-    common::stage("checking free space");
-    let keep = keep_snapshots(cfg);
-    let mut retention = if audit {
-        prune_monthly(data, media, keep, None)?
-    } else {
-        prune_updates(media, &names[0], None)?
-    };
-    let (ssd, hdd) = space_needed(app_bytes, media_bytes, image_bytes(&names)?);
-    // The USB drive is not used by monthly maintenance.
-    for (root, needed, what) in [(data, ssd, "SSD"), (media, hdd, "HDD")] {
-        let (mut have, drive) = drive_space(root)?;
-        let reserve = reserve_for(setting, drive);
-        let wanted = needed.saturating_add(reserve);
-        if have < wanted && what == "HDD" && audit {
-            have = make_room(media, &mut retention, wanted)?;
-        }
-        if have < wanted {
-            let gb = |b: u64| (b as f64 / 1e9).ceil() as u64;
-            let unfinished = if what == "HDD" {
-                let runs: Vec<String> = retention["incomplete_not_removed"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|r| r.as_str().map(str::to_string))
-                    .collect();
-                unfinished_note(&folder, &runs, size(&folder, &runs).unwrap_or(0))
-            } else {
-                String::new()
-            };
-            return Err(Error::new(&format!(
-                "Not enough space on the {what} ({}) for the snapshot and update: {} GB free, about {} GB needed (a copy of the app data and the new app images, plus the {} GB reserve{}). Free up space there, or lower the reserve{unfinished}",
-                root.display(),
-                gb(have),
-                gb(wanted),
-                gb(reserve),
-                if reserve < setting {
-                    ": a fifth of the drive, less than maintenance.minimum_free_gb"
-                } else {
-                    " from maintenance.minimum_free_gb"
-                }
-            )));
-        }
-    }
+    let mut retention = room(cfg, &folder, &names, &paths, audit)?;
     let run = format!("{}-{}", (common::now() * 1e6) as u128, std::process::id());
     common::directory(&folder, 0o700)?;
     let snapshot = folder.join(&run);
@@ -3013,27 +2953,7 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
     let work = work_dir(data, &run);
     common::directory(&data.join("backups/maintenance-work"), 0o700)?;
     common::directory(&work, 0o700)?;
-    let mut models = json!({});
-    let mut rows = vec![];
-    for name in &names {
-        let mut current = model(cfg, name)?;
-        valid_model(&current, name, data, media)?;
-        rows.extend(containers(name, &mut current)?);
-        let file = snapshot.join(format!("{name}-old.json"));
-        common::atomic_json(&file, &current)?;
-        models[name] = current;
-    }
-    common::atomic_json(&snapshot.join("config.json"), cfg)?;
-    for name in &names {
-        health(
-            &snapshot.join(format!("{name}-old.json")),
-            &format!("neko-{name}"),
-            name,
-            30,
-            false,
-            &snapshot,
-        )?;
-    }
+    let (models, rows) = running_models(cfg, &names, &snapshot)?;
     integrations(cfgpath, cfg, false)?;
     no_other_writers(&rows, data, media, &paths)?;
     // The new version was downloaded by the daily check, while the apps ran: the
@@ -3057,17 +2977,7 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
         Plan::Audit => None,
     };
     if !in_window() {
-        if postponed {
-            // Even without the check the night is too short: a failure, so it is seen.
-            return Err(Error::new(&format!(
-                "{NIGHT_TOO_SHORT} (maintenance.night_end_hour is {})",
-                cfg["maintenance"]["night_end_hour"].as_i64().unwrap_or(6)
-            )));
-        }
-        if audit {
-            mark_night_ran_out(data_root);
-        }
-        return Err(Error::new(NIGHT_BEFORE_STOP));
+        return Err(night_ended(cfg, postponed, audit, data_root));
     }
     if audit {
         clear_night_ran_out(data_root);
@@ -3079,50 +2989,8 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
     common::stage("stopping the apps for a consistent snapshot");
     stop(&rows)?;
     mounts(cfgpath, cfg, false)?;
-    common::stage("writing the snapshot");
-    let exclude: &[&str] = if sealing { &SEALED_EXCLUDES } else { &[] };
-    tar(data, &paths.0, &snapshot.join("data.tar"), exclude)?;
-    tar(media, &paths.1, &snapshot.join("media.tar"), &[])?;
-    let password_files = encrypt_secrets(data, &snapshot)?;
-    if password_files == "unencrypted_in_data_tar" {
-        println!("Monthly maintenance: no backup key yet, so this snapshot keeps the app password files unencrypted inside data.tar (readable by root only). To encrypt them from now on: sudo python3 backup_secrets.py --setup");
-    }
-    if sealing {
-        // data.tar left these out; keep a private SSD copy so a failed update can be
-        // rolled back unattended (the encrypted copy needs the sudo password).
-        let mut journal = load(Path::new(JOURNAL))?;
-        journal["sealed_copy"] = json!(save_sealed_copy(data, &work)?);
-        save_journal(&journal)?;
-    }
-    let mut images = std::collections::BTreeSet::new();
-    for m in models.as_object().unwrap().values() {
-        for v in m["services"].as_object().unwrap().values() {
-            images.insert(string(v, "image")?.to_string());
-        }
-    }
-    let image_archive = snapshot.join("images.tar");
-    let image_name = image_archive.to_string_lossy();
-    let mut image_args = vec!["image", "save", "--output", &image_name];
-    image_args.extend(images.iter().map(String::as_str));
-    docker(&image_args)?;
-    fs::File::open(&image_archive)?.sync_all()?;
-    let mut manifest = json!({"format":"neko-maintenance-v1","kind":if audit {"monthly"} else {"update"},"apps":names,"version":VERSION,"created_at":common::now(),"storage":cfg["storage"],"paths":{"data":paths.0,"media":paths.1},"sha256":{"data":common::digest(&snapshot.join("data.tar"))?,"media":common::digest(&snapshot.join("media.tar"))?,"images":common::digest(&image_archive)?},"password_files":password_files});
-    if password_files == "encrypted" {
-        // The archive and the key copy and certificate that open it: a damaged key would
-        // otherwise only show up at a restore, as a "wrong password".
-        for (key, name) in [
-            ("secrets", SECRETS_ARCHIVE),
-            ("secrets_key", SECRETS_KEY),
-            ("secrets_cert", SECRETS_CERT),
-        ] {
-            manifest["sha256"][key] = json!(common::digest(&snapshot.join(name))?);
-        }
-    }
-    common::atomic_json(&snapshot.join("manifest.json"), &manifest)?;
-    verify(&snapshot)?;
-    let mut journal = load(Path::new(JOURNAL))?;
-    journal["phase"] = json!("backed_up");
-    save_journal(&journal)?;
+    write_snapshot(cfg, &snapshot, &work, &names, &paths, sealing, &models)?;
+    set_phase("backed_up")?;
     // The isolated restore test is the monthly check's: an update's snapshot is checked
     // by checksum (verify, above), so its rollback is safe, without the extra downtime.
     if audit {
@@ -3139,29 +3007,8 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
         ));
     }
     mounts(cfgpath, cfg, false)?;
-    let mut journal = load(Path::new(JOURNAL))?;
-    journal["phase"] = json!("updating");
-    save_journal(&journal)?;
-    if let Some(folder) = immich_files {
-        for name in [".env", "compose.yaml"] {
-            common::atomic(
-                &data.join("compose/immich").join(name),
-                &common::bytes(&folder.join(name), 500000)?,
-                0o600,
-            )?;
-        }
-    }
-    // The declared tag moves with an approved Nextcloud major, so later monthly
-    // updates and installer re-runs stay on it (the snapshot covers these files).
-    if let Some((from, to)) = nextcloud_step {
-        for name in ["compose.yaml", "managed.json"] {
-            let path = data.join("compose/nextcloud").join(name);
-            if path.exists() {
-                let text = String::from_utf8_lossy(&common::bytes(&path, 500000)?).to_string();
-                common::atomic(&path, retag_nextcloud(&text, from, to).as_bytes(), 0o600)?;
-            }
-        }
-    }
+    set_phase("updating")?;
+    put_new_files(data, immich_files.as_deref(), nextcloud_step)?;
     common::stage("starting the updated apps");
     // Originals have remained stopped since the consistent backup; no writes are lost.
     let wait = cfg["maintenance"]["health_wait_seconds"]
@@ -3195,9 +3042,7 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
                 &snapshot.join("result.json"),
                 &json!({"status":"pass","updated_at":common::now(),"restore_test":"pass","snapshot":"hdd","images":updated}),
             )?;
-            let mut journal = load(Path::new(JOURNAL))?;
-            journal["phase"] = json!("committed");
-            save_journal(&journal)
+            set_phase("committed")
         },
     )?;
     // The update is committed. Cleanup is best effort: a failure here must never be
@@ -3205,12 +3050,9 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
     // Done while the journal still says "committed": checking the snapshots kept can
     // take long, and a run cut off here (a restart, the time limit) is then finished as
     // the installed update it is, not reported as a failure rolled back.
-    // Read before the old snapshots are tidied: with keep_snapshots 1 the run that names
-    // them is among those removed.
-    // The record on the SSD (OLD_IMAGES) also names those whose run folders are gone.
     retention["after_update"] = match mounts(cfgpath, cfg, false).and_then(|_| {
         if audit {
-            prune_monthly(data, media, keep, Some(&run))
+            prune_monthly(data, media, keep_snapshots(cfg), Some(&run))
         } else {
             prune_updates(media, &names[0], Some(&run))
         }
@@ -3218,39 +3060,291 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
         Ok(report) => report,
         Err(e) => json!({"status":"skipped","reason":e.to_string()}),
     };
-    if audit {
-        // Nothing was updated, so no image was replaced.
-        let _ = common::atomic_json(&snapshot.join("retention.json"), &retention);
-        return finish(data, media, notes);
+    // The monthly check updated nothing, so no image was replaced.
+    if !audit {
+        retention["images_removed"] = json!(clean_images(cfg, &run, &names[0], &updated, &models)?);
     }
-    let app = names[0].as_str();
-    let mut older = previous_images(media, &run, app);
+    let _ = common::atomic_json(&snapshot.join("retention.json"), &retention);
+    finish(data, media, notes)
+}
+/// The monthly check's first step, before anything else: every backup copy compared
+/// with its checksum (an update has no such step). When last month's night ran out
+/// before the apps could be stopped (checking every copy of a big library takes long),
+/// the check waits a month so the snapshot is taken this time. Returns the run's notes
+/// and whether the check was postponed.
+fn checks_first(
+    cfgpath: &Path,
+    cfg: &Value,
+    audit: bool,
+    data_root: &Path,
+) -> Result<(Vec<String>, bool)> {
+    if !audit {
+        return Ok((vec![], false));
+    }
+    if night_ran_out(data_root) {
+        println!("Monthly check: last month's night ran out during the checksum check, so this month the snapshot goes first; the check runs next month");
+        return Ok((
+            vec!["checksum check of every copy: postponed to next month (last month's night ran out during it)".to_string()],
+            true,
+        ));
+    }
+    Ok((check_copies(cfgpath, cfg)?, false))
+}
+/// Old snapshots tidied first (the monthly ones by keep_snapshots, an app's own update
+/// snapshots by UPDATE_SNAPSHOTS), then each drive checked for room: the HDD for the
+/// snapshot, the SSD for a rollback copy and the new images, each keeping its reserve.
+/// For the monthly check, unfinished monthly snapshots are removed to make room. Returns
+/// the retention report.
+fn room(
+    cfg: &Value,
+    folder: &Path,
+    names: &[String],
+    paths: &(Vec<String>, Vec<String>),
+    audit: bool,
+) -> Result<Value> {
+    let data = Path::new(string(cfg, "data_mount")?);
+    let media = Path::new(string(cfg, "media_mount")?);
+    let setting = cfg["maintenance"]["minimum_free_gb"]
+        .as_u64()
+        .unwrap_or(20)
+        .saturating_mul(1 << 30);
+    let app_bytes = size(data, &paths.0)?;
+    let media_bytes = size(media, &paths.1)?;
+    common::stage("checking free space");
+    let mut retention = if audit {
+        prune_monthly(data, media, keep_snapshots(cfg), None)?
+    } else {
+        prune_updates(media, &names[0], None)?
+    };
+    let (ssd, hdd) = space_needed(app_bytes, media_bytes, image_bytes(names)?);
+    // The USB drive is not used by monthly maintenance.
+    for (root, needed, what) in [(data, ssd, "SSD"), (media, hdd, "HDD")] {
+        let (mut have, drive) = drive_space(root)?;
+        let reserve = reserve_for(setting, drive);
+        let wanted = needed.saturating_add(reserve);
+        if have < wanted && what == "HDD" && audit {
+            have = make_room(media, &mut retention, wanted)?;
+        }
+        if have < wanted {
+            let unfinished = if what == "HDD" {
+                let runs: Vec<String> = retention["incomplete_not_removed"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| r.as_str().map(str::to_string))
+                    .collect();
+                unfinished_note(folder, &runs, size(folder, &runs).unwrap_or(0))
+            } else {
+                String::new()
+            };
+            return Err(no_room(
+                what,
+                root,
+                have,
+                wanted,
+                reserve,
+                setting,
+                &unfinished,
+            ));
+        }
+    }
+    Ok(retention)
+}
+fn no_room(
+    what: &str,
+    root: &Path,
+    have: u64,
+    wanted: u64,
+    reserve: u64,
+    setting: u64,
+    unfinished: &str,
+) -> Error {
+    let gb = |b: u64| (b as f64 / 1e9).ceil() as u64;
+    Error::new(&format!(
+        "Not enough space on the {what} ({}) for the snapshot and update: {} GB free, about {} GB needed (a copy of the app data and the new app images, plus the {} GB reserve{}). Free up space there, or lower the reserve{unfinished}",
+        root.display(),
+        gb(have),
+        gb(wanted),
+        gb(reserve),
+        if reserve < setting {
+            ": a fifth of the drive, less than maintenance.minimum_free_gb"
+        } else {
+            " from maintenance.minimum_free_gb"
+        }
+    ))
+}
+/// The apps' models as they run now, each saved in the snapshot folder (`<app>-old.json`)
+/// and checked to be healthy, with the containers to stop.
+fn running_models(cfg: &Value, names: &[String], snapshot: &Path) -> Result<(Value, Vec<Value>)> {
+    let data = Path::new(string(cfg, "data_mount")?);
+    let media = Path::new(string(cfg, "media_mount")?);
+    let mut models = json!({});
+    let mut rows = vec![];
+    for name in names {
+        let mut current = model(cfg, name)?;
+        valid_model(&current, name, data, media)?;
+        rows.extend(containers(name, &mut current)?);
+        common::atomic_json(&snapshot.join(format!("{name}-old.json")), &current)?;
+        models[name] = current;
+    }
+    common::atomic_json(&snapshot.join("config.json"), cfg)?;
+    for name in names {
+        health(
+            &snapshot.join(format!("{name}-old.json")),
+            &format!("neko-{name}"),
+            name,
+            30,
+            false,
+            snapshot,
+        )?;
+    }
+    Ok((models, rows))
+}
+/// The night ended before anything stopped. The monthly check notes it, so the next one
+/// puts the snapshot first; when even that was too short, it is a failure, so it is seen.
+fn night_ended(cfg: &Value, postponed: bool, audit: bool, data_root: &Path) -> Error {
+    if postponed {
+        return Error::new(&format!(
+            "{NIGHT_TOO_SHORT} (maintenance.night_end_hour is {})",
+            cfg["maintenance"]["night_end_hour"].as_i64().unwrap_or(6)
+        ));
+    }
+    if audit {
+        mark_night_ran_out(data_root);
+    }
+    Error::new(NIGHT_BEFORE_STOP)
+}
+fn set_phase(phase: &str) -> Result<()> {
+    let mut journal = load(Path::new(JOURNAL))?;
+    journal["phase"] = json!(phase);
+    save_journal(&journal)
+}
+/// The snapshot of the stopped apps: their data and settings, the password files
+/// (encrypted when there is a backup key), their images, and a manifest with every
+/// checksum, checked once written.
+fn write_snapshot(
+    cfg: &Value,
+    snapshot: &Path,
+    work: &Path,
+    names: &[String],
+    paths: &(Vec<String>, Vec<String>),
+    sealing: bool,
+    models: &Value,
+) -> Result<()> {
+    let data = Path::new(string(cfg, "data_mount")?);
+    let media = Path::new(string(cfg, "media_mount")?);
+    common::stage("writing the snapshot");
+    let exclude: &[&str] = if sealing { &SEALED_EXCLUDES } else { &[] };
+    tar(data, &paths.0, &snapshot.join("data.tar"), exclude)?;
+    tar(media, &paths.1, &snapshot.join("media.tar"), &[])?;
+    let password_files = encrypt_secrets(data, snapshot)?;
+    if password_files == "unencrypted_in_data_tar" {
+        println!("Monthly maintenance: no backup key yet, so this snapshot keeps the app password files unencrypted inside data.tar (readable by root only). To encrypt them from now on: sudo python3 backup_secrets.py --setup");
+    }
+    if sealing {
+        // data.tar left these out; keep a private SSD copy so a failed update can be
+        // rolled back unattended (the encrypted copy needs the sudo password).
+        let mut journal = load(Path::new(JOURNAL))?;
+        journal["sealed_copy"] = json!(save_sealed_copy(data, work)?);
+        save_journal(&journal)?;
+    }
+    let mut images = std::collections::BTreeSet::new();
+    for m in models.as_object().unwrap().values() {
+        for v in m["services"].as_object().unwrap().values() {
+            images.insert(string(v, "image")?.to_string());
+        }
+    }
+    let image_archive = snapshot.join("images.tar");
+    let image_name = image_archive.to_string_lossy();
+    let mut image_args = vec!["image", "save", "--output", &image_name];
+    image_args.extend(images.iter().map(String::as_str));
+    docker(&image_args)?;
+    fs::File::open(&image_archive)?.sync_all()?;
+    let kind = if snapshot
+        .parent()
+        .is_some_and(|p| p.ends_with(MONTHLY_FOLDER))
+    {
+        "monthly"
+    } else {
+        "update"
+    };
+    let mut manifest = json!({"format":"neko-maintenance-v1","kind":kind,"apps":names,"version":VERSION,"created_at":common::now(),"storage":cfg["storage"],"paths":{"data":paths.0,"media":paths.1},"sha256":{"data":common::digest(&snapshot.join("data.tar"))?,"media":common::digest(&snapshot.join("media.tar"))?,"images":common::digest(&image_archive)?},"password_files":password_files});
+    if password_files == "encrypted" {
+        // The archive and the key copy and certificate that open it: a damaged key would
+        // otherwise only show up at a restore, as a "wrong password".
+        for (key, name) in [
+            ("secrets", SECRETS_ARCHIVE),
+            ("secrets_key", SECRETS_KEY),
+            ("secrets_cert", SECRETS_CERT),
+        ] {
+            manifest["sha256"][key] = json!(common::digest(&snapshot.join(name))?);
+        }
+    }
+    common::atomic_json(&snapshot.join("manifest.json"), &manifest)?;
+    verify(snapshot).map(drop)
+}
+/// The files of the new version, into the app's settings folder: a new Immich release's
+/// .env and compose file, the tag of an approved Nextcloud major (so later updates and
+/// setup runs stay on it; the snapshot covers these files).
+fn put_new_files(
+    data: &Path,
+    immich_files: Option<&Path>,
+    nextcloud_step: Option<(u64, u64)>,
+) -> Result<()> {
+    if let Some(folder) = immich_files {
+        for name in [".env", "compose.yaml"] {
+            common::atomic(
+                &data.join("compose/immich").join(name),
+                &common::bytes(&folder.join(name), 500000)?,
+                0o600,
+            )?;
+        }
+    }
+    if let Some((from, to)) = nextcloud_step {
+        for name in ["compose.yaml", "managed.json"] {
+            let path = data.join("compose/nextcloud").join(name);
+            if path.exists() {
+                let text = String::from_utf8_lossy(&common::bytes(&path, 500000)?).to_string();
+                common::atomic(&path, retag_nextcloud(&text, from, to).as_bytes(), 0o600)?;
+            }
+        }
+    }
+    Ok(())
+}
+/// After `app`'s update: the images nothing will use again are removed (its own from
+/// two updates ago, and the record's), never another app's way back (what its last
+/// update replaced) nor a version the daily check downloaded for a later night. Read
+/// before the old snapshots are tidied; the record on the SSD (OLD_IMAGES) also names
+/// those whose run folders are gone. Returns the IDs removed.
+fn clean_images(
+    cfg: &Value,
+    run: &str,
+    app: &str,
+    updated: &Value,
+    models: &Value,
+) -> Result<Vec<String>> {
+    let data = Path::new(string(cfg, "data_mount")?);
+    let media = Path::new(string(cfg, "media_mount")?);
+    let mut older = previous_images(media, run, app);
     older.extend(recorded_images(data));
-    // The record names every app's images: each other app's way back (what its last
-    // update replaced) stays, and so do the versions the daily check downloaded for a
-    // later night.
     let mut stay = crate::updates::waiting_images(data);
-    for other in self::names(cfg)?.iter().filter(|n| n.as_str() != app) {
-        stay.extend(last_replaced(media, &run, other));
+    for other in names(cfg)?.iter().filter(|n| n.as_str() != app) {
+        stay.extend(last_replaced(media, run, other));
     }
     older.retain(|id| !stay.contains(id));
-    let own = own_repositories(&updated, &image_tags);
-    let removed = prune_images(&older, &updated, &models, &|id| {
+    let own = own_repositories(updated, &image_tags);
+    let removed = prune_images(&older, updated, models, &|id| {
         image_tags(id).is_some_and(|tags| only_ours(&tags, &own))
             && docker(&["image", "rm", id]).is_ok()
     });
-    let recorded = still_recorded(&older, &removed, &models, &|id| image_tags(id).is_some());
+    let recorded = still_recorded(&older, &removed, models, &|id| image_tags(id).is_some());
     if let Err(e) = save_recorded_images(data, &recorded) {
-        println!(
-            "Monthly update: could not note the replaced images for next month's clean-up ({e})"
-        );
+        println!("App update: could not note the replaced images for the next clean-up ({e})");
     }
-    retention["images_removed"] = json!(removed);
-    let _ = common::atomic_json(&snapshot.join("retention.json"), &retention);
     if !removed.is_empty() {
         println!("App update: removed {} app image(s) from two updates ago that nothing uses (each kept snapshot still has its own in images.tar)", removed.len());
     }
-    finish(data, media, notes)
+    Ok(removed)
 }
 /// The run is over: its journal goes, saved passwords in old snapshots are blanked.
 fn finish(data: &Path, media: &Path, notes: Vec<String>) -> Result<Vec<String>> {
@@ -4317,12 +4411,10 @@ mod tests {
         assert!(last_replaced(&media, "300-1", "sonarr").is_empty());
         // The update itself keeps every other app's way back and what waits to install.
         let source = include_str!("maintenance.rs");
-        let commit = &source[source
-            .find("let mut older = previous_images(media, &run, app);")
-            .unwrap()..];
+        let commit = &source[source.find("fn clean_images(").unwrap()..];
         let commit = &commit[..commit.find("let own = ").unwrap()];
         assert!(commit.contains("crate::updates::waiting_images(data)"));
-        assert!(commit.contains("last_replaced(media, &run, other)"));
+        assert!(commit.contains("last_replaced(media, run, other)"));
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -4341,13 +4433,15 @@ mod tests {
             .find("if audit {\n        common::stage(\"testing")
             .unwrap()..]
             .starts_with("if audit {"));
-        assert!(body.contains("} else {\n        check_copies(cfgpath, cfg)?\n    };"));
+        assert!(body.contains("checks_first(cfgpath, cfg, audit, data_root)?"));
+        assert!(source.contains("    if !audit {\n        return Ok((vec![], false));\n    }"));
         // An update signs in before and after.
         assert!(body.find("signs_in(data, &c.app)").unwrap() < body.find("stop(&rows)").unwrap());
         assert!(body.contains("signed_in_again(data, &names[0])?;"));
         // And is snapshotted on its own, with its own retention, never the monthly one's.
-        assert!(body.contains("prune_updates(media, &names[0], None)?"));
-        assert!(body.contains("&& audit {\n            have = make_room("));
+        let room = &source[source.find("fn room(").unwrap()..];
+        assert!(room.contains("prune_updates(media, &names[0], None)?"));
+        assert!(room.contains("&& audit {\n            have = make_room("));
     }
     #[test]
     fn the_next_night_retry_is_kept_across_a_restart() {
@@ -5898,7 +5992,7 @@ mod tests {
         // the downloaded images are still here, before anything stops.
         assert!(!body.contains("download_updates("));
         assert!(at("images_here(") < at("save_journal("));
-        assert!(at("NIGHT_BEFORE_STOP") < at("stop(&rows)"));
+        assert!(at("night_ended(") < at("stop(&rows)"));
         let check = &source[source.find("fn look_for_updates(").unwrap()..];
         let check = &check[..check.find("\n}\n").unwrap()];
         assert!(check.contains("download_updates(") && !check.contains("stop(&"));
@@ -6033,10 +6127,16 @@ mod tests {
         assert!(!night_ran_out(&data));
         assert!(!NIGHT_TOO_SHORT.starts_with("Night window ended")); // a failure, not "done in part"
         let source = include_str!("maintenance.rs");
+        let first = &source[source.find("fn checks_first(").unwrap()..];
+        assert!(
+            first.find("night_ran_out(data_root)").unwrap()
+                < first.find("check_copies(cfgpath, cfg)").unwrap()
+        );
+        let ended = &source[source.find("fn night_ended(").unwrap()..];
+        assert!(ended.find("if postponed").unwrap() < ended.find("NIGHT_TOO_SHORT").unwrap());
         let body = &source[source.find("fn transaction(").unwrap()..];
         let at = |s: &str| body.find(s).unwrap_or_else(|| panic!("{s}"));
-        assert!(at("night_ran_out(data_root)") < at("check_copies(cfgpath, cfg)"));
-        assert!(at("NIGHT_TOO_SHORT") < at("stop(&rows)"));
+        assert!(at("night_ended(cfg, postponed, audit, data_root)") < at("stop(&rows)"));
         assert!(at("clear_night_ran_out(data_root)") < at("stop(&rows)"));
     }
 
@@ -6195,7 +6295,7 @@ mod tests {
         let pulls = &pulls[..pulls.find("\nfn transaction(").unwrap()];
         assert!(pulls.contains("remember_images(data, &[id.to_string()]);"));
         let commit = &source[source
-            .find("let mut older = previous_images(media, &run, app);")
+            .find("let mut older = previous_images(media, run, app);")
             .unwrap()..];
         assert!(commit[..200].contains("older.extend(recorded_images(data));"));
         let _ = fs::remove_dir_all(&root);

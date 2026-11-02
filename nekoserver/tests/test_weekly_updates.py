@@ -68,10 +68,12 @@ class ScheduleTests(unittest.TestCase):
     def test_settling_days_and_the_update_day_are_checked(self):
         self.assertEqual(maintenance.options(config(settle_days=3))['settle_days'], 3)
         for bad in (0, 31, '7', True):
+            settings = config(settle_days=bad)
             with self.subTest(settle_days=bad), self.assertRaisesRegex(RuntimeError, 'settle_days'):
-                maintenance.options(config(settle_days=bad))
+                maintenance.options(settings)
+        settings = config(update_day='Wednesday')
         with self.assertRaisesRegex(RuntimeError, 'update_day'):
-            maintenance.options(config(update_day='Wednesday'))
+            maintenance.options(settings)
 
 
 class SignInTests(unittest.TestCase):

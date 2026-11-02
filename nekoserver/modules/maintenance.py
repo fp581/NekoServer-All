@@ -70,6 +70,10 @@ def options(config):
     return opts
 
 
+# The start of the [Service] section of the jobs that run in the household's time zone.
+TIMED_SERVICE = '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
+
+
 def definitions(config, binary, guard):
     opts = options(config)
     start = opts.get('time', '02:30')
@@ -81,7 +85,7 @@ def definitions(config, binary, guard):
     return {
         'nekoserver-maintenance.service': '[Unit]\nDescription=NekoServer monthly check of every backup copy, snapshot and restore test\n'
         + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
+        + TIMED_SERVICE
         + zone
         + '\nTimeoutStartSec=18h\nTimeoutStopSec=infinity\n'
         + f'ExecStart={binary} maintenance --config {guard}\nExecStopPost={command}\n',
@@ -109,7 +113,7 @@ def definitions(config, binary, guard):
         # resume service as the monthly run finish or undo one that was cut off.
         'nekoserver-updates.service': '[Unit]\nDescription=NekoServer weekly protected app updates\n'
         + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
+        + TIMED_SERVICE
         + zone
         + '\nTimeoutStartSec=18h\nTimeoutStopSec=infinity\n'
         + f'ExecStart={binary} update-apps --config {guard}\nExecStopPost={command}\n',
@@ -117,7 +121,7 @@ def definitions(config, binary, guard):
         # the same steps, at any time of day; it goes on if the page is closed.
         'nekoserver-update-now@.service': '[Unit]\nDescription=NekoServer update %i now\n'
         + shared
-        + '[Service]\nType=oneshot\nUMask=0077\nEnvironment=TZ='
+        + TIMED_SERVICE
         + zone
         + '\nTimeoutStartSec=6h\nTimeoutStopSec=infinity\n'
         + f'ExecStart={binary} update-apps --config {guard} --app %i\nExecStopPost={command}\n',
