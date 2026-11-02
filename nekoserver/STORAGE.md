@@ -116,6 +116,28 @@ Use the folder the message names if it isn't `/var/lib/docker`, and remove the `
 
 If you run containers there that you want to keep, note what they are (`docker ps -a`) and where they keep their files first. After NekoServer's setup they run from the SSD: create them again there, pointing at the same files.
 
+## Moving to a bigger drive
+
+`migrate.py` moves the application SSD or the media HDD to a new drive while both are connected, and leaves the old drive exactly as it was. Run it from the NekoServer folder you downloaded, which is on the system disk. The drive being moved is unmounted during the switch, so a copy on that drive can't do it.
+
+1. **Make the new drive's filesystem first**: ext4, XFS or Btrfs, and leave it empty. NekoServer never formats a drive. For example, `sudo mkfs.ext4 -L neko-media /dev/sdX1`.
+2. `sudo python3 migrate.py list` shows each drive and the filesystems it can move to. A filesystem is offered when it is not mounted, sits on a disk of its own (not the system disk, the other drive's, or the old drive's), and is 5% bigger than what the old drive holds. The others are listed with the reason.
+3. `sudo python3 migrate.py move --drive media_hdd --to <UUID>` (or `--drive data_ssd`) does the move:
+   1. It copies everything while the apps still run. This is the long part: hours for a big HDD.
+   2. It stops the apps, Docker, Samba and NekoServer's jobs, and copies what changed meanwhile.
+   3. It compares every file on both drives by checksum. That reads both drives once more.
+   
+   Owners, permissions, hard links, ACLs and extended attributes are kept. If any file differs, the move stops, and the apps start again on the old drive as before.
+4. Then it switches:
+   - The new drive is mounted where the old one was. `/etc/fstab` as it was is kept beside it, as `fstab.neko-before-move-<time>`.
+   - The settings name the new drive and remember the old one (`"previous_drive"`).
+   - Setup runs again, without questions and without a system update, so every service and backup learns the new drive.
+5. **Keep the old drive until you are sure.** `sudo python3 migrate.py back` goes back to it: the settings and `/etc/fstab` name it again, and setup runs. What was saved to the new drive since the move is not on the old one.
+
+While a move is at work (or was cut off), app updates, the checks, the monthly check and app restarts wait. A record in `/etc/nekoserver-backups/migrate.json` says how far it got. After a power cut, run `sudo python3 migrate.py resume` from the same folder:
+- A move cut off before the switch changed nothing; the apps run from the old drive.
+- A move cut off during the switch is finished.
+
 ## RAID arrays and Btrfs pools
 
 The SSD, the HDD or the system disk may sit on a Linux software RAID array (mdadm) or a Btrfs pool over several drives; setup accepts them like any drive. The dashboard then watches the array itself: every drive of it, a rebuild and its progress, and the early signs of a failing drive — corrected read errors on a RAID member, and the read, write and corruption counters Btrfs keeps per drive (`btrfs device stats`). An array that lost a drive, a rebuild, growing error counters or a member whose SMART health fails show on the Drives page and go out as phone alerts, so the failing drive is replaced before the second one goes too. Setup refuses to put a new server on an array that has already lost a drive; a server already set up keeps running and says so instead. RECOVERY.md shows how to replace the failed drive.
