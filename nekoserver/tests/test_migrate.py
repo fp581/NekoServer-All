@@ -265,7 +265,7 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(previous, {'uuid': 'hdd-0001', 'fstype': 'ext4', 'subvolume': '/@media'})
         with (
             mock.patch.object(migrate.os.path, 'exists', return_value=True),
-            mock.patch.object(migrate, 'stop_writers', lambda journal: []),
+            mock.patch.object(migrate, 'stop_writers', return_value=[]),
         ):
             self.assertEqual(migrate.back(self.settings, self.said.append, self.fstab), 0)
         self.assertIn(

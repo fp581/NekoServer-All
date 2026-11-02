@@ -56,6 +56,8 @@ SETUP_LOCK = Path('/run/nekoserver-setup.lock')
 # before too and is not the upgrade's doing.
 DONE = 'success'
 UNITS = Path('/etc/systemd/system')
+# Where each release's files are kept on the SSD (modules/recovery.py).
+RELEASES = 'installer/releases'
 LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
@@ -151,7 +153,7 @@ def ssd(config):
 
 def kept_release(config, folder):
     """A release's copy on the SSD (installer/releases/v<numbers>), checked to be one."""
-    releases = ssd(config) / 'installer/releases'
+    releases = ssd(config) / RELEASES
     path = safe_path(Path(folder))
     if path.parent != releases or not re.fullmatch(r'v\d+\.\d+\.\d+', path.name):
         raise RuntimeError(f'Not a kept NekoServer release: {folder}')
@@ -208,7 +210,7 @@ def dashboard_port_of(config, version):
     """The dashboard's port as that release's setup left it (setup picks another one when
     8787 is taken and keeps it in the settings it saves with the release on the SSD)."""
     try:
-        saved = json.loads((ssd(config) / 'installer/releases' / ('v' + version) / 'config.json').read_text())
+        saved = json.loads((ssd(config) / RELEASES / ('v' + version) / 'config.json').read_text())
     except (OSError, ValueError):
         saved = config
     return dashboard_port(saved) or dashboard_port(config) or DASHBOARD_DEFAULT_PORT
@@ -258,7 +260,7 @@ def upgrade(
         out(busy + '; the upgrade did not start, nothing was changed. Try again later.')
         return 2
     work = ssd(config) / 'installer/upgrades'
-    previous = kept_release(config, ssd(config) / 'installer/releases' / ('v' + VERSION))
+    previous = kept_release(config, ssd(config) / RELEASES / ('v' + VERSION))
     if not (previous / 'install.sh').is_file():
         out(
             f'This release\'s files are not kept on the SSD ({previous}), so there would be no way back; run  sudo bash install.sh  first'
