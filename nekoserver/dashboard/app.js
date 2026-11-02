@@ -3552,7 +3552,6 @@ function renderHealth() {
     monitorCard('Phone notifications', s.notifications, 'notifications', old)
   ]);
   put('readiness', [el('p', 'section-note', readinessNote(media)), ...media.checks.map(c => readinessRow(c, trusted))]);
-  put('updates', s.updates.length ? [updatesBox(s.updates)] : []);
 }
 
 /* ---------- help ---------- */

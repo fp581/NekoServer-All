@@ -1706,6 +1706,14 @@ fn scrub_snapshot(snapshot: &Path) -> Result<()> {
     Ok(())
 }
 /// Scrub every monthly snapshot no unfinished update still depends on (older releases
+/// Whether the unfinished run's journal (`active`) needs the snapshot folder `run`.
+fn journal_names(active: Option<&Value>, run: &str) -> bool {
+    active.is_some_and(|j| {
+        j["snapshot"]
+            .as_str()
+            .is_some_and(|s| Path::new(s).file_name().is_some_and(|f| f == run))
+    })
+}
 /// left resolved passwords in them). Best effort: never fails a finished update.
 fn scrub_all(media: &Path) {
     for folder in [MONTHLY_FOLDER, UPDATE_FOLDER] {
@@ -1715,11 +1723,7 @@ fn scrub_all(media: &Path) {
 fn scrub_folder(hdd: &Path) {
     let active = load(Path::new(JOURNAL)).ok();
     for run in runs_in(hdd).unwrap_or_default() {
-        let in_use = active.as_ref().is_some_and(|j| {
-            j["snapshot"]
-                .as_str()
-                .is_some_and(|s| Path::new(s).file_name().is_some_and(|f| f == run.as_str()))
-        });
+        let in_use = journal_names(active.as_ref(), &run);
         if !in_use {
             if let Err(e) = scrub_snapshot(&hdd.join(&run)) {
                 println!("Monthly snapshot {run}: could not blank saved passwords ({e})");
@@ -1762,11 +1766,7 @@ fn remove_unarchived(media: &Path) {
 fn remove_unarchived_in(hdd: &Path) {
     let active = load(Path::new(JOURNAL)).ok();
     for run in runs_in(hdd).unwrap_or_default() {
-        let in_use = active.as_ref().is_some_and(|j| {
-            j["snapshot"]
-                .as_str()
-                .is_some_and(|s| Path::new(s).file_name().is_some_and(|f| f == run.as_str()))
-        });
+        let in_use = journal_names(active.as_ref(), &run);
         let folder = hdd.join(&run);
         if in_use
             || ARCHIVED
@@ -2261,14 +2261,7 @@ fn remove_run(path: &Path) -> Result<()> {
 /// here: the weekly USB job retires the old monthly copies there.
 fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) -> Result<Value> {
     let journal = load(Path::new(JOURNAL)).ok();
-    let protected = |run: &str| {
-        Some(run) == current
-            || journal.as_ref().is_some_and(|j| {
-                j["snapshot"]
-                    .as_str()
-                    .is_some_and(|s| Path::new(s).file_name().is_some_and(|f| f == run))
-            })
-    };
+    let protected = |run: &str| Some(run) == current || journal_names(journal.as_ref(), run);
     let hdd = media.join("backups/monthly");
     let complete: Vec<String> = monthly_runs(media)?
         .into_iter()
@@ -2417,14 +2410,7 @@ fn run_of(run: &Path, app: &str) -> bool {
 /// names, nor a folder that is not the worker's own.
 fn prune_updates(media: &Path, app: &str, current: Option<&str>) -> Result<Value> {
     let journal = load(Path::new(JOURNAL)).ok();
-    let protected = |run: &str| {
-        Some(run) == current
-            || journal.as_ref().is_some_and(|j| {
-                j["snapshot"]
-                    .as_str()
-                    .is_some_and(|s| Path::new(s).file_name().is_some_and(|f| f == run))
-            })
-    };
+    let protected = |run: &str| Some(run) == current || journal_names(journal.as_ref(), run);
     let folder = media.join(UPDATE_FOLDER);
     let mine: Vec<String> = update_runs(media)?
         .into_iter()
@@ -2813,7 +2799,7 @@ fn retry_transient<T>(
 type Downloads = (Value, Option<PathBuf>, Option<(u64, u64)>, Vec<String>);
 /// Each app's new model with its downloaded images pinned by ID, the new Immich release
 /// files (when there is one), the approved Nextcloud major step (when there is one) and
-/// what was left for next month (said in the run's result).
+/// what was left for later (the next daily check looks again; said in its result).
 fn download_updates(
     cfg: &Value,
     names: &[String],
@@ -2833,7 +2819,7 @@ fn download_updates(
             // A new Immich release that can't be looked up or checked this month waits
             // for the next one; the other apps (and Immich's own pinned release) update.
             immich_files = immich_candidate(cfg, snapshot, work).unwrap_or_else(|e| {
-                println!("Immich: the new release could not be checked ({e}); it waits for next month's run");
+                println!("Immich: the new release could not be checked ({e}); the next check tries again");
                 deferred.push(format!("Immich release: {e}"));
                 None
             });
@@ -2851,7 +2837,7 @@ fn download_updates(
             // new folder) waits too, like one that can't be looked up: Immich stays on its
             // release, and the other apps update.
             Err(e) if name == "immich" && immich_files.is_some() => {
-                println!("Immich: the new release's files did not pass the checks ({e}); it waits for next month's run");
+                println!("Immich: the new release's files did not pass the checks ({e}); the next check tries again");
                 deferred.push(format!("Immich release: {e}"));
                 immich_files = None;
                 let current = data.join("compose/immich");
@@ -4296,11 +4282,14 @@ fn hourly_retry() -> bool {
 /// "running" (a run cut off before it wrote its journal is marked failed by recovery).
 fn nothing_to_finish(data: &Path) -> bool {
     !Path::new(JOURNAL).exists()
-        && load(&data.join("reports/jobs/maintenance.json"))
-            .map_or(true, |r| r["status"] != "running")
+        && ["maintenance", "updates"].iter().all(|job| {
+            load(&data.join(format!("reports/jobs/{job}.json")))
+                .map_or(true, |r| r["status"] != "running")
+        })
 }
-/// What the dashboard says about a monthly run that was cut off (a power cut, a restart)
-/// before its update was installed, once the resume service has put things right.
+/// What the dashboard says about a monthly check or an app update that was cut off (a
+/// power cut, a restart) before its update was installed, once the resume service has
+/// put things right.
 fn cut_off_reason(phase: Option<&str>) -> String {
     let when = match phase {
         Some("snapshot") => "while it was taking the snapshot, with the apps stopped",
@@ -4310,7 +4299,7 @@ fn cut_off_reason(phase: Option<&str>) -> String {
         None => "before it took the snapshot",
     };
     format!(
-        "The monthly run was cut off (a power cut or a restart) {when}. The apps were started again with their versions from before the run; the next monthly run tries again"
+        "The run was cut off (a power cut or a restart) {when}. The apps were started again with their versions from before the run; it is tried again at its next time"
     )
 }
 /// The update was installed (the journal says so): finishing it never rolls back.
@@ -5439,7 +5428,7 @@ mod tests {
         assert!(cut_off_reason(Some("backed_up")).contains("testing the snapshot"));
         assert!(cut_off_reason(None).contains("before it took the snapshot"));
         assert!(cut_off_reason(Some("odd")).contains("restart) part-way"));
-        assert!(cut_off_reason(Some("updating")).contains("the next monthly run tries again"));
+        assert!(cut_off_reason(Some("updating")).contains("it is tried again at its next time"));
     }
     /// A failed run is tried again the next night, three nights running, then left to
     /// next month: the count carries over through the report of the failed run only
