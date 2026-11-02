@@ -510,6 +510,16 @@ def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
     )
 
 
+def new_drive(record, device):
+    """The settings of a drive just chosen: its UUID and filesystem, and nothing kept from
+    the drive it replaces. The old drive's Btrfs subvolume ("/@data", say) would make an
+    ext4 replacement fail its check, and a new Btrfs one look for a subvolume it may not
+    have; the new drive's own subvolume is found again when it is mounted
+    (remember_subvolumes, mount_all)."""
+    record.clear()
+    record.update(uuid=device['uuid'], fstype=device['fstype'])
+
+
 def resolve_storage_identity(config, inventory, apply=False, interactive=False, input_fn=input, out_fn=print):
     """Identify disks by verified UUID. Explicit confirmation is required for unknown devices."""
     items = discover_filesystems(inventory)
@@ -536,8 +546,7 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
             if not interactive:
                 raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
             device = whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
-            record['uuid'] = device['uuid']
-            record['fstype'] = device['fstype']
+            new_drive(record, device)
             uuid = device['uuid']
         elif not uuid:
             out_fn(f'{key} is not configured; {len(items)} formatted candidates discovered (dry-run only)')

@@ -796,7 +796,17 @@ class PortClashTests(unittest.TestCase):
             calls.append(argv[argv.index('compose') + 5 :])
             return mock.Mock(stdout='')
 
-        with mock.patch.object(neko_common, 'checked_run', side_effect=run):
+        real_run = subprocess.run
+
+        def system(argv, **kwargs):  # the image is on this PC; the port check is real
+            if argv[1:3] == ['image', 'inspect']:
+                return mock.Mock(returncode=0)
+            return real_run(argv, **kwargs)
+
+        with (
+            mock.patch.object(neko_common, 'checked_run', side_effect=run),
+            mock.patch.object(neko_common.subprocess, 'run', side_effect=system),
+        ):
             neko_common.compose_up(['docker', 'compose', '-p', 'neko-jellyfin', '-f', 'c.yaml'], 'jellyfin')
         return calls
 
@@ -813,7 +823,8 @@ class PortClashTests(unittest.TestCase):
             '{"Service": "jellyfin", "State": "running"}\n',
         ):  # a newer one
             with self.subTest(ps=ps):
-                self.assertEqual(self.compose(ps), [['pull', '--quiet', 'jellyfin'], ['up', '-d']])
+                # Running and on this PC already: started again as it is, not updated.
+                self.assertEqual(self.compose(ps), [['up', '-d']])
 
     def test_another_docker_container_on_the_port_is_named(self):
         def run(argv, **kwargs):
@@ -867,14 +878,15 @@ class PortClashTests(unittest.TestCase):
             mock.patch.object(neko_common.subprocess, 'run', return_value=networks),
         ):
             neko_common.compose_up(['docker', 'compose', '-p', 'neko-jellyfin', '-f', 'c.yaml'], 'jellyfin')
-        self.assertEqual(calls, [['pull', '--quiet', 'jellyfin'], ['up', '-d']])
+        self.assertEqual(calls, [['up', '-d']])
 
 
 class ImageDownloadTests(unittest.TestCase):
     """Images are downloaded before an app is started, with hours for a slow connection."""
 
-    def compose(self, config, image_present=True):
-        """compose_up against a fake docker: records the pull and up calls."""
+    def compose(self, config, missing=()):
+        """compose_up against a fake docker: records the pull and up calls. `missing`: the
+        images not on this PC yet (every other one is)."""
         calls = []
 
         def run(argv, timeout, what):
@@ -888,7 +900,9 @@ class ImageDownloadTests(unittest.TestCase):
         with (
             mock.patch.object(neko_common, 'checked_run', side_effect=run),
             mock.patch.object(
-                neko_common.subprocess, 'run', return_value=mock.Mock(returncode=0 if image_present else 1)
+                neko_common.subprocess,
+                'run',
+                side_effect=lambda argv, **kwargs: mock.Mock(returncode=1 if argv[-1] in missing else 0),
             ),
         ):
             neko_common.compose_up(['docker', 'compose', '-p', 'neko-immich', '-f', 'c.yaml'], 'Immich', timeout=1200)
@@ -896,7 +910,8 @@ class ImageDownloadTests(unittest.TestCase):
 
     def test_pull_comes_first_with_a_long_limit(self):
         calls = self.compose(
-            {'services': {'server': {'image': 'ghcr.io/immich-app/immich-server:v3'}, 'redis': {'image': 'valkey:8'}}}
+            {'services': {'server': {'image': 'ghcr.io/immich-app/immich-server:v3'}, 'redis': {'image': 'valkey:8'}}},
+            missing={'ghcr.io/immich-app/immich-server:v3', 'valkey:8'},
         )
         self.assertEqual(
             calls,
@@ -910,9 +925,17 @@ class ImageDownloadTests(unittest.TestCase):
         pinned = {'services': {'server': {'image': 'sha256:' + 'a' * 64}, 'redis': {'image': 'sha256:' + 'b' * 64}}}
         self.assertEqual(self.compose(pinned), [(['up', '-d'], 1200, 'Immich (docker compose up)')])
         mixed = {'services': {'server': {'image': 'sha256:' + 'a' * 64}, 'redis': {'image': 'valkey:8'}}}
-        self.assertEqual(self.compose(mixed)[0][0], ['pull', '--quiet', 'redis'])
+        self.assertEqual(self.compose(mixed, missing={'valkey:8'})[0][0], ['pull', '--quiet', 'redis'])
         with self.assertRaisesRegex(RuntimeError, 'pinned for redis .* is not on this PC'):
-            self.compose(pinned, image_present=False)
+            self.compose(pinned, missing={'sha256:' + 'b' * 64})
+
+    def test_an_app_already_on_this_pc_is_not_updated_by_setup(self):
+        # Setup run again (to add the backup app, say) must not download a newer
+        # lscr.io/...:latest: only the monthly update, with its snapshot to roll back to,
+        # updates an app (MONTHLY-MAINTENANCE.md). A new app's image is still downloaded.
+        config = {'services': {'jellyfin': {'image': 'lscr.io/linuxserver/jellyfin:latest'}, 'new': {'image': 'new:1'}}}
+        self.assertEqual(self.compose(config, missing={'new:1'})[0][0], ['pull', '--quiet', 'new'])
+        self.assertEqual(self.compose(config), [(['up', '-d'], 1200, 'Immich (docker compose up)')])
 
     def test_a_busy_registry_is_tried_again_after_a_wait(self):
         answers = iter(

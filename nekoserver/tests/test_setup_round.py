@@ -680,6 +680,16 @@ class DriveSizeTests(unittest.TestCase):
         )
         return config, out
 
+    def test_a_replacement_drive_keeps_nothing_of_the_old_one(self):
+        # The owner's review of 0.41.6: with only the old "uuid" taken out (as the docs say),
+        # the old Btrfs drive's "subvolume" stayed, so an ext4 replacement failed its check
+        # and a new Btrfs one looked for a subvolume it may not have.
+        config = dict(DRIVE_FOLDERS)
+        config['storage'] = {'data_ssd': {'uuid': '', 'fstype': 'btrfs', 'subvolume': '/@data'}}
+        config, _ = self.resolve(['2', 'sdc1', '2', 'sdd1'], config)
+        self.assertEqual(config['storage']['data_ssd'], {'uuid': 'ssd-0001', 'fstype': 'ext4'})
+        self.assertIsNone(storage.subvolume_of(config['storage']['data_ssd']))
+
     def test_the_question_says_the_sizes_first_and_a_too_small_drive_is_asked_again(self):
         config, out = self.resolve(
             ['1', '2', 'sdc1', '2', 'sdd1']
