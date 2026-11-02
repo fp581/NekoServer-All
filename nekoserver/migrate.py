@@ -63,9 +63,10 @@ MARGIN = 1.05
 WRITERS = ('docker.socket', 'docker.service', 'smb.service', 'smbd.service', 'nmb.service', 'nmbd.service')
 
 
-# What may be passed to a program: a plain word, path, option or UUID= name, never a
-# shell construct or a control character (the commands run without a shell anyway).
-ARGUMENT = re.compile(r'[A-Za-z0-9_@%+=:,./-]+')
+# What may be passed to a program: a plain word, path, option, UUID= name or a unit
+# pattern (nekoserver-*: systemctl matches it itself), never a shell construct or a
+# control character (the commands run without a shell anyway).
+ARGUMENT = re.compile(r'[A-Za-z0-9_@%+=:,./*-]+')
 UNIT = re.compile(r'[A-Za-z0-9_@.-]+\.(?:service|timer|socket)')
 
 
@@ -434,7 +435,11 @@ def list_targets(settings, out=print):
     for drive, (_, label) in DRIVES.items():
         if not config.get('storage', {}).get(drive):
             continue
-        found, left_out = targets(config, drive)
+        try:
+            found, left_out = targets(config, drive)
+        except OSError as exc:
+            out(f'The {label} ({drive}): its folder can\'t be read ({exc.strerror}); is it mounted?')
+            continue
         out(f'The {label} ({drive}) can move to:')
         for uuid, fstype, size, name in found:
             out(f'  {name}  {fstype}  {size / 1e9:.0f} GB   sudo python3 migrate.py move --drive {drive} --to {uuid}')

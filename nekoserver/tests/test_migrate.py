@@ -53,6 +53,18 @@ class TargetTests(unittest.TestCase):
         # Never the system disk, the old drive's own disk, the other drive's, nor vfat.
         for name in ('nvme0n1p2', 'sdb2', 'sda1', 'sdf1'):
             self.assertNotIn(name, said)
+        # Found in the lab: the drive list asks systemctl for "nekoserver-*", which the
+        # argument check must let through; an unmounted drive's folder is said, not a crash.
+        self.assertTrue(migrate.ARGUMENT.fullmatch('nekoserver-*'))
+        self.assertFalse(migrate.ARGUMENT.fullmatch('a;b'))
+        said = []
+        with (
+            mock.patch.object(migrate, 'load_settings', return_value=(Path('x'), CONFIG)),
+            mock.patch.object(migrate, 'lsblk', return_value=ROWS),
+            mock.patch.object(migrate, 'used_bytes', side_effect=FileNotFoundError(2, 'No such file or directory')),
+        ):
+            self.assertEqual(migrate.list_targets('x', said.append), 0)
+        self.assertIn('is it mounted?', said[0])
         found, _ = migrate.targets(CONFIG, 'media_hdd', ROWS, used=1500 * GB)
         self.assertEqual([t[0] for t in found], ['newbig-0001', 'newsmall-0001'])
 

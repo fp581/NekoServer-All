@@ -32,6 +32,7 @@ RETRY_SERVICE = 'nekoserver-maintenance-retry.service'
 RETRY_TIMER = 'nekoserver-maintenance-retry.timer'
 UPDATES_TIMER = 'nekoserver-updates.timer'
 CHECK_TIMER = 'nekoserver-update-check.timer'
+SYSTEM_TIMER = 'nekoserver-system-check.timer'
 UPGRADE_RESUME = 'nekoserver-upgrade-resume.service'
 UPGRADE_JOURNAL = '/etc/nekoserver-backups/upgrade.json'  # upgrade.py JOURNAL
 DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
@@ -168,6 +169,14 @@ def definitions(config, binary, guard):
         + shared
         + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=4h\n'
         + f'ExecStart={binary} update-check --config {guard}\n',
+        # The System tab's daily look at the Linux updates waiting and whether a restart
+        # is needed: read-only, it never installs or refreshes a package.
+        'nekoserver-system-check.service': '[Unit]\nDescription=NekoServer daily look at the system updates waiting\n'
+        + shared
+        + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=30min\n'
+        + f'ExecStart=/usr/bin/python3 -Es {bundle}/system_updates.py check --config {bundle}/config.json\n',
+        SYSTEM_TIMER: '[Unit]\nDescription=NekoServer daily look at the system updates waiting\n[Timer]\n'
+        f'OnCalendar=*-*-* 13:51:00 {zone}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
         CHECK_TIMER: '[Unit]\nDescription=NekoServer daily check for app updates\n[Timer]\n'
         f'OnCalendar=*-*-* 13:41:00 {zone}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
     }
@@ -234,6 +243,7 @@ def run(ctx):
         ['systemctl', 'enable', '--now', RETRY_TIMER],
         ['systemctl', 'enable', '--now', UPDATES_TIMER],
         ['systemctl', 'enable', '--now', CHECK_TIMER],
+        ['systemctl', 'enable', '--now', SYSTEM_TIMER],
         ['systemctl', 'enable', UPGRADE_RESUME],
     ):
         subprocess.run(args, check=True, capture_output=True, timeout=1200)

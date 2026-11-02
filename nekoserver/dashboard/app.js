@@ -383,6 +383,7 @@ function validStatus(raw) {
     updates: rows(raw.updates, 20),
     waiting_updates: { ...object(raw.waiting_updates), apps: rows(raw.waiting_updates?.apps, 20) },
     nekoserver_release: object(raw.nekoserver_release),
+    system_updates: object(raw.system_updates),
     media: { ...object(raw.media), checks: rows(raw.media?.checks) },
     acceptance: object(raw.acceptance),
     heartbeat: object(raw.heartbeat),
@@ -3563,19 +3564,67 @@ function nekoserverTab(s) {
   );
   return nodes;
 }
-function systemTab() {
-  return [
+function systemUpdateRow(u) {
+  const row = el('div', 'row');
+  const notes = [
+    u.security ? 'security fix' : '',
+    u.reboot ? 'needs a restart of the computer' : '',
+    ...list(u.restarts).map(r => 'restarts ' + text(r))
+  ];
+  row.append(
+    el('span', '', text(u.name) + ' ' + (u.from ? text(u.from) + ' → ' : '') + text(u.to)),
+    el('span', 'section-note', joined(notes))
+  );
+  return row;
+}
+function systemTab(s) {
+  const sys = s.system_updates;
+  const nodes = [
     el(
       'p',
-      '',
-      'Linux packages, Docker and the kernel are not updated from here yet: a separate, approved system maintenance (with a recovery backup of the system disk first) comes in a later release.'
+      'section-note',
+      joined([
+        text(sys.system, 'This system'),
+        numeric(sys.checked_at) ? 'checked ' + ago(sys.checked_at) : 'not checked yet'
+      ])
+    )
+  ];
+  if (sys.restart_needed) {
+    nodes.push(
+      el(
+        'p',
+        'callout',
+        'The computer needs a restart: ' +
+          list(sys.restart_reasons)
+            .map(r => text(r))
+            .join('; ') +
+          '.'
+      )
+    );
+  }
+  if (numeric(sys.count)) {
+    nodes.push(
+      el('p', '', sys.count ? plural(sys.count, 'package update') + ' waiting.' : 'No package updates waiting.')
+    );
+    const rows = el('div', 'row-list');
+    rows.append(...list(sys.updates).map(systemUpdateRow));
+    nodes.push(rows);
+  } else if (sys.note) {
+    nodes.push(el('p', '', 'The waiting updates are not known: ' + text(sys.note) + '.'));
+  }
+  nodes.push(
+    el(
+      'p',
+      'section-note',
+      'Installing system updates from here comes in a later release, with a recovery backup of the system first. Until then, update the system yourself as you do now. The app snapshots cannot undo a Linux, kernel or Docker upgrade, and a major distribution upgrade (a new Ubuntu release, say) is a separate job. Running  sudo bash install.sh  also installs what NekoServer needs: on Arch that updates the whole system.'
     ),
     el(
       'p',
       'section-note',
-      'The app snapshots cannot undo a Linux, kernel or Docker upgrade. Running  sudo bash install.sh  again also installs the packages NekoServer needs: on Arch that updates the whole system, on Debian and Ubuntu it only refreshes the package lists and installs what is missing.'
+      'OS recovery backup: none made by NekoServer yet. The nightly host backup keeps the system settings NekoServer manages, not the whole system disk.'
     )
-  ];
+  );
+  return nodes;
 }
 function renderUpdates() {
   const s = state.status;
@@ -3590,7 +3639,7 @@ function renderUpdates() {
       renderUpdates();
     };
   }
-  const tabs = { apps: () => appsTab(s), nekoserver: () => nekoserverTab(s), system: systemTab };
+  const tabs = { apps: () => appsTab(s), nekoserver: () => nekoserverTab(s), system: () => systemTab(s) };
   put('updates-tab', tabs[tab]());
 }
 function renderHealth() {
