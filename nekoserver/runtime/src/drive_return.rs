@@ -78,16 +78,17 @@ fn refresh_commands(
 }
 
 /// The recovery services of the jobs that stop apps (the monthly update, the nightly app
-/// and host snapshots, the weekly Immich pause, a photo snapshot), in the order they are
+/// and host snapshots, the weekly Immich and Nextcloud pauses, a photo snapshot), in the order they are
 /// finished: the monthly update's journal first (it decides whether apps roll back),
 /// then the others'. Each finds its own journal and does nothing without one. Starting
 /// Docker alone does not do this: containers a job stopped stay stopped under
 /// `unless-stopped`.
-const RESUMES: [&str; 5] = [
+const RESUMES: [&str; 6] = [
     "nekoserver-maintenance-resume.service",
     "nekoserver-app-resume.service",
     "nekoserver-host-resume.service",
     "nekoserver-immich-resume.service",
+    "nekoserver-nextcloud-resume.service",
     "nekoserver-immich-snapshot-resume.service",
 ];
 
@@ -328,7 +329,8 @@ mod tests {
                 "nekoserver-maintenance-resume.service",
                 "nekoserver-app-resume.service",
                 "nekoserver-host-resume.service",
-                "nekoserver-immich-resume.service"
+                "nekoserver-immich-resume.service",
+                "nekoserver-nextcloud-resume.service"
             ]
         );
         started.borrow_mut().clear();
@@ -344,7 +346,11 @@ mod tests {
             },
         );
         assert!(failed.unwrap_err().to_string().contains("apps not back"));
-        assert_eq!(started.borrow().len(), 5, "the others are still tried");
+        assert_eq!(
+            started.borrow().len(),
+            RESUMES.len(),
+            "the others are still tried"
+        );
     }
     #[test]
     fn the_hdd_power_settings_and_the_dashboard_are_renewed_after_a_remount() {

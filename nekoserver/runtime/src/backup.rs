@@ -1792,6 +1792,14 @@ pub struct CloudCopy {
     pub integrity: Integrity,
 }
 impl CloudCopy {
+    /// This pass, after the `first` one of the same run: the files left out and the list
+    /// of files are this pass's (it saw every file), the counts of both.
+    fn after(mut self, first: CloudCopy) -> CloudCopy {
+        self.copied += first.copied;
+        self.versions += first.versions;
+        self.integrity.repaired += first.integrity.repaired;
+        self
+    }
     pub fn complete(&self) -> bool {
         self.skipped == 0 && self.refused.is_empty()
     }
@@ -2281,15 +2289,27 @@ fn newest_sealed_snapshot(monthly: &Path) -> Option<(PathBuf, Value)> {
             sealed.then_some((path, manifest))
         })
 }
-/// The password list to the USB drive: the newest sealed snapshot's files, each checked
-/// against the manifest's checksum on the HDD and again once copied, into
-/// `passwords/<run>/` with the manifest; the newest USB_PASSWORD_LISTS runs are kept
-/// there. No snapshot with a list yet is nothing to copy (the first monthly run with a
-/// backup key makes one); a damaged list on the HDD is said, in words, for the report.
-fn copy_newest_secrets(monthly: &Path, usb: &Path) -> Result<Option<String>> {
-    let Some((source, manifest)) = newest_sealed_snapshot(monthly) else {
-        println!("USB: no password list to copy yet (the first monthly snapshot made with a backup key holds one)");
-        return Ok(None);
+/// Where the HDD keeps password lists: the monthly snapshots, and the lists setup makes
+/// (seal_passwords) so there is one before the first monthly snapshot.
+const MONTHLY_SNAPSHOTS: &str = "backups/monthly";
+const PASSWORD_LISTS: &str = "backups/password-lists";
+/// Said when the HDD has no password list yet: the week's USB copy is then incomplete.
+const NO_PASSWORD_LIST: &str = "the HDD holds no password list yet, so the USB drive has no copy of the app passwords: setup makes one once the backup password is set (run  sudo bash install.sh  again)";
+/// The password list to the USB drive: the newest list in `sources` (the monthly
+/// snapshots, the lists setup made), its files each checked against the manifest's
+/// checksum on the HDD and again once copied, into `passwords/<run>/` with the manifest;
+/// the newest USB_PASSWORD_LISTS runs are kept there. No list yet, or a damaged one on
+/// the HDD, is said, in words, for the report (the copy is incomplete).
+fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>> {
+    let newest = sources
+        .iter()
+        .filter_map(|folder| newest_sealed_snapshot(folder))
+        .max_by_key(|(path, _)| {
+            snapshot_stamp(&path.file_name().unwrap_or_default().to_string_lossy())
+        });
+    let Some((source, manifest)) = newest else {
+        println!("USB: {NO_PASSWORD_LIST}");
+        return Ok(Some(NO_PASSWORD_LIST.to_string()));
     };
     let run = source
         .file_name()
@@ -2333,8 +2353,115 @@ fn copy_newest_secrets(monthly: &Path, usb: &Path) -> Result<Option<String>> {
     let date = chrono::DateTime::from_timestamp(snapshot_stamp(&run).unwrap_or(0) as i64, 0)
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| run.clone());
-    println!("USB: password list from the monthly snapshot of {date} (encrypted; the recovery menu's \"App password list\" opens it with the backup password)");
+    println!("USB: password list of {date} (encrypted; the recovery menu's \"App password list\" opens it with the backup password)");
     Ok(None)
+}
+/// Setup's own password list on the HDD, sealed for the backup key like the monthly
+/// snapshot's: made after each setup run (where passwords are made and changed), so the
+/// weekly USB copy has a list to take from the first week on, not only after the first
+/// monthly snapshot. Nothing is made without a backup key yet, or when the password
+/// files are as they were for the newest list (the SSD keeps a checksum of them; it never
+/// goes to a backup drive). The newest USB_PASSWORD_LISTS lists are kept.
+pub fn seal_passwords(a: &Args) -> Result<()> {
+    common::require_root()?;
+    let cfgpath = a.path("config")?;
+    let cfg = common::json(&cfgpath, 64000);
+    let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
+    let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
+    guard(&cfgpath, &data, &media)?;
+    let _drives = (common::expect_drive(&media)?, common::expect_drive(&data)?);
+    let key_dir = Path::new(crate::maintenance::SECRETS_KEY_DIR);
+    match seal_passwords_at(&data, &media.join(PASSWORD_LISTS), key_dir, common::now())? {
+        Sealed::Made(run) => println!("Password list: a new encrypted list ({run}) is on the HDD; the weekly USB copy takes it"),
+        Sealed::Current => println!("Password list: the one on the HDD is current"),
+        Sealed::NoKey => println!("Password list: none made, there is no backup key yet (setup asks for the backup password)"),
+    }
+    Ok(())
+}
+#[derive(Debug, PartialEq)]
+enum Sealed {
+    Made(String),
+    Current,
+    NoKey,
+}
+/// The SSD's record of the newest list setup made: its run and a checksum of what it holds.
+const PASSWORD_LIST_STATE: &str = "backups/password-list.json";
+fn seal_passwords_at(data: &Path, lists: &Path, key_dir: &Path, now: f64) -> Result<Sealed> {
+    if !crate::maintenance::secrets_key_ready(key_dir) {
+        return Ok(Sealed::NoKey);
+    }
+    let contents = sealed_contents(data, key_dir)?;
+    let state = data.join(PASSWORD_LIST_STATE);
+    let saved = common::json(&state, 64000);
+    let current = saved["contents"].as_str() == Some(contents.as_str())
+        && saved["run"]
+            .as_str()
+            .filter(|run| snapshot_stamp(run).is_some())
+            .is_some_and(|run| {
+                newest_sealed_snapshot(lists).is_some_and(|(p, _)| p == lists.join(run))
+            });
+    if current {
+        return Ok(Sealed::Current);
+    }
+    // "-0": made by setup (a monthly snapshot's number is 1 or more).
+    let run = format!("{}-0", now.max(0.0) as u64);
+    common::directory(lists, 0o700)?;
+    let folder = lists.join(&run);
+    common::directory(&folder, 0o700)?;
+    let made = (|| {
+        if crate::maintenance::encrypt_secrets_with(data, &folder, key_dir)? != "encrypted" {
+            return Err(Error::new("there are no password files to seal yet"));
+        }
+        let mut sums = json!({});
+        for (key, file) in SECRETS_FILES {
+            sums[key] = json!(common::digest(&folder.join(file))?);
+        }
+        // The monthly snapshot's manifest format, with only the password list in it: the
+        // recovery menu and backup_secrets.py open it like a snapshot's.
+        common::atomic_json(
+            &folder.join("manifest.json"),
+            &json!({"format": "neko-maintenance-v1", "kind": "password-list", "created_at": now, "sha256": sums}),
+        )
+    })();
+    if let Err(e) = made {
+        let _ = fs::remove_dir_all(common::safe(&folder)?);
+        return Err(e);
+    }
+    let kept = snapshot_folders(lists);
+    for (_, old) in kept
+        .iter()
+        .take(kept.len().saturating_sub(USB_PASSWORD_LISTS))
+    {
+        fs::remove_dir_all(common::safe(old)?)?;
+    }
+    common::atomic_json(&state, &json!({"run": run, "contents": contents}))?;
+    Ok(Sealed::Made(run))
+}
+/// A checksum of the password files' contents now (each file's name and checksum) and of
+/// the backup certificate they are sealed for: changes when a password or the key does.
+fn sealed_contents(data: &Path, key_dir: &Path) -> Result<String> {
+    let mut listed = vec![format!(
+        "cert {}",
+        common::digest(&key_dir.join(crate::maintenance::SECRETS_CERT))?
+    )];
+    for member in crate::maintenance::sealed_members(data) {
+        let path = data.join(&member);
+        if fs::symlink_metadata(&path)?.is_dir() {
+            walk(&path, &mut |file| {
+                let name = file
+                    .strip_prefix(data)
+                    .unwrap_or(file)
+                    .display()
+                    .to_string();
+                listed.push(format!("{name} {}", common::digest(file)?));
+                Ok(())
+            })?;
+        } else {
+            listed.push(format!("{member} {}", common::digest(&path)?));
+        }
+    }
+    listed.sort();
+    Ok(common::sha(listed.join("\n").as_bytes()))
 }
 /// Physical disks a block device lives on (through partitions, encryption, LVM).
 fn disks_of(device: &str) -> Option<std::collections::BTreeSet<String>> {
@@ -3069,24 +3196,58 @@ impl Integrity {
 /// gets Immich running again (the job's ExecStopPost, the boot-time resume service, and
 /// the next run all finish it).
 pub(crate) const IMMICH_JOURNAL: &str = "/etc/nekoserver-backups/immich-resume.json";
-const IMMICH_FORMAT: &str = "neko-immich-resume-v1";
-/// Immich's services that write photos and videos, or work on them. The database and
-/// Redis keep running (the dump needs the database).
-const IMMICH_WRITERS: [&str; 3] = [
-    "immich-server",
-    "immich-microservices",
-    "immich-machine-learning",
-];
+/// The same for the weekly USB copy of Nextcloud's files (see paused_cloud).
+pub(crate) const CLOUD_JOURNAL: &str = "/etc/nekoserver-backups/nextcloud-resume.json";
+/// An app a weekly backup pauses for a moment: its Compose project, the services that
+/// write its files (the database and Redis keep running: the dump needs the database),
+/// the journal that names what was stopped, and the service that starts it again.
+pub(crate) struct Paused {
+    name: &'static str,
+    project: &'static str,
+    writers: &'static [&'static str],
+    journal: &'static str,
+    format: &'static str,
+    resume: &'static str,
+    /// What the pause keeps at one point in time, and what waits meanwhile.
+    holds: &'static str,
+}
+pub(crate) const IMMICH: Paused = Paused {
+    name: "Immich",
+    project: "label=com.docker.compose.project=neko-immich",
+    writers: &[
+        "immich-server",
+        "immich-microservices",
+        "immich-machine-learning",
+    ],
+    journal: IMMICH_JOURNAL,
+    format: "neko-immich-resume-v1",
+    resume: "nekoserver-immich-resume.service",
+    holds:
+        "its photos and its database are copied at one point in time; uploads wait until it is back",
+};
+/// Nextcloud's web app (where files are uploaded, renamed and deleted) and its cron job.
+pub(crate) const NEXTCLOUD: Paused = Paused {
+    name: "Nextcloud",
+    project: "label=com.docker.compose.project=neko-nextcloud",
+    writers: &["nextcloud", "cron"],
+    journal: CLOUD_JOURNAL,
+    format: "neko-nextcloud-resume-v1",
+    resume: "nekoserver-nextcloud-resume.service",
+    holds:
+        "its files and its database are copied at one point in time; it is offline until it is back",
+};
 /// What the pause needs from Docker (the tests give a stand-in).
 pub(crate) trait Containers {
-    /// The running containers of Immich's writers: (service, full container ID).
+    /// The running containers of the app's writers: (service, full container ID).
     fn running_writers(&self) -> Result<Vec<(String, String)>>;
     fn stop(&self, id: &str) -> Result<()>;
-    /// Start the container `id`, or, when Immich was set up again since (a new
+    /// Start the container `id`, or, when the app was set up again since (a new
     /// container), the one container of `service` there now.
     fn start(&self, service: &str, id: &str) -> Result<()>;
 }
-pub(crate) struct ImmichDocker;
+/// The app's containers in Docker.
+pub(crate) struct AppDocker(pub(crate) &'static Paused);
+pub(crate) const IMMICH_DOCKER: AppDocker = AppDocker(&IMMICH);
 fn immich_docker(args: &[&str]) -> Result<String> {
     let mut all = vec!["docker", "--host", "unix:///var/run/docker.sock"];
     all.extend_from_slice(args);
@@ -3102,21 +3263,20 @@ fn immich_docker(args: &[&str]) -> Result<String> {
 fn container_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|c| c.is_ascii_hexdigit())
 }
-const IMMICH_LABEL: &str = "label=com.docker.compose.project=neko-immich";
-impl Containers for ImmichDocker {
+impl Containers for AppDocker {
     fn running_writers(&self) -> Result<Vec<(String, String)>> {
         let listed = immich_docker(&[
             "ps",
             "--no-trunc",
             "--filter",
-            IMMICH_LABEL,
+            self.0.project,
             "--format",
             "{{.ID}} {{.Label \"com.docker.compose.service\"}}",
         ])?;
         Ok(listed
             .lines()
             .filter_map(|l| l.trim().split_once(' '))
-            .filter(|(id, service)| container_id(id) && IMMICH_WRITERS.contains(service))
+            .filter(|(id, service)| container_id(id) && self.0.writers.contains(service))
             .map(|(id, service)| (service.to_string(), id.to_string()))
             .collect())
     }
@@ -3124,8 +3284,12 @@ impl Containers for ImmichDocker {
         immich_docker(&["stop", "--time", "60", id]).map(|_| ())
     }
     fn start(&self, service: &str, id: &str) -> Result<()> {
-        if !IMMICH_WRITERS.contains(&service) || !container_id(id) {
-            return Err(Error::new("Unknown Immich container in the resume journal"));
+        let app = self.0;
+        if !app.writers.contains(&service) || !container_id(id) {
+            return Err(Error::new(&format!(
+                "Unknown {} container in the resume journal",
+                app.name
+            )));
         }
         let label = format!("label=com.docker.compose.service={service}");
         let listed = immich_docker(&[
@@ -3133,7 +3297,7 @@ impl Containers for ImmichDocker {
             "-aq",
             "--no-trunc",
             "--filter",
-            IMMICH_LABEL,
+            app.project,
             "--filter",
             &label,
         ])?;
@@ -3143,8 +3307,10 @@ impl Containers for ImmichDocker {
             [only] => only,
             _ => {
                 return Err(Error::new(&format!(
-                    "{service}: its container from before the backup is gone and {} are there now; start Immich again (sudo bash install.sh), then remove {IMMICH_JOURNAL}",
-                    found.len()
+                    "{service}: its container from before the backup is gone and {} are there now; start {} again (sudo bash install.sh), then remove {}",
+                    found.len(),
+                    app.name,
+                    app.journal
                 )))
             }
         };
@@ -3158,9 +3324,15 @@ impl Containers for ImmichDocker {
         Ok(())
     }
 }
-/// Stop Immich's running writers, each written down in `journal` first. Returns the
-/// containers stopped (none when Immich was not running: it is not started later either).
 fn pause_immich(ctl: &dyn Containers, journal: &Path) -> Result<Vec<(String, String)>> {
+    pause_app(&IMMICH, ctl, journal)
+}
+pub(crate) fn resume_immich(ctl: &dyn Containers, journal: &Path) -> Result<()> {
+    resume_app(&IMMICH, ctl, journal)
+}
+/// Stop the app's running writers, each written down in `journal` first. Returns the
+/// containers stopped (none when the app was not running: it is not started later either).
+fn pause_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<Vec<(String, String)>> {
     let writers = ctl.running_writers()?;
     if writers.is_empty() {
         return Ok(writers);
@@ -3174,7 +3346,7 @@ fn pause_immich(ctl: &dyn Containers, journal: &Path) -> Result<Vec<(String, Str
     }
     common::atomic_json(
         journal,
-        &json!({"format": IMMICH_FORMAT, "stopped_at": common::now(), "containers": rows}),
+        &json!({"format": app.format, "stopped_at": common::now(), "containers": rows}),
     )?;
     for (_, id) in &writers {
         ctl.stop(id)?;
@@ -3185,7 +3357,8 @@ fn pause_immich(ctl: &dyn Containers, journal: &Path) -> Result<Vec<(String, Str
     if !still.is_empty() {
         let names: Vec<&str> = still.iter().map(|(s, _)| s.as_str()).collect();
         return Err(Error::new(&format!(
-            "Immich did not stop for its backup ({} still running)",
+            "{} did not stop for its backup ({} still running)",
+            app.name,
             names.join(", ")
         )));
     }
@@ -3193,16 +3366,16 @@ fn pause_immich(ctl: &dyn Containers, journal: &Path) -> Result<Vec<(String, Str
 }
 /// Start what `journal` names again, then remove it. Nothing to do without one. A
 /// container that would not start keeps the journal (the next try starts it).
-pub(crate) fn resume_immich(ctl: &dyn Containers, journal: &Path) -> Result<()> {
+fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> {
     if !journal.exists() {
         return Ok(());
     }
     let saved: Value = serde_json::from_slice(&common::bytes(journal, 64000)?)
-        .map_err(|_| Error::new("The Immich resume journal is unreadable"))?;
+        .map_err(|_| Error::new(&format!("The {} resume journal is unreadable", app.name)))?;
     let rows = saved["containers"]
         .as_array()
-        .filter(|r| saved["format"] == IMMICH_FORMAT && r.len() <= 8)
-        .ok_or_else(|| Error::new("The Immich resume journal is not valid"))?;
+        .filter(|r| saved["format"] == app.format && r.len() <= 8)
+        .ok_or_else(|| Error::new(&format!("The {} resume journal is not valid", app.name)))?;
     let problems: Vec<String> = rows
         .iter()
         .filter_map(|row| {
@@ -3217,28 +3390,36 @@ pub(crate) fn resume_immich(ctl: &dyn Containers, journal: &Path) -> Result<()> 
         .collect();
     if !problems.is_empty() {
         return Err(Error::new(&format!(
-            "Immich could not be started again after its backup; it is retried by: sudo systemctl start nekoserver-immich-resume.service ({})",
+            "{} could not be started again after its backup; it is retried by: sudo systemctl start {} ({})",
+            app.name,
+            app.resume,
             problems.join("; ")
         )));
     }
     if let Some(at) = saved["stopped_at"].as_f64() {
         println!(
-            "Immich: started again; it was paused for {:.0} seconds for its weekly backup",
+            "{}: started again; it was paused for {:.0} seconds for its weekly backup",
+            app.name,
             (common::now() - at).max(0.0)
         );
     }
     finish_journal(journal)
 }
 /// What the pause says it stopped.
-fn say_paused(stopped: &[(String, String)]) {
+fn say_paused(app: &Paused, stopped: &[(String, String)]) {
     if stopped.is_empty() {
-        println!("Immich: not running, so nothing was paused (and it is not started)");
+        println!(
+            "{}: not running, so nothing was paused (and it is not started)",
+            app.name
+        );
         return;
     }
     let names: Vec<&str> = stopped.iter().map(|(s, _)| s.as_str()).collect();
     println!(
-        "Immich: paused ({}) so its photos and its database are copied at one point in time; uploads wait until it is back",
-        names.join(", ")
+        "{}: paused ({}) so {}",
+        app.name,
+        names.join(", "),
+        app.holds
     );
 }
 /// The weekly Immich backup: photos copied to the HDD, then Immich paused for the last
@@ -3266,7 +3447,7 @@ fn paused_backup(
     }
     let (second, dumped) = match pause_immich(ctl, journal) {
         Ok(stopped) => {
-            say_paused(&stopped);
+            say_paused(&IMMICH, &stopped);
             common::stage("copying the last photos and videos with Immich paused");
             let second = archive_with(&library, archive, true, QUIESCED, Check::Quick, true);
             common::stage("making the Immich database copy");
@@ -3319,7 +3500,15 @@ pub fn monthly_archive_check(
 /// Only the SSD is checked (Immich needs nothing else): this also runs when the HDD
 /// dropped out mid-run, and drive-return runs it again once the HDD is back.
 pub fn immich_resume(a: &Args) -> Result<()> {
-    if !Path::new(IMMICH_JOURNAL).exists() {
+    resume_paused(&IMMICH, a)
+}
+/// The same for Nextcloud after the weekly USB copy's pause (paused_cloud). Nextcloud's
+/// apps live on the SSD too (its files on the HDD wait for the HDD's own checks).
+pub fn cloud_resume(a: &Args) -> Result<()> {
+    resume_paused(&NEXTCLOUD, a)
+}
+fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
+    if !Path::new(app.journal).exists() {
         return Ok(());
     }
     common::require_root()?;
@@ -3327,7 +3516,7 @@ pub fn immich_resume(a: &Args) -> Result<()> {
     let cfg = common::json(&cfgpath, 64000);
     let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
     let _recovery = coordinate_data(&cfgpath, &data)?;
-    resume_immich(&ImmichDocker, Path::new(IMMICH_JOURNAL))
+    resume_app(app, &AppDocker(app), Path::new(app.journal))
 }
 /// The weekly database copy, made while Immich is paused: kept on the SSD and the HDD,
 /// the newest `keep` in each.
@@ -3376,7 +3565,7 @@ pub fn preservation(a: &Args) -> Result<()> {
     let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
     // Immich left stopped by a weekly run that was cut off is started again first; it
     // needs only the SSD, so a HDD still missing fails the run after that, not before.
-    resume_immich(&ImmichDocker, Path::new(IMMICH_JOURNAL))?;
+    resume_immich(&IMMICH_DOCKER, Path::new(IMMICH_JOURNAL))?;
     guard(&cfg, &data, &media)?;
     execute_with(
         Some(&data),
@@ -3407,7 +3596,7 @@ pub fn preservation(a: &Args) -> Result<()> {
                 return Err(e);
             }
             let (archived, dumped) = paused_backup(
-                &ImmichDocker,
+                &IMMICH_DOCKER,
                 Path::new(IMMICH_JOURNAL),
                 &data,
                 &archive,
@@ -3479,6 +3668,79 @@ fn cloud_encrypted(cloud: &Path) -> bool {
                 .any(|u| fs::symlink_metadata(u).is_ok_and(|m| m.is_dir()) && keys(u))
         })
 }
+/// The weekly copy's last pass over Nextcloud's files: Nextcloud paused (its web app and
+/// its cron job; the database keeps running), its database copy made, the files that
+/// changed since the first pass copied, then Nextcloud started again: always, also when
+/// the dump or the copy failed. So the database copy names no file the USB copy lacks:
+/// with Nextcloud running, a file renamed or deleted between the dump and the copy left
+/// a database naming a file that backup did not have, and the checksums could not tell.
+/// The first pass, with Nextcloud running, copies nearly everything, so the pause is
+/// short. `lock`: the backups' shared lock (pause_lock), held for the pause. Returns the
+/// second pass (None when Nextcloud was not paused: the first pass stands) and why this
+/// week has no database copy, if so; that makes the week's backup "incomplete".
+fn paused_cloud(
+    ctl: &dyn Containers,
+    journal: &Path,
+    lock: impl FnOnce() -> Result<fs::File>,
+    dump: impl FnOnce() -> Result<()>,
+    second: impl FnOnce() -> Result<CloudCopy>,
+) -> (Result<Option<CloudCopy>>, Option<String>) {
+    let said = |problem: String| {
+        println!("Nextcloud: {problem}");
+        Some(problem)
+    };
+    let _held = match lock() {
+        Ok(held) => held,
+        Err(e) => {
+            return (
+                Ok(None),
+                said(format!("no database copy was made this week ({e})")),
+            )
+        }
+    };
+    let stopped = match pause_app(&NEXTCLOUD, ctl, journal) {
+        Ok(stopped) => stopped,
+        Err(e) => {
+            let resumed = resume_app(&NEXTCLOUD, ctl, journal);
+            return (
+                resumed.map(|()| None),
+                said(format!(
+                    "it could not be paused for its backup, so no database copy was made ({e})"
+                )),
+            );
+        }
+    };
+    say_paused(&NEXTCLOUD, &stopped);
+    let problem = dump()
+        .err()
+        .and_then(|e| said(format!("the database copy could not be made ({e})")));
+    common::stage("copying the last Nextcloud files with Nextcloud paused");
+    let copied = second();
+    let resumed = resume_app(&NEXTCLOUD, ctl, journal);
+    (common::first_error(copied, resumed).map(Some), problem)
+}
+/// The backups' shared lock for the Nextcloud pause, taken while the USB drive's lock is
+/// held. The monthly run takes the two the other way round (the shared lock, then the
+/// USB drive's), so this never waits for it: a monthly run under way (it makes its own
+/// copy of Nextcloud) ends the wait at once, any other job (a nightly backup, setup)
+/// after 30 minutes. Either way the week's copy goes on without a database copy.
+fn pause_lock(cfg: &Path, data: &Path, media: &Path) -> Result<fs::File> {
+    let start = std::time::Instant::now();
+    loop {
+        guard(cfg, data, media)?;
+        if let Ok(held) = common::lock(&data.join("installer/recovery.lock")) {
+            guard(cfg, data, media)?;
+            return Ok(held);
+        }
+        monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+        if start.elapsed() >= std::time::Duration::from_secs(30 * 60) {
+            return Err(Error::new(
+                "another NekoServer job (a nightly backup, or setup) held the backups' lock for 30 minutes",
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+}
 /// The weekly USB copy. It never starts during the monthly snapshot and update, which
 /// read the same HDD (the monthly run makes its own copy of the drive): it waits for
 /// the shared lock, checks no monthly run is under way, and lets the lock go again.
@@ -3490,26 +3752,13 @@ pub fn weekly(a: &Args) -> Result<()> {
     let cfg = a.path("config")?;
     let data = common::mount_path(a.get("data")?)?;
     let media = common::mount_path(a.get("media-root")?)?;
-    let cloud = wants_cloud_database(!a.value("cloud", "").is_empty(), &data);
-    // Nextcloud's weekly database copy is made while the shared lock is held, so no
-    // monthly run can stop or update Nextcloud during it. A copy that fails (Nextcloud
-    // not running, say) makes the week's backup "incomplete"; its files are copied anyway.
-    let made = no_monthly_run(&cfg, &data, &media, || {
-        if !cloud {
-            return None;
-        }
-        match nextcloud_dump(&cfg, &data, &media) {
-            Ok(_) => None,
-            Err(e) => {
-                println!("Nextcloud: the database copy could not be made ({e})");
-                Some(format!(
-                    "the Nextcloud database copy could not be made ({e})"
-                ))
-            }
-        }
+    // Nextcloud left paused by a weekly copy that was cut off is started again first.
+    // Its database copy is made with Nextcloud paused, during the copy (paused_cloud).
+    let resumed = no_monthly_run(&cfg, &data, &media, || {
+        resume_app(&NEXTCLOUD, &AppDocker(&NEXTCLOUD), Path::new(CLOUD_JOURNAL))
     });
-    match made {
-        Ok(problem) => usb_copy(a, Check::Quick, problem),
+    match resumed {
+        Ok(()) => usb_copy(a, Check::Quick, true),
         // Setup was working: no failure recorded, the copy runs next week.
         Err(e) if common::postponed(&e) => Err(e),
         Err(e) => execute(Some(&data), "external", &cfg, move || Err(e)),
@@ -3521,17 +3770,17 @@ fn service_busy(state: &str) -> bool {
     ["active", "activating", "deactivating", "reloading"].contains(&state.trim())
 }
 /// Wait for the shared lock, then check (holding it) that no monthly run is under way:
-/// none cut off half-way and its service not running, and do `then` (the Nextcloud
-/// database copy). The lock is let go on return.
-fn no_monthly_run<F: FnOnce() -> Option<String>>(
+/// none cut off half-way and its service not running, and do `then` (start Nextcloud
+/// again after a cut-off pause). The lock is let go on return.
+fn no_monthly_run<F: FnOnce() -> Result<()>>(
     cfg: &Path,
     data: &Path,
     media: &Path,
     then: F,
-) -> Result<Option<String>> {
+) -> Result<()> {
     let _recovery = coordinate(cfg, data, media)?;
     monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
-    Ok(then())
+    then()
 }
 fn unit_state(unit: &str) -> String {
     common::probe(
@@ -3584,10 +3833,11 @@ pub(crate) const INTEGRITY: &str = "Backup copies failed their checksum check. "
 /// The monthly run's first step for the USB drive: the weekly copy, with every copy on
 /// the drive compared with its checksum (the weekly runs compare size and date only).
 pub fn monthly_usb_check(a: &Args) -> Result<()> {
-    usb_copy(a, Check::Full, None)
+    usb_copy(a, Check::Full, false)
 }
-/// `dump_problem`: why this week's Nextcloud database copy could not be made, if so.
-fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> {
+/// `weekly`: the weekly copy, which makes Nextcloud's database copy with Nextcloud
+/// paused (the monthly run's check of the drive does not: its snapshot has its own).
+fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
     common::require_root()?;
     let uuid = a.get("uuid")?;
     let fstype = a.get("fstype")?;
@@ -3727,16 +3977,41 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
             if let Some(cloud) = &cloud {
                 if cloud.is_dir() {
                     common::stage("copying Nextcloud files to the USB drive");
-                    cloud_copy = Some(copy_cloud(
-                        cloud,
-                        &dest,
-                        true,
-                        fstype == "exfat",
-                        check,
-                        nextcloud_internal(&data).as_deref(),
-                    )?);
+                    let internal = nextcloud_internal(&data);
+                    let copy = || {
+                        copy_cloud(
+                            cloud,
+                            &dest,
+                            true,
+                            fstype == "exfat",
+                            check,
+                            internal.as_deref(),
+                        )
+                    };
+                    let mut copied = copy()?;
                     validate_external(&dest, uuid)?;
                     guard(&cfg, &data, &media)?;
+                    let mut dump_problem = None;
+                    if weekly && wants_cloud_database(true, &data) {
+                        let (second, problem) = paused_cloud(
+                            &AppDocker(&NEXTCLOUD),
+                            Path::new(CLOUD_JOURNAL),
+                            || pause_lock(&cfg, &data, &media),
+                            || nextcloud_dump(&cfg, &data, &media).map(drop),
+                            || {
+                                validate_external(&dest, uuid)?;
+                                guard(&cfg, &data, &media)?;
+                                copy()
+                            },
+                        );
+                        if let Some(second) = second? {
+                            copied = second.after(copied);
+                        }
+                        dump_problem = problem;
+                        validate_external(&dest, uuid)?;
+                        guard(&cfg, &data, &media)?;
+                    }
+                    cloud_copy = Some(copied);
                     if cloud_encrypted(cloud) {
                         println!("Nextcloud: {CLOUD_ENCRYPTED}; this backup is incomplete");
                         cloud_problem = Some(CLOUD_ENCRYPTED.to_string());
@@ -3761,7 +4036,10 @@ fn usb_copy(a: &Args, check: Check, dump_problem: Option<String>) -> Result<()> 
                 }
             }
             common::stage("copying the password list to the USB drive");
-            let passwords_problem = copy_newest_secrets(&media.join("backups/monthly"), &dest)?;
+            let passwords_problem = copy_newest_secrets(
+                &[media.join(MONTHLY_SNAPSHOTS), media.join(PASSWORD_LISTS)],
+                &dest,
+            )?;
             validate_external(&dest, uuid)?;
             if let Some(photos) = &photos {
                 save_integrity(&data, "usb_photos", photos, check)?;
@@ -4205,9 +4483,14 @@ mod tests {
             &monthly.join("100-1/manifest.json"),
             br#"{"format":"neko-maintenance-v1","sha256":{}}"#,
         );
+        // Before any list (the first weeks): said, so the copy is incomplete.
+        let none = copy_newest_secrets(std::slice::from_ref(&monthly), &usb).unwrap();
+        assert_eq!(none.as_deref(), Some(NO_PASSWORD_LIST));
         sealed("200-1", b"older archive", b"key", None);
         sealed("300-1", b"newest archive", b"key", None);
-        assert!(copy_newest_secrets(&monthly, &usb).unwrap().is_none());
+        assert!(copy_newest_secrets(std::slice::from_ref(&monthly), &usb)
+            .unwrap()
+            .is_none());
         let copied = usb.join(USB_PASSWORDS).join("300-1");
         assert_eq!(
             fs::read(copied.join(SECRETS_FILES[0].1)).unwrap(),
@@ -4220,13 +4503,15 @@ mod tests {
         );
         // A damaged newest list is said and not copied; the one already there stays.
         sealed("400-1", b"changed", b"key", Some("0".repeat(64).as_str()));
-        let said = copy_newest_secrets(&monthly, &usb).unwrap().unwrap();
+        let said = copy_newest_secrets(std::slice::from_ref(&monthly), &usb)
+            .unwrap()
+            .unwrap();
         assert!(said.contains("400-1") && said.contains("damaged"), "{said}");
         assert!(copied.join(SECRETS_FILES[0].1).is_file());
         // Only the newest USB_PASSWORD_LISTS lists are kept on the drive.
         for run in ["500-1", "600-1", "700-1"] {
             sealed(run, run.as_bytes(), b"key", None);
-            copy_newest_secrets(&monthly, &usb).unwrap();
+            copy_newest_secrets(std::slice::from_ref(&monthly), &usb).unwrap();
         }
         let kept: Vec<String> = snapshot_folders(&usb.join(USB_PASSWORDS))
             .into_iter()
@@ -4959,16 +5244,24 @@ mod tests {
         let weekly = &source[source.find("pub fn weekly(").unwrap()..];
         let weekly = &weekly[..weekly.find("\n}\n").unwrap()];
         // Inside the closure no_monthly_run runs while it holds the lock and after it
-        // checked that no monthly update is unfinished or running.
+        // checked that no monthly update is unfinished or running: Nextcloud left paused
+        // by a cut-off copy is started again there.
         let gate = weekly
             .find("no_monthly_run(&cfg, &data, &media, ||")
             .unwrap();
-        assert!(gate < weekly.find("nextcloud_dump(&cfg, &data, &media)").unwrap());
+        assert!(gate < weekly.find("resume_app(&NEXTCLOUD").unwrap());
         let check = &source[source.find("fn no_monthly_run<").unwrap()..];
         let at = |s: &str| check.find(s).unwrap();
         assert!(at("coordinate(cfg, data, media)?") < at("monthly_admission("));
-        assert!(at("monthly_admission(") < at("Ok(then())"));
+        assert!(at("monthly_admission(") < at("then()"));
+        // The dump itself: with the shared lock held (pause_lock) and Nextcloud paused.
+        let paused = &source[source.find("fn paused_cloud(").unwrap()..];
+        let at = |s: &str| paused.find(s).unwrap();
+        assert!(
+            at("lock()") < at("pause_app(&NEXTCLOUD") && at("pause_app(&NEXTCLOUD") < at("dump()")
+        );
         let copy = &source[source.find("fn usb_copy(").unwrap()..];
+        assert!(copy.contains("|| pause_lock(&cfg, &data, &media)"));
         assert!(copy.contains("copy_newest_of(\n                            &NEXTCLOUD_DUMPS"));
     }
     /// The newest inventory of a tree, unpacked.
@@ -6493,6 +6786,243 @@ mod tests {
         }
         let _ = fs::remove_dir_all(root);
     }
+    /// Nextcloud's writers running, as the weekly copy finds them.
+    fn nextcloud_up() -> FakeImmich {
+        let fake = FakeImmich::default();
+        fake.running.borrow_mut().extend([
+            ("nextcloud".to_string(), "c".repeat(64)),
+            ("cron".to_string(), "d".repeat(64)),
+        ]);
+        fake
+    }
+    #[test]
+    fn a_file_renamed_during_the_weekly_copy_is_on_the_usb_drive_as_its_database_names_it() {
+        let root = scratch("cloud-pause");
+        let (cloud, usb, journal) = (
+            root.join("cloud"),
+            root.join("usb"),
+            root.join("nextcloud-resume.json"),
+        );
+        write(&cloud.join("alice/files/plan.odt"), b"plan");
+        fs::create_dir_all(&usb).unwrap();
+        let copy = || copy_cloud(&cloud, &usb, true, false, Check::Quick, None);
+        let first = copy().unwrap();
+        // Renamed after the first pass, while Nextcloud still runs: its database names the
+        // new name only. Before 0.41.7 the dump and the copy were made apart with Nextcloud
+        // running, and the USB drive could lack the file the dump names.
+        fs::rename(
+            cloud.join("alice/files/plan.odt"),
+            cloud.join("alice/files/final.odt"),
+        )
+        .unwrap();
+        let fake = nextcloud_up();
+        let dump = root.join("nextcloud.sql");
+        let (second, problem) = paused_cloud(
+            &fake,
+            &journal,
+            || Ok(fs::File::create(root.join("lock"))?),
+            || {
+                assert!(
+                    fake.paused() && journal.is_file(),
+                    "the dump waits for the pause"
+                );
+                let mut names = names(&cloud.join("alice/files"));
+                names.sort();
+                fs::write(&dump, names.join("\n"))?;
+                Ok(())
+            },
+            || {
+                assert!(fake.paused(), "the last pass runs with Nextcloud paused");
+                copy()
+            },
+        );
+        let copied = second.unwrap().unwrap().after(first);
+        assert_eq!(problem, None);
+        assert_eq!(copied.copied, 2);
+        for name in fs::read_to_string(&dump).unwrap().lines() {
+            assert!(
+                usb.join("nextcloud/alice/files").join(name).is_file(),
+                "{name}"
+            );
+        }
+        // Started again, and the journal that would have done it after a power cut is gone.
+        assert_eq!(
+            *fake.done.borrow(),
+            ["stop c", "stop d", "start c", "start d"]
+        );
+        assert!(!journal.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn nextcloud_is_started_again_whatever_the_paused_pass_meets() {
+        let root = scratch("cloud-pause-fails");
+        let journal = root.join("nextcloud-resume.json");
+        // The dump fails: said (the week is incomplete), the files still copied, Nextcloud back.
+        let fake = nextcloud_up();
+        let (second, problem) = paused_cloud(
+            &fake,
+            &journal,
+            || Ok(fs::File::create(root.join("lock"))?),
+            || Err(Error::new("Database dump failed")),
+            || Ok(CloudCopy::default()),
+        );
+        assert!(second.unwrap().is_some());
+        assert!(problem.unwrap().contains("Database dump failed"));
+        assert!(!fake.paused() && !journal.exists());
+        // The copy itself fails: the error comes back, Nextcloud is started again first.
+        let fake = nextcloud_up();
+        let (second, _) = paused_cloud(
+            &fake,
+            &journal,
+            || Ok(fs::File::create(root.join("lock"))?),
+            || Ok(()),
+            || Err(Error::new("External drive missing")),
+        );
+        assert!(second
+            .unwrap_err()
+            .to_string()
+            .contains("External drive missing"));
+        assert!(!fake.paused() && !journal.exists());
+        // No lock (a monthly run under way, say): nothing paused, no dump, said.
+        let fake = nextcloud_up();
+        let (second, problem) = paused_cloud(
+            &fake,
+            &journal,
+            || Err(Error::new("The monthly update is running")),
+            || panic!("no dump without the lock"),
+            || panic!("no paused pass without the lock"),
+        );
+        assert!(second.unwrap().is_none());
+        assert!(problem
+            .unwrap()
+            .contains("no database copy was made this week"));
+        assert!(fake.done.borrow().is_empty());
+        // A Nextcloud that would not stop: nothing dumped, what did stop started again.
+        let fake = FakeImmich {
+            stubborn: true,
+            ..nextcloud_up()
+        };
+        let (second, problem) = paused_cloud(
+            &fake,
+            &journal,
+            || Ok(fs::File::create(root.join("lock"))?),
+            || panic!("no dump while Nextcloud still runs"),
+            || panic!("no paused pass while Nextcloud still runs"),
+        );
+        assert!(second.unwrap().is_none());
+        assert!(problem.unwrap().contains("did not stop"));
+        assert!(!journal.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_weekly_copy_dumps_nextcloud_only_inside_its_pause() {
+        let source = include_str!("backup.rs");
+        let weekly = &source[source.find("pub fn weekly(").unwrap()..];
+        let weekly = &weekly[..weekly.find("\n}\n").unwrap()];
+        assert!(!weekly.contains("nextcloud_dump("), "{weekly}");
+        let copy = &source[source.find("fn usb_copy(").unwrap()..];
+        let copy = &copy[..copy.find("\n}\n").unwrap()];
+        let paused = copy.find("paused_cloud(").unwrap();
+        assert!(
+            copy[paused..].find("nextcloud_dump(").unwrap() < 600,
+            "dumped inside the pause"
+        );
+        // Its resume runs whenever the weekly job ends, and at boot (photo_backup.py).
+        let units = include_str!("../../modules/photo_backup.py");
+        assert!(units.contains("\"cloud-resume\")}\\nTimeoutStopSec"));
+        assert!(units.contains("CLOUD_RESUME = 'nekoserver-nextcloud-resume'"));
+        assert_eq!(NEXTCLOUD.resume, "nekoserver-nextcloud-resume.service");
+    }
+    #[test]
+    fn setup_seals_a_password_list_before_the_first_monthly_snapshot() {
+        let root = scratch("seal-passwords");
+        let (data, lists, keys) = (
+            root.join("ssd"),
+            root.join("hdd/backups/password-lists"),
+            root.join("keys"),
+        );
+        write(
+            &data.join("secrets/accounts/APP-CREDENTIALS.txt"),
+            b"immich: pw1",
+        );
+        write(&data.join("compose/immich/.env"), b"DB_PASSWORD=secret");
+        fs::create_dir_all(data.join("backups")).unwrap();
+        // No backup key yet: nothing made.
+        assert_eq!(
+            seal_passwords_at(&data, &lists, &keys, 100.0).unwrap(),
+            Sealed::NoKey
+        );
+        fs::create_dir_all(&keys).unwrap();
+        let made = std::process::Command::new("openssl")
+            .args([
+                "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=test", "-days", "1",
+                "-keyout",
+            ])
+            .arg(keys.join(crate::maintenance::SECRETS_KEY))
+            .arg("-out")
+            .arg(keys.join(crate::maintenance::SECRETS_CERT))
+            .output()
+            .unwrap();
+        assert!(made.status.success());
+        for name in [
+            crate::maintenance::SECRETS_KEY,
+            crate::maintenance::SECRETS_CERT,
+        ] {
+            fs::set_permissions(keys.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert_eq!(
+            seal_passwords_at(&data, &lists, &keys, 100.0).unwrap(),
+            Sealed::Made("100-0".into())
+        );
+        // Unchanged passwords: no new list. A changed one: a new list.
+        assert_eq!(
+            seal_passwords_at(&data, &lists, &keys, 200.0).unwrap(),
+            Sealed::Current
+        );
+        write(
+            &data.join("secrets/accounts/APP-CREDENTIALS.txt"),
+            b"immich: pw2",
+        );
+        assert_eq!(
+            seal_passwords_at(&data, &lists, &keys, 300.0).unwrap(),
+            Sealed::Made("300-0".into())
+        );
+        // The SSD's record holds no password, nor does the HDD's list (it is encrypted).
+        let state = fs::read_to_string(data.join(PASSWORD_LIST_STATE)).unwrap();
+        assert!(!state.contains("pw2") && !state.contains("secret"));
+        let sealed = fs::read(
+            lists
+                .join("300-0")
+                .join(crate::maintenance::SECRETS_ARCHIVE),
+        )
+        .unwrap();
+        assert!(!sealed.windows(3).any(|w| w == b"pw2"));
+        // The weekly copy takes the newest list, setup's or a monthly snapshot's.
+        let usb = root.join("usb");
+        let monthly = root.join("hdd/backups/monthly");
+        fs::create_dir_all(&monthly).unwrap();
+        assert!(copy_newest_secrets(&[monthly, lists.clone()], &usb)
+            .unwrap()
+            .is_none());
+        assert!(usb
+            .join(USB_PASSWORDS)
+            .join("300-0/manifest.json")
+            .is_file());
+        // Only the newest lists are kept on the HDD.
+        for (n, at) in [400.0, 500.0, 600.0].into_iter().enumerate() {
+            write(
+                &data.join("compose/immich/.env"),
+                format!("DB_PASSWORD={n}").as_bytes(),
+            );
+            seal_passwords_at(&data, &lists, &keys, at).unwrap();
+        }
+        let kept: Vec<String> = snapshot_folders(&lists)
+            .into_iter()
+            .map(|(_, p)| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(kept, ["400-0", "500-0", "600-0"]);
+        let _ = fs::remove_dir_all(root);
+    }
     /// Docker as the weekly Immich backup sees it, recording what was done.
     #[derive(Default)]
     struct FakeImmich {
@@ -6786,7 +7316,7 @@ mod tests {
     #[test]
     fn immich_is_started_again_while_the_hdd_is_missing() {
         let source = include_str!("backup.rs");
-        let body = &source[source.find("pub fn immich_resume(").unwrap()..];
+        let body = &source[source.find("fn resume_paused(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(body.contains("coordinate_data(&cfgpath, &data)"), "{body}");
         assert!(

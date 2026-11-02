@@ -74,6 +74,39 @@ class RefreshTests(unittest.TestCase):
         self.assertNotIn('--source', text)
         self.assertNotIn('After=nekoserver-immich-db-backup.service', text)
 
+    def test_nextcloud_is_started_again_however_the_weekly_copy_ends(self):
+        # The weekly copy pauses Nextcloud for its last files and its database copy: the
+        # job's ExecStopPost and a boot-time service start it again after a failure, a
+        # stop or a power cut. It needs only the SSD, where Nextcloud's apps live.
+        self.config['nextcloud']['enabled'] = True
+        self.install()
+        self.assertIn(
+            'ExecStopPost=' + BIN + ' cloud-resume --config /etc/g.json\nTimeoutStopSec=', self.unit.read_text()
+        )
+        resume = (self.unit.parent / 'nekoserver-nextcloud-resume.service').read_text()
+        self.assertIn('ExecStart=' + BIN + ' cloud-resume --config /etc/g.json\n', resume)
+        self.assertIn('WantedBy=multi-user.target', resume)
+        self.assertIn('RequiresMountsFor=' + self.config['data_mount'] + '\n', resume)
+        self.config['nextcloud']['enabled'] = False
+        self.config['photos']['deploy_immich'] = True
+        self.assertTrue(self.refresh())
+        self.assertNotIn('cloud-resume', self.unit.read_text())
+
+    def test_every_setup_run_seals_the_password_list(self):
+        # The USB drive gets the app passwords from the first week on: setup makes an
+        # encrypted list on the HDD (seal-passwords) after every run, where passwords change.
+        self.install()
+        self.calls.return_value = mock.Mock(returncode=0, stdout='Password list: the one on the HDD is current\n')
+        self.refresh()
+        self.assertIn(
+            [BIN, 'seal-passwords', '--config', '/etc/g.json'], [c.args[0] for c in self.calls.call_args_list]
+        )
+        self.assertIn('Password list: the one on the HDD is current', self.logged)
+        # It failing is said, and setup goes on (the USB copy reports itself incomplete).
+        self.calls.return_value = mock.Mock(returncode=1, stdout='', stderr='Drive check failed')
+        self.refresh()
+        self.assertTrue(any('Password list: not made (Drive check failed)' in line for line in self.logged))
+
     def test_nothing_happens_without_an_installed_copy(self):
         self.assertFalse(self.refresh())
         self.calls.assert_not_called()

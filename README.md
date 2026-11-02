@@ -68,6 +68,15 @@ Cloned before 0.40.0 (running 0.39.x or older)? Then `git pull` does not work on
 
 Want it gone? `sudo bash uninstall.sh` in the same folder: it lists what it would remove, you choose, and it asks twice ([Uninstalling](nekoserver/README.md#uninstalling)).
 
+## Release channels
+
+Each release on GitHub is one of two kinds, and its tag says which:
+
+- **Stable**, tagged `vX.Y.Z` (for example `v1.0.0`). Not yet: every NekoServer release so far is a beta.
+- **Beta**, tagged `vX.Y.ZBeta` (for example `v0.41.7Beta`). It is marked **Pre-release** on GitHub, so GitHub's "Latest" release is never a beta, and nothing that asks GitHub for the latest stable release gets one.
+
+A check on GitHub (the "Release channel" job) marks each new release as its tag says, and fails on a tag that is neither, so a typo is fixed before anyone takes the release. `git pull` follows the `main` branch, whatever the tags say.
+
 ## More
 
 - What changed in each version: [CHANGELOG.md](CHANGELOG.md)

@@ -97,12 +97,14 @@ fn entry() -> Result<()> {
         return serve::hardware();
     }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, heartbeat, storage-guard, gateway-guard, drive-return, maintenance, maintenance-resume\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, maintenance, maintenance-resume\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {
         "storage-guard" | "gateway-guard" | "drive-return" | "heartbeat" | "hdd-policy"
-        | "host-snapshot" | "host-resume" | "immich-resume" => vec!["config"],
+        | "host-snapshot" | "host-resume" | "immich-resume" | "cloud-resume" | "seal-passwords" => {
+            vec!["config"]
+        }
         "music-backup" | "app-snapshot" | "app-resume" | "maintenance" | "maintenance-resume" => {
             vec!["config"]
         }
@@ -218,6 +220,8 @@ fn entry() -> Result<()> {
         }
         "preservation" => backup::preservation(&a),
         "immich-resume" => backup::immich_resume(&a),
+        "cloud-resume" => backup::cloud_resume(&a),
+        "seal-passwords" => backup::seal_passwords(&a),
         "weekly" => backup::weekly(&a),
         "database" => {
             backup::database(

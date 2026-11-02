@@ -681,7 +681,7 @@ class DriveSizeTests(unittest.TestCase):
         return config, out
 
     def test_a_replacement_drive_keeps_nothing_of_the_old_one(self):
-        # The owner's review of 0.41.6: with only the old "uuid" taken out (as the docs say),
+        # The owner's review of 0.41.5: with only the old "uuid" taken out (as the docs say),
         # the old Btrfs drive's "subvolume" stayed, so an ext4 replacement failed its check
         # and a new Btrfs one looked for a subvolume it may not have.
         config = dict(DRIVE_FOLDERS)
