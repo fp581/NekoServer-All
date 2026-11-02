@@ -246,6 +246,108 @@ pub(crate) fn for_dashboard(data: &Path, settle_days: u64, now: f64) -> Value {
     json!({"settle_days": settle_days, "apps": apps.into_iter().map(|(_, v)| v).collect::<Vec<_>>()})
 }
 
+/* ---------- NekoServer's own releases (the NekoServer tab) ---------- */
+
+/// Where NekoServer is published, and what the daily check found there (on the SSD).
+pub(crate) const RELEASES: &str =
+    "https://api.github.com/repos/fp581/NekoServer-All/releases?per_page=30";
+const RELEASE_FILE: &str = "nekoserver.json";
+/// "v0.43.0" (stable) or "v0.43.0Beta" (beta), as README.md "Release channels" says: the
+/// numbers, and whether it is a beta. Any other tag (a typo) is no release.
+pub(crate) fn release_version(tag: &str) -> Option<((u64, u64, u64), bool)> {
+    let caps = regex::Regex::new(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)(Beta)?$")
+        .ok()?
+        .captures(tag)?;
+    let n = |i: usize| caps[i].parse::<u64>().ok();
+    Some(((n(1)?, n(2)?, n(3)?), caps.get(4).is_some()))
+}
+/// The release channel (maintenance.nekoserver_channel): "beta" while every release is a
+/// beta, "stable" to be offered stable releases only.
+pub(crate) fn channel(cfg: &Value) -> &str {
+    match cfg["maintenance"]["nekoserver_channel"].as_str() {
+        Some("stable") => "stable",
+        _ => "beta",
+    }
+}
+/// The newest release newer than `current` on `channel`, from GitHub's list: never a
+/// draft, never a tag outside the channels, and on the stable channel never a beta (nor
+/// a release GitHub marks as a pre-release). A stable release counts as newer than a
+/// beta of the same numbers.
+pub(crate) fn newest_release(releases: &Value, channel: &str, current: &str) -> Option<Value> {
+    let rank = |numbers: (u64, u64, u64), beta: bool| (numbers, !beta);
+    let now = {
+        let numbers = current
+            .split('.')
+            .map(|p| p.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        rank(
+            (
+                numbers.first().copied()?,
+                *numbers.get(1)?,
+                *numbers.get(2)?,
+            ),
+            true,
+        )
+    };
+    releases
+        .as_array()?
+        .iter()
+        .filter(|r| r["draft"] != true)
+        .filter_map(|r| {
+            let (numbers, beta) = release_version(r["tag_name"].as_str()?)?;
+            let allowed = channel == "beta" || (!beta && r["prerelease"] != true);
+            (allowed && rank(numbers, beta) > now).then(|| (rank(numbers, beta), r))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, r)| {
+            json!({
+                "tag": r["tag_name"],
+                "name": common::sanitize(r["name"].as_str().unwrap_or("")),
+                "published_at": r["published_at"],
+                "notes": r["html_url"],
+            })
+        })
+}
+/// Note what the check found: this release, and the newest one offered (or none).
+pub(crate) fn save_release(
+    data: &Path,
+    installed: &str,
+    channel: &str,
+    available: Option<Value>,
+    now: f64,
+) -> Result<()> {
+    common::directory(&folder(data), 0o700)?;
+    common::atomic_json(
+        &folder(data).join(RELEASE_FILE),
+        &json!({"format": "neko-release-check-v1", "installed": installed, "channel": channel, "available": available, "checked_at": now}),
+    )
+}
+/// What the NekoServer tab shows: names, dates and a link only.
+pub(crate) fn release_for_dashboard(data: &Path) -> Value {
+    let saved = common::json(&folder(data).join(RELEASE_FILE), 64_000);
+    if saved["format"] != "neko-release-check-v1" {
+        return json!({});
+    }
+    let notes = saved["available"]["notes"]
+        .as_str()
+        .filter(|u| u.starts_with("https://github.com/fp581/NekoServer-All/releases/"));
+    json!({
+        "installed": saved["installed"],
+        "channel": saved["channel"],
+        "checked_at": saved["checked_at"],
+        "available": saved["available"]["tag"].as_str().filter(|t| release_version(t).is_some()).map(|tag| json!({
+            "tag": tag,
+            "name": saved["available"]["name"],
+            "published_at": saved["available"]["published_at"],
+            "notes": notes,
+        })),
+    })
+}
+/// The release the check offered, when `tag` is it: what the dashboard may start.
+pub(crate) fn offered(data: &Path, tag: &str) -> bool {
+    release_for_dashboard(data)["available"]["tag"] == tag
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,6 +447,61 @@ mod tests {
         assert_eq!(found["apps"]["sonarr"].as_array().unwrap().len(), KEEP);
         forget(&data, &mut found, "sonarr").unwrap();
         assert!(found["apps"]["sonarr"].is_null());
+        let _ = fs::remove_dir_all(data);
+    }
+    #[test]
+    fn only_a_release_on_your_channel_and_newer_than_this_one_is_offered() {
+        let list = json!([
+            {"tag_name": "v0.44.0Beta", "draft": true, "prerelease": true},
+            {"tag_name": "v0.43.1Beta", "prerelease": true, "html_url": "https://github.com/fp581/NekoServer-All/releases/tag/v0.43.1Beta"},
+            {"tag_name": "v0.43.0", "prerelease": false},
+            {"tag_name": "v0.42.0Bata", "prerelease": false},
+            {"tag_name": "V0.50.0Beta", "prerelease": false},
+            {"tag_name": "v0.41.0Beta", "prerelease": true},
+        ]);
+        // Beta: the newest beta or stable, never a draft or a typo.
+        assert_eq!(
+            newest_release(&list, "beta", "0.42.1").unwrap()["tag"],
+            "v0.43.1Beta"
+        );
+        // Stable: betas are never offered.
+        assert_eq!(
+            newest_release(&list, "stable", "0.42.1").unwrap()["tag"],
+            "v0.43.0"
+        );
+        // Nothing newer: nothing offered; a stable release beats its own beta.
+        assert!(newest_release(&list, "beta", "0.43.1").is_none());
+        let same = json!([{"tag_name": "v0.43.1"}, {"tag_name": "v0.43.1Beta"}]);
+        assert_eq!(
+            newest_release(&same, "beta", "0.43.0").unwrap()["tag"],
+            "v0.43.1"
+        );
+        // A release GitHub marks as a pre-release is not stable, whatever its tag.
+        let marked = json!([{"tag_name": "v0.43.0", "prerelease": true}]);
+        assert!(newest_release(&marked, "stable", "0.42.1").is_none());
+        assert_eq!(
+            channel(&json!({"maintenance": {"nekoserver_channel": "stable"}})),
+            "stable"
+        );
+        assert_eq!(channel(&json!({})), "beta");
+        // What the dashboard sees, and the only tag it may start an upgrade to.
+        let data = scratch("release");
+        save_release(
+            &data,
+            "0.42.1",
+            "beta",
+            newest_release(&list, "beta", "0.42.1"),
+            NOW,
+        )
+        .unwrap();
+        let shown = release_for_dashboard(&data);
+        assert_eq!(shown["available"]["tag"], "v0.43.1Beta");
+        assert!(shown["available"]["notes"]
+            .as_str()
+            .unwrap()
+            .ends_with("/v0.43.1Beta"));
+        assert!(offered(&data, "v0.43.1Beta"));
+        assert!(!offered(&data, "v0.43.0"));
         let _ = fs::remove_dir_all(data);
     }
     #[test]

@@ -889,6 +889,11 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
         },
         // Both start a background service, so closing the page stops nothing; the
         // Updates page shows its progress (its job report).
+        "app_upgrade_nekoserver" => match (&service.config, request["tag"].as_str()) {
+            (None, _) => refuse("E42", "App controls are switched off on this server"),
+            (Some(config), Some(tag)) => start_upgrade(config, tag),
+            _ => refuse("E42", "Which release?"),
+        },
         "app_update_run" | "app_update_check" => match &service.config {
             None => refuse("E42", "App controls are switched off on this server"),
             Some(config) => start_update_job(config, op, request["app"].as_str().unwrap_or("")),
@@ -923,6 +928,28 @@ fn update_now(config: &Path, app: &str, sig: &str) -> Value {
             json!({"ok": true, "message": format!("{app} {version} is installed at the next update night (Wednesday night), with a snapshot first.")})
         }
         Err(e) => refuse("E42", &e.to_string()),
+    }
+}
+/// "Upgrade NekoServer" to the release the daily check offered: upgrade.py, as a
+/// background service (nekoserver-upgrade@<tag>), so closing the page stops nothing.
+fn start_upgrade(config: &Path, tag: &str) -> Value {
+    let cfg = common::json(config, 64000);
+    let offered = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))
+        .and_then(|data| crate::backup::guard_data(config, &data).map(|()| data))
+        .is_ok_and(|data| crate::updates::offered(&data, tag));
+    if !offered || crate::updates::release_version(tag).is_none() {
+        return refuse(
+            "E42",
+            "That release is not the one offered any more; Check for updates looks again",
+        );
+    }
+    if let Some(job) = apps::unfinished_job(&apps::journals()) {
+        return refuse("E47", &format!("{job} is still waiting to be finished; NekoServer finishes it on its own. Try again after that."));
+    }
+    let unit = format!("nekoserver-upgrade@{tag}.service");
+    match common::probe(&["systemctl", "start", "--no-block", &unit], 30) {
+        (0, _) => json!({"ok": true, "message": format!("Upgrading NekoServer to {tag}. It goes on if you close this page; the Updates page shows how far it is.")}),
+        _ => refuse("E47", "The upgrade could not be started. Is an update or a backup running? Backups shows which one."),
     }
 }
 /// "Update now" for one app (nekoserver-update-now@<app>: the same snapshot, update,

@@ -71,7 +71,7 @@ fn integrity(data: &Path, ok: bool, away: Option<&str>) -> Value {
     json!(rows)
 }
 /// Every monitored job; notify.rs names an alert for each (checked by a test).
-pub(crate) const JOBS: [(&str, &str, &str, f64); 9] = [
+pub(crate) const JOBS: [(&str, &str, &str, f64); 10] = [
     (
         "music",
         "Music library backup",
@@ -125,6 +125,13 @@ pub(crate) const JOBS: [(&str, &str, &str, f64); 9] = [
         "Daily update check",
         "nekoserver-update-check",
         216000.0,
+    ),
+    // Started by you only: never overdue.
+    (
+        "upgrade",
+        "NekoServer upgrade",
+        "nekoserver-upgrade",
+        f64::MAX,
     ),
 ];
 fn text(v: &Value) -> &str {
@@ -2278,6 +2285,14 @@ pub fn run(a: &Args) -> Result<()> {
         .filter(|s| (30..=300).contains(s))
         .unwrap_or(60));
     result["updates"] = updates(&cfg, ok);
+    // NekoServer's own release: this one, the newest offered, an upgrade at work.
+    result["nekoserver_release"] = if ok {
+        let mut shown = crate::updates::release_for_dashboard(data);
+        shown["upgrading"] = json!(Path::new(crate::maintenance::UPGRADE_JOURNAL).exists());
+        shown
+    } else {
+        json!({})
+    };
     // New app versions waiting to be installed, and when each installs by itself.
     result["waiting_updates"] = if ok {
         let mut shown = crate::updates::for_dashboard(data, crate::updates::settle_days(&cfg), now);

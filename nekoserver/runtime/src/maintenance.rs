@@ -3410,6 +3410,7 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
     ));
     let undone = std::cell::Cell::new(false);
     let result = backup::execute_with(Some(&data), "maintenance", &cfgpath, || {
+        no_upgrade()?;
         let failure = match transaction(&cfgpath, &cfg, &Plan::Audit) {
             Ok(deferred) if deferred.is_empty() => return Ok(backup::Outcome::default()),
             // Updated, with one part left for next month (a new Immich release that
@@ -3501,6 +3502,16 @@ fn job_lock(data: &Path) -> Result<fs::File> {
     )
 }
 const UNFINISHED_UPDATE: &str = "An update is not finished yet, so nothing else is looked at or installed; it is finished by: sudo systemctl start nekoserver-maintenance-resume.service";
+/// A NekoServer upgrade at work or cut off (upgrade.py keeps this record): no app update,
+/// check or monthly run starts until it is over, so the two never overlap.
+pub(crate) const UPGRADE_JOURNAL: &str = "/etc/nekoserver-backups/upgrade.json";
+const UPGRADING: &str = "NekoServer is being upgraded (or an upgrade was cut off and is being put right), so this waits for its next time; the Updates page, NekoServer tab, shows how far it is";
+fn no_upgrade() -> Result<()> {
+    if Path::new(UPGRADE_JOURNAL).exists() {
+        return Err(Error::new(UPGRADING));
+    }
+    Ok(())
+}
 /// Every image of `model` (pinned by ID) is still on this PC.
 fn images_here(model: &Value) -> Result<()> {
     for (service, v) in model["services"].as_object().into_iter().flatten() {
@@ -3609,6 +3620,7 @@ pub fn check_updates(a: &Args) -> Result<()> {
     mounts(&cfgpath, &cfg, false)?;
     let _lock = job_lock(&data)?;
     backup::execute_with(Some(&data), "update_check", &cfgpath, || {
+        no_upgrade()?;
         if Path::new(JOURNAL).exists() {
             return Err(Error::new(UNFINISHED_UPDATE));
         }
@@ -3694,6 +3706,21 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
     }
     crate::updates::save_pending(data, &pending)?;
     let _ = fs::remove_dir_all(common::safe(&work)?);
+    // NekoServer's own releases: noted for the NekoServer tab, never installed by
+    // themselves (an upgrade is yours to start).
+    let channel = crate::updates::channel(cfg);
+    match release_fetch(crate::updates::RELEASES)
+        .and_then(|text| Ok(serde_json::from_str::<Value>(&text)?))
+    {
+        Ok(list) => {
+            let found = crate::updates::newest_release(&list, channel, VERSION);
+            if let Some(tag) = found.as_ref().and_then(|r| r["tag"].as_str()) {
+                println!("NekoServer: {tag} is available (this server runs {VERSION}); upgrade from the dashboard's Updates page when you are ready");
+            }
+            crate::updates::save_release(data, VERSION, channel, found, common::now())?;
+        }
+        Err(e) => said.push(format!("NekoServer releases: could not be looked up ({e})")),
+    }
     Ok(said)
 }
 /// The release a new Immich candidate's files name (IMMICH_VERSION in its .env).
@@ -3866,6 +3893,7 @@ pub fn update_apps(a: &Args) -> Result<()> {
     }
     let undone = std::cell::Cell::new(false);
     let result = backup::execute_with(Some(&data), "updates", &cfgpath, || {
+        no_upgrade()?;
         install_due(&cfgpath, &cfg, &data, &undone, only.as_deref())
     });
     if result.is_err() && undone.get() {
@@ -4309,6 +4337,24 @@ fn committed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nothing_that_stops_apps_starts_while_nekoserver_is_upgraded() {
+        let source = include_str!("maintenance.rs");
+        for start in [
+            "pub fn check_updates(",
+            "pub fn update_apps(",
+            "pub fn run(",
+        ] {
+            let body = &source[source.find(start).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            assert!(body.contains("no_upgrade()?;"), "{start}");
+        }
+        // The same record upgrade.py keeps, and app restarts wait for it too.
+        assert!(include_str!("../../upgrade.py")
+            .contains("JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')"));
+        assert!(UPGRADE_JOURNAL.ends_with("/upgrade.json"));
+        assert!(include_str!("apps.rs").contains("Path::new(maintenance::UPGRADE_JOURNAL)"));
+    }
     /// An update snapshot of `app` at `at`: installed (`done`) or not, as the weekly
     /// update leaves it.
     fn update_run(media: &Path, run: &str, app: &str, at: f64, done: bool, old: Option<char>) {

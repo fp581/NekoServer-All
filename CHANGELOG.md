@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.43.0 — 2026-11-02
+
+The Updates page's NekoServer tab: NekoServer upgrades itself when you approve, as one coordinated operation.
+
+### Added
+- **NekoServer finds its own new releases.** The daily check looks on GitHub for releases on your channel (`maintenance.nekoserver_channel`): `"beta"` by default, while every release is a beta, or `"stable"`. It skips drafts and tags that follow neither channel's form, and on the stable channel anything marked a pre-release. A release found is shown, never installed by itself.
+- **Upgrade NekoServer from the dashboard** (Updates page, NekoServer tab, with the PIN). A background service (`nekoserver-upgrade@<release>`, which runs `upgrade.py`) goes on if the page is closed:
+  - It checks that nothing else is at work.
+  - It downloads the release and checks it is that release.
+  - It runs that release's setup with your saved settings, without questions, and never updates the system packages.
+  - It then checks every step that was done before is done again, that the services run the new release, and that the dashboard answers with the new version.
+  - If anything fails, it runs the previous release's setup again from its copy on the SSD.
+  - A restart in the middle is put right at the next start (`nekoserver-upgrade-resume.service`).
+- **App updates, the checks, the monthly check and app restarts wait** while an upgrade is at work or was cut off, so they never overlap.
+- **`NEKOSERVER_KEEP_SYSTEM`**: `install.sh` and `host.py` leave the system packages alone when an upgrade runs setup. On Arch, a release that needs a new package stops and says to run `sudo bash install.sh` in a terminal, which updates the whole system first. Running setup in a terminal is unchanged.
+
+### Not tried for real
+- The upgrade was tested with stand-ins for the download and for setup, not end to end on a server: it can only be tried for real once a newer release than this one is published.
+
 ## v0.42.1 — 2026-11-02
 
 Follow-ups to 0.42.0: SonarCloud's findings, and superseded and duplicated code taken out.

@@ -41,7 +41,23 @@ Both update buttons start a background service (`nekoserver-update-now@<app>.ser
 
 **Bigger version jumps** (a new Immich or Nextcloud major) are not installed until you approve them. See "Major version updates" below. Nor is a release whose files NekoServer does not recognise: an Immich release with an unknown Compose layout, say.
 
-The **NekoServer** and **System** tabs explain what they will cover. Upgrading NekoServer itself and maintaining the Linux system from the dashboard come in later releases. Until then, upgrade NekoServer with `git pull` and `sudo bash install.sh`. Running setup again also installs the packages it needs: on Arch that updates the whole system, on Debian and Ubuntu it refreshes the package lists and installs what is missing. The app snapshots cannot undo a Linux, kernel or Docker upgrade.
+## Upgrading NekoServer itself
+
+The daily check also looks for new NekoServer releases on GitHub, on your channel (`maintenance.nekoserver_channel`):
+- `"beta"`, the default while every release is a beta, offers the newest release, stable or beta.
+- `"stable"` offers stable releases only (README.md, "Release channels").
+
+A release is never installed by itself. The **Updates** page, **NekoServer** tab, shows it with its release notes. **Upgrade NekoServer** (with the PIN) starts `nekoserver-upgrade@<release>.service`, which runs `upgrade.py`. It goes on if you close the page, and the tab shows how it went:
+
+1. It checks that nothing else is at work: no setup, no unfinished app update or monthly check, no backup holding the shared lock. While it runs, app updates, the daily check, the monthly check and app restarts wait. A record in `/etc/nekoserver-backups/upgrade.json` says how far it got.
+2. It downloads the release from GitHub (`installer/upgrades/` on the SSD) and checks it is that release.
+3. It runs that release's setup with your saved settings, without questions (the log is next to the download). It **never updates the system packages**. On Arch, a release that needs a new package stops there, because Arch installs packages safely only with a full system update. Run `sudo bash install.sh` in a terminal then: that does the system update first.
+4. It checks the result: every setup step that was done before is done again, the background services run the new release, and the dashboard answers with the new version.
+5. If setup stopped or the check failed, it runs the previous release's setup again from its copy on the SSD (`installer/releases/v<previous>/`), so the server is back on the release it had. A restart in the middle is put right at the next start (`nekoserver-upgrade-resume.service`): a download that was cut off changed nothing; a setup that was cut off puts the previous release back.
+
+Putting the previous release back re-runs its setup over the settings and app data as the new release left them. A release that changed the format of its own settings may need you then; the tab and the log say so.
+
+The **System** tab explains what it will cover: maintaining the Linux system from the dashboard comes in a later release. Running `sudo bash install.sh` in a terminal also installs the packages NekoServer needs. On Arch that updates the whole system; on Debian and Ubuntu it refreshes the package lists and installs what is missing. The app snapshots cannot undo a Linux, kernel or Docker upgrade.
 
 ## What the monthly snapshot holds
 
