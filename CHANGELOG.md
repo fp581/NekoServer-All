@@ -34,6 +34,7 @@ Everything else was tested with the automated tests only.
 - **The stable release of the version you run is not offered.** The check offered it, and the upgrade refused it, because both keep their files in the same folder and one can't be the way back to the other. Only a release with a newer version number is offered now.
 
 ### Tests
+- A setup window test failed on CI by chance: a timestamp's digits held the PIN it checks is never recorded. It now leaves the times out of that check.
 - A test for each finding. The Python ones fail on 0.45.3; the Rust ones use functions 0.45.3 doesn't have, so they weren't run against it. The restore that loses its folder, the openSUSE step and the firewall rules are exercised for real (a real folder, bash, iptables).
 
 ## v0.45.3 — 2026-11-03
