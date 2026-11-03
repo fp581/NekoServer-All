@@ -199,6 +199,24 @@ class SignInTests(unittest.TestCase):
         self.assertEqual(ports, [49153])
         self.assertEqual(proved.call_args.kwargs, {'quarantined': True})
 
+    def test_nextcloud_with_two_factor_is_not_known_never_signed_in(self):
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value={'username': 'a', 'password': 'p'}),
+            mock.patch.object(account_setup, 'verify_project', return_value=8080),
+            mock.patch.object(account_setup, 'wait'),
+            mock.patch.object(account_setup, 'nextcloud', return_value=account_setup.NEXTCLOUD_TWO_FACTOR),
+        ):
+            self.assertIsNone(
+                account_setup.signs_in({}, 'nextcloud', client_factory=lambda app, port=None: mock.Mock())
+            )
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value={'username': 'a', 'password': 'p'}),
+            mock.patch.object(account_setup, 'verify_project', return_value=8080),
+            mock.patch.object(account_setup, 'wait'),
+            mock.patch.object(account_setup, 'nextcloud', return_value=None),
+        ):
+            self.assertTrue(account_setup.signs_in({}, 'nextcloud', client_factory=lambda app, port=None: mock.Mock()))
+
     def test_without_sudo_nothing_is_tried(self):
         with mock.patch.object(self.tool.os, 'geteuid', return_value=1000):
             self.assertEqual(self.signin(), self.tool.NO_LOGIN)

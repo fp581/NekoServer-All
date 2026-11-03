@@ -69,6 +69,80 @@ class TargetTests(unittest.TestCase):
         self.assertEqual([t[0] for t in found], ['newbig-0001', 'newsmall-0001'])
 
 
+class StopTests(unittest.TestCase):
+    """What a move stops, with systemctl answering as it does."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.journal = Path(tmp.name) / 'migrate.json'
+        self.units = {'active': ['nekoserver-app-backup.timer', 'nekoserver-dashboard.service'], 'activating': []}
+        self.calls = []
+
+        def run(argv, *args, **kwargs):
+            self.calls.append(argv)
+            if argv[:2] == ['systemctl', 'list-units']:
+                states = argv[4].removeprefix('--state=').split(',')
+                found = [u for state in states for u in self.units.get(state, [])]
+                return mock.Mock(returncode=0, stdout=''.join(u + ' loaded x y\n' for u in found))
+            if argv[:2] == ['systemctl', 'stop']:
+                for state in self.units.values():
+                    if argv[2] in state:
+                        state.remove(argv[2])
+            return mock.Mock(returncode=1, stdout='')  # is-active: Docker and Samba are not running
+
+        patcher = mock.patch.object(migrate, 'run', run)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_backup_at_work_stops_the_move_instead_of_being_cut_off(self):
+        self.units['activating'] = ['nekoserver-app-backup.service']  # a oneshot job running
+        with self.assertRaisesRegex(RuntimeError, 'nekoserver-app-backup.service is at work'):
+            migrate.stop_writers(self.journal)
+        self.assertNotIn(['systemctl', 'stop', 'nekoserver-app-backup.service'], self.calls)
+        # The timers it stopped are noted, so they start again.
+        self.assertEqual(migrate.read(self.journal)['stopped'], ['nekoserver-app-backup.timer'])
+
+    def test_with_no_job_at_work_everything_stops_and_is_noted(self):
+        self.assertEqual(
+            migrate.stop_writers(self.journal), ['nekoserver-app-backup.timer', 'nekoserver-dashboard.service']
+        )
+        self.assertEqual(
+            migrate.read(self.journal)['stopped'], ['nekoserver-app-backup.timer', 'nekoserver-dashboard.service']
+        )
+
+
+class LayeredDiskTests(unittest.TestCase):
+    def test_a_partition_beside_an_encrypted_system_is_never_offered(self):
+        # Ubuntu's "encrypt the disk": / is /dev/mapper/root, on the LUKS partition
+        # nvme0n1p3; nvme0n1p4 is a spare partition of that same disk.
+        def part(name, parent, kind, uuid=None, fstype=None, mounts=(), size=8000 * GB):
+            return {
+                'name': name,
+                'pkname': parent,
+                'type': kind,
+                'uuid': uuid,
+                'fstype': fstype,
+                'size': size,
+                'mountpoints': list(mounts),
+            }
+
+        rows = [
+            part('/dev/nvme0n1', None, 'disk'),
+            part('/dev/nvme0n1p3', '/dev/nvme0n1', 'part', 'luks-1', 'crypto_LUKS'),
+            part('/dev/mapper/root', '/dev/nvme0n1p3', 'crypt', 'os-0001', 'ext4', ['/']),
+            part('/dev/nvme0n1p4', '/dev/nvme0n1', 'part', 'spare-0001', 'ext4'),
+            *ROWS[1:4],
+            part('/dev/sdc', None, 'disk'),
+            part('/dev/sdc1', '/dev/sdc', 'part', 'luks-2', 'crypto_LUKS'),
+            part('/dev/mapper/big', '/dev/sdc1', 'crypt', 'newbig-0001', 'ext4'),
+        ]
+        found, left_out = migrate.targets(CONFIG, 'media_hdd', rows, used=1000 * GB)
+        self.assertEqual([t[0] for t in found], ['newbig-0001'])  # an encrypted new drive is fine
+        self.assertNotIn('nvme0n1p4', ' '.join(left_out))
+        self.assertEqual(migrate.physical_disks(rows, '/dev/mapper/root'), {'/dev/nvme0n1'})
+
+
 @unittest.skipUnless(shutil.which('rsync'), 'rsync is not installed')
 class CopyTests(unittest.TestCase):
     def setUp(self):

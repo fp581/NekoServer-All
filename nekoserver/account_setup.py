@@ -567,7 +567,8 @@ def signs_in(config, app, client_factory=Client):
     """Whether `app` takes its saved login now, for the weekly update (before and after it
     installs a new version). Read-only: with `allow_create` off the app checks below never
     make or change an account, and nothing is written to the saved logins. Returns None
-    when there is no saved login to try; raises with the reason (never a password) when
+    when there is no saved login to try, or it could not be tried (Nextcloud with
+    two-factor sign-in on); raises with the reason (never a password) when
     the app refuses it."""
     entry = store.get(config, app)
     if not entry:
@@ -582,7 +583,10 @@ def signs_in(config, app, client_factory=Client):
         elif app == 'seerr':
             seerr(client, entry, None)
         elif app == 'nextcloud':
-            nextcloud(client, entry, config)
+            # Two-factor sign-in on: Nextcloud refuses a plain password, so the saved one
+            # was not tried. That is "not known", never "signed in".
+            if nextcloud(client, entry, config) == NEXTCLOUD_TWO_FACTOR:
+                return None
         else:
             {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
                 client, entry

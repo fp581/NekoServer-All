@@ -934,15 +934,76 @@ def verify_snapshot(path):
     return meta, model
 
 
+def test_bridge(port):
+    """The Linux name of a rehearsal's network (one per port, at most 15 characters), so
+    the host firewall rules below can name it before it exists."""
+    return f'neko-rt-{port}'
+
+
+# What the restored app may still do on its network: answer the connections made to it
+# (the person opening it on the published port). Anything it starts itself is dropped:
+# towards this PC (INPUT: Samba, SSH, the other apps' ports on all addresses) and through
+# it (DOCKER-USER: the home network, other Docker networks, the internet).
+FIREWALL_CHAINS = ('INPUT', 'DOCKER-USER')
+
+
+def firewall_rule(chain, bridge):
+    return [
+        chain,
+        '-i',
+        bridge,
+        '-m',
+        'conntrack',
+        '!',
+        '--ctstate',
+        'ESTABLISHED,RELATED',
+        '-m',
+        'comment',
+        '--comment',
+        'NekoServer restore test: no new connections from the restored app',
+        '-j',
+        'DROP',
+    ]
+
+
+def isolate_host(bridge, run=None):
+    """Put the rehearsal network's host firewall rules in place (once: an existing one is
+    kept), before anything starts on it. Fails closed: without them nothing starts."""
+    run = run or (lambda argv: command(argv, 30))
+    for chain in FIREWALL_CHAINS:
+        rule = firewall_rule(chain, bridge)
+        try:
+            run(['iptables', '-C', *rule])
+            continue
+        except RuntimeError:
+            pass
+        try:
+            run(['iptables', '-I', *rule])
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f'The restore test was not started: the firewall rule that keeps the restored app from reaching '
+                f'this PC and the network could not be added ({exc}). Docker must manage the firewall with iptables '
+                '(its DOCKER-USER chain).'
+            ) from None
+
+
 def isolated_model(model, meta, workspace, port):
-    # The restored app must not call out (no internet, no other app), but the person
-    # has to open it from this PC. Docker publishes no port at all for a container on
-    # an "internal" network, so the test network is an ordinary bridge without IP
-    # masquerading instead: the published port works, and packets to the outside get
-    # no way back.
+    # The restored app must not call out (to this PC, the home network, another app or
+    # the internet), but the person has to open it from this PC. Docker publishes no
+    # port for a container on an "internal" network (the monthly restore test uses one,
+    # and asks the app from inside it), so this test network is an ordinary bridge
+    # without IP masquerading, named, with host firewall rules (isolate_host) dropping
+    # every connection the app starts itself: the published port works, nothing else does.
     result = {
         'services': {},
-        'networks': {'default': {'driver_opts': {'com.docker.network.bridge.enable_ip_masquerade': 'false'}}},
+        'networks': {
+            'default': {
+                'driver_opts': {
+                    'com.docker.network.bridge.enable_ip_masquerade': 'false',
+                    'com.docker.network.bridge.name': test_bridge(port),
+                }
+            }
+        },
     }
     validate_model(model, Path(meta['source_upload']), Path(meta['source_database']))
     allowed = ('image', 'command', 'entrypoint', 'environment', 'healthcheck', 'shm_size', 'stop_grace_period', 'init')
@@ -1140,6 +1201,7 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
                 raise RuntimeError('Snapshot SQL changed during restore staging')
             atomic_json(workspace / 'compose.json', isolated)
             command(base + ['config', '-q'])
+            isolate_host(test_bridge(port))
             # Only fresh isolated Postgres starts before import; Immich cannot migrate it first.
             started = True
             command(base + ['up', '-d', '--no-deps', '--pull', 'missing', 'database'], 900)

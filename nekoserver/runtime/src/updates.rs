@@ -321,8 +321,11 @@ pub(crate) fn channel(cfg: &Value) -> &str {
 }
 /// The newest release newer than `current` on `channel`, from GitHub's list: never a
 /// draft, never a tag outside the channels, and on the stable channel never a beta (nor
-/// a release GitHub marks as a pre-release). A stable release counts as newer than a
-/// beta of the same numbers.
+/// a release GitHub marks as a pre-release). Of two releases with the same numbers, the
+/// stable one is chosen. Only newer numbers are offered: a server does not record
+/// whether it runs the beta or the stable of its numbers, the two keep their files in
+/// the same folder (`installer/releases/v<numbers>`, the way back), and upgrade.py takes
+/// only a newer number, so the stable of the numbers it runs is never offered.
 pub(crate) fn newest_release(releases: &Value, channel: &str, current: &str) -> Option<Value> {
     let rank = |numbers: (u64, u64, u64), beta: bool| (numbers, !beta);
     let now = {
@@ -336,7 +339,7 @@ pub(crate) fn newest_release(releases: &Value, channel: &str, current: &str) -> 
                 *numbers.get(1)?,
                 *numbers.get(2)?,
             ),
-            true,
+            false,
         )
     };
     releases
@@ -568,6 +571,10 @@ mod tests {
             newest_release(&same, "beta", "0.43.0").unwrap()["tag"],
             "v0.43.1"
         );
+        // The stable of the numbers it runs is not offered (upgrade.py would refuse it).
+        assert!(newest_release(&same, "beta", "0.43.1").is_none());
+        assert!(newest_release(&same, "stable", "0.43.1").is_none());
+        assert!(include_str!("../../upgrade.py").contains("numbers(tag) <= numbers(VERSION)"));
         // A release GitHub marks as a pre-release is not stable, whatever its tag.
         let marked = json!([{"tag_name": "v0.43.0", "prerelease": true}]);
         assert!(newest_release(&marked, "stable", "0.42.1").is_none());

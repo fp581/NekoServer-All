@@ -123,10 +123,29 @@ def used_bytes(folder):
     return (stats.f_blocks - stats.f_bfree) * stats.f_frsize
 
 
+def physical_disks(rows, name):
+    """The physical disks (sda, nvme0n1) the device `name` is built on: through an
+    encrypted (LUKS) layer, LVM or a RAID array, down to the disks themselves. A system
+    on /dev/mapper/root is on the disk under its encrypted partition, not on that partition."""
+    found, todo, seen = set(), [name], set()
+    while todo:
+        current = todo.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        same = [r for r in rows if r.get('name') == current]
+        parents = [r['pkname'] for r in same if r.get('pkname')]
+        if not parents or any(r.get('type') == 'disk' for r in same):
+            found.add(current)
+        else:
+            todo.extend(parents)
+    return found
+
+
 def disk_of(rows, uuid):
-    """The disk (sda, nvme0n1) the filesystem `uuid` is on, or None."""
+    """The physical disks the filesystem `uuid` is on (none when it is not found)."""
     row = next((r for r in rows if r.get('uuid') == uuid), None)
-    return row and (row.get('pkname') or row.get('name'))
+    return physical_disks(rows, row['name']) if row else set()
 
 
 def targets(config, drive, rows=None, used=None):
@@ -136,12 +155,14 @@ def targets(config, drive, rows=None, used=None):
     rows = rows if rows is not None else lsblk()
     mount_key = DRIVES[drive][0]
     need = int((used if used is not None else used_bytes(mount_path(config[mount_key]))) * MARGIN)
-    taken = {disk_of(rows, config['storage'][k]['uuid']) for k in DRIVES if config.get('storage', {}).get(k)}
-    system = {r.get('pkname') or r.get('name') for r in rows if '/' in (r.get('mountpoints') or [])}
+    taken = set().union(
+        *(disk_of(rows, config['storage'][k]['uuid']) for k in DRIVES if config.get('storage', {}).get(k))
+    )
+    system = set().union(*(physical_disks(rows, r['name']) for r in rows if '/' in (r.get('mountpoints') or [])))
     found, left_out = [], []
     for row in rows:
-        disk = row.get('pkname') or row.get('name')
-        if not row.get('uuid') or row.get('fstype') not in FILESYSTEMS or disk in taken or disk in system:
+        disks = physical_disks(rows, row.get('name'))
+        if not row.get('uuid') or row.get('fstype') not in FILESYSTEMS or disks & (taken | system):
             continue
         why = why_not(row, need)
         if why:
@@ -242,20 +263,33 @@ def active(units):
     return [u for u in units if run(['systemctl', 'is-active', '--quiet', u], 30, check=False).returncode == 0]
 
 
-def nekoserver_units():
-    """NekoServer's own services and timers that run now (the dashboard included)."""
-    listed = run(['systemctl', 'list-units', '--plain', '--no-legend', '--state=active', 'nekoserver-*'], 30).stdout
+def nekoserver_units(states='active'):
+    """NekoServer's own services and timers in `states` (the dashboard included). A
+    oneshot job (a backup) at work is "activating", not "active"."""
+    listed = run(['systemctl', 'list-units', '--plain', '--no-legend', '--state=' + states, 'nekoserver-*'], 30).stdout
     return [line.split()[0] for line in listed.splitlines() if line.split()]
 
 
+AT_WORK = 'activating,deactivating,reloading'
+
+
 def stop_writers(journal=JOURNAL):
-    """Everything that writes to the drives stops; what ran is noted to start again."""
-    stopped = [u for u in nekoserver_units() if u.endswith('.timer')] + active(WRITERS)
-    stopped += [u for u in nekoserver_units() if not u.endswith('.timer')]
-    record(journal, phase='stopped', stopped=stopped)
-    for unit in stopped:
+    """Everything that writes to the drives stops; what ran is noted to start again. The
+    timers go first, so no job starts meanwhile; a job already at work (a backup worker,
+    a oneshot service: "activating") stops the move rather than being cut off half-way."""
+    timers = [u for u in nekoserver_units() if u.endswith('.timer')]
+    record(journal, phase='stopped', stopped=timers)
+    for unit in timers:
         run(['systemctl', 'stop', unit], 600, check=False)
-    still = active(WRITERS)
+    busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith('.timer')]
+    if busy:
+        raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
+    rest = active(WRITERS) + [u for u in nekoserver_units() if not u.endswith('.timer')]
+    stopped = timers + rest
+    record(journal, phase='stopped', stopped=stopped)
+    for unit in rest:
+        run(['systemctl', 'stop', unit], 600, check=False)
+    still = active(WRITERS) + [u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith('.timer')]
     if still:
         raise RuntimeError('These did not stop: ' + ', '.join(still))
     return stopped
@@ -638,7 +672,7 @@ def resume_held(settings, out, journal, staging, fstab):
         path, config = load_settings(settings)
         return switch(path, config, saved['drive'], journal, staging, fstab, out)
     # "restart_failed": a move stopped before its switch, whose apps did not all start
-    # again; 0.45.3 also wrote it after a switch, so the drive mounted tells them apart.
+    # again; 0.45.4 also wrote it after a switch, so the drive mounted tells them apart.
     switched = phase in ('started_partly', 'checking_server') or (
         phase == 'restart_failed'
         and (mounted_identity(saved.get('mount', '')) or ('',))[0] == (saved.get('new') or {}).get('uuid')

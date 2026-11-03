@@ -1742,7 +1742,7 @@ fn system_updates(path: &Path) -> Value {
         .take(300)
         .map(|u| {
             json!({"name": word(&u["name"]), "from": word(&u["from"]), "to": word(&u["to"]),
-                "security": u["security"] == true, "reboot": u["reboot"] == true,
+                "security": u["security"].as_bool(), "reboot": u["reboot"] == true,
                 "restarts": u["restarts"].as_array().into_iter().flatten().take(4).map(&word).collect::<Vec<_>>()})
         })
         .collect();
@@ -1752,6 +1752,8 @@ fn system_updates(path: &Path) -> Value {
         "count": saved["count"].as_u64(),
         "updates": if saved["updates"].is_array() { json!(updates) } else { Value::Null },
         "note": saved["note"].as_str().map(|n| chars(&common::sanitize(n), 300)),
+        // Why it is not known which updates fix a security issue (null when it is).
+        "security_note": saved["security_note"].as_str().map(|n| chars(&common::sanitize(n), 300)),
         "restart_needed": saved["restart_needed"] == true,
         // "required", "not_required" or "unknown" (the check could not tell).
         "restart": saved["restart"]

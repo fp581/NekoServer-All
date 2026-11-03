@@ -183,6 +183,7 @@ def signin(settings, app, output=print):
         output(app + ': the saved login was not accepted (' + (str(exc) or type(exc).__name__) + ')')
         return REFUSED
     if answer is None:
+        output(app + ': no saved login could be tried (none is saved, or two-factor sign-in is on)')
         return NO_LOGIN
     output(app + ': signed in with its saved login')
     return SIGNED_IN

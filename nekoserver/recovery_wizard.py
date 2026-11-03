@@ -24,6 +24,10 @@ import zlib
 
 import guided_setup
 from neko_common import (
+    FOLDER_FLAGS,
+    Destination,
+    DestinationGone,  # noqa: F401 (the restores raise it; callers catch it from here)
+    file_count,
     LEDGER_NAME,
     QUARANTINE,
     BackupDamaged,
@@ -214,70 +218,10 @@ def new_folder(suggested, prompt=input, output=print, avoid=(), refuse=()):
     return None
 
 
-def file_count(count):
-    """ "1 file", "2 files"."""
-    return f'{count} file' + ('' if count == 1 else 's')
-
-
 # Inside a restore folder: the damaged copies a restore found, as they are on the backup
 # (a photo or PDF with a few bad bytes often still opens in part). Never checked.
 DAMAGED_AS_IS = 'damaged-as-is'
 NOT_RESTORED = 'NOT-RESTORED.txt'
-
-
-class DestinationGone(RuntimeError):
-    """The restore folder is not the one the restore began in any more: its drive was
-    unplugged, or another drive (or folder) is at its path now."""
-
-
-class Destination:
-    """A restore's new folder, opened once (as the repair's Tree opens a drive). Every
-    folder and file of the restore is made from that open folder, never by its path
-    again, and refused when it would be on another filesystem; before each file the path
-    is checked to still lead to the folder that was opened. So when the drive is
-    unplugged mid-restore, or another one is mounted there, the restore stops instead of
-    going on in the empty folder on the system disk or on the other drive."""
-
-    def __init__(self, path):
-        self.path = Path(path)
-        self.fd = os.open(self.path, FOLDER_FLAGS)
-        held = os.fstat(self.fd)
-        self.held = (held.st_dev, held.st_ino)
-
-    def same(self):
-        """The restore folder's path still leads to the folder that was opened."""
-        try:
-            now = os.stat(self.path, follow_symlinks=False)
-        except OSError:
-            return False
-        return (now.st_dev, now.st_ino) == self.held
-
-    def check(self, done):
-        """Before a write: DestinationGone, saying how far the restore got, once it moved."""
-        if not self.same():
-            raise DestinationGone(
-                f'The restore stopped after {file_count(done)}: {self.path} is not the folder it began in any more '
-                '(its drive was disconnected, or another drive is mounted there now). Nothing more was written. '
-                'The files restored so far stay on that drive; connect it again and restore into a new folder.'
-            )
-
-    def folder(self, parts):
-        """The open folder `parts` below the restore folder, made when missing, reached from
-        the restore folder's open folder without following a link. The caller closes it."""
-        fd = os.dup(self.fd)
-        try:
-            for part in parts:
-                with contextlib.suppress(FileExistsError):
-                    os.mkdir(part, 0o700, dir_fd=fd)
-                found = os.open(part, FOLDER_FLAGS, dir_fd=fd)
-                os.close(fd)
-                fd = found
-                if os.fstat(fd).st_dev != self.held[0]:
-                    raise DestinationGone(f'"{part}" in {self.path} is on another drive (one mounted there)')
-        except BaseException:
-            os.close(fd)
-            raise
-        return fd
 
 
 def retired_copies(root):
@@ -1649,7 +1593,6 @@ def listed(section):
     )
 
 
-FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 DRIVE_NAMES = {'HDD': 'HDD', 'USB': 'USB drive'}
 
 

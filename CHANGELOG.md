@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.45.4 — 2026-11-03
+
+Fixes for the project owner's two reviews of 0.45.3 (17 findings). Built on 0.45.3 (merge PR #56 first).
+
+**Tried for real:**
+- **The Immich restore test's isolation, with Docker in the lab:** a container on the test network reached a service on this PC, at the network's own address and at the PC's address. With the new firewall rules it reached neither, and the published port still answered. Adding the rules twice adds them once.
+- **openSUSE's Python repair step** was run in bash with stand-ins for `zypper` and `python3`: during an upgrade it stops (exit 4) without running zypper; run by hand, it still runs `zypper update`.
+
+Everything else was tested with the automated tests only.
+
+### Fixed: the two most serious
+- **A nightly restore stops when its folder's drive goes.** If the drive with the restore folder was unplugged or replaced part-way, the restore made its folders again at the same path and went on writing there: on the system disk, or on another drive. Now the folder is opened once and every file is made from that open folder; before each one, the path must still lead to it, and a folder on another drive is refused. That is how the photo restore already worked; both now share the same code.
+- **Failed app updates no longer fill the SSD.** Each update that was undone kept its failed app data (`appdata/<app>.neko-failed-<run>`), and nothing weekly ever removed it. Now it goes with its run's snapshot, and of the undone updates of an app only the newest is kept (to look into).
+
+### Fixed: backups and app updates
+- **Nextcloud users whose names start with a dot (`.alice`) are backed up.** Nextcloud allows those names; the USB copy skipped them without a word. Only a name the copy's own records use (`.neko-…`) can't be copied; that user is named in the report, and the copy is not called complete.
+- **The daily update check checks the room on the SSD before it downloads.** It downloads a new version's images only when the SSD keeps its reserve afterwards. Images of versions no longer waiting (replaced by a newer one, now running, or changed by setup) are removed after each check, not only after an update installs; an update's own clean-up keeps noting those still waiting, so they are removed later.
+- **Old app-update snapshots go only while the newer ones are intact**, as for the monthly ones. A newer snapshot that fails its checksum check keeps the older ones and is named.
+- **An update that does not fit can free its own undone updates' snapshots** (on the HDD, with their data on the SSD), oldest first; a complete snapshot is never removed for room.
+- **Update now and a weekly USB copy no longer wait on each other.** An update held the backups' lock while it waited for the USB drive's lock, and the USB copy then waited half an hour for the backups' lock and left out its fresh Nextcloud database copy. An update now takes the USB drive's lock first and keeps it to the end; a copy that starts meanwhile waits at its start, holding nothing.
+- **Nextcloud with two-factor sign-in is "not known" in the update's login check**, never "signed in": its saved password can't be tried.
+- **An app update's record no longer says its restore test passed** (`restore_test: "not_run"`); only the monthly check runs it.
+- **A NekoServer upgrade keeps its way back.** Setup's clean-up of earlier releases could remove the release an upgrade at work would put back (with a newer release that failed still kept, say), before the upgrade checked the result. Releases the upgrade's record names are kept, and every release when that record can't be read.
+- **The manual Immich restore test can't reach this PC or the network.** Its network only had IP masquerading off, which isn't a firewall: the restored app, with your production settings, could reach services on this PC. Two firewall rules now drop every connection it starts itself; without them the test does not start.
+
+### Fixed: drive moves, the System tab and upgrades
+- **A move never offers a partition on the system's disk when the system is encrypted.** With `/` on an encrypted (LUKS) partition, the system's disk was taken to be that partition, so another partition of the same disk could be offered. Each filesystem is now traced down to its physical disks, through encryption, LVM and RAID.
+- **A backup at work stops a move** instead of being cut off half-way. A running backup is "activating" to systemd, not "active", so the move did not see it. Now it stops the timers first; if a job is still at work, it stops, and the apps run as before.
+- **openSUSE's system stays as it is during a NekoServer upgrade.** If Python needed newer libraries, setup brought the whole system up to date even during an upgrade from the dashboard. Now it stops and says to run setup in a terminal, as on Arch.
+- **The System check never writes onto the system disk.** With the SSD missing it wrote its answer under the SSD's empty folder. It now checks that the SSD is mounted first.
+- **Security fixes on Fedora, RHEL and Arch.** They were always shown as "not a security fix". Fedora and RHEL now ask `dnf updateinfo`; Arch asks `arch-audit` when it is installed. Where the system can't say (openSUSE, Arch without arch-audit), the tab says it is not known.
+- **The stable release of the version you run is not offered.** The check offered it, and the upgrade refused it, because both keep their files in the same folder and one can't be the way back to the other. Only a release with a newer version number is offered now.
+
+### Tests
+- A test for each finding. The Python ones fail on 0.45.3; the Rust ones use functions 0.45.3 doesn't have, so they weren't run against it. The restore that loses its folder, the openSUSE step and the firewall rules are exercised for real (a real folder, bash, iptables).
+
 ## v0.45.3 — 2026-11-03
 
 Fixes for the project owner's two reviews of 0.45.2: the drive move's end check, a move overlapping an upgrade, its /etc/fstab switch, finishing one whose apps did not start, an app update's rollback, and the login check of a held-back Immich or Nextcloud.

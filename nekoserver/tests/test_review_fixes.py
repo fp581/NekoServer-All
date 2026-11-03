@@ -2739,11 +2739,53 @@ class IsolatedRestoreNetworkTests(unittest.TestCase):
             isolated = recovery_tools.isolated_model(model, meta, Path('/w'), 2284)
         network = isolated['networks']['default']
         self.assertNotIn('internal', network)
-        self.assertEqual(network['driver_opts'], {'com.docker.network.bridge.enable_ip_masquerade': 'false'})
+        self.assertEqual(
+            network['driver_opts'],
+            {
+                'com.docker.network.bridge.enable_ip_masquerade': 'false',
+                'com.docker.network.bridge.name': 'neko-rt-2284',  # named, for the firewall rules
+            },
+        )
         self.assertEqual(
             isolated['services']['immich-server']['ports'],
             [{'target': 2283, 'published': '2284', 'host_ip': '127.0.0.1', 'protocol': 'tcp'}],
         )
+
+    def test_the_restored_app_can_not_reach_this_pc_or_the_network(self):
+        # Tried in the lab with Docker: without these rules the test container reached a
+        # service on this PC (at the bridge's address and the PC's own); with them it
+        # reached neither, and the published port still answered.
+        import recovery_tools
+
+        rules = []
+
+        def run(argv):
+            rules.append(argv)
+            if argv[1] == '-C':
+                raise RuntimeError('no such rule')
+
+        recovery_tools.isolate_host('neko-rt-2284', run)
+        inserted = [r for r in rules if r[1] == '-I']
+        self.assertEqual([r[2] for r in inserted], ['INPUT', 'DOCKER-USER'])
+        for rule in inserted:
+            self.assertEqual(rule[3:5], ['-i', 'neko-rt-2284'])
+            self.assertIn('ESTABLISHED,RELATED', rule)
+            self.assertEqual(rule[-2:], ['-j', 'DROP'])
+        # Already there: kept, not added twice.
+        rules.clear()
+        recovery_tools.isolate_host('neko-rt-2284', lambda argv: rules.append(argv))
+        self.assertEqual([r[1] for r in rules], ['-C', '-C'])
+
+        # Not possible: nothing starts.
+        def broken(argv):
+            raise RuntimeError('iptables is not there')
+
+        with self.assertRaisesRegex(RuntimeError, 'The restore test was not started'):
+            recovery_tools.isolate_host('neko-rt-2284', broken)
+        # In place before the first service starts.
+        source = (ROOT / 'recovery_tools.py').read_text()
+        body = source[source.index('def restore_test(') :]
+        self.assertLess(body.index('isolate_host(test_bridge(port))'), body.index("'up', '-d'"))
 
 
 class RestoreTestPortTests(unittest.TestCase):
