@@ -698,14 +698,16 @@ class DriveSizeTests(unittest.TestCase):
         self.assertEqual(config['storage']['media_hdd']['uuid'], 'hdd-0001')
         self.assertEqual(
             out[0],
-            'Now choose the SSD (apps, photos and music). It needs at least 20 GB free '
-            '(100 GB or more is recommended).',
+            'Now choose the SSD (apps, photos and music). It needs at least 20 GB free, so a drive of 22 GB or '
+            'more (100 GB or more is recommended).',
         )
-        self.assertIn('  1) sdb1: 16 GB, named "SSD", Cruzer (ext4)  - too small, needs 20 GB', out)
+        self.assertIn('  1) sdb1: 16 GB, named "SSD", Cruzer (ext4)  - too small, needs 22 GB', out)
         self.assertIn('  2) sdc1: 466 GB, named "Fast", Samsung SSD 870 (ext4)', out)
         self.assertIn('  (The disk Linux runs from is not in the list: it is never used for this.)', out)
         self.assertIn(
-            'sdb1 is 16 GB, too small for the SSD: it needs at least 20 GB. Choose another one from the list.', out
+            'sdb1 is 16 GB, too small for the SSD: it needs a drive of at least 22 GB (20 GB free once formatted). '
+            'Choose another one from the list.',
+            out,
         )
         self.assertIn('Type sdc1 to confirm it is the SSD (466 GB): ', out)
         self.assertTrue(any(line.startswith('Now choose the HDD') and '50 GB' in line for line in out))
@@ -716,10 +718,19 @@ class DriveSizeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             self.resolve([], inventory=inventory)
         self.assertIn(
-            'No drive here is big enough for the SSD (apps, photos and music): it needs at least 20 GB',
+            'No drive here is big enough for the SSD (apps, photos and music): it needs a drive of at least 22 GB',
             str(caught.exception),
         )
         self.assertIn('Nothing was changed', str(caught.exception))
+
+    def test_a_drive_of_exactly_the_minimum_is_never_too_small_for_the_minimum(self):
+        # Found in the lab: a 20 GB drive was refused as "too small: it needs at least
+        # 20 GB" (the formatted drive keeps some of it for itself, so it needs 22 GB).
+        smallest, _ = storage.sizes('data_ssd')
+        exactly = {'size': f'{smallest}G'}
+        self.assertFalse(storage.big_enough(exactly, smallest))
+        self.assertGreater(storage.drive_needed(smallest), smallest)
+        self.assertTrue(storage.big_enough({'size': f'{storage.drive_needed(smallest)}G'}, smallest))
 
     def test_enter_alone_says_how_to_go_on(self):
         with self.assertRaisesRegex(
@@ -761,8 +772,8 @@ class DriveSizeTests(unittest.TestCase):
         config, out = self.resolve(['2', 'sdc1', '2', 'sdd1'], config)
         self.assertEqual(config['storage']['data_ssd']['uuid'], 'ssd-0001')
         self.assertIn(
-            'sdb1 (16 GB), the drive saved as the SSD, is too small: it needs at least 20 GB. '
-            'Choose the SSD (apps, photos and music) again:',
+            'sdb1 (16 GB), the drive saved as the SSD, is too small: it needs a drive of at least 22 GB (20 GB '
+            'free once formatted). Choose the SSD (apps, photos and music) again:',
             out,
         )
 

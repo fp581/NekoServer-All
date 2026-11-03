@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 
 const CALLS = new Set(['collectIssues', 'filesIntact', 'appState', 'validStatus', 'fixedFloor', 'raiseFixed',
   'backupSummary', 'recentCopies', 'integrityResult', 'nextRun', 'shortText', 'pinRefusal', 'guideFor', 'appsSummary',
-  'shownApps', 'releaseNotes', 'arrayShown', 'words']);
+  'shownApps', 'releaseNotes', 'arrayShown', 'words', 'waitingWhen']);
 /* Calls answered from another function's result, with more of it. */
 const DETAILED = new Set(['issueDetails']);
 const calls = JSON.parse(process.argv[2]);
@@ -64,6 +64,7 @@ const answers = calls.map(([name, argument]) => {
   }
   if (['backupSummary', 'appsSummary'].includes(name)) { return app[name](app.validStatus(argument)); }
   if (name === 'pinRefusal') { return app.pinRefusal(argument.answer, argument.now); }
+  if (name === 'waitingWhen') { return argument.waiting.map(w => app.waitingWhen(w, argument.waiting, argument.now)); }
   if (name === 'releaseNotes') { return app.releaseNotes(argument.app, argument.version); }
   // The apps Home offers (this stand-in page is the server's own, 127.0.0.1).
   if (name === 'shownApps') { return app.shownApps(app.validStatus(argument), true).map(a => a.id); }

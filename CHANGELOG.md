@@ -2,7 +2,7 @@
 
 ## v0.45.5 — 2026-11-03
 
-Found by installing 0.45.4 in the lab and opening its dashboard in a browser.
+Found by installing 0.45.4 in the lab, opening its dashboard in a browser, and using its Updates page with made-up versions waiting and a PIN set.
 
 **Tried for real** (the lab: Ubuntu 24.04 with systemd, two file-backed drives; this lab can't download Docker or app images, so it ran the dashboard profile): setup with `--check`, then `--profile dashboard --apply`; every step passed and the dashboard, its collector and the control service ran. Every dashboard page and the three Updates tabs were opened in Chromium, with no page errors, and at phone width with nothing wider than the screen. The System check ran for real: 116 Ubuntu updates, security fixes marked, the restart "not known" with its reason. The drive move list, a move refused while the operation lock was held, and an upgrade refused for the same release, for an unfinished move and for a release that isn't there were tried for real. Setup started by hand during a move stopped and named the command that finishes it.
 
@@ -11,6 +11,10 @@ Found by installing 0.45.4 in the lab and opening its dashboard in a browser.
   - the System tab said "whether a restart is needed is not known: ." with no reason, and never named the reasons a restart is needed;
   - an update never said it restarts Docker, Samba, Tailscale or SSH;
   - a RAID array or Btrfs pool was never shown with the drives it holds, nor named after them.
+- **"Install at the next update night" works.** The control service may write only a few folders, and the one holding the version you choose (`backups/updates`) was not one of them, so the button always failed ("Read-only file system"). Found by clicking it in the lab with a PIN set; it now saves your choice.
+- **Each waiting app version says when it really installs.** A version that had waited long enough said "installs from Nov 1" on Nov 3, and every waiting version said it would install, though an update night installs one: the one you chose, else the newest that has waited long enough. Each now says which it is.
+- **The PIN window names updates and upgrades**, not only restarting or closing apps.
+- **A drive that is too small says the size it needs.** A 20 GB drive was refused as "too small: it needs at least 20 GB" (a formatted drive keeps some of itself, so 20 GB free needs a 22 GB drive). The messages now name the drive size needed, with the free space it gives.
 - **The System check says why it did not run in one line.** With the SSD missing, it refused correctly but printed a Python traceback; it now prints one line and exits with code 1.
 
 ## v0.45.4 — 2026-11-03

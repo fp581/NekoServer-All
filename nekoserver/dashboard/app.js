@@ -3085,7 +3085,11 @@ function withPin(then) {
     toast('App controls need a PIN. Run setup again in a terminal on the server to choose one.');
     return;
   }
-  unlockDialog(then, 'APP CONTROLS', 'Restarting or closing apps needs your PIN on every device, the server too.');
+  unlockDialog(
+    then,
+    'APP CONTROLS',
+    'Changes to your apps and to NekoServer (a restart, an update, an upgrade) need your PIN on every device, the server too.'
+  );
 }
 async function appAction(op, body, starting) {
   const answer = await postControl(op, body);
@@ -3405,11 +3409,27 @@ function confirmUpdateNow(app, name, version, sig) {
     )
   );
 }
-function waitingRow(app, name, w) {
+/* When a version waiting installs by itself, as the update night chooses (updates.rs
+ * `due`): the one you chose; else the newest that has waited long enough. */
+function waitingWhen(w, waiting, now = nowSeconds()) {
+  if (w.approved) {
+    return 'installs at the next update night (you chose it)';
+  }
+  if (waiting.some(o => o.approved)) {
+    return 'not installed by itself (you chose another version for the next update night)';
+  }
+  if (!(numeric(w.installs_from) && w.installs_from <= now)) {
+    return 'installs from ' + day(w.installs_from);
+  }
+  const settled = waiting.filter(o => numeric(o.installs_from) && o.installs_from <= now);
+  const newest = settled.reduce((a, o) => (numeric(o.first_seen) && o.first_seen > a.first_seen ? o : a), settled[0]);
+  return newest === w
+    ? 'has waited long enough: installs at the next update night'
+    : 'a newer version that has waited long enough installs instead';
+}
+function waitingRow(app, name, w, waiting = [w]) {
   const row = el('div', 'row');
-  const when = w.approved
-    ? 'installs at the next update night (you chose it)'
-    : 'installs from ' + day(w.installs_from);
+  const when = waitingWhen(w, waiting);
   row.append(el('span', '', text(w.version, 'new version') + ' · found ' + day(w.first_seen) + ' · ' + when));
   const actions = el('div', 'update-actions');
   actions.append(
@@ -3466,7 +3486,7 @@ function updateCard(u) {
     )
   );
   const waiting = list(u.waiting);
-  card.append(...(waiting.length ? waiting.map(w => waitingRow(app, name, w)) : [el('p', '', 'Up to date.')]));
+  card.append(...(waiting.length ? waiting.map(w => waitingRow(app, name, w, waiting)) : [el('p', '', 'Up to date.')]));
   return card;
 }
 function appsTab(s) {

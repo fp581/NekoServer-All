@@ -238,10 +238,12 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None):
         'RuntimeDirectory=nekoserver-control\nRuntimeDirectoryMode=0750\nRuntimeDirectoryPreserve=yes\n'
         # Docker's command-line tool keeps its own settings here, not in root's home.
         'Environment=DOCKER_CONFIG=/run/nekoserver-control/docker\n'
-        # The shared lock that backups and monthly updates hold (an app restart waits for none).
+        # The shared lock that backups and monthly updates hold (an app restart waits for none),
+        # and the version you choose with "Install at the next update night" (approved.json):
+        # the only folders on the SSD it may write to.
         'NoNewPrivileges=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths='
         + str(CONTROL_CONFIG)
-        + (' -' + str(Path(data) / 'installer') if data else '')
+        + (' -' + str(Path(data) / 'installer') + ' -' + str(Path(data) / 'backups/updates') if data else '')
         + '\nPrivateTmp=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n'
         # CAP_KILL: closing an app someone opened on the desktop (their own user's process).
         # The computer's own loopback only: the apps answer there; nothing else is reached.
