@@ -2793,8 +2793,35 @@ class IsolatedRestoreNetworkTests(unittest.TestCase):
         self.assertNotIn('-o', inserted[0])
         # Already there: kept, not added twice.
         rules.clear()
-        recovery_tools.isolate_host('neko-rt-2284', lambda argv: rules.append(argv))
-        self.assertEqual([r[1] for r in rules], ['-C', '-C'])
+
+        def present(argv):
+            rules.append(argv)
+            if argv[1] == '-D':
+                raise RuntimeError('no such rule')
+
+        recovery_tools.isolate_host('neko-rt-2284', present)
+        self.assertEqual([r[1] for r in rules], ['-C', '-C', '-D'])
+        # 0.45.8: 0.45.5's rule (without "! -o") was left in place beside the right one,
+        # so the test's apps still could not reach each other. Each copy is removed, after
+        # the right rules are in.
+        old = recovery_tools.firewall_rule('DOCKER-USER', 'neko-rt-2284', within_passes=False)
+        self.assertNotIn('-o', old)
+        copies = [2]
+        rules.clear()
+
+        def legacy(argv):
+            rules.append(argv)
+            if argv[1] == '-C':
+                raise RuntimeError('no such rule')
+            if argv[1] == '-D':
+                self.assertEqual(argv[2:], old)
+                if not copies[0]:
+                    raise RuntimeError('no such rule')
+                copies[0] -= 1
+
+        recovery_tools.isolate_host('neko-rt-2284', legacy)
+        self.assertEqual([r[1] for r in rules], ['-C', '-I', '-C', '-I', '-D', '-D', '-D'])
+        self.assertEqual(copies, [0])
 
         # Not possible: nothing starts.
         def broken(argv):

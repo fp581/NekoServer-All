@@ -464,7 +464,9 @@ pub fn mode_packet(device: &Device, mode: usize, color: Option<[u8; 3]>) -> Opti
     let mut chosen = device.modes.get(mode)?.clone();
     if let (Some(c), true) = (color, chosen.takes_color()) {
         chosen.color_mode = MODE_SPECIFIC_COLORS;
-        chosen.colors = vec![c; chosen.colors_min.max(1) as usize];
+        // The colour list's length is sent as 16 bits: a device that says it needs more
+        // (a broken or hostile reply) never makes a list of billions in memory.
+        chosen.colors = vec![c; chosen.colors_min.clamp(1, u16::MAX as u32) as usize];
     }
     let mut data = (mode as i32).to_le_bytes().to_vec();
     chosen.write(&mut data);
@@ -703,6 +705,14 @@ pub mod tests {
         );
     }
 
+    /// 0.45.8: a mode that said it needs billions of colours made a list that size.
+    #[test]
+    fn a_mode_asking_for_billions_of_colours_gets_a_list_that_fits() {
+        let mut dev = parse_device(0, &device_bytes("Strip", &[("Static", 1)], 2, false)).unwrap();
+        dev.modes[0].colors_min = u32::MAX;
+        let packet = mode_packet(&dev, 0, Some([1, 2, 3])).unwrap();
+        assert!(packet.len() < 300_000, "{}", packet.len());
+    }
     #[test]
     fn identical_devices_get_their_own_lasting_names() {
         let modes = [("Direct", 0)];

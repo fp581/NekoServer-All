@@ -206,6 +206,16 @@ class SignInTests(unittest.TestCase):
 
         for word in ('Mary Smith', "o'brien", '--', 'twofactorauth:state'):
             self.assertTrue(re.fullmatch(account_setup.ARGUMENT, word), word)
+        # 0.45.8: names Nextcloud and setup accept but the filter refused (the first
+        # character); every name the account check accepts passes it.
+        import account_store
+
+        for word in ('.alice', '_admin', '@home', "'tis", 'a.b'):
+            self.assertTrue(account_store.existing_name_ok('nextcloud', word), word)
+            self.assertTrue(re.fullmatch(account_setup.ARGUMENT, word), word)
+        # Names Nextcloud itself can't have are not taken either.
+        for word in ('a;b', '$(x)', 'josé', '-alice', 'a:b'):
+            self.assertFalse(account_store.existing_name_ok('nextcloud', word), word)
         for word in (' leading', 'a;b', '$(x)', '-x y', 'a\nb'):
             self.assertFalse(re.fullmatch(account_setup.ARGUMENT, word), word)
         source = (ROOT / 'account_setup.py').read_text()

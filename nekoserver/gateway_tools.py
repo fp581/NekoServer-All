@@ -911,11 +911,11 @@ def configure_cloud_origin(config, host, port):
         except (RuntimeError, ValueError):
             return None
 
-    values = get('trusted_domains')
-    if not isinstance(values, list):
+    values, free = listed(get('trusted_domains'))
+    if values is None:
         raise RuntimeError('Cannot inspect Nextcloud trusted hosts')
     if host not in values:
-        command(base + [OCC_SET, 'trusted_domains', str(len(values)), '--value=' + host])
+        command(base + [OCC_SET, 'trusted_domains', str(free), '--value=' + host])
     # Both gateways tell Nextcloud the client used https (X-Forwarded-Proto, from a
     # trusted proxy), so it builds https links for them and plain ones on this PC itself
     # (http://127.0.0.1:8088). A forced protocol, set by releases before 0.39.4, sent
@@ -931,8 +931,32 @@ def configure_cloud_origin(config, host, port):
     known = urlsplit(cli).hostname if isinstance(cli, str) and cli.startswith(HTTPS) else None
     if known not in [*values, host] or known in ('localhost', '127.0.0.1'):
         command(base + [OCC_SET, 'overwrite.cli.url', '--value=https://' + host + ':' + str(port)])
-    for index, proxy in enumerate(cloud_proxies(compose)):
-        command(base + [OCC_SET, 'trusted_proxies', str(index), '--value=' + proxy])
+    trust_gateway_proxies(base, get('trusted_proxies'), cloud_proxies(compose))
+
+
+def trust_gateway_proxies(base, saved, wanted):
+    """The gateway's proxies added to Nextcloud's trusted_proxies after the person's own
+    (another reverse proxy of theirs, say), never over them."""
+    proxies, free = listed(saved)
+    proxies = proxies or []
+    for proxy in wanted:
+        if proxy not in proxies:
+            command(base + [OCC_SET, 'trusted_proxies', str(free), '--value=' + proxy])
+            proxies.append(proxy)
+            free += 1
+
+
+def listed(value):
+    """A Nextcloud list setting as occ shows it: (its values, the next free position), or
+    (None, 0) when it is not one. occ shows a list whose positions have a gap (one taken
+    out in the middle) as an object of position: value; unset, as nothing."""
+    if value is None:
+        return [], 0
+    if isinstance(value, list):
+        return list(value), len(value)
+    if isinstance(value, dict) and all(str(k).isdigit() for k in value):
+        return list(value.values()), max((int(k) for k in value), default=-1) + 1
+    return None, 0
 
 
 # Docker's own default range for the networks it makes (172.17.0.0/16 to 172.31.0.0/16).

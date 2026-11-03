@@ -864,7 +864,10 @@ def inspect(config, profile='full', now=None):
         or 'music_backup' in modules
     ):
         rows = health.backups(config, now, matched['data_ssd'])
-        selected = {'archive', 'database'} if 'photo_preservation' in modules else set()
+        # The photo archive and Immich's database copy only with Immich set up: with it
+        # switched off those jobs are off too, and could never pass.
+        immich = config.get('photos', {}).get('deploy_immich', False)
+        selected = {'archive', 'database'} if 'photo_preservation' in modules and immich else set()
         if 'photo_backup' in modules:
             selected.add('external')
         if 'app_backup' in modules:

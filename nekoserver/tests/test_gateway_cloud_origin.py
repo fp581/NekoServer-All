@@ -119,6 +119,19 @@ class CloudOriginTests(unittest.TestCase):
         self.run_gateways(fake, '192.168.1.20')
         self.assertEqual(fake.system['trusted_proxies'], ['172.16.0.0/12', '192.168.48.1'])
 
+    def test_the_persons_own_trusted_proxy_is_kept(self):
+        # The second audit: each run wrote Docker's range over the first entries of the
+        # list, so a reverse proxy of the person's own lost its trust.
+        fake = FakeNextcloud({'trusted_domains': ['localhost'], 'trusted_proxies': ['10.0.0.5']})
+        self.run_gateways(fake, '192.168.1.20')
+        self.assertEqual(fake.system['trusted_proxies'], ['10.0.0.5', '172.16.0.0/12'])
+        # A list with a gap (an entry taken out in the middle) is an object to occ.
+        import gateway_tools
+
+        self.assertEqual(gateway_tools.listed({'0': 'localhost', '2': 'x'}), (['localhost', 'x'], 3))
+        self.assertEqual(gateway_tools.listed(None), ([], 0))
+        self.assertEqual(gateway_tools.listed('nonsense'), (None, 0))
+
     def test_rerun_is_idempotent(self):
         fake = FakeNextcloud()
         self.run_gateways(fake, '192.168.1.20', '192.168.1.20')

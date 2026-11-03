@@ -80,10 +80,11 @@ def video_support(vainfo):
     """{'codecs': formats the chip decodes, 'encoder': whether it lists an encoder,
     'low_power_only': whether its only H.264 encoder is the low-power one} from vainfo's
     profile lines ("VAProfileH264Main : VAEntrypointVLD")."""
-    codecs, entries = [], set()
+    codecs, entries, decodes = [], set(), set()
     for line in vainfo.splitlines():
         profile, _, entry = (part.strip() for part in line.partition(':'))
         if entry == 'VAEntrypointVLD':
+            decodes.add(profile)
             codecs += [name for prefix, name in VA_CODECS if profile.startswith(prefix) and name not in codecs]
         elif entry.startswith('VAEntrypointEncSlice') and profile.startswith('VAProfileH264'):
             entries.add(entry)
@@ -91,6 +92,10 @@ def video_support(vainfo):
         'codecs': [name for _, name in VA_CODECS if name in codecs],
         'encoder': bool(entries),
         'low_power_only': entries == {'VAEntrypointEncSliceLP'},
+        # 10-bit video (much 4K and anime): only when the chip lists the 10-bit profile,
+        # as many that decode HEVC or VP9 do not (Intel before Kaby Lake, for example).
+        'hevc_10bit': 'VAProfileHEVCMain10' in decodes,
+        'vp9_10bit': 'VAProfileVP9Profile2' in decodes,
     }
 
 
@@ -203,7 +208,9 @@ def probe(app, node, run=subprocess.run):
     support = video_support(result.stdout) if result.returncode == 0 else {'codecs': []}
     if not support['codecs']:
         return None
-    return {'codecs': support['codecs'], **encode_check(cid, node, run, support)}
+    # The 10-bit profiles, named only when the chip lists them (configure_jellyfin).
+    ten = {k: True for k in ('hevc_10bit', 'vp9_10bit') if support.get(k)}
+    return {'codecs': support['codecs'], **ten, **encode_check(cid, node, run, support)}
 
 
 def login_jellyfin(client, entry):
@@ -261,6 +268,10 @@ def configure_jellyfin(entry, method, node, client, video, ours=False, several=F
                 device: node,
                 'EnableHardwareEncoding': video['encode'],
                 'HardwareDecodingCodecs': video['codecs'],
+                # Jellyfin has both on by default; a chip without them fails to play
+                # 10-bit files instead of letting the processor decode them.
+                'EnableDecodingColorDepth10Hevc': video.get('hevc_10bit', False),
+                'EnableDecodingColorDepth10Vp9': video.get('vp9_10bit', False),
             }
         )
         if video.get('low_power'):

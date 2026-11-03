@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.45.7'
+VERSION = '0.45.8'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -183,12 +183,25 @@ def hold_operation(lock=None, wait=False):
     return held
 
 
-MAINTENANCE_UNITS = ('nekoserver-maintenance.service', 'nekoserver-maintenance-resume.service')
+# Every job that changes the apps' versions with the update journal (MAINTENANCE_JOURNAL):
+# the monthly check, its retry and the service that finishes a cut-off one, the weekly
+# app updates and "Update now" on the dashboard (one instance per app; systemctl matches
+# the pattern against the services loaded now).
+MAINTENANCE_UNITS = (
+    'nekoserver-maintenance.service',
+    'nekoserver-maintenance-resume.service',
+    'nekoserver-maintenance-retry.service',
+    'nekoserver-updates.service',
+    'nekoserver-update-now@*.service',
+)
+# How to see whether one of them is still working.
+MAINTENANCE_SHOWN = "sudo systemctl list-units 'nekoserver-maintenance*' 'nekoserver-update*'"
 
 
 def maintenance_running(run=subprocess.run):
-    """The monthly update, or the service that finishes a cut-off one, is working right
-    now (both are oneshot services: "activating" while they run)."""
+    """An app update (the monthly one, the weekly one, "Update now", or the service that
+    finishes a cut-off one) is working right now (all are oneshot services: "activating"
+    while they run)."""
     try:
         result = run(
             ['systemctl', 'is-active', *MAINTENANCE_UNITS], capture_output=True, text=True, timeout=15, check=False
@@ -214,9 +227,9 @@ def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was change
     which = f'NekoServer v{started}' if isinstance(started, str) and started else 'an earlier NekoServer'
     if running():
         return (
-            f'A monthly update started by {which} is running right now (it can take an hour or more). '
-            'Let it finish: sudo systemctl status nekoserver-maintenance.service shows "inactive" once it '
-            f'has. Then run  sudo bash install.sh  again. {outcome}'
+            f'An app update started by {which} is running right now (it can take an hour or more). '
+            f'Let it finish: {MAINTENANCE_SHOWN}  lists no running one once it has. '
+            f'Then run  sudo bash install.sh  again. {outcome}'
         )
     return (
         f'A monthly update started by {which} did not finish, so some apps may still be stopped. '

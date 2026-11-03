@@ -82,8 +82,10 @@ class Client:
 # What may be passed to docker: a word (a name, a label, a path, an account name with
 # Nextcloud's allowed characters) or an option, never a shell construct or a control character.
 # A word may hold spaces after its first character ("Mary Smith", a Nextcloud account
-# name): Docker gets each argument as one, never through a shell.
-ARGUMENT = r"--|[A-Za-z0-9/][A-Za-z0-9 _.@:/=+,'-]*|--?[A-Za-z][A-Za-z0-9-]*(?:=[A-Za-z0-9_./:,-]*)?"
+# name), and start with any character a Nextcloud name may start with (".alice",
+# "_admin", "@home", "'tis") except "-", which would read as an option: Docker gets each
+# argument as one, never through a shell.
+ARGUMENT = r"--|[A-Za-z0-9/_.@'][A-Za-z0-9 _.@:/=+,'-]*|--?[A-Za-z][A-Za-z0-9-]*(?:=[A-Za-z0-9_./:,-]*)?"
 
 
 def docker(args, input_text=None):

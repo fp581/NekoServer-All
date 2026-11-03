@@ -208,8 +208,17 @@ const JOB_UNITS = {
   host: 'nekoserver-host-backup.service',
   music: 'nekoserver-music-backup.service',
   monthly: 'nekoserver-maintenance.service',
-  maintenance: 'nekoserver-maintenance.service'
+  maintenance: 'nekoserver-maintenance.service',
+  updates: 'nekoserver-updates.service',
+  update_check: 'nekoserver-update-check.service',
+  upgrade: 'nekoserver-upgrade-resume.service'
 };
+/* The service a job runs as: the status says (the weekly photo schedule runs the
+   database copy, an upgrade runs as nekoserver-upgrade@<release>), else the usual one. */
+function jobUnit(job) {
+  const said = text(job?.unit);
+  return /^nekoserver-[A-Za-z0-9@._-]{1,80}\.service$/.test(said) ? said : JOB_UNITS[job?.id] || null;
+}
 const LABELS = {
   pass: 'Passed',
   fail: 'Failed',
@@ -665,7 +674,7 @@ function guideFor(id) {
 function unitFor(id) {
   const [kind, name] = id.split(':');
   if (kind === 'job') {
-    return JOB_UNITS[name] || null;
+    return jobUnit(list(state.status?.backups).find(b => b.id === name) || { id: name });
   }
   return kind === 'startup' ? name : null;
 }
@@ -826,7 +835,7 @@ function backupIssues(s, add) {
       continue;
     } // waits for a missing drive: its alert says so
     const name = text(job.name, 'Backup'),
-      unit = JOB_UNITS[job.id],
+      unit = jobUnit(job),
       timer = object(job.timer);
     if (['fail', 'partial', 'stale'].includes(job.status)) {
       add(
@@ -1459,7 +1468,7 @@ function backupCard(job, fresh) {
   }
   card.append(
     keyed(
-      button('Help & logs', () => showGuide('backup', JOB_UNITS[job.id]), 'text-button'),
+      button('Help & logs', () => showGuide('backup', jobUnit(job)), 'text-button'),
       'backup-' + job.id
     )
   );
@@ -3970,7 +3979,8 @@ function showGuide(id, requestedUnit) {
     steps.append(el('li', '', step));
   }
   const listed = list(state.status?.startup).some(u => u.unit === requestedUnit);
-  const unit = Object.values(JOB_UNITS).includes(requestedUnit) || listed ? requestedUnit : guide.unit;
+  const job = list(state.status?.backups).some(b => jobUnit(b) === requestedUnit);
+  const unit = Object.values(JOB_UNITS).includes(requestedUnit) || listed || job ? requestedUnit : guide.unit;
   openDialog('GUIDED HELP', guide.title, [
     el('p', '', guide.intro),
     steps,

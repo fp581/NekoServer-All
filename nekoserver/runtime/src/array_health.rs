@@ -228,7 +228,7 @@ pub(crate) fn btrfs_pool(uuid: &str, stats: Option<&str>, missing: &[String]) ->
     } else if stats.is_none() {
         (
             "unknown",
-            "The btrfs tool is not installed, so the drives' error counters can't be read"
+            "The drives' error counters can't be read right now (btrfs device stats did not answer; is btrfs-progs installed?)"
                 .to_string(),
         )
     } else {
@@ -395,7 +395,7 @@ pub(crate) mod tests {
         assert_eq!(gone["status"], "degraded");
         let blind = btrfs_pool("aabbccdd-1111", None, &[]);
         assert_eq!(blind["status"], "unknown");
-        assert!(blind["reason"].as_str().unwrap().contains("btrfs tool"));
+        assert!(blind["reason"].as_str().unwrap().contains("btrfs-progs"));
     }
 
     #[test]

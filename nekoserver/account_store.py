@@ -63,13 +63,15 @@ def existing_name_ok(app, username):
     """A login you already have in the app (NekoServer only signs in with it): the names
     the apps themselves allow, such as `mary.smith`, `Mary Smith`, `1stuser` or Immich's
     `admin@localhost`. Still refused: control characters, spaces at either end, and for
-    Nextcloud a `:` (it would split the HTTP sign-in) or a leading `-` (Nextcloud's
-    command line would read it as an option)."""
+    Nextcloud a character its own names can't have (such as `:`, which would split the
+    HTTP sign-in) or a leading `-` (Nextcloud's command line would read it as an option)."""
     if not 1 <= len(username) <= 128 or control(username) or username != username.strip():
         return False
     if app in EMAIL_LOGINS:
         return bool(re.fullmatch(r'[^\s@]+@[^\s@]+', username))
-    return app != 'nextcloud' or not (':' in username or username.startswith('-'))
+    # Nextcloud's own rule for a name (modules/nextcloud.py ACCOUNT_NAME), and never a
+    # leading "-" (its command line would read it as an option).
+    return app != 'nextcloud' or bool(re.fullmatch(r"[a-zA-Z0-9 _.@'-]+", username) and username[0] != '-')
 
 
 def name_ok(app, username, existing):
@@ -87,7 +89,11 @@ def validate_login(app, username, password, existing=False):
     if not valid and existing:
         raise ValueError(
             'Enter the login exactly as the app has it (1-128 characters, no control characters'
-            + (', no : and not starting with -' if app == 'nextcloud' else '')
+            + (
+                "; for Nextcloud only letters, digits, spaces and _ . @ ' -, not starting with -"
+                if app == 'nextcloud'
+                else ''
+            )
             + ')'
         )
     if not valid:

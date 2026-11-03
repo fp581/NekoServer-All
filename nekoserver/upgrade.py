@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.45.7Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.45.8Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -66,7 +66,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.45.7Beta" or "0.45.7"; None for anything else."""
+    """(0, 44, 0) from "v0.45.8Beta" or "0.45.8"; None for anything else."""
     match = TAG.fullmatch(text if text.startswith('v') else 'v' + text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -393,22 +393,87 @@ def resume_held(settings, out, setup, journal):
     return go_back(previous, settings, owner(config), log_file, out, setup, journal, before)
 
 
+# The upgrade's report, beside the other jobs' (the dashboard's "last upgrade" line and
+# its alert read it), and the service each kind of run is (the dashboard asks systemd
+# whether a run said to be at work still is).
+REPORT = 'reports/jobs/upgrade.json'
+RESUME_UNIT = 'nekoserver-upgrade-resume'
+
+
+def reported(config, unit, work, journal=JOURNAL, now=time.time, out=print):
+    """Run work(out) and keep its report as the other jobs keep theirs: "running" while at
+    work, then "pass" (upgraded), "partial" (nothing changed, or put back on this
+    release: the apps work) or "fail" (it needs you: the record is still there). The
+    reason is the last thing the upgrade said. The report is written only to the SSD
+    when it is mounted, and a report that can't be written never stops the upgrade."""
+    path = ssd(config) / REPORT
+    try:
+        old = json.loads(path.read_text())
+    except (OSError, ValueError):
+        old = {}
+    said = []
+
+    def told(line):
+        said.append(str(line))
+        out(line)
+
+    row = {
+        'job': 'upgrade',
+        'unit': unit,
+        'status': 'running',
+        'started_at': now(),
+        'finished_at': None,
+        'last_success': old.get('last_success') if isinstance(old, dict) else None,
+    }
+    keep_report(path, row)
+    code = 2
+    try:
+        code = work(told)
+    except Exception as exc:
+        said.append(f'the upgrade stopped on an error ({type(exc).__name__}: {exc})')
+        raise
+    finally:
+        last = said[-1] if said else 'the upgrade stopped without saying why'
+        row['finished_at'] = now()
+        if code == 0:
+            row.update(status='pass', last_success=row['finished_at'])
+        elif code == 2 and journal.exists():
+            row.update(status='fail', reason=last)
+        else:
+            row.update(status='partial', missing=[last], last_partial=row['finished_at'])
+        keep_report(path, row)
+    return code
+
+
+def keep_report(path, row):
+    if not os.path.ismount(path.parents[2]):
+        return
+    try:
+        ensure_directory(path.parent)
+        atomic_json(path, row)
+    except OSError as exc:
+        print(f'The upgrade report could not be written ({exc}); the upgrade goes on', file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('run', 'resume'))
-    parser.add_argument('--tag', help='with run: the release, such as v0.45.7Beta')
+    parser.add_argument('--tag', help='with run: the release, such as v0.45.8Beta')
     parser.add_argument(
         '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
     )
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run it with sudo')
-    if args.action == 'resume':
-        return resume(args.config)
-    if not args.tag:
-        parser.error('run needs --tag')
+    if args.action == 'run' and not (args.tag and TAG.fullmatch(args.tag)):
+        parser.error('run needs --tag with a release, such as v0.45.8Beta')
     config = json.loads(settings_path(args.config).read_text())
-    return upgrade(args.tag, args.config, recovery=ssd(config) / 'installer/recovery.lock')
+    if args.action == 'resume':
+        return reported(config, RESUME_UNIT, lambda out: resume(args.config, out))
+    recovery = ssd(config) / 'installer/recovery.lock'
+    return reported(
+        config, 'nekoserver-upgrade@' + args.tag, lambda out: upgrade(args.tag, args.config, out, recovery=recovery)
+    )
 
 
 if __name__ == '__main__':

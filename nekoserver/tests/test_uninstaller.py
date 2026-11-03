@@ -1499,7 +1499,7 @@ class ExclusionTests(unittest.TestCase):
                 return 0, 'activating\ninactive'
             return self.system.call(argv, timeout)
 
-        with self.assertRaisesRegex(uninstaller.Stopped, 'monthly update is running'):
+        with self.assertRaisesRegex(uninstaller.Stopped, 'app update is running'):
             self.remove(call=call)
         self.assertNotIn(['systemctl', 'disable', '--now', 'nekoserver-maintenance.service'], self.system.calls)
         self.assert_nothing_deleted()

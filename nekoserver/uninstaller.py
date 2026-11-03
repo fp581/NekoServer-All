@@ -1237,8 +1237,10 @@ def _maintenance_idle(call, raises=True):
         return True
     if raises:
         raise Stopped(
-            'A monthly update is running right now. Let it finish (sudo systemctl status nekoserver-maintenance.service '
-            'shows "inactive" once it has), then run  sudo bash uninstall.sh  again.' + NOTHING_DELETED
+            'An app update is running right now. Let it finish ('
+            + neko_common.MAINTENANCE_SHOWN
+            + '  lists no running one once it has), then run  sudo bash uninstall.sh  again.'
+            + NOTHING_DELETED
         )
     return False
 

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from neko_common import safe_path, atomic_json, ensure_room
+from neko_common import safe_path, ensure_room
 
 
 def verify(snapshot):
@@ -54,29 +54,62 @@ def stage(snapshot, destination):
         'Unpacking this snapshot',
     )
     destination.mkdir(mode=0o700)
-    for name in ('data', 'media'):
-        target = destination / name
-        target.mkdir(mode=0o700)
-        subprocess.run(
-            [
-                'tar',
-                '--extract',
-                '--file',
-                str(snapshot / (name + '.tar')),
-                '--acls',
-                '--xattrs',
-                '--numeric-owner',
-                '--same-owner',
-                '-C',
-                str(target),
-            ],
-            check=True,
+    # Everything is written through the folder made just now, opened once: a folder
+    # swapped in at its path meanwhile (its parent may be writable by others) gets neither
+    # part of the copy nor the record that it is complete.
+    root = os.open(destination, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name in ('data', 'media'):
+            os.mkdir(name, 0o700, dir_fd=root)
+            target = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            try:
+                into = f'/proc/self/fd/{target}'
+                archive = str(snapshot / (name + '.tar'))
+                subprocess.run(
+                    [
+                        'tar',
+                        '--extract',
+                        '--file',
+                        archive,
+                        '--acls',
+                        '--xattrs',
+                        '--numeric-owner',
+                        '--same-owner',
+                        '-C',
+                        into,
+                    ],
+                    check=True,
+                    pass_fds=(target,),
+                )
+                subprocess.run(['tar', '--compare', '--file', archive, '-C', into], check=True, pass_fds=(target,))
+            finally:
+                os.close(target)
+        here = os.stat(destination, follow_symlinks=False)
+        made = os.fstat(root)
+        if (here.st_dev, here.st_ino) != (made.st_dev, made.st_ino):
+            raise RuntimeError(
+                f'{destination} was replaced while the snapshot was unpacked; nothing there is a checked copy. '
+                'Choose a new folder and stage again.'
+            )
+        record = json.dumps(
+            {'format': 'neko-monthly-staged-v1', 'snapshot': str(snapshot), 'live_data_replaced': False}, indent=2
         )
-        subprocess.run(['tar', '--compare', '--file', str(snapshot / (name + '.tar')), '-C', str(target)], check=True)
-    atomic_json(
-        destination / 'verified.json',
-        {'format': 'neko-monthly-staged-v1', 'snapshot': str(snapshot), 'live_data_replaced': False},
-    )
+        written_in(root, 'verified.json', record + '\n')
+    finally:
+        os.close(root)
+
+
+def written_in(folder, name, text):
+    """`name` written whole in the open `folder` (by its descriptor): a temporary file,
+    synced, then renamed over it."""
+    temporary = name + '.tmp'
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+    with os.fdopen(fd, 'w') as out:
+        out.write(text)
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+    os.fsync(folder)
 
 
 def main():

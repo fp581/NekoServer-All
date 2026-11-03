@@ -947,12 +947,12 @@ def test_bridge(port):
 FIREWALL_CHAINS = ('INPUT', 'DOCKER-USER')
 
 
-def firewall_rule(chain, bridge):
+def firewall_rule(chain, bridge, within_passes=True):
     # Through this PC: only towards somewhere else. Between the test's own containers
     # (Immich and its database, Redis and ML), traffic stays on the bridge, and Linux
     # passes it through the same chain when bridge netfilter is on (Docker turns it on):
     # without "! -o", the restored Immich could not reach its own database.
-    within = ['!', '-o', bridge] if chain == 'DOCKER-USER' else []
+    within = ['!', '-o', bridge] if chain == 'DOCKER-USER' and within_passes else []
     return [
         chain,
         '-i',
@@ -991,6 +991,14 @@ def isolate_host(bridge, run=None):
                 f'this PC and the network could not be added ({exc}). Docker must manage the firewall with iptables '
                 '(its DOCKER-USER chain).'
             ) from None
+    # 0.45.5's rule for this network dropped the traffic between the test's own apps too.
+    # It stays in the firewall until the PC restarts: removed once the right ones are in
+    # place (so the network is never left open meanwhile), each copy of it.
+    for _ in range(20):
+        try:
+            run(['iptables', '-D', *firewall_rule('DOCKER-USER', bridge, within_passes=False)])
+        except RuntimeError:
+            break
 
 
 def isolated_model(model, meta, workspace, port):

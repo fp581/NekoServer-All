@@ -313,5 +313,67 @@ class UpgradeTests(unittest.TestCase):
                 arch._install(['samba'], 60)
 
 
+class UpgradeReportTests(unittest.TestCase):
+    """0.45.8: the dashboard's "last upgrade" line read reports/jobs/upgrade.json, which
+    nothing wrote, so every upgrade (and every failed one) showed as "unknown"."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(['rm', '-rf', str(self.dir)]))
+        self.config = {'data_mount': str(self.dir / 'ssd')}
+        self.journal = self.dir / 'upgrade.json'
+        self.path = self.dir / 'ssd' / upgrade.REPORT
+        clock = iter(range(100, 200))
+        self.now = lambda: next(clock)
+        mounted = mock.patch.object(upgrade.os.path, 'ismount', lambda p: Path(p) == self.dir / 'ssd')
+        mounted.start()
+        self.addCleanup(mounted.stop)
+
+    def report(self, code, said='done', journal=False, unit='nekoserver-upgrade@' + NEWER):
+        seen = []
+
+        def work(out):
+            seen.append(json.loads(self.path.read_text()))
+            if journal:
+                self.journal.write_text('{}')
+            out(said)
+            return code
+
+        got = upgrade.reported(self.config, unit, work, journal=self.journal, now=self.now, out=lambda line: None)
+        self.assertEqual(got, code)
+        self.assertEqual(seen[0]['status'], 'running')
+        self.assertEqual(seen[0]['unit'], unit)
+        return json.loads(self.path.read_text())
+
+    def test_each_ending_is_reported_as_the_dashboard_reads_it(self):
+        passed = self.report(0, 'NekoServer is installed and checked')
+        self.assertEqual((passed['status'], passed['last_success']), ('pass', passed['finished_at']))
+        back = self.report(1, 'This server runs 0.45.7 again')
+        self.assertEqual((back['status'], back['missing']), ('partial', ['This server runs 0.45.7 again']))
+        # The last success is kept from the run before.
+        self.assertEqual(back['last_success'], passed['last_success'])
+        refused = self.report(2, 'not newer; nothing was changed')
+        self.assertEqual(refused['status'], 'partial')
+        stuck = self.report(2, 'Putting it back did not pass either', journal=True)
+        self.assertEqual((stuck['status'], stuck['reason']), ('fail', 'Putting it back did not pass either'))
+
+    def test_an_error_still_ends_the_report(self):
+        self.journal.write_text('{}')
+
+        def work(out):
+            raise OSError('disk full')
+
+        with self.assertRaises(OSError):
+            upgrade.reported(self.config, 'nekoserver-upgrade-resume', work, journal=self.journal, now=self.now)
+        row = json.loads(self.path.read_text())
+        self.assertEqual(row['status'], 'fail')
+        self.assertIn('disk full', row['reason'])
+
+    def test_nothing_is_written_while_the_ssd_is_not_mounted(self):
+        self.config['data_mount'] = str(self.dir / 'gone')
+        self.assertEqual(upgrade.reported(self.config, 'x', lambda out: 0, journal=self.journal, now=self.now), 0)
+        self.assertFalse((self.dir / 'gone').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -259,6 +259,31 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
             }
         }
     }
+    // The outside monitor's check-ins: "unknown" while its schedule is set up means its
+    // status could not be read, never that it is reached again. Switched off, the alert is
+    // dropped quietly (retired).
+    if s["heartbeat"]["status"] == "unknown" && s["heartbeat"]["timer"]["installed"] == true {
+        unknown.insert("heartbeat:delivery".into());
+    }
+    // Tailscale's sign-in: only a state it reported counts. While it can't be asked (no
+    // answer, a reply that can't be read) neither alert has recovered, and while it is
+    // signed out the time left on its sign-in isn't known either.
+    let tailscale = s["tailscale"]["state"].as_str().unwrap_or("");
+    if ![
+        "Running",
+        "Starting",
+        "Stopped",
+        "NeedsLogin",
+        "NeedsMachineAuth",
+        "NoState",
+    ]
+    .contains(&tailscale)
+    {
+        unknown.insert("tailscale:login".into());
+        unknown.insert("tailscale:expiry".into());
+    } else if tailscale == "NeedsLogin" {
+        unknown.insert("tailscale:expiry".into());
+    }
     if s["media"]["status"] != "current" {
         unknown.insert("media-failure".into());
     }
@@ -325,6 +350,10 @@ fn retired(s: &Value) -> BTreeSet<String> {
             .filter(|r| r["status"] == "disabled")
             .filter_map(|r| r["id"].as_str().map(|id| format!("backup:{id}"))),
     );
+    // The outside monitor switched off: nothing to reach any more.
+    if s["heartbeat"]["timer"]["installed"] == false {
+        out.insert("heartbeat:delivery".into());
+    }
     out
 }
 /// Pure transition logic; only successfully delivered events advance deduplication.
@@ -627,6 +656,60 @@ mod tests {
     use super::*;
     fn snapshot(now: f64, alerts: Value) -> Value {
         json!({"format":"neko-dashboard-v1","generated_at":now,"alerts":alerts,"applications":[{"id":"sonarr","state":"running","health":"healthy"}],"storage":[],"backups":[],"media":{"status":"current"},"metrics":{"temperature":40}})
+    }
+    /// 0.45.8: a Tailscale or outside-monitor state that could not be read cleared their
+    /// alerts, and "RECOVERED" was sent for a problem nobody had looked at.
+    #[test]
+    fn an_unreadable_sign_in_or_check_in_is_not_recovered() {
+        let opened = |id: &str| {
+            json!({"format":"neko-notifications-v1","attempts":0,
+                "entries":{id:{"first_seen":0.0,"last_sent":10.0,"sent_level":"warning"}}})
+        };
+        let ids =
+            |e: &Vec<(String, bool, String)>| e.iter().map(|(i, ..)| i.clone()).collect::<Vec<_>>();
+        for (id, blind, seen) in [
+            (
+                "tailscale:login",
+                json!(null),
+                json!({"state":"Running","days_left":null}),
+            ),
+            (
+                "tailscale:login",
+                json!({"state":"unknown","days_left":null}),
+                json!({"state":"Running","days_left":90}),
+            ),
+            (
+                "tailscale:expiry",
+                json!({"state":"NeedsLogin","days_left":null}),
+                json!({"state":"Running","days_left":null}),
+            ),
+        ] {
+            let mut s = snapshot(1000., json!([]));
+            s["tailscale"] = blind;
+            let (state, e) = plan(&s, &opened(id), 1000., 180, 43200);
+            assert!(e.is_empty(), "{id}: {e:?}");
+            assert!(state["entries"][id].is_object(), "{id}");
+            s["tailscale"] = seen;
+            let (_, e) = plan(&s, &opened(id), 1000., 180, 43200);
+            assert_eq!(ids(&e), [id]);
+        }
+        let mut s = snapshot(1000., json!([]));
+        s["heartbeat"] = json!({"status":"unknown","timer":{"installed":true}});
+        let (state, e) = plan(&s, &opened("heartbeat:delivery"), 1000., 180, 43200);
+        assert!(
+            e.is_empty() && state["entries"]["heartbeat:delivery"].is_object(),
+            "{e:?}"
+        );
+        s["heartbeat"] = json!({"status":"pass","timer":{"installed":true}});
+        let (_, e) = plan(&s, &opened("heartbeat:delivery"), 1000., 180, 43200);
+        assert_eq!(ids(&e), ["heartbeat:delivery"]);
+        // Switched off: dropped, nothing sent.
+        s["heartbeat"] = json!({"status":"unknown","timer":{"installed":false}});
+        let (state, e) = plan(&s, &opened("heartbeat:delivery"), 1000., 180, 43200);
+        assert!(
+            e.is_empty() && state["entries"]["heartbeat:delivery"].is_null(),
+            "{e:?}"
+        );
     }
     #[test]
     fn rejects_destination_injection() {

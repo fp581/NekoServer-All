@@ -1141,7 +1141,9 @@ class InterruptedSetupTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(photos.shutil, 'which', return_value='/usr/bin/docker'))
             stack.enter_context(mock.patch.object(photos.subprocess, 'run', side_effect=lambda a, **k: calls.append(a)))
             stack.enter_context(
-                mock.patch.object(photos, 'checked_run', side_effect=lambda a, *r, **k: calls.append(a))
+                mock.patch.object(
+                    photos, 'checked_run', side_effect=lambda a, *r, **k: calls.append(a) or mock.Mock(stdout='{}')
+                )
             )
             stack.enter_context(
                 mock.patch.object(
@@ -1153,6 +1155,8 @@ class InterruptedSetupTests(unittest.TestCase):
             )
             stack.enter_context(mock.patch.object(photos, 'compose_image_override', return_value=[]))
             stack.enter_context(mock.patch.object(photos, 'atomic_write', side_effect=write))
+            # Docker's reading of the file is not run here; its check has tests of its own.
+            stack.enter_context(mock.patch.object(photos, 'checked_model'))
             photos._run(self.Ctx(cfg))
         return urls, calls, data / 'ssd/compose/immich'
 
