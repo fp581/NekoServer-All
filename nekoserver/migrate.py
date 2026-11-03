@@ -673,7 +673,7 @@ def resume_held(settings, out, journal, staging, fstab):
         path, config = load_settings(settings)
         return switch(path, config, saved['drive'], journal, staging, fstab, out)
     # "restart_failed": a move stopped before its switch, whose apps did not all start
-    # again; 0.45.4 also wrote it after a switch, so the drive mounted tells them apart.
+    # again; 0.45.5 also wrote it after a switch, so the drive mounted tells them apart.
     switched = phase in ('started_partly', 'checking_server') or (
         phase == 'restart_failed'
         and (mounted_identity(saved.get('mount', '')) or ('',))[0] == (saved.get('new') or {}).get('uuid')

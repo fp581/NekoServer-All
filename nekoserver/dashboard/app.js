@@ -13,6 +13,9 @@ const $ = id => document.getElementById(id);
 const numeric = v => typeof v === 'number' && Number.isFinite(v);
 const count = v => (numeric(v) && v >= 0 ? v : 0);
 const list = v => (Array.isArray(v) ? v.filter(r => r && typeof r === 'object') : []); // rows (objects)
+// Lists of words (an array's drives, a restart's reasons): `list` keeps rows only and
+// would drop every one of them.
+const words = v => (Array.isArray(v) ? v.filter(w => typeof w === 'string' && w) : []);
 const values = v => (Array.isArray(v) ? v : []); // plain numbers or words
 const object = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const text = (v, fallback = '') => (typeof v === 'string' && v ? v : fallback);
@@ -741,7 +744,7 @@ const ARRAY_BADGES = {
   unknown: ['unknown', 'Not checked']
 };
 function arrayShown(a) {
-  const names = list(a.holds_names)
+  const names = words(a.holds_names)
     .map(n => text(n))
     .filter(Boolean);
   return text(a.name, 'Drive array') + (names.length ? ' (' + names.join(', ') + ')' : '');
@@ -3263,7 +3266,7 @@ function driveCard(disk, old, arrays) {
   if (smart.reason && smart.status !== 'pass') {
     card.append(hint(text(smart.reason)));
   }
-  for (const a of list(arrays).filter(a => list(a.holds).includes(disk.id))) {
+  for (const a of list(arrays).filter(a => words(a.holds).includes(disk.id))) {
     card.append(arrayLine(a));
     if (a.status !== 'healthy') {
       card.append(hint(text(a.reason)));
@@ -3571,7 +3574,7 @@ function systemUpdateRow(u) {
   const notes = [
     u.security ? 'security fix' : '',
     u.reboot ? 'needs a restart of the computer' : '',
-    ...list(u.restarts).map(r => 'restarts ' + text(r))
+    ...words(u.restarts).map(r => 'restarts ' + text(r))
   ];
   row.append(
     el('span', '', text(u.name) + ' ' + (u.from ? text(u.from) + ' → ' : '') + text(u.to)),
@@ -3591,7 +3594,7 @@ function systemTab(s) {
       ])
     )
   ];
-  const reasons = list(sys.restart_reasons)
+  const reasons = words(sys.restart_reasons)
     .map(r => text(r))
     .join('; ');
   if (sys.restart === 'required') {
@@ -3652,7 +3655,7 @@ function renderHealth() {
     trusted = !old && media.status === 'current';
   const arrays = list(s.arrays),
     held = new Set(s.storage.map(d => d.id));
-  const apart = arrays.filter(a => !list(a.holds).some(id => held.has(id)));
+  const apart = arrays.filter(a => !words(a.holds).some(id => held.has(id)));
   const driveCards = s.storage.map(disk => driveCard(disk, old, arrays)).concat(apart.map(a => arrayCard(a, old)));
   put('drives', driveCards.length ? driveCards : [empty('No drives reported.')]);
   put(
