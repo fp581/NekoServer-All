@@ -115,15 +115,23 @@ class MoveTests(unittest.TestCase):
         self.staging = self.dir / 'staging'
         self.staging.mkdir()
         self.calls, self.said = [], []
+        # What findmnt says is mounted where (the tests change it to unplug a drive).
+        self.mounted = {
+            '/mnt/nekoserver-media': ('hdd-0001', 'ext4', ''),
+            str(self.staging): ('newbig-0001', 'ext4', ''),
+        }
+        self.start_fails = set()
+        self.busy = None
         for target, value in (
+            ('mounted_identity', lambda folder: self.mounted.get(str(folder))),
             ('settings_path', lambda p: Path(p)),
             ('mount_path', lambda p: Path(p)),
-            ('nothing_at_work', lambda: None),
+            ('nothing_at_work', lambda **kwargs: self.busy),
             ('targets', lambda config, drive: ([('newbig-0001', 'ext4', 8000 * GB, '/dev/sdc1')], [])),
             ('mount_staging', lambda uuid, fstype, staging: staging),
             ('copy', lambda source, target, final=False, out=print: self.calls.append(('copy', final))),
             ('stop_writers', self.stop),
-            ('start_again', lambda stopped, out=print: self.calls.append(('start', tuple(stopped)))),
+            ('start_again', self.start),
             ('run', lambda argv, *a, **k: self.calls.append(tuple(argv)) or mock.Mock(returncode=0, stdout='')),
             ('setup_again', lambda *a, **k: self.calls.append(('setup',))),
         ):
@@ -133,6 +141,10 @@ class MoveTests(unittest.TestCase):
         ismount = mock.patch.object(migrate.os.path, 'ismount', return_value=False)
         ismount.start()
         self.addCleanup(ismount.stop)
+
+    def start(self, stopped, out=print):
+        self.calls.append(('start', tuple(stopped or [])))
+        return [u for u in stopped or [] if u in self.start_fails]
 
     def stop(self, journal):
         migrate.record(journal, phase='stopped', stopped=['docker.service', 'nekoserver-app-backup.timer'])
@@ -202,6 +214,118 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(self.move(), 2)
         self.assertIn('Run this from the NekoServer folder you downloaded', self.said[-1])
         self.assertEqual(self.calls, [])
+
+    def test_a_drive_that_drops_out_mid_move_stops_it_before_the_last_copy(self):
+        # Unplugged while the apps were being stopped: its folder is an empty one on the
+        # system disk now. The last copy would delete everything copied so far, and an
+        # empty-to-empty comparison would pass.
+        def stop(journal):
+            migrate.record(journal, phase='stopped', stopped=['docker.service'])
+            self.mounted.pop('/mnt/nekoserver-media')
+            return ['docker.service']
+
+        with (
+            mock.patch.object(migrate, 'stop_writers', stop),
+            mock.patch.object(migrate, 'differences', return_value=[]),
+        ):
+            self.assertEqual(self.move(), 1)
+        self.assertNotIn(('copy', True), self.calls)
+        self.assertIn('no longer the one mounted', self.said[-1])
+        self.assertIn(('start', ('docker.service',)), self.calls)
+        self.assertIn('UUID=hdd-0001', self.fstab.read_text())
+        # Another drive mounted there instead: the same.
+        self.calls.clear()
+        self.mounted['/mnt/nekoserver-media'] = ('other-0001', 'ext4', '')
+        self.assertEqual(self.move(), 2)  # it is not the drive the settings name: refused before anything
+        self.assertEqual(self.calls, [])
+
+    def test_stopping_that_fails_part_way_starts_again_what_it_stopped(self):
+        def stop(journal):
+            migrate.record(journal, phase='stopped', stopped=['nekoserver-dashboard.service', 'docker.service'])
+            raise RuntimeError('These did not stop: docker.service')
+
+        self.start_fails = {'docker.service'}
+        with mock.patch.object(migrate, 'stop_writers', stop):
+            self.assertEqual(self.move(), 2)
+        # The list comes from the record, not from what the failed call would have returned.
+        self.assertIn(('start', ('nekoserver-dashboard.service', 'docker.service')), self.calls)
+        # Not everything runs again: the record stays, naming what is left, and it says so.
+        self.assertTrue(self.journal.exists())
+        self.assertEqual(migrate.read(self.journal)['stopped'], ['docker.service'])
+        self.assertIn('did not start again: docker.service', self.said[-1])
+        # Once it runs again, resume finishes the clean-up.
+        self.start_fails = set()
+        self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertFalse(self.journal.exists())
+
+    def test_going_back_to_a_btrfs_drive_mounts_its_own_subvolume_again(self):
+        self.mounted['/mnt/nekoserver-media'] = ('hdd-0001', 'ext4', '/@media')
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 0)
+        previous = json.loads(self.settings.read_text())['storage']['media_hdd']['previous_drive']
+        self.assertEqual(previous, {'uuid': 'hdd-0001', 'fstype': 'ext4', 'subvolume': '/@media'})
+        with (
+            mock.patch.object(migrate.os.path, 'exists', return_value=True),
+            mock.patch.object(migrate, 'stop_writers', return_value=[]),
+        ):
+            self.assertEqual(migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+        self.assertIn(
+            'UUID=hdd-0001 /mnt/nekoserver-media ext4 defaults,nofail,x-systemd.device-timeout=90s,subvol=/@media 0 2',
+            self.fstab.read_text(),
+        )
+        self.assertEqual(
+            json.loads(self.settings.read_text())['storage']['media_hdd'],
+            # The newer drive is remembered in turn: `back` again goes to it.
+            {
+                'uuid': 'hdd-0001',
+                'fstype': 'ext4',
+                'subvolume': '/@media',
+                'previous_drive': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
+            },
+        )
+
+    def test_going_back_has_the_moves_checks_and_its_record(self):
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 0)
+        self.mounted['/mnt/nekoserver-media'] = ('newbig-0001', 'ext4', '')
+
+        def go_back():
+            return migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab)
+
+        # Setup, an upgrade, an unfinished update or a backup at work: nothing is done.
+        self.busy = 'A backup or an app update is running'
+        self.calls.clear()
+        self.assertEqual(go_back(), 2)
+        self.assertEqual(self.calls, [])
+        self.assertIn('A backup or an app update is running', self.said[-1])
+        self.busy = None
+
+        # Cut off right after it switched /etc/fstab (a power cut): its record is on the OS
+        # disk (not in /run, which a restart empties), and resume finishes it.
+        def cut_off(*args, **kwargs):
+            raise SystemExit('power cut')
+
+        with (
+            mock.patch.object(migrate.os.path, 'exists', return_value=True),
+            mock.patch.object(migrate, 'setup_again', cut_off),
+            self.assertRaises(SystemExit),
+        ):
+            go_back()
+        saved = migrate.read(self.journal)
+        self.assertEqual((saved['direction'], saved['phase']), ('back', 'setup'))
+        self.assertEqual(saved['new']['uuid'], 'hdd-0001')
+        self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+        self.assertFalse(self.journal.exists())
+        self.assertIn('UUID=hdd-0001 /mnt/nekoserver-media', self.fstab.read_text())
+        self.assertEqual(json.loads(self.settings.read_text())['storage']['media_hdd']['uuid'], 'hdd-0001')
+        self.assertIn('is the old drive again', self.said[-1])
+        # A setup started by hand meanwhile stops (the move's own runs pass the flag).
+        script = (ROOT / 'install.sh').read_text()
+        self.assertIn('[[ -e /etc/nekoserver-backups/migrate.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]]', script)
+        self.assertIn("'NEKOSERVER_KEEP_SYSTEM': '1'", (ROOT / 'upgrade.py').read_text())
+        self.assertIn('migrate.py resume', (ROOT / 'install.sh').read_text())
+        # Nothing here writes to /run any more.
+        self.assertNotIn("'/run/neko-migrate", (ROOT / 'migrate.py').read_text())
 
     def test_the_fstab_line_is_switched_only_when_it_is_the_old_drives(self):
         self.fstab.write_text(self.fstab.read_text() + 'UUID=other /mnt/nekoserver-media ext4 defaults 0 2\n')

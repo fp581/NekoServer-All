@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.45.0Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.45.2Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -31,11 +31,13 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    DASHBOARD_DEFAULT_PORT,
     MAINTENANCE_JOURNAL,
     VERSION,
     atomic_json,
     atomic_write,
     checked_settings,
+    dashboard_port,
     default_settings,
     ensure_directory,
     fetch,
@@ -49,14 +51,18 @@ FORMAT = 'neko-upgrade-v1'
 ARCHIVE = 'https://codeload.github.com/fp581/NekoServer-All/tar.gz/refs/tags/{tag}'
 TAG = re.compile(r'v(\d+)\.(\d+)\.(\d+)(Beta)?')
 SETUP_LOCK = Path('/run/nekoserver-setup.lock')
-# The steps whose result says the server works; a step waiting for you (Tailscale's
-# sign-in, say) was waiting before too and is not the upgrade's doing.
-DONE = 'complete'
+# The status the installer records for a step that worked (installer.py
+# complete_status); a step waiting for you (Tailscale's sign-in, say) was waiting
+# before too and is not the upgrade's doing.
+DONE = 'success'
+UNITS = Path('/etc/systemd/system')
+# Where each release's files are kept on the SSD (modules/recovery.py).
+RELEASES = 'installer/releases'
 LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.45.0Beta" or "0.45.0"; None for anything else."""
+    """(0, 44, 0) from "v0.45.2Beta" or "0.45.2"; None for anything else."""
     match = TAG.fullmatch(text if text.startswith('v') else 'v' + text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -147,7 +153,7 @@ def ssd(config):
 
 def kept_release(config, folder):
     """A release's copy on the SSD (installer/releases/v<numbers>), checked to be one."""
-    releases = ssd(config) / 'installer/releases'
+    releases = ssd(config) / RELEASES
     path = safe_path(Path(folder))
     if path.parent != releases or not re.fullmatch(r'v\d+\.\d+\.\d+', path.name):
         raise RuntimeError(f'Not a kept NekoServer release: {folder}')
@@ -183,24 +189,51 @@ def run_setup(project, settings, account, log_file, run=subprocess.run):
         ).returncode
 
 
+def setup_problem(setup, project, settings, account, log_file):
+    """Why a release's setup did not work, or None. Setup that could not be started or
+    that ran past its time (six hours) is a failure like any other, never an exception
+    that would skip putting the previous release back."""
+    try:
+        code = setup(project, settings, account, log_file)
+    except subprocess.TimeoutExpired:
+        return f'its setup ran for more than six hours and was stopped (the log: {log_file})'
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f'its setup could not run ({exc}; the log: {log_file})'
+    return f'its setup stopped (exit code {code}; the log says why: {log_file})' if code not in (0, 1) else None
+
+
 def works_on(config, tag, before, version_now, running_now):
-    """Why the upgraded server does not pass its check, or None: a step done before is
-    not done now, the dashboard does not answer with the new version, or a service still
-    runs the old release."""
-    lost = sorted(before - steps_done(config))
+    """Why the server does not pass its check for release `tag` (after the upgrade, or
+    after the previous release was put back), or None: a step that worked before does not
+    now, the dashboard does not answer with that release, or an installed service still
+    runs another one."""
+    lost = sorted(set(before) - steps_done(config))
     if lost:
         return 'these steps worked before and do not now: ' + ', '.join(lost)
     wanted = '.'.join(str(n) for n in numbers(tag))
-    if version_now() != wanted:
-        return f'the dashboard does not answer with {wanted} yet'
-    if not running_now(wanted):
-        return f'the background services do not run {wanted} yet'
+    if version_now(wanted) != wanted:
+        return f'the dashboard does not answer with {wanted}'
+    behind = running_now(wanted)
+    if behind:
+        return f'these services do not run {wanted}: ' + ', '.join(behind)
     return None
 
 
-def dashboard_version(port=8787, timeout=10):
+def dashboard_port_of(config, version):
+    """The dashboard's port as that release's setup left it (setup picks another one when
+    8787 is taken and keeps it in the settings it saves with the release on the SSD)."""
+    try:
+        saved = json.loads((ssd(config) / RELEASES / ('v' + version) / 'config.json').read_text())
+    except (OSError, ValueError):
+        saved = config
+    return dashboard_port(saved) or dashboard_port(config) or DASHBOARD_DEFAULT_PORT
+
+
+def dashboard_version(config, version, timeout=10):
+    """The version the dashboard answers with, on the port that release uses."""
     import urllib.request
 
+    port = dashboard_port_of(config, version)
     try:
         with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/status', timeout=timeout) as answer:
             return json.loads(answer.read(4_000_000)).get('version')
@@ -208,16 +241,22 @@ def dashboard_version(port=8787, timeout=10):
         return None
 
 
-def services_run(version, run=subprocess.run):
-    """The dashboard's service runs this release's background program."""
-    shown = run(
-        ['systemctl', 'show', '--property=ExecStart', '--value', 'nekoserver-dashboard.service'],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    ).stdout
-    return f'/v{version}/' in shown
+RELEASE_IN_PATH = re.compile(r'/v(\d+\.\d+\.\d+)/')
+
+
+def services_behind(version, units=UNITS):
+    """NekoServer's installed services and timers whose definition names another
+    release's files (each release has its own folder: /v<version>/): every backup worker,
+    the dashboard and the rest must run `version`."""
+    behind = []
+    for unit in sorted(Path(units).glob('nekoserver-*')):
+        try:
+            text = unit.read_text(errors='replace') if unit.is_file() else ''
+        except OSError:
+            continue
+        if any(found != version for found in RELEASE_IN_PATH.findall(text)):
+            behind.append(unit.name)
+    return behind
 
 
 def upgrade(
@@ -234,7 +273,7 @@ def upgrade(
         out(busy + '; the upgrade did not start, nothing was changed. Try again later.')
         return 2
     work = ssd(config) / 'installer/upgrades'
-    previous = kept_release(config, ssd(config) / 'installer/releases' / ('v' + VERSION))
+    previous = kept_release(config, ssd(config) / RELEASES / ('v' + VERSION))
     if not (previous / 'install.sh').is_file():
         out(
             f'This release\'s files are not kept on the SSD ({previous}), so there would be no way back; run  sudo bash install.sh  first'
@@ -243,7 +282,7 @@ def upgrade(
     account = owner(config)
     before = steps_done(config)
     log_file = work / (tag + '.log')
-    record('downloading', journal, to=tag, previous=str(previous), log=str(log_file))
+    record('downloading', journal, to=tag, previous=str(previous), log=str(log_file), before=sorted(before))
     try:
         project = download(tag, work, get)
     except (RuntimeError, OSError, tarfile.TarError) as exc:
@@ -252,30 +291,42 @@ def upgrade(
         return 1
     out(f'Setting up {tag} (this takes a while: it builds the background program). The log: {log_file}')
     record('installing', journal, project=str(project))
-    code = setup(project, settings, account, log_file)
-    problem = f'its setup stopped (exit code {code}; the log says why: {log_file})' if code not in (0, 1) else None
+    problem = setup_problem(setup, project, settings, account, log_file)
     if problem is None:
         record('verifying', journal)
-        problem = (check or (lambda: works_on(config, tag, before, dashboard_version, services_run)))()
+        problem = (check or (lambda: verify(config, tag, before)))()
     if problem is None:
         journal.unlink(missing_ok=True)
         out(f'NekoServer {tag} is installed and checked')
         return 0
+    record('failed', journal, problem=problem)
     out(f'The upgrade to {tag} did not pass: {problem}. Putting {VERSION} back...')
-    return go_back(previous, settings, account, log_file, out, setup, journal)
+    return go_back(previous, settings, account, log_file, out, setup, journal, before)
 
 
-def go_back(previous, settings, account, log_file, out=print, setup=run_setup, journal=JOURNAL):
-    """The previous release's setup again, from its copy on the SSD."""
+def verify(config, tag, before):
+    """The real check of the server for release `tag`."""
+    return works_on(config, tag, before, lambda wanted: dashboard_version(config, wanted), services_behind)
+
+
+def go_back(previous, settings, account, log_file, out=print, setup=run_setup, journal=JOURNAL, before=(), check=None):
+    """The previous release's setup again, from its copy on the SSD, then the same check
+    as after an upgrade: every step that worked before works again, and the dashboard and
+    every service run that release. Only then is the upgrade's record removed; otherwise
+    it stays, and nothing else (app updates, the monthly check) starts until you have
+    finished it."""
     record('going_back', journal)
-    code = setup(previous, settings, account, log_file)
-    if code in (0, 1):
+    config = json.loads(settings_path(settings).read_text())
+    problem = setup_problem(setup, previous, settings, account, log_file)
+    if problem is None:
+        problem = (check or (lambda: verify(config, previous.name, before)))()
+    if problem is None:
         journal.unlink(missing_ok=True)
-        out(f'This server runs {previous.name.lstrip("v")} again, as before the upgrade')
+        out(f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check')
         return 1
     out(
-        f'Putting {previous.name} back stopped too (exit code {code}). Run  sudo bash install.sh  in {previous} '
-        f'(it carries on where it stopped); the log: {log_file}'
+        f'Putting {previous.name} back did not pass either: {problem}. Run  sudo bash install.sh  in {previous} '
+        f'(it carries on where it stopped); the log: {log_file}. App updates and the monthly check wait until then.'
     )
     return 2
 
@@ -298,13 +349,14 @@ def resume(settings, out=print, setup=run_setup, journal=JOURNAL):
     previous = kept_release(config, saved.get('previous', ''))
     out('An upgrade was cut off before it was checked; putting ' + previous.name + ' back')
     log_file = ssd(config) / 'installer/upgrades' / ((saved.get('to') or 'resume') + '.log')
-    return go_back(previous, settings, owner(config), log_file, out, setup, journal)
+    before = [step for step in saved.get('before') or [] if isinstance(step, str)]
+    return go_back(previous, settings, owner(config), log_file, out, setup, journal, before)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('run', 'resume'))
-    parser.add_argument('--tag', help='with run: the release, such as v0.45.0Beta')
+    parser.add_argument('--tag', help='with run: the release, such as v0.45.2Beta')
     parser.add_argument(
         '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
     )

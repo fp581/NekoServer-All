@@ -1753,6 +1753,11 @@ fn system_updates(path: &Path) -> Value {
         "updates": if saved["updates"].is_array() { json!(updates) } else { Value::Null },
         "note": saved["note"].as_str().map(|n| chars(&common::sanitize(n), 300)),
         "restart_needed": saved["restart_needed"] == true,
+        // "required", "not_required" or "unknown" (the check could not tell).
+        "restart": saved["restart"]
+            .as_str()
+            .filter(|state| ["required", "not_required"].contains(state))
+            .unwrap_or("unknown"),
         "restart_reasons": saved["restart_reasons"].as_array().into_iter().flatten().take(5).map(&word).collect::<Vec<_>>(),
     })
 }

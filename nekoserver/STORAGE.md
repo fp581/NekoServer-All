@@ -127,12 +127,12 @@ If you run containers there that you want to keep, note what they are (`docker p
    2. It stops the apps, Docker, Samba and NekoServer's jobs, and copies what changed meanwhile.
    3. It compares every file on both drives by checksum. That reads both drives once more.
    
-   Owners, permissions, hard links, ACLs and extended attributes are kept. If any file differs, the move stops, and the apps start again on the old drive as before.
+   Owners, permissions, hard links, ACLs and extended attributes are kept. Before each of these steps, both drives must still be the ones the move began with (the old drive's UUID, filesystem and Btrfs subvolume, and the new drive's UUID). If a drive dropped out, or if any file differs, the move stops, and the apps start again on the old drive as before.
 4. Then it switches:
    - The new drive is mounted where the old one was. `/etc/fstab` as it was is kept beside it, as `fstab.neko-before-move-<time>`.
-   - The settings name the new drive and remember the old one (`"previous_drive"`).
+   - The settings name the new drive and remember the old one, whole (`"previous_drive"`, its Btrfs subvolume included, so `back` mounts the same tree again).
    - Setup runs again, without questions and without a system update, so every service and backup learns the new drive.
-5. **Keep the old drive until you are sure.** `sudo python3 migrate.py back` goes back to it: the settings and `/etc/fstab` name it again, and setup runs. What was saved to the new drive since the move is not on the old one.
+5. **Keep the old drive until you are sure.** `sudo python3 migrate.py back` goes back to it: the settings and `/etc/fstab` name it again (its Btrfs subvolume too), and setup runs. It has the same checks as a move: nothing else may be at work, and its record lets `resume` finish it after a restart. What was saved to the new drive since the move is not on the old one. The settings then remember the new drive in turn, so `back` once more goes to it again.
 
 While a move is at work (or was cut off), app updates, the checks, the monthly check and app restarts wait. A record in `/etc/nekoserver-backups/migrate.json` says how far it got. After a power cut, run `sudo python3 migrate.py resume` from the same folder:
 - A move cut off before the switch changed nothing; the apps run from the old drive.

@@ -69,15 +69,38 @@ class ReadTests(unittest.TestCase):
             (modules / '6.8.0-49-generic').mkdir(parents=True)
             flag = Path(tmp) / 'reboot-required'
             quiet = lambda argv, timeout=600: (0, '')  # noqa: E731
-            self.assertEqual(s.restart_needed('debian', quiet, '6.8.0-49-generic', modules, flag), (False, []))
-            needed, why = s.restart_needed('debian', quiet, '6.8.0-45-generic', modules, flag)
-            self.assertTrue(needed)
+            self.assertEqual(s.restart_needed('debian', quiet, '6.8.0-49-generic', modules, flag), (s.NOT_REQUIRED, []))
+            state, why = s.restart_needed('debian', quiet, '6.8.0-45-generic', modules, flag)
+            self.assertEqual(state, s.REQUIRED)
             self.assertIn('replaced by an update', why[0])
             flag.write_text('')
-            self.assertEqual(len(s.restart_needed('debian', quiet, '6.8.0-49-generic', modules, flag)[1]), 1)
-            self.assertTrue(
-                s.restart_needed('suse', lambda argv, timeout=600: (102, ''), '6.8.0-49-generic', modules)[0]
+            self.assertEqual(s.restart_needed('debian', quiet, '6.8.0-49-generic', modules, flag)[0], s.REQUIRED)
+            self.assertEqual(
+                s.restart_needed('suse', lambda argv, timeout=600: (102, ''), '6.8.0-49-generic', modules)[0],
+                s.REQUIRED,
             )
+
+    def test_a_restart_check_that_cannot_answer_is_not_known_never_not_needed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            modules = Path(tmp) / 'modules'
+            (modules / '6.8.0-49-generic').mkdir(parents=True)
+            for family, code in (('fedora', 127), ('rhel', 2), ('suse', 127), ('suse', 4)):
+                with self.subTest(family=family, code=code):
+                    state, why = s.restart_needed(
+                        family, lambda argv, timeout=600: (code, ''), '6.8.0-49-generic', modules
+                    )
+                    self.assertEqual(state, s.UNKNOWN)
+                    self.assertTrue(why and ('not installed' in why[0] or 'did not answer' in why[0]), why)
+            # Their own "not needed": not needed.
+            self.assertEqual(
+                s.restart_needed('fedora', lambda argv, timeout=600: (0, ''), '6.8.0-49-generic', modules)[0],
+                s.NOT_REQUIRED,
+            )
+            # A needed restart wins over a check that could not answer.
+            state, _ = s.restart_needed('fedora', lambda argv, timeout=600: (127, ''), '6.8.0-1-generic', modules)
+            self.assertEqual(state, s.REQUIRED)
+            # No kernel folders to compare: not known either.
+            self.assertEqual(s.restart_needed('arch', lambda a, t=0: (0, ''), 'x', Path(tmp) / 'none')[0], s.UNKNOWN)
 
     def test_the_status_counts_every_update_and_lists_the_first_ones(self):
         many = ''.join(f'Inst p{n} [1] (2 Ubuntu:24.04/noble-updates [amd64])\n' for n in range(400))

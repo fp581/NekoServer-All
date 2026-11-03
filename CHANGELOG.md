@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.45.2 — 2026-11-02
+
+Fixes for the project owner's two reviews of 0.45.1: going back after a drive move, the settling of app updates, the restart check on the System tab, an Immich major's approval, an upgrade's setup that runs out of time, and Update now's version. Built on 0.45.1 (merge PR #54 first).
+
+**Tried for real** (the lab: Ubuntu 24.04 with systemd, two loop-device drives): a drive move, then going back while setup held its lock (refused, nothing changed), then going back for real (fstab and the settings name the old drive again and remember the newer one, the service writing to the drive runs again, no record left). The app updates, the upgrade and the System tab were tested with the automated tests only.
+
+### Fixed
+- **Going back after a drive move (`migrate.py back`) has the move's checks and a record that survives a restart.** It did not check that setup, an upgrade, an app update or the monthly check was at work, and the list of what to start again lived in `/run`, which a restart empties. Now it checks the same as a move (also the backups' shared lock), refuses to run from the drive it moves, and keeps its record in `/etc/nekoserver-backups/migrate.json`, so `sudo python3 migrate.py resume` finishes it after a restart, as for a move. It stops and starts the apps the same way, and remembers the newer drive, so you can switch again. A setup started by hand while a move is unfinished now stops and says to run `migrate.py resume` (the move's own setup runs are not affected).
+- **Daily app builds now become ready to install.** The daily check kept only the last four versions it found for an app, but a version must wait 7 days (the default) before it is installed. An image that publishes a build every day pushed each one out before it had waited long enough, so it was never updated. Now it keeps the newest version, the oldest one still settling, the newest one that has settled and one you approved (never more than four), so the oldest settling one becomes ready on time.
+- **Taking back an Immich major upgrade's approval now stops it.** The approval (`maintenance.immich_major_update`) was checked when the daily check downloaded the new major, but not again when it was installed. Removing it afterwards left the downloaded version to be installed anyway. Now it is checked again when it would be installed, as Nextcloud's already was.
+- **A NekoServer upgrade whose setup ran out of time is put back at once.** A setup that ran past its six hours (or could not be started) ended the upgrade with an error before the previous release was put back; the record stayed, so it was put back only at the next start. Now that is a failure like any other: it is noted in the record, and the previous release is set up again and checked straight away (the record stays when that fails too).
+- **Update now installs the version shown next to the button.** It used the update night's choice, which prefers a version you chose earlier for the night, so it could install an older version than the one you pressed it for. The dashboard now names the version, the control service checks it is still waiting, and the worker installs exactly that one (`nekoserver-update-now@<app>:<version>`).
+- **"Restart not needed" only when the system's check said so.** On Fedora, RHEL and openSUSE a missing `needs-restarting` or `zypper needs-rebooting`, or one that failed, showed as "no restart needed". The System tab now shows needed, not needed or **not known**, with the reason.
+
+### Tests
+- Each fix has a test that fails on 0.45.1: going back while another job is at work, a going back cut off part-way and finished by `resume`; daily builds over 12 days with 7 days to settle; a restart check that is missing or fails; an Immich major whose approval was taken back after it was downloaded; an upgrade setup that times out or cannot start; Update now with an older version chosen for the night.
+
+## v0.45.1 — 2026-11-02
+
+Fixes for the project owner's two reviews of 0.45.0: the NekoServer upgrade and the drive move.
+
+**Tried for real** (the lab: Ubuntu 24.04 with systemd, two loop-device drives):
+- The drive move again, with its new checks: done, as in 0.45.0.
+- The old drive unmounted while the apps were being stopped: the move stopped before its last copy, and the new drive's copy was still there.
+
+### Fixed
+- **The upgrade now sees which setup steps worked before.** It looked for the status "complete", which the installer never writes ("success"). So the list of steps that worked before was always empty, and a step the new release broke went unnoticed. The tests used "complete" too, which hid it; they now check the installer's own word.
+- **Putting the previous release back is checked before it is called done.** Its setup ending with exit code 1 (which can mean a step failed) was taken as success, the record removed and "runs again as before" said. It now gets the same check as an upgrade: every step that worked before, the dashboard and every service on that release. Until that passes, the record stays, and app updates and the monthly check keep waiting. After a restart, the check uses the steps the upgrade noted when it began.
+- **The dashboard is asked on its own port.** The check always asked port 8787. Setup picks another port when 8787 is taken, so a good upgrade could be undone. It now uses the port that release's setup saved.
+- **A drive move checks both drives before each step.** It copied from the drive's folder without checking it was still the drive. A drive that dropped out would leave that folder an empty one on the system disk: the last copy (which deletes from the new drive what is not on the old one) would then erase the copy, and the empty-to-empty comparison would pass. Now, before each copy, before the comparison and before the switch, the old drive must still be the one mounted there (UUID, filesystem and Btrfs subvolume), and the new one at its own folder. Otherwise the move stops with nothing changed.
+- **A move whose stopping of the apps failed part-way starts again all it had stopped.** It started again an empty list and removed its record, while it said everything ran as before. It now starts again what its record lists. The record goes only once all of it runs; otherwise it stays, names what is left, and `migrate.py resume` finishes once you have started those.
+- **Going back to an old Btrfs drive mounts its own subvolume again.** The move remembered only the old drive's UUID and filesystem, so `back` could mount the drive's top level instead of `/@media`, say. It now keeps the whole record, the subvolume as mounted included, and `back` puts it in `/etc/fstab` and the settings again.
+- **Every NekoServer service must run the new release, not only the dashboard.** The check looked at the dashboard's service alone. Now any installed `nekoserver-*` service or timer whose definition names another release's folder fails the check: the backups, the monthly check, the updates and the rest.
+
 ## v0.45.0 — 2026-11-02
 
 The Updates page's System tab, first step: it shows, it changes nothing. Also two faults in 0.44.0's drive move, found by trying it for real.

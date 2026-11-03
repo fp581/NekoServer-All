@@ -4,6 +4,7 @@ the result, and puts the previous release back when anything fails."""
 
 import io
 import json
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -48,13 +49,17 @@ class UpgradeTests(unittest.TestCase):
         self.previous.mkdir(parents=True)
         (self.previous / 'install.sh').write_text('#!/bin/bash\n')
         (self.data / 'installer/state').mkdir(parents=True)
-        self.state({'storage': 'complete', 'photos': 'complete', 'tailscale': 'needs_setup'})
+        self.state({'storage': 'success', 'photos': 'success', 'tailscale': 'needs_setup'})
         self.settings = self.dir / 'my-config.json'
         self.settings.write_text(json.dumps({'data_mount': str(self.data)}))
         self.journal = self.dir / 'etc/upgrade.json'
         self.said = []
         self.ran = []
+        # The check after putting the previous release back (verify): what it answers,
+        # and what it was asked.
+        self.back_problem, self.verified = None, []
         for target, value in (
+            ('verify', lambda config, tag, before: self.verified.append((tag, sorted(before))) or self.back_problem),
             ('settings_path', lambda p: Path(p)),
             ('owner', lambda config: 'neko'),
             ('MAINTENANCE_JOURNAL', str(self.dir / 'none.json')),
@@ -113,6 +118,26 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue(self.journal.exists())
         self.assertIn('sudo bash install.sh  in ' + str(self.previous), self.said[-1])
 
+    def test_a_setup_that_runs_out_of_time_is_put_back_at_once(self):
+        def timed_out(project, settings, account, log_file):
+            self.ran.append((Path(project).name, account, self.journal_phase()))
+            if len(self.ran) == 1:
+                raise subprocess.TimeoutExpired('install.sh', 6 * 3600)
+            return 0
+
+        self.assertEqual(self.upgrade(timed_out), 1)
+        self.assertEqual([r[0] for r in self.ran], ['nekoserver', 'v' + VERSION])
+        self.assertIn('more than six hours', ' '.join(self.said))
+        self.assertFalse(self.journal.exists())
+
+        # The way back failing the same way keeps the record, with why.
+        def never_starts(project, settings, account, log_file):
+            raise OSError('bash is not there')
+
+        self.assertEqual(self.upgrade(never_starts), 2)
+        saved = json.loads(self.journal.read_text())
+        self.assertEqual((saved['phase'], 'bash is not there' in saved['problem']), ('going_back', True))
+
     def test_a_download_that_is_not_that_release_changes_nothing(self):
         for payload in (release(NEWER, version='0.0.1'), b'not an archive', release('v0.0.1Beta')):
             with self.subTest(payload=payload[:20]):
@@ -143,23 +168,69 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(self.ran, [])
 
     def test_the_check_finds_a_step_that_stopped_working(self):
+        # The status is the one the installer writes (0.43.0 looked for "complete", which
+        # it never writes, so no lost step could ever be found).
+        self.assertEqual(upgrade.DONE, 'success')
+        self.assertIn("complete_status = 'success' if args.apply", (ROOT / 'installer.py').read_text())
         before = upgrade.steps_done({'data_mount': str(self.data)})
         self.assertEqual(before, {'storage', 'photos'})
-        self.state({'storage': 'complete', 'photos': 'failed', 'tailscale': 'needs_setup'})
+        self.state({'storage': 'success', 'photos': 'failed', 'tailscale': 'needs_setup'})
         wanted = '.'.join(map(str, upgrade.numbers(NEWER)))
-        found = upgrade.works_on({'data_mount': str(self.data)}, NEWER, before, lambda: wanted, lambda v: True)
-        self.assertIn('photos', found)
-        self.state({'storage': 'complete', 'photos': 'complete'})
         config = {'data_mount': str(self.data)}
-        self.assertIsNone(upgrade.works_on(config, NEWER, before, lambda: wanted, lambda v: True))
-        self.assertIn('dashboard', upgrade.works_on(config, NEWER, before, lambda: VERSION, lambda v: True))
-        self.assertIn('services', upgrade.works_on(config, NEWER, before, lambda: wanted, lambda v: False))
+        answers = lambda v: wanted  # noqa: E731
+        found = upgrade.works_on(config, NEWER, before, answers, lambda v: [])
+        self.assertIn('photos', found)
+        self.state({'storage': 'success', 'photos': 'success'})
+        self.assertIsNone(upgrade.works_on(config, NEWER, before, answers, lambda v: []))
+        self.assertIn('dashboard', upgrade.works_on(config, NEWER, before, lambda v: VERSION, lambda v: []))
+        behind = upgrade.works_on(config, NEWER, before, answers, lambda v: ['nekoserver-app-backup.service'])
+        self.assertIn('nekoserver-app-backup.service', behind)
+
+    def test_putting_the_release_back_is_checked_before_it_is_called_done(self):
+        # Its setup ends with 1 (a step failed, or one only waits for you): the check decides.
+        self.back_problem = 'these steps worked before and do not now: photos'
+        self.assertEqual(self.upgrade(self.setup(2, 1)), 2)
+        self.assertTrue(self.journal.exists())  # app updates and the monthly check keep waiting
+        self.assertIn('did not pass either: these steps worked before', self.said[-1])
+        # The check is of the previous release, against the steps that worked before.
+        self.assertEqual(self.verified[-1], ('v' + VERSION, ['photos', 'storage']))
+        self.journal.unlink()
+        self.back_problem = None
+        self.assertEqual(self.upgrade(self.setup(2, 1)), 1)
+        self.assertFalse(self.journal.exists())
+        self.assertIn('passed its check', self.said[-1])
+        # After a restart too, with the steps the upgrade noted before it began.
+        upgrade.record('installing', self.journal, to=NEWER, previous=str(self.previous), before=['storage'])
+        self.back_problem = 'the dashboard does not answer'
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(1), self.journal), 2)
+        self.assertEqual(self.verified[-1], ('v' + VERSION, ['storage']))
+        self.assertTrue(self.journal.exists())
+
+    def test_the_dashboard_is_asked_on_the_port_that_release_uses(self):
+        config = {'data_mount': str(self.data), 'dashboard': {'port': 8787}}
+        kept = self.data / 'installer/releases' / ('v' + VERSION) / 'config.json'
+        kept.write_text(json.dumps({'dashboard': {'port': 8790}}))  # setup found 8787 taken
+        self.assertEqual(upgrade.dashboard_port_of(config, VERSION), 8790)
+        self.assertEqual(upgrade.dashboard_port_of(config, '9.9.9'), 8787)  # no copy kept: the settings
+        self.assertEqual(upgrade.dashboard_port_of({'data_mount': str(self.data)}, '9.9.9'), 8787)
+
+    def test_every_installed_service_must_run_the_new_release(self):
+        units = self.dir / 'units'
+        units.mkdir()
+        (units / 'nekoserver-dashboard.service').write_text('ExecStart=/usr/local/lib/nekoserver-dashboard/v1.2.3/x\n')
+        (units / 'nekoserver-app-backup.service').write_text(
+            'ExecStart=/srv/n/installer/runtime/v1.2.2/x app-snapshot\n'
+        )
+        (units / 'nekoserver-heartbeat.timer').write_text('[Timer]\nOnCalendar=hourly\n')  # no release in it
+        (units / 'docker.service').write_text('ExecStart=/v0.0.1/dockerd\n')  # not NekoServer's
+        self.assertEqual(upgrade.services_behind('1.2.3', units), ['nekoserver-app-backup.service'])
+        self.assertEqual(upgrade.services_behind('1.2.2', units), ['nekoserver-dashboard.service'])
 
     def test_a_cut_off_upgrade_is_put_right_at_the_next_start(self):
         upgrade.record('downloading', self.journal, to=NEWER, previous=str(self.previous))
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
         self.assertFalse(self.journal.exists())
-        upgrade.record('installing', self.journal, to=NEWER, previous=str(self.previous))
+        upgrade.record('installing', self.journal, to=NEWER, previous=str(self.previous), before=['storage'])
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
         self.assertEqual(self.ran[-1][0], 'v' + VERSION)
         self.assertFalse(self.journal.exists())

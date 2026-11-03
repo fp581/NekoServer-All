@@ -896,7 +896,12 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
         },
         "app_update_run" | "app_update_check" => match &service.config {
             None => refuse("E42", "App controls are switched off on this server"),
-            Some(config) => start_update_job(config, op, request["app"].as_str().unwrap_or("")),
+            Some(config) => start_update_job(
+                config,
+                op,
+                request["app"].as_str().unwrap_or(""),
+                request["sig"].as_str().unwrap_or(""),
+            ),
         },
         "desktop_close" | "desktop_force" => match process() {
             Some((pid, start)) => apps::Close {
@@ -916,7 +921,7 @@ fn app_control(service: &Arc<Service>, op: &str, request: &Value) -> Value {
 /// "Install at the next update night" for a version the daily check found: it skips its
 /// settling days (an urgent fix, say). The PIN is already checked.
 fn update_now(config: &Path, app: &str, sig: &str) -> Value {
-    if !(8..=64).contains(&sig.len()) || !sig.bytes().all(|c| c.is_ascii_hexdigit()) {
+    if !crate::updates::valid_signature(sig) {
         return refuse("E42", "Which update?");
     }
     let cfg = common::json(config, 64000);
@@ -952,9 +957,10 @@ fn start_upgrade(config: &Path, tag: &str) -> Value {
         _ => refuse("E47", "The upgrade could not be started. Is an update or a backup running? Backups shows which one."),
     }
 }
-/// "Update now" for one app (nekoserver-update-now@<app>: the same snapshot, update,
-/// checks and undo as on the update night) or "Check for updates" (the daily check, now).
-fn start_update_job(config: &Path, op: &str, app: &str) -> Value {
+/// "Update now" for one app, to the version `sig` shown on the page
+/// (nekoserver-update-now@<app>:<sig>: the same snapshot, update, checks and undo as on
+/// the update night), or "Check for updates" (the daily check, now).
+fn start_update_job(config: &Path, op: &str, app: &str, sig: &str) -> Value {
     let unit = if op == "app_update_check" {
         "nekoserver-update-check.service".to_string()
     } else {
@@ -962,7 +968,20 @@ fn start_update_job(config: &Path, op: &str, app: &str) -> Value {
         let Some(app) = apps::installed(&cfg).into_iter().find(|a| *a == app) else {
             return refuse("E42", "That app isn't installed on this server");
         };
-        format!("nekoserver-update-now@{app}.service")
+        let waiting = crate::updates::valid_signature(sig)
+            && common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))
+                .and_then(|data| crate::backup::guard_data(config, &data).map(|()| data))
+                .is_ok_and(|data| {
+                    crate::updates::exact(&crate::updates::pending(&data), app, sig, &|_| true)
+                        .is_some()
+                });
+        if !waiting {
+            return refuse(
+                "E42",
+                "That version is not waiting any more; Check for updates looks again",
+            );
+        }
+        format!("nekoserver-update-now@{app}:{sig}.service")
     };
     if let Some(job) = apps::unfinished_job(&apps::journals()) {
         return refuse("E47", &format!("{job} is still waiting to be finished; NekoServer finishes it on its own. Try again after that."));

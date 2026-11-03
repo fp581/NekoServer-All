@@ -62,20 +62,41 @@ def pending(family, run=call):
     return found, None
 
 
+# What the system's own restart check answers, by family: the command, and its exit
+# codes for "a restart is needed" and "it is not". Any other answer (the tool missing,
+# an error) is "not known", never "not needed".
+RESTART_CHECKS = {
+    'fedora': (['needs-restarting', '-r'], 1, 0),
+    'rhel': (['needs-restarting', '-r'], 1, 0),
+    'suse': (['zypper', '--non-interactive', 'needs-rebooting'], 102, 0),
+}
+REQUIRED, NOT_REQUIRED, UNKNOWN = 'required', 'not_required', 'unknown'
+
+
 def restart_needed(family, run=call, running=None, modules=Path('/usr/lib/modules'), flag=Path('/run/reboot-required')):
     """Whether the computer needs a restart now (an update installed earlier waits for
-    one), and why."""
-    reasons = []
+    one): REQUIRED, NOT_REQUIRED or UNKNOWN, with the reasons (why it is needed, or why
+    it could not be told)."""
+    needed, unknown = [], []
     kernel = running or os.uname().release
-    if modules.is_dir() and not (modules / kernel).is_dir():
-        reasons.append(f'the running Linux kernel ({kernel}) was replaced by an update')
+    if not modules.is_dir():
+        unknown.append(f'{modules} is not there, so the installed kernels cannot be compared with the running one')
+    elif not (modules / kernel).is_dir():
+        needed.append(f'the running Linux kernel ({kernel}) was replaced by an update')
     if family == 'debian' and Path(flag).exists():
-        reasons.append('the system says so (/run/reboot-required)')
-    if family in ('fedora', 'rhel') and run(['needs-restarting', '-r'], 120)[0] == 1:
-        reasons.append('the system says so (needs-restarting -r)')
-    if family == 'suse' and run(['zypper', '--non-interactive', 'needs-rebooting'], 120)[0] == 102:
-        reasons.append('the system says so (zypper needs-rebooting)')
-    return bool(reasons), reasons
+        needed.append('the system says so (/run/reboot-required)')
+    if family in RESTART_CHECKS:
+        argv, yes, no = RESTART_CHECKS[family]
+        code = run(argv, 120)[0]
+        if code == yes:
+            needed.append(f'the system says so ({" ".join(argv[:: len(argv) - 1])})')
+        elif code == 127:
+            unknown.append(f'{argv[0]} is not installed, so the system\'s own check could not be asked')
+        elif code != no:
+            unknown.append(f'{" ".join(argv)} did not answer (exit code {code})')
+    if needed:
+        return REQUIRED, needed
+    return (UNKNOWN, unknown) if unknown else (NOT_REQUIRED, [])
 
 
 def status(run=call, release=None, now=None, **restart):
@@ -96,7 +117,8 @@ def status(run=call, release=None, now=None, **restart):
     result['updates'] = None if found is None else found[:SHOWN]
     result['count'] = None if found is None else len(found)
     result['note'] = why
-    result['restart_needed'], result['restart_reasons'] = restart_needed(name, run, **restart)
+    result['restart'], result['restart_reasons'] = restart_needed(name, run, **restart)
+    result['restart_needed'] = result['restart'] == REQUIRED
     return result
 
 
@@ -114,7 +136,9 @@ def check(settings):
             if count is not None
             else 'updates not known (' + str(result['note']) + ')'
         )
-        + ('; a restart is needed' if result.get('restart_needed') else '')
+        + {REQUIRED: '; a restart is needed', UNKNOWN: '; whether a restart is needed is not known'}.get(
+            result.get('restart'), ''
+        )
     )
     return 0
 

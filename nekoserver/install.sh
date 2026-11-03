@@ -290,6 +290,12 @@ if "$apply"; then
     python3 "$ROOT/installer.py" --finish-update
     exit 0
   fi
+  # A drive move at work (or cut off) runs setup itself, with NEKOSERVER_KEEP_SYSTEM; a
+  # setup started by hand meanwhile could start apps on a drive half switched.
+  if [[ -e /etc/nekoserver-backups/migrate.json && -z "${NEKOSERVER_KEEP_SYSTEM:-}" ]]; then
+    echo "A drive move is not finished (/etc/nekoserver-backups/migrate.json). Finish it with  sudo python3 migrate.py resume  (it runs setup itself)." >&2
+    exit 1
+  fi
   if ! "$recover" && [[ -e /etc/nekoserver-backups/maintenance-resume.json ]]; then
     # An unfinished monthly update is finished first (by the release that started it,
     # or by this one with --finish-update); stop before the system update or any
