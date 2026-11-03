@@ -2787,6 +2787,10 @@ class IsolatedRestoreNetworkTests(unittest.TestCase):
             self.assertEqual(rule[3:5], ['-i', 'neko-rt-2284'])
             self.assertIn('ESTABLISHED,RELATED', rule)
             self.assertEqual(rule[-2:], ['-j', 'DROP'])
+        # Found in the lab (bridge netfilter on, as Docker sets it): the rule also dropped
+        # Immich's connections to its own database. Traffic that stays on the bridge passes.
+        self.assertEqual(inserted[1][5:8], ['!', '-o', 'neko-rt-2284'])
+        self.assertNotIn('-o', inserted[0])
         # Already there: kept, not added twice.
         rules.clear()
         recovery_tools.isolate_host('neko-rt-2284', lambda argv: rules.append(argv))
