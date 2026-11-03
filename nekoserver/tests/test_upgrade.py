@@ -63,6 +63,8 @@ class UpgradeTests(unittest.TestCase):
             ('settings_path', lambda p: Path(p)),
             ('owner', lambda config: 'neko'),
             ('MAINTENANCE_JOURNAL', str(self.dir / 'none.json')),
+            ('MIGRATE_JOURNAL', self.dir / 'no-move.json'),
+            ('OPERATION_LOCK', self.dir / 'operation.lock'),
         ):
             patcher = mock.patch.object(upgrade, target, value)
             patcher.start()
