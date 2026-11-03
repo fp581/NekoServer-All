@@ -931,10 +931,15 @@ def configure_cloud_origin(config, host, port):
     known = urlsplit(cli).hostname if isinstance(cli, str) and cli.startswith(HTTPS) else None
     if known not in [*values, host] or known in ('localhost', '127.0.0.1'):
         command(base + [OCC_SET, 'overwrite.cli.url', '--value=https://' + host + ':' + str(port)])
-    # Added after the person's own (another reverse proxy of theirs, say), never over them.
-    proxies, free = listed(get('trusted_proxies'))
+    trust_gateway_proxies(base, get('trusted_proxies'), cloud_proxies(compose))
+
+
+def trust_gateway_proxies(base, saved, wanted):
+    """The gateway's proxies added to Nextcloud's trusted_proxies after the person's own
+    (another reverse proxy of theirs, say), never over them."""
+    proxies, free = listed(saved)
     proxies = proxies or []
-    for proxy in cloud_proxies(compose):
+    for proxy in wanted:
         if proxy not in proxies:
             command(base + [OCC_SET, 'trusted_proxies', str(free), '--value=' + proxy])
             proxies.append(proxy)

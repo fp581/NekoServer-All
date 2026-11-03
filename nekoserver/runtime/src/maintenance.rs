@@ -317,6 +317,11 @@ fn widens_rights(v: &Value) -> bool {
         "cgroup",
         "cgroup_parent",
         "uts",
+        // Device access beyond the graphics chip (`devices`, checked by gpu_only), and
+        // another container runtime.
+        "device_cgroup_rules",
+        "gpus",
+        "runtime",
     ]
     .iter()
     .any(|key| v.get(*key).is_some())
@@ -327,10 +332,89 @@ fn widens_rights(v: &Value) -> bool {
             })
         })
 }
+/// The devices a service is given: none, or the graphics chip as NekoServer's apps get it
+/// (`/dev/dri`, or one of its card / render nodes, at the same place), for Jellyfin and
+/// Immich's server only. Compose shows each as "/dev/dri:/dev/dri[:rwm]" or as
+/// {"source", "target", "permissions"}.
+fn gpu_only(service: &str, v: &Value) -> bool {
+    let Some(devices) = v.get("devices") else {
+        return true;
+    };
+    let Some(list) = devices.as_array() else {
+        return false;
+    };
+    let chip = |path: &str| {
+        path == "/dev/dri"
+            || path
+                .strip_prefix("/dev/dri/")
+                .and_then(|n| n.strip_prefix("renderD").or_else(|| n.strip_prefix("card")))
+                .is_some_and(|d| {
+                    !d.is_empty() && d.len() <= 4 && d.bytes().all(|b| b.is_ascii_digit())
+                })
+    };
+    let mapping = |d: &Value| -> Option<(String, String, String)> {
+        if let Some(text) = d.as_str() {
+            let mut parts = text.split(':');
+            let source = parts.next()?.to_string();
+            let target = parts.next().unwrap_or(&source).to_string();
+            let rights = parts.next().unwrap_or("rwm").to_string();
+            return parts.next().is_none().then_some((source, target, rights));
+        }
+        let o = d.as_object()?;
+        if o.keys()
+            .any(|k| !["source", "target", "permissions"].contains(&k.as_str()))
+        {
+            return None;
+        }
+        let source = o.get("source")?.as_str()?.to_string();
+        let target = o
+            .get("target")
+            .and_then(Value::as_str)
+            .unwrap_or(&source)
+            .to_string();
+        let rights = o
+            .get("permissions")
+            .and_then(Value::as_str)
+            .unwrap_or("rwm")
+            .to_string();
+        Some((source, target, rights))
+    };
+    ["jellyfin", "immich-server"].contains(&service)
+        && list.iter().all(|d| {
+            mapping(d).is_some_and(|(source, target, rights)| {
+                chip(&source)
+                    && source == target
+                    && !rights.is_empty()
+                    && rights.chars().all(|c| "rwm".contains(c))
+            })
+        })
+}
+/// A named volume as Docker makes it by itself: on its own storage, never one defined to
+/// bind a folder of this PC (driver_opts "o: bind", "device: /"), another driver's, or
+/// one made outside this Compose file (`external`).
+fn plain_volume(v: &Value) -> bool {
+    let Some(o) = v.as_object() else {
+        return v.is_null();
+    };
+    o.get("driver").is_none_or(|d| d == "local")
+        && o.get("driver_opts")
+            .is_none_or(|d| d.as_object().is_some_and(|m| m.is_empty()))
+        && o.get("external").is_none_or(|e| e == false)
+        && o.keys()
+            .all(|k| ["name", "driver", "driver_opts", "external", "labels"].contains(&k.as_str()))
+}
 fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<()> {
     let services = model["services"]
         .as_object()
         .ok_or_else(|| Error::new("Compose services missing"))?;
+    if let Some(volumes) = model.get("volumes") {
+        let plain = volumes
+            .as_object()
+            .is_some_and(|all| all.values().all(plain_volume));
+        if !plain {
+            return Err(Error::new("Uncovered persistent volume"));
+        }
+    }
     let expected = if ["immich", "nextcloud"].contains(&name) {
         4
     } else {
@@ -349,6 +433,7 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<(
             || v.get("ipc").is_some()
             || v.get("build").is_some()
             || widens_rights(v)
+            || !gpu_only(service, v)
         {
             return Err(Error::new("Unsupported Compose isolation"));
         }
@@ -4809,6 +4894,85 @@ mod tests {
             app_history(&media, "sonarr"),
             json!({"last_snapshot": null, "last_update": null})
         );
+        let _ = fs::remove_dir_all(root);
+    }
+    /// 0.45.8, the owner's review: a downloaded Compose file could give an app the host's
+    /// whole filesystem through a named volume defined as a bind, or any device.
+    #[test]
+    fn a_compose_file_gets_no_host_folder_through_a_volume_and_no_device_but_the_chip() {
+        let root = scratch("volume-device");
+        let (data, media) = (root.join("srv"), root.join("mnt"));
+        let port = json!([{"host_ip": "127.0.0.1", "published": "8096", "target": 8096}]);
+        let plain = json!({"services": {"jellyfin": {"image": "sha256:8", "ports": port}}});
+        let with = |key: &str, value: Value| {
+            let mut m = plain.clone();
+            m["services"]["jellyfin"][key] = value;
+            m
+        };
+        let ok = |m: &Value| valid_model(m, "jellyfin", &data, &media).is_ok();
+        // The chip, as NekoServer's own files give it, in both of Compose's shapes.
+        assert!(ok(&with("devices", json!(["/dev/dri:/dev/dri"]))));
+        assert!(ok(&with(
+            "devices",
+            json!([{"source": "/dev/dri", "target": "/dev/dri", "permissions": "rwm"}])
+        )));
+        assert!(ok(&with(
+            "devices",
+            json!(["/dev/dri/renderD128:/dev/dri/renderD128:rw"])
+        )));
+        for odd in [
+            json!(["/dev/sda:/dev/sda"]),
+            json!(["/dev/mem"]),
+            json!(["/dev/dri:/dev/other"]),
+            json!(["/dev/dri/../sda:/dev/dri/../sda"]),
+            json!([{"source": "/dev/kmsg", "target": "/dev/kmsg"}]),
+            json!([{"source": "/dev/dri", "target": "/dev/dri", "cgroup": "a"}]),
+            json!("/dev/dri:/dev/dri"),
+        ] {
+            assert!(!ok(&with("devices", odd.clone())), "{odd}");
+        }
+        assert!(!ok(&with("device_cgroup_rules", json!(["a *:* rwm"]))));
+        assert!(!ok(&with("gpus", json!("all"))));
+        assert!(!ok(&with("runtime", json!("nvidia"))));
+        // The chip only for the apps that use it.
+        let mut redis = json!({"services": {}});
+        for s in [
+            "immich-server",
+            "immich-machine-learning",
+            "database",
+            "redis",
+        ] {
+            redis["services"][s] = json!({"image": "sha256:8"});
+        }
+        redis["services"]["redis"]["devices"] = json!(["/dev/dri:/dev/dri"]);
+        assert!(!gpu_only("redis", &redis["services"]["redis"]));
+        assert!(gpu_only(
+            "immich-server",
+            &json!({"devices": ["/dev/dri:/dev/dri"]})
+        ));
+        // Named volumes: Docker's own storage only.
+        let named = |def: Value| {
+            let mut m = plain.clone();
+            m["volumes"] = json!({"cache": def});
+            ok(&m)
+        };
+        assert!(named(json!({"name": "neko-immich_cache"})));
+        assert!(named(json!(null)));
+        assert!(named(
+            json!({"name": "x", "driver": "local", "driver_opts": {}})
+        ));
+        for odd in [
+            json!({"driver_opts": {"type": "none", "o": "bind", "device": "/"}}),
+            json!({"driver": "local", "driver_opts": {"device": "/etc"}}),
+            json!({"driver": "sshfs"}),
+            json!({"external": true, "name": "someone-elses"}),
+            json!("bind"),
+        ] {
+            assert!(!named(odd.clone()), "{odd}");
+        }
+        let mut list = plain.clone();
+        list["volumes"] = json!(["x"]);
+        assert!(!ok(&list));
         let _ = fs::remove_dir_all(root);
     }
     #[test]

@@ -63,7 +63,7 @@ class StageTests(unittest.TestCase):
         monthly.stage(self.snapshot, out)
         self.assertEqual((out / 'data/app/db.sql').read_bytes(), b'data')
         self.assertEqual((out / 'media/photo.jpg').read_bytes(), b'media')
-        self.assertEqual(json.loads((out / 'verified.json').read_text())['live_data_replaced'], False)
+        self.assertIs(json.loads((out / 'verified.json').read_text())['live_data_replaced'], False)
         self.assertFalse((out / 'verified.json.tmp').exists())
 
     def test_a_folder_swapped_in_between_the_parts_is_never_marked_checked(self):
