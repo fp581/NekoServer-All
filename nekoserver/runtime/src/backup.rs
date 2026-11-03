@@ -3170,9 +3170,10 @@ fn prune_dumps_of(
         }
     }
     dumps.sort();
-    let kept_aside = usize::from(newest.is_some_and(|n| folder.join(n).is_file()));
-    let excess = (dumps.len() + kept_aside).saturating_sub(keep as usize);
-    let removed: Vec<String> = dumps.into_iter().take(excess).collect();
+    let made = newest.filter(|n| folder.join(n).is_file());
+    let removed = retired_dumps(dumps, made, keep as usize, |n| {
+        dump_verified(&folder.join(n))
+    });
     for name in &removed {
         fs::remove_file(common::safe(&folder.join(name))?)?;
         let note = dump_note(&folder.join(name));
@@ -3188,6 +3189,54 @@ fn prune_dumps_of(
         );
     }
     Ok(removed)
+}
+/// A database copy that matches the checksum in its note: one that can be trusted.
+fn dump_verified(dump: &Path) -> bool {
+    let note = common::json(&dump_note(dump), 64000);
+    note["sha256"]
+        .as_str()
+        .is_some_and(|sum| common::digest(dump).is_ok_and(|d| d == sum))
+}
+/// Which of the older copies `dumps` (sorted, oldest first) go, so that `keep` remain
+/// with `made`, the copy just made (always kept). Only copies that match their note's
+/// checksum count: the newest `keep` of those stay, so a damaged or unchecked newer copy
+/// never pushes out good history. A copy that can't be checked (damaged, or without
+/// its note) stays only while it is newer than every good one (up to `keep` of them);
+/// with no good copy at all, the newest stay as before.
+fn retired_dumps(
+    dumps: Vec<String>,
+    made: Option<&str>,
+    keep: usize,
+    verified: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let made_good = made.is_some_and(&verified);
+    let (good, unchecked): (Vec<String>, Vec<String>) =
+        dumps.into_iter().partition(|n| verified(n));
+    let mut removed = vec![];
+    let good_room = keep.saturating_sub(usize::from(made_good));
+    let good_excess = good.len().saturating_sub(good_room);
+    removed.extend(good.iter().take(good_excess).cloned());
+    let newest_good = good
+        .last()
+        .map(String::as_str)
+        .into_iter()
+        .chain(made.filter(|_| made_good))
+        .max();
+    let room = match newest_good {
+        // Newer than every good copy: kept (at most `keep`); older ones are replaced.
+        Some(best) => {
+            let newer: Vec<&String> = unchecked.iter().filter(|n| n.as_str() > best).collect();
+            let kept: Vec<&String> = newer.iter().rev().take(keep).copied().collect();
+            removed.extend(unchecked.iter().filter(|n| !kept.contains(n)).cloned());
+            removed.sort();
+            return removed;
+        }
+        None => keep.saturating_sub(usize::from(made.is_some())),
+    };
+    let excess = unchecked.len().saturating_sub(room);
+    removed.extend(unchecked.into_iter().take(excess));
+    removed.sort();
+    removed
 }
 /// New Immich originals copied to the HDD archive, the copies checked as `check` says.
 /// Ok(Some(why)) when the run's list of files could not be written (incomplete).
@@ -6084,6 +6133,53 @@ mod tests {
             .unwrap()
             .contains("without the keys"));
         fs::remove_dir_all(root).unwrap();
+    }
+    /// 0.45.8, the owner's review: dumps were kept by date alone, so three damaged newer
+    /// copies pushed out an older good one, leaving one good copy of four.
+    #[test]
+    fn damaged_or_unchecked_copies_never_push_out_good_ones() {
+        let root = scratch("dump-verified");
+        let good = |stamp: &str| {
+            let dump = root.join(format!("immich-{stamp}.sql"));
+            write(&dump, format!("dump {stamp}").as_bytes());
+            let note = json!({"sha256": common::digest(&dump).unwrap()});
+            write(&dump_note(&dump), note.to_string().as_bytes());
+        };
+        good("20261001T001500Z");
+        for stamp in ["20261008T001500Z", "20261015T001500Z", "20261022T001500Z"] {
+            good(stamp);
+            write(&root.join(format!("immich-{stamp}.sql")), b"damaged since");
+        }
+        good("20261029T001500Z");
+        let removed = prune_dumps(&root, 4, Some("immich-20261029T001500Z.sql")).unwrap();
+        // The damaged ones go; both good ones stay.
+        assert_eq!(
+            removed,
+            [
+                "immich-20261008T001500Z.sql",
+                "immich-20261015T001500Z.sql",
+                "immich-20261022T001500Z.sql"
+            ]
+        );
+        assert!(root.join("immich-20261001T001500Z.sql").is_file());
+        assert!(root.join("immich-20261029T001500Z.sql").is_file());
+        // A copy without a note newer than every good one stays; older ones go.
+        let v = |n: &str| ["a1", "a3"].contains(&n);
+        let names = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            retired_dumps(names(&["a1", "a2", "a3", "a4"]), None, 4, v),
+            ["a2"]
+        );
+        // The newest four good ones stay; unchecked ones never count against them.
+        let all = |_: &str| true;
+        assert_eq!(
+            retired_dumps(names(&["a1", "a2", "a3", "a4", "a5"]), Some("a6"), 4, all),
+            ["a1", "a2"]
+        );
+        // A damaged copy just made keeps its place, and pushes out no good copy.
+        let old_good = |n: &str| n != "a6";
+        assert!(retired_dumps(names(&["a1", "a2", "a3"]), Some("a6"), 4, old_good).is_empty());
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn old_database_dumps_are_pruned_newest_kept() {
