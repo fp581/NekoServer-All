@@ -206,8 +206,15 @@ def finish_files_folder(base, config, folder, log):
     safe_path(folder / RECOVERY_NOTE).unlink(missing_ok=True)
 
 
-# Nextcloud's own rule for an account name (lib/private/User/Manager.php).
-ACCOUNT_NAME = re.compile(r'[a-zA-Z0-9_.@-]+')
+# Nextcloud's own rule for an account name (lib/private/User/Manager.php): letters,
+# digits, spaces and _.@-' ("Mary Smith", "o'brien"); never "." or ".." (a folder name).
+ACCOUNT_NAME = re.compile(r"[a-zA-Z0-9 _.@'-]+")
+
+
+def valid_account(name):
+    return bool(ACCOUNT_NAME.fullmatch(name)) and name.strip() == name and name not in ('.', '..')
+
+
 # Said when Nextcloud can't be asked for its accounts: nothing is guessed, and the note
 # (RECOVERY_NOTE) stays, so the next setup run makes their folders.
 UNLISTED = (
@@ -241,29 +248,77 @@ def listed_accounts(base, run=subprocess.run):
     names = [name for name in accounts if isinstance(name, str)] if isinstance(accounts, dict) else None
     if names is None:
         raise RuntimeError(UNLISTED.format(why='its answer was not a list of accounts'))
-    return [name for name in names if ACCOUNT_NAME.fullmatch(name)]
+    # Every account gets its folder: one whose name Nextcloud itself would not accept is
+    # named, never left out without a word (its uploads would stay refused).
+    odd = [name for name in names if not valid_account(name)]
+    if odd:
+        raise RuntimeError(
+            UNLISTED.format(
+                why='it lists accounts whose names are not valid account names: ' + ', '.join(map(repr, odd))
+            )
+        )
+    return names
+
+
+def scan_errors(text):
+    """The Errors count of `occ files:scan`'s summary table, or None when it shows none
+    (its answer is then not one that says the scan worked)."""
+    header = None
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.strip().strip('|').split('|')]
+        if 'Errors' in cells:
+            header = cells
+        elif header and len(cells) == len(header) and cells[header.index('Errors')].isdigit():
+            return int(cells[header.index('Errors')])
+    return None
 
 
 def account_folders_given_back(base, files, log, run=subprocess.run):
     """After the files folder was given back empty, Nextcloud's database still lists what
     the old drive held: it takes each account's `files` folder for present, never makes
     it again, and refuses every upload ("Could not create path"; the monthly check's test
-    file with it). Each account named by Nextcloud gets the folder on the new drive, and
-    a scan drops the old drive's listing. The number of accounts done; an error when
-    Nextcloud can't say which accounts it has (listed_accounts)."""
+    file with it). Each account named by Nextcloud gets the folder on the new drive, it is
+    checked to be there, and a scan of that account drops the old drive's listing. A scan
+    can end with exit code 0 and errors in its table: an account counts as done only with
+    the folder there and its scan's Errors at 0. The number of accounts done; an error
+    (naming the accounts left) otherwise, so the recovery note stays for the next run."""
     named = listed_accounts(base, run)
+    left = []
     for name in named:
-        ensure_directory(safe_path(files / name / 'files'), 0o755, WWW_DATA, WWW_DATA)
-    checked_run(
-        base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'files:scan', '--all'],
-        1800,
-        'Nextcloud (refreshing its file list)',
-    )
+        folder = safe_path(files / name / 'files')
+        ensure_directory(folder, 0o755, WWW_DATA, WWW_DATA)
+        if not folder.is_dir() or folder.is_symlink():
+            left.append(f'{name} (its folder could not be made)')
+            continue
+        why = scanned(base, name, run)
+        if why:
+            left.append(f'{name} ({why})')
+    if left:
+        raise RuntimeError(
+            'Nextcloud: these accounts\' folders on the new HDD are not ready, so their uploads may still be refused: '
+            + '; '.join(left)
+            + '. Run  sudo bash install.sh  again: it tries them again'
+        )
     log(
         f'Nextcloud: the folders of its {len(named)} account(s) were made on the new drive and its file list '
         'refreshed, so uploads work again'
     )
     return len(named)
+
+
+def scanned(base, name, run=subprocess.run):
+    """Why refreshing the file list of the account `name` did not work, or None."""
+    argv = base + ['exec', '-T', '-u', 'www-data', 'nextcloud', 'php', 'occ', 'files:scan', '--', name]
+    try:
+        done = run(argv, capture_output=True, text=True, timeout=1800, check=False)
+    except subprocess.TimeoutExpired:
+        return 'its file scan did not finish within 30 minutes'
+    if done.returncode != 0:
+        return f'its file scan ended with error {done.returncode}'
+    errors = scan_errors(done.stdout or '')
+    if errors is None:
+        return 'its file scan did not say how it went'
+    return f'its file scan found {errors} error(s)' if errors else None
 
 
 def settings_changed(recorded, wanted):

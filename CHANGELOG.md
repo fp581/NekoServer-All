@@ -2,7 +2,7 @@
 
 ## v0.45.4 — 2026-11-03
 
-Fixes for the project owner's two reviews of 0.45.3 (17 findings). Built on 0.45.3 (merge PR #56 first).
+Fixes for the project owner's three reviews of 0.45.3 (18 findings). Built on 0.45.3 (merge PR #56 first).
 
 **Tried for real:**
 - **The Immich restore test's isolation, with Docker in the lab:** a container on the test network reached a service on this PC, at the network's own address and at the PC's address. With the new firewall rules it reached neither, and the published port still answered. Adding the rules twice adds them once.
@@ -24,6 +24,8 @@ Everything else was tested with the automated tests only.
 - **An app update's record no longer says its restore test passed** (`restore_test: "not_run"`); only the monthly check runs it.
 - **A NekoServer upgrade keeps its way back.** Setup's clean-up of earlier releases could remove the release an upgrade at work would put back (with a newer release that failed still kept, say), before the upgrade checked the result. Releases the upgrade's record names are kept, and every release when that record can't be read.
 - **The manual Immich restore test can't reach this PC or the network.** Its network only had IP masquerading off, which isn't a firewall: the restored app, with your production settings, could reach services on this PC. Two firewall rules now drop every connection it starts itself; without them the test does not start.
+
+- **Nextcloud accounts with a space or an apostrophe get their folders back on a new HDD.** After the files folder was given back on a new HDD, accounts like `Mary Smith` or `o'brien` were left out (the name check allowed neither, though Nextcloud does), and the file scan's errors went unseen, because `occ files:scan` ends with exit code 0 anyway. So setup said uploads worked again and dropped its note to finish the job. Now every account Nextcloud lists gets its folder, checked to be there, and its own scan, which must report 0 errors. Until every account is done, the note stays and the next setup tries again. An account name Nextcloud itself would not accept is named, never skipped.
 
 ### Fixed: drive moves, the System tab and upgrades
 - **A move never offers a partition on the system's disk when the system is encrypted.** With `/` on an encrypted (LUKS) partition, the system's disk was taken to be that partition, so another partition of the same disk could be offered. Each filesystem is now traced down to its physical disks, through encryption, LVM and RAID.
