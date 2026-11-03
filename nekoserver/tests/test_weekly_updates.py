@@ -169,7 +169,7 @@ class SignInTests(unittest.TestCase):
                         container(project, 'immich-server', str(root / 'photos/immich-library'), inner, asked, given),
                     ]
                 )
-                with mock.patch.object(account_setup, 'docker', lambda argv: next(answers)):
+                with mock.patch.object(account_setup, 'docker', side_effect=answers):
                     return account_setup.verify_project(config, 'immich', quarantined=quarantined)
 
             self.assertEqual(check(fixed, fixed, quarantined=False), int(fixed))  # as usual

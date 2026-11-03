@@ -367,13 +367,14 @@ def server_check(config, before):
 
 
 BUSY = 'A NekoServer upgrade or another drive move is at work'
+TRY_LATER = '; nothing was changed. Try again later.'
 
 
 def with_operation(out, work, wait=False):
     """`work()` holding the operation lock (shared with upgrade.py) from start to end."""
     held = hold_operation(OPERATION_LOCK, wait)
     if held is None:
-        out(BUSY + '; nothing was changed. Try again later.')
+        out(BUSY + TRY_LATER)
         return 2
     with held:
         return work()
@@ -391,7 +392,7 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
         return 2
     busy = nothing_at_work(recovery=recovery_lock(config))
     if busy:
-        out(busy + '; nothing was changed. Try again later.')
+        out(busy + TRY_LATER)
         return 2
     mount_key, label = DRIVES[drive]
     mountpoint = mount_path(config[mount_key])
@@ -584,7 +585,7 @@ def back_held(settings, out, journal, staging, fstab):
             continue
         busy = nothing_at_work(recovery=recovery_lock(config))
         if busy:
-            out(busy + '; nothing was changed. Try again later.')
+            out(busy + TRY_LATER)
             return 2
         mountpoint = mount_path(config[mount_key])
         current = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}

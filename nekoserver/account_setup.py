@@ -557,7 +557,7 @@ def verify_project(config, app, quarantined=False):
         isinstance(given, list)
         and len(given) == 1
         and given[0].get('HostIp') == '127.0.0.1'
-        and re.fullmatch(r'[1-9][0-9]{3,4}', str(given[0].get('HostPort', '')))
+        and re.fullmatch(r'[1-9]\d{3,4}', str(given[0].get('HostPort', '')))
         and 1024 <= int(given[0]['HostPort']) <= 65535
     )
     return int(given[0]['HostPort'])
