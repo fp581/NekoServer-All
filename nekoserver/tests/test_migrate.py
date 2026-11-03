@@ -442,7 +442,7 @@ class MoveTests(unittest.TestCase):
         self.assertFalse(self.journal.exists())
         # Nothing ran again (no restart): the switch is finished as before.
         migrate.record(self.journal, phase='switching', **cut_off)
-        with mock.patch.object(migrate, 'active', lambda units: []):
+        with mock.patch.object(migrate, 'active', return_value=[]):
             self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
         self.assertIn('UUID=newbig-0001', self.fstab.read_text())
 
