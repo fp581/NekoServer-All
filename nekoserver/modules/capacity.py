@@ -23,6 +23,9 @@ GIB = 1024**3
 SSD = (20, 100)  # Docker images (~20 GB), app data, photos and music live here.
 HDD = (50, 500)  # Movies, shows, Nextcloud files and every HDD backup.
 USB_MIN = 16  # The USB copy must at least fit photos + Nextcloud files.
+# What an empty drive sold as 1 GB has free once formatted, at the least: 10^9 bytes,
+# less what ext4 keeps for itself (about 5 %) and a little more for its tables.
+SOLD_AS_FREE = 0.9 * 10**9
 
 
 def free_bytes(path):
@@ -288,7 +291,10 @@ def measure(root, pairs):
 
 
 def gib(value):
-    return f'{value / GIB:.0f} GB'
+    """Space as the messages say it: whole GB, but never rounded up ("19.6 GB free",
+    not the 20 GB it is short of)."""
+    amount = value / GIB
+    return f'{amount:.0f} GB' if round(amount) <= amount else f'{amount:.1f} GB'
 
 
 def assess(
@@ -309,9 +315,12 @@ def assess(
                 f'The {name} has only {gib(space)} free. NekoServer needs at least '
                 f'{minimum} GB there for {purpose}. Free up space or choose a bigger drive.'
             )
-        elif space < recommended * GIB:
+        # The recommendation is a drive size as sold (500 GB is 465 GiB, less once
+        # formatted): an empty drive of that size passes, so a new "500 GB" HDD is never
+        # warned about as too small.
+        elif space < recommended * SOLD_AS_FREE:
             warn.append(
-                f'The {name} has {gib(space)} free. {recommended} GB or more is recommended '
+                f'The {name} has {gib(space)} free. A drive of {recommended} GB or more is recommended '
                 f'for {purpose}; it will fill up sooner.'
             )
     # The archive also keeps photos deleted from Immich and earlier versions.

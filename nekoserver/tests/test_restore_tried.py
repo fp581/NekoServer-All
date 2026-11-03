@@ -88,7 +88,7 @@ class RestoreTriedTests(unittest.TestCase):
 
 @unittest.skipUnless(NODE, 'node is not installed')
 class BackupIssuesTests(unittest.TestCase):
-    def issues(self, backups):
+    def issues(self, backups, units=False):
         app = (ROOT / 'dashboard/app.js').read_text()
         pieces = [
             re.search(rf'^const {name} = .*$', app, re.MULTILINE).group(0)
@@ -96,11 +96,14 @@ class BackupIssuesTests(unittest.TestCase):
         ]
         for name in ('JOB_UNITS', 'LABELS'):
             pieces.append(re.search(rf'^const {name} = \{{.*?\}};', app, re.MULTILINE | re.DOTALL).group(0))
-        pieces.append(re.search(r'^function backupIssues\(s, add\) \{.*?^\}', app, re.MULTILINE | re.DOTALL).group(0))
+        for name in ('backupIssues', 'jobUnit'):
+            pieces.append(re.search(rf'^function {name}\(.*?^\}}', app, re.MULTILINE | re.DOTALL).group(0))
         script = (
-            '\n'.join(pieces)
+            f'const units = {json.dumps(units)};\n'
+            + '\n'.join(pieces)
             + f'''
-const rows = []; backupIssues({{backups: {json.dumps(backups)}}}, (id, title) => rows.push(id));
+const jobLabel = () => '', guideFor = () => '';
+const rows = []; backupIssues({{backups: {json.dumps(backups)}}}, (id, title, d, g, l, unit) => rows.push(units ? [id, unit] : id));
 console.log(JSON.stringify(rows));'''
         )
         return json.loads(subprocess.run([NODE, '-e', script], capture_output=True, text=True, check=True).stdout)
@@ -118,6 +121,27 @@ console.log(JSON.stringify(rows));'''
         self.assertEqual(self.issues(rows), [])
         rows[0]['status'] = 'pass'
         self.assertEqual(self.issues(rows), ['timer:archive'])
+
+    def test_the_log_commands_name_the_service_that_ran(self):
+        """0.45.8: with weekly photo backups the archive job runs as the database copy's
+        service, and an upgrade as nekoserver-upgrade@<release>; the page named the
+        usual service (or none), so its log commands showed the wrong logs."""
+        failed = {'status': 'fail', 'timer': {}, 'last_success': 1.0}
+        rows = [
+            {**failed, 'id': 'archive', 'unit': 'nekoserver-immich-db-backup.service'},
+            {**failed, 'id': 'upgrade', 'unit': 'nekoserver-upgrade@v0.45.8Beta.service'},
+            {**failed, 'id': 'updates'},
+            {**failed, 'id': 'host', 'unit': 'ssh.service; reboot'},
+        ]
+        self.assertEqual(
+            [row for row in self.issues(rows, units=True) if row[0].startswith('job:')],
+            [
+                ['job:archive', 'nekoserver-immich-db-backup.service'],
+                ['job:upgrade', 'nekoserver-upgrade@v0.45.8Beta.service'],
+                ['job:updates', 'nekoserver-updates.service'],
+                ['job:host', 'nekoserver-host-backup.service'],
+            ],
+        )
 
 
 if __name__ == '__main__':

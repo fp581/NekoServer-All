@@ -49,7 +49,7 @@ def run(ctx):
         result = music_client.check(ctx.config)
     atomic_json(Path(ctx.config['data_mount']) / 'reports/music-setup.json', result)
     ctx.log(
-        'Music uses the SSD library/music folder read-only; Lidarr imports into the same folder. Music gateway: HTTPS port 8446. Phone/desktop client login and real playback remain acceptance steps.'
+        'Music uses the SSD library/music folder read-only; Lidarr imports into the same folder. Music gateway: the HTTPS address setup printed for Music (port 8446 unless another program had it; the phone setup page lists it). Phone/desktop client login and real playback remain acceptance steps.'
     )
     if result['status'] != 'pass':
         return {

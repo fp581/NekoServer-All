@@ -446,6 +446,79 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
         self.assertIn('UUID=newbig-0001', self.fstab.read_text())
 
+    def test_apps_that_ran_and_were_stopped_again_still_mean_starting_over(self):
+        """0.45.8: after a restart the apps ran on the old drive, then were stopped (for a
+        recovery, say); nothing ran when resume looked, so it switched to the new drive's
+        older copy, and what was saved in between was missing."""
+        cut_off = {
+            'drive': 'media_hdd',
+            'mount': '/mnt/nekoserver-media',
+            'old': {'uuid': 'hdd-0001', 'fstype': 'ext4'},
+            'new': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
+            'stopped': ['docker.service'],
+        }
+        quiet = mock.patch.object(migrate, 'active', return_value=[])
+        # Another boot: Docker started with the computer.
+        migrate.record(self.journal, phase='switching', boot='an-earlier-boot', since=5, **cut_off)
+        with quiet, mock.patch.object(migrate, 'this_boot', return_value='this-boot'):
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertIn('UUID=hdd-0001', self.fstab.read_text())
+        self.assertIn('Start the move again', self.said[-1])
+        # The same boot, but Docker was started (and stopped) after the record.
+        migrate.record(self.journal, phase='switching', boot='this-boot', since=5, **cut_off)
+        with (
+            quiet,
+            mock.patch.object(migrate, 'this_boot', return_value='this-boot'),
+            mock.patch.object(migrate, 'started_since', lambda units, since: list(units)),
+        ):
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertIn('UUID=hdd-0001', self.fstab.read_text())
+        # Nothing ran since: the switch is finished.
+        migrate.record(self.journal, phase='switching', boot='this-boot', since=5, **cut_off)
+        with (
+            quiet,
+            mock.patch.object(migrate, 'this_boot', return_value='this-boot'),
+            mock.patch.object(migrate, 'started_since', return_value=[]),
+        ):
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+        self.assertIn('UUID=newbig-0001', self.fstab.read_text())
+
+    def test_systemd_start_times_are_read_as_it_prints_them(self):
+        shown = {
+            'docker.service': 'InactiveExitTimestampMonotonic=900\n',
+            'smbd.service': 'InactiveExitTimestampMonotonic=0\n',
+        }
+        with mock.patch.object(migrate, 'run', lambda argv, *a, **k: mock.Mock(stdout=shown[argv[-1]])):
+            self.assertEqual(migrate.started_since(['docker.service', 'smbd.service'], 500), ['docker.service'])
+        self.assertTrue(migrate.this_boot())
+
+    def test_a_move_started_again_goes_on_with_its_own_copy(self):
+        """0.45.8: "Start the move again" was refused at once: the copy the first move made
+        is on the new drive, so it was not empty. Its own copy is reused; any other
+        content still means no."""
+        self.staging.mkdir(parents=True, exist_ok=True)
+        (self.staging / 'from-the-first-move').write_text('x')
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 1)
+        self.assertIn('is not empty', self.said[-1])
+        migrate.copy_note(self.journal).write_text(
+            json.dumps({'drive': 'media_hdd', 'old': 'hdd-0001', 'new': 'newbig-0001'})
+        )
+        self.mounted[str(self.staging)] = ('newbig-0001', 'ext4', '')  # mounted again
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 0, self.said)
+        self.assertIn('UUID=newbig-0001', self.fstab.read_text())
+        self.assertFalse(migrate.copy_note(self.journal).exists())  # done: the note goes
+
+    def test_a_copy_made_by_a_move_is_noted_for_a_retry(self):
+        def fails(*args, **kwargs):
+            raise RuntimeError('the copy stopped')
+
+        with mock.patch.object(migrate, 'copy', fails):
+            self.assertEqual(self.move(), 1)
+        self.assertTrue(migrate.our_copy(self.journal, 'media_hdd', 'hdd-0001', 'newbig-0001'))
+        self.assertFalse(migrate.our_copy(self.journal, 'media_hdd', 'hdd-0001', 'other-0001'))
+
     def test_back_takes_back_the_drive_asked_for(self):
         storage = json.loads(self.settings.read_text())
         storage['storage']['data_ssd']['previous_drive'] = {'uuid': 'oldssd-0001', 'fstype': 'ext4'}

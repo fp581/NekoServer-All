@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.45.8 — 2026-11-03
+
+From a second full audit of every part of the code (the runtime, setup and its window, the gateway, the backups' reports, the dashboard and its alerts), each finding checked against the code before it was fixed. Again no finding allowed getting past the PIN, attacking the page from another site, or injecting commands. Each fix has a test, and each test was run against 0.45.7 and fails there.
+
+### Fixed: from the project owner's review of 0.45.7
+- **A drive move cut off before its switch never switches to a copy that is out of date.** 0.45.7 started over when the apps ran again on the old drive, but only if they were running when `resume` looked. Apps that ran after a restart and were then stopped (for a recovery, say) went unseen, and the move switched to the new drive's older copy. The move's record now notes the boot and the time; a restart since, or any of its services started since (still running or not), means starting over.
+- **"Start the move again" works.** The copy the first move made is on the new drive, so the move refused it at once as "not empty". A move now notes the copy it makes; started again with the same two drives, it goes on with that copy (its last pass removes what is no longer on the old drive, and every file is compared after it). Any other drive must still be empty.
+- **Staging a monthly snapshot can't report success for a split copy.** `monthly-recovery.py --stage` named its folder by path for each part. A folder swapped in at that path between the parts got the second part and the "checked" record. Everything is now written through the folder it made, opened once; if the path no longer leads to it, it says so and writes no record.
+- **0.45.5's restore-test firewall rule is removed.** The corrected rule was added beside the old one, which still dropped the traffic between the test's own apps until the PC restarted. Once the right rules are in, each copy of the old one is taken out. Tried on a real iptables.
+- **Nextcloud names such as `.alice`, `_admin` or `@home` work for the update's login check.** Setup accepted them, but the command filter refused a name that didn't start with a letter or digit. It now takes every first character a Nextcloud name may have, except `-`. Setup also stops taking names that Nextcloud itself can't have.
+
+### Fixed: privacy and safety
+- **Your file names no longer reach the dashboard's status file.** That file can be read by every account on the server. A damaged backup copy, or a weekly USB copy that left files out, put up to five of your Nextcloud or photo file names in it, and in the dashboard's alerts. It now gives the counts only; the repair menu (`sudo bash install.sh --recover`) and the backup's own report (readable by root only) still name the files.
+- **The race in the backup copy is closed.** 0.45.7 listed a narrow race (a folder in the path swapped for a link between the check and the open). The runtime now opens each file with the kernel refusing a link anywhere in its path (openat2 with `RESOLVE_NO_SYMLINKS`); on a kernel too old for that, it keeps the earlier check.
+- **A file on the backup drive can't fill the memory.** The list of files of each weekly copy is unpacked from the drive; a small file that unpacked to gigabytes was read whole. It is now read up to 1 GB, then left.
+- **A broken reply from OpenRGB can't make a list of billions of colours.**
+- **Setup's window never writes over a settings file it can't read.** When `my-config.json` couldn't be read (a typo made while editing it by hand), a switch pressed in the window replaced it with the defaults. It now says the file can't be read and changes nothing.
+
+### Fixed: the dashboard and alerts
+- **The NekoServer tab shows how the last upgrade went.** Its "last upgrade" line read a report nothing wrote, so it always said "unknown". The upgrade now writes it: passed, put back on the release you had (a warning, your apps work), or needs you (with what to do).
+- **An upgrade at work is no longer shown as cut off.** The dashboard asked systemd about a service called `nekoserver-upgrade`, which doesn't exist (each upgrade runs as `nekoserver-upgrade@<release>`).
+- **No false "RECOVERED" for Tailscale or the outside monitor.** When their state couldn't be read, an open alert was taken as fixed and "RECOVERED" was sent to your phone.
+- **A two-drive Btrfs pool whose error counters can't be read stays listed** as "unknown". It was left out, and its open alert was then dropped as if the pool had been taken out on purpose.
+- **The log commands name the service that ran.** With weekly photo backups the archive runs as the Immich database copy's service, and the weekly updates, the daily check and upgrades had no service named at all.
+- **Setup says "running now" while an app update runs.** The weekly updates, "Update now" and the monthly retry weren't counted, so setup said the update "did not finish" and told you to start the service that finishes it, while it was still working. The uninstaller waits for them too.
+- **The acceptance check doesn't ask for the photo jobs without Immich.** With Immich switched off they are off too, so the check could never pass.
+
+### Fixed: setup
+- **A chip that decodes 10-bit video gets Jellyfin's 10-bit decoding.** Jellyfin's 10-bit HEVC and VP9 decoding stayed off even when the graphics chip supports them.
+- **Nextcloud keeps the trusted proxy you added.** Setup wrote its own proxies over the first two entries of the list, removing one you had added.
+- **Drive sizes are never rounded up.** A drive with 19.96 GB free was shown as "20 GB" while being refused as too small. A new drive sold as "1 TB" (931 GiB) is also no longer called smaller than recommended.
+- **The music port is described as it is chosen:** 8446 unless another program has it; the phone setup page shows the one in use.
+
+### Tried for real
+- The firewall cleanup, on a real iptables: with two copies of 0.45.5's rule in place, both were removed and only the right rules stayed.
+- Monthly staging with real tar archives (the swap test runs real `tar`).
+- The rest is covered by tests only (the Rust ones on a real Linux kernel, the dashboard's in Node). The lab checks of 0.45.5 to 0.45.7 still stand.
+
 ## v0.45.7 — 2026-11-03
 
 From a full audit of the code: five separate reviews (the dashboard and control service, the backups, app updates and rollback, setup, recovery and drive moves), each finding checked against the code before it was fixed. No finding allowed getting past the PIN, attacking the page from another site, or injecting commands. Each fix below has a test; the Python ones fail on 0.45.6.

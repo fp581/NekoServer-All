@@ -44,12 +44,9 @@ fn integrity(data: &Path, ok: bool, away: Option<&str>) -> Value {
             continue;
         }
         let count = |key: &str| s["counts"][key].as_u64().unwrap_or(0);
-        let files: Vec<String> = ["both_damaged", "damaged", "missing", "disagree"]
-            .iter()
-            .flat_map(|k| s[k].as_array().cloned().unwrap_or_default())
-            .filter_map(|v| v.as_str().map(|f| chars(f, 120)))
-            .take(5)
-            .collect();
+        // Counts only: the status file can be read by every account on the server, so the
+        // names of the person's own files stay in the root-only integrity report (the
+        // repair menu lists them).
         // When every copy was last compared with its checksum: a quick run (size and
         // dates) proves nothing about copies already there. None before 0.39.6.
         let full_at = s["full_at"].as_f64().filter(|t| t.is_finite() && *t > 0.0);
@@ -58,8 +55,7 @@ fn integrity(data: &Path, ok: bool, away: Option<&str>) -> Value {
             "unverified": s["unverified"].as_u64().unwrap_or(0),
             "repaired": s["repaired"].as_u64().unwrap_or(0),
             "damaged": count("damaged"), "both_damaged": count("both_damaged"), "disagree": count("disagree"),
-            "missing": count("missing"),
-            "files": files}));
+            "missing": count("missing")}));
         if id == "archive" {
             if let (Some(row), Some(drive)) = (rows.last_mut(), away) {
                 row["blocked"] = json!(format!(
@@ -565,11 +561,13 @@ fn arrays_section(mounted: &[Value], cache: &mut Value, now: f64, interval: f64)
         let uuid = text(&m["uuid"]).to_string();
         let sys = Path::new("/sys/fs/btrfs").join(&uuid);
         let mut missing = vec![];
+        let mut devices = 0;
         for entry in std::fs::read_dir(sys.join("devinfo"))
             .into_iter()
             .flatten()
             .flatten()
         {
+            devices += 1;
             let flag = std::fs::read_to_string(entry.path().join("missing")).unwrap_or_default();
             if flag.trim() == "1" {
                 missing.push(format!("device {}", entry.file_name().to_string_lossy()));
@@ -579,9 +577,11 @@ fn arrays_section(mounted: &[Value], cache: &mut Value, now: f64, interval: f64)
         let mut row =
             crate::array_health::btrfs_pool(&uuid, (code == 0).then_some(stats.as_str()), &missing);
         // Only a pool, or a drive with something to say, earns a row of its own: a
-        // healthy single Btrfs drive's health is already on its drive card.
+        // healthy single Btrfs drive's health is already on its drive card. A pool whose
+        // counters can't be read stays listed as unknown (the kernel still lists its
+        // drives): dropped, its open alert would be taken as stopped on purpose.
         let members = row["members"].as_array().map(|m| m.len()).unwrap_or(0);
-        if members < 2 && ["healthy", "unknown"].contains(&text(&row["status"])) {
+        if !shown_as_pool(members, devices, text(&row["status"])) {
             continue;
         }
         row["holds"] = json!([m["id"]]);
@@ -595,6 +595,11 @@ fn arrays_section(mounted: &[Value], cache: &mut Value, now: f64, interval: f64)
         }
     }
     json!(rows)
+}
+/// Whether a Btrfs filesystem gets a row of its own: a pool (two drives or more, by its
+/// counters or by the kernel's list), or one with something to say.
+fn shown_as_pool(members: usize, devices: usize, status: &str) -> bool {
+    members.max(devices) >= 2 || !["healthy", "unknown"].contains(&status)
 }
 /// Bytes from a size Docker prints ("512MiB", "1.2GiB", "800kB").
 fn docker_size(text: &str) -> Option<f64> {
@@ -1078,6 +1083,14 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         } else {
             empty()
         };
+        // The upgrade runs as nekoserver-upgrade@<release> (or, after a restart, as the
+        // resume service): its report says which, so a run at work is asked about.
+        let named = upgrade_unit(&saved);
+        let unit = if key == "upgrade" {
+            named.as_str()
+        } else {
+            unit
+        };
         let raw = text(&saved["status"]);
         // An update undone after the apps did not start well: the backup was made and the
         // apps are back as they were, so only the update is still to come (done in part).
@@ -1155,7 +1168,9 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         } else {
             None
         };
-        let mut row = json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key)});
+        // The service that does the work, for the page's log commands (the weekly photo
+        // schedule's, an upgrade's own instance).
+        let mut row = json!({"id":key,"name":name,"status":state,"last_success":success,"last_attempt":start,"timer":timer,"reason":reason,"restore":restore_tests(cfg,key),"unit":format!("{unit}.service")});
         if undone {
             row["rolled_back"] = json!(true);
         }
@@ -1167,6 +1182,26 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         out.push(row);
     }
     json!(out)
+}
+/// The service the upgrade's report names, when it is one of the upgrade's own: the
+/// release's (nekoserver-upgrade@v0.45.8Beta) or the resume after a restart.
+fn upgrade_unit(saved: &Value) -> String {
+    let unit = text(&saved["unit"]);
+    let release = unit
+        .strip_prefix("nekoserver-upgrade@v")
+        .is_some_and(|tag| {
+            let digits = tag.strip_suffix("Beta").unwrap_or(tag);
+            let parts: Vec<&str> = digits.split('.').collect();
+            parts.len() == 3
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.len() <= 6 && p.bytes().all(|b| b.is_ascii_digit()))
+        });
+    if release || unit == "nekoserver-upgrade-resume" {
+        unit.to_string()
+    } else {
+        "nekoserver-upgrade".to_string()
+    }
 }
 /// When this backup's schedule was set up (its timer file was written), if it was.
 fn timer_installed_at(unit: &str) -> Option<f64> {
@@ -1319,7 +1354,7 @@ fn failure_reason(saved: &Value) -> String {
         (false, false) => format!("Failed while {stage}: {reason}"),
     }
 }
-/// "3 files were not copied (2 in use, 1 with a name the USB drive cannot store): a, b, c".
+/// "3 files were not copied (2 in use, 1 with a name the USB drive cannot store; …)".
 fn partial_reason(missing: &Value) -> String {
     // The monthly run says what it left for later as a list of sentences ("USB check:
     // the drive is full", "Immich release: …"): each is shown, the first five in full.
@@ -1340,26 +1375,16 @@ fn partial_reason(missing: &Value) -> String {
     }
     let in_use = missing["in_use"].as_u64().unwrap_or(0);
     let names = missing["unsupported_names"].as_u64().unwrap_or(0);
-    let files: Vec<String> = missing["files"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|f| f.as_str())
-                .take(5)
-                .map(|f| chars(f, 120))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Counts only: the status file can be read by every account on the server, so the
+    // names of the files stay in the job's root-only report (reports/jobs on the SSD).
+    let listed = missing["files"].as_array().is_some_and(|a| !a.is_empty());
     let mut parts = vec![];
-    if in_use + names > 0 || !files.is_empty() {
-        let mut text = format!(
-            "{} not copied ({in_use} in use, {names} with names the USB drive cannot store)",
+    if in_use + names > 0 || listed {
+        parts.push(format!(
+            "{} not copied ({in_use} in use, {names} with names the USB drive cannot store; \
+             their names are in the backup's report, reports/jobs on the application SSD)",
             plural(in_use + names, "file was", "files were")
-        );
-        if !files.is_empty() {
-            text += &format!(": {}", files.join(", "));
-        }
-        parts.push(text);
+        ));
     }
     // The USB copy of the Immich database (missing, stale or without its version note),
     // and a source that could not be copied at all (the Nextcloud folder missing).
@@ -2169,15 +2194,6 @@ pub(crate) fn alerts(s: &Value) -> Value {
             let bad =
                 count("damaged") + count("both_damaged") + count("disagree") + count("missing");
             if bad > 0 {
-                let files = c["files"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|f| f.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .unwrap_or_default();
                 add(
                     format!("integrity:{}", text(&c["id"])),
                     if count("both_damaged") + count("damaged") + count("missing") > 0 { "critical" } else { "warning" },
@@ -2186,7 +2202,7 @@ pub(crate) fn alerts(s: &Value) -> Value {
                         text(&c["name"]),
                         plural(bad, "file is", "files are")
                     ),
-                    &format!("Run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\". Files: {files}"),
+                    "Run  sudo bash install.sh --recover  and choose \"Repair damaged backup copies\"; it lists the files.",
                 );
             }
         }
@@ -2823,7 +2839,7 @@ mod os_tests {
         let shown = shown.as_array().unwrap();
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0]["level"], "critical");
-        assert!(text(&shown[0]["detail"]).contains("upload/u/b.jpg"));
+        assert!(!shown[0].to_string().contains("b.jpg"), "{}", shown[0]);
         assert!(text(&shown[0]["detail"]).contains("Repair damaged backup copies"));
         let _ = std::fs::remove_dir_all(data);
     }
@@ -2860,12 +2876,17 @@ mod os_tests {
         );
     }
     #[test]
-    fn partial_backup_is_a_warning_with_its_files() {
+    fn partial_backup_is_a_warning_without_its_file_names() {
         let reason = partial_reason(
             &json!({"in_use":1,"unsupported_names":1,"files":["alice/open.docx","bob/a:b.txt"]}),
         );
         assert!(reason.starts_with("2 files were not copied"));
-        assert!(reason.contains("alice/open.docx"));
+        // The names stay in the root-only job report: the status file is readable by all.
+        assert!(
+            !reason.contains("alice") && !reason.contains("bob"),
+            "{reason}"
+        );
+        assert!(reason.contains("reports/jobs"), "{reason}");
         let db = partial_reason(
             &json!({"in_use":0,"unsupported_names":0,"files":[],"database":"the newest Immich database copy is 10 days old"}),
         );
@@ -2881,7 +2902,7 @@ mod os_tests {
             &json!({"backups":[{"id":"external","name":"USB backup","status":"partial","reason":reason}]}),
         );
         assert_eq!(shown[0]["level"], "warning");
-        assert!(text(&shown[0]["detail"]).contains("bob/a:b.txt"));
+        assert!(!text(&shown[0]["detail"]).contains("bob/a:b.txt"));
     }
     #[test]
     fn a_monthly_run_done_in_part_says_why() {
@@ -2984,7 +3005,9 @@ mod integrity_tests {
         save_integrity(&data, "archive", &quick, Check::Quick).unwrap();
         let after = integrity(&data, true, None)[0].clone();
         assert_eq!(after["damaged"], 1, "{after}");
-        assert_eq!(after["files"], json!(["upload/u/b.jpg"]));
+        // The status file is readable by every account: counts, never the file names.
+        assert!(after.get("files").is_none(), "{after}");
+        assert!(!after.to_string().contains("b.jpg"), "{after}");
         assert_eq!(
             after["full_at"].as_f64(),
             Some(full_at),
@@ -3308,6 +3331,43 @@ mod round_two_tests {
         assert!(!shown.contains(".…") && !shown.ends_with(".."), "{shown}");
         assert!(shown.ends_with('.') || shown.ends_with('…'), "{shown}");
     }
+    /// 0.45.8: the upgrade runs as nekoserver-upgrade@<release>; the dashboard asked the
+    /// unit "nekoserver-upgrade", which does not exist, so a run at work read as cut off.
+    #[test]
+    fn the_upgrade_is_asked_about_by_its_own_service() {
+        let unit = |u: &str| upgrade_unit(&json!({"unit": u}));
+        assert_eq!(
+            unit("nekoserver-upgrade@v0.45.8Beta"),
+            "nekoserver-upgrade@v0.45.8Beta"
+        );
+        assert_eq!(
+            unit("nekoserver-upgrade@v1.0.0"),
+            "nekoserver-upgrade@v1.0.0"
+        );
+        assert_eq!(
+            unit("nekoserver-upgrade-resume"),
+            "nekoserver-upgrade-resume"
+        );
+        for odd in [
+            "nekoserver-upgrade@v1.0",
+            "ssh",
+            "nekoserver-upgrade@v1.0.0;x",
+            "nekoserver-upgrade@v..1",
+        ] {
+            assert_eq!(unit(odd), "nekoserver-upgrade", "{odd}");
+        }
+        assert_eq!(upgrade_unit(&json!({})), "nekoserver-upgrade");
+    }
+    /// 0.45.8: a two-drive Btrfs pool whose counters could not be read was left out, and
+    /// its open alert was then dropped as if the pool had been taken out on purpose.
+    #[test]
+    fn a_pool_whose_counters_cannot_be_read_stays_listed() {
+        assert!(shown_as_pool(0, 2, "unknown"));
+        assert!(shown_as_pool(2, 0, "healthy"));
+        assert!(!shown_as_pool(0, 1, "unknown"));
+        assert!(!shown_as_pool(1, 1, "healthy"));
+        assert!(shown_as_pool(1, 1, "warning"));
+    }
     /// QA after 0.40.2: "1 file", never "1 files".
     #[test]
     fn counts_agree_with_their_noun() {
@@ -3320,6 +3380,7 @@ mod round_two_tests {
             alerts(&row(2))[0]["title"],
             "USB photo copy: 2 files are damaged or missing"
         );
+        assert!(!alerts(&row(2))[0].to_string().contains("a.jpg"));
         assert!(partial_reason(&json!({"in_use": 1, "files": ["a.docx"]}))
             .starts_with("1 file was not copied"));
     }

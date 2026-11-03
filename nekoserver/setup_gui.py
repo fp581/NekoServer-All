@@ -171,6 +171,14 @@ def expected_owners(config):
     return owners
 
 
+# choose(): the settings file is there but can't be read, so nothing was written.
+UNREADABLE = object()
+UNREADABLE_SAID = (
+    'my-config.json can\'t be read right now (a mistake in it, perhaps a comma), so this switch was not '
+    'saved and your file was left as it is. Fix the file, then press the switch again.'
+)
+
+
 class Window:
     """The server behind the setup window, running in a thread of setup's own process."""
 
@@ -357,13 +365,17 @@ class Window:
             self.frozen = True
 
     def _saved(self):
-        """The settings file as it is now (what the installer may have added since the
-        window opened), or the window's copy when it cannot be read."""
+        """The settings file as it is now (what the installer, or you, changed since the
+        window opened); the window's copy when there is no file; None when the file is
+        there but can't be read (a mistake typed into it): then nothing is written over
+        it, or your edits would be lost."""
+        if not self.config_path.exists():
+            return self.config
         try:
             value = json.loads(settings_path(self.config_path).read_text(encoding='utf-8'))
         except (OSError, ValueError, RuntimeError):
-            return self.config
-        return value if isinstance(value, dict) else self.config
+            return None
+        return value if isinstance(value, dict) else None
 
     def choose(self, changes, start=False):
         """Switch extras on or off, saved to the settings file at once (owner kept):
@@ -376,6 +388,8 @@ class Window:
                 return False
             if chosen:
                 config = self._saved()
+                if config is None:
+                    return UNREADABLE
                 for key, value in chosen.items():
                     explanations.set_extra(config, by_id[key], value)
                 owner = (
@@ -428,6 +442,8 @@ class Window:
 
     @staticmethod
     def _fixed_or_ok(taken):
+        if taken is UNREADABLE:
+            return 409, json.dumps({'ok': False, 'reason': UNREADABLE_SAID}).encode(), JSON
         if taken:
             return 200, b'{"ok": true}', JSON
         return 409, b'{"ok": false, "reason": "Setup has started, so the choices are fixed."}', JSON

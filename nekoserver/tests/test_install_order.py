@@ -752,6 +752,14 @@ class HardwareVideoTests(unittest.TestCase):
         self.assertIn('decoding only', said)
         self.assertFalse(saved['EnableHardwareEncoding'])
         self.assertEqual(saved['HardwareDecodingCodecs'], ['h264', 'hevc', 'vp9', 'av1'])
+        # The second audit: 10-bit HEVC/VP9 stayed on (Jellyfin's default) on chips that
+        # list only 8-bit, so 10-bit files failed to play. Only what the chip lists.
+        self.assertFalse(saved['EnableDecodingColorDepth10Hevc'])
+        self.assertFalse(saved['EnableDecodingColorDepth10Vp9'])
+        ten = hv.video_support(
+            decode_only + 'VAProfileHEVCMain10 : VAEntrypointVLD\nVAProfileVP9Profile2 : VAEntrypointVLD\n'
+        )
+        self.assertTrue(ten['hevc_10bit'] and ten['vp9_10bit'])
         self.assertEqual(hv.configure_immich(entry, 'vaapi', '/dev/dri/renderD128', Fake(), video), hv.NO_ENCODER)
 
         # An encoder listed that fails its test encode counts as none.
@@ -1268,6 +1276,14 @@ class UnfinishedMaintenanceTests(unittest.TestCase):
             run = mock.Mock(return_value=mock.Mock(stdout=states))
             self.assertEqual(neko_common.maintenance_running(run), expected, states)
         self.assertEqual(run.call_args[0][0], ['systemctl', 'is-active', *neko_common.MAINTENANCE_UNITS])
+        # 0.45.8: the weekly updates and "Update now" share the update journal; while one
+        # ran, setup said the update "did not finish" and told you to start the resume.
+        for unit in (
+            'nekoserver-updates.service',
+            'nekoserver-update-now@*.service',
+            'nekoserver-maintenance-retry.service',
+        ):
+            self.assertIn(unit, run.call_args[0][0])
         self.assertFalse(neko_common.maintenance_running(mock.Mock(side_effect=OSError)))
 
     def test_setup_rechecks_once_it_holds_the_shared_lock(self):

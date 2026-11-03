@@ -273,6 +273,55 @@ def differences(source, target):
     return [line for line in shown.stdout.splitlines() if line.strip()]
 
 
+BOOT_ID = Path('/proc/sys/kernel/random/boot_id')
+
+
+def this_boot():
+    """This boot's ID: it changes at every start of the computer."""
+    try:
+        return BOOT_ID.read_text().strip()
+    except OSError:
+        return ''
+
+
+def monotonic_usec():
+    """Now, on the clock systemd times its services by (microseconds since boot)."""
+    return int(time.clock_gettime(time.CLOCK_MONOTONIC) * 1_000_000)
+
+
+def started_since(units, since):
+    """Those of `units` started after `since` (monotonic_usec, this boot): running now,
+    or started and stopped again meanwhile (by you, or by a recovery that stopped them)."""
+    started = []
+    for unit in units:
+        shown = run(['systemctl', 'show', '--property=InactiveExitTimestampMonotonic', unit], 30, check=False)
+        value = (getattr(shown, 'stdout', '') or '').strip().partition('=')[2]
+        if value.isdigit() and int(value) > since:
+            started.append(unit)
+    return started
+
+
+def copy_note(journal):
+    """The record of the copy a move made on its new drive (beside the move's record), so
+    a move started again may go on with that copy instead of refusing a drive that is no
+    longer empty. It names both drives: any other drive must still be empty."""
+    return Path(journal).with_name('migrate-copy.json')
+
+
+def our_copy(journal, drive, old_uuid, new_uuid):
+    try:
+        note = json.loads(copy_note(journal).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(note, dict) and note == {'drive': drive, 'old': old_uuid, 'new': new_uuid}
+
+
+def switching(journal):
+    """The record just before the switch, with this boot and the time: what the move
+    stopped must not have run again since (see ran_again_on_old)."""
+    record(journal, phase='switching', boot=this_boot(), since=monotonic_usec())
+
+
 def active(units):
     return [u for u in units if run(['systemctl', 'is-active', '--quiet', u], 30, check=False).returncode == 0]
 
@@ -475,8 +524,12 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     new = {'uuid': new_uuid, 'fstype': fstype}
     try:
         mount_staging(new_uuid, fstype, staging)
-        if not empty(staging):
+        if not empty(staging) and not our_copy(journal, drive, old.get('uuid'), new_uuid):
             raise RuntimeError(f'{name} is not empty; NekoServer only moves to an empty filesystem')
+        # A move started again goes on with the copy this one makes (its last pass removes
+        # what is no longer on the old drive, and every file is compared after it).
+        ensure_directory(Path(journal).parent, 0o700)
+        atomic_json(copy_note(journal), {'drive': drive, 'old': old.get('uuid'), 'new': new_uuid})
         record(journal, phase='copying')
         same_drives(mountpoint, old, staging, new)
         copy(mountpoint, staging, out=out)
@@ -492,7 +545,7 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
         same_drives(mountpoint, old, staging, new)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         return stopped_safely(exc, label, journal, staging, out)
-    record(journal, phase='switching')
+    switching(journal)
     return switch(path, config, drive, journal, staging, fstab, out)
 
 
@@ -627,6 +680,7 @@ def started_and_checked(config, drive, journal, out=print):
         return 2
     going_back = saved.get('direction') == 'back'
     journal.unlink(missing_ok=True)
+    copy_note(journal).unlink(missing_ok=True)
     label = DRIVES[drive][1]
     if going_back:
         out(f'The {label} is the old drive again. Anything saved to the other one since the move is still on it.')
@@ -725,7 +779,7 @@ def back_held(settings, out, journal, staging, fstab, wanted=None):
         stop_writers(journal)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         return stopped_safely(exc, label, journal, staging, out)
-    record(journal, phase='switching')
+    switching(journal)
     return switch(path, config, drive, journal, staging, fstab, out)
 
 
@@ -738,12 +792,20 @@ def resume(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
 
 def ran_again_on_old(saved, fstab):
     """A move recorded as switching whose /etc/fstab still names the old drive, while
-    something it stopped (Docker, Samba, a NekoServer service) runs again."""
+    something it stopped (Docker, Samba, a NekoServer service) ran again since: it runs
+    now, the computer was started again (Docker starts at boot), or it was started and
+    stopped again meanwhile (stopped for a recovery, say). Its writes are on the old
+    drive only."""
     new = saved.get('new') or {}
     if fstab_names_new(saved.get('mount', ''), new, fstab):
         return False
     stopped = [u for u in saved.get('stopped') or [] if isinstance(u, str) and UNIT.fullmatch(u)]
-    return bool(active(stopped))
+    if active(stopped):
+        return True
+    boot, since = saved.get('boot'), saved.get('since')
+    if isinstance(boot, str) and boot and boot != this_boot():
+        return True
+    return isinstance(since, int) and bool(started_since(stopped, since))
 
 
 def resume_held(settings, out, journal, staging, fstab):
@@ -757,7 +819,7 @@ def resume_held(settings, out, journal, staging, fstab):
         # it would lose it. The move starts over instead (its copy is quick the second time).
         return stopped_safely(
             'the apps ran again on the old drive before it switched (a restart, say), so the new drive\'s '
-            'copy is not up to date. Start the move again (sudo python3 migrate.py move ...)',
+            'copy is not up to date. Start the move again (sudo python3 migrate.py move ...): it goes on with the copy already there, so only what changed is copied',
             'drive',
             journal,
             staging,

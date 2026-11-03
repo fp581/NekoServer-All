@@ -70,6 +70,33 @@ class CarryTests(unittest.TestCase):
             after = {c['id']: c['status'] for c in saved[-1]['manual']}
             self.assertEqual(after['app_restore'], 'pass')
 
+    def test_photo_jobs_are_asked_for_only_with_immich(self):
+        """0.45.8: with Immich switched off its archive and database jobs are off too, yet
+        the check asked for both, so it could never pass."""
+        rows = [
+            {'id': job, 'name': job, 'status': 'disabled', 'last_success': None,
+             'timer': {'installed': False, 'active': False}}
+            for job in ('archive', 'database', 'external')
+        ]  # fmt: skip
+
+        def asked(immich):
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = config(Path(tmp))
+                cfg.setdefault('photos', {})['deploy_immich'] = immich
+                with (
+                    mock.patch.object(
+                        acceptance.health, 'mount_info', side_effect=lambda path, uuid, fs: {'status': 'mounted'}
+                    ),
+                    mock.patch.object(acceptance.health, 'backups', return_value=rows),
+                    mock.patch.object(acceptance, 'save'),
+                ):
+                    report = acceptance.inspect(cfg, 'full')
+            return {c['id'] for c in json.loads(json.dumps(report))['automatic'] if c['id'].startswith('backup:')}
+
+        self.assertNotIn('backup:archive', asked(False))
+        self.assertNotIn('backup:database', asked(False))
+        self.assertLessEqual({'backup:archive', 'backup:database'}, asked(True))
+
 
 class StaleTests(unittest.TestCase):
     def test_stale_is_a_complete_check_over_a_day_old_never_a_failed_one(self):

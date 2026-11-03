@@ -584,6 +584,17 @@ class CapacityTests(unittest.TestCase):
     def test_enough_space(self):
         self.assertEqual(self.assess(500, 4000, usb=1000, photos=200), ([], []))
 
+    def test_space_is_never_rounded_up_and_a_new_drive_is_not_called_small(self):
+        # The second audit: 19.6 GiB free stopped setup as "has only 20 GB free ... needs at
+        # least 20 GB"; a new 500 GB HDD was always warned about as smaller than 500 GB.
+        from modules import capacity
+
+        self.assertEqual(capacity.gib(int(19.6 * capacity.GIB)), '19.6 GB')
+        self.assertEqual(capacity.gib(30 * capacity.GIB), '30 GB')
+        self.assertEqual(capacity.gib(int(30.4 * capacity.GIB)), '30 GB')
+        new_hdd = int(500 * 10**9 * 0.94)  # what an empty ext4 "500 GB" drive has free
+        self.assertGreaterEqual(new_hdd, capacity.HDD[1] * capacity.SOLD_AS_FREE)
+
     def test_too_little_stops_with_a_clear_reason(self):
         stop, _ = self.assess(10, 4000)
         self.assertTrue(stop and 'SSD has only 10 GB free' in stop[0])

@@ -212,15 +212,35 @@ fn newest(folder: &Path) -> Option<(PathBuf, Value)> {
         .collect();
     oldest_first(&mut names);
     let path = folder.join(names.pop()?);
-    let output = Command::new("gzip")
+    let text = unpacked(&path, UNPACKED_MAX)?;
+    let value: Value = serde_json::from_slice(&text).ok()?;
+    (value["format"] == FORMAT).then(|| (path, value["files"].clone()))
+}
+/// The most an inventory may unpack to: well over the list of millions of files, but a
+/// small file on the backup drive that unpacks to far more (a "zip bomb") is read no
+/// further, so it can't fill the memory.
+const UNPACKED_MAX: u64 = 1 << 30;
+/// The file at `path` unpacked by gzip, if it unpacks fully to at most `max` bytes.
+fn unpacked(path: &Path, max: u64) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut child = Command::new("gzip")
         .args(["-d", "-c"])
-        .stdin(fs::File::open(common::safe(&path).ok()?).ok()?)
+        .stdin(fs::File::open(common::safe(path).ok()?).ok()?)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
-    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
-    (output.status.success() && value["format"] == FORMAT).then(|| (path, value["files"].clone()))
+    let mut out = vec![];
+    let read = child
+        .stdout
+        .take()
+        .map(|s| s.take(max + 1).read_to_end(&mut out));
+    let whole = matches!(read, Some(Ok(_))) && out.len() as u64 <= max;
+    if !whole {
+        let _ = child.kill();
+    }
+    let done = child.wait().ok()?;
+    (whole && done.success()).then_some(out)
 }
 /// Write `inventory` for the tree at `root`, then keep the newest KEPT. Returns its path
 /// and true; or the newest list already there and false when that one names the same
@@ -332,6 +352,26 @@ pub(crate) fn finish_mirror(source: &Path, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 0.45.8: an inventory on the backup drive was unpacked whole into memory, so a small
+    /// file that unpacks to gigabytes could take all of it.
+    #[test]
+    fn an_inventory_that_unpacks_too_far_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("neko-inv-bomb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("list.json.gz");
+        fs::write(
+            &file,
+            compressed(&json!({"format": FORMAT, "files": {"a": 1}})).unwrap(),
+        )
+        .unwrap();
+        assert!(unpacked(&file, 1 << 20).is_some());
+        assert!(unpacked(&file, 10).is_none());
+        // Not gzip: nothing.
+        fs::write(&file, b"plain").unwrap();
+        assert!(unpacked(&file, 1 << 20).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
     #[test]
     fn a_note_linked_elsewhere_is_never_followed() {
         // The audit of 0.45.6: a USB drive someone else prepared could link a note to

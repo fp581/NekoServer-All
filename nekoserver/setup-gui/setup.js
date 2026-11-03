@@ -50,7 +50,8 @@
 
   async function save(changes) {
     try {
-      await post('api/choose', changes);
+      const answer = await post('api/choose', changes);
+      $('choose-note').textContent = answer.ok === false && answer.reason ? answer.reason : '';
     } catch {
       /* the next poll shows what the server has; the switch stays as pressed */
     }

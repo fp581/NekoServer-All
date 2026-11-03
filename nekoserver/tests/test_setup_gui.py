@@ -406,6 +406,16 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(after, saved)
         self.assertFalse(after['tv']['wanted'])
 
+    def test_a_settings_file_that_cannot_be_read_is_never_written_over(self):
+        # The second audit: a mistake typed into my-config.json while the window was open
+        # made a switch write the window's old copy over it, losing the person's edits.
+        edited = self.settings.read_text().rstrip().rstrip('}') + ', "mine": 1,}'
+        self.settings.write_text(edited)
+        answer = self.refused('api/choose', {'tv': False})
+        self.assertIn("my-config.json can't be read right now", answer['reason'])
+        self.assertEqual(self.settings.read_text(), edited)  # left exactly as typed
+        self.assertIn('id="choose-note"', (ROOT / 'setup-gui/index.html').read_text())
+
     def test_a_terminal_start_also_fixes_the_choices(self):
         self.window.freeze()
         self.assertFalse(self.window.started.is_set())
