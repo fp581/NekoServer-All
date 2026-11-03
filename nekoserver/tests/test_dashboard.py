@@ -437,7 +437,12 @@ class FanAndLightControlTests(unittest.TestCase):
         self.assertNotIn('--no-fans', control)
         # App controls: closing a desktop app (CAP_KILL) and the shared backup lock, nothing more.
         self.assertIn('CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_KILL\n', control)
-        self.assertIn('ReadWritePaths=' + str(dashboard.CONTROL_CONFIG) + ' -/srv/n/installer\n', control)
+        # Found in the lab: "Install at the next update night" failed with "Read-only file
+        # system" (it writes backups/updates/approved.json, which was not writable here).
+        self.assertIn(
+            'ReadWritePaths=' + str(dashboard.CONTROL_CONFIG) + ' -/srv/n/installer -/srv/n/backups/updates\n', control
+        )
+        self.assertIn('FOLDER: &str = "backups/updates"', (ROOT / 'runtime/src/updates.rs').read_text())
         self.assertIn('ProtectHome=yes', control)
         # The web server stays unprivileged and only gains the control socket's group.
         web = dashboard.units(Path('/srv/n'), self.code, Path('/etc/x.json'), 8787, 60, control=True)[dashboard.SERVICE]

@@ -948,10 +948,16 @@ FIREWALL_CHAINS = ('INPUT', 'DOCKER-USER')
 
 
 def firewall_rule(chain, bridge):
+    # Through this PC: only towards somewhere else. Between the test's own containers
+    # (Immich and its database, Redis and ML), traffic stays on the bridge, and Linux
+    # passes it through the same chain when bridge netfilter is on (Docker turns it on):
+    # without "! -o", the restored Immich could not reach its own database.
+    within = ['!', '-o', bridge] if chain == 'DOCKER-USER' else []
     return [
         chain,
         '-i',
         bridge,
+        *within,
         '-m',
         'conntrack',
         '!',

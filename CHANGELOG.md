@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.45.6 — 2026-11-03
+
+Found by using the Updates page in the lab (made-up versions waiting, a PIN set), and fixes for the project owner's review of 0.45.5.
+
+**Tried for real** (the lab, with Docker): the restore test's firewall rules with two containers on the test network. With bridge netfilter on (Docker turns it on), 0.45.5's rule also dropped the restored Immich's connection to its own database; with the fixed rule that connection works, while this PC and the network stay unreachable and the published port answers. In the lab dashboard, "Install at the next update night" now saves the choice (it failed before), and each waiting version's line was read in the browser.
+
+### Fixed
+- **`migrate.py back --drive media_hdd` takes back the HDD.** `back` ignored `--drive` and took back the first drive with an earlier one in the settings (the SSD). It now takes the drive named; when both drives were moved and none is named, it asks which and changes nothing.
+- **A move whose final check failed can be finished.** After setup or the check failed, the apps run again on the new drive; `resume` then tried to unmount that drive, failed (it is in use) and stopped before running setup again. When the new drive is already the one mounted there, `resume` now runs setup and the check again without unmounting it.
+- **The restore test's apps reach each other.** The rule that stops the restored Immich reaching this PC and the network also dropped its connections to its own database, Redis and ML service when bridge netfilter is on, as Docker sets it. Traffic that stays on the test network now passes.
+- **A drive move never offers a partition of the boot disk or of the system's Btrfs pool.** Only the disk holding `/` counted as the system's. Now the disks holding `/boot`, `/boot/efi`, `/efi`, `/usr`, `/var`, `/home` and swap count too, as does every member of a Btrfs system spread over several drives (lsblk shows its folder on one of them only).
+- **"Install at the next update night" works.** The control service may write only a few folders, and the one holding the version you choose (`backups/updates`) was not one of them, so the button always failed ("Read-only file system"). Found by clicking it in the lab with a PIN set; it now saves your choice.
+- **Each waiting app version says when it really installs.** A version that had waited long enough said "installs from Nov 1" on Nov 3, and every waiting version said it would install, though an update night installs one: the one you chose, else the newest that has waited long enough. Each now says which it is.
+- **The PIN window names updates and upgrades**, not only restarting or closing apps.
+- **A drive that is too small says the size it needs.** A 20 GB drive was refused as "too small: it needs at least 20 GB" (a formatted drive keeps some of itself, so 20 GB free needs a 22 GB drive). The messages now name the drive size needed, with the free space it gives.
+
+### Tests
+- A test for each; the move ones fail on 0.45.5, the firewall rule's was tried on a live Linux bridge.
+
 ## v0.45.5 — 2026-11-03
 
 Found by installing 0.45.4 in the lab and opening its dashboard in a browser.

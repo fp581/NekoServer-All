@@ -1,6 +1,7 @@
 """Safe existing-filesystem mounting by explicitly configured UUID; never formats."""
 
 import json
+import math
 import os
 import re
 import shutil
@@ -451,6 +452,13 @@ def big_enough(device, smallest):
     return found is None or found >= smallest * GIB * OVERHEAD
 
 
+def drive_needed(smallest):
+    """The drive size that has `smallest` GB free once formatted, in the GB `size_words`
+    shows drives in: said with the minimum, so a 20 GB drive is never refused as "too
+    small: it needs at least 20 GB"."""
+    return math.ceil(smallest * OVERHEAD)
+
+
 def size_said(device):
     """A drive's size in words, with how it was counted for a Btrfs pool over several drives."""
     note = device.get('size_note')
@@ -480,13 +488,19 @@ def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
     if not any(big_enough(v, smallest) for v in options):
         found = ', '.join(describe(v) for v in options)
         raise RuntimeError(
-            f'No drive here is big enough for {label}: it needs at least {smallest} GB ({recommended} GB '
-            f'or more is recommended), and these are smaller: {found}. Connect a bigger one (formatted '
+            f'No drive here is big enough for {label}: it needs a drive of at least {drive_needed(smallest)} GB '
+            f'({smallest} GB free once formatted; {recommended} GB or more is recommended), and these are smaller: {found}. Connect a bigger one (formatted '
             'ext4), then run  sudo bash install.sh  again. Nothing was changed.'
         )
-    out_fn(f'Now choose {label}. It needs at least {smallest} GB free ({recommended} GB or more is recommended).')
+    out_fn(
+        f'Now choose {label}. It needs at least {smallest} GB free, so a drive of {drive_needed(smallest)} GB or '
+        f'more ({recommended} GB or more is recommended).'
+    )
     for n, v in enumerate(options, 1):
-        out_fn(f'  {n}) {describe(v)}' + ('' if big_enough(v, smallest) else f'  - too small, needs {smallest} GB'))
+        out_fn(
+            f'  {n}) {describe(v)}'
+            + ('' if big_enough(v, smallest) else f'  - too small, needs {drive_needed(smallest)} GB')
+        )
     out_fn('  (The disk Linux runs from is not in the list: it is never used for this.)')
     for _ in range(attempts):
         try:
@@ -502,8 +516,8 @@ def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
         if big_enough(device, smallest):
             return confirmed(device, f"{short} ({size_words(device.get('size'))})", input_fn, out_fn, attempts)
         out_fn(
-            f"{device['name']} is {size_said(device)}, too small for {short}: it needs at least "
-            f'{smallest} GB. Choose another one from the list.'
+            f"{device['name']} is {size_said(device)}, too small for {short}: it needs a drive of at least "
+            f'{drive_needed(smallest)} GB ({smallest} GB free once formatted). Choose another one from the list.'
         )
     raise RuntimeError(
         f'No drive was chosen for {label}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
@@ -649,8 +663,8 @@ def too_small(device, key, label, config, interactive, out_fn):
         return False
     short = short_name(key)
     said = (
-        f"{device['name']} ({size_said(device)}), the drive saved as {short}, is too small: it needs at "
-        f'least {smallest} GB.'
+        f"{device['name']} ({size_said(device)}), the drive saved as {short}, is too small: it needs a drive "
+        f'of at least {drive_needed(smallest)} GB ({smallest} GB free once formatted).'
     )
     if device.get('mountpoint') and device['mountpoint'] == folder:
         raise RuntimeError(

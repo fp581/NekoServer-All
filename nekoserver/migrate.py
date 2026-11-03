@@ -4,7 +4,7 @@ connected. Nothing is ever written to the old drive: until you remove it, you ca
 
   sudo python3 migrate.py list                      the drives you can move to
   sudo python3 migrate.py move --drive media_hdd --to <UUID>
-  sudo python3 migrate.py back                      go back to the old drive
+  sudo python3 migrate.py back [--drive media_hdd]  go back to the old drive (--drive when both were moved)
   sudo python3 migrate.py resume                    after a restart: put a cut-off move right
 
 Before you start, make the new drive's filesystem yourself (NekoServer never formats a
@@ -142,6 +142,20 @@ def physical_disks(rows, name):
     return found
 
 
+# What Linux itself runs from: the system, its boot and EFI partitions (often on a disk of
+# their own), its separate /usr, /var or /home, and its swap.
+SYSTEM_MOUNTS = {'/', '/boot', '/boot/efi', '/efi', '/usr', '/var', '/home', '[SWAP]'}
+
+
+def system_disks(rows):
+    """Every physical disk Linux runs from. A Btrfs system over several drives shows its
+    folder on one of them only: each drive with that filesystem's UUID is a member too."""
+    mounted = [r for r in rows if SYSTEM_MOUNTS & set(r.get('mountpoints') or [])]
+    pools = {r['uuid'] for r in mounted if r.get('uuid')}
+    members = mounted + [r for r in rows if r.get('uuid') in pools]
+    return set().union(*(physical_disks(rows, r['name']) for r in members))
+
+
 def disk_of(rows, uuid):
     """The physical disks the filesystem `uuid` is on (none when it is not found)."""
     row = next((r for r in rows if r.get('uuid') == uuid), None)
@@ -158,7 +172,7 @@ def targets(config, drive, rows=None, used=None):
     taken = set().union(
         *(disk_of(rows, config['storage'][k]['uuid']) for k in DRIVES if config.get('storage', {}).get(k))
     )
-    system = set().union(*(physical_disks(rows, r['name']) for r in rows if '/' in (r.get('mountpoints') or [])))
+    system = system_disks(rows)
     found, left_out = [], []
     for row in rows:
         disks = physical_disks(rows, row.get('name'))
@@ -521,6 +535,32 @@ def checked_move(saved, config, drive):
     return str(mountpoint), old, new
 
 
+def fstab_names_new(mountpoint, new, fstab):
+    """The one active line that mounts the folder names the new drive (a comment or
+    another line naming it does not count): the switch was made before a restart."""
+    lines = fstab.read_text().splitlines()
+    found = mount_lines(lines, mountpoint)
+    return len(found) == 1 and names_drive(lines[found[0]], new['uuid'])
+
+
+def mounted_in_place(mountpoint, new, there, fstab):
+    """Already switched and mounted (resume after setup or the check failed, with the apps
+    started again on it): nothing to unmount; setup and the check run again."""
+    return there == (new['uuid'], new['fstype'], new.get('subvolume') or '') and fstab_names_new(mountpoint, new, fstab)
+
+
+def unmounted_and_switched(mountpoint, old, new, fstab, out):
+    """The old drive unmounted and /etc/fstab naming the new one; False (said) when the
+    folder can't be unmounted."""
+    run(['umount', str(mountpoint)], 600, check=False)
+    if os.path.ismount(mountpoint):
+        out(f'{mountpoint} could not be unmounted (something still uses it); nothing was switched')
+        return False
+    if not fstab_names_new(mountpoint, new, fstab):
+        switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab, subvolume=new.get('subvolume'))
+    return True
+
+
 def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTAB, out=print):
     """The new drive takes the old one's place; idempotent, so a restart in the middle
     is finished by `resume`."""
@@ -537,19 +577,13 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
             f'{mountpoint} has another drive mounted ({there[0]}), neither the old nor the new one; nothing was switched'
         )
         return 2
-    for folder in (staging, mountpoint):
-        run(['umount', str(folder)], 600, check=False)
-    if os.path.ismount(mountpoint):
-        out(f'{mountpoint} could not be unmounted (something still uses it); nothing was switched')
+    run(['umount', str(staging)], 600, check=False)
+    in_place = mounted_in_place(mountpoint, new, there, fstab)
+    if not in_place and not unmounted_and_switched(mountpoint, old, new, fstab, out):
         return 2
-    # The one active line that mounts the folder (a comment or another line naming the
-    # new drive does not count): already the new drive after a restart, else the old one.
-    lines = fstab.read_text().splitlines()
-    found = mount_lines(lines, mountpoint)
-    if len(found) != 1 or not names_drive(lines[found[0]], new['uuid']):
-        switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab, subvolume=new.get('subvolume'))
     set_drive(settings, config, drive, new, old)
-    run(['mount', mountpoint], 120, check=False)
+    if not in_place:
+        run(['mount', mountpoint], 120, check=False)
     there = mounted_identity(mountpoint)
     if there is None or there[0] != new['uuid']:
         out(
@@ -604,57 +638,95 @@ def started_and_checked(config, drive, journal, out=print):
     return 0
 
 
-def back(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
-    """Go back to the old drive: the settings and /etc/fstab name it again (its Btrfs
-    subvolume too), and setup runs. The same checks, lock and durable record as a move,
-    so it never overlaps another job, and `resume` finishes it after a restart. What was
-    written to the newer drive since the move stays on it."""
-    return with_operation(out, lambda: back_held(settings, out, journal, staging, fstab))
+def back(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB, drive=None):
+    """Go back to the old drive of `drive` (needed when both drives were moved): the
+    settings and /etc/fstab name it again (its Btrfs subvolume too), and setup runs. The
+    same checks, lock and durable record as a move, so it never overlaps another job, and
+    `resume` finishes it after a restart. What was written to the newer drive since the
+    move stays on it."""
+    return with_operation(out, lambda: back_held(settings, out, journal, staging, fstab, drive))
 
 
-def back_held(settings, out, journal, staging, fstab):
-    path, config = load_settings(settings)
-    for drive, (mount_key, label) in DRIVES.items():
-        previous = config['storage'].get(drive, {}).get('previous_drive')
-        if not previous:
-            continue
-        busy = nothing_at_work(recovery=recovery_lock(config))
-        if busy:
-            out(busy + TRY_LATER)
-            return 2
-        mountpoint = mount_path(config[mount_key])
-        current = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
-        if (
-            not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (previous, current))
-            or previous.get('fstype') not in FILESYSTEMS
-            or not SUBVOLUME.fullmatch(str(previous.get('subvolume') or ''))
-        ):
-            out(f'The settings\' record of the {label} is not valid; nothing was changed')
-            return 2
-        if on_the_moved_drive(path, mountpoint):
-            out(FROM_THE_DOWNLOAD.format(label=label))
-            return 2
-        if not os.path.exists('/dev/disk/by-uuid/' + previous['uuid']):
-            out(f'The old {label} ({previous["uuid"]}) is not connected')
-            return 2
-        record(
-            journal,
-            phase='stopping',
-            direction='back',
-            drive=drive,
-            mount=str(mountpoint),
-            old=current,
-            new=previous,
-            before=steps_working(config),
+NOT_MOVED = 'No drive was moved (the settings name no earlier drive)'
+
+
+def which_back(config, drive):
+    """The drive `back` takes back, or (None, why not)."""
+    moved = [d for d in DRIVES if config['storage'].get(d, {}).get('previous_drive')]
+    if drive:
+        if drive not in DRIVES:
+            return None, 'Use --drive data_ssd (the application SSD) or --drive media_hdd (the media HDD)'
+        if drive not in moved:
+            return None, f'The {DRIVES[drive][1]} was not moved (the settings name no earlier drive for it)'
+        return drive, None
+    if len(moved) > 1:
+        return None, (
+            'Both drives were moved: say which one goes back, with  --drive data_ssd  (the application SSD) or  '
+            '--drive media_hdd  (the media HDD)'
         )
-        try:
-            stop_writers(journal)
-        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-            return stopped_safely(exc, label, journal, staging, out)
-        record(journal, phase='switching')
-        return switch(path, config, drive, journal, staging, fstab, out)
-    out('No drive was moved (the settings name no earlier drive)')
-    return 1
+    if not moved:
+        return None, NOT_MOVED
+    return moved[0], None
+
+
+def connected_uuids(folder='/dev/disk/by-uuid'):
+    """The UUIDs of the filesystems connected now (no path is made from a UUID the
+    settings hold)."""
+    try:
+        return set(os.listdir(folder))
+    except OSError:
+        return set()
+
+
+def back_problem(config, path, drive, previous, current):
+    """Why `back` can't take `drive` back now, or None: another job at work, the settings'
+    records not valid, run from the drive it moves, the old drive not connected."""
+    mount_key, label = DRIVES[drive]
+    busy = nothing_at_work(recovery=recovery_lock(config))
+    if busy:
+        return busy + TRY_LATER
+    if (
+        not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (previous, current))
+        or previous.get('fstype') not in FILESYSTEMS
+        or not SUBVOLUME.fullmatch(str(previous.get('subvolume') or ''))
+    ):
+        return f'The settings\' record of the {label} is not valid; nothing was changed'
+    if on_the_moved_drive(path, mount_path(config[mount_key])):
+        return FROM_THE_DOWNLOAD.format(label=label)
+    if previous['uuid'] not in connected_uuids():
+        return f'The old {label} ({previous["uuid"]}) is not connected'
+    return None
+
+
+def back_held(settings, out, journal, staging, fstab, wanted=None):
+    path, config = load_settings(settings)
+    drive, why = which_back(config, wanted)
+    if drive is None:
+        out(why)
+        return 1 if why == NOT_MOVED else 2
+    mount_key, label = DRIVES[drive]
+    previous = config['storage'][drive]['previous_drive']
+    current = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
+    problem = back_problem(config, path, drive, previous, current)
+    if problem:
+        out(problem)
+        return 2
+    record(
+        journal,
+        phase='stopping',
+        direction='back',
+        drive=drive,
+        mount=str(mount_path(config[mount_key])),
+        old=current,
+        new=previous,
+        before=steps_working(config),
+    )
+    try:
+        stop_writers(journal)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        return stopped_safely(exc, label, journal, staging, out)
+    record(journal, phase='switching')
+    return switch(path, config, drive, journal, staging, fstab, out)
 
 
 def resume(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
@@ -673,7 +745,7 @@ def resume_held(settings, out, journal, staging, fstab):
         path, config = load_settings(settings)
         return switch(path, config, saved['drive'], journal, staging, fstab, out)
     # "restart_failed": a move stopped before its switch, whose apps did not all start
-    # again; 0.45.5 also wrote it after a switch, so the drive mounted tells them apart.
+    # again; 0.45.6 also wrote it after a switch, so the drive mounted tells them apart.
     switched = phase in ('started_partly', 'checking_server') or (
         phase == 'restart_failed'
         and (mounted_identity(saved.get('mount', '')) or ('',))[0] == (saved.get('new') or {}).get('uuid')
@@ -724,7 +796,9 @@ def main():
         if not (args.drive and args.to and UUID.fullmatch(args.to)):
             parser.error('move needs --drive and --to (the UUID list shows)')
         return move(args.config, args.drive, args.to)
-    return {'list': list_targets, 'back': back, 'resume': resume}[args.action](args.config)
+    if args.action == 'back':
+        return back(args.config, drive=args.drive)
+    return {'list': list_targets, 'resume': resume}[args.action](args.config)
 
 
 if __name__ == '__main__':

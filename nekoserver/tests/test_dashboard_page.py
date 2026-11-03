@@ -36,6 +36,30 @@ def status(**parts):
 
 @unittest.skipUnless(NODE, 'node is not installed')
 class DashboardPageTests(unittest.TestCase):
+    def test_each_waiting_version_says_when_it_really_installs(self):
+        # Found in the lab: a version that had waited long enough said "installs from
+        # Nov 1" on Nov 3, and every waiting version said it installs, though the update
+        # night installs one: the one you chose, else the newest that has waited.
+        now, day = 1_800_000_000, 86400
+        old = {'version': '10.11.2', 'first_seen': now - 9 * day, 'installs_from': now - 2 * day}
+        older = {'version': '10.11.1', 'first_seen': now - 12 * day, 'installs_from': now - 5 * day}
+        new = {'version': '10.11.3', 'first_seen': now - 2 * day, 'installs_from': now + 5 * day}
+        said = page(
+            ('waitingWhen', {'waiting': [new, old, older], 'now': now}),
+            ('waitingWhen', {'waiting': [{**new, 'approved': True}, old], 'now': now}),
+        )
+        self.assertEqual(said[0][1], 'has waited long enough: installs at the next update night')
+        self.assertEqual(said[0][2], 'a newer version that has waited long enough installs instead')
+        self.assertTrue(said[0][0].startswith('installs from '))
+        self.assertEqual(
+            said[1],
+            [
+                'installs at the next update night (you chose it)',
+                'not installed by itself (you chose another version for the next update night)',
+            ],
+        )
+        self.assertIn('an update, an upgrade) need your PIN', (ROOT / 'dashboard/app.js').read_text())
+
     def test_lists_of_words_are_shown_not_dropped(self):
         # Found in the lab (0.45.4): the restart's reason read "not known: ." and an
         # update that restarts Docker never said so. `list` keeps objects (rows) only,

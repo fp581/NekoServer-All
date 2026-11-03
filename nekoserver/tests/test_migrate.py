@@ -142,6 +142,38 @@ class LayeredDiskTests(unittest.TestCase):
         self.assertNotIn('nvme0n1p4', ' '.join(left_out))
         self.assertEqual(migrate.physical_disks(rows, '/dev/mapper/root'), {'/dev/nvme0n1'})
 
+    def test_a_boot_disk_and_every_member_of_a_btrfs_system_are_never_offered(self):
+        def part(name, parent, kind, uuid=None, fstype=None, mounts=(), size=8000 * GB):
+            return {
+                'name': name,
+                'pkname': parent,
+                'type': kind,
+                'uuid': uuid,
+                'fstype': fstype,
+                'size': size,
+                'mountpoints': list(mounts),
+            }
+
+        rows = [
+            # / is a Btrfs pool over two disks; lsblk shows its folder on the first only.
+            part('/dev/sdx', None, 'disk'),
+            part('/dev/sdx1', '/dev/sdx', 'part', 'pool-0001', 'btrfs', ['/']),
+            part('/dev/sdy', None, 'disk'),
+            part('/dev/sdy1', '/dev/sdy', 'part', 'pool-0001', 'btrfs'),
+            part('/dev/sdy2', '/dev/sdy', 'part', 'spare-on-pool', 'ext4'),
+            # /boot/efi on a disk of its own, with a spare partition beside it.
+            part('/dev/sdz', None, 'disk'),
+            part('/dev/sdz1', '/dev/sdz', 'part', 'efi-0001', 'vfat', ['/boot/efi']),
+            part('/dev/sdz2', '/dev/sdz', 'part', 'spare-on-boot', 'ext4'),
+            *ROWS[1:4],
+            part('/dev/sdc', None, 'disk'),
+            part('/dev/sdc1', '/dev/sdc', 'part', 'newbig-0001', 'ext4'),
+        ]
+        found, left_out = migrate.targets(CONFIG, 'media_hdd', rows, used=1000 * GB)
+        self.assertEqual([t[0] for t in found], ['newbig-0001'])
+        self.assertFalse({'/dev/sdy2', '/dev/sdz2'} & {t[3] for t in found})
+        self.assertEqual(migrate.system_disks(rows), {'/dev/sdx', '/dev/sdy', '/dev/sdz'})
+
 
 @unittest.skipUnless(shutil.which('rsync'), 'rsync is not installed')
 class CopyTests(unittest.TestCase):
@@ -359,7 +391,9 @@ class MoveTests(unittest.TestCase):
         previous = json.loads(self.settings.read_text())['storage']['media_hdd']['previous_drive']
         self.assertEqual(previous, {'uuid': 'hdd-0001', 'fstype': 'ext4', 'subvolume': '/@media'})
         with (
-            mock.patch.object(migrate.os.path, 'exists', return_value=True),
+            mock.patch.object(
+                migrate, 'connected_uuids', return_value={'hdd-0001', 'newbig-0001', 'oldhdd-0001', 'oldssd-0001'}
+            ),
             mock.patch.object(migrate, 'stop_writers', return_value=[]),
         ):
             self.assertEqual(migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
@@ -377,6 +411,60 @@ class MoveTests(unittest.TestCase):
                 'previous_drive': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
             },
         )
+
+    def test_going_back_needs_the_old_drive_connected(self):
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 0)
+        with mock.patch.object(migrate, 'connected_uuids', return_value={'newbig-0001'}):
+            self.assertEqual(migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab), 2)
+        self.assertIn('The old media HDD (hdd-0001) is not connected', self.said[-1])
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'abcd-1234').touch()
+            self.assertEqual(migrate.connected_uuids(tmp), {'abcd-1234'})
+        self.assertEqual(migrate.connected_uuids('/nonexistent'), set())
+
+    def test_back_takes_back_the_drive_asked_for(self):
+        storage = json.loads(self.settings.read_text())
+        storage['storage']['data_ssd']['previous_drive'] = {'uuid': 'oldssd-0001', 'fstype': 'ext4'}
+        storage['storage']['media_hdd']['previous_drive'] = {'uuid': 'oldhdd-0001', 'fstype': 'ext4'}
+        self.settings.write_text(json.dumps(storage))
+
+        def go_back(drive=None):
+            with (
+                mock.patch.object(
+                    migrate, 'connected_uuids', return_value={'hdd-0001', 'newbig-0001', 'oldhdd-0001', 'oldssd-0001'}
+                ),
+                mock.patch.object(migrate, 'stop_writers', return_value=[]),
+            ):
+                return migrate.back(
+                    self.settings, self.said.append, self.journal, self.staging, self.fstab, drive=drive
+                )
+
+        # Both moved: it asks which, and changes nothing.
+        self.assertEqual(go_back(), 2)
+        self.assertIn('Both drives were moved: say which one goes back', self.said[-1])
+        self.assertFalse(self.journal.exists())
+        # --drive media_hdd: the HDD, never the SSD (the first in the settings).
+        go_back('media_hdd')
+        self.assertEqual(json.loads(self.settings.read_text())['storage']['media_hdd']['uuid'], 'oldhdd-0001')
+        self.assertEqual(json.loads(self.settings.read_text())['storage']['data_ssd']['uuid'], 'ssd-0001')
+        self.assertEqual(migrate.which_back(storage, 'data_ssd'), ('data_ssd', None))
+        self.assertIsNone(migrate.which_back({'storage': {}}, 'media_hdd')[0])
+
+    def test_resume_after_the_check_failed_does_not_unmount_the_drive_in_use(self):
+        # The final check failed after the apps had started again on the new drive:
+        # resume must not try to unmount it (they use it), but run setup and the check again.
+        self.problem = 'these steps worked before and do not now: immich'
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 2)
+        self.assertEqual(migrate.read(self.journal)['phase'], 'setup')
+        self.problem = None
+        self.calls.clear()
+        with mock.patch.object(migrate.os.path, 'ismount', return_value=True):  # in use: can't be unmounted
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+        self.assertNotIn(('umount', '/mnt/nekoserver-media'), self.calls)
+        self.assertIn(('setup',), self.calls)
+        self.assertFalse(self.journal.exists())
 
     def test_going_back_has_the_moves_checks_and_its_record(self):
         with mock.patch.object(migrate, 'differences', return_value=[]):
@@ -400,7 +488,9 @@ class MoveTests(unittest.TestCase):
             raise SystemExit('power cut')
 
         with (
-            mock.patch.object(migrate.os.path, 'exists', return_value=True),
+            mock.patch.object(
+                migrate, 'connected_uuids', return_value={'hdd-0001', 'newbig-0001', 'oldhdd-0001', 'oldssd-0001'}
+            ),
             mock.patch.object(migrate, 'setup_again', cut_off),
             self.assertRaises(SystemExit),
         ):
