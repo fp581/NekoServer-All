@@ -129,12 +129,13 @@ If you run containers there that you want to keep, note what they are (`docker p
    
    Owners, permissions, hard links, ACLs and extended attributes are kept. Before each of these steps, both drives must still be the ones the move began with (the old drive's UUID, filesystem and Btrfs subvolume, and the new drive's UUID). If a drive dropped out, or if any file differs, the move stops, and the apps start again on the old drive as before.
 4. Then it switches:
-   - The new drive is mounted where the old one was. `/etc/fstab` as it was is kept beside it, as `fstab.neko-before-move-<time>`.
+   - The new drive is mounted where the old one was: the one active line of `/etc/fstab` that mounts the folder is changed (a commented-out line doesn't count), and the drive Linux then mounts there must be the new one, or the move stops and says so. `/etc/fstab` as it was is kept beside it, as `fstab.neko-before-move-<time>`.
    - The settings name the new drive and remember the old one, whole (`"previous_drive"`, its Btrfs subvolume included, so `back` mounts the same tree again).
    - Setup runs again, without questions and without a system update, so every service and backup learns the new drive.
-5. **Keep the old drive until you are sure.** `sudo python3 migrate.py back` goes back to it: the settings and `/etc/fstab` name it again (its Btrfs subvolume too), and setup runs. It has the same checks as a move: nothing else may be at work, and its record lets `resume` finish it after a restart. What was saved to the new drive since the move is not on the old one. The settings then remember the new drive in turn, so `back` once more goes to it again.
+   - What the move stopped starts again, and the server gets the same check as after a NekoServer upgrade: every setup step that worked before the move works again, the dashboard answers and every NekoServer service runs this release. Only then is the move done. If something did not start or the check fails, it says what; put that right and run `sudo python3 migrate.py resume`, which carries on with the new drive (it never goes back by itself).
+5. **Keep the old drive until you are sure.** `sudo python3 migrate.py back` goes back to it: the settings and `/etc/fstab` name it again (its Btrfs subvolume too), and setup runs. It has the same checks as a move, the check at the end too: nothing else may be at work, and its record lets `resume` finish it after a restart. What was saved to the new drive since the move is not on the old one. The settings then remember the new drive in turn, so `back` once more goes to it again.
 
-While a move is at work (or was cut off), app updates, the checks, the monthly check and app restarts wait. A record in `/etc/nekoserver-backups/migrate.json` says how far it got. After a power cut, run `sudo python3 migrate.py resume` from the same folder:
+While a move is at work (or was cut off), app updates, the checks, the monthly check, app restarts and a NekoServer upgrade wait; a move and an upgrade hold the same lock, also when started from a terminal. A record in `/etc/nekoserver-backups/migrate.json` says how far it got. After a power cut, run `sudo python3 migrate.py resume` from the same folder:
 - A move cut off before the switch changed nothing; the apps run from the old drive.
 - A move cut off during the switch is finished.
 

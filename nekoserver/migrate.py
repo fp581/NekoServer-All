@@ -20,8 +20,11 @@ got, so a power cut at any point is put right):
    apps are started again on the old drive, as before.
 5. Switches: the new drive is mounted where the old one was (the old line in /etc/fstab
    is kept aside), the settings name the new drive, and setup runs again (without
-   questions, without a system update) so every service knows it.
-The old drive is left exactly as it was."""
+   questions, without a system update) so every service knows it. The apps start again,
+   and the server is checked the way an upgrade checks it: every setup step that worked
+   before works again, and every NekoServer service runs this release.
+The old drive is left exactly as it was. A move holds the same lock as a NekoServer
+upgrade from start to end, so the two never overlap."""
 
 import argparse
 import fcntl
@@ -36,11 +39,14 @@ from pathlib import Path
 
 from neko_common import (
     MAINTENANCE_JOURNAL,
+    VERSION,
+    OPERATION_LOCK,
     atomic_json,
     atomic_write,
     checked_settings,
     default_settings,
     ensure_directory,
+    hold_operation,
     mount_path,
     settings_path,
 )
@@ -288,15 +294,31 @@ def same_drives(mountpoint, old, staging, new):
         raise RuntimeError(f'the new drive is no longer the one mounted at {staging}')
 
 
+def mount_lines(lines, mountpoint):
+    """The lines of /etc/fstab that mount `mountpoint` (a comment is not one)."""
+    from modules.storage import fstab_folder
+
+    wanted = os.path.normpath(mountpoint)
+    return [
+        i
+        for i, line in enumerate(lines)
+        if not line.lstrip().startswith('#') and line.split()[1:2] and fstab_folder(line.split()[1]) == wanted
+    ]
+
+
+def names_drive(line, uuid):
+    """The fstab line's source is the drive `uuid` (UUID=..., quoted or not)."""
+    return line.split()[0].replace('"', '') == f'UUID={uuid}'
+
+
 def switch_fstab(mountpoint, old_uuid, new_uuid, fstype, fstab=FSTAB, now=None, subvolume=None):
     """The line that mounts `mountpoint` names the new drive; the fstab as it was is
     kept beside it (fstab.neko-before-move-<time>)."""
-    from modules.storage import fstab_folder, fstab_line
+    from modules.storage import fstab_line
 
     lines = fstab.read_text().splitlines()
-    wanted = os.path.normpath(mountpoint)
-    found = [i for i, line in enumerate(lines) if line.split()[1:2] and fstab_folder(line.split()[1]) == wanted]
-    if len(found) != 1 or f'UUID={old_uuid}' not in lines[found[0]].split()[0]:
+    found = mount_lines(lines, mountpoint)
+    if len(found) != 1 or not names_drive(lines[found[0]], old_uuid):
         raise RuntimeError(f'/etc/fstab does not have exactly one line mounting {mountpoint} from the old drive')
     kept = fstab.with_name(f'{fstab.name}.neko-before-move-{int(now or time.time())}')
     shutil.copy2(fstab, kept)
@@ -321,17 +343,48 @@ def setup_again(config, settings, log_file, out=print):
     service and backup learns the new drive (upgrade.py runs it the same way)."""
     import upgrade
 
-    from neko_common import VERSION
-
     bundle = upgrade.kept_release(config, mount_path(config['data_mount']) / 'installer/releases' / ('v' + VERSION))
     out('Running setup again so every service knows the new drive (this takes a while)...')
-    code = upgrade.run_setup(bundle, settings, upgrade.owner(config), log_file)
-    if code not in (0, 1):
-        raise RuntimeError(f'setup stopped (exit code {code}; the log says why: {log_file})')
+    problem = upgrade.setup_problem(upgrade.run_setup, bundle, settings, upgrade.owner(config), log_file)
+    if problem:
+        raise RuntimeError(problem.replace('its setup', 'setup', 1))
+
+
+def steps_working(config):
+    """The setup steps that work now (recorded before the move, for the check after it)."""
+    import upgrade
+
+    return sorted(upgrade.steps_done(config))
+
+
+def server_check(config, before):
+    """Why the server does not pass the upgrade's check after the move, or None: a setup
+    step that worked before does not now (setup's exit code 1 can mean one failed), the
+    dashboard does not answer, or a NekoServer service does not run this release."""
+    import upgrade
+
+    return upgrade.verify(config, 'v' + VERSION, before)
+
+
+BUSY = 'A NekoServer upgrade or another drive move is at work'
+
+
+def with_operation(out, work, wait=False):
+    """`work()` holding the operation lock (shared with upgrade.py) from start to end."""
+    held = hold_operation(OPERATION_LOCK, wait)
+    if held is None:
+        out(BUSY + '; nothing was changed. Try again later.')
+        return 2
+    with held:
+        return work()
 
 
 def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
     """The whole move (see the top of this file). 0: done; 1: stopped, nothing changed; 2: needs you."""
+    return with_operation(out, lambda: move_held(settings, drive, new_uuid, out, journal, staging, fstab))
+
+
+def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     path, config = load_settings(settings)
     if drive not in DRIVES:
         out('Use --drive data_ssd (the application SSD) or --drive media_hdd (the media HDD)')
@@ -361,7 +414,13 @@ def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING,
         return 2
     _, fstype, _, name = target
     record(
-        journal, phase='checking', drive=drive, mount=str(mountpoint), old=old, new={'uuid': new_uuid, 'fstype': fstype}
+        journal,
+        phase='checking',
+        drive=drive,
+        mount=str(mountpoint),
+        old=old,
+        new={'uuid': new_uuid, 'fstype': fstype},
+        before=steps_working(config),
     )
     new = {'uuid': new_uuid, 'fstype': fstype}
     try:
@@ -447,11 +506,21 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
     if os.path.ismount(mountpoint):
         out(f'{mountpoint} could not be unmounted (something still uses it); nothing was switched')
         return 2
-    lines = fstab.read_text()
-    if f'UUID={new["uuid"]} ' not in lines:
+    # The one active line that mounts the folder (a comment or another line naming the
+    # new drive does not count): already the new drive after a restart, else the old one.
+    lines = fstab.read_text().splitlines()
+    found = mount_lines(lines, mountpoint)
+    if len(found) != 1 or not names_drive(lines[found[0]], new['uuid']):
         switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab, subvolume=new.get('subvolume'))
     set_drive(settings, config, drive, new, old)
-    run(['mount', mountpoint], 120)
+    run(['mount', mountpoint], 120, check=False)
+    there = mounted_identity(mountpoint)
+    if there is None or there[0] != new['uuid']:
+        out(
+            f'{mountpoint} did not mount the new drive {new["uuid"]} (it shows {there[0] if there else "nothing"}). '
+            'Look at /etc/fstab (the line before the move is kept beside it), then  sudo python3 migrate.py resume'
+        )
+        return 2
     record(journal, phase='setup')
     log_file = Path(mountpoint if drive == 'data_ssd' else config['data_mount']) / 'installer/migrate.log'
     try:
@@ -459,23 +528,41 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
     except RuntimeError as exc:
         out(f'The new drive is in place, but {exc}. Put that right, then finish with  sudo python3 migrate.py resume')
         return 2
-    failed = start_again(read(journal).get('stopped'), out)
+    return started_and_checked(config, drive, journal, out)
+
+
+def started_and_checked(config, drive, journal, out=print):
+    """After the switch: what the move stopped starts again on the drive now in place,
+    and the server passes the upgrade's check. Until both have, the record stays (phase
+    "started_partly" or "setup"), and `resume` carries on from there, never back."""
+    saved = read(journal) or {}
+    failed = start_again(saved.get('stopped'), out)
     if failed:
-        record(journal, phase='restart_failed', stopped=failed)
+        record(journal, phase='started_partly', stopped=failed)
         out(
             'The drives are switched, but these did not start again: '
             + ', '.join(failed)
             + '. Start them (sudo systemctl start <name>), then  sudo python3 migrate.py resume'
         )
         return 2
-    going_back = read(journal).get('direction') == 'back'
+    record(journal, phase='checking_server', stopped=[])
+    before = [step for step in saved.get('before') or [] if isinstance(step, str)]
+    problem = server_check(config, before)
+    if problem:
+        record(journal, phase='setup')
+        out(
+            f'The drive is in place, but the server does not pass its check: {problem}. '
+            'Put that right, then  sudo python3 migrate.py resume  (it runs setup and the check again)'
+        )
+        return 2
+    going_back = saved.get('direction') == 'back'
     journal.unlink(missing_ok=True)
     label = DRIVES[drive][1]
     if going_back:
         out(f'The {label} is the old drive again. Anything saved to the other one since the move is still on it.')
     else:
         out(
-            f'Done: the {label} is the new drive, mounted at {mountpoint}. The old drive was not changed: '
+            f'Done: the {label} is the new drive, mounted at {saved.get("mount")}. The old drive was not changed: '
             'keep it until you are sure, then disconnect it. To go back to it: sudo python3 migrate.py back'
         )
     return 0
@@ -483,9 +570,13 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
 
 def back(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
     """Go back to the old drive: the settings and /etc/fstab name it again (its Btrfs
-    subvolume too), and setup runs. The same checks and the same durable record as a move,
+    subvolume too), and setup runs. The same checks, lock and durable record as a move,
     so it never overlaps another job, and `resume` finishes it after a restart. What was
     written to the newer drive since the move stays on it."""
+    return with_operation(out, lambda: back_held(settings, out, journal, staging, fstab))
+
+
+def back_held(settings, out, journal, staging, fstab):
     path, config = load_settings(settings)
     for drive, (mount_key, label) in DRIVES.items():
         previous = config['storage'].get(drive, {}).get('previous_drive')
@@ -511,7 +602,14 @@ def back(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
             out(f'The old {label} ({previous["uuid"]}) is not connected')
             return 2
         record(
-            journal, phase='stopping', direction='back', drive=drive, mount=str(mountpoint), old=current, new=previous
+            journal,
+            phase='stopping',
+            direction='back',
+            drive=drive,
+            mount=str(mountpoint),
+            old=current,
+            new=previous,
+            before=steps_working(config),
         )
         try:
             stop_writers(journal)
@@ -524,14 +622,30 @@ def back(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
 
 
 def resume(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
-    """After a restart: a move cut off before its switch changed nothing (the apps are
-    started again on the old drive); one cut off while it switched is finished."""
+    """After a restart (or once you put right what it said): a move cut off before its
+    switch changed nothing (the apps are started again on the old drive); one cut off
+    while it switched, or after it, is finished on the new drive. It waits for the lock."""
+    return with_operation(out, lambda: resume_held(settings, out, journal, staging, fstab), wait=True)
+
+
+def resume_held(settings, out, journal, staging, fstab):
     saved = read(journal)
     if saved is None:
         return 0
-    if saved.get('phase') in ('switching', 'setup'):
+    phase = saved.get('phase')
+    if phase in ('switching', 'setup'):
         path, config = load_settings(settings)
         return switch(path, config, saved['drive'], journal, staging, fstab, out)
+    # "restart_failed": a move stopped before its switch, whose apps did not all start
+    # again; 0.45.3 also wrote it after a switch, so the drive mounted tells them apart.
+    switched = phase in ('started_partly', 'checking_server') or (
+        phase == 'restart_failed'
+        and (mounted_identity(saved.get('mount', '')) or ('',))[0] == (saved.get('new') or {}).get('uuid')
+    )
+    if switched:
+        path, config = load_settings(settings)
+        checked_move(saved, config, saved['drive'])
+        return started_and_checked(config, saved['drive'], journal, out)
     return stopped_safely('it was cut off before it switched (a restart, say)', 'drive', journal, staging, out)
 
 

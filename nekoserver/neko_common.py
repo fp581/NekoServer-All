@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.45.2'
+VERSION = '0.45.3'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -162,6 +162,24 @@ def write_units(units):
 
 
 MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
+# Held for the whole of a NekoServer upgrade (upgrade.py) and a drive move (migrate.py),
+# also while they finish one that was cut off: the two never run at the same time,
+# whether started from the dashboard or a terminal. In /run: a restart lets it go.
+OPERATION_LOCK = Path('/run/nekoserver-operation.lock')
+
+
+def hold_operation(lock=None, wait=False):
+    """The operation lock, held until the returned file is closed (or the program ends);
+    None when another upgrade or drive move holds it (`wait`: wait for it instead)."""
+    import fcntl
+
+    held = open(lock or OPERATION_LOCK, 'a')
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+    except BlockingIOError:
+        held.close()
+        return None
+    return held
 
 
 MAINTENANCE_UNITS = ('nekoserver-maintenance.service', 'nekoserver-maintenance-resume.service')

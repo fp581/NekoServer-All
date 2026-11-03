@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.45.3 — 2026-11-03
+
+Fixes for the project owner's two reviews of 0.45.2: the drive move's end check, a move overlapping an upgrade, its /etc/fstab switch, finishing one whose apps did not start, an app update's rollback, and the login check of a held-back Immich or Nextcloud.
+
+**Tried for real** (the lab: Ubuntu 24.04 with systemd, two loop-device drives): a move with a commented-out /etc/fstab line naming the new drive (the real line was switched, the new drive mounted, data, links, owners and attributes kept); a `back` refused while another process held the operation lock (nothing changed). Docker (Compose 5.5) was asked what it records for a port it picks (`"0"` asked, the real one under NetworkSettings), which is what the login check now reads. Setup and the server check in the move, the rollback and a real Immich or Nextcloud update were tested with the automated tests only.
+
+### Fixed
+- **A drive move is checked at the end the way an upgrade is.** It took setup's exit code 1 as success, but that can also mean a step failed, so a move could say "Done" with broken apps. Now it notes which setup steps work before the move, and after setup and the restart it runs the upgrade's own check: those steps work again, the dashboard answers and every NekoServer service runs this release. If not, it says what, keeps its record, and `migrate.py resume` runs setup and the check again. `back` is checked the same way.
+- **A drive move and a NekoServer upgrade can't overlap any more, also from a terminal.** `upgrade.py` didn't look for an unfinished move's record. It does now, and both hold one operation lock (`/run/nekoserver-operation.lock`) from start to end, including when they finish a cut-off run (`resume` waits for the lock).
+- **Only the active `/etc/fstab` line counts.** The move skipped the switch when the new drive's UUID appeared anywhere in the file, even in a comment, and left the real line naming the old drive. Now it reads the one active line that mounts the folder, and after mounting it checks that the new drive is the one mounted there; if not, it stops and says so.
+- **Finishing a move whose apps did not start no longer talks about the old drive.** A restart failure after the switch was recorded like one before it, so `resume` said "the old drive, unchanged" while the new drive was in use. They are now recorded apart (`started_partly` after the switch), and `resume` starts them on the new drive and runs the check. A 0.45.2 record is told apart by which drive is mounted.
+
+- **A failed app update rolls back only that app.** An update snapshots only the app it updates, but the rollback asked for the folders of every app set up, found the others missing and stopped half-way ("Rollback state incomplete"), which left the update unfinished and every later one waiting. It now puts back only what that run's snapshot holds (its manifest) for the apps that run changed (its record).
+- **A healthy Immich or Nextcloud update passes its login check.** While an update is checked they run on a port Docker picks, on this computer only, but the login check accepted only their usual port, so it refused them, and the update was rolled back. The check now reads the held-back container's real port from Docker (on 127.0.0.1 only, never below 1024) and signs in there, with the same identity checks (its project, service, folder and that it runs). Only the update's login check accepts it.
+
+### Tests
+- A test for each fails on 0.45.2: setup's step failures found by the end check; a move refused while the operation lock is held, and an upgrade refused while a move is unfinished; a commented line naming the new drive; a mount of the wrong drive; apps that do not start after the switch, finished on the new drive (also from a 0.45.2 record). A rollback asks only for its own app's saved paths; the login check takes the held-back container's port and refuses a low or fixed other one, another project, or a check that is not the update's. The test stand-in for `mount` now mounts what /etc/fstab's active line names, as Linux does.
+
 ## v0.45.2 — 2026-11-02
 
 Fixes for the project owner's two reviews of 0.45.1: going back after a drive move, the settling of app updates, the restart check on the System tab, an Immich major's approval, an upgrade's setup that runs out of time, and Update now's version. Built on 0.45.1 (merge PR #54 first).

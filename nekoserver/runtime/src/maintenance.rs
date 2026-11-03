@@ -109,6 +109,28 @@ fn roots(names: &[String]) -> (Vec<String>, Vec<String>) {
     // App password files are never archived in plain text: see encrypt_secrets.
     (data, media)
 }
+/// What a rollback puts back: the paths this run's snapshot holds (its manifest) for
+/// the apps this run changed (its journal), nothing else. An app update snapshots only
+/// its own app; asking for every app set up would find the others missing and stop the
+/// rollback half-way ("Rollback state incomplete"). A snapshot made without a backup key
+/// holds the password list (secrets/accounts) in data.tar too.
+fn rollback_paths(apps: &[String], manifest: &Value) -> (Vec<String>, Vec<String>) {
+    let wanted = roots(apps);
+    let held = |kind: &str, ours: &[String], extra: &[&str]| -> Vec<String> {
+        manifest["paths"][kind]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|p| ours.iter().any(|o| o == p) || extra.contains(p))
+            .map(str::to_string)
+            .collect()
+    };
+    (
+        held("data", &wanted.0, &["secrets/accounts"]),
+        held("media", &wanted.1, &[]),
+    )
+}
 /// What data.tar and media.tar hold. Without a backup key the app password list
 /// (secrets/accounts) goes into data.tar too, root-only and disclosed in the manifest
 /// ("unencrypted_in_data_tar"): no encrypted archive is written then, and leaving it
@@ -1512,14 +1534,13 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             journal["restored"] = json!([]);
             save_journal(&journal)?;
         }
-        let mut allowed = roots(&names(cfg)?);
-        let has_accounts = snapshot_manifest["paths"]["data"]
-            .as_array()
-            .is_some_and(|paths| paths.iter().any(|p| p == "secrets/accounts"));
-        // A snapshot made without a backup key holds the password list in data.tar.
-        if has_accounts {
-            allowed.0.push("secrets/accounts".to_string());
-        }
+        let apps: Vec<String> = journal["models"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let allowed = rollback_paths(&apps, &snapshot_manifest);
         for (kind, root, paths) in [
             ("data", Path::new(string(cfg, "data_mount")?), allowed.0),
             ("media", Path::new(string(cfg, "media_mount")?), allowed.1),
@@ -5450,6 +5471,28 @@ mod tests {
     fn image_ids_are_immutable() {
         assert!(image_id(&format!("sha256:{}", "a".repeat(64))));
         assert!(!image_id("nextcloud:latest"));
+    }
+    #[test]
+    fn a_rollback_puts_back_only_what_its_run_saved() {
+        // An update of Jellyfin alone, on a server with Immich and Nextcloud too.
+        let manifest = json!({"paths": {"data": ["appdata/jellyfin", "compose/jellyfin", "secrets/accounts"], "media": []}});
+        let (data, media) = rollback_paths(&["jellyfin".to_string()], &manifest);
+        assert_eq!(
+            data,
+            ["appdata/jellyfin", "compose/jellyfin", "secrets/accounts"]
+        );
+        assert!(media.is_empty());
+        // Never another app's folders, even if a manifest named them, nor one it lacks.
+        let wider = json!({"paths": {"data": ["appdata/jellyfin", "appdata/immich", "../etc"], "media": ["x"]}});
+        let (data, media) = rollback_paths(&["jellyfin".to_string()], &wider);
+        assert_eq!(data, ["appdata/jellyfin"]);
+        assert!(media.is_empty());
+        // The source: the journal's apps and the manifest, not every app set up.
+        let source = include_str!("maintenance.rs");
+        let recovery = &source[source.find("fn resume(cfgpath").unwrap()..];
+        let recovery = &recovery[..recovery.find("\n}\n").unwrap()];
+        assert!(recovery.contains("rollback_paths(&apps, &snapshot_manifest)"));
+        assert!(!recovery.contains("roots(&names(cfg)?)"));
     }
     #[test]
     fn update_now_names_the_app_and_the_version() {
