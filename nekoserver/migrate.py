@@ -669,6 +669,15 @@ def which_back(config, drive):
     return moved[0], None
 
 
+def connected_uuids(folder='/dev/disk/by-uuid'):
+    """The UUIDs of the filesystems connected now (no path is made from a UUID the
+    settings hold)."""
+    try:
+        return set(os.listdir(folder))
+    except OSError:
+        return set()
+
+
 def back_problem(config, path, drive, previous, current):
     """Why `back` can't take `drive` back now, or None: another job at work, the settings'
     records not valid, run from the drive it moves, the old drive not connected."""
@@ -684,7 +693,7 @@ def back_problem(config, path, drive, previous, current):
         return f'The settings\' record of the {label} is not valid; nothing was changed'
     if on_the_moved_drive(path, mount_path(config[mount_key])):
         return FROM_THE_DOWNLOAD.format(label=label)
-    if not os.path.exists('/dev/disk/by-uuid/' + previous['uuid']):
+    if previous['uuid'] not in connected_uuids():
         return f'The old {label} ({previous["uuid"]}) is not connected'
     return None
 

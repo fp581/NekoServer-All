@@ -391,7 +391,9 @@ class MoveTests(unittest.TestCase):
         previous = json.loads(self.settings.read_text())['storage']['media_hdd']['previous_drive']
         self.assertEqual(previous, {'uuid': 'hdd-0001', 'fstype': 'ext4', 'subvolume': '/@media'})
         with (
-            mock.patch.object(migrate.os.path, 'exists', return_value=True),
+            mock.patch.object(
+                migrate, 'connected_uuids', return_value={'hdd-0001', 'newbig-0001', 'oldhdd-0001', 'oldssd-0001'}
+            ),
             mock.patch.object(migrate, 'stop_writers', return_value=[]),
         ):
             self.assertEqual(migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
@@ -410,6 +412,17 @@ class MoveTests(unittest.TestCase):
             },
         )
 
+    def test_going_back_needs_the_old_drive_connected(self):
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 0)
+        with mock.patch.object(migrate, 'connected_uuids', return_value={'newbig-0001'}):
+            self.assertEqual(migrate.back(self.settings, self.said.append, self.journal, self.staging, self.fstab), 2)
+        self.assertIn('The old media HDD (hdd-0001) is not connected', self.said[-1])
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'abcd-1234').touch()
+            self.assertEqual(migrate.connected_uuids(tmp), {'abcd-1234'})
+        self.assertEqual(migrate.connected_uuids('/nonexistent'), set())
+
     def test_back_takes_back_the_drive_asked_for(self):
         storage = json.loads(self.settings.read_text())
         storage['storage']['data_ssd']['previous_drive'] = {'uuid': 'oldssd-0001', 'fstype': 'ext4'}
@@ -418,7 +431,9 @@ class MoveTests(unittest.TestCase):
 
         def go_back(drive=None):
             with (
-                mock.patch.object(migrate.os.path, 'exists', return_value=True),
+                mock.patch.object(
+                    migrate, 'connected_uuids', return_value={'hdd-0001', 'newbig-0001', 'oldhdd-0001', 'oldssd-0001'}
+                ),
                 mock.patch.object(migrate, 'stop_writers', return_value=[]),
             ):
                 return migrate.back(
@@ -473,7 +488,9 @@ class MoveTests(unittest.TestCase):
             raise SystemExit('power cut')
 
         with (
-            mock.patch.object(migrate.os.path, 'exists', return_value=True),
+            mock.patch.object(
+                migrate, 'connected_uuids', return_value={'hdd-0001', 'newbig-0001', 'oldhdd-0001', 'oldssd-0001'}
+            ),
             mock.patch.object(migrate, 'setup_again', cut_off),
             self.assertRaises(SystemExit),
         ):
