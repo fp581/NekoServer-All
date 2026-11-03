@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.45.5 — 2026-11-03
+
+Found by installing 0.45.4 in the lab and opening its dashboard in a browser.
+
+**Tried for real** (the lab: Ubuntu 24.04 with systemd, two file-backed drives; this lab can't download Docker or app images, so it ran the dashboard profile): setup with `--check`, then `--profile dashboard --apply`; every step passed and the dashboard, its collector and the control service ran. Every dashboard page and the three Updates tabs were opened in Chromium, with no page errors, and at phone width with nothing wider than the screen. The System check ran for real: 116 Ubuntu updates, security fixes marked, the restart "not known" with its reason. The drive move list, a move refused while the operation lock was held, and an upgrade refused for the same release, for an unfinished move and for a release that isn't there were tried for real. Setup started by hand during a move stopped and named the command that finishes it.
+
+### Fixed
+- **The dashboard showed lists of words as empty.** Since 0.41.1 the page's list helper kept only rows (objects), and these lists hold plain words, so it dropped every one of them:
+  - the System tab said "whether a restart is needed is not known: ." with no reason, and never named the reasons a restart is needed;
+  - an update never said it restarts Docker, Samba, Tailscale or SSH;
+  - a RAID array or Btrfs pool was never shown with the drives it holds, nor named after them.
+- **The System check says why it did not run in one line.** With the SSD missing, it refused correctly but printed a Python traceback; it now prints one line and exits with code 1.
+
 ## v0.45.4 — 2026-11-03
 
 Fixes for the project owner's three reviews of 0.45.3 (18 findings). Built on 0.45.3 (merge PR #56 first).

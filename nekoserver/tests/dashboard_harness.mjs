@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 
 const CALLS = new Set(['collectIssues', 'filesIntact', 'appState', 'validStatus', 'fixedFloor', 'raiseFixed',
   'backupSummary', 'recentCopies', 'integrityResult', 'nextRun', 'shortText', 'pinRefusal', 'guideFor', 'appsSummary',
-  'shownApps', 'releaseNotes']);
+  'shownApps', 'releaseNotes', 'arrayShown', 'words']);
 /* Calls answered from another function's result, with more of it. */
 const DETAILED = new Set(['issueDetails']);
 const calls = JSON.parse(process.argv[2]);

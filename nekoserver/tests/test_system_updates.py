@@ -2,6 +2,7 @@
 without changing anything. The apt output below is the shape a real Ubuntu 24.04 lab
 machine gave (122 updates, as apt itself counted)."""
 
+import io
 import json
 import sys
 import tempfile
@@ -150,6 +151,18 @@ class ReadTests(unittest.TestCase):
             ):
                 s.check(settings)
             self.assertFalse((ssd / 'backups').exists())
+            # From the command line (the timer): one line, exit code 1, no traceback.
+            err = io.StringIO()
+            with (
+                mock.patch.object(sys, 'argv', ['system_updates.py', 'check', '--config', str(settings)]),
+                mock.patch.object(s, 'checked_settings', lambda v: v),
+                mock.patch.object(s.os, 'geteuid', return_value=0),
+                mock.patch.object(s, 'settings_path', lambda p: Path(p)),
+                mock.patch.object(s, 'mount_path', lambda p: Path(p)),
+                mock.patch.object(sys, 'stderr', err),
+            ):
+                self.assertEqual(s.main(), 1)
+            self.assertIn('System: not checked: Storage identity mismatch', err.getvalue())
 
     def test_a_restart_check_that_cannot_answer_is_not_known_never_not_needed(self):
         with tempfile.TemporaryDirectory() as tmp:

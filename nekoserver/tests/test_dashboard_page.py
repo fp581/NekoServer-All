@@ -36,6 +36,21 @@ def status(**parts):
 
 @unittest.skipUnless(NODE, 'node is not installed')
 class DashboardPageTests(unittest.TestCase):
+    def test_lists_of_words_are_shown_not_dropped(self):
+        # Found in the lab (0.45.4): the restart's reason read "not known: ." and an
+        # update that restarts Docker never said so. `list` keeps objects (rows) only,
+        # so every list of words passed through it came back empty (since 0.41.1).
+        answers = page(
+            ('words', ['Docker (every app restarts)', 3, '', {'x': 1}, None]),
+            ('words', None),
+            ('arrayShown', {'name': 'md0', 'holds_names': ['Application SSD', 'Media HDD']}),
+        )
+        self.assertEqual(answers, [['Docker (every app restarts)'], [], 'md0 (Application SSD, Media HDD)'])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        for field in ('sys.restart_reasons', 'u.restarts', 'a.holds', 'a.holds_names'):
+            self.assertIn(f'words({field})', source)
+            self.assertNotIn(f'list({field})', source)
+
     def test_the_updates_page_links_each_apps_own_release_notes(self):
         answers = page(
             ('releaseNotes', {'app': 'immich', 'version': 'v2.3.1'}),

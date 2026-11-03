@@ -192,7 +192,13 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run it with sudo')
-    return check(args.config)
+    try:
+        return check(args.config)
+    except (RuntimeError, OSError, ValueError, KeyError) as exc:
+        # Said in a line (the timer's log), not as a Python traceback: an SSD not mounted
+        # is the usual one; the next daily check tries again.
+        print(f'System: not checked: {exc}', file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':
