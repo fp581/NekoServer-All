@@ -535,6 +535,32 @@ def checked_move(saved, config, drive):
     return str(mountpoint), old, new
 
 
+def fstab_names_new(mountpoint, new, fstab):
+    """The one active line that mounts the folder names the new drive (a comment or
+    another line naming it does not count): the switch was made before a restart."""
+    lines = fstab.read_text().splitlines()
+    found = mount_lines(lines, mountpoint)
+    return len(found) == 1 and names_drive(lines[found[0]], new['uuid'])
+
+
+def mounted_in_place(mountpoint, new, there, fstab):
+    """Already switched and mounted (resume after setup or the check failed, with the apps
+    started again on it): nothing to unmount; setup and the check run again."""
+    return there == (new['uuid'], new['fstype'], new.get('subvolume') or '') and fstab_names_new(mountpoint, new, fstab)
+
+
+def unmounted_and_switched(mountpoint, old, new, fstab, out):
+    """The old drive unmounted and /etc/fstab naming the new one; False (said) when the
+    folder can't be unmounted."""
+    run(['umount', str(mountpoint)], 600, check=False)
+    if os.path.ismount(mountpoint):
+        out(f'{mountpoint} could not be unmounted (something still uses it); nothing was switched')
+        return False
+    if not fstab_names_new(mountpoint, new, fstab):
+        switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab, subvolume=new.get('subvolume'))
+    return True
+
+
 def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTAB, out=print):
     """The new drive takes the old one's place; idempotent, so a restart in the middle
     is finished by `resume`."""
@@ -552,21 +578,9 @@ def switch(settings, config, drive, journal=JOURNAL, staging=STAGING, fstab=FSTA
         )
         return 2
     run(['umount', str(staging)], 600, check=False)
-    # The one active line that mounts the folder (a comment or another line naming the
-    # new drive does not count): already the new drive after a restart, else the old one.
-    lines = fstab.read_text().splitlines()
-    found = mount_lines(lines, mountpoint)
-    switched = len(found) == 1 and names_drive(lines[found[0]], new['uuid'])
-    # Already switched and mounted (resume after setup or the check failed, with the
-    # apps started again on it): nothing to unmount; setup and the check run again.
-    in_place = switched and there is not None and there == (new['uuid'], new['fstype'], new.get('subvolume') or '')
-    if not in_place:
-        run(['umount', str(mountpoint)], 600, check=False)
-        if os.path.ismount(mountpoint):
-            out(f'{mountpoint} could not be unmounted (something still uses it); nothing was switched')
-            return 2
-        if not switched:
-            switch_fstab(mountpoint, old['uuid'], new['uuid'], new['fstype'], fstab, subvolume=new.get('subvolume'))
+    in_place = mounted_in_place(mountpoint, new, there, fstab)
+    if not in_place and not unmounted_and_switched(mountpoint, old, new, fstab, out):
+        return 2
     set_drive(settings, config, drive, new, old)
     if not in_place:
         run(['mount', mountpoint], 120, check=False)
@@ -655,53 +669,55 @@ def which_back(config, drive):
     return moved[0], None
 
 
+def back_problem(config, path, drive, previous, current):
+    """Why `back` can't take `drive` back now, or None: another job at work, the settings'
+    records not valid, run from the drive it moves, the old drive not connected."""
+    mount_key, label = DRIVES[drive]
+    busy = nothing_at_work(recovery=recovery_lock(config))
+    if busy:
+        return busy + TRY_LATER
+    if (
+        not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (previous, current))
+        or previous.get('fstype') not in FILESYSTEMS
+        or not SUBVOLUME.fullmatch(str(previous.get('subvolume') or ''))
+    ):
+        return f'The settings\' record of the {label} is not valid; nothing was changed'
+    if on_the_moved_drive(path, mount_path(config[mount_key])):
+        return FROM_THE_DOWNLOAD.format(label=label)
+    if not os.path.exists('/dev/disk/by-uuid/' + previous['uuid']):
+        return f'The old {label} ({previous["uuid"]}) is not connected'
+    return None
+
+
 def back_held(settings, out, journal, staging, fstab, wanted=None):
     path, config = load_settings(settings)
-    chosen, why = which_back(config, wanted)
-    if chosen is None:
+    drive, why = which_back(config, wanted)
+    if drive is None:
         out(why)
         return 1 if why == NOT_MOVED else 2
-    for drive, (mount_key, label) in DRIVES.items():
-        previous = config['storage'].get(drive, {}).get('previous_drive')
-        if drive != chosen or not previous:
-            continue
-        busy = nothing_at_work(recovery=recovery_lock(config))
-        if busy:
-            out(busy + TRY_LATER)
-            return 2
-        mountpoint = mount_path(config[mount_key])
-        current = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
-        if (
-            not all(UUID.fullmatch(str(d.get('uuid', ''))) for d in (previous, current))
-            or previous.get('fstype') not in FILESYSTEMS
-            or not SUBVOLUME.fullmatch(str(previous.get('subvolume') or ''))
-        ):
-            out(f'The settings\' record of the {label} is not valid; nothing was changed')
-            return 2
-        if on_the_moved_drive(path, mountpoint):
-            out(FROM_THE_DOWNLOAD.format(label=label))
-            return 2
-        if not os.path.exists('/dev/disk/by-uuid/' + previous['uuid']):
-            out(f'The old {label} ({previous["uuid"]}) is not connected')
-            return 2
-        record(
-            journal,
-            phase='stopping',
-            direction='back',
-            drive=drive,
-            mount=str(mountpoint),
-            old=current,
-            new=previous,
-            before=steps_working(config),
-        )
-        try:
-            stop_writers(journal)
-        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
-            return stopped_safely(exc, label, journal, staging, out)
-        record(journal, phase='switching')
-        return switch(path, config, drive, journal, staging, fstab, out)
-    out(NOT_MOVED)
-    return 1
+    mount_key, label = DRIVES[drive]
+    previous = config['storage'][drive]['previous_drive']
+    current = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
+    problem = back_problem(config, path, drive, previous, current)
+    if problem:
+        out(problem)
+        return 2
+    record(
+        journal,
+        phase='stopping',
+        direction='back',
+        drive=drive,
+        mount=str(mount_path(config[mount_key])),
+        old=current,
+        new=previous,
+        before=steps_working(config),
+    )
+    try:
+        stop_writers(journal)
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        return stopped_safely(exc, label, journal, staging, out)
+    record(journal, phase='switching')
+    return switch(path, config, drive, journal, staging, fstab, out)
 
 
 def resume(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
