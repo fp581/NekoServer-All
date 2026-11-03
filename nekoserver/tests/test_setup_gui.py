@@ -138,7 +138,8 @@ class ProgressTests(unittest.TestCase):
 
                 self.assertEqual(getpass.getpass('PIN: '), '1234')
                 self.assertEqual(setup_progress.question_kind('Ready? [yes/no]: ', False), 'yesno')
-        texts = json.dumps(setup_progress.events())
+        # Without the times: a timestamp's digits can hold "1234" (seen on CI).
+        texts = json.dumps([{k: v for k, v in e.items() if k != 'at'} for e in setup_progress.events()])
         self.assertNotIn('secret answer', texts)
         self.assertNotIn('1234', texts)
         self.assertEqual(

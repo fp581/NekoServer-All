@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -153,6 +154,29 @@ class SnapshotRestoreTests(unittest.TestCase):
         (self.root / 'exists').mkdir()
         with self.assertRaisesRegex(RuntimeError, 'new absolute directory'):
             sr.restore(sr.APPS, snap, self.root / 'exists')
+
+    def test_a_restore_folder_that_goes_away_stops_the_restore(self):
+        # Its drive unplugged (or another mounted there) after the first file: the rest
+        # must not be written into a folder made anew at the same path.
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'appdata/a/one': b'1', 'appdata/a/two': b'2', 'appdata/b/three': b'3'})
+        target = self.root / 'new'
+        real = sr.copy_row
+        copied = []
+
+        def then_unplugged(kind, snapshot, destination, row):
+            real(kind, snapshot, destination, row)
+            copied.append(row['path'])
+            if len(copied) == 1:
+                os.rename(target, self.root / 'unplugged')
+
+        with mock.patch.object(sr, 'copy_row', then_unplugged):
+            with self.assertRaisesRegex(RuntimeError, 'is not the folder it began in any more'):
+                sr.restore(sr.APPS, snap, target)
+        self.assertEqual(len(copied), 1)
+        self.assertFalse(target.exists())  # never made again on whatever is there now
+        # Also inside one row: a folder on another drive (one mounted there) is refused.
+        self.assertIn('st_dev != self.held[0]', (ROOT / 'neko_common.py').read_text())
 
     def test_a_missing_parent_folder_says_what_to_do(self):
         # IT-16: it said only "No such file or directory".

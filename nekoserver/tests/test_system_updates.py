@@ -2,6 +2,7 @@
 without changing anything. The apt output below is the shape a real Ubuntu 24.04 lab
 machine gave (122 updates, as apt itself counted)."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -40,13 +41,66 @@ class ReadTests(unittest.TestCase):
             s.host.zypper_updates(
                 'S | Repository | Name | Current | Available | Arch\nv | Main | samba | 4.19 | 4.20 | x86_64\n'
             ),
-            [{'name': 'samba', 'from': '4.19', 'to': '4.20', 'security': False}],
+            [{'name': 'samba', 'from': '4.19', 'to': '4.20', 'security': None}],  # not known
         )
         self.assertEqual(s.host.pacman_updates('linux 6.11.1-1 -> 6.11.2-1\n')[0]['to'], '6.11.2-1')
         # Only queries: no install, remove or refresh of the package lists.
         for argv, *_ in s.host.UPDATE_QUERIES.values():
             self.assertFalse({'install', 'upgrade', 'update', '-Sy', '-Syu', 'refresh'} & set(argv), argv)
         self.assertIn('-s', s.host.UPDATE_QUERIES['debian'][0])  # apt-get only simulates
+
+    def test_security_fixes_are_told_where_the_system_says_and_not_known_elsewhere(self):
+        def status(family, answers):
+            def run(argv, timeout=600):
+                return answers.get(argv[0], (127, ''))
+
+            with mock.patch.object(s.host, 'detect', return_value=mock.Mock()) as detect:
+                detect.return_value.name = family
+                return s.status(run=run, release={'ID': family}, running='x', modules=Path('/nonexistent'))
+
+        dnf = {
+            'dnf': (100, 'openssl-libs.x86_64  1:3.2.4-1.fc42  updates\nbash.x86_64  5.2.37-1.fc42  updates\n'),
+            'needs-restarting': (0, ''),
+        }
+        advisories = 'FEDORA-2026-1a2b3c  Important/Sec.  openssl-libs-1:3.2.4-1.fc42.x86_64\n'
+        real = dnf['dnf']
+
+        def dnf_run(argv, timeout=600):
+            if argv[:3] == ['dnf', '-q', 'updateinfo']:
+                return 0, advisories
+            return real if argv[0] == 'dnf' else dnf.get(argv[0], (127, ''))
+
+        with mock.patch.object(s.host, 'detect', return_value=mock.Mock()) as detect:
+            detect.return_value.name = 'fedora'
+            found = s.status(run=dnf_run, release={}, running='x', modules=Path('/nonexistent'))
+        by_name = {u['name']: u['security'] for u in found['updates']}
+        self.assertEqual(by_name, {'openssl-libs': True, 'bash': False})
+        self.assertNotIn('security_note', found)
+        # Arch without arch-audit, and openSUSE: "not known", never "no".
+        arch = status('arch', {'checkupdates': (0, 'openssl 3.4.0-1 -> 3.4.1-1\n')})
+        self.assertIsNone(arch['updates'][0]['security'])
+        self.assertIn('install arch-audit', arch['security_note'])
+        audited = status(
+            'arch',
+            {
+                'checkupdates': (0, 'openssl 3.4.0-1 -> 3.4.1-1\nbash 5.2-1 -> 5.3-1\n'),
+                'arch-audit': (1, 'Package openssl is affected by CVE-2026-0001. High risk! Update to 3.4.1-1!\n'),
+            },
+        )
+        self.assertEqual([u['security'] for u in audited['updates']], [True, False])
+        suse = status(
+            'suse',
+            {
+                'zypper': (
+                    0,
+                    'S | Repository | Name | Current | Available | Arch\nv | Main | samba | 4.19 | 4.20 | x86_64\n',
+                )
+            },
+        )
+        self.assertIsNone(suse['updates'][0]['security'])
+        self.assertIn('security patches, not the packages', suse['security_note'])
+        # Debian says it in the list itself: no extra query, no note.
+        self.assertNotIn('debian', s.host.SECURITY_QUERIES)
 
     def test_what_an_update_means_is_said(self):
         found, why = s.pending('debian', run=lambda argv, timeout=600: (0, APT))
@@ -79,6 +133,23 @@ class ReadTests(unittest.TestCase):
                 s.restart_needed('suse', lambda argv, timeout=600: (102, ''), '6.8.0-49-generic', modules)[0],
                 s.REQUIRED,
             )
+
+    def test_the_answer_is_never_written_where_the_ssd_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / 'config.json'
+            ssd = Path(tmp) / 'ssd'  # the folder of an SSD that is not mounted
+            ssd.mkdir()
+            settings.write_text(
+                json.dumps({'data_mount': str(ssd), 'storage': {'data_ssd': {'uuid': 'ssd-0001', 'fstype': 'ext4'}}})
+            )
+            with (
+                mock.patch.object(s, 'settings_path', lambda p: Path(p)),
+                mock.patch.object(s, 'mount_path', lambda p: Path(p)),
+                mock.patch.object(s, 'status', return_value={'count': 0}),
+                self.assertRaisesRegex(RuntimeError, 'Storage identity mismatch'),
+            ):
+                s.check(settings)
+            self.assertFalse((ssd / 'backups').exists())
 
     def test_a_restart_check_that_cannot_answer_is_not_known_never_not_needed(self):
         with tempfile.TemporaryDirectory() as tmp:

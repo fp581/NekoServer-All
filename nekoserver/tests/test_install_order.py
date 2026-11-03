@@ -1873,6 +1873,32 @@ class KeptCopyTests(unittest.TestCase):
         self.assertNotIn(releases / 'v0.1.0', removed)
         self.assertIn(releases / 'v0.2.0', removed)
 
+    def test_the_release_an_upgrade_would_put_back_is_never_retired(self):
+        import native_runtime
+
+        releases = self.data / 'installer/releases'
+        for version in ('v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.4.0', 'v0.9.0'):
+            (releases / version).mkdir(parents=True)
+        lib, units = Path(self.tmp.name) / 'lib', Path(self.tmp.name) / 'units'
+        lib.mkdir()
+        units.mkdir()
+        (lib / 'nekoserver-dashboard/v0.1.0').mkdir(parents=True)
+        journal = Path(self.tmp.name) / 'upgrade.json'
+        # Upgrading from 0.1.0 (a newer 0.9.0 that failed earlier is still kept).
+        journal.write_text(json.dumps({'phase': 'installing', 'from': '0.1.0', 'previous': str(releases / 'v0.1.0')}))
+        removed = native_runtime.retire_old(self.data, self.logged.append, lib=lib, units=units, journal=journal)
+        self.assertNotIn(releases / 'v0.1.0', removed)
+        self.assertTrue((releases / 'v0.1.0').is_dir())
+        self.assertTrue((lib / 'nekoserver-dashboard/v0.1.0').is_dir())
+        self.assertIn(releases / 'v0.2.0', removed)
+        # A record that can't be read keeps every release.
+        journal.write_text('{not json')
+        self.assertEqual(
+            native_runtime.retire_old(self.data, self.logged.append, lib=lib, units=units, journal=journal), []
+        )
+        # The record's path is upgrade.py's own.
+        self.assertIn("JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')", (ROOT / 'upgrade.py').read_text())
+
     def test_one_set_aside_copy_per_version_and_it_goes_with_its_version(self):
         import native_runtime
 

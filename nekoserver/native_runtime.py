@@ -176,7 +176,27 @@ def settings_files(folder):
     return [f for f in Path(folder).glob('config*.json') if f.is_file() and not f.is_symlink()]
 
 
-def retire_old(data, log=print, lib=Path('/usr/local/lib'), units=SYSTEMD_UNITS):
+UPGRADE_JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')  # upgrade.py JOURNAL
+
+
+def upgrade_needs(journal=UPGRADE_JOURNAL):
+    """The release folder names an upgrade at work (or cut off) still needs: the release
+    it would put back (its way back) and the one it is installing. An unreadable record
+    keeps every release, as it can't say which one is needed."""
+    try:
+        saved = json.loads(Path(journal).read_text())
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError):
+        return None
+    if not isinstance(saved, dict):
+        return None
+    names = {Path(str(saved.get(key) or '')).name for key in ('previous', 'project')}
+    names |= {'v' + str(saved[key]).lstrip('v') for key in ('from',) if saved.get(key)}
+    return {n for n in names if n}
+
+
+def retire_old(data, log=print, lib=Path('/usr/local/lib'), units=SYSTEMD_UNITS, journal=UPGRADE_JOURNAL):
     """After a setup run finished: remove the runtime copies of earlier releases that no
     installed service uses any more (each release deploys its own copies, which otherwise
     stay for good), and release bundles older than the KEEP_BUNDLES newest. The current
@@ -185,11 +205,18 @@ def retire_old(data, log=print, lib=Path('/usr/local/lib'), units=SYSTEMD_UNITS)
 
     data = Path(data)
     current = 'v' + VERSION
+    # An upgrade at work runs this release's setup, which ends here, before it checks
+    # the result: the release it would put back must still be there then.
+    needed = upgrade_needs(journal)
+    if needed is None:
+        log('Earlier releases kept: the NekoServer upgrade record can not be read')
+        return []
     old = []
     # Docker's start guard (modules/docker.py) has its own per-release folder on the SSD.
     for home in [Path(lib) / name for name in SYSTEM_HOMES] + [data / 'installer/runtime', data / 'installer/guards']:
         old += [p for p in release_folders(home) if p.name != current and not in_use(p, units)]
     old += retired_bundles(data / 'installer/releases', current, units)
+    old = [p for p in old if p.name.split('.replaced-')[0] not in needed]
     for folder in old:
         shutil.rmtree(folder, ignore_errors=True)
     if old:

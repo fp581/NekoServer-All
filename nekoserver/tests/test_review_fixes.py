@@ -2500,32 +2500,48 @@ class NextcloudReinstalledLinuxTests(unittest.TestCase):
         # Seen on the rig (round 6): the folder given back, Nextcloud's database still listed
         # the old HDD's folders, so it never made the administrator's `files` folder again
         # and refused every upload ("Could not create path"), the monthly check's test file too.
+        # The owner's review of 0.45.3: "Mary Smith" and "o'brien" are accounts too.
         from modules import nextcloud
 
-        ran = []
-
-        listed = '{"neko_6d72bdeaa6a2":"neko_6d72bdeaa6a2","alice":"Alice","../evil":"x"}'
+        table = (
+            'Starting scan for user 1 out of 1 ({name})\n'
+            '+---------+-------+-----+---------+---------+--------+--------------+\n'
+            '| Folders | Files | New | Updated | Removed | Errors | Elapsed time |\n'
+            '+---------+-------+-----+---------+---------+--------+--------------+\n'
+            '| 3       | 5     | 0   | 0       | 0       | {errors}      | 00:00:01     |\n'
+        )
+        listed = json.dumps({'neko_6d72bdeaa6a2': 'x', 'alice': 'Alice', 'Mary Smith': 'Mary', "o'brien": 'O'})
+        errors = {}
+        scans = []
 
         def run(argv, **kw):
-            ran.append(argv[-2:])
-            return mock.Mock(returncode=0, stdout=listed if 'user:list' in argv else '', stderr='')
+            if 'user:list' in argv:
+                return mock.Mock(returncode=0, stdout=listed, stderr='')
+            scans.append(argv[-3:])
+            # occ files:scan ends with 0 even when its table counts errors.
+            return mock.Mock(returncode=0, stdout=table.format(name=argv[-1], errors=errors.get(argv[-1], 0)))
 
-        with (
-            tempfile.TemporaryDirectory() as tmp,
-            mock.patch.object(nextcloud, 'ensure_directory') as made,
-            mock.patch.object(nextcloud, 'checked_run') as scanned,
-        ):
-            said = []
+        with tempfile.TemporaryDirectory() as tmp:
             files = Path(tmp) / 'cloud/files'
-            done = nextcloud.account_folders_given_back(['compose'], files, said.append, run=run)
-        self.assertEqual(done, 2)
-        self.assertEqual(
-            [c.args for c in made.call_args_list],
-            [(files / 'neko_6d72bdeaa6a2/files', 0o755, 33, 33), (files / 'alice/files', 0o755, 33, 33)],
-        )
-        self.assertEqual(scanned.call_args.args[0][-2:], ['files:scan', '--all'])
-        self.assertIn('2 account(s)', said[0])
-        self.assertIn('uploads work again', said[0])
+            with mock.patch.object(
+                nextcloud, 'ensure_directory', lambda path, *a: path.mkdir(parents=True, exist_ok=True)
+            ):
+                said = []
+                self.assertEqual(nextcloud.account_folders_given_back(['compose'], files, said.append, run=run), 4)
+                self.assertTrue((files / 'Mary Smith/files').is_dir() and (files / "o'brien/files").is_dir())
+                # Each account scanned on its own, its name one argument after "--".
+                self.assertIn(['files:scan', '--', 'Mary Smith'], scans)
+                self.assertIn('4 account(s)', said[0])
+                self.assertIn('uploads work again', said[0])
+                # A scan that counts errors (exit code 0): not done, and said which.
+                errors["o'brien"] = 2
+                with self.assertRaisesRegex(RuntimeError, "o'brien \\(its file scan found 2 error\\(s\\)\\)"):
+                    nextcloud.account_folders_given_back(['compose'], files, said.append, run=run)
+        # A name Nextcloud would not accept is named, not left out.
+        listed = json.dumps({'alice': 'Alice', '../evil': 'x'})
+        with self.assertRaisesRegex(RuntimeError, "not valid account names: '../evil'"):
+            nextcloud.listed_accounts(['compose'], run)
+        self.assertIsNone(nextcloud.scan_errors('Scanned nothing\n'))
 
     def test_an_interrupted_recovery_finishes_at_the_next_setup_run(self):
         # The owner's review of 0.41.4: setup stopped between giving the folder back and making
@@ -2739,11 +2755,53 @@ class IsolatedRestoreNetworkTests(unittest.TestCase):
             isolated = recovery_tools.isolated_model(model, meta, Path('/w'), 2284)
         network = isolated['networks']['default']
         self.assertNotIn('internal', network)
-        self.assertEqual(network['driver_opts'], {'com.docker.network.bridge.enable_ip_masquerade': 'false'})
+        self.assertEqual(
+            network['driver_opts'],
+            {
+                'com.docker.network.bridge.enable_ip_masquerade': 'false',
+                'com.docker.network.bridge.name': 'neko-rt-2284',  # named, for the firewall rules
+            },
+        )
         self.assertEqual(
             isolated['services']['immich-server']['ports'],
             [{'target': 2283, 'published': '2284', 'host_ip': '127.0.0.1', 'protocol': 'tcp'}],
         )
+
+    def test_the_restored_app_can_not_reach_this_pc_or_the_network(self):
+        # Tried in the lab with Docker: without these rules the test container reached a
+        # service on this PC (at the bridge's address and the PC's own); with them it
+        # reached neither, and the published port still answered.
+        import recovery_tools
+
+        rules = []
+
+        def run(argv):
+            rules.append(argv)
+            if argv[1] == '-C':
+                raise RuntimeError('no such rule')
+
+        recovery_tools.isolate_host('neko-rt-2284', run)
+        inserted = [r for r in rules if r[1] == '-I']
+        self.assertEqual([r[2] for r in inserted], ['INPUT', 'DOCKER-USER'])
+        for rule in inserted:
+            self.assertEqual(rule[3:5], ['-i', 'neko-rt-2284'])
+            self.assertIn('ESTABLISHED,RELATED', rule)
+            self.assertEqual(rule[-2:], ['-j', 'DROP'])
+        # Already there: kept, not added twice.
+        rules.clear()
+        recovery_tools.isolate_host('neko-rt-2284', lambda argv: rules.append(argv))
+        self.assertEqual([r[1] for r in rules], ['-C', '-C'])
+
+        # Not possible: nothing starts.
+        def broken(argv):
+            raise RuntimeError('iptables is not there')
+
+        with self.assertRaisesRegex(RuntimeError, 'The restore test was not started'):
+            recovery_tools.isolate_host('neko-rt-2284', broken)
+        # In place before the first service starts.
+        source = (ROOT / 'recovery_tools.py').read_text()
+        body = source[source.index('def restore_test(') :]
+        self.assertLess(body.index('isolate_host(test_bridge(port))'), body.index("'up', '-d'"))
 
 
 class RestoreTestPortTests(unittest.TestCase):

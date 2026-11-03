@@ -3599,6 +3599,9 @@ function systemTab(s) {
   } else if (sys.restart === 'unknown' && numeric(sys.checked_at)) {
     nodes.push(el('p', 'section-note', 'Whether the computer needs a restart is not known: ' + reasons + '.'));
   }
+  if (sys.security_note) {
+    nodes.push(el('p', 'section-note', text(sys.security_note) + '.'));
+  }
   if (numeric(sys.count)) {
     nodes.push(
       el('p', '', sys.count ? plural(sys.count, 'package update') + ' waiting.' : 'No package updates waiting.')

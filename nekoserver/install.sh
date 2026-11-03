@@ -501,7 +501,11 @@ if "$apply" && [[ "$family" == suse ]] && ! python3 -c 'import ssl, sqlite3, pye
   # (Tumbleweed and Slowroll are rolling and are brought up to date as a whole, as
   # Arch is).
   echo 'Python is installed, but parts of it do not load with the libraries this system has (it needs updating).'
-  if [[ "${ID:-}" == opensuse-leap ]]; then
+  if [[ -n "${NEKOSERVER_KEEP_SYSTEM:-}" ]]; then
+    # A NekoServer upgrade or drive move from the dashboard never updates the system.
+    echo 'A NekoServer upgrade from the dashboard does not update the system. Run  sudo bash install.sh  in a terminal: it brings the system up to date first.' >&2
+    exit 4
+  elif [[ "${ID:-}" == opensuse-leap ]]; then
     echo 'Bringing the installed packages up to date (zypper update). This can take a while.'
     zypper_run update --no-recommends
   else

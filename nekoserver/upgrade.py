@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.45.2Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.45.4Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -33,6 +33,7 @@ from pathlib import Path
 from neko_common import (
     DASHBOARD_DEFAULT_PORT,
     MAINTENANCE_JOURNAL,
+    OPERATION_LOCK,
     VERSION,
     atomic_json,
     atomic_write,
@@ -41,12 +42,14 @@ from neko_common import (
     default_settings,
     ensure_directory,
     fetch,
+    hold_operation,
     mount_path,
     safe_path,
     settings_path,
 )
 
 JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')
+MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
 FORMAT = 'neko-upgrade-v1'
 ARCHIVE = 'https://codeload.github.com/fp581/NekoServer-All/tar.gz/refs/tags/{tag}'
 TAG = re.compile(r'v(\d+)\.(\d+)\.(\d+)(Beta)?')
@@ -62,7 +65,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.45.2Beta" or "0.45.2"; None for anything else."""
+    """(0, 44, 0) from "v0.45.4Beta" or "0.45.4"; None for anything else."""
     match = TAG.fullmatch(text if text.startswith('v') else 'v' + text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -92,6 +95,8 @@ def nothing_at_work(lock=SETUP_LOCK, journal=JOURNAL, maintenance=None, recovery
         return 'A NekoServer upgrade is already at work (or one was cut off and is being put right)'
     if Path(maintenance or MAINTENANCE_JOURNAL).exists():
         return 'An app update or the monthly check is not finished yet; it is finished by itself first'
+    if Path(MIGRATE_JOURNAL).exists():
+        return 'A move to another drive is not finished yet (sudo python3 migrate.py resume)'
     for path, what in (
         (lock, 'Setup (sudo bash install.sh) is running'),
         (recovery, 'A backup or an app update is running'),
@@ -259,11 +264,24 @@ def services_behind(version, units=UNITS):
     return behind
 
 
-def upgrade(
+BUSY_MOVE = 'A drive move (migrate.py) or another upgrade is at work'
+
+
+def upgrade(tag, settings, out=print, **more):
+    """The whole upgrade (see the top of this file), holding the operation lock from start
+    to end, so a drive move started meanwhile (from a terminal too) waits. Returns 0 when
+    the server runs the new release, 1 when it was put back on this one, 2 when it needs you."""
+    held = hold_operation(OPERATION_LOCK)
+    if held is None:
+        out(BUSY_MOVE + '; the upgrade did not start, nothing was changed. Try again later.')
+        return 2
+    with held:
+        return upgrade_held(tag, settings, out, **more)
+
+
+def upgrade_held(
     tag, settings, out=print, get=fetch, setup=run_setup, check=None, journal=JOURNAL, recovery=None, lock=SETUP_LOCK
 ):
-    """The whole upgrade (see the top of this file). Returns 0 when the server runs the
-    new release, 1 when it was put back on this one, 2 when it needs you."""
     config = json.loads(settings_path(settings).read_text())
     if not numbers(tag) or numbers(tag) <= numbers(VERSION):
         out(f'{tag} is not newer than this release ({VERSION}); nothing was changed')
@@ -334,7 +352,12 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
 def resume(settings, out=print, setup=run_setup, journal=JOURNAL):
     """At boot: an upgrade that was cut off. One cut off while it downloaded changed
     nothing; one cut off while it set up or checked the new release is put back on the
-    release it had (the new one may be half set up)."""
+    release it had (the new one may be half set up). It waits for the operation lock."""
+    with hold_operation(OPERATION_LOCK, wait=True):
+        return resume_held(settings, out, setup, journal)
+
+
+def resume_held(settings, out, setup, journal):
     saved = read(journal)
     if saved is None:
         if journal.exists():
@@ -356,7 +379,7 @@ def resume(settings, out=print, setup=run_setup, journal=JOURNAL):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('run', 'resume'))
-    parser.add_argument('--tag', help='with run: the release, such as v0.45.2Beta')
+    parser.add_argument('--tag', help='with run: the release, such as v0.45.4Beta')
     parser.add_argument(
         '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
     )

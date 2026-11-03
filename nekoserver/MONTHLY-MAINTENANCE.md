@@ -47,9 +47,11 @@ The daily check also looks for new NekoServer releases on GitHub, on your channe
 - `"beta"`, the default while every release is a beta, offers the newest release, stable or beta.
 - `"stable"` offers stable releases only (README.md, "Release channels").
 
+Only a release with newer numbers is offered. The stable release of the numbers you run (`v0.46.0` on a server running `v0.46.0Beta`) is the same NekoServer as far as an upgrade goes: both keep their files in the same folder on the SSD, so one can't be the way back to the other.
+
 A release is never installed by itself. The **Updates** page, **NekoServer** tab, shows it with its release notes. **Upgrade NekoServer** (with the PIN) starts `nekoserver-upgrade@<release>.service`, which runs `upgrade.py`. It goes on if you close the page, and the tab shows how it went:
 
-1. It checks that nothing else is at work: no setup, no unfinished app update or monthly check, no backup holding the shared lock. While it runs, app updates, the daily check, the monthly check and app restarts wait. A record in `/etc/nekoserver-backups/upgrade.json` says how far it got.
+1. It checks that nothing else is at work: no setup, no unfinished app update, monthly check or drive move, no backup holding the shared lock. From start to end it holds the lock a drive move holds too (`migrate.py`), also when you start it from a terminal. While it runs, app updates, the daily check, the monthly check and app restarts wait. A record in `/etc/nekoserver-backups/upgrade.json` says how far it got.
 2. It downloads the release from GitHub (`installer/upgrades/` on the SSD) and checks it is that release.
 3. It runs that release's setup with your saved settings, without questions (the log is next to the download). It **never updates the system packages**. On Arch, a release that needs a new package stops there, because Arch installs packages safely only with a full system update. Run `sudo bash install.sh` in a terminal then: that does the system update first.
 4. It checks the result: every setup step that worked before works again, every NekoServer service and timer runs the new release (each release has its own folder), and the dashboard answers with the new version, on the port that release's setup uses.
@@ -63,6 +65,7 @@ The **System** tab shows the Linux system's side, read once a day by `nekoserver
 - **The package updates waiting**, counted and listed. Each is marked when it is a security fix, when it needs a restart of the computer (a new kernel, systemd, the C library), or when it restarts a service the apps depend on (Docker restarts every app; Samba, Tailscale, SSH).
   - On Debian and Ubuntu it asks `apt-get -s dist-upgrade` (a simulation), on Fedora and RHEL `dnf check-update`, on openSUSE `zypper list-updates`.
   - On Arch it uses `checkupdates`, from pacman-contrib, which reads a copy of the package lists. Without it the tab says how to install it.
+- **Which updates fix a security issue**: on Debian and Ubuntu from the update list itself, on Fedora and RHEL from `dnf updateinfo`, on Arch from `arch-audit` when it is installed (`sudo pacman -S arch-audit`). Where the system can't say (openSUSE, Arch without arch-audit), the tab says it is not known, never that there is none.
 - **Whether the computer needs a restart now**: needed (the running kernel was replaced by an update, or the system says so: `/run/reboot-required`, `needs-restarting -r`, `zypper needs-rebooting`), not needed, or **not known**, with the reason (on Fedora or RHEL `needs-restarting` comes with `dnf-utils`; a check that is missing or fails is never taken as "not needed").
 
 Installing system updates from the dashboard comes in a later release, with a recovery backup of the system disk first. Until then, update the system as you do now. A major distribution upgrade (a new Ubuntu release, say) is a separate job. Running `sudo bash install.sh` in a terminal also installs the packages NekoServer needs. On Arch that updates the whole system; on Debian and Ubuntu it refreshes the package lists and installs what is missing. The app snapshots cannot undo a Linux, kernel or Docker upgrade.

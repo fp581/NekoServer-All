@@ -504,8 +504,17 @@ def nextcloud(client, entry, config):
     return None
 
 
-def verify_project(config, app):
-    """Prove the local port belongs to this managed app before sending a secret."""
+# Held back while an update is checked (maintenance.rs `quarantined`): published on a
+# port Docker picks, on this computer only, until the update is committed.
+QUARANTINED = ('immich', 'nextcloud')
+
+
+def verify_project(config, app, quarantined=False):
+    """Prove the local port belongs to this managed app before sending a secret; returns
+    that port. Normally the app's own fixed port. With `quarantined` (the weekly update's
+    login check), Immich and Nextcloud may instead be the update's held-back container,
+    published on a port Docker picked: the same identity checks, and that port, read from
+    Docker, on 127.0.0.1 only."""
     project = 'navidrome' if app == 'navidrome_listener' else app
     service = 'immich-server' if project == 'immich' else project
     root = Path(config['data_mount'])
@@ -538,34 +547,46 @@ def verify_project(config, app):
     bindings = value.get('HostConfig', {}).get('PortBindings', {})
     port = 80 if project == 'nextcloud' else store.APPS[project][1]
     ports = bindings.get(str(port) + '/tcp')
+    check(isinstance(ports, list) and len(ports) == 1 and ports[0].get('HostIp') == '127.0.0.1')
+    if ports[0].get('HostPort') == str(store.APPS[project][1]):
+        return store.APPS[project][1]
+    # Held back: asked for any port ("0" or none), and the one Docker gave it.
+    check(quarantined and project in QUARANTINED and ports[0].get('HostPort') in ('0', '', None))
+    given = (value.get('NetworkSettings', {}).get('Ports') or {}).get(str(port) + '/tcp')
     check(
-        isinstance(ports, list)
-        and len(ports) == 1
-        and ports[0].get('HostIp') == '127.0.0.1'
-        and ports[0].get('HostPort') == str(store.APPS[project][1])
+        isinstance(given, list)
+        and len(given) == 1
+        and given[0].get('HostIp') == '127.0.0.1'
+        and re.fullmatch(r'[1-9]\d{3,4}', str(given[0].get('HostPort', '')))
+        and 1024 <= int(given[0]['HostPort']) <= 65535
     )
+    return int(given[0]['HostPort'])
 
 
 def signs_in(config, app, client_factory=Client):
     """Whether `app` takes its saved login now, for the weekly update (before and after it
     installs a new version). Read-only: with `allow_create` off the app checks below never
     make or change an account, and nothing is written to the saved logins. Returns None
-    when there is no saved login to try; raises with the reason (never a password) when
+    when there is no saved login to try, or it could not be tried (Nextcloud with
+    two-factor sign-in on); raises with the reason (never a password) when
     the app refuses it."""
     entry = store.get(config, app)
     if not entry:
         return None
     entry = {**entry, 'allow_create': False}
-    client = client_factory(app)
+    # The port is the one proved to be the app's (the held-back one during an update).
+    client = client_factory(app, verify_project(config, app, quarantined=True))
     try:
-        verify_project(config, app)
         wait(app, client, 60)
         if app in ARR:
             arr(client, entry, config, app)
         elif app == 'seerr':
             seerr(client, entry, None)
         elif app == 'nextcloud':
-            nextcloud(client, entry, config)
+            # Two-factor sign-in on: Nextcloud refuses a plain password, so the saved one
+            # was not tried. That is "not known", never "signed in".
+            if nextcloud(client, entry, config) == NEXTCLOUD_TWO_FACTOR:
+                return None
         else:
             {'jellyfin': jellyfin, 'immich': immich, 'navidrome': navidrome, 'qbittorrent': qbittorrent}[app](
                 client, entry

@@ -18,7 +18,15 @@ import time
 from pathlib import Path
 
 import host
-from neko_common import atomic_json, checked_settings, default_settings, ensure_directory, mount_path, settings_path
+from neko_common import (
+    atomic_json,
+    checked_settings,
+    default_settings,
+    ensure_directory,
+    mount_path,
+    settings_path,
+    verify_storage,
+)
 
 FORMAT = 'neko-system-check-v1'
 SHOWN = 300  # packages listed at most (the count is always exact)
@@ -45,6 +53,20 @@ def call(argv, timeout=600):
     except subprocess.TimeoutExpired:
         return 124, ''
     return done.returncode, done.stdout
+
+
+def security_fixes(family, run=call):
+    """The names of the waiting packages that fix a security issue, or (None, why) when
+    that is not known here. Debian and Ubuntu: None too, as their list says it itself."""
+    if family not in host.SECURITY_QUERIES:
+        return None, host.SECURITY_UNKNOWN.get(family)
+    argv, good, read, missing = host.SECURITY_QUERIES[family]
+    code, text = run(argv)
+    if code == 127:
+        return None, missing or f'{argv[0]} is not installed'
+    if code not in good:
+        return None, f'{" ".join(argv[:3])} did not answer (exit code {code})'
+    return read(text), None
 
 
 def pending(family, run=call):
@@ -99,6 +121,18 @@ def restart_needed(family, run=call, running=None, modules=Path('/usr/lib/module
     return (UNKNOWN, unknown) if unknown else (NOT_REQUIRED, [])
 
 
+def mark_security(family, found, run=call):
+    """Mark which of the updates `found` fix a security issue: True or False as the
+    system says, None where it can't say (shown as "not known", never as "no"). Returns
+    why it is not known, or None. Debian and Ubuntu say it in the list itself."""
+    if not found or (family not in host.SECURITY_QUERIES and family not in host.SECURITY_UNKNOWN):
+        return None
+    fixes, unknown = security_fixes(family, run)
+    for package in found:
+        package['security'] = None if fixes is None else package['name'] in fixes
+    return None if fixes is not None else 'Which updates fix a security issue is not known: ' + unknown
+
+
 def status(run=call, release=None, now=None, **restart):
     """Everything the System tab shows."""
     release = release if release is not None else host.os_release()
@@ -114,6 +148,9 @@ def status(run=call, release=None, now=None, **restart):
         result['note'] = 'This system has no NekoServer package support, so its updates are not listed'
         return result
     found, why = pending(name, run)
+    note = mark_security(name, found, run)
+    if note:
+        result['security_note'] = note
     result['updates'] = None if found is None else found[:SHOWN]
     result['count'] = None if found is None else len(found)
     result['note'] = why
@@ -124,6 +161,9 @@ def status(run=call, release=None, now=None, **restart):
 
 def check(settings):
     config = json.loads(settings_path(settings).read_text())
+    # The SSD must be the one the settings name, mounted: with it missing, its folder is
+    # a plain one on the system disk, and the answer would be written there.
+    verify_storage(config, keys=('data_ssd',))
     folder = mount_path(config['data_mount']) / 'backups/updates'
     ensure_directory(folder, 0o700)
     result = status()

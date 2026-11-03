@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import sys
 
-from neko_common import safe_path, atomic_json, ensure_directory, ensure_room
+from neko_common import Destination, safe_path, atomic_json, ensure_room
 
 
 # What the restore did, written into the new folder next to the files.
@@ -180,8 +180,17 @@ def restore(kind, snapshot, destination, preserve_owners=False):
         raise RuntimeError('Root required to restore original ownership')
     destination.mkdir(mode=0o700)  # Never create missing parents or reuse an existing directory.
     rows = manifest['files']
-    for row in rows:
-        copy_row(kind, snapshot, destination, row)
+    # Opened once: every folder and file is made from that open folder, and before each
+    # one the path must still lead to it. A drive unplugged or replaced mid-restore stops
+    # the restore; it never goes on in a folder made anew on the system disk or another drive.
+    target = Destination(destination)
+    try:
+        for done, row in enumerate(rows):
+            target.check(done)
+            copy_row(kind, snapshot, target, row)
+        target.check(len(rows))
+    finally:
+        target.close()
     # Privately retain evidence before applying original directory permissions. Owners
     # count as restored only after every chown/chmod worked: a failure leaves the
     # report saying so (the command itself fails too).
@@ -209,20 +218,29 @@ def restore(kind, snapshot, destination, preserve_owners=False):
     return destination
 
 
-def copy_row(kind, snapshot, destination, row):
-    """Copy one inventory entry into the new folder privately, verifying its checksum."""
+def copy_row(kind, snapshot, target, row):
+    """Copy one inventory entry into the new folder (`target`, the open Destination)
+    privately, verifying its checksum as written."""
     rel = relative(kind, row['path'])
-    target = safe_path(destination / rel)
-    ensure_directory(target.parent, 0o700)
     if row['kind'] == 'directory':
-        ensure_directory(target, 0o700)
+        os.close(target.folder(rel.parts))
         return
-    with safe_path(snapshot / 'payload' / rel).open('rb') as source, target.open('xb') as output:
-        os.chmod(target, 0o600)
+    folder = target.folder(rel.parent.parts)
+    try:
+        written = os.open(
+            rel.name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=folder
+        )
+    finally:
+        os.close(folder)
+    with safe_path(snapshot / 'payload' / rel).open('rb') as source, os.fdopen(written, 'r+b') as output:
         shutil.copyfileobj(source, output, 65536)
         output.flush()
         os.fsync(output.fileno())
-    if digest(target) != row['sha256']:
+        output.seek(0)
+        found = hashlib.sha256()
+        for block in iter(lambda: output.read(1 << 20), b''):
+            found.update(block)
+    if found.hexdigest() != row['sha256']:
         raise RuntimeError('Restored file verification failed; partial directory retained')
 
 

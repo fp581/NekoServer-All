@@ -1,5 +1,6 @@
 """Shared local filesystem safety; standard library only."""
 
+import contextlib
 import ctypes
 import errno
 import hashlib
@@ -16,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.45.2'
+VERSION = '0.45.4'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -162,6 +163,24 @@ def write_units(units):
 
 
 MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
+# Held for the whole of a NekoServer upgrade (upgrade.py) and a drive move (migrate.py),
+# also while they finish one that was cut off: the two never run at the same time,
+# whether started from the dashboard or a terminal. In /run: a restart lets it go.
+OPERATION_LOCK = Path('/run/nekoserver-operation.lock')
+
+
+def hold_operation(lock=None, wait=False):
+    """The operation lock, held until the returned file is closed (or the program ends);
+    None when another upgrade or drive move holds it (`wait`: wait for it instead)."""
+    import fcntl
+
+    held = open(lock or OPERATION_LOCK, 'a')
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+    except BlockingIOError:
+        held.close()
+        return None
+    return held
 
 
 MAINTENANCE_UNITS = ('nekoserver-maintenance.service', 'nekoserver-maintenance-resume.service')
@@ -1349,3 +1368,69 @@ def ensure_room(folder, need, what='This restore'):
             f'{usage.free / GIB:.1f} GB is free on that drive (5 GB or 5% is kept free). '
             'Free some space or choose a folder on another drive.'
         )
+
+
+def file_count(count):
+    """ "1 file", "2 files"."""
+    return f'{count} file' + ('' if count == 1 else 's')
+
+
+FOLDER_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+class DestinationGone(RuntimeError):
+    """The restore folder is not the one the restore began in any more: its drive was
+    unplugged, or another drive (or folder) is at its path now."""
+
+
+class Destination:
+    """A restore's new folder, opened once (as the repair's Tree opens a drive). Every
+    folder and file of the restore is made from that open folder, never by its path
+    again, and refused when it would be on another filesystem; before each file the path
+    is checked to still lead to the folder that was opened. So when the drive is
+    unplugged mid-restore, or another one is mounted there, the restore stops instead of
+    going on in the empty folder on the system disk or on the other drive."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.fd = os.open(self.path, FOLDER_FLAGS)
+        held = os.fstat(self.fd)
+        self.held = (held.st_dev, held.st_ino)
+
+    def same(self):
+        """The restore folder's path still leads to the folder that was opened."""
+        try:
+            now = os.stat(self.path, follow_symlinks=False)
+        except OSError:
+            return False
+        return (now.st_dev, now.st_ino) == self.held
+
+    def check(self, done):
+        """Before a write: DestinationGone, saying how far the restore got, once it moved."""
+        if not self.same():
+            raise DestinationGone(
+                f'The restore stopped after {file_count(done)}: {self.path} is not the folder it began in any more '
+                '(its drive was disconnected, or another drive is mounted there now). Nothing more was written. '
+                'The files restored so far stay on that drive; connect it again and restore into a new folder.'
+            )
+
+    def folder(self, parts):
+        """The open folder `parts` below the restore folder, made when missing, reached from
+        the restore folder's open folder without following a link. The caller closes it."""
+        fd = os.dup(self.fd)
+        try:
+            for part in parts:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                found = os.open(part, FOLDER_FLAGS, dir_fd=fd)
+                os.close(fd)
+                fd = found
+                if os.fstat(fd).st_dev != self.held[0]:
+                    raise DestinationGone(f'"{part}" in {self.path} is on another drive (one mounted there)')
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def close(self):
+        os.close(self.fd)

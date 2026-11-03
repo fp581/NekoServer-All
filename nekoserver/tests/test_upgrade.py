@@ -63,6 +63,8 @@ class UpgradeTests(unittest.TestCase):
             ('settings_path', lambda p: Path(p)),
             ('owner', lambda config: 'neko'),
             ('MAINTENANCE_JOURNAL', str(self.dir / 'none.json')),
+            ('MIGRATE_JOURNAL', self.dir / 'no-move.json'),
+            ('OPERATION_LOCK', self.dir / 'operation.lock'),
         ):
             patcher = mock.patch.object(upgrade, target, value)
             patcher.start()
@@ -137,6 +139,30 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(self.upgrade(never_starts), 2)
         saved = json.loads(self.journal.read_text())
         self.assertEqual((saved['phase'], 'bash is not there' in saved['problem']), ('going_back', True))
+
+    def test_opensuse_python_repair_never_updates_the_system_during_an_upgrade(self):
+        script = (ROOT / 'install.sh').read_text()
+        start = script.index('if "$apply" && [[ "$family" == suse ]] && ! python3 -c')
+        block = script[start : script.index("\nif ! python3 -c 'import sys;", start)]
+        bin_dir = self.dir / 'bin'
+        bin_dir.mkdir()
+        for name, body in (('python3', 'exit 1'), ('zypper', 'echo zypper "$@" >> "$CALLS"')):
+            (bin_dir / name).write_text('#!/bin/sh\n' + body + '\n')
+            (bin_dir / name).chmod(0o755)
+        calls = self.dir / 'calls'
+        program = 'zypper_run() { zypper "$@"; }\napply=true\nfamily=suse\nID=opensuse-leap\n' + block + '\n'
+
+        def run(**more):
+            env = {'PATH': f'{bin_dir}:/usr/bin:/bin', 'CALLS': str(calls), **more}
+            return subprocess.run(['bash', '-c', program], env=env, capture_output=True, text=True, check=False)
+
+        kept = run(NEKOSERVER_KEEP_SYSTEM='1')
+        self.assertEqual(kept.returncode, 4)
+        self.assertIn('does not update the system', kept.stderr)
+        self.assertFalse(calls.exists())  # zypper never ran
+        # Setup started by hand still brings Leap up to date.
+        run()
+        self.assertIn('zypper update --no-recommends', calls.read_text())
 
     def test_a_download_that_is_not_that_release_changes_nothing(self):
         for payload in (release(NEWER, version='0.0.1'), b'not an archive', release('v0.0.1Beta')):

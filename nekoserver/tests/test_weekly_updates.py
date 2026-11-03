@@ -129,11 +129,93 @@ class SignInTests(unittest.TestCase):
             mock.patch.object(account_setup, 'jellyfin', jellyfin),
             mock.patch.object(account_setup.store, 'update') as update,
         ):
-            self.assertTrue(account_setup.signs_in({}, 'jellyfin', client_factory=lambda app: mock.Mock()))
+            self.assertTrue(account_setup.signs_in({}, 'jellyfin', client_factory=lambda app, port=None: mock.Mock()))
         self.assertEqual(seen, [False])
         update.assert_not_called()  # the saved logins stay as they are
         with mock.patch.object(account_setup.store, 'get', return_value=None):
-            self.assertIsNone(account_setup.signs_in({}, 'jellyfin', client_factory=lambda app: mock.Mock()))
+            self.assertIsNone(account_setup.signs_in({}, 'jellyfin', client_factory=lambda app, port=None: mock.Mock()))
+
+    def test_a_held_back_immich_or_nextcloud_is_signed_in_on_its_own_port(self):
+        def container(project, service, source, inner, asked, given):
+            return json.dumps(
+                [
+                    {
+                        'State': {'Running': True},
+                        'Config': {
+                            'Labels': {
+                                'com.docker.compose.project': 'neko-' + project,
+                                'com.docker.compose.service': service,
+                            }
+                        },
+                        'Mounts': [{'Type': 'bind', 'Source': source}],
+                        'HostConfig': {'PortBindings': {inner: [{'HostIp': '127.0.0.1', 'HostPort': asked}]}},
+                        'NetworkSettings': {'Ports': {inner: [{'HostIp': '127.0.0.1', 'HostPort': given}]}},
+                    }
+                ]
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'compose/immich').mkdir(parents=True)
+            (root / 'compose/immich/compose.yaml').write_text('services: {}\n')
+            config = {'data_mount': str(root)}
+            inner = f'{account_setup.store.APPS["immich"][1]}/tcp'
+            fixed = str(account_setup.store.APPS['immich'][1])
+
+            def check(asked, given, quarantined=True, project='immich'):
+                answers = iter(
+                    [
+                        'a' * 12,
+                        container(project, 'immich-server', str(root / 'photos/immich-library'), inner, asked, given),
+                    ]
+                )
+                with mock.patch.object(account_setup, 'docker', side_effect=answers):
+                    return account_setup.verify_project(config, 'immich', quarantined=quarantined)
+
+            self.assertEqual(check(fixed, fixed, quarantined=False), int(fixed))  # as usual
+            self.assertEqual(check('0', '49153'), 49153)  # held back during the update
+            for asked, given, quarantined in (
+                ('0', '49153', False),  # only the update's login check accepts it
+                ('0', '80', True),  # never a low port
+                ('0', 'x', True),
+                ('8080', '8080', True),  # another fixed port: not the app's
+            ):
+                with self.assertRaises(RuntimeError):
+                    check(asked, given, quarantined)
+            # Identity checks stay: another project's container on that port is refused.
+            with self.assertRaises(RuntimeError):
+                check('0', '49153', project='other')
+        # The login check signs in on the port it proved.
+        ports = []
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value={'username': 'a', 'password': 'p'}),
+            mock.patch.object(account_setup, 'verify_project', return_value=49153) as proved,
+            mock.patch.object(account_setup, 'wait'),
+            mock.patch.object(account_setup, 'immich'),
+        ):
+            account_setup.signs_in(
+                {}, 'immich', client_factory=lambda app, port=None: ports.append(port) or mock.Mock()
+            )
+        self.assertEqual(ports, [49153])
+        self.assertEqual(proved.call_args.kwargs, {'quarantined': True})
+
+    def test_nextcloud_with_two_factor_is_not_known_never_signed_in(self):
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value={'username': 'a', 'password': 'p'}),
+            mock.patch.object(account_setup, 'verify_project', return_value=8080),
+            mock.patch.object(account_setup, 'wait'),
+            mock.patch.object(account_setup, 'nextcloud', return_value=account_setup.NEXTCLOUD_TWO_FACTOR),
+        ):
+            self.assertIsNone(
+                account_setup.signs_in({}, 'nextcloud', client_factory=lambda app, port=None: mock.Mock())
+            )
+        with (
+            mock.patch.object(account_setup.store, 'get', return_value={'username': 'a', 'password': 'p'}),
+            mock.patch.object(account_setup, 'verify_project', return_value=8080),
+            mock.patch.object(account_setup, 'wait'),
+            mock.patch.object(account_setup, 'nextcloud', return_value=None),
+        ):
+            self.assertTrue(account_setup.signs_in({}, 'nextcloud', client_factory=lambda app, port=None: mock.Mock()))
 
     def test_without_sudo_nothing_is_tried(self):
         with mock.patch.object(self.tool.os, 'geteuid', return_value=1000):

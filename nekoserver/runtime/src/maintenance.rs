@@ -109,6 +109,28 @@ fn roots(names: &[String]) -> (Vec<String>, Vec<String>) {
     // App password files are never archived in plain text: see encrypt_secrets.
     (data, media)
 }
+/// What a rollback puts back: the paths this run's snapshot holds (its manifest) for
+/// the apps this run changed (its journal), nothing else. An app update snapshots only
+/// its own app; asking for every app set up would find the others missing and stop the
+/// rollback half-way ("Rollback state incomplete"). A snapshot made without a backup key
+/// holds the password list (secrets/accounts) in data.tar too.
+fn rollback_paths(apps: &[String], manifest: &Value) -> (Vec<String>, Vec<String>) {
+    let wanted = roots(apps);
+    let held = |kind: &str, ours: &[String], extra: &[&str]| -> Vec<String> {
+        manifest["paths"][kind]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|p| ours.iter().any(|o| o == p) || extra.contains(p))
+            .map(str::to_string)
+            .collect()
+    };
+    (
+        held("data", &wanted.0, &["secrets/accounts"]),
+        held("media", &wanted.1, &[]),
+    )
+}
 /// What data.tar and media.tar hold. Without a backup key the app password list
 /// (secrets/accounts) goes into data.tar too, root-only and disclosed in the manifest
 /// ("unencrypted_in_data_tar"): no encrypted archive is written then, and leaving it
@@ -1512,14 +1534,13 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             journal["restored"] = json!([]);
             save_journal(&journal)?;
         }
-        let mut allowed = roots(&names(cfg)?);
-        let has_accounts = snapshot_manifest["paths"]["data"]
-            .as_array()
-            .is_some_and(|paths| paths.iter().any(|p| p == "secrets/accounts"));
-        // A snapshot made without a backup key holds the password list in data.tar.
-        if has_accounts {
-            allowed.0.push("secrets/accounts".to_string());
-        }
+        let apps: Vec<String> = journal["models"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let allowed = rollback_paths(&apps, &snapshot_manifest);
         for (kind, root, paths) in [
             ("data", Path::new(string(cfg, "data_mount")?), allowed.0),
             ("media", Path::new(string(cfg, "media_mount")?), allowed.1),
@@ -2431,9 +2452,14 @@ fn run_of(run: &Path, app: &str) -> bool {
 }
 /// Keep the newest UPDATE_SNAPSHOTS complete update snapshots of `app` (an update that
 /// was installed); older ones go, and so does an unfinished one older than those (its
-/// update was undone, or cut off and finished). Never the one `current` or a journal
-/// names, nor a folder that is not the worker's own.
-fn prune_updates(media: &Path, app: &str, current: Option<&str>) -> Result<Value> {
+/// update was undone, or cut off and finished). Of the unfinished ones newer than those,
+/// only the newest stays (to look into): updates that keep failing would otherwise pile
+/// up a snapshot on the HDD and the failed app data on the SSD each week. Old ones go
+/// only while the complete ones kept in their place pass their checksum check, as for
+/// the monthly snapshots. With a run, its rollback's copies on the SSD
+/// (`<app>.neko-failed-<run>`) go too. Never the one `current` or a journal names, nor a
+/// folder that is not the worker's own.
+fn prune_updates(data: &Path, media: &Path, app: &str, current: Option<&str>) -> Result<Value> {
     let journal = load(Path::new(JOURNAL)).ok();
     let protected = |run: &str| Some(run) == current || journal_names(journal.as_ref(), run);
     let folder = media.join(UPDATE_FOLDER);
@@ -2445,24 +2471,94 @@ fn prune_updates(media: &Path, app: &str, current: Option<&str>) -> Result<Value
         .iter()
         .filter(|r| folder.join(r).join("result.json").is_file())
         .collect();
-    let oldest_kept = complete
-        .len()
-        .checked_sub(UPDATE_SNAPSHOTS)
-        .map(|cut| complete[cut]);
     let mut removed = vec![];
-    if let Some(oldest_kept) = oldest_kept {
-        let at = mine.iter().position(|r| r == oldest_kept).unwrap_or(0);
-        for run in &mine[..at] {
-            if protected(run) {
-                continue;
-            }
-            match remove_run(&folder.join(run)) {
-                Ok(()) => removed.push(json!(run)),
-                Err(e) => println!("App update snapshots: {run} kept ({e})"),
-            }
+    let cut = complete.len().saturating_sub(UPDATE_SNAPSHOTS);
+    let damaged: Vec<&String> = if cut > 0 {
+        complete[cut..]
+            .iter()
+            .filter(|r| verify(&folder.join(r)).is_err())
+            .copied()
+            .collect()
+    } else {
+        vec![]
+    };
+    // The runs older than the oldest one kept, when those kept are intact.
+    let older = match complete.get(cut) {
+        Some(oldest_kept) if cut > 0 && damaged.is_empty() => {
+            mine.iter().position(|r| &r == oldest_kept).unwrap_or(0)
+        }
+        _ => 0,
+    };
+    let unfinished_newer: Vec<&String> = mine[older..]
+        .iter()
+        .filter(|r| !complete.contains(r))
+        .collect();
+    let mut going: Vec<&String> = mine[..older].iter().collect();
+    if let Some((_, older_unfinished)) = unfinished_newer.split_last() {
+        going.extend(older_unfinished);
+    }
+    for run in going {
+        if protected(run) {
+            continue;
+        }
+        if let Err(e) = remove_update_run(data, &folder, run, &mut removed) {
+            println!("App update snapshots: {run} kept ({e})");
         }
     }
-    Ok(json!({"app": app, "keep": UPDATE_SNAPSHOTS, "removed": removed}))
+    let mut report = json!({"app": app, "keep": UPDATE_SNAPSHOTS, "removed": removed});
+    if !damaged.is_empty() {
+        let names: Vec<&str> = damaged.iter().map(|r| r.as_str()).collect();
+        println!(
+            "App update snapshots of {app}: older ones kept, {} failed its checksum check",
+            names.join(", ")
+        );
+        report["held_back"] = json!(names);
+    }
+    Ok(report)
+}
+/// One update snapshot off the HDD, and its rollback's copies off the SSD.
+fn remove_update_run(
+    data: &Path,
+    folder: &Path,
+    run: &str,
+    removed: &mut Vec<Value>,
+) -> Result<()> {
+    remove_run(&folder.join(run))?;
+    removed.push(json!(run));
+    for copy in failed_copies(data, run)? {
+        fs::remove_dir_all(common::safe(&copy)?)?;
+        removed.push(json!({"run": run, "drive": "ssd", "failed_update": copy}));
+    }
+    Ok(())
+}
+/// An update that does not fit: the unfinished update snapshots of `app` (its updates
+/// that were undone) are removed, oldest first, until it fits, with their copies on the
+/// SSD; a complete one is never removed for room. Without this a failed update's
+/// snapshot could take the room the next update needs, and nothing would ever free it.
+fn make_update_room(data: &Path, media: &Path, app: &str, retention: &mut Value) -> Result<()> {
+    let journal = load(Path::new(JOURNAL)).ok();
+    let folder = media.join(UPDATE_FOLDER);
+    let mut removed = vec![];
+    for run in update_runs(media)? {
+        let path = folder.join(&run);
+        if !run_of(&path, app)
+            || path.join("result.json").is_file()
+            || journal_names(journal.as_ref(), &run)
+        {
+            continue;
+        }
+        match remove_update_run(data, &folder, &run, &mut removed) {
+            Ok(()) => println!(
+                "App update snapshots: unfinished snapshot {run} of {app} removed to make room"
+            ),
+            Err(e) => println!("App update snapshots: {run} kept ({e})"),
+        }
+        break;
+    }
+    if let Some(list) = retention["removed"].as_array_mut() {
+        list.extend(removed);
+    }
+    Ok(())
 }
 /// A full HDD: the unfinished monthly snapshots (cut off, or their restore test failed)
 /// that retention still keeps are removed, oldest first, until the run fits (`wanted`
@@ -2941,8 +3037,12 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
     // A weekly USB copy at work (also when the check above was left out, or the USB
     // drive was not checked) is waited for before any app stops; a later one sees this
     // run and does not start (backup::no_weekly_copy).
-    common::stage("waiting for a weekly USB copy at work to finish");
-    backup::no_weekly_copy()?;
+    // An app update holds the USB drive's lock already (update_apps, before the
+    // backups' lock); the monthly run, which a weekly copy sees and stays out of, waits here.
+    if audit {
+        common::stage("waiting for a weekly USB copy at work to finish");
+        backup::no_weekly_copy()?;
+    }
     mounts(cfgpath, cfg, false)?;
     let data = Path::new(string(cfg, "data_mount")?);
     let media = Path::new(string(cfg, "media_mount")?);
@@ -3051,7 +3151,7 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
             }
             common::atomic_json(
                 &snapshot.join("result.json"),
-                &json!({"status":"pass","updated_at":common::now(),"restore_test":"pass","snapshot":"hdd","images":updated}),
+                &json!({"status":"pass","updated_at":common::now(),"restore_test":if audit {"pass"} else {"not_run"},"snapshot":"hdd","images":updated}),
             )?;
             set_phase("committed")
         },
@@ -3065,7 +3165,7 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
         if audit {
             prune_monthly(data, media, keep_snapshots(cfg), Some(&run))
         } else {
-            prune_updates(media, &names[0], Some(&run))
+            prune_updates(data, media, &names[0], Some(&run))
         }
     }) {
         Ok(report) => report,
@@ -3125,7 +3225,7 @@ fn room(
     let mut retention = if audit {
         prune_monthly(data, media, keep_snapshots(cfg), None)?
     } else {
-        prune_updates(media, &names[0], None)?
+        prune_updates(data, media, &names[0], None)?
     };
     let (ssd, hdd) = space_needed(app_bytes, media_bytes, image_bytes(names)?);
     // The USB drive is not used by monthly maintenance.
@@ -3135,6 +3235,15 @@ fn room(
         let wanted = needed.saturating_add(reserve);
         if have < wanted && what == "HDD" && audit {
             have = make_room(media, &mut retention, wanted)?;
+        }
+        // An update: its own undone updates' snapshots (HDD) and their failed app data (SSD).
+        while have < wanted && !audit {
+            let before = retention["removed"].as_array().map_or(0, Vec::len);
+            make_update_room(data, media, &names[0], &mut retention)?;
+            if retention["removed"].as_array().map_or(0, Vec::len) == before {
+                break;
+            }
+            have = drive_space(root)?.0;
         }
         if have < wanted {
             let unfinished = if what == "HDD" {
@@ -3342,13 +3451,17 @@ fn clean_images(
     for other in names(cfg)?.iter().filter(|n| n.as_str() != app) {
         stay.extend(last_replaced(media, run, other));
     }
+    let waiting: Vec<String> = older.intersection(&stay).cloned().collect();
     older.retain(|id| !stay.contains(id));
     let own = own_repositories(updated, &image_tags);
     let removed = prune_images(&older, updated, models, &|id| {
         image_tags(id).is_some_and(|tags| only_ours(&tags, &own))
             && docker(&["image", "rm", id]).is_ok()
     });
-    let recorded = still_recorded(&older, &removed, models, &|id| image_tags(id).is_some());
+    let mut recorded = still_recorded(&older, &removed, models, &|id| image_tags(id).is_some());
+    // Still needed now (a version waiting, another app's way back), but noted, so the
+    // daily check removes them once they are not.
+    recorded.extend(waiting);
     if let Err(e) = save_recorded_images(data, &recorded) {
         println!("App update: could not note the replaced images for the next clean-up ({e})");
     }
@@ -3692,6 +3805,13 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
     let settle = crate::updates::settle_days(cfg);
     let mut said = vec![];
     for name in &names {
+        // Docker keeps the images on the SSD: a download that would leave it with less
+        // than the reserve waits (the next check looks again), as an update would.
+        if let Some(why) = no_download_room(cfg, data, name, drive_space(data), image_bytes) {
+            println!("{name}: {why}; the next check tries again");
+            said.push(format!("{name}: {why}"));
+            continue;
+        }
         let (updated, immich_files, step, deferred) =
             match download_updates(cfg, std::slice::from_ref(name), data, media, &notes, &work) {
                 Ok(found) => found,
@@ -3744,6 +3864,15 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
     }
     crate::updates::save_pending(data, &pending)?;
     let _ = fs::remove_dir_all(common::safe(&work)?);
+    // The images of versions no longer waiting (a newer one replaced them, the app runs
+    // them now, setup changed the app): removed now, not only after an update installs.
+    let removed = clean_downloads(data, media, &models, &names);
+    if !removed.is_empty() {
+        println!(
+            "Update check: removed {} downloaded image(s) no version waiting needs any more",
+            removed.len()
+        );
+    }
     // NekoServer's own releases: noted for the NekoServer tab, never installed by
     // themselves (an upgrade is yours to start).
     let channel = crate::updates::channel(cfg);
@@ -3760,6 +3889,64 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
         Err(e) => said.push(format!("NekoServer releases: could not be looked up ({e})")),
     }
     Ok(said)
+}
+/// Why the daily check must not download `app`'s new images now, or None: the SSD
+/// (Docker's data folder) would keep less than the update's reserve
+/// (`maintenance.minimum_free_gb`, at most a fifth of the drive) after images as big as
+/// the ones the app runs now.
+fn no_download_room(
+    cfg: &Value,
+    data: &Path,
+    app: &str,
+    space: Result<(u64, u64)>,
+    images: fn(&[String]) -> Result<u64>,
+) -> Option<String> {
+    let setting = cfg["maintenance"]["minimum_free_gb"]
+        .as_u64()
+        .unwrap_or(20)
+        .saturating_mul(1 << 30);
+    let (free, drive) = match space {
+        Ok(found) => found,
+        Err(e) => {
+            return Some(format!(
+                "the free space on the SSD ({}) could not be read ({e})",
+                data.display()
+            ))
+        }
+    };
+    let need = images(&[app.to_string()]).unwrap_or(0);
+    let wanted = need.saturating_add(reserve_for(setting, drive));
+    (free < wanted).then(|| {
+        let gb = |b: u64| (b as f64 / 1e9).ceil() as u64;
+        format!(
+            "its new version was not downloaded: the SSD has {} GB free, and about {} GB are needed (images as big as the ones it runs now, plus the reserve)",
+            gb(free),
+            gb(wanted)
+        )
+    })
+}
+/// After the daily check: the images it downloaded (noted in OLD_IMAGES) that no
+/// version waiting, no app now and no last update's way back uses are removed from
+/// Docker; images of your own never (only IDs NekoServer noted, with only its names).
+/// Returns those removed. The ones still needed stay noted for a later clean-up.
+fn clean_downloads(data: &Path, media: &Path, models: &Value, names: &[String]) -> Vec<String> {
+    let noted = recorded_images(data);
+    let mut stay = crate::updates::waiting_images(data);
+    for name in names {
+        stay.extend(last_replaced(media, "", name));
+    }
+    let older: std::collections::BTreeSet<String> = noted.difference(&stay).cloned().collect();
+    let own = own_repositories(models, &image_tags);
+    let removed = prune_images(&older, models, &json!({}), &|id| {
+        image_tags(id).is_some_and(|tags| only_ours(&tags, &own))
+            && docker(&["image", "rm", id]).is_ok()
+    });
+    let mut recorded = still_recorded(&older, &removed, &json!({}), &|id| image_tags(id).is_some());
+    recorded.extend(noted.intersection(&stay).cloned());
+    if let Err(e) = save_recorded_images(data, &recorded) {
+        println!("Update check: could not note the downloaded images for the next clean-up ({e})");
+    }
+    removed
 }
 /// The release a new Immich candidate's files name (IMMICH_VERSION in its .env).
 fn immich_release(folder: &Path) -> Result<String> {
@@ -3925,6 +4112,10 @@ pub fn update_apps(a: &Args) -> Result<()> {
     // "Update now" for one app (the dashboard starts nekoserver-update-now@<app>:<sig>):
     // exactly the version you chose there, whatever the time, through the same steps.
     let only = update_now_target(&a.value("app", ""), &names(&cfg)?)?;
+    // Always the USB drive's lock first, then the backups' one (see backup::hold_usb):
+    // the other order, with a weekly copy waiting for the backups' lock, waits on itself.
+    common::stage("waiting for a weekly USB copy at work to finish");
+    let _usb = backup::hold_usb()?;
     let _lock = job_lock(&data)?;
     // Anything a cut-off run left is finished first (or undone).
     resume(&cfgpath, &cfg)?;
@@ -4434,9 +4625,15 @@ mod tests {
             .mode(0o700)
             .create(&dir)
             .unwrap();
+        let mut sums = json!({});
+        for key in ["data", "media", "images"] {
+            let archive = dir.join(format!("{key}.tar"));
+            fs::write(&archive, format!("{run} {key}")).unwrap();
+            sums[key] = json!(common::digest(&archive).unwrap());
+        }
         common::atomic_json(
             &dir.join("manifest.json"),
-            &json!({"format":"neko-maintenance-v1","kind":"update","apps":[app],"created_at":at}),
+            &json!({"format":"neko-maintenance-v1","kind":"update","apps":[app],"created_at":at,"sha256":sums}),
         )
         .unwrap();
         if let Some(c) = old {
@@ -4460,7 +4657,7 @@ mod tests {
         update_run(&media, "200-1", "jellyfin", 200.0, true, None);
         update_run(&media, "250-1", "immich", 250.0, true, None);
         update_run(&media, "300-1", "jellyfin", 300.0, true, None);
-        let report = prune_updates(&media, "jellyfin", Some("300-1")).unwrap();
+        let report = prune_updates(&root.join("ssd"), &media, "jellyfin", Some("300-1")).unwrap();
         assert_eq!(report["removed"], json!(["100-1", "150-1"]));
         // Another app's snapshot is never touched by this one's retention.
         assert_eq!(update_runs(&media).unwrap(), ["200-1", "250-1", "300-1"]);
@@ -4480,6 +4677,91 @@ mod tests {
             app_history(&media, "sonarr"),
             json!({"last_snapshot": null, "last_update": null})
         );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn an_update_takes_the_usb_lock_before_the_backups_lock() {
+        let source = include_str!("maintenance.rs");
+        let body = &source[source.find("pub fn update_apps(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.find("backup::hold_usb()?").unwrap() < body.find("job_lock(&data)?").unwrap());
+        // And the transaction never waits for that lock again (it would wait on itself).
+        let run = &source[source.find("fn transaction(").unwrap()..];
+        let run = &run[..run.find("\n}\n").unwrap()];
+        assert!(run.contains("if audit {\n        common::stage(\"waiting for a weekly USB copy"));
+        // The weekly copy takes the USB lock first, and the backups' one only later.
+        let backup = include_str!("backup.rs");
+        let copy = &backup[backup.find("fn usb_copy(").unwrap()..];
+        assert!(
+            copy.find("Path::new(USB_LOCK)").unwrap() < copy.find("copy_to_usb(&run)").unwrap()
+        );
+    }
+    #[test]
+    fn the_daily_check_downloads_only_with_room_and_clears_what_it_no_longer_needs() {
+        const GB: u64 = 1 << 30;
+        let cfg = json!({"maintenance": {"minimum_free_gb": 20}});
+        let images = |_: &[String]| -> Result<u64> { Ok(3 * GB) };
+        let data = Path::new("/srv/nekoserver");
+        // 500 GB SSD: 20 GB reserve + 3 GB of images.
+        assert!(
+            no_download_room(&cfg, data, "jellyfin", Ok((24 * GB, 500 * GB)), images).is_none()
+        );
+        let why =
+            no_download_room(&cfg, data, "jellyfin", Ok((22 * GB, 500 * GB)), images).unwrap();
+        assert!(why.contains("not downloaded"), "{why}");
+        assert!(no_download_room(&cfg, data, "jellyfin", Err(Error::new("x")), images).is_some());
+        // The check guards each download, and clears the images left over afterwards.
+        let source = include_str!("maintenance.rs");
+        let check = &source[source.find("fn look_for_updates(").unwrap()..];
+        let check = &check[..check.find("\n}\n").unwrap()];
+        assert!(
+            check.find("no_download_room(").unwrap() < check.find("download_updates(").unwrap()
+        );
+        assert!(check.contains("clean_downloads(data, media, &models, &names)"));
+        // An update's clean-up keeps noting the images still waiting, for that clean-up.
+        let clean = &source[source.find("fn clean_images(").unwrap()..];
+        assert!(clean[..clean.find("\n}\n").unwrap()].contains("recorded.extend(waiting);"));
+    }
+    #[test]
+    fn failed_updates_do_not_pile_up_and_a_damaged_snapshot_keeps_the_older_ones() {
+        let root = std::env::temp_dir().join(format!("neko-update-fails-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (ssd, media) = (root.join("ssd"), root.join("hdd"));
+        let failed = |run: &str| ssd.join(format!("appdata/jellyfin.neko-failed-{run}"));
+        update_run(&media, "100-1", "jellyfin", 100.0, true, None);
+        // Three weeks of updates that were undone, each leaving its failed app data.
+        for run in ["200-1", "300-1", "400-1"] {
+            update_run(&media, run, "jellyfin", 200.0, false, None);
+            fs::create_dir_all(failed(run).join("db")).unwrap();
+        }
+        let report = prune_updates(&ssd, &media, "jellyfin", None).unwrap();
+        // Only the newest undone one stays (to look into), with its failed app data.
+        assert_eq!(update_runs(&media).unwrap(), ["100-1", "400-1"]);
+        assert!(!failed("200-1").exists() && !failed("300-1").exists());
+        assert!(failed("400-1").exists());
+        assert!(report["removed"]
+            .to_string()
+            .contains("jellyfin.neko-failed-200-1"));
+        // An update that does not fit can free that one too (never a complete one).
+        let mut retention = json!({"removed": []});
+        make_update_room(&ssd, &media, "jellyfin", &mut retention).unwrap();
+        assert_eq!(update_runs(&media).unwrap(), ["100-1"]);
+        assert!(!failed("400-1").exists());
+        make_update_room(&ssd, &media, "jellyfin", &mut retention).unwrap();
+        assert_eq!(update_runs(&media).unwrap(), ["100-1"]);
+        // Old complete ones go only while the newer ones kept pass their checksum check.
+        update_run(&media, "500-1", "jellyfin", 500.0, true, None);
+        update_run(&media, "600-1", "jellyfin", 600.0, true, None);
+        fs::write(media.join(UPDATE_FOLDER).join("600-1/data.tar"), b"bit rot").unwrap();
+        let report = prune_updates(&ssd, &media, "jellyfin", None).unwrap();
+        assert_eq!(report["held_back"], json!(["600-1"]));
+        assert_eq!(update_runs(&media).unwrap(), ["100-1", "500-1", "600-1"]);
+        update_run(&media, "600-1", "jellyfin", 600.0, true, None); // intact again
+        prune_updates(&ssd, &media, "jellyfin", None).unwrap();
+        assert_eq!(update_runs(&media).unwrap(), ["500-1", "600-1"]);
+        // A weekly update does not run the restore test, and its record says so.
+        let source = include_str!("maintenance.rs");
+        assert!(source.contains(r#""restore_test":if audit {"pass"} else {"not_run"}"#));
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -4544,7 +4826,7 @@ mod tests {
         assert!(body.contains("signed_in_again(data, &names[0])?;"));
         // And is snapshotted on its own, with its own retention, never the monthly one's.
         let room = &source[source.find("fn room(").unwrap()..];
-        assert!(room.contains("prune_updates(media, &names[0], None)?"));
+        assert!(room.contains("prune_updates(data, media, &names[0], None)?"));
         assert!(room.contains("&& audit {\n            have = make_room("));
     }
     #[test]
@@ -5450,6 +5732,28 @@ mod tests {
     fn image_ids_are_immutable() {
         assert!(image_id(&format!("sha256:{}", "a".repeat(64))));
         assert!(!image_id("nextcloud:latest"));
+    }
+    #[test]
+    fn a_rollback_puts_back_only_what_its_run_saved() {
+        // An update of Jellyfin alone, on a server with Immich and Nextcloud too.
+        let manifest = json!({"paths": {"data": ["appdata/jellyfin", "compose/jellyfin", "secrets/accounts"], "media": []}});
+        let (data, media) = rollback_paths(&["jellyfin".to_string()], &manifest);
+        assert_eq!(
+            data,
+            ["appdata/jellyfin", "compose/jellyfin", "secrets/accounts"]
+        );
+        assert!(media.is_empty());
+        // Never another app's folders, even if a manifest named them, nor one it lacks.
+        let wider = json!({"paths": {"data": ["appdata/jellyfin", "appdata/immich", "../etc"], "media": ["x"]}});
+        let (data, media) = rollback_paths(&["jellyfin".to_string()], &wider);
+        assert_eq!(data, ["appdata/jellyfin"]);
+        assert!(media.is_empty());
+        // The source: the journal's apps and the manifest, not every app set up.
+        let source = include_str!("maintenance.rs");
+        let recovery = &source[source.find("fn resume(cfgpath").unwrap()..];
+        let recovery = &recovery[..recovery.find("\n}\n").unwrap()];
+        assert!(recovery.contains("rollback_paths(&apps, &snapshot_manifest)"));
+        assert!(!recovery.contains("roots(&names(cfg)?)"));
     }
     #[test]
     fn update_now_names_the_app_and_the_version() {

@@ -92,7 +92,7 @@ def dnf_updates(text):
     for line in text.splitlines():
         parts = line.split()
         if len(parts) == 3 and '.' in parts[0] and not line.startswith(' ') and parts[0] != 'Obsoleting':
-            found.append({'name': parts[0].rsplit('.', 1)[0], 'from': '', 'to': parts[1], 'security': False})
+            found.append({'name': parts[0].rsplit('.', 1)[0], 'from': '', 'to': parts[1], 'security': None})
     return found
 
 
@@ -102,7 +102,7 @@ def zypper_updates(text):
     for line in text.splitlines():
         cells = [c.strip() for c in line.split('|')]
         if len(cells) >= 6 and cells[0] == 'v':
-            found.append({'name': cells[2], 'from': cells[3], 'to': cells[4], 'security': False})
+            found.append({'name': cells[2], 'from': cells[3], 'to': cells[4], 'security': None})
     return found
 
 
@@ -112,8 +112,42 @@ def pacman_updates(text):
     for line in text.splitlines():
         match = re.match(r'^(\S+) (\S+) -> (\S+)$', line.strip())
         if match:
-            found.append({'name': match[1], 'from': match[2], 'to': match[3], 'security': False})
+            found.append({'name': match[1], 'from': match[2], 'to': match[3], 'security': None})
     return found
+
+
+# A package's name from its full RPM name in an advisory list:
+# "openssl-libs-1:3.2.4-1.fc42.x86_64" -> "openssl-libs".
+RPM_NAME = re.compile(r'^(.+)-(?:\d+:)?[^-:]+-[^-]+\.(?:x86_64|aarch64|noarch|i686|ppc64le|s390x|armv7hl|riscv64)$')
+
+
+def dnf_security(text):
+    """`dnf updateinfo list --security --updates` (dnf4, and dnf5's alias of
+    `advisory list`): one advisory and package per line; the names of the packages."""
+    return {match[1] for line in text.splitlines() for word in line.split() if (match := RPM_NAME.match(word))}
+
+
+def arch_security(text):
+    """`arch-audit -u` (Arch's security tracker): "Package openssl is affected by
+    CVE-... Update to 3.4.1-1!"; the names of the packages a fixed version is out for."""
+    return {match[1] for line in text.splitlines() if (match := re.match(r'^Package (\S+) is affected by', line))}
+
+
+# Per family: the read-only query of which waiting updates fix a security issue, how to
+# read it, and why it may not be known. Debian and Ubuntu say so in the update list itself
+# (the repository's name); openSUSE's list of security patches names patches, not the
+# packages in it, so there it is not known.
+SECURITY_QUERIES = {
+    'fedora': (['dnf', '-q', 'updateinfo', 'list', '--security', '--updates'], (0,), dnf_security, None),
+    'rhel': (['dnf', '-q', 'updateinfo', 'list', '--security', '--updates'], (0,), dnf_security, None),
+    'arch': (
+        ['arch-audit', '-u'],
+        (0, 1),
+        arch_security,
+        'install arch-audit to see which updates fix a security issue (sudo pacman -S arch-audit)',
+    ),
+}
+SECURITY_UNKNOWN = {'suse': 'openSUSE lists security patches, not the packages in them'}
 
 
 # Per family: the read-only query of the updates waiting (the System tab,

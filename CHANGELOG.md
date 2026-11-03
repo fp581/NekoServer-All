@@ -1,5 +1,62 @@
 # Changelog
 
+## v0.45.4 — 2026-11-03
+
+Fixes for the project owner's three reviews of 0.45.3 (18 findings). Built on 0.45.3 (merge PR #56 first).
+
+**Tried for real:**
+- **The Immich restore test's isolation, with Docker in the lab:** a container on the test network reached a service on this PC, at the network's own address and at the PC's address. With the new firewall rules it reached neither, and the published port still answered. Adding the rules twice adds them once.
+- **openSUSE's Python repair step** was run in bash with stand-ins for `zypper` and `python3`: during an upgrade it stops (exit 4) without running zypper; run by hand, it still runs `zypper update`.
+
+Everything else was tested with the automated tests only.
+
+### Fixed: the two most serious
+- **A nightly restore stops when its folder's drive goes.** If the drive with the restore folder was unplugged or replaced part-way, the restore made its folders again at the same path and went on writing there: on the system disk, or on another drive. Now the folder is opened once and every file is made from that open folder; before each one, the path must still lead to it, and a folder on another drive is refused. That is how the photo restore already worked; both now share the same code.
+- **Failed app updates no longer fill the SSD.** Each update that was undone kept its failed app data (`appdata/<app>.neko-failed-<run>`), and nothing weekly ever removed it. Now it goes with its run's snapshot, and of the undone updates of an app only the newest is kept (to look into).
+
+### Fixed: backups and app updates
+- **Nextcloud users whose names start with a dot (`.alice`) are backed up.** Nextcloud allows those names; the USB copy skipped them without a word. Only a name the copy's own records use (`.neko-…`) can't be copied; that user is named in the report, and the copy is not called complete.
+- **The daily update check checks the room on the SSD before it downloads.** It downloads a new version's images only when the SSD keeps its reserve afterwards. Images of versions no longer waiting (replaced by a newer one, now running, or changed by setup) are removed after each check, not only after an update installs; an update's own clean-up keeps noting those still waiting, so they are removed later.
+- **Old app-update snapshots go only while the newer ones are intact**, as for the monthly ones. A newer snapshot that fails its checksum check keeps the older ones and is named.
+- **An update that does not fit can free its own undone updates' snapshots** (on the HDD, with their data on the SSD), oldest first; a complete snapshot is never removed for room.
+- **Update now and a weekly USB copy no longer wait on each other.** An update held the backups' lock while it waited for the USB drive's lock, and the USB copy then waited half an hour for the backups' lock and left out its fresh Nextcloud database copy. An update now takes the USB drive's lock first and keeps it to the end; a copy that starts meanwhile waits at its start, holding nothing.
+- **Nextcloud with two-factor sign-in is "not known" in the update's login check**, never "signed in": its saved password can't be tried.
+- **An app update's record no longer says its restore test passed** (`restore_test: "not_run"`); only the monthly check runs it.
+- **A NekoServer upgrade keeps its way back.** Setup's clean-up of earlier releases could remove the release an upgrade at work would put back (with a newer release that failed still kept, say), before the upgrade checked the result. Releases the upgrade's record names are kept, and every release when that record can't be read.
+- **The manual Immich restore test can't reach this PC or the network.** Its network only had IP masquerading off, which isn't a firewall: the restored app, with your production settings, could reach services on this PC. Two firewall rules now drop every connection it starts itself; without them the test does not start.
+
+- **Nextcloud accounts with a space or an apostrophe get their folders back on a new HDD.** After the files folder was given back on a new HDD, accounts like `Mary Smith` or `o'brien` were left out (the name check allowed neither, though Nextcloud does), and the file scan's errors went unseen, because `occ files:scan` ends with exit code 0 anyway. So setup said uploads worked again and dropped its note to finish the job. Now every account Nextcloud lists gets its folder, checked to be there, and its own scan, which must report 0 errors. Until every account is done, the note stays and the next setup tries again. An account name Nextcloud itself would not accept is named, never skipped.
+
+### Fixed: drive moves, the System tab and upgrades
+- **A move never offers a partition on the system's disk when the system is encrypted.** With `/` on an encrypted (LUKS) partition, the system's disk was taken to be that partition, so another partition of the same disk could be offered. Each filesystem is now traced down to its physical disks, through encryption, LVM and RAID.
+- **A backup at work stops a move** instead of being cut off half-way. A running backup is "activating" to systemd, not "active", so the move did not see it. Now it stops the timers first; if a job is still at work, it stops, and the apps run as before.
+- **openSUSE's system stays as it is during a NekoServer upgrade.** If Python needed newer libraries, setup brought the whole system up to date even during an upgrade from the dashboard. Now it stops and says to run setup in a terminal, as on Arch.
+- **The System check never writes onto the system disk.** With the SSD missing it wrote its answer under the SSD's empty folder. It now checks that the SSD is mounted first.
+- **Security fixes on Fedora, RHEL and Arch.** They were always shown as "not a security fix". Fedora and RHEL now ask `dnf updateinfo`; Arch asks `arch-audit` when it is installed. Where the system can't say (openSUSE, Arch without arch-audit), the tab says it is not known.
+- **The stable release of the version you run is not offered.** The check offered it, and the upgrade refused it, because both keep their files in the same folder and one can't be the way back to the other. Only a release with a newer version number is offered now.
+
+### Tests
+- A setup window test failed on CI by chance: a timestamp's digits held the PIN it checks is never recorded. It now leaves the times out of that check.
+- A test for each finding. The Python ones fail on 0.45.3; the Rust ones use functions 0.45.3 doesn't have, so they weren't run against it. The restore that loses its folder, the openSUSE step and the firewall rules are exercised for real (a real folder, bash, iptables).
+
+## v0.45.3 — 2026-11-03
+
+Fixes for the project owner's two reviews of 0.45.2: the drive move's end check, a move overlapping an upgrade, its /etc/fstab switch, finishing one whose apps did not start, an app update's rollback, and the login check of a held-back Immich or Nextcloud.
+
+**Tried for real** (the lab: Ubuntu 24.04 with systemd, two loop-device drives): a move with a commented-out /etc/fstab line naming the new drive (the real line was switched, the new drive mounted, data, links, owners and attributes kept); a `back` refused while another process held the operation lock (nothing changed). Docker (Compose 5.5) was asked what it records for a port it picks (`"0"` asked, the real one under NetworkSettings), which is what the login check now reads. Setup and the server check in the move, the rollback and a real Immich or Nextcloud update were tested with the automated tests only.
+
+### Fixed
+- **A drive move is checked at the end the way an upgrade is.** It took setup's exit code 1 as success, but that can also mean a step failed, so a move could say "Done" with broken apps. Now it notes which setup steps work before the move, and after setup and the restart it runs the upgrade's own check: those steps work again, the dashboard answers and every NekoServer service runs this release. If not, it says what, keeps its record, and `migrate.py resume` runs setup and the check again. `back` is checked the same way.
+- **A drive move and a NekoServer upgrade can't overlap any more, also from a terminal.** `upgrade.py` didn't look for an unfinished move's record. It does now, and both hold one operation lock (`/run/nekoserver-operation.lock`) from start to end, including when they finish a cut-off run (`resume` waits for the lock).
+- **Only the active `/etc/fstab` line counts.** The move skipped the switch when the new drive's UUID appeared anywhere in the file, even in a comment, and left the real line naming the old drive. Now it reads the one active line that mounts the folder, and after mounting it checks that the new drive is the one mounted there; if not, it stops and says so.
+- **Finishing a move whose apps did not start no longer talks about the old drive.** A restart failure after the switch was recorded like one before it, so `resume` said "the old drive, unchanged" while the new drive was in use. They are now recorded apart (`started_partly` after the switch), and `resume` starts them on the new drive and runs the check. A 0.45.2 record is told apart by which drive is mounted.
+
+- **A failed app update rolls back only that app.** An update snapshots only the app it updates, but the rollback asked for the folders of every app set up, found the others missing and stopped half-way ("Rollback state incomplete"), which left the update unfinished and every later one waiting. It now puts back only what that run's snapshot holds (its manifest) for the apps that run changed (its record).
+- **A healthy Immich or Nextcloud update passes its login check.** While an update is checked they run on a port Docker picks, on this computer only, but the login check accepted only their usual port, so it refused them, and the update was rolled back. The check now reads the held-back container's real port from Docker (on 127.0.0.1 only, never below 1024) and signs in there, with the same identity checks (its project, service, folder and that it runs). Only the update's login check accepts it.
+
+### Tests
+- A test for each fails on 0.45.2: setup's step failures found by the end check; a move refused while the operation lock is held, and an upgrade refused while a move is unfinished; a commented line naming the new drive; a mount of the wrong drive; apps that do not start after the switch, finished on the new drive (also from a 0.45.2 record). A rollback asks only for its own app's saved paths; the login check takes the held-back container's port and refuses a low or fixed other one, another project, or a check that is not the update's. The test stand-in for `mount` now mounts what /etc/fstab's active line names, as Linux does.
+
 ## v0.45.2 — 2026-11-02
 
 Fixes for the project owner's two reviews of 0.45.1: going back after a drive move, the settling of app updates, the restart check on the System tab, an Immich major's approval, an upgrade's setup that runs out of time, and Update now's version. Built on 0.45.1 (merge PR #54 first).

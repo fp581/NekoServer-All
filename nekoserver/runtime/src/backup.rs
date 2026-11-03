@@ -1863,11 +1863,20 @@ pub fn copy_cloud(
             .to_string_lossy()
             .to_string();
         let files = user_dir.join("files");
+        // A user is a folder with a "files" folder in it. Nextcloud allows names that
+        // start with a dot (".alice"), so those are users too; only the names the copy's
+        // own records use (".neko-...") cannot be one there, and are named, never skipped
+        // without a word.
         if is_nextcloud_internal(&user, internal)
-            || user.starts_with('.')
             || !fs::symlink_metadata(&user_dir)?.is_dir()
             || !fs::symlink_metadata(&files).is_ok_and(|m| m.is_dir())
         {
+            continue;
+        }
+        if user.starts_with(".neko-") {
+            refused.push(format!(
+                "{user} (every file of this Nextcloud user: the name is one NekoServer's backup uses for its own records)"
+            ));
             continue;
         }
         if fat_names {
@@ -3823,6 +3832,16 @@ pub fn no_weekly_copy() -> Result<()> {
         std::time::Duration::from_secs(8 * 3600),
     )
 }
+/// The USB drive's lock, held: an app update takes it before the backups' shared lock
+/// and keeps it to the end. A weekly copy that starts meanwhile waits for it at its
+/// start, holding nothing, instead of waiting at its Nextcloud database copy for the
+/// shared lock the update holds (half an hour, then that copy is left out).
+pub fn hold_usb() -> Result<fs::File> {
+    common::lock_wait(
+        Path::new(USB_LOCK),
+        std::time::Duration::from_secs(8 * 3600),
+    )
+}
 fn no_weekly_copy_at(lock: &Path, max: std::time::Duration) -> Result<()> {
     common::lock_wait(lock, max).map(drop)
 }
@@ -5669,14 +5688,19 @@ mod tests {
         write(&cloud.join("bob/files/todo.txt"), b"todo");
         write(&cloud.join("nextcloud.log"), b"log");
         write(&cloud.join(".ocdata"), b"");
+        write(
+            &cloud.join(".alice/files/dot.txt"),
+            b"a user whose name starts with a dot",
+        );
         let usb = root.join("usb");
         fs::create_dir_all(&usb).unwrap();
         let first = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
-        assert_eq!((first.copied, first.versions, first.skipped), (3, 0, 0));
+        assert_eq!((first.copied, first.versions, first.skipped), (4, 0, 0));
         assert!(first.complete());
         assert_eq!(
             names(&usb.join("nextcloud")),
             [
+                ".alice", // Nextcloud allows a name that starts with a dot
                 ".neko-inventory",
                 ".neko-ledger.json",
                 ".neko-ledger.lock",
@@ -5684,6 +5708,12 @@ mod tests {
                 "bob"
             ]
         );
+        // A user named like the copy's own records is named, and the copy not complete.
+        write(&cloud.join(".neko-inventory/files/x"), b"x");
+        let named = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+        assert!(!named.complete());
+        assert!(named.refused[0].starts_with(".neko-inventory (every file of this Nextcloud user"));
+        fs::remove_dir_all(cloud.join(".neko-inventory")).unwrap();
         assert_eq!(names(&usb.join("nextcloud/alice")), ["files"]);
         assert_eq!(
             fs::read(usb.join("nextcloud/alice/files/Documents/plan.odt")).unwrap(),
