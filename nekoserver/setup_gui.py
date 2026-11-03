@@ -385,7 +385,7 @@ class Window:
                 )
                 atomic_json(self.config_path, config)
                 if owner is not None and os.geteuid() == 0:
-                    os.chown(self.config_path, *owner)
+                    os.chown(self.config_path, *owner, follow_symlinks=False)
                 self.config = config
             if start:
                 self.frozen = True

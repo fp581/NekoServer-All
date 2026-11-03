@@ -110,7 +110,7 @@ def place(path, text, user, home, log):
             return
     tv.ensure_user_dir(path.parent, home, user)
     atomic_write(path, text, 0o755)
-    os.chown(path, user.pw_uid, user.pw_gid)
+    os.chown(path, user.pw_uid, user.pw_gid, follow_symlinks=False)
     if shutil.which('gio'):
         # GNOME shows a desktop launcher only once it is marked as trusted.
         subprocess.run(

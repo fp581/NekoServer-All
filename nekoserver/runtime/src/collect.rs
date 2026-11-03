@@ -1727,6 +1727,21 @@ fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
     });
     r
 }
+/// The apps the Tailscale gateway set up routes for (gateway_tools.py writes its report).
+fn remote_apps(report: &Path) -> Value {
+    let saved = common::json(report, 64_000);
+    if saved["format"] != "neko-gateway-v1" || saved["status"] != "configured" {
+        return json!([]);
+    }
+    json!(saved["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|a| a.len() <= 40 && a.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+        .take(20)
+        .collect::<Vec<_>>())
+}
 /// What the System tab shows (system_updates.py writes it daily, as root): names,
 /// versions, counts and reasons only, each shortened.
 fn system_updates(path: &Path) -> Value {
@@ -2348,6 +2363,13 @@ pub fn run(a: &Args) -> Result<()> {
         json!({"apps": []})
     };
     result["tv"] = tv(&cfg, ok.then_some(data));
+    // The apps the Tailscale gateway really publishes (its own report): only those get an
+    // "Open" link on a phone; the others' addresses lead nowhere.
+    result["remote_apps"] = if ok {
+        remote_apps(&data.join("reports/gateway-tailnet.json"))
+    } else {
+        json!([])
+    };
     result["integrity"] = integrity(data, ok, away);
     result["backup_key"] = json!(backup_key_ready());
     result["tailscale"] = tailscale_login(now);
@@ -2396,6 +2418,27 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn only_the_apps_the_gateway_publishes_get_a_phone_link() {
+        // The audit of 0.45.6: a phone got an "Open" link for every app with a Tailscale
+        // port, also for apps the gateway does not publish; those links led nowhere.
+        let dir = std::env::temp_dir().join(format!("neko-remote-apps-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let report = dir.join("gateway-tailnet.json");
+        assert_eq!(remote_apps(&report), json!([]));
+        fs::write(&report, r#"{"format":"neko-gateway-v1","status":"configured","services":["jellyfin","immich","../x"]}"#).unwrap();
+        assert_eq!(remote_apps(&report), json!(["jellyfin", "immich"]));
+        fs::write(
+            &report,
+            r#"{"format":"neko-gateway-v1","status":"pending","services":["jellyfin"]}"#,
+        )
+        .unwrap();
+        assert_eq!(remote_apps(&report), json!([]));
+        assert!(include_str!("../../dashboard/app.js")
+            .contains("words(state.status?.remote_apps).includes(id)"));
+        let _ = fs::remove_dir_all(dir);
+    }
     #[test]
     fn a_hung_drive_never_holds_up_the_dashboard() {
         use std::time::{Duration, Instant};

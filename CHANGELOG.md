@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.45.7 — 2026-11-03
+
+From a full audit of the code: five separate reviews (the dashboard and control service, the backups, app updates and rollback, setup, recovery and drive moves), each finding checked against the code before it was fixed. No finding allowed getting past the PIN, attacking the page from another site, or injecting commands. Each fix below has a test; the Python ones fail on 0.45.6.
+
+### Fixed: the more serious ones
+- **The daily check now pins each app by image ID, never by tag.** On a new server the check pinned every app by tag (`jellyfin:latest`). Its download then moved the tag, so running `sudo bash install.sh` before that app's first update night started the new image untested, with no snapshot; the dashboard also showed the new version as installed. It now pins what the containers run, by image ID, and re-pins pins made by tag. It downloads nothing for an app it can't pin.
+- **A monthly check whose restore test runs past the night is done, not run again.** It installs nothing, but it stopped at the night's end like an update would, and came back every night (all apps stopped for hours each time). Each such run counted as complete, so with `keep_snapshots` 3 the earlier months' snapshots were all removed within three nights.
+- **App updates and the monthly check no longer wait hours on each other.** The monthly run holds the backups' lock while it waits for the USB drive; an update held the USB drive's lock while it waited for the backups'. An update on the same night as a monthly retry, or "Update now" during a monthly run, stalled both for up to 3 hours. An update now never holds one of the two while waiting for the other.
+- **"Install at the next update night" works on a new server too.** 0.45.6 let the control service write the folder that stores your choice, but systemd skips a folder that doesn't exist when the service starts, and on a new server the first daily check creates it only hours later. Setup now makes the folder before starting the service.
+- **A drive move cut off before its switch, whose apps ran again, starts over.** If the switch failed (the old drive was busy) and the computer then restarted, the apps ran on the old drive. `resume` then switched to the new drive's older copy, so what was saved in between was missing from the server. Now `resume` sees the apps ran again and stops the move, keeping the old drive; run the move again.
+- **A Nextcloud user can't block the weekly USB copy by naming a file like the copy's own records.** A file called `notes.neko-latest`, `.neko-names.json` or `film.neko-part`, or a user called `neko-damaged`, was copied, then reported "missing" every week. That failed the copy and kept the monthly snapshot and updates waiting. Such names are now named in the report and not copied.
+
+### Fixed: smaller ones
+- **Notes on a USB drive are read without following links, and within a size.** This covers the current-version notes and the folder name records: a drive someone else prepared could link them to `/dev/zero` or a file outside the drive.
+- **A damaged copy that can't be repaired during the live Nextcloud or photo pass** (the file changed meanwhile) counts as a file in use; it no longer fails the whole copy.
+- **Setup never changes a file's owner through a link.** It wrote into folders the desktop user owns (the Steam launcher, the desktop link), then changed owners by path. A link swapped in meanwhile would have been followed.
+- **A NekoServer upgrade cut off part-way leaves no record behind.** A download cut short, or a check that got half a reply, ended the upgrade with an error and left its record, so app updates and the monthly check waited until the next restart. The download now just fails ("this server stays on …"); a failed check puts the previous release back.
+- **The update's login check works for a Nextcloud administrator whose name has a space** ("Mary Smith"); the command filter refused it.
+- **Each account on the server has its own PIN lockout.** A program of another account typing wrong PINs locked out the person at the server for up to a day.
+- **More room for slow connections.** A few dozen connections sending a byte now and then kept the dashboard's four workers busy; it now has 16, each held at most about 4 s.
+- **On a phone, "Open" shows only for apps the Tailscale gateway publishes.** It showed for every app with a Tailscale port, and those links led nowhere.
+- **A lighting change while OpenRGB hangs no longer says "unavailable" when it was saved.** The page and the web server now wait longer than the control service can take.
+- **The record that an update went in is written after its commit.** A run cut off in between left a record saying installed though it was undone.
+- **An update cut off after its commit is noted installed** (by resume), so it isn't installed again.
+- **An update's media check waits for the hourly one** instead of failing at once and undoing a good update.
+- **A downloaded Compose file can't gain rights NekoServer's apps don't have.** `volumes_from`, `cap_add`, a security option other than no-new-privileges, `userns_mode` and `cgroup` are refused.
+
+### Not changed
+- A narrow race in the backup copy (a parent folder swapped for a link between the check and the open) is still possible for someone who controls the app's files and wins it. A lost race stops the run, loudly. Closing it needs the copy rewritten to open every folder through the one above it; that's for a later release.
+
 ## v0.45.6 — 2026-11-03
 
 Found by using the Updates page in the lab (made-up versions waiting, a PIN set), and fixes for the project owner's review of 0.45.5.

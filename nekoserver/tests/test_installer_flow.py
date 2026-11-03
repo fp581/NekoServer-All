@@ -510,7 +510,7 @@ class ReasonsReachTheLogTests(unittest.TestCase):
             chowned = []
             with (
                 mock.patch('os.geteuid', return_value=0),
-                mock.patch('os.chown', side_effect=lambda p, u, g: chowned.append((u, g))),
+                mock.patch('os.chown', side_effect=lambda p, u, g, **kw: chowned.append((u, g))),
             ):
                 ctx.persist_config()
             self.assertEqual(chowned, [(path.stat().st_uid, path.stat().st_gid)])

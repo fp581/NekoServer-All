@@ -3189,3 +3189,21 @@ class QbittorrentLoginTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class OwnerChangeTests(unittest.TestCase):
+    def test_root_never_changes_an_owner_through_a_link(self):
+        # The audit of 0.45.6: root wrote a file into a folder the desktop user owns, then
+        # changed its owner by path, following a link swapped in meanwhile (/etc/shadow).
+        import re
+
+        found = []
+        for path in sorted(ROOT.glob('*.py')) + sorted((ROOT / 'modules').glob('*.py')):
+            for n, line in enumerate(path.read_text().splitlines(), 1):
+                if re.search(r'\bos\.chown\(', line) and 'follow_symlinks=False' not in line:
+                    found.append(f'{path.name}:{n}')
+        # neko_common chowns its own private temporary file and the folders it just made;
+        # snapshot_restore inside the restore's new root-only folder (symlinks restored as text).
+        self.assertEqual(
+            [f for f in found if not f.startswith(('neko_common.py', 'snapshot_restore.py', 'recovery_wizard.py'))], []
+        )

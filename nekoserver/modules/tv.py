@@ -159,7 +159,7 @@ def user_folder(item, user):
         ensure_directory(item, 0o755, user.pw_uid, user.pw_gid)
         return
     if left_by_a_cut_off_run(item):
-        os.chown(item, user.pw_uid, user.pw_gid)
+        os.chown(item, user.pw_uid, user.pw_gid, follow_symlinks=False)
     if not item.is_dir() or item.stat().st_uid != user.pw_uid:
         raise RuntimeError('Existing TV user directory has incompatible ownership/type')
 
@@ -224,7 +224,7 @@ def write_launchers(destinations, user, home, recorded):
         if path.exists() and (path.read_text(errors='replace') == text or not own_launcher(path, home, user, recorded)):
             continue
         atomic_write(path, text, 0o755)
-        os.chown(path, user.pw_uid, user.pw_gid)
+        os.chown(path, user.pw_uid, user.pw_gid, follow_symlinks=False)
 
 
 def sleep_blocked(run=command):

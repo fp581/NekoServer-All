@@ -116,7 +116,7 @@ def prepare_settings(root=ROOT, account=None):
     atomic_json(path, settings)
     if account is not None:
         # Readable and editable by the person who ran sudo, nobody else.
-        os.chown(path, account.pw_uid, account.pw_gid)
+        os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
     os.chmod(path, 0o600)
     return path, True
 
@@ -180,7 +180,7 @@ def take_earlier_settings(root=ROOT, account=None, prompt=input, output=print):
     path = Path(root) / SETTINGS
     atomic_json(path, read_json(source))
     if account is not None:
-        os.chown(path, account.pw_uid, account.pw_gid)
+        os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
     output('Copied them to ' + str(path) + '.')
     return True
 

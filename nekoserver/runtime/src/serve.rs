@@ -158,13 +158,18 @@ fn allowed(port: u16, public: Option<&str>) -> (Vec<String>, Vec<String>) {
     (hosts, origins)
 }
 
+/// How long the web server waits for the control service's answer.
+const CONTROL_WAIT: Duration = Duration::from_secs(15);
 /// Largest request body accepted (fan curves and colours are small).
 const MAX_BODY: usize = 4096;
 
 /// Ask the control service (one JSON line each way).
 fn ask_control(socket: &Path, request: &Value) -> std::result::Result<Value, &'static str> {
     let mut stream = UnixStream::connect(socket).map_err(|_| "E21")?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    // Longer than the control service may take itself: a lighting change waits for the
+    // lighting lock (up to about 6 s while OpenRGB does not answer) and then up to 3 s
+    // more; a shorter wait said "unavailable" though the change was saved.
+    let _ = stream.set_read_timeout(Some(CONTROL_WAIT));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
     writeln!(stream, "{request}").map_err(|_| "E21")?;
     let mut line = String::new();
@@ -301,21 +306,28 @@ pub fn peer_uid(tables: &[String], client: SocketAddr, server: SocketAddr) -> Op
 /// program is counted on its own (`program:<account>`), so it can't use up the wrong
 /// PINs that all devices share. When the tables can't be read, it counts as Tailscale.
 fn forwarded_source(server: &Server, stream: &TcpStream, named: Option<String>) -> Option<String> {
-    let tables = server
-        .tables
-        .iter()
-        .filter_map(|t| fs::read_to_string(t).ok())
-        .collect::<Vec<_>>();
-    let owner = match (stream.peer_addr(), stream.local_addr()) {
-        (Ok(client), Ok(here)) => peer_uid(&tables, client, here),
-        _ => None,
-    };
-    match owner {
+    match connection_owner(server, stream) {
         Some(uid) if uid != 0 => Some(format!("program:{uid}")),
         _ => named,
     }
 }
 
+/// The account of the program at the other end of a connection made on this computer
+/// (its connection table's owner column), or None when it can't be told.
+fn connection_owner(server: &Server, stream: &TcpStream) -> Option<u32> {
+    let tables = server
+        .tables
+        .iter()
+        .filter_map(|t| fs::read_to_string(t).ok())
+        .collect::<Vec<_>>();
+    match (stream.peer_addr(), stream.local_addr()) {
+        (Ok(client), Ok(here)) => peer_uid(&tables, client, here),
+        _ => None,
+    }
+}
+/// Requests answered at once, and connections that may wait for a worker.
+const WORKERS: usize = 16;
+const QUEUE: usize = 128;
 struct Server {
     assets: PathBuf,
     status: PathBuf,
@@ -415,7 +427,7 @@ fn merge_nvidia(value: &mut Value, status: &Value, now: f64) {
     }
 }
 fn handle(mut stream: TcpStream, server: &Server) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
     if !stream
         .peer_addr()
@@ -517,13 +529,14 @@ fn handle(mut stream: TcpStream, server: &Server) {
             && (hosts[0].starts_with(b"127.0.0.1:") || hosts[0].starts_with(b"localhost:"));
         let who = Who {
             local,
-            source: (!local)
-                .then(|| {
-                    let named =
-                        source_of(&values("tailscale-user-login"), &values("x-forwarded-for"));
-                    forwarded_source(server, &stream, named)
-                })
-                .flatten(),
+            source: if local {
+                // The account of the program on this computer that connected: each one's
+                // wrong PINs count on their own.
+                connection_owner(server, &stream).map(|uid| format!("account:{uid}"))
+            } else {
+                let named = source_of(&values("tailscale-user-login"), &values("x-forwarded-for"));
+                forwarded_source(server, &stream, named)
+            },
         };
         let token = values("x-neko-token")
             .first()
@@ -673,9 +686,12 @@ pub fn run(a: &Args) -> Result<()> {
         live: Mutex::new(Live::default()),
         tables: CONNECTION_TABLES.iter().map(PathBuf::from).collect(),
     });
-    let (tx, rx) = mpsc::sync_channel::<TcpStream>(32);
+    // Each connection holds a worker for at most about 4 s (a 3 s limit for the request,
+    // checked after reads that wait at most 1 s). With few workers, a few dozen slow
+    // connections kept every one busy and the page got no answer (the audit of 0.45.6).
+    let (tx, rx) = mpsc::sync_channel::<TcpStream>(QUEUE);
     let rx = Arc::new(Mutex::new(rx));
-    for _ in 0..4 {
+    for _ in 0..WORKERS {
         let rx = rx.clone();
         let server = server.clone();
         thread::spawn(move || loop {

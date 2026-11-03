@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.45.6Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.45.7Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -21,6 +21,7 @@ it got, so a power cut at any point is put right at the next start):
 
 import argparse
 import fcntl
+import http.client
 import json
 import os
 import re
@@ -65,7 +66,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.45.6Beta" or "0.45.6"; None for anything else."""
+    """(0, 44, 0) from "v0.45.7Beta" or "0.45.7"; None for anything else."""
     match = TAG.fullmatch(text if text.startswith('v') else 'v' + text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -303,16 +304,18 @@ def upgrade_held(
     record('downloading', journal, to=tag, previous=str(previous), log=str(log_file), before=sorted(before))
     try:
         project = download(tag, work, get)
-    except (RuntimeError, OSError, tarfile.TarError) as exc:
+    except DOWNLOAD_ERRORS as exc:
+        # A download cut off part-way (a short archive, a connection closed early) is one
+        # of these too: the record goes, and app updates and the monthly check go on.
         journal.unlink(missing_ok=True)
-        out(f'{exc}; this server stays on {VERSION}')
+        out(f'{exc or type(exc).__name__}; this server stays on {VERSION}')
         return 1
     out(f'Setting up {tag} (this takes a while: it builds the background program). The log: {log_file}')
     record('installing', journal, project=str(project))
     problem = setup_problem(setup, project, settings, account, log_file)
     if problem is None:
         record('verifying', journal)
-        problem = (check or (lambda: verify(config, tag, before)))()
+        problem = checked(check or (lambda: verify(config, tag, before)))
     if problem is None:
         journal.unlink(missing_ok=True)
         out(f'NekoServer {tag} is installed and checked')
@@ -320,6 +323,20 @@ def upgrade_held(
     record('failed', journal, problem=problem)
     out(f'The upgrade to {tag} did not pass: {problem}. Putting {VERSION} back...')
     return go_back(previous, settings, account, log_file, out, setup, journal, before)
+
+
+# What a download, an archive or a check over the network can raise when it fails part-way.
+DOWNLOAD_ERRORS = (RuntimeError, OSError, tarfile.TarError, EOFError, ValueError, http.client.HTTPException)
+
+
+def checked(check):
+    """The check's answer: why the server does not pass it, or None. A check that itself
+    fails (the dashboard answering half a reply, say) is a failed check, never an error
+    that would leave the upgrade's record behind without putting the release back."""
+    try:
+        return check()
+    except DOWNLOAD_ERRORS as exc:
+        return f'the check could not be made ({exc or type(exc).__name__})'
 
 
 def verify(config, tag, before):
@@ -337,7 +354,7 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
     config = json.loads(settings_path(settings).read_text())
     problem = setup_problem(setup, previous, settings, account, log_file)
     if problem is None:
-        problem = (check or (lambda: verify(config, previous.name, before)))()
+        problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:
         journal.unlink(missing_ok=True)
         out(f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check')
@@ -379,7 +396,7 @@ def resume_held(settings, out, setup, journal):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('run', 'resume'))
-    parser.add_argument('--tag', help='with run: the release, such as v0.45.6Beta')
+    parser.add_argument('--tag', help='with run: the release, such as v0.45.7Beta')
     parser.add_argument(
         '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
     )

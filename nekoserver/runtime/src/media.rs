@@ -754,7 +754,15 @@ pub fn run(a: &Args) -> Result<()> {
             "Media report must use its fixed private destination",
         ));
     }
-    let _lock = common::lock(Path::new("/run/nekoserver-media-health.lock"))?;
+    // An update's own check (before it is committed) waits for an hourly check at work
+    // to end: failing at once would undo a good update (the audit of 0.45.6). The hourly
+    // check itself simply skips its hour.
+    let lock = Path::new("/run/nekoserver-media-health.lock");
+    let _lock = if a.flag("checking") {
+        common::lock_wait(lock, std::time::Duration::from_secs(10 * 60))?
+    } else {
+        common::lock(lock)?
+    };
     let selected = cfg["media"]["services"]
         .as_array()
         .ok_or_else(|| Error::new("Media services required"))?

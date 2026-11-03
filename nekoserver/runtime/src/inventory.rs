@@ -109,12 +109,15 @@ impl Inventory {
 /// saw it: the one its current-version note names, else the file's own first copy.
 fn current_copy(target: &Path) -> Option<String> {
     let folder = target.parent()?;
-    let noted = fs::read(crate::backup::latest_marker(target))
-        .ok()
-        .and_then(|b| String::from_utf8(b).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|n| !n.is_empty() && !n.contains('/') && n != "." && n != "..")
-        .filter(|n| fs::symlink_metadata(folder.join(n)).is_ok_and(|m| m.is_file()));
+    let noted = crate::common::bytes(
+        &crate::backup::latest_marker(target),
+        crate::backup::NOTE_LIMIT,
+    )
+    .ok()
+    .and_then(|b| String::from_utf8(b).ok())
+    .map(|s| s.trim().to_string())
+    .filter(|n| !n.is_empty() && !n.contains('/') && n != "." && n != "..")
+    .filter(|n| fs::symlink_metadata(folder.join(n)).is_ok_and(|m| m.is_file()));
     noted.or_else(|| {
         fs::symlink_metadata(target)
             .is_ok_and(|m| m.is_file())
@@ -329,6 +332,31 @@ pub(crate) fn finish_mirror(source: &Path, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_note_linked_elsewhere_is_never_followed() {
+        // The audit of 0.45.6: a USB drive someone else prepared could link a note to
+        // /dev/zero (root reads without end) or to a file outside the drive.
+        let root = std::env::temp_dir().join(format!("neko-note-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("photo.jpg");
+        fs::write(&target, b"first").unwrap();
+        fs::write(root.join("photo.neko-2.jpg"), b"second").unwrap();
+        fs::write(root.join("elsewhere"), b"photo.neko-2.jpg").unwrap();
+        std::os::unix::fs::symlink(
+            root.join("elsewhere"),
+            crate::backup::latest_marker(&target),
+        )
+        .unwrap();
+        assert_eq!(current_copy(&target).as_deref(), Some("photo.jpg"));
+        fs::remove_file(crate::backup::latest_marker(&target)).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", crate::backup::latest_marker(&target)).unwrap();
+        assert_eq!(current_copy(&target).as_deref(), Some("photo.jpg"));
+        fs::remove_file(crate::backup::latest_marker(&target)).unwrap();
+        fs::write(crate::backup::latest_marker(&target), b"photo.neko-2.jpg").unwrap();
+        assert_eq!(current_copy(&target).as_deref(), Some("photo.neko-2.jpg"));
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn inventory_names_are_dated() {
         assert!(inventory_name("20261025T030000Z.json.gz"));

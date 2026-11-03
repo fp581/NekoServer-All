@@ -625,7 +625,13 @@ fn move_aside(
         // The folder's record of which version belongs to which file goes too.
         let names = object.with_file_name(NAMES);
         if names.is_file() && !parent.join(NAMES).exists() {
-            fs::copy(&names, parent.join(NAMES))?;
+            // Read without following a link and within a size, as every note on the USB
+            // drive is (a drive someone else prepared could link it anywhere).
+            common::atomic(
+                &parent.join(NAMES),
+                &common::bytes(&names, NOTE_LIMIT)?,
+                0o600,
+            )?;
         }
     }
     let mut moved = 0;
@@ -657,6 +663,9 @@ fn move_aside(
 /// (`name.ext` or one of its dated versions) that matches the file as the backup last
 /// saw it, so "restore the newest" restores that one, also after an edit was undone.
 /// A name too long for the note's own name is shortened (as neko_common.latest_note).
+/// The most a note on a backup drive (a current-version note, a folder's names record)
+/// is read: they hold a name or a short list of names.
+pub(crate) const NOTE_LIMIT: usize = 1_000_000;
 pub(crate) fn latest_marker(target: &Path) -> PathBuf {
     let name = target.file_name().unwrap_or_default().to_string_lossy();
     let room = NAME_MAX - ".".len() - ".neko-latest".len();
@@ -664,7 +673,7 @@ pub(crate) fn latest_marker(target: &Path) -> PathBuf {
 }
 fn mark_latest(target: &Path, current: &str, apply: bool) -> Result<()> {
     let marker = latest_marker(target);
-    if !apply || fs::read(&marker).is_ok_and(|b| b == current.as_bytes()) {
+    if !apply || common::bytes(&marker, NOTE_LIMIT).is_ok_and(|b| b == current.as_bytes()) {
         return Ok(());
     }
     common::atomic(&marker, current.as_bytes(), 0o600)
@@ -1157,7 +1166,7 @@ fn archive_with(
             // tidying up): left for the next run, as the Nextcloud copy does.
             let kept = match kept_copy(path, &target, apply, 0o644, check, expected.as_deref()) {
                 Ok(kept) => kept,
-                Err(e) if e.to_string().contains("changed") || !path.exists() => {
+                Err(e) if in_use_now(&e, path) => {
                     in_use += 1;
                     if path.exists() {
                         live.add(&target, &archive);
@@ -1174,8 +1183,13 @@ fn archive_with(
                 // The Immich original still matches what was recorded: it is the
                 // trusted copy, so the damaged archive file is replaced from it.
                 Added::Damaged if apply && kept.source_sha256 == expected => {
-                    replace_damaged(path, &target, &quarantine.join(&key))?;
-                    report.repaired += 1;
+                    match replace_damaged(path, &target, &quarantine.join(&key)) {
+                        Ok(()) => report.repaired += 1,
+                        // Changed (or gone) while it was copied: like any file in use,
+                        // copied next time; the damaged copy is kept aside.
+                        Err(e) if in_use_now(&e, path) => in_use += 1,
+                        Err(e) => return Err(e),
+                    }
                 }
                 Added::Damaged => report.damaged.push(key.clone()),
             }
@@ -1552,7 +1566,7 @@ pub fn mirror(source: &Path, dest: &Path, apply: bool, check: Check) -> Result<(
         for note in &notes {
             let target = dest.join(ledger_key(note, &source)?);
             let text = common::bytes(note, 4_000_000)?;
-            if fs::read(&target).ok().as_deref() != Some(text.as_slice()) {
+            if common::bytes(&target, 4_000_000).ok().as_deref() != Some(text.as_slice()) {
                 if let Some(parent) = target.parent() {
                     common::directory(parent, 0o755)?;
                 }
@@ -1662,6 +1676,11 @@ fn remove_emptied(source: &Path, dest: &Path, from: &Path) -> Result<()> {
     Ok(())
 }
 /// Keep the damaged copy aside (never delete) and put the verified file back.
+/// A copy that failed because its source changed (or went) meanwhile: an app still at
+/// work on it, as a live copy allows; anything else is a real failure.
+fn in_use_now(e: &Error, source: &Path) -> bool {
+    e.to_string().contains("changed") || !source.exists()
+}
 fn replace_damaged(source: &Path, target: &Path, quarantine: &Path) -> Result<()> {
     if let Some(parent) = quarantine.parent() {
         common::directory(parent, 0o700)?;
@@ -1873,7 +1892,7 @@ pub fn copy_cloud(
         {
             continue;
         }
-        if user.starts_with(".neko-") {
+        if user.starts_with(".neko-") || user == QUARANTINE {
             refused.push(format!(
                 "{user} (every file of this Nextcloud user: the name is one NekoServer's backup uses for its own records)"
             ));
@@ -1884,12 +1903,22 @@ pub fn copy_cloud(
         }
         walk(&files, &mut |path| {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if nextcloud_upload_in_progress(&name) || name.ends_with(".neko-part") {
+            if nextcloud_upload_in_progress(&name) {
                 return Ok(());
             }
             let relative = path
                 .strip_prefix(&files)
                 .map_err(|_| Error::new("Invalid relative path"))?;
+            // A name the copy uses for its own records (notes.neko-latest, .neko-names.json,
+            // an unfinished copy's .neko-part): its own reading leaves those out, so a user's
+            // file of that name would be reported missing every week. Named, not copied.
+            if metadata_name(&name) {
+                refused.push(format!(
+                    "{user}/{} (a name NekoServer's backup uses for its own records; rename it)",
+                    relative.display()
+                ));
+                return Ok(());
+            }
             // A name that is not valid text (made on another system with an old character
             // set) cannot go in the checksum list: that file is left out and named, not
             // the whole copy stopped.
@@ -1942,8 +1971,14 @@ pub fn copy_cloud(
                         Added::Same => {}
                         // The live file still matches the recorded checksum: repair the USB copy.
                         Added::Damaged if apply && kept.source_sha256 == expected => {
-                            replace_damaged(path, &target, &quarantine.join(&key))?;
-                            report.repaired += 1;
+                            match replace_damaged(path, &target, &quarantine.join(&key)) {
+                                Ok(()) => report.repaired += 1,
+                                Err(e) if in_use_now(&e, path) => {
+                                    skipped += 1;
+                                    skipped_files.push(format!("{user}/{}", relative.display()));
+                                }
+                                Err(e) => return Err(e),
+                            }
                         }
                         Added::Damaged => report.damaged.push(key.clone()),
                     }
@@ -1954,7 +1989,7 @@ pub fn copy_cloud(
                         record_kept(&mut ledger, &root, &kept, &mut report)?;
                     }
                 }
-                Err(e) if e.to_string().contains("changed") || !path.exists() => {
+                Err(e) if in_use_now(&e, path) => {
                     skipped += 1;
                     skipped_files.push(format!("{user}/{}", relative.display()));
                 }
@@ -5714,6 +5749,38 @@ mod tests {
         assert!(!named.complete());
         assert!(named.refused[0].starts_with(".neko-inventory (every file of this Nextcloud user"));
         fs::remove_dir_all(cloud.join(".neko-inventory")).unwrap();
+        // The audit of 0.45.6: a user's files named like the copy's own records, and a
+        // user named like its quarantine folder, were copied, then reported missing every
+        // week (the copy's own reading leaves those names out), failing the monthly run.
+        for name in [
+            "notes.neko-latest",
+            ".neko-names.json",
+            ".neko-1-2-3",
+            "film.neko-part",
+        ] {
+            write(&cloud.join("alice/files").join(name), b"user file");
+        }
+        write(&cloud.join("neko-damaged/files/x.txt"), b"x");
+        for _ in 0..2 {
+            let run = copy_cloud(&cloud, &usb, true, false, Check::Quick, None).unwrap();
+            assert!(
+                run.integrity.missing.is_empty(),
+                "{:?}",
+                run.integrity.missing
+            );
+            assert_eq!(run.refused.len(), 5, "{:?}", run.refused);
+            assert!(!run.complete());
+        }
+        assert!(!usb.join("nextcloud/alice/files/notes.neko-latest").exists());
+        for name in [
+            "notes.neko-latest",
+            ".neko-names.json",
+            ".neko-1-2-3",
+            "film.neko-part",
+        ] {
+            fs::remove_file(cloud.join("alice/files").join(name)).unwrap();
+        }
+        fs::remove_dir_all(cloud.join("neko-damaged")).unwrap();
         assert_eq!(names(&usb.join("nextcloud/alice")), ["files"]);
         assert_eq!(
             fs::read(usb.join("nextcloud/alice/files/Documents/plan.odt")).unwrap(),

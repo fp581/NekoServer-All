@@ -197,6 +197,10 @@ def socket_proxyd(places=None):
     return next((p for p in places or PROXYD_PLACES if p.is_file() and os.access(p, os.X_OK)), None)
 
 
+# Where the app updates keep what they found and what you chose (updates.rs FOLDER).
+UPDATES_FOLDER = 'backups/updates'
+
+
 def control_units(code, lighting, fans=True, data=None, proxyd=None):
     """The root control service (fans, lights, and restarting or closing apps from the
     dashboard) and, with lighting, OpenRGB's server and the link to it. The control
@@ -243,7 +247,7 @@ def control_units(code, lighting, fans=True, data=None, proxyd=None):
         # the only folders on the SSD it may write to.
         'NoNewPrivileges=yes\nProtectHome=yes\nProtectSystem=strict\nReadWritePaths='
         + str(CONTROL_CONFIG)
-        + (' -' + str(Path(data) / 'installer') + ' -' + str(Path(data) / 'backups/updates') if data else '')
+        + (' -' + str(Path(data) / 'installer') + ' -' + str(Path(data) / UPDATES_FOLDER) if data else '')
         + '\nPrivateTmp=yes\nProtectKernelModules=yes\nProtectControlGroups=yes\n'
         # CAP_KILL: closing an app someone opened on the desktop (their own user's process).
         # The computer's own loopback only: the apps answer there; nothing else is reached.
@@ -791,6 +795,11 @@ def run(ctx):
     write_files(folders, payloads, definitions)
     atomic_json(config, collector_settings(cfg, smart, interval))
     safe_path(data / 'dashboard-state').mkdir(mode=0o700, exist_ok=True)
+    # The control service may write here (the version chosen with "Install at the next
+    # update night"); systemd leaves out of ReadWritePaths a folder that is not there when
+    # the service starts, so it is made first, as the daily update check would make it.
+    for folder in ('backups', UPDATES_FOLDER):
+        safe_path(data / folder).mkdir(mode=0o700, exist_ok=True)
     start_services(definitions, code, True, ctx.log, fans=control)
     if not answers(port):
         raise RuntimeError(

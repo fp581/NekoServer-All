@@ -199,6 +199,19 @@ class SignInTests(unittest.TestCase):
         self.assertEqual(ports, [49153])
         self.assertEqual(proved.call_args.kwargs, {'quarantined': True})
 
+    def test_a_nextcloud_account_name_with_a_space_is_checked_too(self):
+        # The audit of 0.45.6: the command filter refused "Mary Smith", so the update's
+        # login check could not run for that administrator.
+        import re
+
+        for word in ('Mary Smith', "o'brien", '--', 'twofactorauth:state'):
+            self.assertTrue(re.fullmatch(account_setup.ARGUMENT, word), word)
+        for word in (' leading', 'a;b', '$(x)', '-x y', 'a\nb'):
+            self.assertFalse(re.fullmatch(account_setup.ARGUMENT, word), word)
+        source = (ROOT / 'account_setup.py').read_text()
+        self.assertIn("'twofactorauth:state', '--', username", source)
+        self.assertIn("'user:info', '--output=json', '--', entry['username']", source)
+
     def test_nextcloud_with_two_factor_is_not_known_never_signed_in(self):
         with (
             mock.patch.object(account_setup.store, 'get', return_value={'username': 'a', 'password': 'p'}),

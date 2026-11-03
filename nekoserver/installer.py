@@ -56,7 +56,7 @@ class Context:
             owner = (path.stat().st_uid, path.stat().st_gid) if path.exists() else None
             atomic_json(path, self.config)
             if owner is not None and os.geteuid() == 0:
-                os.chown(path, *owner)
+                os.chown(path, *owner, follow_symlinks=False)
 
 
 def read_json(path):
