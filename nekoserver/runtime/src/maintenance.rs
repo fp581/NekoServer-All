@@ -304,6 +304,29 @@ fn image_id(s: &str) -> bool {
     s.strip_prefix("sha256:")
         .is_some_and(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
 }
+/// A service asking for more than NekoServer's apps have: another container's volumes
+/// (around the folders `valid_model` checks), extra capabilities, another user namespace,
+/// cgroup or host name space, or a security option other than no-new-privileges. A
+/// downloaded Compose file (a new Immich release) with one is refused.
+fn widens_rights(v: &Value) -> bool {
+    let allowed = ["no-new-privileges:true", "no-new-privileges"];
+    [
+        "volumes_from",
+        "cap_add",
+        "userns_mode",
+        "cgroup",
+        "cgroup_parent",
+        "uts",
+    ]
+    .iter()
+    .any(|key| v.get(*key).is_some())
+        || v.get("security_opt").is_some_and(|o| {
+            o.as_array().is_none_or(|opts| {
+                opts.iter()
+                    .any(|o| !allowed.contains(&o.as_str().unwrap_or("")))
+            })
+        })
+}
 fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<()> {
     let services = model["services"]
         .as_object()
@@ -325,6 +348,7 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<(
             || v.get("pid").is_some()
             || v.get("ipc").is_some()
             || v.get("build").is_some()
+            || widens_rights(v)
         {
             return Err(Error::new("Unsupported Compose isolation"));
         }
@@ -1442,6 +1466,27 @@ fn resumable(journal: &Value, cfg: &Value) -> bool {
             .contains(&p)
         })
 }
+/// A committed run finished by resume: its record that the update went in (result.json,
+/// when it was cut off before writing it), and the version noted installed, so the
+/// update night does not install it again. Best effort: the update stands either way.
+fn finish_committed(journal: &Value, snapshot: &Path, data: &Path) {
+    let result = snapshot.join("result.json");
+    if !result.exists() {
+        let audit = journal["kind"] == "audit";
+        let _ = common::atomic_json(
+            &result,
+            &json!({"status":"pass","updated_at":common::now(),"restore_test":if audit {"pass"} else {"not_run"},"snapshot":"hdd","finished_by":"resume"}),
+        );
+    }
+    if let (Some(app), Some(sig)) = (
+        journal["candidate"]["app"].as_str(),
+        journal["candidate"]["sig"].as_str(),
+    ) {
+        if let Err(e) = crate::updates::installed(data, app, sig) {
+            println!("App update: {app} is installed, but it could not be noted ({e}); the next check notes it");
+        }
+    }
+}
 /// "0.39.5" as (0, 39, 5), to compare releases.
 fn release(text: &str) -> Option<(u64, u64, u64)> {
     let mut parts = text.split('.').map(|p| p.parse::<u64>().ok());
@@ -1478,6 +1523,7 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             &|file, name| live(file, name),
             &|file, name| health(file, &format!("neko-{name}"), name, wait, false, &snapshot),
         )?;
+        finish_committed(&journal, &snapshot, Path::new(string(cfg, "data_mount")?));
         fs::remove_file(JOURNAL)?;
         fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
         scrub_all(Path::new(string(cfg, "media_mount")?));
@@ -1822,23 +1868,57 @@ fn write_pins(data: &Path, name: &str, model: &Value) -> Result<()> {
     )
 }
 /// Before the first download: each app not pinned yet (no update has gone in for it) is
-/// pinned to the images it runs now. A download moves the app's tag (jellyfin:latest)
-/// to the new image; without the pin, the next `sudo bash install.sh` would start that
-/// image, untested and with no snapshot to go back to, when this run stops before its
-/// update (the night ran out, another download failed). Returns the apps pinned now.
+/// pinned to the images it runs now, by image ID. A download moves the app's tag
+/// (jellyfin:latest) to the new image; without the pin, or with a pin by tag, the next
+/// `sudo bash install.sh` would start that image, untested and with no snapshot to go
+/// back to. A pin by tag (0.42.0 to 0.45.6 wrote those from the daily check) is made
+/// again from what the app's containers run. Returns the apps pinned now.
 fn pin_unpinned(data: &Path, names: &[String], models: &Value) -> Result<Vec<String>> {
+    pin_unpinned_with(data, names, models, &|name, model| {
+        containers(name, model).map(drop)
+    })
+}
+fn pin_unpinned_with(
+    data: &Path,
+    names: &[String],
+    models: &Value,
+    running: &dyn Fn(&str, &mut Value) -> Result<()>,
+) -> Result<Vec<String>> {
     let mut pinned = vec![];
     for name in names {
-        let pins = data
-            .join("compose")
-            .join(name)
-            .join("maintenance-images.json");
-        if fs::symlink_metadata(&pins).is_err() {
-            write_pins(data, name, &models[name.as_str()])?;
-            pinned.push(name.clone());
+        if pinned_by_id(data, name) {
+            continue;
+        }
+        // What the containers run now (the image IDs), never the tags the settings name.
+        let mut model = models[name.as_str()].clone();
+        match running(name, &mut model) {
+            Ok(()) if model_images_all_ids(&model) => {
+                write_pins(data, name, &model)?;
+                pinned.push(name.clone());
+            }
+            Ok(()) | Err(_) => println!(
+                "{name}: not running as set up, so its images were not pinned yet; its new version is not looked for until it is"
+            ),
         }
     }
     Ok(pinned)
+}
+/// The app's pins (maintenance-images.json) name each image by ID.
+fn pinned_by_id(data: &Path, name: &str) -> bool {
+    let pins = data
+        .join("compose")
+        .join(name)
+        .join("maintenance-images.json");
+    fs::symlink_metadata(&pins).is_ok() && model_images_all_ids(&common::json(&pins, 64_000))
+}
+/// Every service of the model names its image by ID ("sha256:…").
+fn model_images_all_ids(model: &Value) -> bool {
+    model["services"].as_object().is_some_and(|services| {
+        !services.is_empty()
+            && services
+                .values()
+                .all(|v| image_id(v["image"].as_str().unwrap_or("")))
+    })
 }
 fn source_model(folder: &Path, name: &str) -> Result<Value> {
     let manifest = folder.join("compose.yaml");
@@ -3094,8 +3174,14 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
         clear_night_ran_out(data_root);
     }
     common::directory(Path::new("/etc/nekoserver-backups"), 0o700)?;
+    // The version an update installs, so a run cut off after its commit still marks it
+    // installed (resume): it is not found and installed once more.
+    let candidate = match plan {
+        Plan::Update(c) => json!({"app": c.app, "sig": c.sig}),
+        Plan::Audit => Value::Null,
+    };
     save_journal(
-        &json!({"format":"neko-maintenance-resume-v1","version":VERSION,"run":run,"kind":if audit {"audit"} else {"update"},"phase":"snapshot","snapshot":snapshot,"storage":cfg["storage"],"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"models":models,"containers":rows,"rehearsals":[]}),
+        &json!({"format":"neko-maintenance-resume-v1","version":VERSION,"run":run,"kind":if audit {"audit"} else {"update"},"phase":"snapshot","snapshot":snapshot,"storage":cfg["storage"],"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"models":models,"containers":rows,"rehearsals":[],"candidate":candidate}),
     )?;
     common::stage("stopping the apps for a consistent snapshot");
     stop(&rows)?;
@@ -3112,7 +3198,12 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
             &json!({"status":"pass","method":"isolated containers started from extracted backups with HTTP probes; Immich and Nextcloud databases restored and checked by SQL","at":common::now()}),
         )?;
     }
-    if !in_window() {
+    // An update waits for the next night when this one ended meanwhile. The monthly check
+    // installs nothing: done here (the snapshot and its restore test passed), it starts
+    // the apps again as they were, also past the night. Waiting would make it run again
+    // every night (all apps stopped for hours), and each run, complete, would push the
+    // earlier months' snapshots out of those kept.
+    if !audit && !in_window() {
         return Err(Error::new(
             "Night window ended; backups complete, updates deferred",
         ));
@@ -3149,11 +3240,14 @@ fn transaction(cfgpath: &Path, cfg: &Value, plan: &Plan) -> Result<Vec<String>> 
             for name in &names {
                 write_override(cfg, name, &updated[name])?;
             }
+            // Committed first, then the record that says so: a run cut off between the two
+            // is finished as the installed update it is (resume writes the record), and one
+            // cut off before both is undone with no record saying it was installed.
+            set_phase("committed")?;
             common::atomic_json(
                 &snapshot.join("result.json"),
                 &json!({"status":"pass","updated_at":common::now(),"restore_test":if audit {"pass"} else {"not_run"},"snapshot":"hdd","images":updated}),
-            )?;
-            set_phase("committed")
+            )
         },
     )?;
     // The update is committed. Cleanup is best effort: a failure here must never be
@@ -3630,6 +3724,31 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
 }
 /* ---------- weekly app updates (updates.rs keeps the versions found) ---------- */
 
+/// The USB drive's lock and the backups' one, for an app update. A weekly USB copy holds
+/// the USB lock and then takes the backups' lock for its Nextcloud database copy; the
+/// monthly run holds the backups' lock and then waits for the USB lock. Holding one while
+/// waiting for the other would make one of them wait hours for the other. So: the USB lock
+/// (waited for, holding nothing), then the backups' lock only if it is free at once;
+/// otherwise the USB lock goes back, the backups' lock is waited for (holding nothing),
+/// let go, and it starts again.
+fn both_locks<U, R>(
+    _data: &Path,
+    usb: impl Fn() -> Result<U>,
+    try_backups: impl Fn() -> Result<R>,
+    wait_backups: impl Fn() -> Result<R>,
+) -> Result<(U, R)> {
+    for _ in 0..12 {
+        let held = usb()?;
+        if let Ok(backups) = try_backups() {
+            return Ok((held, backups));
+        }
+        drop(held);
+        drop(wait_backups()?);
+    }
+    Err(Error::new(
+        "Another NekoServer job kept the USB drive or the backups busy; the update was not started (it is tried again at its next time)",
+    ))
+}
 /// The backups' shared lock, as the monthly run takes it: setup holding it for half an
 /// hour postpones the job (it is not a failure, and it runs at its next time).
 fn job_lock(data: &Path) -> Result<fs::File> {
@@ -3805,6 +3924,14 @@ fn look_for_updates(cfg: &Value, data: &Path, media: &Path) -> Result<Vec<String
     let settle = crate::updates::settle_days(cfg);
     let mut said = vec![];
     for name in &names {
+        // Never a download for an app not pinned by image ID: it would move the app's tag
+        // to an image setup would then start untested.
+        if !pinned_by_id(data, name) {
+            said.push(format!(
+                "{name}: not looked for (its images could not be pinned: is it running?)"
+            ));
+            continue;
+        }
         // Docker keeps the images on the SSD: a download that would leave it with less
         // than the reserve waits (the next check looks again), as an update would.
         if let Some(why) = no_download_room(cfg, data, name, drive_space(data), image_bytes) {
@@ -4112,11 +4239,16 @@ pub fn update_apps(a: &Args) -> Result<()> {
     // "Update now" for one app (the dashboard starts nekoserver-update-now@<app>:<sig>):
     // exactly the version you chose there, whatever the time, through the same steps.
     let only = update_now_target(&a.value("app", ""), &names(&cfg)?)?;
-    // Always the USB drive's lock first, then the backups' one (see backup::hold_usb):
-    // the other order, with a weekly copy waiting for the backups' lock, waits on itself.
-    common::stage("waiting for a weekly USB copy at work to finish");
-    let _usb = backup::hold_usb()?;
-    let _lock = job_lock(&data)?;
+    // Both the USB drive's lock and the backups' one, never one held while waiting for
+    // the other (see both_locks): a weekly copy takes them in one order, the monthly run
+    // in the other.
+    common::stage("waiting for a weekly USB copy or another job at work to finish");
+    let (_usb, _lock) = both_locks(
+        &data,
+        backup::hold_usb,
+        || common::lock(&data.join("installer/recovery.lock")),
+        || job_lock(&data),
+    )?;
     // Anything a cut-off run left is finished first (or undone).
     resume(&cfgpath, &cfg)?;
     if only.is_none() && !night(&cfg) {
@@ -4680,11 +4812,182 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
+    fn a_compose_file_never_gains_more_than_neko_servers_apps_have() {
+        // NekoServer's own apps' setting passes.
+        assert!(!widens_rights(
+            &json!({"image": "x", "security_opt": ["no-new-privileges:true"]})
+        ));
+        assert!(!widens_rights(&json!({"image": "x"})));
+        for extra in [
+            json!({"volumes_from": ["neko-nextcloud-nextcloud-1"]}),
+            json!({"cap_add": ["SYS_ADMIN"]}),
+            json!({"security_opt": ["apparmor:unconfined"]}),
+            json!({"security_opt": "seccomp:unconfined"}),
+            json!({"userns_mode": "host"}),
+            json!({"cgroup": "host"}),
+        ] {
+            assert!(widens_rights(&extra), "{extra}");
+        }
+        let source = include_str!("maintenance.rs");
+        let check = &source[source.find("fn valid_model(").unwrap()..];
+        assert!(check[..check.find("\n}\n").unwrap()].contains("|| widens_rights(v)"));
+    }
+    #[test]
+    fn an_updates_media_check_waits_for_the_hourly_one() {
+        let media = include_str!("media.rs");
+        let at = media
+            .find("let lock = Path::new(\"/run/nekoserver-media-health.lock\");")
+            .unwrap();
+        assert!(media[at..at + 400]
+            .contains("if a.flag(\"checking\") {\n        common::lock_wait(lock"));
+        // Within the time the update gives the whole check (900 s).
+        assert!(media[at..at + 400].contains("from_secs(10 * 60)"));
+        assert!(include_str!("maintenance.rs")
+            .contains("let (code, _) = common::command(&args, 900)?;"));
+    }
+    #[test]
+    fn a_run_cut_off_after_its_commit_is_recorded_and_noted_installed() {
+        let root = std::env::temp_dir().join(format!("neko-committed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (data, snapshot) = (root.join("ssd"), root.join("hdd/run"));
+        fs::create_dir_all(&snapshot).unwrap();
+        let mut pending = crate::updates::pending(&data);
+        crate::updates::record(
+            &data,
+            &mut pending,
+            "jellyfin",
+            ("abcdef0123456789", "10.11.3"),
+            1.0,
+            7,
+        )
+        .unwrap();
+        crate::updates::save_pending(&data, &pending).unwrap();
+        let journal =
+            json!({"kind": "update", "candidate": {"app": "jellyfin", "sig": "abcdef0123456789"}});
+        finish_committed(&journal, &snapshot, &data);
+        assert!(snapshot.join("result.json").is_file());
+        assert!(crate::updates::pending(&data)["apps"]["jellyfin"]
+            .as_array()
+            .is_none_or(Vec::is_empty));
+        // The order at the commit: the phase first, then the record.
+        let source = include_str!("maintenance.rs");
+        let commit = &source[source.find("Persist successful image identities").unwrap()..];
+        assert!(
+            commit.find("set_phase(\"committed\")?;").unwrap()
+                < commit.find("\"result.json\"").unwrap()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn apps_are_pinned_by_image_id_never_by_tag() {
+        let root = std::env::temp_dir().join(format!("neko-pins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("compose/jellyfin")).unwrap();
+        fs::create_dir_all(root.join("compose/immich")).unwrap();
+        let id = format!("sha256:{}", "a".repeat(64));
+        let tags = json!({"jellyfin": {"services": {"jellyfin": {"image": "jellyfin/jellyfin:latest"}}},
+            "immich": {"services": {"immich-server": {"image": "ghcr.io/immich-app/immich-server:v2"}}}});
+        // An old pin by tag (as 0.42.0 to 0.45.6 wrote) is made again from what runs.
+        common::atomic_json(
+            &root.join("compose/jellyfin/maintenance-images.json"),
+            &json!({"services": {"jellyfin": {"image": "jellyfin/jellyfin:latest"}}}),
+        )
+        .unwrap();
+        let running = |name: &str, model: &mut Value| -> Result<()> {
+            if name == "immich" {
+                return Err(Error::new("not running"));
+            }
+            for v in model["services"].as_object_mut().unwrap().values_mut() {
+                v["image"] = json!(format!("sha256:{}", "a".repeat(64)));
+            }
+            Ok(())
+        };
+        let pinned = pin_unpinned_with(
+            &root,
+            &["jellyfin".into(), "immich".into()],
+            &tags,
+            &running,
+        )
+        .unwrap();
+        assert_eq!(pinned, ["jellyfin"]);
+        let pins = common::json(
+            &root.join("compose/jellyfin/maintenance-images.json"),
+            64_000,
+        );
+        assert_eq!(pins["services"]["jellyfin"]["image"], json!(id));
+        assert!(pinned_by_id(&root, "jellyfin"));
+        // Not running: no pin by tag is written, and its new version is not downloaded.
+        assert!(!root.join("compose/immich/maintenance-images.json").exists());
+        assert!(!pinned_by_id(&root, "immich"));
+        let source = include_str!("maintenance.rs");
+        let check = &source[source.find("fn look_for_updates(").unwrap()..];
+        assert!(
+            check.find("if !pinned_by_id(data, name)").unwrap()
+                < check.find("download_updates(cfg").unwrap()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_monthly_check_that_runs_past_the_night_is_finished_not_repeated() {
+        let source = include_str!("maintenance.rs");
+        let body = &source[source.find("fn transaction(").unwrap()..];
+        let body = &body[..body.find("\nfn finish(").unwrap()];
+        let late = body
+            .find("\"Night window ended; backups complete, updates deferred\"")
+            .unwrap();
+        assert!(body[..late]
+            .trim_end()
+            .ends_with("if !audit && !in_window() {\n        return Err(Error::new("));
+    }
+    #[test]
     fn an_update_takes_the_usb_lock_before_the_backups_lock() {
         let source = include_str!("maintenance.rs");
         let body = &source[source.find("pub fn update_apps(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        assert!(body.find("backup::hold_usb()?").unwrap() < body.find("job_lock(&data)?").unwrap());
+        assert!(body.contains("both_locks(") && body.contains("backup::hold_usb,"));
+        // Never one held while waiting for the other: a stand-in where the backups' lock
+        // is busy at first lets the USB lock go before it waits.
+        use std::cell::RefCell;
+        let events = RefCell::new(vec![]);
+        let busy = std::cell::Cell::new(1);
+        struct Held<'a>(&'a RefCell<Vec<&'static str>>, &'static str);
+        impl Drop for Held<'_> {
+            fn drop(&mut self) {
+                self.0.borrow_mut().push(self.1);
+            }
+        }
+        let got = both_locks(
+            Path::new("/x"),
+            || {
+                events.borrow_mut().push("usb");
+                Ok(Held(&events, "usb released"))
+            },
+            || {
+                if busy.get() > 0 {
+                    busy.set(busy.get() - 1);
+                    Err(Error::new("busy"))
+                } else {
+                    events.borrow_mut().push("backups");
+                    Ok(Held(&events, "backups released"))
+                }
+            },
+            || {
+                events.borrow_mut().push("waited for backups");
+                Ok(Held(&events, "backups released"))
+            },
+        )
+        .unwrap();
+        drop(got);
+        assert_eq!(
+            events.borrow()[..5],
+            [
+                "usb",
+                "usb released",
+                "waited for backups",
+                "backups released",
+                "usb"
+            ]
+        );
         // And the transaction never waits for that lock again (it would wait on itself).
         let run = &source[source.find("fn transaction(").unwrap()..];
         let run = &run[..run.find("\n}\n").unwrap()];
@@ -6650,14 +6953,22 @@ mod tests {
         }
         // Sonarr was updated before: its pins are the update's and stay as they are.
         let earlier = data.join("compose/sonarr/maintenance-images.json");
-        fs::write(&earlier, b"{\"services\":{}}").unwrap();
+        let update = format!(
+            "{{\"services\":{{\"sonarr\":{{\"image\":\"{}\"}}}}}}",
+            id('c')
+        );
+        fs::write(&earlier, &update).unwrap();
         let models = json!({"jellyfin":{"services":{"jellyfin":{"image":id('a')}}},
                             "sonarr":{"services":{"sonarr":{"image":id('b')}}}});
         let names = vec!["jellyfin".to_string(), "sonarr".to_string()];
-        assert_eq!(pin_unpinned(&data, &names, &models).unwrap(), ["jellyfin"]);
+        let as_running = |_: &str, _: &mut Value| -> Result<()> { Ok(()) };
+        assert_eq!(
+            pin_unpinned_with(&data, &names, &models, &as_running).unwrap(),
+            ["jellyfin"]
+        );
         let pins = load(&data.join("compose/jellyfin/maintenance-images.json")).unwrap();
         assert_eq!(pins, json!({"services":{"jellyfin":{"image":id('a')}}}));
-        assert_eq!(fs::read(&earlier).unwrap(), b"{\"services\":{}}");
+        assert_eq!(fs::read(&earlier).unwrap(), update.as_bytes());
         // Before the first pull, in the run itself.
         let source = include_str!("maintenance.rs");
         let body = &source[source.find("fn transaction(").unwrap()..];

@@ -1128,7 +1128,8 @@ function appAddress(id) {
     return 'http://127.0.0.1:' + spec.port + '/';
   }
   const tailnet = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net$/i.test(location.hostname);
-  if (tailnet && spec.tailnet) {
+  // Only an app the Tailscale gateway publishes: another one's address leads nowhere.
+  if (tailnet && spec.tailnet && words(state.status?.remote_apps).includes(id)) {
     return 'https://' + location.hostname + ':' + spec.tailnet + '/';
   }
   return null; // a phone's "localhost" is the phone itself: never guess an address
@@ -1868,7 +1869,7 @@ function tokenHeader() {
 }
 async function postControl(op, body = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+  const timer = setTimeout(() => controller.abort(), 20000); // longer than the server waits for the control service (15 s)
   try {
     const response = await fetch('/api/control/' + op, {
       method: 'POST',

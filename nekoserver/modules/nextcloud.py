@@ -160,8 +160,8 @@ def files_folder_given_back(config, log, note=None):
     ensure_directory(files, 0o750)
     for marker in DATA_MARKERS:
         (files / marker).write_text('# Nextcloud data directory\n')
-        os.chown(files / marker, WWW_DATA, WWW_DATA)
-    os.chown(files, WWW_DATA, WWW_DATA)
+        os.chown(files / marker, WWW_DATA, WWW_DATA, follow_symlinks=False)
+    os.chown(files, WWW_DATA, WWW_DATA, follow_symlinks=False)
     log(
         'Nextcloud: its files folder on the HDD was empty (a new HDD?): made Nextcloud\'s own again, so it '
         'starts with no files. Get them back with  sudo bash install.sh --recover  (Nextcloud files, from '
@@ -608,7 +608,7 @@ def run(ctx):
             # Nextcloud/Apache writes as www-data; only newly empty application data is initialized.
             files = safe_path(Path(config['media_mount']) / FILES_FOLDER)
             if not any(files.iterdir()):
-                os.chown(files, WWW_DATA, WWW_DATA)
+                os.chown(files, WWW_DATA, WWW_DATA, follow_symlinks=False)
             password = chosen['password'] if chosen else secrets.token_hex(24)
             atomic_write(
                 env,

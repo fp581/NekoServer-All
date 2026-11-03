@@ -595,7 +595,7 @@ def _apply_lan(config):
     for folder in public:
         ensure_directory(folder, 0o755)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chown(state, user.pw_uid, user.pw_gid)
+    os.chown(state, user.pw_uid, user.pw_gid, follow_symlinks=False)
     notes = set_aside(aside)
     for p, content in payloads.items():
         atomic_write(p, content, 0o750 if p.name == native_runtime.NAME else 0o644)

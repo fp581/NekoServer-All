@@ -442,7 +442,13 @@ class FanAndLightControlTests(unittest.TestCase):
         self.assertIn(
             'ReadWritePaths=' + str(dashboard.CONTROL_CONFIG) + ' -/srv/n/installer -/srv/n/backups/updates\n', control
         )
-        self.assertIn('FOLDER: &str = "backups/updates"', (ROOT / 'runtime/src/updates.rs').read_text())
+        self.assertIn(f'FOLDER: &str = "{dashboard.UPDATES_FOLDER}"', (ROOT / 'runtime/src/updates.rs').read_text())
+        # The audit of 0.45.6: "-" leaves out a folder that is not there when the service
+        # starts, and on a new server the daily check makes it only later. Setup makes it
+        # before the service starts.
+        source = (ROOT / 'modules/dashboard.py').read_text()
+        run = source[source.index('def run(ctx):') :]
+        self.assertLess(run.index("for folder in ('backups', UPDATES_FOLDER):"), run.index('start_services('))
         self.assertIn('ProtectHome=yes', control)
         # The web server stays unprivileged and only gains the control socket's group.
         web = dashboard.units(Path('/srv/n'), self.code, Path('/etc/x.json'), 8787, 60, control=True)[dashboard.SERVICE]

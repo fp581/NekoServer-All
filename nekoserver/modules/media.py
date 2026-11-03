@@ -218,7 +218,7 @@ def app_folder(configs, target, uid, gid):
         ensure_directory(configs, 0o755)
         ensure_directory(target, 0o750, uid, gid)
     elif target.is_dir() and not target.is_symlink() and target.stat().st_uid == 0 and not any(target.iterdir()):
-        os.chown(target, uid, gid)
+        os.chown(target, uid, gid, follow_symlinks=False)
 
 
 def _run(context):

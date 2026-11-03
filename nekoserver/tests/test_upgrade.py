@@ -164,6 +164,30 @@ class UpgradeTests(unittest.TestCase):
         run()
         self.assertIn('zypper update --no-recommends', calls.read_text())
 
+    def test_a_download_or_check_cut_off_part_way_never_leaves_the_record_behind(self):
+        # The audit of 0.45.6: a short archive (EOFError) or a connection closed early
+        # (IncompleteRead) ended the upgrade with a traceback and left its record, which
+        # kept app updates and the monthly check waiting until the next restart.
+        import http.client
+
+        for error in (
+            EOFError('Compressed file ended before the end-of-stream marker was reached'),
+            http.client.IncompleteRead(b'x', 10),
+        ):
+            with self.subTest(type(error).__name__), mock.patch.object(upgrade, 'download', side_effect=error):
+                self.said.clear()
+                self.assertEqual(self.upgrade(self.setup(0)), 1)
+                self.assertFalse(self.journal.exists())
+                self.assertIn('this server stays on', self.said[-1])
+
+        # A check that fails itself is a failed check: the release you had is put back.
+        def broken():
+            raise http.client.BadStatusLine('half a reply')
+
+        self.assertEqual(self.upgrade(self.setup(0, 0), check=broken), 1)
+        self.assertIn('the check could not be made', ' '.join(self.said))
+        self.assertFalse(self.journal.exists())
+
     def test_a_download_that_is_not_that_release_changes_nothing(self):
         for payload in (release(NEWER, version='0.0.1'), b'not an archive', release('v0.0.1Beta')):
             with self.subTest(payload=payload[:20]):

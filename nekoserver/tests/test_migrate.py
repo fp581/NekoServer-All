@@ -423,6 +423,29 @@ class MoveTests(unittest.TestCase):
             self.assertEqual(migrate.connected_uuids(tmp), {'abcd-1234'})
         self.assertEqual(migrate.connected_uuids('/nonexistent'), set())
 
+    def test_a_move_cut_off_before_its_switch_whose_apps_ran_again_starts_over(self):
+        # The audit of 0.45.6: the switch failed (the old drive was busy), the computer
+        # restarted, and the apps ran on the old drive. Switching to the new drive's copy
+        # would lose what they wrote since.
+        cut_off = {
+            'drive': 'media_hdd',
+            'mount': '/mnt/nekoserver-media',
+            'old': {'uuid': 'hdd-0001', 'fstype': 'ext4'},
+            'new': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
+            'stopped': ['docker.service', 'nekoserver-app-backup.timer'],
+        }
+        migrate.record(self.journal, phase='switching', **cut_off)
+        with mock.patch.object(migrate, 'active', lambda units: [u for u in units if u == 'docker.service']):
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertIn('UUID=hdd-0001', self.fstab.read_text())  # never switched
+        self.assertIn("copy is not up to date. Start the move again", self.said[-1])
+        self.assertFalse(self.journal.exists())
+        # Nothing ran again (no restart): the switch is finished as before.
+        migrate.record(self.journal, phase='switching', **cut_off)
+        with mock.patch.object(migrate, 'active', lambda units: []):
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+        self.assertIn('UUID=newbig-0001', self.fstab.read_text())
+
     def test_back_takes_back_the_drive_asked_for(self):
         storage = json.loads(self.settings.read_text())
         storage['storage']['data_ssd']['previous_drive'] = {'uuid': 'oldssd-0001', 'fstype': 'ext4'}

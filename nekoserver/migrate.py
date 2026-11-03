@@ -736,16 +736,38 @@ def resume(settings, out=print, journal=JOURNAL, staging=STAGING, fstab=FSTAB):
     return with_operation(out, lambda: resume_held(settings, out, journal, staging, fstab), wait=True)
 
 
+def ran_again_on_old(saved, fstab):
+    """A move recorded as switching whose /etc/fstab still names the old drive, while
+    something it stopped (Docker, Samba, a NekoServer service) runs again."""
+    new = saved.get('new') or {}
+    if fstab_names_new(saved.get('mount', ''), new, fstab):
+        return False
+    stopped = [u for u in saved.get('stopped') or [] if isinstance(u, str) and UNIT.fullmatch(u)]
+    return bool(active(stopped))
+
+
 def resume_held(settings, out, journal, staging, fstab):
     saved = read(journal)
     if saved is None:
         return 0
     phase = saved.get('phase')
+    if phase == 'switching' and ran_again_on_old(saved, fstab):
+        # Not switched yet, and what the move stopped runs again (a restart started it on
+        # the old drive): what was written since is not on the new drive, so switching to
+        # it would lose it. The move starts over instead (its copy is quick the second time).
+        return stopped_safely(
+            'the apps ran again on the old drive before it switched (a restart, say), so the new drive\'s '
+            'copy is not up to date. Start the move again (sudo python3 migrate.py move ...)',
+            'drive',
+            journal,
+            staging,
+            out,
+        )
     if phase in ('switching', 'setup'):
         path, config = load_settings(settings)
         return switch(path, config, saved['drive'], journal, staging, fstab, out)
     # "restart_failed": a move stopped before its switch, whose apps did not all start
-    # again; 0.45.6 also wrote it after a switch, so the drive mounted tells them apart.
+    # again; 0.45.7 also wrote it after a switch, so the drive mounted tells them apart.
     switched = phase in ('started_partly', 'checking_server') or (
         phase == 'restart_failed'
         and (mounted_identity(saved.get('mount', '')) or ('',))[0] == (saved.get('new') or {}).get('uuid')

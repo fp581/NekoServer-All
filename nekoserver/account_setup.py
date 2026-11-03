@@ -81,7 +81,9 @@ class Client:
 
 # What may be passed to docker: a word (a name, a label, a path, an account name with
 # Nextcloud's allowed characters) or an option, never a shell construct or a control character.
-ARGUMENT = r"[A-Za-z0-9/][A-Za-z0-9_.@:/=+,'-]*|--?[A-Za-z][A-Za-z0-9-]*(?:=[A-Za-z0-9_./:,-]*)?"
+# A word may hold spaces after its first character ("Mary Smith", a Nextcloud account
+# name): Docker gets each argument as one, never through a shell.
+ARGUMENT = r"--|[A-Za-z0-9/][A-Za-z0-9 _.@:/=+,'-]*|--?[A-Za-z][A-Za-z0-9-]*(?:=[A-Za-z0-9_./:,-]*)?"
 
 
 def docker(args, input_text=None):
@@ -436,7 +438,7 @@ def nextcloud_two_factor(config, username, groups=()):
     user, or required of them by the administrator. Required "for everyone" counts; one
     required only for some groups, or for all but some, counts only when this user is
     covered (`groups`: the user's groups, from user:info)."""
-    state = nextcloud_occ(config, 'twofactorauth:state', username)
+    state = nextcloud_occ(config, 'twofactorauth:state', '--', username)
     if 'is enabled for user' in state:
         return True
     enforced = nextcloud_occ(config, 'twofactorauth:enforce')
@@ -485,7 +487,7 @@ def nextcloud(client, entry, config):
     the step is not stuck for ever. Returns a note for the setup log, or None."""
     status = client.call('/status.php')
     check(status.get('installed') is True and status.get('maintenance') is False and not status.get('needsDbUpgrade'))
-    info = json.loads(nextcloud_occ(config, 'user:info', '--output=json', entry['username']))
+    info = json.loads(nextcloud_occ(config, 'user:info', '--output=json', '--', entry['username']))
     check(info.get('enabled') is True and 'admin' in info.get('groups', []))
     basic = base64.b64encode((entry['username'] + ':' + entry['password']).encode()).decode()
     path = '/remote.php/dav/files/' + urllib.parse.quote(entry['username'], safe='') + '/'

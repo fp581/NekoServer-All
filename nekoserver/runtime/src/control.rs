@@ -255,7 +255,22 @@ pub struct Gate {
 /// Tailscale Serve passed on, or a program on the server that sent such headers itself.
 fn source_of(request: &Value) -> String {
     if request["local"] == true {
-        return LOCAL.to_string();
+        // Each account on the server itself counts on its own (the web server tells the
+        // account from the connection): another account's program typing wrong PINs never
+        // locks out the person at the server.
+        return match request["source"]
+            .as_str()
+            .and_then(|s| s.strip_prefix("account:"))
+        {
+            Some(uid)
+                if !uid.is_empty()
+                    && uid.len() <= 10
+                    && uid.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                format!("{LOCAL}:{uid}")
+            }
+            _ => LOCAL.to_string(),
+        };
     }
     match request["source"].as_str() {
         Some(s) if !s.is_empty() && s.len() <= 200 && s != LOCAL => format!("remote:{s}"),
@@ -263,6 +278,9 @@ fn source_of(request: &Value) -> String {
     }
 }
 const LOCAL: &str = "local";
+fn is_local(source: &str) -> bool {
+    source == LOCAL || source.starts_with("local:")
+}
 /// A program of another account on the server itself that sent Tailscale's headers (the
 /// web server saw that the connection was not Tailscale's). It has its own lockout and
 /// never uses up the wrong PINs that the devices share.
@@ -282,7 +300,7 @@ impl Gate {
         if !self.strikes.contains_key(source) && self.strikes.len() >= MAX_SOURCES {
             self.strikes.retain(|_, s| !s.quiet());
         }
-        let key = if source == LOCAL
+        let key = if is_local(source)
             || self.strikes.contains_key(source)
             || self.strikes.len() < MAX_SOURCES
         {
@@ -294,7 +312,7 @@ impl Gate {
     }
     pub fn unlock(&mut self, pin: &str, request: &Value) -> Value {
         let source = source_of(request);
-        let local = source == LOCAL;
+        let local = is_local(&source);
         let shares = !local && !source.starts_with(PROGRAM);
         if let Some(wait) = self.strikes_for(&source).wait() {
             return locked_out(wait);
@@ -2367,6 +2385,19 @@ mod tests {
         let pretend = json!({"source": "local"});
         assert_eq!(source_of(&pretend), "remote");
         assert_eq!(source_of(&json!({"local": true, "source": "x"})), "local");
+        // The audit of 0.45.6: every account on the server shared one lockout, so another
+        // account's program could lock out the person at the server for up to a day.
+        let mine = json!({"local": true, "source": "account:1000"});
+        let other = json!({"local": true, "source": "account:1001"});
+        assert_eq!(source_of(&mine), "local:1000");
+        for _ in 0..MAX_TRIES + 2 {
+            gate.unlock("0000", &other);
+        }
+        assert_eq!(gate.unlock("4321", &mine)["ok"], true);
+        assert_eq!(
+            source_of(&json!({"local": true, "source": "account:1x"})),
+            "local"
+        );
         assert_eq!(source_of(&json!({"source": "a".repeat(300)})), "remote");
         // The server itself is still limited on its own.
         let local = json!({"local": true});
