@@ -121,6 +121,18 @@ def restart_needed(family, run=call, running=None, modules=Path('/usr/lib/module
     return (UNKNOWN, unknown) if unknown else (NOT_REQUIRED, [])
 
 
+def mark_security(family, found, run=call):
+    """Mark which of the updates `found` fix a security issue: True or False as the
+    system says, None where it can't say (shown as "not known", never as "no"). Returns
+    why it is not known, or None. Debian and Ubuntu say it in the list itself."""
+    if not found or (family not in host.SECURITY_QUERIES and family not in host.SECURITY_UNKNOWN):
+        return None
+    fixes, unknown = security_fixes(family, run)
+    for package in found:
+        package['security'] = None if fixes is None else package['name'] in fixes
+    return None if fixes is not None else 'Which updates fix a security issue is not known: ' + unknown
+
+
 def status(run=call, release=None, now=None, **restart):
     """Everything the System tab shows."""
     release = release if release is not None else host.os_release()
@@ -136,14 +148,9 @@ def status(run=call, release=None, now=None, **restart):
         result['note'] = 'This system has no NekoServer package support, so its updates are not listed'
         return result
     found, why = pending(name, run)
-    # Whether an update fixes a security issue: True or False as the system says, None
-    # where it cannot say (shown as "not known", never as "no").
-    if found and (name in host.SECURITY_QUERIES or name in host.SECURITY_UNKNOWN):
-        fixes, unknown = security_fixes(name, run)
-        for package in found or []:
-            package['security'] = None if fixes is None else package['name'] in fixes
-        if fixes is None and found:
-            result['security_note'] = 'Which updates fix a security issue is not known: ' + unknown
+    note = mark_security(name, found, run)
+    if note:
+        result['security_note'] = note
     result['updates'] = None if found is None else found[:SHOWN]
     result['count'] = None if found is None else len(found)
     result['note'] = why

@@ -271,25 +271,26 @@ def nekoserver_units(states='active'):
 
 
 AT_WORK = 'activating,deactivating,reloading'
+TIMER = '.timer'
 
 
 def stop_writers(journal=JOURNAL):
     """Everything that writes to the drives stops; what ran is noted to start again. The
     timers go first, so no job starts meanwhile; a job already at work (a backup worker,
     a oneshot service: "activating") stops the move rather than being cut off half-way."""
-    timers = [u for u in nekoserver_units() if u.endswith('.timer')]
+    timers = [u for u in nekoserver_units() if u.endswith(TIMER)]
     record(journal, phase='stopped', stopped=timers)
     for unit in timers:
         run(['systemctl', 'stop', unit], 600, check=False)
-    busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith('.timer')]
+    busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER)]
     if busy:
         raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
-    rest = active(WRITERS) + [u for u in nekoserver_units() if not u.endswith('.timer')]
+    rest = active(WRITERS) + [u for u in nekoserver_units() if not u.endswith(TIMER)]
     stopped = timers + rest
     record(journal, phase='stopped', stopped=stopped)
     for unit in rest:
         run(['systemctl', 'stop', unit], 600, check=False)
-    still = active(WRITERS) + [u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith('.timer')]
+    still = active(WRITERS) + [u for u in nekoserver_units('active,' + AT_WORK) if not u.endswith(TIMER)]
     if still:
         raise RuntimeError('These did not stop: ' + ', '.join(still))
     return stopped
