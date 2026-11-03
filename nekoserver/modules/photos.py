@@ -110,32 +110,29 @@ SAFE_OPTIONS = ('no-new-privileges:true', 'no-new-privileges')
 CHIP = re.compile(r'/dev/dri(/(renderD|card)\d{1,4})?')
 
 
+def device_parts(device):
+    """(source, target, permissions) of one device as Compose shows it, or None."""
+    if isinstance(device, str):
+        parts = device.split(':')
+        if len(parts) > 3:
+            return None
+        return parts[0], parts[1] if len(parts) > 1 else parts[0], parts[2] if len(parts) > 2 else 'rwm'
+    if isinstance(device, dict) and set(device) <= {'source', 'target', 'permissions'}:
+        source = device.get('source')
+        return source, device.get('target', source), device.get('permissions', 'rwm')
+    return None
+
+
 def chip_only(devices):
     """Devices as Compose shows them ("/dev/dri:/dev/dri[:rwm]" or {source, target,
     permissions}): only the graphics chip, at the same place."""
     if not isinstance(devices, list):
         return False
     for device in devices:
-        if isinstance(device, str):
-            parts = device.split(':')
-            if len(parts) > 3:
-                return False
-            source = parts[0]
-            target = parts[1] if len(parts) > 1 else source
-            rights = parts[2] if len(parts) > 2 else 'rwm'
-        elif isinstance(device, dict) and set(device) <= {'source', 'target', 'permissions'}:
-            source = device.get('source')
-            target, rights = device.get('target', source), device.get('permissions', 'rwm')
-        else:
+        source, target, rights = device_parts(device) or (None, None, None)
+        if not (isinstance(source, str) and CHIP.fullmatch(source) and source == target):
             return False
-        if not (
-            isinstance(source, str)
-            and CHIP.fullmatch(source)
-            and source == target
-            and isinstance(rights, str)
-            and rights
-            and set(rights) <= set('rwm')
-        ):
+        if not (isinstance(rights, str) and rights and set(rights) <= set('rwm')):
             return False
     return True
 
@@ -154,6 +151,22 @@ def plain_volume(volume):
     )
 
 
+def widened(name, service):
+    """What one service asks for beyond what NekoServer gives it; its graphics chip
+    mapping, once checked, is taken out (recovery_tools.validate_model refuses any)."""
+    wider = [key for key in WIDER if key in service]
+    options = service.get('security_opt', [])
+    if not isinstance(options, list) or any(o not in SAFE_OPTIONS for o in options):
+        wider.append('security_opt')
+    devices = service.pop('devices', None)
+    if devices is not None and not (name == 'immich-server' and chip_only(devices)):
+        wider.append('devices')
+    ports = service.get('ports', [])
+    if not isinstance(ports, list) or any(not isinstance(p, dict) or p.get('host_ip') != '127.0.0.1' for p in ports):
+        wider.append('ports beyond this PC')
+    return wider
+
+
 def checked_model(model, upload, db):
     """The downloaded Immich release's Compose file, as Docker reads it, before anything
     starts: the four standard services with the folders NekoServer gave them
@@ -169,20 +182,7 @@ def checked_model(model, upload, db):
     if not isinstance(volumes, dict) or not all(plain_volume(v) for v in volumes.values()):
         raise RuntimeError(refused.format('a volume that is not on Docker\'s own storage'))
     for name, service in (model.get('services') or {}).items():
-        if not isinstance(service, dict):
-            continue
-        wider = [key for key in WIDER if key in service]
-        options = service.get('security_opt', [])
-        if not isinstance(options, list) or any(o not in SAFE_OPTIONS for o in options):
-            wider.append('security_opt')
-        devices = service.pop('devices', None)
-        if devices is not None and not (name == 'immich-server' and chip_only(devices)):
-            wider.append('devices')
-        ports = service.get('ports', [])
-        if not isinstance(ports, list) or any(
-            not isinstance(p, dict) or p.get('host_ip') != '127.0.0.1' for p in ports
-        ):
-            wider.append('ports beyond this PC')
+        wider = widened(name, service) if isinstance(service, dict) else []
         if wider:
             raise RuntimeError(refused.format(name + ': ' + ', '.join(wider)))
     try:
