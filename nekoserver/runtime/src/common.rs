@@ -329,14 +329,52 @@ pub fn file(path: &Path) -> Result<File> {
     if !fs::symlink_metadata(path)?.is_file() {
         return Err(Error::new("Regular file required"));
     }
-    let f = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)?;
+    let f = open_read_no_links(path)?;
     if !f.metadata()?.is_file() {
         return Err(Error::new("Regular file required"));
     }
     Ok(f)
+}
+/// Open `path` to read, following no link anywhere in it. `safe` checks each folder of
+/// the path first, but a folder someone can write to could be swapped for a link right
+/// after that check (the audit of 0.45.6): the kernel's openat2 with RESOLVE_NO_SYMLINKS
+/// refuses a link in any part of the path as it opens. On a kernel without it (before
+/// 5.6) or where it is blocked, the last part alone is opened without following a link.
+fn open_read_no_links(path: &Path) -> Result<File> {
+    use std::os::fd::FromRawFd;
+    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+    let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| Error::new("Invalid path"))?;
+    // SAFETY: open_how is plain data; zeroed is its documented starting value.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = flags as u64;
+    how.resolve = libc::RESOLVE_NO_SYMLINKS;
+    // SAFETY: a NUL-terminated path, a valid open_how and its size, as openat2 takes them.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            name.as_ptr(),
+            &how as *const libc::open_how,
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd >= 0 {
+        // SAFETY: openat2 returned a new descriptor that nothing else owns.
+        return Ok(unsafe { File::from_raw_fd(fd as i32) });
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ENOSYS) | Some(libc::EPERM) => Ok(OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path)?),
+        Some(libc::ELOOP) => Err(Error::new(&format!(
+            "Symlink path refused: a part of {} became a link",
+            path.display()
+        ))),
+        _ => Err(err.into()),
+    }
 }
 pub fn bytes(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let f = file(path)?;
@@ -931,6 +969,31 @@ pub fn directory(path: &Path, mode: u32) -> Result<()> {
 }
 #[cfg(test)]
 mod lock_tests {
+    #[test]
+    fn a_link_anywhere_in_the_path_is_never_followed_when_reading() {
+        use std::io::Read;
+        let root = std::env::temp_dir().join(format!("neko-no-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("real/inner")).unwrap();
+        fs::write(root.join("real/inner/secret"), b"outside").unwrap();
+        fs::create_dir_all(root.join("tree")).unwrap();
+        // A folder of the path swapped for a link after the folders were checked.
+        std::os::unix::fs::symlink(root.join("real/inner"), root.join("tree/inner")).unwrap();
+        let read = super::open_read_no_links(&root.join("tree/inner/secret"));
+        assert!(
+            read.is_err(),
+            "a link in the middle of the path was followed"
+        );
+        fs::create_dir_all(root.join("plain")).unwrap();
+        fs::write(root.join("plain/file"), b"ok").unwrap();
+        let mut text = String::new();
+        super::open_read_no_links(&root.join("plain/file"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "ok");
+        let _ = fs::remove_dir_all(root);
+    }
     #[test]
     fn failure_reasons_keep_the_cause_but_not_secrets() {
         assert_eq!(
