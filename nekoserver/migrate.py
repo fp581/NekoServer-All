@@ -203,19 +203,27 @@ def targets(config, drive, rows=None, used=None, inventory=None):
         disks = physical_disks(rows, row.get('name'))
         if not row.get('uuid') or row.get('fstype') not in FILESYSTEMS or disks & (taken | system):
             continue
-        why = why_not(row, need) or (inventory is not None and setup_would_refuse(inventory, row['uuid']))
-        if disks & backup_disks:
-            why = 'the USB backup drive (a backup must stay on a drive of its own)'
-        elif drive == 'data_ssd' and on_nas(rows, disks):
-            why = (
-                'a disk on the network storage box; the SSD for the apps must be connected to this PC '
-                '(it holds the databases)'
-            )
+        why = refused_target(row, need, inventory) or kept_for(drive, rows, disks, backup_disks)
         if why:
             left_out.append(f'{row.get("name")}: {why}')
         else:
             found.append((row['uuid'], row['fstype'], int(row['size']), row.get('name')))
     return found, left_out
+
+
+def refused_target(row, need, inventory):
+    """Why the filesystem can't take the drive (mounted, too small, or one setup would
+    refuse), or None. `inventory`: lsblk's tree, for setup's own checks."""
+    return why_not(row, need) or (inventory is not None and setup_would_refuse(inventory, row['uuid'])) or None
+
+
+def kept_for(drive, rows, disks, backup_disks):
+    """Why a disk is kept out for this drive: the USB backup's, or a NAS disk for the SSD."""
+    if disks & backup_disks:
+        return 'the USB backup drive (a backup must stay on a drive of its own)'
+    if drive == 'data_ssd' and on_nas(rows, disks):
+        return 'a disk on the network storage box; the SSD for the apps must be connected to this PC (it holds the databases)'
+    return None
 
 
 def why_not(row, need):

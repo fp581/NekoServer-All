@@ -2101,18 +2101,18 @@ def takes_writes(folder, wait=WRITE_WAIT):
     same): Linux still shows an aborted ext4 as mounted read-write, so only a write tells.
     A write still waiting after `wait` seconds (the NAS away, within its ten-minute wait)
     stops the check with a message instead of freezing the menu."""
-    import threading
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as StillWaiting
 
-    answer = []
-    tried = threading.Thread(target=lambda: answer.append(test_write(folder)), daemon=True)
-    tried.start()
-    tried.join(wait)
-    if not answer:
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(test_write, folder).result(timeout=wait)
+    except StillWaiting:
         raise RuntimeError(
             f'A test write to {folder} is still waiting after {wait} s: the network storage box is not answering '
             '(writes wait up to ten minutes for it). Check it is on and connected, then choose this again.'
-        )
-    return answer[0]
+        ) from None
+    finally:
+        pool.shutdown(wait=False)  # a write still waiting finishes (or fails) by itself
 
 
 def test_write(folder):

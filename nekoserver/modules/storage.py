@@ -1291,16 +1291,8 @@ def choose_locations(context, input_fn=None, interactive=None):
         if chosen.get(what) in DRIVE_WORDS:
             same_place(context, what, words, chosen[what], kept)
             continue
-        if len(kept) > 1:
-            raise RuntimeError(
-                f'{words.capitalize()} have files on both the SSD and the media drive, and setup can\'t tell '
-                'which ones the app uses. Look in both folders, then say which one it is: put '
-                f'"locations": {{"{what}": "ssd"}} (or "media") in my-config.json and run setup again. '
-                'The other folder is left as it is. Nothing was changed.'
-            )
         if kept:
-            context.log(f'{words.capitalize()}: kept where they already are, on {DRIVE_WORDS[kept[0]]}')
-            chosen[what] = kept[0]
+            chosen[what] = where_kept(context, what, words, kept)
         else:
             best = recommended(room['ssd'], threshold)
             # Asked: the better drive is offered first. Not asked: the better one on a new
@@ -1323,6 +1315,19 @@ PHOTOS_ON_MEDIA = (
     'but does not survive losing that drive. Your only copy on another drive is the weekly USB backup, so '
     'set it up (setup asks for the USB drive next).'
 )
+
+
+def where_kept(context, what, words, kept):
+    """The drive that already holds `what`'s files; with files on both, setup stops."""
+    if len(kept) > 1:
+        raise RuntimeError(
+            f'{words.capitalize()} have files on both the SSD and the media drive, and setup can\'t tell '
+            'which ones the app uses. Look in both folders, then say which one it is: put '
+            f'"locations": {{"{what}": "ssd"}} (or "media") in my-config.json and run setup again. '
+            'The other folder is left as it is. Nothing was changed.'
+        )
+    context.log(f'{words.capitalize()}: kept where they already are, on {DRIVE_WORDS[kept[0]]}')
+    return kept[0]
 
 
 def set_up_before(config):

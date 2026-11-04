@@ -390,9 +390,10 @@ class StepTests(unittest.TestCase):
                 nas.run(ctx)
         self.assertEqual(config['network_storage']['chap'], [IQN])
         # Lost since: noticed, and with no one to type it, setup stops.
+        again = self.Ctx(config)
         with mock.patch.object(nas, 'chap_kept', return_value=False), mock.patch.object(nas, 'known_at'):
             with self.assertRaisesRegex(RuntimeError, 'no longer in its iSCSI settings'):
-                nas.logged_in(self.Ctx(config), IQN, PORTAL, False, True, False)
+                nas.logged_in(again, IQN, PORTAL, False, True, False)
 
     def test_a_backup_drive_alone_on_the_nas_gets_the_nas_check(self):
         from modules import server_os
