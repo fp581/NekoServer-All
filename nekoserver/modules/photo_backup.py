@@ -11,6 +11,7 @@ from pathlib import Path
 import native_runtime
 from modules.photo_preservation import resume_command, resume_unit
 from neko_common import (
+    cloud_files,
     MANAGED_UNIT,
     RESUME_TIMEOUT,
     SYSTEMD_UNITS,
@@ -175,7 +176,7 @@ def command_line(config, binary, guard, uuid, fstype, source, dest):
     )
     if copies(config)[1]:
         # Nextcloud user files get the same add-only weekly copy as photos.
-        cmd += ' --cloud ' + str(Path(config['media_mount']) / 'cloud/files')
+        cmd += ' --cloud ' + str(cloud_files(config))
     return cmd
 
 

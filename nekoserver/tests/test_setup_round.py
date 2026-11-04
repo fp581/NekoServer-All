@@ -304,7 +304,9 @@ class WindowPackageTests(unittest.TestCase):
             window = setup_gui.Window(Path(d) / SETTINGS_NAME, {'tv': {'wanted': False}}, wizard.STEPS, [])
             self.addCleanup(window.stop)
             asked = {e['id']: e['asked'] for e in window._extras()}
-        self.assertEqual(asked, {'tv': False, 'notifications': True, 'heartbeat': True, 'nextcloud': False})
+        self.assertEqual(
+            asked, {'network_storage': False, 'tv': False, 'notifications': True, 'heartbeat': True, 'nextcloud': False}
+        )
 
 
 class WindowPageTests(unittest.TestCase):

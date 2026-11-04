@@ -403,7 +403,23 @@ fn plain_volume(v: &Value) -> bool {
         && o.keys()
             .all(|k| ["name", "driver", "driver_opts", "external", "labels"].contains(&k.as_str()))
 }
-fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<()> {
+/// `locations`: where setup put the photos, the music and Nextcloud's files (the
+/// settings' "locations"; null: the layout before 0.46.0).
+fn valid_model(
+    model: &Value,
+    name: &str,
+    data: &Path,
+    media: &Path,
+    locations: &Value,
+) -> Result<()> {
+    let places = Places {
+        name,
+        data,
+        media,
+        photos: common::located(locations, "photos", data, media).join("photos/immich-library"),
+        cloud: common::located(locations, "cloud", data, media).join("cloud/files"),
+        music: common::located(locations, "music", data, media).to_path_buf(),
+    };
     let services = model["services"]
         .as_object()
         .ok_or_else(|| Error::new("Compose services missing"))?;
@@ -426,59 +442,83 @@ fn valid_model(model: &Value, name: &str, data: &Path, media: &Path) -> Result<(
         ));
     }
     for (service, v) in services {
-        if !expected_service(name, service)
-            || v["privileged"] == true
-            || v.get("network_mode").is_some()
-            || v.get("pid").is_some()
-            || v.get("ipc").is_some()
-            || v.get("build").is_some()
-            || widens_rights(v)
-            || !gpu_only(service, v)
-        {
+        if !isolated(name, service, v) {
             return Err(Error::new("Unsupported Compose isolation"));
         }
         for volume in v["volumes"].as_array().cloned().unwrap_or_default() {
-            if volume["type"] == "bind" {
-                let source = Path::new(string(&volume, "source")?);
-                let p = if source == Path::new("/etc/localtime") && volume["read_only"] == true {
-                    source.to_path_buf()
-                } else {
-                    common::safe(source)?
-                };
-                let allowed = p == data.join("appdata").join(name)
-                    || p.starts_with(data.join("appdata").join(name));
-                let photo = name == "immich" && p == data.join("photos/immich-library");
-                let cloud = name == "nextcloud" && p == media.join("cloud/files");
-                let library = p == media.join("library")
-                    || (name == "jellyfin"
-                        && ["movies", "tv"]
-                            .iter()
-                            .any(|n| p == media.join("library").join(n)))
-                    || (name == "navidrome" && p == data.join("library/music"))
-                    || (name == "lidarr" && p == data.join("library"))
-                    || (name == "qbittorrent" && p == data.join("library/downloads/music"));
-                let localtime = p == Path::new("/etc/localtime") && volume["read_only"] == true;
-                if !(allowed || photo || cloud || library || localtime) {
-                    return Err(Error::new("Uncovered container bind mount"));
-                }
-            } else if volume["type"] != "volume"
-                || !(service == "redis" || service == "immich-machine-learning")
-            {
-                return Err(Error::new("Uncovered persistent volume"));
-            }
+            places.volume_ok(service, &volume)?;
         }
-        if service == name || service == "immich-server" {
-            let ports = v["ports"]
-                .as_array()
-                .ok_or_else(|| Error::new("Application port missing"))?;
-            let peer = peer_port(service, v);
-            let public = |p: &Value| p["host_ip"] != "127.0.0.1" && !is_peer_binding(p, peer);
-            if ports.is_empty() || ports.iter().any(public) {
-                return Err(Error::new("Loopback application ports required"));
+        published_ok(name, service, v)?;
+    }
+    Ok(())
+}
+/// A service of the app's own that keeps to NekoServer's isolation.
+fn isolated(name: &str, service: &str, v: &Value) -> bool {
+    expected_service(name, service)
+        && v["privileged"] != true
+        && ["network_mode", "pid", "ipc", "build"]
+            .iter()
+            .all(|key| v.get(*key).is_none())
+        && !widens_rights(v)
+        && gpu_only(service, v)
+}
+/// The folders one app may bind: its own settings, and your files where setup put them.
+struct Places<'a> {
+    name: &'a str,
+    data: &'a Path,
+    media: &'a Path,
+    photos: PathBuf,
+    cloud: PathBuf,
+    music: PathBuf,
+}
+impl Places<'_> {
+    fn volume_ok(&self, service: &str, volume: &Value) -> Result<()> {
+        if volume["type"] == "bind" {
+            let source = Path::new(string(volume, "source")?);
+            let localtime = source == Path::new("/etc/localtime") && volume["read_only"] == true;
+            let p = if localtime {
+                source.to_path_buf()
+            } else {
+                common::safe(source)?
+            };
+            if !(localtime || self.bind_ok(&p)) {
+                return Err(Error::new("Uncovered container bind mount"));
             }
-        } else if v["ports"].as_array().is_some_and(|p| !p.is_empty()) {
-            return Err(Error::new("Unexpected supporting service publication"));
+        } else if volume["type"] != "volume"
+            || !(service == "redis" || service == "immich-machine-learning")
+        {
+            return Err(Error::new("Uncovered persistent volume"));
         }
+        Ok(())
+    }
+    fn bind_ok(&self, p: &Path) -> bool {
+        let name = self.name;
+        let own = self.data.join("appdata").join(name);
+        let library = self.media.join("library");
+        p.starts_with(&own)
+            || (name == "immich" && p == self.photos)
+            || (name == "nextcloud" && p == self.cloud)
+            || p == library
+            || (name == "jellyfin" && ["movies", "tv"].iter().any(|n| p == library.join(n)))
+            || (name == "navidrome" && p == self.music.join("library/music"))
+            || (name == "lidarr" && p == self.music.join("library"))
+            || (name == "qbittorrent" && p == self.music.join("library/downloads/music"))
+    }
+}
+/// The app's own port on this PC only (qBittorrent's peer port excepted); its helpers
+/// publish nothing.
+fn published_ok(name: &str, service: &str, v: &Value) -> Result<()> {
+    if service == name || service == "immich-server" {
+        let ports = v["ports"]
+            .as_array()
+            .ok_or_else(|| Error::new("Application port missing"))?;
+        let peer = peer_port(service, v);
+        let public = |p: &Value| p["host_ip"] != "127.0.0.1" && !is_peer_binding(p, peer);
+        if ports.is_empty() || ports.iter().any(public) {
+            return Err(Error::new("Loopback application ports required"));
+        }
+    } else if v["ports"].as_array().is_some_and(|p| !p.is_empty()) {
+        return Err(Error::new("Unexpected supporting service publication"));
     }
     Ok(())
 }
@@ -2912,6 +2952,7 @@ fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>
     let photos = &cfg["photos"];
     let immich = photos["deploy_immich"] == true;
     let media = Path::new(cfg["media_mount"].as_str().unwrap_or(""));
+    let data_root = Path::new(cfg["data_mount"].as_str().unwrap_or(""));
     let archive_dir = photos["archive_dir"]
         .as_str()
         .unwrap_or("photos/archive")
@@ -2951,7 +2992,10 @@ fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>
         if cloud {
             options.insert(
                 "cloud".into(),
-                media.join("cloud/files").to_string_lossy().into_owned(),
+                common::located(&cfg["locations"], "cloud", data_root, media)
+                    .join("cloud/files")
+                    .to_string_lossy()
+                    .into_owned(),
             );
         }
         Args(options)
@@ -3115,8 +3159,8 @@ fn download_updates(
         } else {
             data.join("compose").join(name)
         };
-        let checked =
-            source_model(&source, name).and_then(|m| valid_model(&m, name, data, media).map(|_| m));
+        let checked = source_model(&source, name)
+            .and_then(|m| valid_model(&m, name, data, media, &cfg["locations"]).map(|_| m));
         let mut candidate = match checked {
             Ok(model) => model,
             // A new Immich release whose files don't pass the checks (another service, a
@@ -3128,7 +3172,7 @@ fn download_updates(
                 immich_files = None;
                 let current = data.join("compose/immich");
                 let model = source_model(&current, name)?;
-                valid_model(&model, name, data, media)?;
+                valid_model(&model, name, data, media, &cfg["locations"])?;
                 model
             }
             Err(e) => return Err(e),
@@ -3481,7 +3525,7 @@ fn running_models(cfg: &Value, names: &[String], snapshot: &Path) -> Result<(Val
     let mut rows = vec![];
     for name in names {
         let mut current = model(cfg, name)?;
-        valid_model(&current, name, data, media)?;
+        valid_model(&current, name, data, media, &cfg["locations"])?;
         rows.extend(containers(name, &mut current)?);
         common::atomic_json(&snapshot.join(format!("{name}-old.json")), &current)?;
         models[name] = current;
@@ -4299,7 +4343,13 @@ fn load_candidate(
     for (service, v) in services.iter_mut() {
         v["image"] = images[service].clone();
     }
-    valid_model(&model, app, data, Path::new(string(cfg, "media_mount")?))?;
+    valid_model(
+        &model,
+        app,
+        data,
+        Path::new(string(cfg, "media_mount")?),
+        &cfg["locations"],
+    )?;
     Ok(Some(Candidate {
         app: app.to_string(),
         sig,
@@ -4909,7 +4959,7 @@ mod tests {
             m["services"]["jellyfin"][key] = value;
             m
         };
-        let ok = |m: &Value| valid_model(m, "jellyfin", &data, &media).is_ok();
+        let ok = |m: &Value| valid_model(m, "jellyfin", &data, &media, &Value::Null).is_ok();
         // The chip, as NekoServer's own files give it, in both of Compose's shapes.
         assert!(ok(&with("devices", json!(["/dev/dri:/dev/dri"]))));
         assert!(ok(&with(
@@ -4975,6 +5025,38 @@ mod tests {
         assert!(!ok(&list));
         let _ = fs::remove_dir_all(root);
     }
+    /// 0.46.0: setup asks where the photos, the music and Nextcloud's files live; the
+    /// update's check accepts the folders where they are, and only those.
+    #[test]
+    fn the_apps_folders_are_checked_where_setup_put_them() {
+        let (data, media) = (Path::new("/srv/neko"), Path::new("/mnt/neko"));
+        let port = json!([{"host_ip": "127.0.0.1", "published": "4533", "target": 4533}]);
+        let navidrome = |source: &Path| {
+            json!({"services": {"navidrome": {"image": "sha256:8", "ports": port,
+                "volumes": [{"type": "bind", "source": source.join("library/music"), "target": "/music", "read_only": true}]}}})
+        };
+        let on_media = json!({"music": "media"});
+        assert!(valid_model(&navidrome(data), "navidrome", data, media, &Value::Null).is_ok());
+        assert!(valid_model(&navidrome(media), "navidrome", data, media, &Value::Null).is_err());
+        assert!(valid_model(&navidrome(media), "navidrome", data, media, &on_media).is_ok());
+        assert!(valid_model(&navidrome(data), "navidrome", data, media, &on_media).is_err());
+        assert_eq!(
+            common::located(&json!({"cloud": "ssd"}), "cloud", data, media),
+            data
+        );
+        assert_eq!(common::located(&Value::Null, "cloud", data, media), media);
+        assert_eq!(common::located(&Value::Null, "photos", data, media), data);
+        let cfg = json!({"data_mount": "/srv/neko", "media_mount": "/mnt/neko", "locations": {"photos": "media"}});
+        assert_eq!(
+            common::photo_library(&cfg).unwrap(),
+            media.join("photos/immich-library")
+        );
+        assert!(common::files_root(
+            &json!({"data_mount": "/srv/neko", "locations": {"photos": "usb"}}),
+            "photos"
+        )
+        .is_err());
+    }
     #[test]
     fn a_compose_file_never_gains_more_than_neko_servers_apps_have() {
         // NekoServer's own apps' setting passes.
@@ -4992,9 +5074,19 @@ mod tests {
         ] {
             assert!(widens_rights(&extra), "{extra}");
         }
-        let source = include_str!("maintenance.rs");
-        let check = &source[source.find("fn valid_model(").unwrap()..];
-        assert!(check[..check.find("\n}\n").unwrap()].contains("|| widens_rights(v)"));
+        // The update's check refuses them: a model that asks for one is not used.
+        let port = json!([{"host_ip": "127.0.0.1", "published": "8096", "target": 8096}]);
+        let (data, media) = (Path::new("/srv/neko"), Path::new("/mnt/neko"));
+        let plain = json!({"services": {"jellyfin": {"image": "sha256:8", "ports": port}}});
+        assert!(valid_model(&plain, "jellyfin", data, media, &Value::Null).is_ok());
+        let mut wider = plain.clone();
+        wider["services"]["jellyfin"]["cap_add"] = json!(["SYS_ADMIN"]);
+        assert_eq!(
+            valid_model(&wider, "jellyfin", data, media, &Value::Null)
+                .unwrap_err()
+                .to_string(),
+            "Unsupported Compose isolation"
+        );
     }
     #[test]
     fn an_updates_media_check_waits_for_the_hourly_one() {
@@ -6360,7 +6452,8 @@ mod tests {
             &m,
             "jellyfin",
             Path::new("/srv/neko"),
-            Path::new("/mnt/neko")
+            Path::new("/mnt/neko"),
+            &Value::Null
         )
         .is_err());
     }
@@ -6667,14 +6760,17 @@ mod tests {
         fs::create_dir_all(media.join("library/movies")).unwrap();
         let port = json!([{"host_ip": "127.0.0.1", "published": "8096", "target": 8096}]);
         let plain = json!({"services": {"jellyfin": {"image": "sha256:8", "ports": port}}});
-        valid_model(&plain, "jellyfin", &data, &media).unwrap();
+        valid_model(&plain, "jellyfin", &data, &media, &Value::Null).unwrap();
         let with = |key: &str, value: Value| {
             let mut m = plain.clone();
             m["services"]["jellyfin"][key] = value;
             m
         };
-        let refused =
-            |m: &Value, name: &str| valid_model(m, name, &data, &media).unwrap_err().to_string();
+        let refused = |m: &Value, name: &str| {
+            valid_model(m, name, &data, &media, &Value::Null)
+                .unwrap_err()
+                .to_string()
+        };
         for (key, value) in [
             ("privileged", json!(true)),
             ("network_mode", json!("host")),
@@ -6688,7 +6784,14 @@ mod tests {
                 "{key}"
             );
         }
-        assert!(valid_model(&with("privileged", json!(false)), "jellyfin", &data, &media).is_ok());
+        assert!(valid_model(
+            &with("privileged", json!(false)),
+            "jellyfin",
+            &data,
+            &media,
+            &Value::Null
+        )
+        .is_ok());
         // Another app's name, an unknown one, or a second service: refused.
         assert_eq!(refused(&plain, "sonarr"), "Unsupported Compose isolation");
         assert_eq!(refused(&plain, "plex"), "Unsupported Compose isolation");
@@ -6705,7 +6808,8 @@ mod tests {
             &with("volumes", bind(&own, false)),
             "jellyfin",
             &data,
-            &media
+            &media,
+            &Value::Null
         )
         .is_ok());
         let movies = media.join("library/movies");
@@ -6713,7 +6817,8 @@ mod tests {
             &with("volumes", bind(&movies, true)),
             "jellyfin",
             &data,
-            &media
+            &media,
+            &Value::Null
         )
         .is_ok());
         // Each app's own library folders, and nobody else's.
@@ -6736,7 +6841,7 @@ mod tests {
         ] {
             fs::create_dir_all(data.join("appdata").join(name)).unwrap();
             assert!(
-                valid_model(&one(name, &folder), name, &data, &media).is_ok(),
+                valid_model(&one(name, &folder), name, &data, &media, &Value::Null).is_ok(),
                 "{name}"
             );
         }
@@ -6755,13 +6860,13 @@ mod tests {
         let mut photos = models()["immich"].clone();
         photos["services"]["immich-server"]["volumes"] =
             bind(&data.join("photos/immich-library"), false);
-        valid_model(&photos, "immich", &data, &media).unwrap();
+        valid_model(&photos, "immich", &data, &media, &Value::Null).unwrap();
         photos["services"]["immich-server"]["volumes"] = bind(&media.join("cloud/files"), false);
         assert_eq!(refused(&photos, "immich"), "Uncovered container bind mount");
         let mut cloud = models()["nextcloud"].clone();
-        valid_model(&cloud, "nextcloud", &data, &media).unwrap();
+        valid_model(&cloud, "nextcloud", &data, &media, &Value::Null).unwrap();
         cloud["services"]["nextcloud"]["volumes"] = bind(&media.join("cloud/files"), false);
-        valid_model(&cloud, "nextcloud", &data, &media).unwrap();
+        valid_model(&cloud, "nextcloud", &data, &media, &Value::Null).unwrap();
         cloud["services"]["nextcloud"]["volumes"] =
             bind(&data.join("photos/immich-library"), false);
         assert_eq!(
@@ -6773,14 +6878,16 @@ mod tests {
             &with("volumes", bind(clock, true)),
             "jellyfin",
             &data,
-            &media
+            &media,
+            &Value::Null
         )
         .is_ok());
         assert!(valid_model(
             &with("volumes", bind(clock, false)),
             "jellyfin",
             &data,
-            &media
+            &media,
+            &Value::Null
         )
         .is_err());
         let other = data.join("appdata/sonarr");
@@ -6804,7 +6911,7 @@ mod tests {
             "Loopback application ports required"
         );
         let mut immich = models()["immich"].clone();
-        valid_model(&immich, "immich", &data, &media).unwrap();
+        valid_model(&immich, "immich", &data, &media, &Value::Null).unwrap();
         immich["services"]["redis"]["ports"] = port.clone();
         assert_eq!(
             refused(&immich, "immich"),
@@ -6813,7 +6920,7 @@ mod tests {
         immich["services"]["redis"]["ports"] = json!([]);
         immich["services"]["redis"]["volumes"] =
             json!([{"type": "volume", "source": "redis", "target": "/data"}]);
-        valid_model(&immich, "immich", &data, &media).unwrap();
+        valid_model(&immich, "immich", &data, &media, &Value::Null).unwrap();
         let _ = fs::remove_dir_all(root);
     }
     #[test]

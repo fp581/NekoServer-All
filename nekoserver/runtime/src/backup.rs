@@ -3240,15 +3240,16 @@ fn retired_dumps(
 }
 /// New Immich originals copied to the HDD archive, the copies checked as `check` says.
 /// Ok(Some(why)) when the run's list of files could not be written (incomplete).
-fn archive_step(data: &Path, archive: &Path, min_age: u64, check: Check) -> Result<Option<String>> {
+/// `library`: Immich's photos, where setup put them (common::photo_library).
+fn archive_step(
+    data: &Path,
+    library: &Path,
+    archive: &Path,
+    min_age: u64,
+    check: Check,
+) -> Result<Option<String>> {
     common::stage("copying new photos and videos to the HDD");
-    let (_, checks) = archive_checked(
-        &data.join("photos/immich-library"),
-        archive,
-        true,
-        min_age,
-        check,
-    )?;
+    let (_, checks) = archive_checked(library, archive, true, min_age, check)?;
     archive_result(data, &checks, check)
 }
 /// Save what the archive's checks found; damage fails the step (after it was saved).
@@ -3528,11 +3529,12 @@ fn paused_backup(
     ctl: &dyn Containers,
     journal: &Path,
     data: &Path,
+    library: &Path,
     archive: &Path,
     min_age: u64,
     dump: impl FnOnce() -> Result<Option<PathBuf>>,
 ) -> (Result<Option<String>>, Result<Option<PathBuf>>) {
-    let library = data.join("photos/immich-library");
+    let library = library.to_path_buf();
     common::stage("copying new photos and videos to the HDD");
     let first = archive_with(&library, archive, true, Some(min_age), Check::Quick, false);
     if let Err(e) = &first {
@@ -3579,8 +3581,10 @@ pub fn monthly_archive_check(
     )?;
     guard(cfg, data, media)?;
     let _drives = (common::expect_drive(media)?, common::expect_drive(data)?);
+    let library = common::photo_library(&common::json(cfg, 64000))?;
     let listed = archive_step(
         data,
+        &library,
         &media.join(common::relative(archive_dir)?),
         min_age,
         Check::Full,
@@ -3676,22 +3680,26 @@ pub fn preservation(a: &Args) -> Result<()> {
             let archive = media.join(archive_dir);
             let min_age = a.number("min-age", 600)?;
             let keep = a.number("db-keep", 4)?;
+            // Where setup put Immich's photos (the SSD or the media drive, "locations").
+            let library = common::photo_library(&common::json(&cfg, 64000))?;
             // Every copy is compared by checksum only in the monthly run (monthly_archive_check).
             if !a.flag("db-backup") {
-                return archive_step(&data, &archive, min_age, Check::Quick).map(listed_outcome);
+                return archive_step(&data, &library, &archive, min_age, Check::Quick)
+                    .map(listed_outcome);
             }
             // An update cut off while it installed (or rolled back) may have left
             // Immich's database half-migrated: not saved as the newest copy, and Immich
             // not paused (its way back starts it). The photos are copied anyway: they
             // are never rolled back.
             if let Err(e) = no_unfinished_update() {
-                archive_step(&data, &archive, min_age, Check::Quick)?;
+                archive_step(&data, &library, &archive, min_age, Check::Quick)?;
                 return Err(e);
             }
             let (archived, dumped) = paused_backup(
                 &IMMICH_DOCKER,
                 Path::new(IMMICH_JOURNAL),
                 &data,
+                &library,
                 &archive,
                 min_age,
                 || {
@@ -7335,16 +7343,24 @@ mod tests {
         write(&library.join("upload/u/new.jpg"), b"new");
         let fake = FakeImmich::up();
         let dump = data.join("backups/immich-database/immich-test.sql");
-        let (archived, dumped) = paused_backup(&fake, &journal, &data, &archive, 600, || {
-            // The dump is made with Immich stopped, after every photo was copied: it
-            // names (as Immich's database would) every asset in the library now.
-            assert!(fake.paused());
-            assert!(journal.is_file());
-            let mut assets: Vec<String> = names(&library.join("upload/u"));
-            assets.sort();
-            write(&dump, assets.join("\n").as_bytes());
-            Ok(Some(dump.clone()))
-        });
+        let (archived, dumped) = paused_backup(
+            &fake,
+            &journal,
+            &data,
+            &data.join("photos/immich-library"),
+            &archive,
+            600,
+            || {
+                // The dump is made with Immich stopped, after every photo was copied: it
+                // names (as Immich's database would) every asset in the library now.
+                assert!(fake.paused());
+                assert!(journal.is_file());
+                let mut assets: Vec<String> = names(&library.join("upload/u"));
+                assets.sort();
+                write(&dump, assets.join("\n").as_bytes());
+                Ok(Some(dump.clone()))
+            },
+        );
         archived.unwrap();
         // Every asset the dump names, the one uploaded just before the run too, is in
         // the archive, as it was.
@@ -7363,7 +7379,15 @@ mod tests {
         assert!(!journal.exists());
         // Immich not running when the job starts: nothing paused, nothing started.
         let off = FakeImmich::default();
-        let (archived, dumped) = paused_backup(&off, &journal, &data, &archive, 600, || Ok(None));
+        let (archived, dumped) = paused_backup(
+            &off,
+            &journal,
+            &data,
+            &data.join("photos/immich-library"),
+            &archive,
+            600,
+            || Ok(None),
+        );
         assert!(archived.is_ok() && dumped.is_ok());
         assert!(off.done.borrow().is_empty() && !journal.exists());
         let _ = fs::remove_dir_all(root);
@@ -7381,9 +7405,15 @@ mod tests {
             stubborn: true,
             ..FakeImmich::up()
         };
-        let (archived, dumped) = paused_backup(&fake, &journal, &data, &archive, 600, || {
-            panic!("no dump while Immich still runs")
-        });
+        let (archived, dumped) = paused_backup(
+            &fake,
+            &journal,
+            &data,
+            &data.join("photos/immich-library"),
+            &archive,
+            600,
+            || panic!("no dump while Immich still runs"),
+        );
         let said = archived.unwrap_err().to_string();
         assert!(said.contains("did not stop"), "{said}");
         assert!(dumped.is_err());
@@ -7402,9 +7432,15 @@ mod tests {
         );
         write(&data.join("photos/immich-library/upload/u/a.jpg"), b"a");
         let fake = FakeImmich::up();
-        let (archived, dumped) = paused_backup(&fake, &journal, &data, &archive, 600, || {
-            Err(Error::new("Database dump failed or too small"))
-        });
+        let (archived, dumped) = paused_backup(
+            &fake,
+            &journal,
+            &data,
+            &data.join("photos/immich-library"),
+            &archive,
+            600,
+            || Err(Error::new("Database dump failed or too small")),
+        );
         assert!(archived.is_ok());
         assert!(dumped.unwrap_err().to_string().contains("dump failed"));
         assert!(!fake.paused() && !journal.exists());

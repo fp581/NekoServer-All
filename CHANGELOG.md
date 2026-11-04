@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.46.0 — 2026-11-04
+
+Two new things, built for a NAS-based server (a WD My Cloud EX4100 with two mirrored pools, an i3 laptop running NekoServer, a 250 GB SSD on the laptop by USB):
+- **The media drive and the backup drive can be on a network storage box (NAS) over iSCSI.**
+- **Setup asks where each app keeps your files**, and every backup follows the choice.
+
+**Tried for real**, in a lab VM (Ubuntu 24.04 with the real open-iscsi), against a software iSCSI target standing in for the NAS:
+- Setup's NAS step logged in to two targets and listed both LUNs by their stable names. It refused to format them and gave the commands instead.
+- The drive step mounted the NAS LUN with the network options and never offered it for the SSD.
+- After a restart, the LUN came back by itself: network, then login, then mount.
+- A 30-second outage and a 30-second target power cut only paused the writes.
+- With Linux's default waits, a 200-second outage aborted ext4's journal. With the waits setup now sets, the same outage only paused the writes.
+- A longer outage, with the waits shortened for the test: the new check stopped the apps once the drive stopped taking writes. The recovery menu's new check repaired the drive, and the apps started again.
+
+Not tried: a real EX4100, Docker apps on a NAS drive (the lab VM has no Docker), and CHAP logins (the lab target had none). The setup window shows these questions the way it shows every setup question; that part wasn't tried in a browser.
+
+### New: drives on a NAS
+- **A switch on the setup window's first screen:** *My media and backup drives are in a network storage box (NAS)*. Off by default.
+- **The new step "Drives on the network storage box":**
+  - Installs the iSCSI tools (open-iscsi; iscsi-initiator-utils on Fedora and RHEL).
+  - Shows this PC's initiator name, to allow on the NAS.
+  - Asks for the NAS's address, checks that it answers, and lists its targets for you to choose.
+  - Asks for a CHAP login if the NAS needs one. The password is written in the target's own settings, readable by root only, never on a command line or in `my-config.json`.
+  - Logs in, again at every start, at the address you gave, even when the NAS lists itself at another (found in the lab: the login failed otherwise).
+  - Lists each LUN with its size, filesystem and identity (WWN).
+- **Never formats.** An empty LUN gets the exact `mkfs.ext4` command, with a label of its own, to check and run yourself.
+- **The drive step** marks NAS disks *on the network storage box*, never offers them for the SSD, and keeps their identity (WWN), so a different disk with the same filesystem ID is refused. They are mounted once the network is up and this PC is logged in (`_netdev`, and the login service required). An ext4 one turns read-only on write errors rather than carry on half-written.
+- **Longer waits for the NAS.** Setup raises iSCSI's wait to 10 minutes, and the disk driver's to 120 s per try (a udev rule for iSCSI disks only), so a NAS away for up to ten minutes only pauses reads and writes. Linux's defaults give up after two to three minutes, and ext4 then aborted its journal (seen in the lab).
+- **A check every minute (`nekoserver-nas-watch`)** tries a small write on each NAS drive. Linux still shows an aborted ext4 as mounted "rw" (statvfs says so too), so only a write tells.
+  - When a drive stops taking writes, it stops the apps that write there (Docker, the shared folders, the home gateway), once.
+  - It starts them again only when every NAS drive takes writes, through the same checks as when a drive comes back.
+  - A NAS that is only slow to answer gets no action: its writes wait.
+- **The recovery menu's new "Check a drive that turned read-only":** it stops the apps and unmounts the drive (never by force). It checks and repairs the filesystem with your yes (`e2fsck`; anything it won't fix on its own is left to you), mounts the drive again, makes sure it takes writes, and starts the apps.
+- **The dashboard** shows the connection to the NAS, a drive that turned read-only or waits for the NAS, and "health watched by the NAS" instead of SMART, which this PC can't read through iSCSI. A NAS alert recovers only once Linux says the session is logged in again, and a read-only drive is never "back". A NAS connection no longer used is dropped quietly.
+- **The guide** (STORAGE.md, "Drives on a network storage box") covers the EX4100's own steps: a target with a LUN on each pool, allowing only this PC, fixed addresses.
+
+### New: where each app keeps your files
+- **After the drives, setup asks** where Immich's photos, the music library (with its downloads) and Nextcloud's files go: the SSD (faster) or the media drive (more room). The better one comes first:
+  - photos on the SSD from 500 GB, music from 400 GB
+  - Nextcloud's files always on the media drive
+
+  The apps' settings and databases stay on the SSD.
+- **Everything follows the choice:**
+  - the apps' folders
+  - the photo archive copy and the weekly USB copy
+  - the music backup
+  - the repair and restore menus
+  - the update's checks
+  - the drive space and acceptance checks
+  - the media health checks
+
+  All of them read the paths from one place (`neko_common` and the runtime's `common`). A test checks that no path is written out by hand any more.
+- **Servers set up before 0.46.0 keep their layout:** a place that already holds files stays where it is, and the apps' definitions come out exactly as before. A setting changed by hand while the files are still on the other drive stops setup instead of starting an app on an empty folder.
+
 ## v0.45.8 — 2026-11-03
 
 From a second full audit of every part of the code (the runtime, setup and its window, the gateway, the backups' reports, the dashboard and its alerts), each finding checked against the code before it was fixed. Again no finding allowed getting past the PIN, attacking the page from another site, or injecting commands. Each fix has a test, and each test was run against 0.45.7 and fails there.

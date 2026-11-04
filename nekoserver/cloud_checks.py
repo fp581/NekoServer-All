@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import status_checks as health
-from neko_common import app_port, local_opener
+from neko_common import app_port, cloud_files, local_opener
 
 
 def check(config):
@@ -50,7 +50,7 @@ def check(config):
         if service in ('nextcloud', 'cron'):
             wanted = {
                 '/var/www/html': str(Path(config['data_mount']) / 'appdata/nextcloud/html'),
-                '/var/www/html/data': str(Path(config['media_mount']) / 'cloud/files'),
+                '/var/www/html/data': str(cloud_files(config)),
             }
         elif service == 'database':
             wanted = {'/var/lib/postgresql/data': str(Path(config['data_mount']) / 'appdata/nextcloud/postgres')}

@@ -169,6 +169,45 @@ pub fn mount_path(s: &str) -> Result<PathBuf> {
     }
     Ok(p)
 }
+/// The drive's folder that holds `what` ("photos", "music", "cloud"), as setup chose it
+/// ("locations": "ssd" or "media", neko_common.LOCATIONS); a setting missing is the
+/// layout before 0.46.0: photos and music on the SSD, Nextcloud's files on the media drive.
+pub fn files_root(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
+    let default = if what == "cloud" { "media" } else { "ssd" };
+    let chosen = cfg["locations"][what].as_str().unwrap_or(default);
+    let key = match chosen {
+        "ssd" => "data_mount",
+        "media" => "media_mount",
+        _ => {
+            return Err(Error::new(&format!(
+                "locations.{what} must be \"ssd\" or \"media\""
+            )))
+        }
+    };
+    mount_path(cfg[key].as_str().unwrap_or(""))
+}
+/// The drive folder (`data` or `media`) that holds `what`, from the settings' "locations"
+/// (see files_root), for code that has the two folders already.
+pub fn located<'a>(
+    locations: &serde_json::Value,
+    what: &str,
+    data: &'a Path,
+    media: &'a Path,
+) -> &'a Path {
+    let default = if what == "cloud" { "media" } else { "ssd" };
+    if locations[what].as_str().unwrap_or(default) == "media" {
+        media
+    } else {
+        data
+    }
+}
+/// Immich's photos and videos.
+pub fn photo_library(cfg: &serde_json::Value) -> Result<PathBuf> {
+    Ok(files_root(cfg, "photos")?.join("photos/immich-library"))
+}
+pub fn music_library(cfg: &serde_json::Value) -> Result<PathBuf> {
+    Ok(files_root(cfg, "music")?.join("library/music"))
+}
 pub fn relative(s: &str) -> Result<PathBuf> {
     let p = PathBuf::from(s);
     if p.is_absolute()

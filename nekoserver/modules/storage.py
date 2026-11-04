@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from neko_common import mount_path, atomic_json, atomic_write, findmnt, confirmed, safe_path
 
-DEPENDENCIES = ['system']
+DEPENDENCIES = ['system', 'network_storage']
 DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and media HDD by UUID'
 
 
@@ -24,7 +24,7 @@ def call(argv, timeout=30):
 def inventory_now():
     """Every disk and partition, as lsblk JSON (one command, used by all drive pickers)."""
     return json.loads(
-        call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MOUNTPOINTS,MODEL,RM,TRAN,LABEL'])
+        call(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINT,MOUNTPOINTS,MODEL,RM,TRAN,LABEL,WWN'])
     )
 
 
@@ -234,7 +234,7 @@ def boot_unlock_problem(device, crypttab=CRYPTTAB):
     )
 
 
-def candidate(dev, parent, physical, unlocks=()):
+def candidate(dev, parent, physical, unlocks=(), tran=None, wwn=None):
     """One lsblk row as a filesystem setup could use, or None. `unlocks`: the encrypted
     drives it sits on, which Linux must open before it can be mounted."""
     uuid = dev.get('uuid')
@@ -253,6 +253,9 @@ def candidate(dev, parent, physical, unlocks=()):
         'physical_disks': [physical],
         'kind': kind,
         'unlocks': list(unlocks),
+        # On a NAS (iSCSI): its disk's transport and identity (WWN), never its sdX name.
+        'network': tran == 'iscsi',
+        'wwn': wwn,
     }
 
 
@@ -311,15 +314,17 @@ def discover_filesystems(inventory, sub_uuid=device_sub_uuid):
     """Return candidates, never auto-select a device on model/size alone."""
     rows, placed = [], []
 
-    def walk(dev, parent='', disk=None, unlocks=()):
+    def walk(dev, parent='', disk=None, unlocks=(), tran=None, wwn=None):
         physical = dev.get('name', '') if dev.get('type') == 'disk' else disk
+        if dev.get('type') == 'disk':
+            tran, wwn = dev.get('tran'), dev.get('wwn')
         placed.append((dev, physical))
-        row = candidate(dev, parent, physical, unlocks)
+        row = candidate(dev, parent, physical, unlocks, tran, wwn)
         if row:
             rows.append(row)
         below = (*unlocks, dev.get('name', '')) if dev.get('type') == 'crypt' else unlocks
         for child in dev.get('children', []):
-            walk(child, dev.get('model') or parent, physical, below)
+            walk(child, dev.get('model') or parent, physical, below, tran, wwn)
 
     for device in inventory.get('blockdevices', []):
         walk(device)
@@ -475,6 +480,8 @@ def describe(device):
         words.append(str(device['model']).strip())
     if device.get('mountpoint'):
         words.append(f'open at {device["mountpoint"]}')
+    if device.get('network'):
+        words.append('on the network storage box (iSCSI' + (f", {device['wwn']}" if device.get('wwn') else '') + ')')
     note = f"; {device['size_note']}" if device.get('size_note') else ''
     return f"{device['name']}: " + ', '.join(words) + f" ({device['fstype']})" + note
 
@@ -524,6 +531,18 @@ def ask_drive(options, key, label, input_fn=input, out_fn=print, attempts=3):
     )
 
 
+def local_ssd(key, device):
+    """The application SSD is on this PC: it holds the databases and setup's own records,
+    and makes the apps fast. A disk on a NAS is for the media HDD and the backup drive."""
+    if key == 'data_ssd' and device.get('network'):
+        raise RuntimeError(
+            f"{device['name']} is a disk on the network storage box. The SSD for the apps must be connected to "
+            'this PC (by USB 3, or inside it): it holds the databases and setup\'s own records, and is what makes '
+            'the apps fast. Choose the NAS disk for the media HDD, then run setup again. Nothing was changed.'
+        )
+    return device
+
+
 def new_drive(record, device):
     """The settings of a drive just chosen: its UUID and filesystem, and nothing kept from
     the drive it replaces. The old drive's Btrfs subvolume ("/@data", say) would make an
@@ -532,6 +551,8 @@ def new_drive(record, device):
     (remember_subvolumes, mount_all)."""
     record.clear()
     record.update(uuid=device['uuid'], fstype=device['fstype'])
+    if device.get('network'):
+        record['network'] = {'transport': 'iscsi', 'wwn': device.get('wwn')}
 
 
 def resolve_storage_identity(config, inventory, apply=False, interactive=False, input_fn=input, out_fn=print):
@@ -560,6 +581,7 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
             if not interactive:
                 raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
             device = whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
+            local_ssd(key, device)
             new_drive(record, device)
             uuid = device['uuid']
         elif not uuid:
@@ -586,6 +608,16 @@ def choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)
             or str(v['mountpoint']).startswith(('/run/media/', '/media/'))
         )
     ]
+    # The SSD for the apps is on this PC: a disk on the NAS is not offered for it.
+    remote = [v for v in options if v.get('network')] if key == 'data_ssd' else []
+    options = [v for v in options if v not in remote]
+    if not options and remote:
+        raise RuntimeError(
+            'Only disks on the network storage box were found for the SSD ('
+            + ', '.join(v['name'] for v in remote)
+            + "). The SSD for the apps must be connected to this PC (by USB 3, or inside it), formatted ext4: "
+            'connect it, then run  sudo bash install.sh  again. Nothing was changed.'
+        )
     if not options:
         raise RuntimeError(nothing_eligible(inventory, items, selected, label))
     return ask_drive(options, key, label, input_fn, out_fn)
@@ -647,8 +679,26 @@ def saved_choice(record, uuid, items, key, label, apply, inventory=None, config=
         raise RuntimeError(f'Filesystem type mismatch for {key}')
     if apply:
         unlocked(matches[0])
+        local_ssd(key, matches[0])
+        same_nas_disk(record, matches[0], label)
     record['fstype'] = matches[0]['fstype']
     return uuid
+
+
+def same_nas_disk(record, device, label):
+    """A drive saved as being on the NAS is still that NAS disk (the same WWN, when the NAS
+    reports one), and a drive on the NAS is noted as one (chosen before 0.46.0)."""
+    saved = record.get('network')
+    if device.get('network'):
+        wwn = (saved or {}).get('wwn')
+        if wwn and device.get('wwn') and wwn != device['wwn']:
+            raise RuntimeError(
+                f"The {label} has its UUID, but it is on another NAS disk than before ({device['wwn']}, not {wwn}): "
+                'a copy of the disk, perhaps. Check on the NAS which LUN is which, then run setup again.'
+            )
+        record['network'] = {'transport': 'iscsi', 'wwn': device.get('wwn') or wwn}
+    elif saved:
+        record.pop('network', None)
 
 
 def too_small(device, key, label, config, interactive, out_fn):
@@ -693,6 +743,15 @@ def own_disks(uuid, items, taken, apply):
             'HDD are two different drives. Choose a partition of a real drive instead.'
         )
     return physical
+
+
+def network_uuids(config):
+    """The drives in the settings that are on a NAS (recorded when they were chosen)."""
+    return frozenset(
+        record['uuid']
+        for record in config.get('storage', {}).values()
+        if isinstance(record, dict) and record.get('network') and record.get('uuid')
+    )
 
 
 def mount_specs(config):
@@ -775,6 +834,43 @@ def validate_device(uuid, fstype):
     return str(source)
 
 
+# A drive on a network storage box (iSCSI, network_storage.py) is mounted once the network
+# is up and this PC has logged in to the NAS (_netdev, and the login service required);
+# an ext4 one that loses the NAS long enough to fail writes turns read-only rather than
+# carry on half-written (errors=remount-ro), so nothing writes past a fault unseen.
+NETWORK_OPTIONS = ',_netdev,x-systemd.requires={unit}'
+NETWORK_EXT4 = ',errors=remount-ro'
+
+
+def login_unit():
+    """The service that logs this PC in to the NAS at every start, on this Linux."""
+    import host
+
+    return host.service('iscsi-login')
+
+
+def disk_of(uuid, sys_class=Path('/sys/class/block')):
+    """The disk (sdc) the filesystem with this UUID is on: itself, or the disk its
+    partition belongs to. None when it is not connected."""
+    try:
+        name = Path(os.path.realpath(BY_UUID + uuid)).name
+    except OSError:
+        return None
+    entry = Path(sys_class) / name
+    if not entry.exists():
+        return None
+    return Path(os.path.realpath(entry)).parent.name if (entry / 'partition').exists() else name
+
+
+def on_network(uuid):
+    """Where the filesystem with this UUID comes from when it is on a NAS's iSCSI disk
+    ({'portal', 'iqn', 'lun'}), else None."""
+    from modules.network_storage import where
+
+    disk = disk_of(uuid)
+    return where(disk) if disk else None
+
+
 # How long a drive may take to appear at boot before its mount is given up. Large hard
 # drives, in USB enclosures or spinning up one after another, can take half a minute;
 # 15 s (before 0.28.7) could leave the HDD unmounted, and Docker and every app with it.
@@ -784,10 +880,17 @@ MOUNT_OPTIONS = 'defaults,nofail,x-systemd.device-timeout=90s'
 OLDER_OPTIONS = ('defaults,nofail,x-systemd.device-timeout=15s',)
 
 
-def fstab_line(uuid, fstype, mountpoint, subvolume=None):
+def fstab_line(uuid, fstype, mountpoint, subvolume=None, network=None):
+    """The line that mounts a drive at every start. `network`: the drive is on a NAS
+    (None: found out from the drive itself, on_network)."""
     if any(c.isspace() for c in mountpoint):
         raise RuntimeError('Mountpoint cannot contain whitespace')
-    options = MOUNT_OPTIONS + (f',subvol={subvolume}' if subvolume else '')
+    if network is None:
+        network = on_network(uuid) is not None
+    options = MOUNT_OPTIONS
+    if network:
+        options += NETWORK_OPTIONS.format(unit=login_unit()) + (NETWORK_EXT4 if fstype == 'ext4' else '')
+    options += f',subvol={subvolume}' if subvolume else ''
     return f'UUID={uuid} {mountpoint} {fstype} {options} 0 2'
 
 
@@ -825,7 +928,8 @@ def own_line(found):
     """The fields are a line NekoServer wrote (UUID=, the folder, a type, its own options,
     then 0 2), for whatever drive."""
     options = found[3].split(',') if len(found) == 6 else []
-    base = ','.join(o for o in options if not o.startswith('subvol='))
+    added = ('subvol=', '_netdev', 'x-systemd.requires=', NETWORK_EXT4.lstrip(','))
+    base = ','.join(o for o in options if not o.startswith(added))
     return found[0].startswith('UUID=') and found[4:] == ['0', '2'] and base in (MOUNT_OPTIONS, *OLDER_OPTIONS)
 
 
@@ -867,7 +971,19 @@ def existing_line(lines, uuid, mountpoint, entry, resolve=uuid_of, connected=dri
     # tree is known (and saved as the subvolume), the line is pinned to it.
     older = tuple(o + wanted[3][len(MOUNT_OPTIONS) :] for o in OLDER_OPTIONS)
     default = (MOUNT_OPTIONS, *OLDER_OPTIONS) if wanted[3] != MOUNT_OPTIONS else ()
-    if len(matches) != 1 or found[:3] != wanted[:3] or len(found) < 4 or found[3] not in (wanted[3], *older, *default):
+
+    # One of NekoServer's own lines for this drive, with or without the NAS options (the
+    # drive moved to or from a NAS), and the same subvolume or none yet: brought up to date.
+    def subvolume(options):
+        return next((o for o in options.split(',') if o.startswith('subvol=')), None)
+
+    ours = own_line(found) and subvolume(found[3]) in (subvolume(wanted[3]), None)
+    if (
+        len(matches) != 1
+        or found[:3] != wanted[:3]
+        or len(found) < 4
+        or not (found[3] in (wanted[3], *older, *default) or ours)
+    ):
         theirs = '\n'.join('    ' + lines[i].strip() for i, _ in matches)
         raise RuntimeError(
             f'/etc/fstab already has a line for this drive (UUID {uuid}) or for {mountpoint}, '
@@ -901,16 +1017,17 @@ def keep_first(path, backup):
         os.close(directory)
 
 
-def install_fstab(specs, path=Path('/etc/fstab'), log=None):
+def install_fstab(specs, path=Path('/etc/fstab'), log=None, network=frozenset()):
     """Add (or bring up to date) the lines that mount the SSD and HDD at boot: NekoServer's
     own line with older options, or for a drive that is gone (replaced), is rewritten. A
-    line for the same drive or folder that NekoServer didn't write stops setup instead."""
+    line for the same drive or folder that NekoServer didn't write stops setup instead.
+    `network`: the UUIDs of the drives on a NAS, mounted once it can be reached."""
     path = safe_path(path)
     existing = path.read_text() if path.exists() else ''
     lines = existing.splitlines()
     additions, upgraded, notes = [], False, []
     for _, uuid, fstype, mountpoint, subvolume in specs:
-        entry = fstab_line(uuid, fstype, mountpoint, subvolume)
+        entry = fstab_line(uuid, fstype, mountpoint, subvolume, network=uuid in network)
         index = existing_line(lines, uuid, mountpoint, entry, notes=notes)
         if index is None:
             additions.append(entry)
@@ -981,6 +1098,7 @@ def run(context):
     # is asked again on the next run instead of being kept.
     save_storage(context)
     mount_all(context, specs)
+    choose_locations(context)
     choose_usb(context)
 
 
@@ -1002,7 +1120,7 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
     subvolume (`btrfs subvolume set-default`, `/@data` say): that tree is saved as the
     drive's subvolume and its fstab line pinned to it, so a restart (or a later change of
     the default) mounts the same files, and the next run finds the line its own."""
-    install_fstab(specs, fstab, context.log)
+    install_fstab(specs, fstab, context.log, network_uuids(context.config))
     call(['systemctl', 'daemon-reload'])
     pinned = []
     for key, uuid, fstype, target, subvolume in specs:
@@ -1105,6 +1223,109 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None):
             f'{subvolume}; a restart would mount a different tree'
         )
     return found
+
+
+# The three places setup asks about (neko_common.LOCATIONS), in the words it asks them.
+WHERE = (
+    ('photos', "Immich's photos and videos", 500),
+    ('music', 'the music library (and its downloads)', 400),
+    ('cloud', "Nextcloud's files", None),
+)
+
+
+def recommended(ssd_gb, threshold):
+    """The better drive on this server: the SSD (faster) when it is big enough to hold it
+    for years (`threshold` GB), else the media drive (bigger). No threshold (Nextcloud's
+    files, which grow without limit and need no speed): the media drive."""
+    return 'ssd' if threshold is not None and ssd_gb >= threshold else 'media'
+
+
+def has_files(folder):
+    try:
+        return folder.is_dir() and any(folder.iterdir())
+    except OSError:
+        return False
+
+
+def kept_location(config, what):
+    """Where `what` already is, when its folder holds files on one drive: it stays there
+    (moving it is a job of its own), or None when it is nowhere yet."""
+    from neko_common import DRIVE_KEYS, LOCATIONS
+
+    for drive in ('ssd', 'media'):
+        root = Path(config[DRIVE_KEYS[drive]])
+        if any(has_files(root / rel) for rel in LOCATIONS[what][1]):
+            return drive
+    return None
+
+
+def free_gb(folder):
+    try:
+        found = os.statvfs(folder)
+    except OSError:
+        return 0
+    return found.f_bavail * found.f_frsize // 10**9
+
+
+DRIVE_WORDS = {'ssd': 'the SSD', 'media': 'the media drive'}
+
+
+def choose_locations(context, input_fn=None, interactive=None):
+    """Where each app keeps your files, asked once (saved as "locations"): the SSD or the
+    media drive, the better one pre-selected. The backups, restores and checks all follow
+    the choice (neko_common.files_root). A place already holding files stays as it is."""
+    config = context.config
+    chosen = config.setdefault('locations', {})
+    interactive = sys.stdin.isatty() if interactive is None else interactive
+    room = {'ssd': free_gb(config['data_mount']), 'media': free_gb(config['media_mount'])}
+    on_nas = bool(config.get('storage', {}).get('media_hdd', {}).get('network'))
+    changed = False
+    for what, words, threshold in WHERE:
+        kept = kept_location(config, what)
+        if chosen.get(what) in DRIVE_WORDS:
+            same_place(what, words, chosen[what], kept)
+            continue
+        if kept:
+            context.log(f'{words.capitalize()}: kept where they already are, on {DRIVE_WORDS[kept]}')
+            chosen[what] = kept
+        else:
+            best = recommended(room['ssd'], threshold)
+            chosen[what] = asked_location(context, words, best, room, on_nas, input_fn) if interactive else best
+            context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
+        changed = True
+    if changed and hasattr(context, 'persist_config'):
+        context.persist_config()
+
+
+def same_place(what, words, chosen, kept):
+    """A saved choice must be where the files are: the app would start on an empty folder."""
+    if kept and kept != chosen:
+        raise RuntimeError(
+            f'The settings put {words} on {DRIVE_WORDS[chosen]}, but they are on {DRIVE_WORDS[kept]}: the app '
+            f'would start with an empty folder. Put "locations": {{"{what}": "{kept}"}} back in my-config.json '
+            '(moving them is a job of its own, with the apps stopped), then run setup again. Nothing was changed.'
+        )
+
+
+def asked_location(context, words, best, room, on_nas, input_fn=None):
+    """The drive for `words`, asked: the better one first, Enter takes it."""
+    said = {
+        'media': f'the media drive{" (on the network storage box)" if on_nas else ""}: {room["media"]} GB free, the most room',
+        'ssd': f'the SSD: {room["ssd"]} GB free, faster',
+    }
+    options = [best, 'ssd' if best == 'media' else 'media']
+    context.log(f'Where should {words} be kept? (The backups follow wherever you choose.)')
+    for n, drive in enumerate(options, 1):
+        context.log(f'  {n}) {said[drive]}' + ('  (recommended)' if drive == best else ''))
+    for _ in range(3):
+        try:
+            answer = (input_fn or input)('Number (Enter for the recommended one): ').strip()
+        except EOFError:
+            answer = ''
+        if answer in ('', '1', '2'):
+            return options[int(answer) - 1] if answer else best
+        context.log('Type 1 or 2, or press Enter.')
+    return best
 
 
 def choose_usb(context):

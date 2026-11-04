@@ -12,6 +12,7 @@ from modules import (
     nextcloud,
     maintenance,
     music,
+    network_storage,
 )
 
 
@@ -32,6 +33,7 @@ def validate(config, plan):
     nextcloud_default(config, plan)
     validators = {
         'music': music.options,
+        'network_storage': network_storage.options,
         'nextcloud': nextcloud.options,
         'maintenance': maintenance.options,
         'server_os': server_os.settings,
@@ -44,6 +46,11 @@ def validate(config, plan):
     for name in plan:
         if name in validators:
             validators[name](config)
+    from neko_common import LOCATIONS
+
+    places = config.get('locations', {})
+    if not isinstance(places, dict) or any(k not in LOCATIONS or v not in ('ssd', 'media') for k, v in places.items()):
+        raise RuntimeError('locations must name photos, music or cloud, each "ssd" or "media"')
     for group in ('tv', 'onboarding', 'docker', 'photos', 'networking', 'guided_setup'):
         values = config.get(group, {})
         if not isinstance(values, dict):

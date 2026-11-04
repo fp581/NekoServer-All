@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.45.8'
+VERSION = '0.46.0'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -785,6 +785,50 @@ HIDDEN_FROM_SERVICES = ('/home', '/root', '/run/user')
 
 # The system's top-level folders a drive is mounted inside of, never on.
 TOP_FOLDERS = ('mnt', 'srv', 'home', 'var', 'tmp')
+
+
+# Where each app keeps your files, chosen at setup ("locations": "ssd" or "media"; the
+# apps' settings and databases always stay on the SSD, movies and TV on the media drive).
+# Downloads live with the music: Lidarr moves finished downloads into the library, which
+# works only on one drive. A setting missing is the layout before 0.46.0.
+LOCATIONS = {
+    'photos': ('ssd', ('photos/immich-library',)),
+    'music': ('ssd', ('library/music', 'library/downloads/music')),
+    'cloud': ('media', ('cloud/files',)),
+}
+DRIVE_KEYS = {'ssd': 'data_mount', 'media': 'media_mount'}
+
+
+def location(config, what):
+    """'ssd' or 'media': the drive that holds `what` (photos, music, cloud)."""
+    default, _ = LOCATIONS[what]
+    chosen = (config.get('locations') or {}).get(what, default)
+    if chosen not in DRIVE_KEYS:
+        raise RuntimeError(f'locations.{what} must be "ssd" or "media"')
+    return chosen
+
+
+def files_root(config, what):
+    """The drive's folder (/srv/nekoserver or /mnt/nekoserver-media) that holds `what`."""
+    return mount_path(config[DRIVE_KEYS[location(config, what)]])
+
+
+def photo_library(config):
+    """Immich's photos and videos (its upload location)."""
+    return files_root(config, 'photos') / 'photos/immich-library'
+
+
+def music_library(config):
+    return files_root(config, 'music') / 'library/music'
+
+
+def music_downloads(config):
+    return files_root(config, 'music') / 'library/downloads/music'
+
+
+def cloud_files(config):
+    """Nextcloud's files (its data folder)."""
+    return files_root(config, 'cloud') / 'cloud/files'
 
 
 def mount_path(value):

@@ -1215,7 +1215,17 @@ class UpgradeMigrationTests(unittest.TestCase):
 
     def test_current_navidrome_template_has_no_pending_migration_from_itself(self):
         current = (ROOT / 'compose' / 'navidrome.yaml').read_text()
-        self.assertEqual(current, (self.FIXTURES / 'navidrome.yaml').read_text())
+        # Since 0.46.0 the music's drive is a variable of its own: rendered for music on the
+        # SSD (every server before 0.46.0) it is the same text, so nothing is migrated.
+        values = ('/srv/nekoserver', '/mnt/nekoserver-media', 1000, 1000, 'UTC', '127.0.0.1')
+        self.assertEqual(
+            media.render(current, *values), media.render((self.FIXTURES / 'navidrome.yaml').read_text(), *values)
+        )
+        for name in ('lidarr', 'qbittorrent', 'navidrome'):
+            text = (ROOT / 'compose' / f'{name}.yaml').read_text()
+            self.assertIn('${NEKO_MUSIC}/library', text)
+            self.assertNotIn('${NEKO_DATA}/library', text)
+            self.assertIn('/mnt/nekoserver-media/library', media.render(text, *values, '/mnt/nekoserver-media'))
         self.assertNotIn(current, [old for old, _ in self.previous('navidrome')])
 
     def test_locally_edited_manifest_is_not_recognised(self):

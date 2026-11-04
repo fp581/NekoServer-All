@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import pwd
 
-from neko_common import safe_path
+from neko_common import files_root, music_downloads, safe_path
 
 
 def access(path, uid, groups, mask, bind_root=False):
@@ -52,9 +52,13 @@ def check(config, modules):
             inspect(app + ':appdata', data / 'appdata' / app, uid, {gid}, True, bind_root=True)
         for category in ('movies', 'tv', 'music', 'downloads'):
             inspect(
-                'media:' + category, (data if category == 'music' else media) / 'library' / category, uid, {gid}, True
+                'media:' + category,
+                (files_root(config, 'music') if category == 'music' else media) / 'library' / category,
+                uid,
+                {gid},
+                True,
             )
-        inspect('media:music-downloads', data / 'library/downloads/music', uid, {gid}, True)
+        inspect('media:music-downloads', music_downloads(config), uid, {gid}, True)
     if 'samba' in modules:
         from modules.samba import samba_account
 

@@ -47,6 +47,9 @@ APP_PACKAGES = (
 # Tailscale's service has the same name on every family.
 TAILSCALE_UNIT = 'tailscaled.service'
 SAMBA_UNIT = 'smb.service'
+# The service that logs in to the saved iSCSI targets at every start (network_storage):
+# iscsi.service from open-iscsi everywhere but Debian and Ubuntu, which call it open-iscsi.
+ISCSI_LOGIN_UNIT = 'iscsi.service'
 
 
 class Unsupported(RuntimeError):
@@ -726,7 +729,7 @@ class Arch(Family):
     manager = 'pacman'
     ids = ('arch', 'nyarch')
     like = ('arch',)
-    services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT})
+    services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT, 'iscsi-login': ISCSI_LOGIN_UNIT})
     settings = ('/etc/pacman.conf', '/etc/pacman.d/mirrorlist')
     wait = 600  # seconds to wait for another pacman to finish
     sleep = staticmethod(time.sleep)
@@ -1032,7 +1035,9 @@ class Debian(PackageLock, Family):
             'rust': ('rustc', 'cargo'),
         }
     )
-    services = MappingProxyType({'samba': 'smbd.service', 'tailscale': TAILSCALE_UNIT})
+    services = MappingProxyType(
+        {'samba': 'smbd.service', 'tailscale': TAILSCALE_UNIT, 'iscsi-login': 'open-iscsi.service'}
+    )
     settings = (
         '/etc/apt/sources.list',
         '/etc/apt/sources.list.d',
@@ -1553,6 +1558,8 @@ class Fedora(PackageLock, Family):
             'docker': ('docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin'),
             'docker-compose': 'docker-compose-plugin',
             'libva-mesa-driver': 'mesa-va-drivers',
+            # The iSCSI tools (network_storage).
+            'open-iscsi': 'iscsi-initiator-utils',
             # The TV: Steam from RPM Fusion's repository for it (Fedora's third-party source),
             # Mesa's Vulkan drivers for every chip in one package, bluetoothctl inside bluez.
             'vulkan-intel': 'mesa-vulkan-drivers',
@@ -1564,7 +1571,7 @@ class Fedora(PackageLock, Family):
             'rust': ('rust', 'cargo'),
         }
     )
-    services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT})
+    services = MappingProxyType({'samba': SAMBA_UNIT, 'tailscale': TAILSCALE_UNIT, 'iscsi-login': ISCSI_LOGIN_UNIT})
     settings = ('/etc/dnf/dnf.conf', '/etc/yum.repos.d')
     journal = '/var/lib/nekoserver-host/package-install.json'
     repositories = MappingProxyType({'docker': DOCKER_RPM, 'docker-compose': DOCKER_RPM, 'tailscale': TAILSCALE_RPM})

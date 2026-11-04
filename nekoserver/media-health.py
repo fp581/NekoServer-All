@@ -5,6 +5,9 @@ import argparse, json, re, subprocess, sys, urllib.request, urllib.error, xml.et
 from datetime import datetime, timezone
 from pathlib import Path
 from neko_common import (
+    files_root,
+    music_downloads,
+    music_library,
     MEDIA_APPS,
     app_ports,
     atomic_json,
@@ -162,12 +165,13 @@ def audit(config, probe=http_check):
                 for m in mounts
             )
         )
+        # The music and its downloads are on the drive setup chose for them ("locations").
         if name == 'navidrome':
-            media_ok = str(Path(config['data_mount']) / 'library/music') in mounts
+            media_ok = str(music_library(config)) in mounts
         if name == 'qbittorrent':
-            media_ok = media_ok and str(Path(config['data_mount']) / 'library/downloads/music') in mounts
+            media_ok = media_ok and str(music_downloads(config)) in mounts
         if name == 'lidarr':
-            media_ok = str(Path(config['data_mount']) / 'library') in mounts
+            media_ok = str(files_root(config, 'music') / 'library') in mounts
         if (
             info['state'] != 'running'
             or not info['network']

@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from neko_common import (
     APP_PORTS,
+    files_root,
     DASHBOARD_DEFAULT_PORT,
     compose_up,
     findmnt,
@@ -50,10 +51,12 @@ LIDARR_V0210_MOUNTS = (
     '      - "${NEKO_DATA}/library/downloads/music:/data/downloads/music"\n'
     '      - "${NEKO_DATA}/library/music:/data/music"\n'
 )
+# The current mounts (the music's drive is NEKO_MUSIC since 0.46.0: the same text as
+# before once rendered for music on the SSD, so installed definitions still match).
 LIDARR_V0211_MOUNTS = (
     '      # Single SSD mount: /data/downloads/music and /data/music share one\n'
     '      # filesystem mount, so imports hardlink or move instead of copying.\n'
-    '      - "${NEKO_DATA}/library:/data"\n'
+    '      - "${NEKO_MUSIC}/library:/data"\n'
 )
 NAVIDROME_V0170_SCANNER = (
     'ND_MUSICFOLDER: "/music"\n      ND_DATAFOLDER: "/data"\n      ND_SCANNER_SCHEDULE: "0 * * * *"\n'
@@ -200,8 +203,18 @@ def replacement(name, dest, template, rendered, values):
     return backup, current
 
 
-def render(template, data, media, uid, gid, tz, bind):
-    substitutions = dict(DATA=str(data), MEDIA=str(media), UID=str(uid), GID=str(gid), TZ=tz, BIND=bind)
+def render(template, data, media, uid, gid, tz, bind, music=None):
+    """A template with this server's values. `music`: the drive that holds the music and
+    its downloads (setup's choice, neko_common.files_root); the SSD when not given."""
+    substitutions = {
+        'DATA': str(data),
+        'MEDIA': str(media),
+        'UID': str(uid),
+        'GID': str(gid),
+        'TZ': tz,
+        'BIND': bind,
+        'MUSIC': str(music or data),
+    }
     output = template
     for key, value in substitutions.items():
         output = output.replace('${NEKO_' + key + '}', value)
@@ -251,6 +264,8 @@ def _run(context):
         raise RuntimeError('Media UIs must stay localhost-only behind the configured gateway')
     project_root = Path(__file__).resolve().parents[1]
     compose_dir = data / 'compose'
+    # The drive that holds the music and its downloads, as setup chose it ("locations").
+    music = files_root(context.config, 'music')
     configs = data / 'appdata'
     # Check ALL destinations first; never clobber previously customized manifests.
     manifests = {}
@@ -261,7 +276,7 @@ def _run(context):
         if dest.is_symlink():
             raise RuntimeError(f'Refusing symlink manifest: {dest}')
         template = (project_root / 'compose' / f'{name}.yaml').read_text(encoding='utf-8')
-        values = (data, media, uid, gid, tz, bind)
+        values = (data, media, uid, gid, tz, bind, music)
         rendered = render(template, *values)
         desired = adapt_to_host(name, rendered, peer_port=torrent_port(settings))
         if dest.exists() and dest.read_text(encoding='utf-8') != desired:
@@ -275,9 +290,9 @@ def _run(context):
                 raise RuntimeError(f'Refusing symlink path: {path}')
     context.log('Prepared all media Compose manifests without touching existing projects')
     ensure_directory(media / 'library', 0o755)
-    ensure_directory(data / 'library', 0o755)
+    ensure_directory(music / 'library', 0o755)
     for folder in ('music', 'downloads/music'):
-        target = safe_path(data / 'library' / folder)
+        target = safe_path(music / 'library' / folder)
         if not target.exists():
             ensure_directory(target, 0o2775, uid, gid)
     for folder in ('movies', 'tv', 'downloads'):

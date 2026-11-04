@@ -11,6 +11,8 @@ import subprocess
 import time
 
 from neko_common import (
+    cloud_files,
+    files_root,
     atomic_json,
     atomic_write,
     checked_run,
@@ -95,7 +97,9 @@ def settings(config, image):
         'trusted_hosts': list(opts.get('trusted_hosts', ['localhost', '127.0.0.1'])),
         'public_url': opts.get('public_url', ''),
         'data_mount': str(config['data_mount']),
-        'media_mount': str(config['media_mount']),
+        # The drive that holds Nextcloud's files (the media drive unless setup put them on
+        # the SSD, "locations").
+        'media_mount': str(files_root(config, 'cloud')),
     }
 
 
@@ -128,7 +132,7 @@ def adopt_admin(opts, owned, chosen, persist, log):
 # (.ncdata since Nextcloud 31, .ocdata before).
 DATA_MARKERS = ('.ncdata', '.ocdata')
 WWW_DATA = 33
-# Nextcloud's files folder, under the HDD's mount.
+# Nextcloud's files folder, under the drive that holds it (neko_common.cloud_files).
 FILES_FOLDER = 'cloud/files'
 # Setup's note, beside Nextcloud's settings on the SSD, that the files folder was given
 # back on a new HDD and its accounts' folders are still to be made. Written before the
@@ -146,8 +150,8 @@ def files_folder_given_back(config, log, note=None):
     get them back is said. `note` (RECOVERY_NOTE) is written first, naming the HDD, so
     the accounts' folders are still made when this setup stops before them. True when
     that was done."""
-    media = Path(config['media_mount'])
-    files = safe_path(media / FILES_FOLDER)
+    media = files_root(config, 'cloud')
+    files = safe_path(cloud_files(config))
     if files.is_dir() and any(files.iterdir()):
         return False
     if note is not None:
@@ -181,7 +185,7 @@ def recovery_pending(config, note, log):
         recorded = json.loads(note.read_text())
     except (OSError, ValueError):
         recorded = None
-    identity = mounted_identity(Path(config['media_mount']))
+    identity = mounted_identity(files_root(config, 'cloud'))
     if not isinstance(recorded, dict) or recorded.get('filesystem') != (list(identity) if identity else None):
         note.unlink()
         return False
@@ -202,7 +206,7 @@ def files_folder_to_give_back(config, folder, log):
 def finish_files_folder(base, config, folder, log):
     """The accounts' folders made on the new HDD and the file list refreshed; the note
     goes only then, so a failure in either leaves it for the next run."""
-    account_folders_given_back(base, safe_path(Path(config['media_mount']) / FILES_FOLDER), log)
+    account_folders_given_back(base, safe_path(cloud_files(config)), log)
     safe_path(folder / RECOVERY_NOTE).unlink(missing_ok=True)
 
 
@@ -354,7 +358,7 @@ def settings_of(owned):
 def model(config, image):
     opts = options(config)
     root = Path(config['data_mount']) / 'appdata/nextcloud'
-    files = Path(config['media_mount']) / FILES_FOLDER
+    files = cloud_files(config)
     mounts = [str(root / 'html') + ':/var/www/html', str(files) + ':/var/www/html/data']
     env = {
         'POSTGRES_HOST': 'database',
@@ -589,7 +593,7 @@ def run(ctx):
             if chosen:
                 opts['admin_user'] = chosen['username']
                 ctx.persist_config()
-            for existing in (data / HTML, data / POSTGRES, Path(config['media_mount']) / FILES_FOLDER):
+            for existing in (data / HTML, data / POSTGRES, cloud_files(config)):
                 safe_path(existing)
                 if existing.exists() and any(existing.iterdir()):
                     raise RuntimeError('Existing Nextcloud data preserved; explicit recovery required')
@@ -600,13 +604,13 @@ def run(ctx):
                 (data / 'appdata/nextcloud', 0o700),
                 (data / HTML, 0o755),
                 (data / POSTGRES, 0o700),
-                (Path(config['media_mount']) / 'cloud', 0o755),
-                (Path(config['media_mount']) / FILES_FOLDER, 0o750),
+                (cloud_files(config).parent, 0o755),
+                (cloud_files(config), 0o750),
                 (folder, 0o700),
             ):
                 ensure_directory(safe_path(target), mode)
             # Nextcloud/Apache writes as www-data; only newly empty application data is initialized.
-            files = safe_path(Path(config['media_mount']) / FILES_FOLDER)
+            files = safe_path(cloud_files(config))
             if not any(files.iterdir()):
                 os.chown(files, WWW_DATA, WWW_DATA, follow_symlinks=False)
             password = chosen['password'] if chosen else secrets.token_hex(24)
