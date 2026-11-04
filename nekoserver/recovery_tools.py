@@ -38,6 +38,7 @@ import native_runtime
 CONFIG_NAME = 'config.json'
 RECOVER_TOOL = 'recover.py'
 DOCKER = ['docker', '--host', 'unix:///var/run/docker.sock']
+PROJECT_LABEL = 'label=com.docker.compose.project='  # a docker filter for one Compose project's things
 SERVICES = {'database', 'redis', 'immich-server', 'immich-machine-learning'}
 FORMAT = 'neko-immich-snapshot-v1'
 
@@ -957,7 +958,7 @@ def clear_left_bridge(port, run=None):
         project = (details.get('Labels') or {}).get('com.docker.compose.project', '')
         if not re.fullmatch(r'neko-restore-[0-9a-f]{12}', project):
             continue
-        label = 'label=com.docker.compose.project=' + project
+        label = PROJECT_LABEL + project
         if run(DOCKER + ['ps', '-q', '--filter', label]).split():
             raise RuntimeError(f'An earlier restore test ({project}) still runs on its network; stop it first')
         stopped = run(DOCKER + ['ps', '-a', '-q', '--filter', label]).split()
@@ -1206,8 +1207,8 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
     clear_left_bridge(port)
     project = 'neko-restore-' + uuid.uuid4().hex[:12]
     for argv in (
-        DOCKER + ['ps', '-a', '--filter', 'label=com.docker.compose.project=' + project, '-q'],
-        DOCKER + ['network', 'ls', '--filter', 'label=com.docker.compose.project=' + project, '-q'],
+        DOCKER + ['ps', '-a', '--filter', PROJECT_LABEL + project, '-q'],
+        DOCKER + ['network', 'ls', '--filter', PROJECT_LABEL + project, '-q'],
     ):
         if command(argv).strip():
             raise RuntimeError('Restore project identity already exists')

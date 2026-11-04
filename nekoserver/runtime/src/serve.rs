@@ -430,6 +430,71 @@ fn merge_nvidia(value: &mut Value, status: &Value, now: f64) {
 /// queue is given only what is left (the audit of 0.46.2: queued slow connections each got
 /// a full 3 s once a worker took them, so a few hundred kept every worker busy).
 const REQUEST_TIME: Duration = Duration::from_secs(3);
+/// The request's head (up to its blank line), read until `start` + REQUEST_TIME; None when
+/// it didn't come in time, the connection closed, or it was too long (answered 431).
+fn read_head(stream: &mut TcpStream, start: Instant) -> Option<Vec<u8>> {
+    let mut buf = Vec::with_capacity(4096);
+    while start.elapsed() <= REQUEST_TIME {
+        if buf.len() >= 16384 {
+            reply(stream, 431, b"", "application/json", false);
+            return None;
+        }
+        let mut chunk = [0u8; 2048];
+        let capacity = chunk.len().min(16384 - buf.len());
+        match stream.read(&mut chunk[..capacity]) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+        if buf.windows(4).any(|b| b == b"\r\n\r\n") {
+            return Some(buf);
+        }
+    }
+    None
+}
+/// The body's length from Content-Length: none or 0, or for a POST up to MAX_BODY.
+fn body_length(given: &[&[u8]], post: bool) -> Option<usize> {
+    let length = match given {
+        [] => Some(0),
+        [v] => std::str::from_utf8(v)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok()),
+        _ => None,
+    };
+    length.filter(|n| *n == 0 || (post && *n <= MAX_BODY))
+}
+/// The rest of a body of `length` bytes after what came with the head, read until
+/// `start` + REQUEST_TIME.
+fn read_body(stream: &mut TcpStream, mut body: Vec<u8>, length: usize, start: Instant) -> Vec<u8> {
+    while body.len() < length && start.elapsed() < REQUEST_TIME {
+        let mut chunk = [0u8; 2048];
+        match stream.read(&mut chunk[..(length - body.len()).min(2048)]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => body.extend_from_slice(&chunk[..n]),
+        }
+    }
+    body
+}
+/// The request names the dashboard's own address and comes from its page: one Host the
+/// dashboard answers to, an Origin (at most one) of its own, never cross-site, and for a
+/// change (POST) the page itself (browsers always send Origin with POST), so another site
+/// cannot press the buttons. `known`: the hosts and origins it answers to.
+fn from_the_page(
+    hosts: &[&[u8]],
+    origin: &[&[u8]],
+    fetch: &[&[u8]],
+    post: bool,
+    known: (&[String], &[String]),
+) -> bool {
+    let (allowed_hosts, origins) = known;
+    hosts.len() == 1
+        && allowed_hosts.iter().any(|h| h.as_bytes() == hosts[0])
+        && origin.len() <= 1
+        && origin
+            .first()
+            .is_none_or(|v| origins.iter().any(|o| o.as_bytes() == *v))
+        && !fetch.iter().any(|v| *v == b"cross-site")
+        && !(post && (origin.len() != 1 || fetch.iter().any(|v| *v != b"same-origin")))
+}
 fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
     if accepted.elapsed() >= REQUEST_TIME {
         return; // waited out its time in the queue: closed unanswered
@@ -443,26 +508,10 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
     {
         return;
     }
-    let mut buf = Vec::with_capacity(4096);
     let start = accepted;
-    loop {
-        if start.elapsed() > REQUEST_TIME {
-            return;
-        }
-        if buf.len() >= 16384 {
-            reply(&mut stream, 431, b"", "application/json", false);
-            return;
-        }
-        let mut chunk = [0u8; 2048];
-        let capacity = chunk.len().min(16384 - buf.len());
-        match stream.read(&mut chunk[..capacity]) {
-            Ok(0) | Err(_) => return,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-        }
-        if buf.windows(4).any(|b| b == b"\r\n\r\n") {
-            break;
-        }
-    }
+    let Some(buf) = read_head(&mut stream, start) else {
+        return;
+    };
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
     let body_start = match req.parse(&buf) {
@@ -491,29 +540,11 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
     let origin = values("origin");
     let fetch = values("sec-fetch-site");
     let cl = values("content-length");
-    if hosts.len() != 1
-        || !allowed_hosts.iter().any(|h| h.as_bytes() == hosts[0])
-        || origin.len() > 1
-        || origin
-            .first()
-            .map(|v| !origins.iter().any(|o| o.as_bytes() == *v))
-            .unwrap_or(false)
-        || fetch.iter().any(|v| *v == b"cross-site")
-        // Changes must come from the dashboard page itself (browsers always send
-        // Origin with POST), so another site cannot press the buttons.
-        || (post && (origin.len() != 1 || fetch.iter().any(|v| *v != b"same-origin")))
-    {
+    if !from_the_page(&hosts, &origin, &fetch, post, (&allowed_hosts, &origins)) {
         reply_error(&mut stream, "E41", head);
         return;
     }
-    let length = match cl.as_slice() {
-        [] => Some(0),
-        [v] => std::str::from_utf8(v)
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok()),
-        _ => None,
-    };
-    let Some(length) = length.filter(|n| *n == 0 || (post && *n <= MAX_BODY)) else {
+    let Some(length) = body_length(&cl, post) else {
         reply_error(&mut stream, "E42", head);
         return;
     };
@@ -549,14 +580,7 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
             .first()
             .and_then(|v| std::str::from_utf8(v).ok())
             .map(str::to_string);
-        let mut body = buf[body_start..].to_vec();
-        while body.len() < length && start.elapsed() < REQUEST_TIME {
-            let mut chunk = [0u8; 2048];
-            match stream.read(&mut chunk[..(length - body.len()).min(2048)]) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => body.extend_from_slice(&chunk[..n]),
-            }
-        }
+        let body = read_body(&mut stream, buf[body_start..].to_vec(), length, start);
         let result = control(
             server,
             path,
