@@ -214,7 +214,7 @@ def build(lab):
     if not (rootfs / 'usr/sbin/iscsiadm').exists():
         shutil.rmtree(rootfs, ignore_errors=True)
         sh(['debootstrap', '--variant=minbase', '--components=main,universe', '--include=' + PACKAGES,
-            'noble', str(rootfs), 'http://archive.ubuntu.com/ubuntu'])  # fmt: skip  # NOSONAR: debootstrap checks the archive's signed Release file
+            'noble', str(rootfs), 'https://archive.ubuntu.com/ubuntu'])  # fmt: skip
     kernel = max(Path('/boot').glob('vmlinuz-*-generic')).name.removeprefix('vmlinuz-')
     # Into lib/modules/<kernel>: without the folder there, cp would make the copy lib/modules itself.
     (rootfs / 'lib/modules').mkdir(parents=True, exist_ok=True)
