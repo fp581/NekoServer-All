@@ -2861,7 +2861,7 @@ class RestoreTestPortTests(unittest.TestCase):
                 {'data_mount': d, 'media_mount': '/nonexistent'}, 2284, run=lambda *a, **k: shown
             )
         self.assertIn('earlier restore test (neko-restore-0123456789ab)', message)
-        self.assertIn(f'-f {work}/compose.json stop', message)
+        self.assertIn(f'-f {work}/compose.json down', message)  # down: its network goes too
         self.assertIn('--port', message)
 
     def test_another_program_on_the_port_is_said_plainly(self):

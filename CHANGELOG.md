@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.46.3 — 2026-11-04
+
+A stabilization release: fixes only, from a second audit of 0.46.2. It had four separate reviews: 0.46.2's own changes, the dashboard and control service, installing and upgrading, and the apps and restores. Each fix has a test that fails on 0.46.2.
+
+### Fixed: the dashboard
+- **No other program can take the dashboard's port and catch the PIN** (P1).
+  - The dashboard bound its port itself, after waiting up to three minutes for its first readings at start-up. Any account on the PC could take `127.0.0.1:8787` first (a `@reboot` job, say), serve a copy of the page to the phones and read the PIN they type.
+  - systemd now holds the port from the start of the computer (`nekoserver-dashboard.socket`) and hands it to the dashboard. The dashboard also checks that it got the right port.
+- **Close app and Force close never stop a program started with sudo from the app.** Setup or a system update run with sudo in a terminal sits in the terminal's group, and Force close killed it. Only the desktop user's own processes are closed now.
+- **Slow connections hold the dashboard less.** A request's 3 seconds now count from when it was accepted, so one that waited in the queue is closed at once instead of taking a worker for 3 seconds more.
+- **The Processes page lists a process whose name has a byte that isn't UTF-8.** It was left out before.
+- **An upgrade from a `-beta` tag shows as running** while it runs.
+
+### Fixed: upgrades
+- **A copy kept beside a unit file no longer fails every upgrade.** The gateway keeps a `.before-<time>` copy of a unit it rewrites. That copy named an old release, so the check after an upgrade failed, and so did the check after putting the release back. Only real unit files are looked at now.
+- **Putting a release back removes the units the newer one added.** The older setup rewrites only its own units, so a new one kept running the newer release's program.
+- **An upgrade waits for a pending restart.** When a system update waits for a restart, setup stops at once, and so does the old release's setup. The upgrade then failed, and then failed to go back. It now says to restart first and changes nothing.
+- The upgrade's description now says what it checks: the release's version, from this project's GitHub tag, over HTTPS. Releases are not signed yet.
+
+### Fixed: apps and restores
+- **A Nextcloud setting that can't be read is never overwritten.** If occ timed out, or printed a PHP warning before its answer, the list of trusted domains was taken as empty, and its first entry (`localhost`, or the other gateway's address) was replaced. Only "not set" counts as empty now; any other failure stops the step.
+- **A restore test left behind no longer blocks the next one on its port.** A failed or stopped test kept its network, and Docker refused the next test's network of the same name. A left network is now removed, with its stopped containers, before the next test, and the advice says `down`.
+- **A restore test's own network is never offered as the home network**, neither in setup's choice of network nor at start-up.
+- The Nextcloud fallback install's comment now says that its passwords are briefly in its process's arguments, as with the image's own first start.
+
+### Fixed: drives on a NAS (0.46.2's own changes)
+- **With only the backup drive on the NAS, the apps start again after a repair.** The menu left the start to the NAS check, which has no drive to look at in that case, so its hold was never lifted. The menu now starts the apps itself then, and the check lifts a hold left from before.
+- **Drive-return doesn't start the apps on a NAS drive that fails writes.** It holds them as the NAS check would, and that check starts them once the drive takes writes. A drive that is only waiting for the NAS is no reason to wait.
+- **Quitting the recovery menu doesn't wait for a stuck test write.**
+- **The recovery menu checks the backup drive's NAS disk identity (WWN) too**, as the weekly copy does.
+- **A busy USB drive (the weekly copy) never hides the HDD's password lists.**
+- The NAS check no longer claims to keep a failed start "for the dashboard": the failure is reported in the check's log.
+
+### Fixed: Linux families
+- **A Fedora derivative that also names `rhel` (Nobara, say) is not taken for RHEL**, whose repositories have no release of its number. It is refused as not supported.
+
+### Tried for real
+- **The dashboard with its port handed over by systemd:** run as an ordinary user under `systemd-socket-activate`, it answered on the handed port. Handed another port than its settings name, it refused to start.
+- Everything else is covered by tests only (1319 Python, 449 Rust).
+
+### Not changed
+- **Releases are not signed.** Whoever can push a tag to the project's GitHub can publish a release. Signed checksums would need a signing key and a step in the release process.
+- **Slow connections:** a few hundred slow local connections can still keep the dashboard busy. Each one now holds a worker for much less time.
+
 ## v0.46.2 — 2026-11-04
 
 A stabilization release: fixes only. They come from a new audit of 0.46.1 (four separate reviews: the NAS code, the Compose checks, backups and restores, drive moves and setup) and the project owner's two reviews of `v0.46.1-beta`. Each fix has a test that fails on 0.46.1.

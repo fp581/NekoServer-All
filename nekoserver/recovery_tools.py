@@ -941,6 +941,33 @@ def test_bridge(port):
     return f'neko-rt-{port}'
 
 
+def clear_left_bridge(port, run=None):
+    """An earlier restore test's network on this port, left by a test that failed or was
+    stopped (its containers stopped, not removed), removed with those stopped containers:
+    Docker refuses a second network with the same bridge name, so the next test on the port
+    failed at its start (the audit of 0.46.2). A test still running is left alone (the port
+    check said so before). Returns the projects cleared."""
+    run = run or command
+    cleared = []
+    for network in run(DOCKER + ['network', 'ls', '--filter', 'name=neko-restore-', '-q']).split():
+        found = json.loads(run(DOCKER + ['network', 'inspect', network]))
+        details = found[0] if isinstance(found, list) and found else {}
+        if (details.get('Options') or {}).get('com.docker.network.bridge.name') != test_bridge(port):
+            continue
+        project = (details.get('Labels') or {}).get('com.docker.compose.project', '')
+        if not re.fullmatch(r'neko-restore-[0-9a-f]{12}', project):
+            continue
+        label = 'label=com.docker.compose.project=' + project
+        if run(DOCKER + ['ps', '-q', '--filter', label]).split():
+            raise RuntimeError(f'An earlier restore test ({project}) still runs on its network; stop it first')
+        stopped = run(DOCKER + ['ps', '-a', '-q', '--filter', label]).split()
+        if stopped:
+            run(DOCKER + ['rm', *stopped])
+        run(DOCKER + ['network', 'rm', network])
+        cleared.append(project)
+    return cleared
+
+
 # What the restored app may still do on its network: answer the connections made to it
 # (the person opening it on the published port). Anything it starts itself is dropped:
 # towards this PC (INPUT: Samba, SSH, the other apps' ports on all addresses) and through
@@ -1135,7 +1162,7 @@ def port_in_use(config, port, run=subprocess.run):
                 if json.loads(report.read_text()).get('project') == project:
                     return (
                         f'An earlier restore test ({project}) is still running on port {port}, left for you to check. '
-                        f'Stop it with  sudo docker --host unix:///var/run/docker.sock compose -p {project} -f {report.parent}/compose.json stop  '
+                        f'Stop it with  sudo docker --host unix:///var/run/docker.sock compose -p {project} -f {report.parent}/compose.json down  '
                         'and run this again, or choose another port with --port'
                     )
             except (OSError, ValueError):
@@ -1176,6 +1203,7 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
             'Nothing was changed: add  --confirm RESTORE-ISOLATED  to the command to build the separate test copy '
             '(it never touches your real Immich)'
         )
+    clear_left_bridge(port)
     project = 'neko-restore-' + uuid.uuid4().hex[:12]
     for argv in (
         DOCKER + ['ps', '-a', '--filter', 'label=com.docker.compose.project=' + project, '-q'],

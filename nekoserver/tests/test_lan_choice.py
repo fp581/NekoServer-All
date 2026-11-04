@@ -24,6 +24,12 @@ class HomeBridgeTests(unittest.TestCase):
     """A bridge of your own carrying the home network (br0, bridge0) is offered like a
     network card; Docker's, libvirt's and the tunnels never are (startup.rs agrees)."""
 
+    def test_a_restore_tests_own_network_is_never_a_home_network(self):
+        """The audit of 0.46.2: the restore test's bridge (neko-rt-<port>) has a private
+        address and was offered as the home network."""
+        self.assertTrue(network_access.internal_interface('neko-rt-2284'))
+        self.assertFalse(network_access.internal_interface('enp3s0'))
+
     def test_a_home_bridge_is_a_candidate_and_dockers_bridges_are_not(self):
         import json
 

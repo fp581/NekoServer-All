@@ -19,6 +19,7 @@ class FakeNextcloud:
         self.system = system if system is not None else {'trusted_domains': ['localhost', '127.0.0.1']}
         self.gateways = gateways
         self.calls = []
+        self.unreadable = set()
 
     def __call__(self, args, timeout=30, env=None):
         self.calls.append(args)
@@ -31,7 +32,12 @@ class FakeNextcloud:
         action, key = occ[0], occ[1]
         if action == 'config:system:get':
             if key not in self.system:
-                raise RuntimeError('missing key')
+                # occ's answer for a setting that is not set: exit 1, nothing said.
+                raise RuntimeError(
+                    'Gateway command failed (docker --host unix:///var/run/docker.sock): no reason given'
+                )
+            if key in self.unreadable:
+                raise RuntimeError('Gateway command took over 60 seconds (docker --host unix:///var/run/docker.sock)')
             return json.dumps(self.system[key])
         if action == 'config:system:delete':
             self.system.pop(key, None)
@@ -131,6 +137,16 @@ class CloudOriginTests(unittest.TestCase):
         self.assertEqual(gateway_tools.listed({'0': 'localhost', '2': 'x'}), (['localhost', 'x'], 3))
         self.assertEqual(gateway_tools.listed(None), ([], 0))
         self.assertEqual(gateway_tools.listed('nonsense'), (None, 0))
+
+    def test_a_setting_that_could_not_be_read_is_never_overwritten(self):
+        """The audit of 0.46.2: occ timing out on the trusted domains was taken for an empty
+        list, and the first entry (localhost, or the other gateway's address) was replaced."""
+        fake = FakeNextcloud()
+        fake.unreadable.add('trusted_domains')
+        with self.assertRaisesRegex(RuntimeError, "trusted_domains setting could not be read"):
+            self.run_gateways(fake, '192.168.1.20')
+        self.assertEqual(fake.system['trusted_domains'], ['localhost', '127.0.0.1'])
+        self.assertFalse(any('config:system:set' in call for call in fake.calls))
 
     def test_rerun_is_idempotent(self):
         fake = FakeNextcloud()

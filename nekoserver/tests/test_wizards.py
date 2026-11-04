@@ -1717,6 +1717,25 @@ class RecoveryWizardTests(unittest.TestCase):
             recovery_wizard.restore_passwords(self.config, answers('1'), [].append)
         self.assertEqual(restored[0][2], str(self.root / 'usb/passwords/1750000000000000-0'))
 
+    def test_a_busy_usb_drive_never_hides_the_hdds_lists(self):
+        """The audit of 0.46.2: the weekly copy holding the USB drive stopped the restore of a
+        list that is on the HDD."""
+        self.write('hdd/backups/monthly/1700000000000000-4/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('hdd/backups/monthly/1700000000000000-4/secrets.tar.cms', b'sealed')
+        restored, out = [], []
+        with (
+            mock.patch.object(
+                recovery_wizard.Usb,
+                '__enter__',
+                side_effect=RuntimeError('the weekly backup is using the USB drive right now'),
+            ),
+            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
+        ):
+            recovery_wizard.restore_passwords(self.config, answers('1'), out.append)
+        self.assertIn('The USB drive is not looked at', out[0])
+        self.assertEqual(restored[0][2], str(self.media / 'backups/monthly/1700000000000000-4'))
+
     def test_no_password_list_anywhere_is_said(self):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),

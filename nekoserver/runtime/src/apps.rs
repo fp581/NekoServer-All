@@ -505,6 +505,20 @@ impl Host {
     fn desktop(&self, pid: u32) -> Option<live::Desktop> {
         live::desktop_of(&fs::read_to_string(self.proc.join(format!("{pid}/cgroup"))).ok()?)
     }
+    /// The desktop app the process belongs to, when it also runs as that desktop's own
+    /// user: a program started with sudo from the app (setup from a terminal, a system
+    /// update) stays in its group but runs as root, and is never closed from here (the
+    /// audit of 0.46.2: Force close killed them).
+    fn own_desktop(&self, pid: u32) -> Option<live::Desktop> {
+        let desktop = self.desktop(pid)?;
+        let status = fs::read_to_string(self.proc.join(format!("{pid}/status"))).ok()?;
+        let uids = status.lines().find_map(|l| l.strip_prefix("Uid:"))?;
+        let all: Vec<u32> = uids
+            .split_whitespace()
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        (all.len() == 4 && all.iter().all(|u| *u == desktop.uid)).then_some(desktop)
+    }
     /// Every process of the desktop app, from its cgroup and any groups below it.
     fn members(&self, path: &str) -> Vec<u32> {
         let mut pids = vec![];
@@ -535,7 +549,7 @@ impl Host {
             }
             // SAFETY: the descriptor was just returned to us and is owned from here on.
             let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
-            if self.desktop(pid).map(|d| d.path).as_deref() != Some(path) {
+            if self.own_desktop(pid).map(|d| d.path).as_deref() != Some(path) {
                 continue;
             }
             use std::os::fd::AsRawFd;
@@ -553,10 +567,12 @@ impl Host {
         }
         sent
     }
+    /// Every process of the app it may close is gone (one running as another user, which
+    /// it never closes, doesn't count).
     fn gone(&self, path: &str) -> bool {
         self.members(path)
             .into_iter()
-            .all(|pid| self.desktop(pid).map(|d| d.path).as_deref() != Some(path))
+            .all(|pid| self.own_desktop(pid).map(|d| d.path).as_deref() != Some(path))
     }
 }
 
@@ -832,6 +848,10 @@ mod tests {
             Desk { root, host, path }
         }
         fn describe(&self, pid: u32, start: u64, cgroup: &str) {
+            self.describe_as(pid, start, cgroup, 1000);
+        }
+        /// A process of the app running as `uid` (0: started with sudo from it).
+        fn describe_as(&self, pid: u32, start: u64, cgroup: &str, uid: u32) {
             let dir = self.root.join(format!("proc/{pid}"));
             fs::create_dir_all(&dir).unwrap();
             fs::write(
@@ -840,6 +860,11 @@ mod tests {
             )
             .unwrap();
             fs::write(dir.join("cgroup"), format!("0::{cgroup}\n")).unwrap();
+            fs::write(
+                dir.join("status"),
+                format!("Name:\tapp\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+            )
+            .unwrap();
         }
         fn members(&self, pids: &[u32]) {
             let list = pids.iter().map(|p| format!("{p}\n")).collect::<String>();
@@ -918,6 +943,36 @@ mod tests {
         assert_eq!(done["label"], "Kate");
     }
 
+    #[test]
+    fn a_program_started_with_sudo_from_the_app_is_never_closed() {
+        // The audit of 0.46.2: setup or a system update started with sudo in Konsole sits
+        // in Konsole's group, and Force close killed it.
+        let desk = Desk::new("sudo", "app-org.kde.konsole-88bb.scope");
+        let mut mine = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut root = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        desk.describe(mine.id(), 4242, &desk.path);
+        desk.describe_as(root.id(), 4242, &desk.path, 0);
+        desk.members(&[mine.id(), root.id()]);
+        assert_eq!(desk.host.signal(&desk.path, libc::SIGTERM), 1);
+        mine.wait().unwrap();
+        assert!(
+            root.try_wait().unwrap().is_none(),
+            "the root one still runs"
+        );
+        desk.members(&[root.id()]);
+        assert!(
+            desk.host.gone(&desk.path),
+            "only the app's own processes count"
+        );
+        root.kill().unwrap();
+        root.wait().unwrap();
+    }
     #[test]
     fn an_app_that_ignores_close_can_be_force_closed() {
         let desk = Desk::new("force", "app-stubborn-1234.scope");

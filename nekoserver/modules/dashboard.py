@@ -38,6 +38,9 @@ LAUNCHER = Path('/usr/local/bin/nekoserver-dashboard')
 DESKTOP_ENTRY = Path('/usr/share/applications/nekoserver-dashboard.desktop')
 MANAGED = 'X-NekoServer-Managed=true'
 SERVICE = 'nekoserver-dashboard.service'
+# Its port, opened by systemd at the start of the computer and handed to it, so no other
+# program can take the port first (serve.rs listener; the audit of 0.46.2).
+SOCKET = 'nekoserver-dashboard.socket'
 EXEC_START = 'ExecStart='
 SERVICE_UNIT = SYSTEMD_UNITS / SERVICE
 # Fan and lighting changes: the only root part, reached by the web server over a socket.
@@ -318,8 +321,14 @@ def units(data, code, config, port, interval, public=None, control=False):
         + str(data / 'dashboard-state')
         + '\nRestrictAddressFamilies=AF_UNIX\n',
         'nekoserver-dashboard-collect.timer': f'[Unit]\nDescription=NekoServer periodic dashboard collection\n[Timer]\nOnBootSec=15s\nOnUnitInactiveSec={interval}s\nUnit=nekoserver-dashboard-collect.service\n[Install]\nWantedBy=timers.target\n',
+        SOCKET: '[Unit]\nDescription=NekoServer local dashboard port\n[Socket]\n'
+        f'ListenStream=127.0.0.1:{port}\nAccept=no\nNoDelay=yes\n[Install]\nWantedBy=sockets.target\n',
         # Starts with the computer and comes back by itself if it ever stops.
-        SERVICE: '[Unit]\nDescription=NekoServer local dashboard\nWants=nekoserver-dashboard-collect.service\nAfter=network.target nekoserver-dashboard-collect.service\nStartLimitIntervalSec=0\n[Service]\nType=simple\nDynamicUser=yes\nExecStart='
+        SERVICE: '[Unit]\nDescription=NekoServer local dashboard\nRequires='
+        + SOCKET
+        + '\nWants=nekoserver-dashboard-collect.service\nAfter=network.target '
+        + SOCKET
+        + ' nekoserver-dashboard-collect.service\nStartLimitIntervalSec=0\n[Service]\nType=simple\nDynamicUser=yes\nExecStart='
         + serve
         + ' --assets '
         + str(code / 'dashboard')
@@ -740,6 +749,10 @@ def start_services(definitions, code, control, log, fans=True):
     if control:
         CONTROL_CONFIG.mkdir(mode=0o700, exist_ok=True)
         choose_pin(code / native_runtime.NAME, log)
+    # The port first (a changed port needs the socket made again, with the dashboard off).
+    systemctl('stop', SERVICE)
+    systemctl('enable', SOCKET)
+    systemctl('restart', SOCKET)
     for unit in ('nekoserver-dashboard-collect.timer', SERVICE):
         systemctl('enable', '--now', unit)
     if started:

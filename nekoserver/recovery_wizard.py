@@ -1052,6 +1052,18 @@ def unused(path):
     return candidate
 
 
+def nas_disk_of(device, run=subprocess.run):
+    """The WWN of the disk under `device` (lsblk, from the device down to its disk), or ''."""
+    shown = run(
+        ['lsblk', '-n', '-s', '-o', 'TYPE,WWN', str(device)], capture_output=True, text=True, timeout=30, check=False
+    )
+    for line in (shown.stdout or '').splitlines():
+        kind, _, wwn = line.strip().partition(' ')
+        if kind == 'disk':
+            return wwn.strip()
+    return ''
+
+
 class Usb:
     """Mount the backup USB drive (read-only unless `writable`), if it is not mounted."""
 
@@ -1061,6 +1073,8 @@ class Usb:
         photos = config.get('photos', {})
         self.uuid = photos.get('external_backup_uuid', '')
         self.fstype = photos.get('external_backup_fstype', 'ext4')
+        # On a NAS: the NAS disk setup chose (photo_backup.same_nas_disk), as the weekly copy checks.
+        self.wwn = (photos.get('external_backup_network') or {}).get('wwn')
         self.mounted_here = False
         self.lock = None
 
@@ -1094,6 +1108,11 @@ class Usb:
         ):
             if not (Path('/dev/disk/by-uuid') / self.uuid).exists():
                 return None
+            if self.wwn and nas_disk_of(Path('/dev/disk/by-uuid') / self.uuid) != self.wwn:
+                raise RuntimeError(
+                    'the USB backup drive has its UUID but is on another NAS disk than setup chose (a restored or '
+                    'copied LUN, most likely); run  sudo bash install.sh  to choose which one to use'
+                )
             self.mount.mkdir(parents=True, exist_ok=True)
             options = usb_mount_options(self.fstype, self.writable)
             if (
@@ -1468,12 +1487,18 @@ def restore_passwords(config, prompt, output):
     setup's) and the USB drive's copies, when it is plugged in (the review of 0.46.1: with
     any list on the HDD, a newer one on the USB drive was never offered)."""
     hdd = password_snapshots(config)
-    with Usb(config) as usb:
-        runs = newest_first(hdd + usb_password_lists(usb))
-        if not runs:
-            output('No password list on the HDD, nor on the USB drive (or it is not plugged in).')
-            return
-        return restore_password_list(config, runs, prompt, output)
+    try:
+        with Usb(config) as usb:
+            runs = newest_first(hdd + usb_password_lists(usb))
+            if runs:
+                return restore_password_list(config, runs, prompt, output)
+    except RuntimeError as exc:
+        # The USB drive busy (the weekly copy) or refused: the HDD's lists all the same
+        # (the audit of 0.46.2).
+        output(f'The USB drive is not looked at: {exc}.')
+        if hdd:
+            return restore_password_list(config, hdd, prompt, output)
+    output('No password list on the HDD, nor on the USB drive (or it is not plugged in).')
 
 
 def restore_password_list(config, runs, prompt, output):
@@ -2099,18 +2124,23 @@ def takes_writes(folder, wait=WRITE_WAIT):
     same): Linux still shows an aborted ext4 as mounted read-write, so only a write tells.
     A write still waiting after `wait` seconds (the NAS away, within its ten-minute wait)
     stops the check with a message instead of freezing the menu."""
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as StillWaiting
+    import threading
 
-    pool = ThreadPoolExecutor(max_workers=1)
-    try:
-        return pool.submit(test_write, folder).result(timeout=wait)
-    except StillWaiting:
+    # A daemon thread: quitting the menu never waits for a write still stuck (a pool's
+    # threads are waited for at exit, the audit of 0.46.2).
+    answered, answer = threading.Event(), {}
+
+    def write():
+        answer['writes'] = test_write(folder)
+        answered.set()
+
+    threading.Thread(target=write, daemon=True).start()
+    if not answered.wait(wait):
         raise RuntimeError(
             f'A test write to {folder} is still waiting after {wait} s: the network storage box is not answering '
             '(writes wait up to ten minutes for it). Check it is on and connected, then choose this again.'
-        ) from None
-    finally:
-        pool.shutdown(wait=False)  # a write still waiting finishes (or fails) by itself
+        )
+    return answer['writes']
 
 
 def test_write(folder):
@@ -2234,7 +2264,7 @@ def checked_drive(config, prompt, output, run, writes, errors):
     repaired(folder, f'/dev/disk/by-uuid/{uuid}', fstype, prompt, output, run)
     mounted_again(folder, run, writes)
     output(f'{folder} is checked, mounted again and takes writes.')
-    start_apps(run, output)
+    start_apps(run, output, config)
 
 
 def unmounted(folder, run):
@@ -2293,11 +2323,18 @@ def mounted_again(folder, run, writes):
         )
 
 
-def start_apps(run, output):
+def nas_main_drive(config):
+    """True when the SSD or the HDD is on a NAS (the NAS check starts the apps then). Only the
+    backup drive there: the apps are started here (the audit of 0.46.2: the NAS check has
+    no drive to look at then, and its hold was never lifted)."""
+    return any(isinstance(r, dict) and r.get('network') for r in (config or {}).get('storage', {}).values())
+
+
+def start_apps(run, output, config=None):
     """The apps started again: through the NAS check when it is there (it starts them only
     once every drive on the NAS takes writes, through the drive-return checks), else the
     services that write to the drives, those switched on."""
-    if Path('/etc/systemd/system', NAS_WATCH).is_file():
+    if nas_main_drive(config) and Path('/etc/systemd/system', NAS_WATCH).is_file():
         # Under the check's own lock (a check at work would write over the note), then a
         # check of its own, which starts them through the drive checks.
         with open(NAS_WATCH_LOCK, 'a') as turn:

@@ -1738,6 +1738,18 @@ class Rhel(Fedora):
     epel = frozenset({'caddy', 'qrencode'})
     EPEL_ADDRESS = 'repo=epel-'  # in every EPEL repository definition (its metalink)
 
+    @classmethod
+    def matches(cls, release):
+        """RHEL and its rebuilds. A Fedora derivative that also names rhel in ID_LIKE
+        (Nobara, say: version 42) is not one: RHEL's repositories have no release of that
+        number (the audit of 0.46.2), so it is left to the Fedora check, or unsupported."""
+        if not super().matches(release):
+            return False
+        if set(_words(release, 'ID')) & set(cls.ids):
+            return True
+        major = (release.get('VERSION_ID') or '').split('.')[0]
+        return not ('fedora' in _words(release, 'ID_LIKE') and major.isdigit() and int(major) >= 30)
+
     def __init__(self, run=run_command, release=None, fetch=_fetch):
         super().__init__(run, release, fetch)
         # Docker packages RHEL itself under rhel/ and its rebuilds under centos/; Tailscale

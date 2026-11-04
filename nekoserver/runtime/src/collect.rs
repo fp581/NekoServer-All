@@ -1286,7 +1286,11 @@ fn upgrade_unit(saved: &Value) -> String {
     let release = unit
         .strip_prefix("nekoserver-upgrade@v")
         .is_some_and(|tag| {
-            let digits = tag.strip_suffix("Beta").unwrap_or(tag);
+            // A beta either way it is written (updates.rs release_version).
+            let digits = tag
+                .strip_suffix("Beta")
+                .or_else(|| tag.strip_suffix("-beta"))
+                .unwrap_or(tag);
             let parts: Vec<&str> = digits.split('.').collect();
             parts.len() == 3
                 && parts
@@ -3483,6 +3487,11 @@ mod round_two_tests {
         assert_eq!(
             unit("nekoserver-upgrade@v1.0.0"),
             "nekoserver-upgrade@v1.0.0"
+        );
+        // The audit of 0.46.2: a beta tagged "-beta" was asked about as the plain unit.
+        assert_eq!(
+            unit("nekoserver-upgrade@v0.46.3-beta"),
+            "nekoserver-upgrade@v0.46.3-beta"
         );
         assert_eq!(
             unit("nekoserver-upgrade-resume"),
