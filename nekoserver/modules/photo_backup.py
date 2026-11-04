@@ -264,14 +264,10 @@ def runtime_of(cmd):
     return binary, rest.split(' ', 1)[0]
 
 
-def install_units(config, cmd, photos, day, when, unit=None, timer=None):
-    """Write the weekly service and timer and switch the timer on. Only a unit NekoServer
-    wrote is replaced (the timer's older wording included). With Nextcloud, also its
-    resume service, beside the weekly one."""
-    unit = unit or SERVICE_UNIT
-    timer = timer or TIMER_UNIT
-    cloud = ' --cloud ' in cmd
+def unit_texts(config, cmd, photos, day, when):
+    """The weekly service and its timer, as install_units writes them."""
     binary, guard = runtime_of(cmd)
+    cloud = ' --cloud ' in cmd
     service = (
         '[Unit]\nDescription=NekoServer add-only USB backup of photos and Nextcloud files\nRequiresMountsFor='
         + config['media_mount']
@@ -295,6 +291,18 @@ def install_units(config, cmd, photos, day, when, unit=None, timer=None):
         + host_timezone(config)
         + '\nPersistent=true\n[Install]\nWantedBy=timers.target\n'
     )
+    return service, schedule
+
+
+def install_units(config, cmd, photos, day, when, unit=None, timer=None):
+    """Write the weekly service and timer and switch the timer on. Only a unit NekoServer
+    wrote is replaced (the timer's older wording included). With Nextcloud, also its
+    resume service, beside the weekly one."""
+    unit = unit or SERVICE_UNIT
+    timer = timer or TIMER_UNIT
+    cloud = ' --cloud ' in cmd
+    binary, guard = runtime_of(cmd)
+    service, schedule = unit_texts(config, cmd, photos, day, when)
     for path, text in ((unit, service), (timer, schedule)):
         current = path.read_text() if path.exists() else text
         if current != text and not current.startswith(
@@ -441,9 +449,14 @@ def refresh(config, log, unit=None, timer=None):
         )
         # After every setup run, which is where passwords are made and changed.
         seal_passwords(found.group(1), native_runtime.backup_guard(config), log)
-        if 'ExecStart=' + cmd + '\n' in current:
-            return False
         day, when = schedule(opts)
+        # Current only when both files are as setup would write them now (the copy, and the
+        # day and time) and the timer is on: a copy switched off while no app was set up,
+        # or a new schedule, stayed as it was (the 0.46.0 review).
+        service, timer_text = unit_texts(config, cmd, photos, day, when)
+        on = subprocess.run(['systemctl', 'is-enabled', '--quiet', timer.name], check=False, timeout=30)
+        if current == service and timer.is_file() and timer.read_text() == timer_text and on.returncode == 0:
+            return False
         install_units(config, cmd, photos, day, when, unit, timer)
     except (KeyError, OSError, RuntimeError, subprocess.SubprocessError) as exc:
         log(f'USB backup: settings not refreshed ({exc})')

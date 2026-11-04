@@ -180,6 +180,7 @@ class BuildNeededTests(unittest.TestCase):
             ('Cargo.lock', '# lock\n'),
             ('build.py', '# build\n'),
             ('src/main.rs', 'fn main() {}\n'),
+            ('src/shared.json', '{}\n'),
         ):
             (root / name).write_text(text)
         return root
@@ -188,7 +189,7 @@ class BuildNeededTests(unittest.TestCase):
         import hashlib
 
         (root / 'bin/nekoserver-runtime').write_bytes(binary)
-        sources = ['Cargo.toml', 'Cargo.lock', 'build.py', 'src/main.rs']
+        sources = ['Cargo.toml', 'Cargo.lock', 'build.py', 'src/main.rs', 'src/shared.json']
         (root / 'build.json').write_text(
             json.dumps(
                 {

@@ -165,7 +165,13 @@ def main():
     out = ROOT / 'bin/nekoserver-runtime'
     out.parent.mkdir(exist_ok=True)
     replace_file(out, blob, 0o750)
-    sources = [ROOT / 'Cargo.toml', ROOT / 'Cargo.lock', ROOT / 'build.py', *sorted((ROOT / 'src').glob('*.rs'))]
+    sources = [
+        ROOT / 'Cargo.toml',
+        ROOT / 'Cargo.lock',
+        ROOT / 'build.py',
+        ROOT / 'src/shared.json',
+        *sorted((ROOT / 'src').glob('*.rs')),
+    ]
     version = subprocess.check_output([out, '--version'], text=True, timeout=60).strip().split()[-1]
     metadata = {'version': version}
     metadata.update(

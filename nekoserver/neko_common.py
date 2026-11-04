@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.46.0'
+VERSION = '0.46.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -791,11 +791,11 @@ TOP_FOLDERS = ('mnt', 'srv', 'home', 'var', 'tmp')
 # apps' settings and databases always stay on the SSD, movies and TV on the media drive).
 # Downloads live with the music: Lidarr moves finished downloads into the library, which
 # works only on one drive. A setting missing is the layout before 0.46.0.
-LOCATIONS = {
-    'photos': ('ssd', ('photos/immich-library',)),
-    'music': ('ssd', ('library/music', 'library/downloads/music')),
-    'cloud': ('media', ('cloud/files',)),
-}
+# The facts setup and the runtime share, kept once (runtime/src/shared.json, built into the
+# runtime): where each app's files live by default, the NAS check's file names, the
+# services that write to the drives.
+SHARED = json.loads((Path(__file__).resolve().parent / 'runtime/src/shared.json').read_text())
+LOCATIONS = {what: (place['default'], tuple(place['folders'])) for what, place in SHARED['locations'].items()}
 DRIVE_KEYS = {'ssd': 'data_mount', 'media': 'media_mount'}
 
 
@@ -815,20 +815,20 @@ def files_root(config, what):
 
 def photo_library(config):
     """Immich's photos and videos (its upload location)."""
-    return files_root(config, 'photos') / 'photos/immich-library'
+    return files_root(config, 'photos') / LOCATIONS['photos'][1][0]
 
 
 def music_library(config):
-    return files_root(config, 'music') / 'library/music'
+    return files_root(config, 'music') / LOCATIONS['music'][1][0]
 
 
 def music_downloads(config):
-    return files_root(config, 'music') / 'library/downloads/music'
+    return files_root(config, 'music') / LOCATIONS['music'][1][1]
 
 
 def cloud_files(config):
     """Nextcloud's files (its data folder)."""
-    return files_root(config, 'cloud') / 'cloud/files'
+    return files_root(config, 'cloud') / LOCATIONS['cloud'][1][0]
 
 
 def mount_path(value):

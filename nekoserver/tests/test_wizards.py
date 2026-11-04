@@ -684,6 +684,15 @@ class RecoveryWizardTests(unittest.TestCase):
         runs = recovery_wizard.monthly_snapshots(self.media / 'backups/monthly', need='secrets.tar.cms')
         self.assertEqual([p.name for p, _ in runs], ['200-1'])
 
+    def test_password_lists_named_in_seconds_or_microseconds_are_in_time_order(self):
+        """The 0.46.0 review: setup's lists (named in seconds) sorted before every monthly
+        list (microseconds), and showed as made in 1970."""
+        for name in ('1700000000000000-42', '1800000000-0'):
+            self.write(f'hdd/backups/monthly/{name}/manifest.json')
+        runs = recovery_wizard.monthly_snapshots(self.media / 'backups/monthly')
+        self.assertEqual([p.name for p, _ in runs], ['1800000000-0', '1700000000000000-42'])
+        self.assertNotIn('1970', runs[0][1])
+
     def test_restore_folder_must_be_new(self):
         existing = self.root / 'exists'
         existing.mkdir()
@@ -711,8 +720,26 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual((restored / 'library/b.heic').read_bytes(), b'photo2')
         self.assertEqual((self.root / 'ssd/photos/immich-library/upload/live.jpg').read_bytes(), b'live')
         self.assertTrue(any('2 files copied' in line for line in out))
+        # The rebuild command names the library Immich really uses (the 0.46.0 review, H08).
+        rebuild = f'sudo cp -a {restored}/upload {restored}/library {self.root}/ssd/photos/immich-library/'
+        self.assertIn(rebuild, '\n'.join(out))
         # Other accounts never get in (the restore itself is given to the person's own).
         self.assertEqual((self.media / 'restored').stat().st_mode & 0o007, 0)
+
+    def test_the_rebuild_command_follows_photos_on_the_media_drive(self):
+        """The 0.46.0 review, H08: RECOVERY.md sent the photos to the SSD's library even when
+        setup had put Immich's library on the media drive."""
+        self.write('hdd/photos/archive/upload/u1/a.jpg', b'photo')
+        self.config['locations'] = {'photos': 'media'}
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+        ):
+            out = []
+            recovery_wizard.restore_photos(self.config, answers('1', 'yes', 'no'), out.append)
+        said = '\n'.join(out)
+        self.assertIn(f'library {self.media}/photos/immich-library/', said)
+        self.assertNotIn('ssd/photos/immich-library', said)
 
     def test_a_restore_never_goes_inside_a_backup(self):
         self.write('hdd/photos/archive/upload/u1/a.jpg', b'photo')

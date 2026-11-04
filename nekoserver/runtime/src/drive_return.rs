@@ -40,6 +40,7 @@ fn decide(mounted: Option<&str>, alive: bool, present: bool) -> Step {
 /// switched on (enabled) and not running.
 /// Said when the drives came back under a running setup, which brings the apps back itself.
 const LEFT_TO_SETUP: &str = "Drive return: setup (sudo bash install.sh) is running and starts the apps itself once the drives are in place; nothing to do here";
+const HELD_FOR_NAS: &str = "Drive return: the drives are back, but a drive on the network storage box does not take writes, so the apps stay stopped (the NAS check starts them once it does; check it with  sudo bash install.sh --recover)";
 
 pub(crate) const SERVICES: [&str; 4] = [
     "docker.service",
@@ -257,6 +258,13 @@ pub fn run(a: &Args) -> Result<()> {
     // its record naming the old drive and refused, and this run ended as a failure.
     if common::setup_running() {
         println!("{}", LEFT_TO_SETUP);
+        return Ok(());
+    }
+    // The NAS check stopped the apps for a NAS drive that does not take writes: they stay
+    // stopped (the 0.46.0 review: plugging the SSD in again started them). That check
+    // starts them once every drive takes writes.
+    if crate::nas_watch::held() {
+        println!("{HELD_FOR_NAS}");
         return Ok(());
     }
     let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _, _)| p).collect();

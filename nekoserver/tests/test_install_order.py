@@ -1795,6 +1795,7 @@ class KeptCopyTests(unittest.TestCase):
             'runtime/bin/nekoserver-runtime',
             'runtime/THIRD-PARTY-NOTICES.md',
             'runtime/src/main.rs',
+            'runtime/src/shared.json',
         ):
             (self.project / name).write_text(name + ' v1\n')
         self.data.mkdir()

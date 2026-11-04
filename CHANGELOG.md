@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.46.1 — 2026-11-04
+
+A stabilization release: fixes only, no new features. It follows the four rules for NAS support:
+- a list of what is tested, experimental or not supported (the new **SUPPORT.md**)
+- the same guarantees for every kind of drive: the right drive, ready before the apps, and a way back after a fault
+- interruption tests kept for good (the new **lab/nas_lab.py**)
+- releases like this one, made only of fixes
+
+Setup now also refuses what it can't manage safely, instead of guessing.
+
+The fixes come from the project owner's reviews of 0.46.0 (H01 to H08, then three more lists), each with a test that fails on 0.46.0.
+
+### How the work is split now
+- **Setup decides once and writes the decision down; the runtime only checks it against reality.** Setup writes the folders it chose for each app (`paths` in the drives file). The runtime reads them and never works them out again, so the two can't disagree.
+- **The facts both use are in one file**, `runtime/src/shared.json`: where each app's files go by default, the NAS check's files, the services that write to the drives, and the Compose keys an app may use. The runtime builds it in; setup reads it.
+- **The Compose rules live once, in the runtime.** Setup's first Immich install asks the runtime (`check-compose`) instead of keeping its own copy of the rules.
+
+### Fixed: drives on a NAS
+- **A CHAP login is never lost** (H05, P1). Each setup run discovered the targets again in a way that rewrote their saved records, CHAP login included. Discovery now only lists them. Setup reads the login back after saving it and checks at every run that it is still there. If it is gone, setup asks for it again, or stops with a message when no one is there to type it.
+- **CHAP logins work for records named `host,port`.** Setup didn't find a record of that form, so it couldn't save the login to it.
+- **A wrong CHAP password is named.** The NAS refusing the login gets "the NAS refused the login", and setup asks for the CHAP login once more.
+- **After Linux is installed again, the NAS still knows this PC.** Setup keeps this PC's iSCSI name in the settings (`network_storage.initiator`) and puts it back, so a new Linux doesn't get a name the NAS refuses. The host backups keep the name too. The CHAP password is never in a backup: setup asks for it again.
+- **A setting that didn't stick stops setup** (H01). Logging in at every start, and the 10-minute wait: each update's result was ignored. Now each one is checked and read back.
+- **A chosen target the NAS no longer lists stops setup** (H02). Before, it was silently dropped from the settings.
+- **No network wait means no NAS** (H03). The start-up must wait for the network before it logs in. When this PC has no network manager that can say the network is up, or the wait can't be switched on, setup refuses. Before, it warned, and the drives went missing after each restart.
+- **A NAS that starts after the PC is logged in to again.** The minute check sees the NAS answer and logs in, and the drive-return service mounts the drives and starts the apps. Before, the drive stayed missing until the next restart.
+- **The minute check retries a stop that failed** (H06). A refused stop was recorded as done and never tried again. While the apps are held, any that started again is stopped again.
+- **The hold lasts until every NAS drive takes writes.** Plugging the SSD in again (drive-return) started the apps while a NAS drive still didn't take writes. A drive that was gone or waiting while held let a restarted app carry on.
+- **A drive with filesystem errors is shown.** ext4 counts its errors; the dashboard reads the count, alerts on it, and calls the drive recovered only once it is back to zero (after a check).
+- **The drive repair waits for other work** (H07). "Check a drive that turned read-only" stopped the apps and unmounted the drive with no look at a drive move, an upgrade, an app update or a backup at work. It now holds the operation lock and checks for running NekoServer jobs first.
+- **The runtime checks the NAS disk's identity (WWN)**, as setup does. A restored or cloned LUN carrying the same filesystem UUID is refused by the backups, Docker's start check and drive-return.
+
+### Fixed: backups and recovery
+- **The weekly USB copy takes Nextcloud's files from where setup put them** (H04, P1). With Nextcloud's files on the SSD, the USB copy refused the folder.
+- **The Immich rebuild uses the library Immich really uses** (H08). RECOVERY.md always copied the photos into the SSD's library. The restore menu now ends with the exact command for your server, and the guide gives both folders.
+- **The newest password list is the one copied to the USB drive** (P1). Setup named its lists in seconds and the monthly snapshots in microseconds, so an older monthly list outranked setup's newer one. The USB drive's retention could then remove the new copy at once. Lists are compared as times now, and setup's new ones are named in microseconds. The recovery menu sorts and dates them the same way.
+- **A damaged password list is made again.** Setup called a list "current" when the passwords hadn't changed, without checking its files. Every weekly USB copy was then incomplete.
+- **The weekly USB copy is switched on again with its app.** When no app was left to copy, the copy was switched off. Setting the app up again didn't switch it back on, and a new day or time was never installed.
+- **A drive move recovered after a restart never switches to an out-of-date copy on a guess** (P1). A move record without the boot and the time (written before 0.45.8), an unreadable boot ID, or systemd not saying when a service last started now count as "the apps may have run": the move starts over. Before, they counted as "nothing ran".
+- **A drive move never offers the USB backup drive, nor a NAS disk for the SSD.** Setup refuses both. The trouble showed only after the copy and the switch.
+
+### Fixed: Compose files
+- **More ways to get access are refused** (P1). The checks refused named keys, so new ones passed: `use_api_socket` (Docker's own socket), `post_start`/`pre_stop` hooks running with every right, and `secrets` or `configs` read from this PC's files. Both checks now take only the keys NekoServer knows (`shared.json`), so a key Docker adds later is refused until it is reviewed. The restore-test conversion gets only checked files.
+- **A named volume is the app's own.** Any volume name passed, and Compose uses an existing volume of that name as it is, with whatever storage or files it has. The name must now be the app's own (`neko-<app>_<key>`), and an existing volume must be the one Compose made for that app, on Docker's own storage.
+
+### Fixed: setup
+- **An app's files on both drives stop setup.** Setup took the SSD's folder without a word. It now asks you to say which one the app uses.
+- **The preserved release copy keeps `runtime/src/shared.json`.** Without it, a reinstall from the copy kept on the SSD would not start.
+
+### Documentation
+- **SUPPORT.md** says what is tested, experimental or not supported. Setup says "experimental" when the NAS switch is on.
+- STORAGE.md, MUSIC.md and NEXTCLOUD.md describe the chosen locations instead of "on the SSD". With music on the media drive, the optional music backup is on the same drive: it keeps older versions, not a copy safe from that drive (or its NAS).
+- STORAGE.md's NAS section covers the new refusals, the retries, the error count and reconnecting after Linux is installed again.
+- **The front page** (README.md) mentions NAS drives and SUPPORT.md, and its drive table follows the chosen locations. Its pictures show smaller (720 px wide; the overview 480 px), and the dashboard, setup-window and overview images are 20–60% lighter (429, 396 and 108 KB). The two terminal recordings stay as they are: re-encoding saved under 3%.
+
+### Tried for real
+The new lab (`sudo python3 lab/nas_lab.py run`) builds an Ubuntu 24.04 VM with the real open-iscsi, and a software iSCSI target stands in for the NAS. NekoServer's own NAS step, drive step and units set the VM up. A stand-in service plays the apps' writer. The lab ran in QEMU without KVM, so slowly.
+- **Passed:**
+  - a 30-second network cut and a 200-second network cut: no write failed, and the longest one waited 204 s
+  - a NAS power cut: no write failed
+  - an outage longer than the waits: the minute check stopped the writer and held it, the recovery menu repaired the drive, and the writer started again
+- **A restart, and the NAS switched on after the PC:** the VM's own logs show the drive mounted and the writer started within seconds both times. The drive-return service did it after the late NAS, and passed the new WWN check doing so. The scenario's own pass/fail check had a bug (it read `findmnt`'s table as its answer); it is fixed, and a clean run of every scenario was still going when this was written.
+- **CHAP** against a real login (wrong password refused, right one accepted, kept when setup runs again), in the VM, earlier in this release's work.
+- **The lab itself had bugs, now fixed:** it put the kernel modules in the wrong folder (no 9p share in the VM), chose disks by `sdX` names (they change between starts; now by label), kept one run's state for the next (each run now starts from a clean disk), and asked for KVM where there was none.
+
+Not tried: a real EX4100, Docker apps on a NAS drive (the lab VM has no Docker), and the password-list and USB-schedule fixes outside their tests.
+
 ## v0.46.0 — 2026-11-04
 
 Two new things, built for a NAS-based server (a WD My Cloud EX4100 with two mirrored pools, an i3 laptop running NekoServer, a 250 GB SSD on the laptop by USB):

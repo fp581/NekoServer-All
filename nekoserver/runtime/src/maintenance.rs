@@ -304,33 +304,27 @@ fn image_id(s: &str) -> bool {
     s.strip_prefix("sha256:")
         .is_some_and(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
 }
-/// A service asking for more than NekoServer's apps have: another container's volumes
-/// (around the folders `valid_model` checks), extra capabilities, another user namespace,
-/// cgroup or host name space, or a security option other than no-new-privileges. A
-/// downloaded Compose file (a new Immich release) with one is refused.
+/// A service asking for more than NekoServer's apps have. Only the keys NekoServer knows
+/// what they give an app are allowed (shared.json "compose"): anything else, such as
+/// `privileged`, `cap_add`, another container's volumes, a host name space,
+/// `use_api_socket` (Docker's own socket), a `post_start` hook, `secrets` or `configs`
+/// read from this PC's files, or a key a later Docker adds, is refused. A security
+/// option other than no-new-privileges is refused too. A downloaded Compose file (a new
+/// Immich release) with one is not used.
 fn widens_rights(v: &Value) -> bool {
     let allowed = ["no-new-privileges:true", "no-new-privileges"];
-    [
-        "volumes_from",
-        "cap_add",
-        "userns_mode",
-        "cgroup",
-        "cgroup_parent",
-        "uts",
-        // Device access beyond the graphics chip (`devices`, checked by gpu_only), and
-        // another container runtime.
-        "device_cgroup_rules",
-        "gpus",
-        "runtime",
-    ]
-    .iter()
-    .any(|key| v.get(*key).is_some())
-        || v.get("security_opt").is_some_and(|o| {
-            o.as_array().is_none_or(|opts| {
-                opts.iter()
-                    .any(|o| !allowed.contains(&o.as_str().unwrap_or("")))
-            })
+    let known = common::shared_list(&["compose", "service_keys"]);
+    v.as_object().is_none_or(|o| {
+        o.iter().any(|(k, value)| {
+            // `privileged: false` is what Docker does anyway.
+            !(known.contains(&k.as_str()) || (k == "privileged" && *value == false))
         })
+    }) || v.get("security_opt").is_some_and(|o| {
+        o.as_array().is_none_or(|opts| {
+            opts.iter()
+                .any(|o| !allowed.contains(&o.as_str().unwrap_or("")))
+        })
+    })
 }
 /// The devices a service is given: none, or the graphics chip as NekoServer's apps get it
 /// (`/dev/dri`, or one of its card / render nodes, at the same place), for Jellyfin and
@@ -390,18 +384,55 @@ fn gpu_only(service: &str, v: &Value) -> bool {
         })
 }
 /// A named volume as Docker makes it by itself: on its own storage, never one defined to
-/// bind a folder of this PC (driver_opts "o: bind", "device: /"), another driver's, or
-/// one made outside this Compose file (`external`).
-fn plain_volume(v: &Value) -> bool {
+/// bind a folder of this PC (driver_opts "o: bind", "device: /"), another driver's, one
+/// made outside this Compose file (`external`), or one under another name: Compose would
+/// use any volume of that name that already exists, whatever it holds. Its name is the
+/// app's own (`neko-<app>_<key>`, as Compose names it).
+fn plain_volume(name: &str, key: &str, v: &Value) -> bool {
     let Some(o) = v.as_object() else {
         return v.is_null();
     };
-    o.get("driver").is_none_or(|d| d == "local")
+    o.get("name")
+        .is_none_or(|n| n.as_str() == Some(format!("neko-{name}_{key}").as_str()))
+        && o.get("driver").is_none_or(|d| d == "local")
         && o.get("driver_opts")
             .is_none_or(|d| d.as_object().is_some_and(|m| m.is_empty()))
         && o.get("external").is_none_or(|e| e == false)
         && o.keys()
             .all(|k| ["name", "driver", "driver_opts", "external", "labels"].contains(&k.as_str()))
+}
+/// The named volumes a model declares, as Docker has them now: each one that already
+/// exists must be the one Compose made for this app (its labels), on Docker's own storage
+/// with no options. Compose would use any existing volume of that name as it is
+/// (`external: false` notwithstanding), also one made by hand to bind a folder of this PC
+/// or holding someone else's files.
+fn volumes_ours(name: &str, model: &Value) -> Result<()> {
+    for (key, v) in model["volumes"].as_object().into_iter().flatten() {
+        let volume = v["name"]
+            .as_str()
+            .map_or_else(|| format!("neko-{name}_{key}"), str::to_string);
+        let found = docker(&["volume", "ls", "-q", "--filter", &format!("name={volume}")])?;
+        if !found.lines().any(|line| line.trim() == volume) {
+            continue; // Compose makes it, with its labels
+        }
+        let inspected: Value = serde_json::from_str(&docker(&["volume", "inspect", &volume])?)?;
+        if !volume_is_ours(name, key, &inspected[0]) {
+            return Err(Error::new(&format!(
+                "The Docker volume {volume} was not made by NekoServer for {name} (or has storage options): \
+                 Compose would use it as it is. Look at it with `sudo docker volume inspect {volume}`; \
+                 if it is not needed, remove it (`sudo docker volume rm {volume}`) and run setup again"
+            )));
+        }
+    }
+    Ok(())
+}
+/// One volume as `docker volume inspect` shows it: Compose's own for this app's `key`.
+fn volume_is_ours(name: &str, key: &str, v: &Value) -> bool {
+    let labels = &v["Labels"];
+    v["Driver"] == "local"
+        && v["Options"].as_object().is_none_or(|o| o.is_empty())
+        && labels["com.docker.compose.project"] == format!("neko-{name}").as_str()
+        && labels["com.docker.compose.volume"] == key
 }
 /// `locations`: where setup put the photos, the music and Nextcloud's files (the
 /// settings' "locations"; null: the layout before 0.46.0).
@@ -423,10 +454,18 @@ fn valid_model(
     let services = model["services"]
         .as_object()
         .ok_or_else(|| Error::new("Compose services missing"))?;
+    let file_keys = common::shared_list(&["compose", "file_keys"]);
+    if model
+        .as_object()
+        .is_none_or(|o| o.keys().any(|k| !file_keys.contains(&k.as_str())))
+    {
+        // `secrets` and `configs` hand the app files of this PC.
+        return Err(Error::new("Unsupported Compose settings"));
+    }
     if let Some(volumes) = model.get("volumes") {
         let plain = volumes
             .as_object()
-            .is_some_and(|all| all.values().all(plain_volume));
+            .is_some_and(|all| all.iter().all(|(key, v)| plain_volume(name, key, v)));
         if !plain {
             return Err(Error::new("Uncovered persistent volume"));
         }
@@ -454,13 +493,7 @@ fn valid_model(
 }
 /// A service of the app's own that keeps to NekoServer's isolation.
 fn isolated(name: &str, service: &str, v: &Value) -> bool {
-    expected_service(name, service)
-        && v["privileged"] != true
-        && ["network_mode", "pid", "ipc", "build"]
-            .iter()
-            .all(|key| v.get(*key).is_none())
-        && !widens_rights(v)
-        && gpu_only(service, v)
+    expected_service(name, service) && !widens_rights(v) && gpu_only(service, v)
 }
 /// The folders one app may bind: its own settings, and your files where setup put them.
 struct Places<'a> {
@@ -3159,8 +3192,11 @@ fn download_updates(
         } else {
             data.join("compose").join(name)
         };
-        let checked = source_model(&source, name)
-            .and_then(|m| valid_model(&m, name, data, media, &cfg["locations"]).map(|_| m));
+        let checked = source_model(&source, name).and_then(|m| {
+            valid_model(&m, name, data, media, &cfg["locations"])?;
+            volumes_ours(name, &m)?;
+            Ok(m)
+        });
         let mut candidate = match checked {
             Ok(model) => model,
             // A new Immich release whose files don't pass the checks (another service, a
@@ -4002,6 +4038,24 @@ fn version_of(app: &str, model: &Value, release: Option<&str>, step: Option<(u64
 /// `update-check` (daily, while the apps run): look for a new version of each app,
 /// download it, and note it with the day it was first seen. Nothing is stopped or
 /// changed: the weekly update installs a version once it has settled.
+/// `check-compose --config <settings> --app <name> --model <file>`: an app's Compose
+/// model (as `docker compose config --format json` gives it) checked with the update's
+/// own rules (valid_model), for setup to use before it first starts an app, so the rules
+/// exist once. Says "ok", or fails with the reason.
+pub fn check_compose(a: &Args) -> Result<()> {
+    let cfg = common::json(&a.path("config")?, 2_000_000);
+    let app = a.get("app")?;
+    if !["immich", "nextcloud"].contains(&app) && !MEDIA.contains(&app) {
+        return Err(Error::new("Unknown app"));
+    }
+    let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
+    let data = common::mount_path(string(&cfg, "data_mount")?)?;
+    let media = common::mount_path(string(&cfg, "media_mount")?)?;
+    valid_model(&model, app, &data, &media, &cfg["locations"])?;
+    volumes_ours(app, &model)?;
+    println!("ok");
+    Ok(())
+}
 pub fn check_updates(a: &Args) -> Result<()> {
     common::require_root()?;
     let cfgpath = a.path("config")?;
@@ -5006,10 +5060,10 @@ mod tests {
             m["volumes"] = json!({"cache": def});
             ok(&m)
         };
-        assert!(named(json!({"name": "neko-immich_cache"})));
+        assert!(named(json!({"name": "neko-jellyfin_cache"})));
         assert!(named(json!(null)));
         assert!(named(
-            json!({"name": "x", "driver": "local", "driver_opts": {}})
+            json!({"name": "neko-jellyfin_cache", "driver": "local", "driver_opts": {}})
         ));
         for odd in [
             json!({"driver_opts": {"type": "none", "o": "bind", "device": "/"}}),
@@ -5017,12 +5071,52 @@ mod tests {
             json!({"driver": "sshfs"}),
             json!({"external": true, "name": "someone-elses"}),
             json!("bind"),
+            // The 0.46.0 review: any other name was used as it is, also a volume that
+            // already exists with other storage or someone else's files in it.
+            json!({"name": "x"}),
+            json!({"name": "neko-nextcloud_cache"}),
         ] {
             assert!(!named(odd.clone()), "{odd}");
         }
         let mut list = plain.clone();
         list["volumes"] = json!(["x"]);
         assert!(!ok(&list));
+        let _ = fs::remove_dir_all(root);
+    }
+    /// 0.46.1: setup's first Immich install uses this same check (check-compose), so the
+    /// rules exist once.
+    #[test]
+    fn setup_checks_a_compose_model_with_the_updates_rules() {
+        let root = scratch("check-compose");
+        let cfg = root.join("settings.json");
+        fs::write(
+            &cfg,
+            r#"{"data_mount":"/srv/neko","media_mount":"/mnt/neko"}"#,
+        )
+        .unwrap();
+        let model = root.join("model.json");
+        let args = |app: &str| {
+            Args(std::collections::BTreeMap::from([
+                ("config".to_string(), cfg.to_string_lossy().into_owned()),
+                ("app".to_string(), app.to_string()),
+                ("model".to_string(), model.to_string_lossy().into_owned()),
+            ]))
+        };
+        let port = json!([{"host_ip": "127.0.0.1", "published": "8096", "target": 8096}]);
+        fs::write(
+            &model,
+            json!({"services": {"jellyfin": {"image": "x", "ports": port}}}).to_string(),
+        )
+        .unwrap();
+        assert!(check_compose(&args("jellyfin")).is_ok());
+        fs::write(
+            &model,
+            json!({"services": {"jellyfin": {"image": "x", "ports": port, "cap_add": ["ALL"]}}})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(check_compose(&args("jellyfin")).is_err());
+        assert!(check_compose(&args("../etc")).is_err());
         let _ = fs::remove_dir_all(root);
     }
     /// 0.46.0: setup asks where the photos, the music and Nextcloud's files live; the
@@ -5058,7 +5152,47 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn only_the_volume_compose_made_for_the_app_is_used() {
+        let ours = json!({"Driver": "local", "Options": null, "Labels": {
+            "com.docker.compose.project": "neko-immich", "com.docker.compose.volume": "model-cache"}});
+        assert!(volume_is_ours("immich", "model-cache", &ours));
+        let mut empty = ours.clone();
+        empty["Options"] = json!({});
+        assert!(volume_is_ours("immich", "model-cache", &empty));
+        // The 0.46.0 review: a volume made by hand under that name (no labels, or another
+        // app's, or binding a folder of this PC) was used as it is.
+        let mut by_hand = ours.clone();
+        by_hand["Labels"] = Value::Null;
+        let mut bound = ours.clone();
+        bound["Options"] = json!({"type": "none", "o": "bind", "device": "/root"});
+        let mut other = ours.clone();
+        other["Labels"]["com.docker.compose.project"] = json!("neko-nextcloud");
+        let mut driver = ours.clone();
+        driver["Driver"] = json!("sshfs");
+        for odd in [by_hand, bound, other, driver] {
+            assert!(!volume_is_ours("immich", "model-cache", &odd), "{odd}");
+        }
+        assert!(!volume_is_ours("immich", "cache", &ours));
+    }
+    #[test]
     fn a_compose_file_never_gains_more_than_neko_servers_apps_have() {
+        // The 0.46.0 review: secrets and configs read from this PC's files are refused
+        // with the file's other settings.
+        let port = json!([{"host_ip": "127.0.0.1", "published": "8096", "target": 8096}]);
+        let (data, media) = (Path::new("/srv/neko"), Path::new("/mnt/neko"));
+        for (key, value) in [
+            ("secrets", json!({"key": {"file": "/root/.ssh/id_ed25519"}})),
+            ("configs", json!({"settings": {"file": "/etc/shadow"}})),
+        ] {
+            let mut m = json!({"services": {"jellyfin": {"image": "sha256:8", "ports": port}}});
+            m[key] = value;
+            assert_eq!(
+                valid_model(&m, "jellyfin", data, media, &Value::Null)
+                    .unwrap_err()
+                    .to_string(),
+                "Unsupported Compose settings"
+            );
+        }
         // NekoServer's own apps' setting passes.
         assert!(!widens_rights(
             &json!({"image": "x", "security_opt": ["no-new-privileges:true"]})
@@ -6777,6 +6911,19 @@ mod tests {
             ("pid", json!("host")),
             ("ipc", json!("host")),
             ("build", json!({"context": "."})),
+            // The 0.46.0 review: Docker's own socket in the container, and a hook that
+            // runs as root with every right.
+            ("use_api_socket", json!(true)),
+            (
+                "post_start",
+                json!([{"command": "sh", "privileged": true, "user": "root"}]),
+            ),
+            ("pre_stop", json!([{"command": "sh", "privileged": true}])),
+            ("secrets", json!(["key"])),
+            ("configs", json!(["settings"])),
+            ("cap_add", json!(["SYS_ADMIN"])),
+            ("group_add", json!(["docker"])),
+            ("a_key_docker_adds_later", json!(true)),
         ] {
             assert_eq!(
                 refused(&with(key, value), "jellyfin"),

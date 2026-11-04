@@ -251,7 +251,11 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     }
     for row in s["storage"].as_array().unwrap() {
         let id = row["id"].as_str().unwrap_or("");
-        if row["status"] == "mounted" && row["read_only"] != true && row["waiting"] != true {
+        if row["status"] == "mounted"
+            && row["read_only"] != true
+            && row["waiting"] != true
+            && row["fs_errors"].as_u64().unwrap_or(0) == 0
+        {
             unknown.remove(&format!("mount:{id}"));
             if row["used_percent"].is_number() {
                 unknown.remove(&format!("space:{id}"));

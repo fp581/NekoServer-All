@@ -8,7 +8,7 @@ from neko_common import SYSTEMD_UNITS, VERSION, safe_path, atomic_write, atomic_
 TARGET = 'x86_64-unknown-linux-musl'  # the static release build
 TARGETS = (TARGET, 'x86_64-unknown-linux-gnu')  # ... or this PC's own, as install.sh builds it
 NAME = 'nekoserver-runtime'
-SOURCES = ('Cargo.toml', 'Cargo.lock', 'build.py')
+SOURCES = ('Cargo.toml', 'Cargo.lock', 'build.py', 'src/shared.json')
 
 
 def expected_sources(root):
@@ -82,6 +82,15 @@ def payload(project, config):
                 'The runtime was built from other sources than these; run  sudo bash install.sh  again (it builds the runtime), or python3 runtime/build.py'
             )
     return binary
+
+
+def ask_runtime(project, config, args, timeout=60, run=subprocess.run):
+    """Run one of the runtime's checks from this release's own verified build (payload),
+    for a rule that lives once, in the runtime: (exit code, what it said)."""
+    payload(project, config)
+    binary = safe_path(Path(project) / 'runtime' / 'bin' / NAME)
+    done = run([str(binary), *args], capture_output=True, text=True, timeout=timeout, check=False)
+    return done.returncode, ((done.stdout or '') + (done.stderr or '')).strip()
 
 
 RECORD_SUFFIX = '.build.json'  # next to each copy NekoServer deploys: the build it came from
@@ -243,9 +252,23 @@ def retired_bundles(releases, current, units=SYSTEMD_UNITS):
 
 def storage_config(config):
     """The drives as the runtime's jobs read them, with where each app keeps its files."""
+    from neko_common import cloud_files, music_downloads, music_library, photo_library
+
     found = {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}
     if config.get('locations'):
         found['locations'] = config['locations']
+    # The folders setup decided, written down: the runtime reads them and never works them
+    # out again (common::saved_path), so the two halves can't disagree.
+    found['paths'] = {
+        'photos': str(photo_library(config)),
+        'music': str(music_library(config)),
+        'downloads': str(music_downloads(config)),
+        'cloud': str(cloud_files(config)),
+    }
+    nas = config.get('network_storage') or {}
+    if nas.get('wanted') is True:
+        # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).
+        found['network_storage'] = {k: nas[k] for k in ('wanted', 'portal', 'targets') if k in nas}
     return found
 
 

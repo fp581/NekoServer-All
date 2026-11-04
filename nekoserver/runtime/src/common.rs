@@ -169,11 +169,42 @@ pub fn mount_path(s: &str) -> Result<PathBuf> {
     }
     Ok(p)
 }
+/// The facts setup and the runtime share (src/shared.json, read by setup too): where each
+/// app's files live by default, the NAS check's file names, the services that write to
+/// the drives. Built in, so one copy decides for both.
+pub static SHARED: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(|| {
+    serde_json::from_str(include_str!("shared.json")).expect("shared.json is valid JSON")
+});
+/// A text field of SHARED.
+pub fn shared(section: &str, key: &str) -> &'static str {
+    SHARED[section][key].as_str().unwrap_or("")
+}
+/// A list of the shared facts: `path` names it, as ["compose", "service_keys"].
+pub fn shared_list(path: &[&str]) -> Vec<&'static str> {
+    path.iter()
+        .fold(&*SHARED, |v, key| &v[*key])
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect()
+}
+/// Where `what` is by default ("ssd" or "media") and its folders on that drive.
+fn location_of(what: &str) -> (&'static str, Vec<&'static str>) {
+    let place = &SHARED["locations"][what];
+    let folders = place["folders"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    (place["default"].as_str().unwrap_or("ssd"), folders)
+}
 /// The drive's folder that holds `what` ("photos", "music", "cloud"), as setup chose it
 /// ("locations": "ssd" or "media", neko_common.LOCATIONS); a setting missing is the
 /// layout before 0.46.0: photos and music on the SSD, Nextcloud's files on the media drive.
 pub fn files_root(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
-    let default = if what == "cloud" { "media" } else { "ssd" };
+    let (default, _) = location_of(what);
     let chosen = cfg["locations"][what].as_str().unwrap_or(default);
     let key = match chosen {
         "ssd" => "data_mount",
@@ -194,19 +225,60 @@ pub fn located<'a>(
     data: &'a Path,
     media: &'a Path,
 ) -> &'a Path {
-    let default = if what == "cloud" { "media" } else { "ssd" };
+    let (default, _) = location_of(what);
     if locations[what].as_str().unwrap_or(default) == "media" {
         media
     } else {
         data
     }
 }
+/// How many errors Linux has counted on the ext4 filesystem mounted from `source`
+/// (/dev/sdb1): kept in the filesystem itself until it is checked and repaired (e2fsck
+/// resets it; seen in the lab). Read from /sys without touching the drive, so a sleeping
+/// HDD stays asleep. None when it isn't ext4 or can't be read.
+pub fn ext4_errors(source: &str, sys: &Path) -> Option<u64> {
+    let name = fs::canonicalize(source)
+        .ok()?
+        .file_name()?
+        .to_str()?
+        .to_string();
+    let text = fs::read_to_string(sys.join(name).join("errors_count")).ok()?;
+    text.trim().parse().ok()
+}
+/// The folder setup decided for `what` ("photos", "music", "downloads", "cloud"): read
+/// from the settings it wrote for the runtime ("paths", native_runtime.storage_config),
+/// never worked out again here, so the two halves can't disagree. It must be on the SSD
+/// or the media drive the settings name. Settings written before 0.46.1 have no "paths":
+/// the same rule (shared.json) gives the same folder.
+pub fn saved_path(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
+    if let Some(path) = cfg["paths"][what].as_str() {
+        let path = safe(Path::new(path))?;
+        let drives = ["data_mount", "media_mount"]
+            .iter()
+            .filter_map(|k| cfg[*k].as_str().and_then(|m| mount_path(m).ok()))
+            .collect::<Vec<_>>();
+        if !drives.iter().any(|d| path.starts_with(d) && path != *d) {
+            return Err(Error::new(&format!(
+                "paths.{what} is not on the SSD or the media drive"
+            )));
+        }
+        return Ok(path);
+    }
+    let (place, folder) = match what {
+        "downloads" => (
+            "music",
+            location_of("music").1.get(1).copied().unwrap_or(""),
+        ),
+        other => (other, location_of(other).1.first().copied().unwrap_or("")),
+    };
+    Ok(files_root(cfg, place)?.join(folder))
+}
 /// Immich's photos and videos.
 pub fn photo_library(cfg: &serde_json::Value) -> Result<PathBuf> {
-    Ok(files_root(cfg, "photos")?.join("photos/immich-library"))
+    saved_path(cfg, "photos")
 }
 pub fn music_library(cfg: &serde_json::Value) -> Result<PathBuf> {
-    Ok(files_root(cfg, "music")?.join("library/music"))
+    saved_path(cfg, "music")
 }
 pub fn relative(s: &str) -> Result<PathBuf> {
     let p = PathBuf::from(s);

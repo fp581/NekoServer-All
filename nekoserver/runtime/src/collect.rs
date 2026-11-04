@@ -459,7 +459,7 @@ fn nas_drive(r: &mut Value, key: &str, now: f64) {
     if r["status"] != "mounted" {
         return;
     }
-    let seen = common::json(Path::new(crate::nas_watch::STATE), 64000);
+    let seen = common::json(Path::new(*crate::nas_watch::STATE), 64000);
     let fresh = seen["at"]
         .as_f64()
         .is_some_and(|t| (now - 180.0..=now + 60.0).contains(&t));
@@ -550,6 +550,15 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
                 r["status"] = json!("unavailable")
             }
             let source = text(&info["source"]);
+            // Errors Linux met on the filesystem (a cable, a NAS away for long): it may
+            // have turned read-only, or may still hold half-written changes.
+            if fs == "ext4" || key == "os" {
+                if let Some(n) =
+                    common::ext4_errors(source, Path::new("/sys/fs/ext4")).filter(|n| *n > 0)
+                {
+                    r["fs_errors"] = json!(n);
+                }
+            }
             mounted.push(json!({"id":key,"name":name,"source":source,"mount":path,"fstype":fs,"uuid":expected.unwrap_or("")}));
             r["smart"] = if on_nas(cfg, key) {
                 // This PC sees no SMART or RAID state through iSCSI: the NAS does.
@@ -2082,6 +2091,13 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("{name} unavailable"),
                     &detail,
                 );
+            } else if d["fs_errors"].as_u64().is_some_and(|n| n > 0) && id != "os" {
+                add(
+                    format!("mount:{id}"),
+                    "critical",
+                    format!("{name} has filesystem errors"),
+                    "Linux met errors writing to it (a loose cable, the network storage box away for long, a failing drive), so some changes may be missing and the drive may have turned read-only. Check it: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\" (it checks and repairs the filesystem, with your yes).",
+                );
             } else if d["waiting"] == true {
                 add(
                     format!("mount:{id}"),
@@ -3547,6 +3563,29 @@ mod round_two_tests {
             "media_hdd"
         ));
         assert!(!on_nas(&json!({"storage": {"media_hdd": {}}}), "media_hdd"));
+        let _ = fs::remove_dir_all(root);
+    }
+    /// 0.46.1: a drive whose filesystem had errors (counted by Linux in /sys, read without
+    /// waking the drive) is said, and not "back" until the count is reset by a repair.
+    #[test]
+    fn a_drive_with_filesystem_errors_is_said() {
+        let root = std::env::temp_dir().join(format!("neko-ext4-errors-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sys/sdb1")).unwrap();
+        fs::write(root.join("sys/sdb1/errors_count"), "3\n").unwrap();
+        fs::write(root.join("sdb1"), "").unwrap();
+        let source = root.join("sdb1");
+        assert_eq!(
+            common::ext4_errors(source.to_str().unwrap(), &root.join("sys")),
+            Some(3)
+        );
+        assert_eq!(common::ext4_errors("/dev/none", &root.join("sys")), None);
+        let shown = alerts(
+            &json!({"storage": [{"id": "media_hdd", "name": "Media HDD", "status": "mounted", "fs_errors": 3}]}),
+        );
+        let alert = &shown.as_array().unwrap()[0];
+        assert_eq!(alert["title"], "Media HDD has filesystem errors");
+        assert!(text(&alert["detail"]).contains("Check a drive that turned read-only"));
         let _ = fs::remove_dir_all(root);
     }
     /// QA after 0.40.2: "1 file", never "1 files".
