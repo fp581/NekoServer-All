@@ -1098,6 +1098,7 @@ def run(context):
     # is asked again on the next run instead of being kept.
     save_storage(context)
     mount_all(context, specs)
+    choose_locations(context)
     choose_usb(context)
 
 
@@ -1222,6 +1223,105 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None):
             f'{subvolume}; a restart would mount a different tree'
         )
     return found
+
+
+# The three places setup asks about (neko_common.LOCATIONS), in the words it asks them.
+WHERE = (
+    ('photos', "Immich's photos and videos", 500),
+    ('music', 'the music library (and its downloads)', 400),
+    ('cloud', "Nextcloud's files", None),
+)
+
+
+def recommended(what, ssd_gb, threshold):
+    """The better drive for `what` on this server: the SSD (faster) when it is big enough
+    to hold it for years (`threshold` GB), else the media drive (bigger). Nextcloud's
+    files always on the media drive: they grow without limit and need no speed."""
+    return 'ssd' if threshold is not None and ssd_gb >= threshold else 'media'
+
+
+def has_files(folder):
+    try:
+        return folder.is_dir() and any(folder.iterdir())
+    except OSError:
+        return False
+
+
+def kept_location(config, what):
+    """Where `what` already is, when its folder holds files on one drive: it stays there
+    (moving it is a job of its own), or None when it is nowhere yet."""
+    from neko_common import DRIVE_KEYS, LOCATIONS
+
+    for drive in ('ssd', 'media'):
+        root = Path(config[DRIVE_KEYS[drive]])
+        if any(has_files(root / rel) for rel in LOCATIONS[what][1]):
+            return drive
+    return None
+
+
+def free_gb(folder):
+    try:
+        found = os.statvfs(folder)
+    except OSError:
+        return 0
+    return found.f_bavail * found.f_frsize // 10**9
+
+
+def choose_locations(context, input_fn=None, interactive=None):
+    """Where each app keeps your files, asked once (saved as "locations"): the SSD or the
+    media drive, the better one pre-selected. The backups, restores and checks all follow
+    the choice (neko_common.files_root). A place already holding files stays as it is."""
+    config = context.config
+    chosen = config.setdefault('locations', {})
+    interactive = sys.stdin.isatty() if interactive is None else interactive
+    ssd_gb = free_gb(config['data_mount'])
+    media_gb = free_gb(config['media_mount'])
+    nas = ' (on the network storage box)' if config.get('storage', {}).get('media_hdd', {}).get('network') else ''
+    changed = False
+    for what, words, threshold in WHERE:
+        kept = kept_location(config, what)
+        if chosen.get(what) in ('ssd', 'media'):
+            if kept and kept != chosen[what]:
+                where = {'ssd': 'the SSD', 'media': 'the media drive'}
+                raise RuntimeError(
+                    f'The settings put {words} on {where[chosen[what]]}, but they are on {where[kept]}: the app '
+                    f'would start with an empty folder. Put "locations": {{"{what}": "{kept}"}} back in '
+                    'my-config.json (moving them is a job of its own, with the apps stopped), then run setup '
+                    'again. Nothing was changed.'
+                )
+            continue
+        if kept:
+            chosen[what] = kept
+            context.log(
+                f'{words.capitalize()}: kept where they already are, on the {"SSD" if kept == "ssd" else "media drive"}'
+            )
+            changed = True
+            continue
+        best = recommended(what, ssd_gb, threshold)
+        options = [
+            ('media', f'the media drive{nas}: {media_gb} GB free, the most room'),
+            ('ssd', f'the SSD: {ssd_gb} GB free, faster'),
+        ]
+        options.sort(key=lambda o: o[0] != best)
+        pick = best
+        if interactive:
+            context.log(f'Where should {words} be kept? (The backups follow wherever you choose.)')
+            for n, (drive, said) in enumerate(options, 1):
+                context.log(f'  {n}) {said}' + ('  (recommended)' if drive == best else ''))
+            for _ in range(3):
+                try:
+                    answer = (input_fn or input)('Number (Enter for the recommended one): ').strip()
+                except EOFError:
+                    answer = ''
+                if answer in ('', '1', '2'):
+                    pick = options[int(answer) - 1][0] if answer else best
+                    break
+                context.log('Type 1 or 2, or press Enter.')
+        chosen[what] = pick
+        context.log(f'{words.capitalize()}: on the {"SSD" if pick == "ssd" else "media drive"}')
+        changed = True
+    if changed and hasattr(context, 'persist_config'):
+        context.persist_config()
 
 
 def choose_usb(context):

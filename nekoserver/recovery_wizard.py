@@ -24,6 +24,9 @@ import zlib
 
 import guided_setup
 from neko_common import (
+    cloud_files,
+    location,
+    photo_library,
     FOLDER_FLAGS,
     Destination,
     DestinationGone,  # noqa: F401 (the restores raise it; callers catch it from here)
@@ -1118,7 +1121,7 @@ def tool(name, *args):
 
 
 def restore_photos(config, prompt, output):
-    media, data = Path(config['media_mount']), Path(config['data_mount'])
+    media = Path(config['media_mount'])
     archive = media / config.get('photos', {}).get('archive_dir', ARCHIVE_DIR)
     with Usb(config) as usb:
         sources = [('hdd', 'The HDD (weekly copy)')] if archive.is_dir() else []
@@ -1157,7 +1160,7 @@ def restore_photos(config, prompt, output):
         'To get them back into Immich: open Immich in a browser, click "Upload" and choose',
         'files from that folder (for thousands of files, the Immich command-line uploader is',
         'faster: see https://immich.app/docs/features/command-line-interface).',
-        f'Your current Immich library ({data / "photos/immich-library"}) was not touched.',
+        f'Your current Immich library ({photo_library(config)}) was not touched.',
     )
 
 
@@ -1179,6 +1182,12 @@ MISSING = 'missing'
 def ssd_ready(config):
     """The SSD is mounted where the settings say, and it is the drive they name."""
     return identity_matches(Path(config['data_mount']), config.get('storage', {}).get('data_ssd', {}))
+
+
+def holder_ready(config, what):
+    """The drive that holds `what` (photos, cloud: neko_common.files_root) is mounted where
+    the settings say, and is the drive they name."""
+    return ssd_ready(config) if location(config, what) == 'ssd' else hdd_ready(config)
 
 
 def note_findings(config, section, kind, copies):
@@ -1988,7 +1997,6 @@ def open_trees(config, usb, output):
 
 def repair_jobs(config, work, trees, output):
     """[(keys, trees, originals folder or None, sections, every copy here, trees away)]."""
-    media, data = Path(config['media_mount']), Path(config['data_mount'])
     hdd, usb = trees["hdd"], trees.get("usb")
     photos = [tree for tree in (hdd, usb) if tree is not None and not tree.gone]
     away = [tree for tree in (hdd, usb) if tree is not None and tree.gone]
@@ -2002,24 +2010,23 @@ def repair_jobs(config, work, trees, output):
             (
                 keys,
                 photos,
-                data / 'photos/immich-library' if ssd_ready(config) else None,
+                photo_library(config) if holder_ready(config, 'photos') else None,
                 ('archive', 'usb_photos'),
                 len(photos) == 2,
                 away,
             )
         )
-    jobs += cloud_job(work, trees, media, output)
+    jobs += cloud_job(work, trees, config, output)
     return jobs
 
 
-def cloud_job(work, trees, media, output):
+def cloud_job(work, trees, config, output):
     """The Nextcloud copy's repair job (repair_jobs), or none: Nextcloud's live files are
-    read only from the HDD the settings name."""
-    hdd, usb, cloud = trees['hdd'], trees.get('usb'), trees.get('cloud')
+    read only from the drive the settings name for them."""
+    usb, cloud = trees.get('usb'), trees.get('cloud')
     if cloud is not None and not cloud.gone:
-        return [
-            (work['usb_nextcloud'], [cloud], None if hdd.gone else media / 'cloud/files', ('usb_nextcloud',), True, [])
-        ]
+        live = cloud_files(config) if holder_ready(config, 'cloud') else None
+        return [(work['usb_nextcloud'], [cloud], live, ('usb_nextcloud',), True, [])]
     if usb is None and (work['usb_nextcloud'] or work['usb_photos']):
         output('  The USB drive is not plugged in: its copies were not checked and stay listed.')
     return []

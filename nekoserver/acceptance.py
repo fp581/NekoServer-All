@@ -12,6 +12,9 @@ import permission_checks
 import os_checks
 from modules import docker as docker_module, tv
 from neko_common import (
+    files_root,
+    music_downloads,
+    photo_library,
     VERSION,
     mount_path,
     safe_path,
@@ -232,7 +235,7 @@ def containers(config, photos=False):
                     # The same bindings the snapshot checks (recovery_tools.IMMICH_BINDINGS).
                     targets = recovery_tools.IMMICH_BINDINGS.get(svc, ())
                     if svc == 'immich-server':
-                        expected = str(Path(config['data_mount']) / 'photos/immich-library')
+                        expected = str(photo_library(config))
                     elif svc == 'database':
                         expected = str(Path(config['data_mount']) / 'appdata/immich/postgres')
                     else:
@@ -243,9 +246,10 @@ def containers(config, photos=False):
                     mounts = bound(str(Path(config['data_mount']) / 'appdata' / app), (destination,))
                     if app in ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'qbittorrent'):
                         library = (
-                            Path(config['data_mount'] if app in ('navidrome', 'lidarr') else config['media_mount'])
-                            / 'library'
-                        )
+                            files_root(config, 'music')
+                            if app in ('navidrome', 'lidarr')
+                            else Path(config['media_mount'])
+                        ) / 'library'
                         if app == 'jellyfin':
                             needed = [('movies', '/data/movies', True), ('tv', '/data/tv', True)]
                         elif app == 'navidrome':
@@ -254,9 +258,7 @@ def containers(config, photos=False):
                             needed = [('', DATA, False)]
                         mounts = mounts and all(bound(str(library / rel), (dest,), ro) for rel, dest, ro in needed)
                         if app == 'qbittorrent':
-                            mounts = mounts and bound(
-                                str(Path(config['data_mount']) / 'library/downloads/music'), ('/data/downloads/music',)
-                            )
+                            mounts = mounts and bound(str(music_downloads(config)), ('/data/downloads/music',))
                 network = v.get('NetworkSettings', {})
                 bindings = network.get('Ports', {})
                 peer = peer_port(v) if app == 'qbittorrent' else None

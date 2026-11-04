@@ -13,7 +13,7 @@ import tempfile
 import time
 
 import guided_setup
-from neko_common import regular_files, usb_mount_options, version_parts
+from neko_common import cloud_files, photo_library, regular_files, usb_mount_options, version_parts
 
 DEPENDENCIES = ['storage']
 DESCRIPTION = 'Check there is enough space on the SSD, HDD and USB drive before installing'
@@ -86,9 +86,8 @@ def usb_sources(config):
     """(folder on this server, matching folder on the USB drive) for everything the weekly
     job copies there; mirrors the layout the server program writes. Photos come from the
     HDD archive, which keeps photos deleted from Immich and every saved version."""
-    media = Path(config['media_mount'])
     pairs = [(archive_folder(config) / name, name) for name in PHOTO_SECTIONS]
-    cloud = media / 'cloud/files'
+    cloud = cloud_files(config)
     internal = nextcloud_appdata(config)
     try:
         users = sorted(cloud.iterdir()) if cloud.is_dir() else []
@@ -109,7 +108,7 @@ def usb_sources(config):
 def awaiting_archive(config):
     """Bytes of photos and videos on the SSD that the HDD archive does not hold yet; the
     nightly archive copy adds them there, and the weekly USB copy then adds them too."""
-    library = Path(config['data_mount']) / 'photos/immich-library'
+    library = photo_library(config)
     return pending_bytes(archive_folder(config), [(library / name, name) for name in PHOTO_SECTIONS])
 
 
@@ -324,8 +323,8 @@ def assess(
                 f'for {purpose}; it will fill up sooner.'
             )
     # The archive also keeps photos deleted from Immich and earlier versions.
-    photos = max(used(data / 'photos/immich-library'), used(archive_folder(config)))
-    cloud = used(media / 'cloud/files')
+    photos = max(used(photo_library(config)), used(archive_folder(config)))
+    cloud = used(cloud_files(config))
     room = usb_space(
         config.get('photos', {}).get('external_backup_uuid', ''),
         usb_sources(config),

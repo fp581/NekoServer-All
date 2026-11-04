@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 import music_client
-from neko_common import atomic_json, verify_storage, checked_settings, default_settings
+from neko_common import atomic_json, verify_storage, checked_settings, default_settings, music_library
 
 
 def main(argv=None):
@@ -45,7 +45,7 @@ def main(argv=None):
     atomic_json(Path(config['data_mount']) / 'reports/music-setup.json', result)
     print('Music setup: ' + result['status'])
     if result.get('library_empty'):
-        print('The library is empty. Import your music into the SSD library/music folder; Navidrome will scan it.')
+        print(f'The library is empty. Import your music into {music_library(config)}; Navidrome will scan it.')
     print('Phone: Amperfy (Subsonic/Navidrome). Desktop: Feishin or the built-in browser player.')
     print(
         'For phone/remote clients use the HTTPS music address setup printed (port 8446 unless another '

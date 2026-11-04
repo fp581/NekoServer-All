@@ -3,7 +3,15 @@
 from neko_common import checked_run, compose_image_override, compose_up, fetch, findmnt
 import os, re, secrets, subprocess, urllib.request, json, shutil
 from pathlib import Path
-from neko_common import safe_path, relative_path, atomic_write, ensure_directory, verify_storage, host_timezone
+from neko_common import (
+    photo_library,
+    safe_path,
+    relative_path,
+    atomic_write,
+    ensure_directory,
+    verify_storage,
+    host_timezone,
+)
 
 DEPENDENCIES = ['docker', 'account_credentials']  # Immich's login is chosen before it first starts
 DESCRIPTION = 'Configure Immich with upstream Compose and separate append-only photo archive'
@@ -265,7 +273,8 @@ def _run(ctx):
     subprocess.run(['docker', 'info'], check=True, stdout=subprocess.DEVNULL, timeout=120)
     compose_dir = data / 'compose' / 'immich'
     db = data / 'appdata' / 'immich' / 'postgres'
-    upload = data / 'photos' / 'immich-library'
+    # Where setup put the photos: the SSD, or the media drive ("locations").
+    upload = photo_library(cfg)
     archive = media / relative_path(opts.get('archive_dir', 'photos/archive'))
     inbox = media / relative_path(opts.get('inbox_dir', 'photos/inbox'))
     for target in (compose_dir, db, upload, archive, inbox):

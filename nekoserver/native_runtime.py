@@ -242,7 +242,11 @@ def retired_bundles(releases, current, units=SYSTEMD_UNITS):
 
 
 def storage_config(config):
-    return {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}
+    """The drives as the runtime's jobs read them, with where each app keeps its files."""
+    found = {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}
+    if config.get('locations'):
+        found['locations'] = config['locations']
+    return found
 
 
 def backup_guard(config):

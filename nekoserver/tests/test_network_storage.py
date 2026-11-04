@@ -481,3 +481,99 @@ class ReadOnlyCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Run  sudo e2fsck -f /dev/disk/by-uuid/nas-0001  yourself'):
             self.check(['y', 'y'])
         self.assertNotIn('apps', [c[0] for c in self.calls])
+
+
+class LocationTests(unittest.TestCase):
+    """0.46.0: setup asks where each app keeps your files; everything follows the choice."""
+
+    class Ctx:
+        def __init__(self, config):
+            self.config, self.lines, self.saved = config, [], 0
+
+        def log(self, line):
+            self.lines.append(line)
+
+        def persist_config(self):
+            self.saved += 1
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.config = {'data_mount': str(self.root / 'srv'), 'media_mount': str(self.root / 'mnt')}
+        for drive in ('srv', 'mnt'):
+            (self.root / drive).mkdir()
+
+    def ask(self, answers, ssd_gb=230, interactive=True):
+        ctx = self.Ctx(self.config)
+        typed = iter(answers)
+        with mock.patch.object(storage, 'free_gb', lambda f: ssd_gb if f.endswith('srv') else 1800):
+            storage.choose_locations(ctx, lambda prompt='': next(typed), interactive)
+        return ctx
+
+    def test_the_better_drive_is_offered_first_and_enter_takes_it(self):
+        ctx = self.ask(['', '2', ''])
+        # A 250 GB SSD: photos and music on the media drive; music moved to the SSD by hand.
+        self.assertEqual(self.config['locations'], {'photos': 'media', 'music': 'ssd', 'cloud': 'media'})
+        said = '\n'.join(ctx.lines)
+        self.assertIn('the media drive: 1800 GB free, the most room  (recommended)', said)
+        self.assertIn('The backups follow wherever you choose', said)
+        self.assertEqual(ctx.saved, 1)
+        # A big SSD: photos and music there.
+        self.config.pop('locations')
+        self.ask([], ssd_gb=900, interactive=False)
+        self.assertEqual(self.config['locations'], {'photos': 'ssd', 'music': 'ssd', 'cloud': 'media'})
+
+    def test_files_already_on_a_drive_stay_there_and_a_wrong_setting_stops_setup(self):
+        library = self.root / 'srv/photos/immich-library'
+        library.mkdir(parents=True)
+        (library / 'upload').mkdir()
+        self.ask(['', ''])
+        self.assertEqual(self.config['locations']['photos'], 'ssd')  # the layout before 0.46.0
+        self.config['locations']['photos'] = 'media'
+        with self.assertRaisesRegex(RuntimeError, 'would start with an empty folder'):
+            self.ask([])
+
+    def test_every_path_follows_the_choice(self):
+        import neko_common
+
+        config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
+        self.assertEqual(str(neko_common.photo_library(config)), '/srv/nekoserver/photos/immich-library')
+        self.assertEqual(str(neko_common.cloud_files(config)), '/mnt/nekoserver-media/cloud/files')
+        config['locations'] = {'photos': 'media', 'music': 'media', 'cloud': 'ssd'}
+        self.assertEqual(str(neko_common.photo_library(config)), '/mnt/nekoserver-media/photos/immich-library')
+        self.assertEqual(str(neko_common.music_library(config)), '/mnt/nekoserver-media/library/music')
+        self.assertEqual(str(neko_common.music_downloads(config)), '/mnt/nekoserver-media/library/downloads/music')
+        self.assertEqual(str(neko_common.cloud_files(config)), '/srv/nekoserver/cloud/files')
+        # The runtime's jobs get the choice with the drives.
+        import native_runtime
+        from modules import photo_backup
+
+        config['storage'] = {}
+        self.assertEqual(native_runtime.storage_config(config)['locations'], config['locations'])
+        cmd = photo_backup.command_line(
+            {**config, 'nextcloud': {'enabled': True}}, 'bin', 'guard', 'u', 'ext4', None, '/mnt/usb'
+        )
+        self.assertIn('--cloud /srv/nekoserver/cloud/files', cmd)
+        import config_checks
+
+        with self.assertRaises(RuntimeError):
+            config_checks.validate({'locations': {'photos': 'usb'}}, [])
+        with self.assertRaises(RuntimeError):
+            config_checks.validate({'locations': {'films': 'ssd'}}, [])
+
+    def test_no_data_path_is_written_out_by_hand_any_more(self):
+        """Every step, backup, restore and check reads the paths from the resolvers."""
+        import re
+
+        allowed = {'neko_common.py', 'test_', 'common.rs'}
+        for path in [*ROOT.glob('*.py'), *ROOT.glob('modules/*.py'), *ROOT.glob('runtime/src/*.rs')]:
+            if any(a in path.name for a in allowed):
+                continue
+            text = path.read_text()
+            if path.suffix == '.rs':
+                text = text.split('#[cfg(test)]')[0]
+            for pattern in (r"data_mount'\]\) / 'photos/immich-library", r"media_mount'\]\) / 'cloud/files",
+                            r'data\.join\("photos/immich-library"\)', r'data\.join\("library/music"\)',
+                            r'media\.join\("cloud/files"\)', r"data / 'library/downloads/music'"):  # fmt: skip
+                self.assertIsNone(re.search(pattern, text), f'{path.name}: {pattern}')

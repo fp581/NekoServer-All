@@ -13,7 +13,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 import account_store as store
-from neko_common import app_port, local_opener, safe_path
+from neko_common import app_port, local_opener, photo_library, safe_path
 
 ARR = {
     app: (version, app_port(app))
@@ -544,8 +544,10 @@ def verify_project(config, app, quarantined=False):
         and labels.get('com.docker.compose.project') == 'neko-' + project
         and labels.get('com.docker.compose.service') == service
     )
-    expected = root / {'immich': 'photos/immich-library', 'nextcloud': 'appdata/nextcloud/html'}.get(
-        project, 'appdata/' + project
+    expected = (
+        photo_library(config)
+        if project == 'immich'
+        else root / {'nextcloud': 'appdata/nextcloud/html'}.get(project, 'appdata/' + project)
     )
     check(any(m.get('Type') == 'bind' and m.get('Source') == str(expected) for m in value.get('Mounts', [])))
     bindings = value.get('HostConfig', {}).get('PortBindings', {})

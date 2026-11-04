@@ -19,6 +19,47 @@
 
 Navidrome, Lidarr and the qBittorrent music category use the SSD. Local imports route music to SSD and videos to HDD. Incomplete downloads may use the configured shared temporary folder. No watched-video migration between SSD/HDD is performed.
 
+## Where each app keeps your files
+
+Setup asks once, after the drives are chosen, where three things go: **Immich's photos and videos**, **the music library** (with its downloads: Lidarr moves finished downloads into the library, which only works on one drive) and **Nextcloud's files**. For each, you choose the SSD (faster) or the media drive (more room). The better one for this server is offered first, and Enter takes it:
+- Photos and music go on the SSD when it is big enough to hold them for years (500 GB or more for photos, 400 GB for music). Otherwise they go on the media drive.
+- Nextcloud's files always go on the media drive: they keep growing and don't need the speed.
+
+The apps' settings and databases always stay on the SSD, and movies and TV on the media drive. Every backup, restore, check and update follows your choice. The weekly copies, the photo archive, the repair menu, the monthly snapshot and the update's checks all read where the files are from your settings (`"locations"` in `my-config.json`).
+
+A place that already holds files stays where it is: servers set up before 0.46.0 keep photos and music on the SSD. Changing `"locations"` by hand while the files are still on the other drive stops setup, because the app would start with an empty folder. Moving them is a job of its own: stop the apps, copy the folder with `rsync -aHAX`, then change the setting.
+
+## Drives on a network storage box (NAS)
+
+NekoServer can use disks on a NAS for the **media drive** and the **backup drive**. It needs a NAS that offers **iSCSI** (a WD My Cloud EX, Synology, QNAP and most others do). iSCSI hands this PC a virtual disk over the network (a *LUN*), and the PC uses it like a disk of its own. The SSD for the apps stays on this PC (by USB 3, or inside it): it holds the databases and setup's own records, and it is what makes the apps feel fast.
+
+**On the NAS first** (on a WD My Cloud EX4100: *Storage > iSCSI* in its web page):
+1. Switch iSCSI on.
+2. Make one *target* with one *LUN* on each pool: one on the media pool (the 2 TB mirror, say) and one on the backup pool (the 1 TB mirror). Use the pool's full size.
+3. Allow only this PC on each target. Setup shows this PC's name for that (its *initiator name*, `iqn.…`) at the start of the NAS step.
+4. Give the NAS a fixed address on your router, and this PC too.
+
+**Then in setup:** on the first screen, switch on *My media and backup drives are in a network storage box (NAS)*. Setup installs the iSCSI tools and shows this PC's initiator name. Then it asks:
+1. The NAS's address.
+2. Which targets to use.
+3. Whether the NAS asks for a CHAP login. The password is kept in the target's own settings, readable by root only, never in `my-config.json`.
+
+It logs in, again at every start, and lists each LUN with its size, its filesystem and its identity (WWN).
+
+**NekoServer never formats a LUN.** For an empty one, setup shows the exact command (`sudo mkfs.ext4 -L neko-media1 /dev/disk/by-path/…`). Check the size and the LUN number, run it, then run setup again. After that, the drive step offers the LUNs like any other disk, marked *on the network storage box*, but never for the SSD.
+
+**Each LUN belongs to this PC alone.** Another computer mounting the same LUN at the same time would damage it. Other computers reach the files through the apps and NekoServer's shared folders. The NAS's own shares do not show what is inside a LUN.
+
+**At every start**, the network comes up first, then this PC logs in to the NAS, then the LUNs are mounted, then the apps start. If the NAS is off, the PC still starts; the drives show as missing, and the apps come back once the NAS is on.
+
+**When the NAS is away:**
+- **Up to ten minutes** (a restart, a cable, a firmware update): reads and writes wait for it, then go on. Nothing is lost. Tried in the lab: a 200-second outage only paused the writes. Linux's defaults give up after two to three minutes, which aborted the filesystem; setup raises them.
+- **Longer:** the writes fail, and Linux turns the drive read-only to protect it (it still shows as mounted). A check every minute tries a small write on each NAS drive. When one fails, it stops the apps that write there, so nothing carries on half-written, and the dashboard says so. Then, in a terminal: `sudo bash install.sh --recover`, and choose *Check a drive that turned read-only*. That stops the apps, unmounts the drive (never by force), checks and repairs its filesystem with your yes (`e2fsck`), mounts it again, makes sure it takes writes, and starts the apps.
+
+**What this PC can and can't see.** The dashboard shows the connection to the NAS, whether each drive takes writes, and its free space. The disks' health (SMART) and the RAID are inside the NAS: **keep the NAS's own alerts on.**
+
+**One box, one risk.** With the media drive and the backup drive in the same NAS, a fault of the NAS (its power supply, a setting) can take both. The weekly backup copies your photos, Nextcloud files and database copies, not films and TV. When you can, keep a second copy of what matters somewhere else.
+
 ## How backups are verified
 
 Every backup tree (the photo archive on the HDD, its copy on the USB drive, and the Nextcloud copy on the USB drive) has a **checksum ledger**, `.neko-ledger.json`, at its root.

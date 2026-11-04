@@ -665,7 +665,7 @@ def snapshot_plan(config, destination):
     mounts(config)
     base = compose_args(config)
     model = json_command(base + ['config', '--format', 'json'])
-    upload = safe_path(Path(config['data_mount']) / 'photos/immich-library')
+    upload = safe_path(neko_common.photo_library(config))
     database = safe_path(Path(config['data_mount']) / 'appdata/immich/postgres')
     validate_model(model, upload, database)
     version = None

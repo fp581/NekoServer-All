@@ -11,7 +11,7 @@ services:
     volumes:
       - "${NEKO_DATA}/appdata/qbittorrent:/config"
       - "${NEKO_MEDIA}/library:/data"
-      - "${NEKO_DATA}/library/downloads/music:/data/downloads/music"
+      - "${NEKO_MUSIC}/library/downloads/music:/data/downloads/music"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

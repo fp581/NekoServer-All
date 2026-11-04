@@ -11,7 +11,7 @@ services:
       - "${NEKO_DATA}/appdata/lidarr:/config"
       # Single SSD mount: /data/downloads/music and /data/music share one
       # filesystem mount, so imports hardlink or move instead of copying.
-      - "${NEKO_DATA}/library:/data"
+      - "${NEKO_MUSIC}/library:/data"
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

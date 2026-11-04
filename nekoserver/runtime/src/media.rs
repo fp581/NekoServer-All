@@ -621,7 +621,8 @@ fn writable_as_expected(app: &str, expected: bool, actual: &Value, checking: boo
 }
 /// `checking`: a monthly update is checking the apps before it commits, with the
 /// library mounts of the apps that import, move or delete media made read-only.
-fn inspect(app: &str, data: &Path, media: &Path, checking: bool) -> Result<Value> {
+/// `music`: the drive that holds the music library and its downloads (setup's choice).
+fn inspect(app: &str, data: &Path, media: &Path, music: &Path, checking: bool) -> Result<Value> {
     let filter = format!("label=com.docker.compose.project=neko-{app}");
     let service = format!("label=com.docker.compose.service={app}");
     let (code, ids) = common::command(
@@ -672,7 +673,7 @@ fn inspect(app: &str, data: &Path, media: &Path, checking: bool) -> Result<Value
         mounts.iter().any(|m| {
             Path::new(text(&m["Source"]))
                 == (if app == "navidrome" || app == "lidarr" {
-                    data
+                    music
                 } else {
                     media
                 })
@@ -685,7 +686,7 @@ fn inspect(app: &str, data: &Path, media: &Path, checking: bool) -> Result<Value
     let ssd_music_ok = app != "qbittorrent"
         || mounts.iter().any(|m| {
             m["Source"]
-                == data
+                == music
                     .join("library/downloads/music")
                     .to_string_lossy()
                     .as_ref()
@@ -747,6 +748,7 @@ pub fn run(a: &Args) -> Result<()> {
     let cfg = common::json(&config, 2_000_000);
     let data = common::mount_path(text(&cfg["data_mount"]))?;
     let media = common::mount_path(text(&cfg["media_mount"]))?;
+    let music = common::files_root(&cfg, "music")?;
     backup::guard(&config, &data, &media)?;
     let output = common::safe(&a.path("output")?)?;
     if output != data.join("reports/media/latest.json") {
@@ -780,7 +782,7 @@ pub fn run(a: &Args) -> Result<()> {
     let mut integrations = json!({});
     let checking = a.flag("checking");
     for app in &selected {
-        services[app]=inspect(app,&data,&media,checking).unwrap_or_else(|_|json!({"result":"fail","reason":"Container, mounts or local HTTP inspection failed"}));
+        services[app]=inspect(app,&data,&media,&music,checking).unwrap_or_else(|_|json!({"result":"fail","reason":"Container, mounts or local HTTP inspection failed"}));
     }
     for app in ["sonarr", "radarr", "lidarr", "prowlarr"]
         .iter()

@@ -65,7 +65,8 @@ pub fn run(a: &Args) -> Result<()> {
         backup::no_unfinished_update()?;
         // A HDD that drops out mid-run stops it (see common::expect_drive).
         let _hdd = common::expect_drive(&media)?;
-        let source = common::safe(&data.join("library/music"))?;
+        // Where setup put the music (the SSD or the media drive, "locations").
+        let source = common::safe(&common::music_library(&common::json(&config, 64000))?)?;
         let root = common::safe(&media.join("backups/music"))?;
         let (mut rows, mut waiting) = (vec![], vec![]);
         inventory(&source, &source, &mut rows, &mut waiting)?;

@@ -7,7 +7,7 @@ import sys
 
 import music_client
 import setup_progress
-from neko_common import VERSION, atomic_json
+from neko_common import VERSION, atomic_json, music_library
 
 DEPENDENCIES = ['media', 'recovery', 'music_backup']
 DESCRIPTION = 'Music library, private listener checks and browser/phone/desktop client handoff'
@@ -49,7 +49,7 @@ def run(ctx):
         result = music_client.check(ctx.config)
     atomic_json(Path(ctx.config['data_mount']) / 'reports/music-setup.json', result)
     ctx.log(
-        'Music uses the SSD library/music folder read-only; Lidarr imports into the same folder. Music gateway: the HTTPS address setup printed for Music (port 8446 unless another program had it; the phone setup page lists it). Phone/desktop client login and real playback remain acceptance steps.'
+        f'Music uses {music_library(ctx.config)} read-only; Lidarr imports into the same folder. Music gateway: the HTTPS address setup printed for Music (port 8446 unless another program had it; the phone setup page lists it). Phone/desktop client login and real playback remain acceptance steps.'
     )
     if result['status'] != 'pass':
         return {

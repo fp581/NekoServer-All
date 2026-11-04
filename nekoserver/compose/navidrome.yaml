@@ -12,7 +12,7 @@ services:
       TZ: "${NEKO_TZ}"
     volumes:
       - "${NEKO_DATA}/appdata/navidrome:/data"
-      - "${NEKO_DATA}/library/music:/music:ro"
+      - "${NEKO_MUSIC}/library/music:/music:ro"
     user: "${NEKO_UID}:${NEKO_GID}"
     restart: unless-stopped
     security_opt:
