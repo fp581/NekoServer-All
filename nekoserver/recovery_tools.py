@@ -552,7 +552,13 @@ def validate_model(model, upload, database):
             raise RuntimeError('Invalid Immich service')
         # A snapshot also leaves out the graphics chip and another user (restore tests run
         # without them).
-        if set(svc) - set(COMPOSE_KEYS['service_keys']) or {'devices', 'user'} & set(svc):
+        security = svc.get('security_opt', [])
+        if (
+            set(svc) - set(COMPOSE_KEYS['service_keys'])
+            or {'devices', 'user'} & set(svc)
+            or not isinstance(security, list)
+            or set(security) - set(COMPOSE_KEYS['security_opt'])
+        ):
             raise RuntimeError('Custom Immich runtime settings require manual isolated recovery')
         seen = set()
         for volume in svc.get('volumes', []):
@@ -572,7 +578,8 @@ def validate_model(model, upload, database):
                     raise RuntimeError('External/custom Immich mounts are not covered; no incomplete snapshot allowed')
             elif not (
                 volume.get('type') == 'volume'
-                and name == 'immich-machine-learning'
+                # A cache of its own (as the runtime's check allows): not in a snapshot.
+                and name in ('immich-machine-learning', 'redis')
                 and isinstance(source, str)
                 and re.fullmatch(r'[A-Za-z0-9_-]+', source)
             ):

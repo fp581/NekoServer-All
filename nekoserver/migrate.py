@@ -168,12 +168,28 @@ def on_nas(rows, disks):
     return any(r.get('tran') == 'iscsi' for r in rows if r.get('name') in disks)
 
 
-def targets(config, drive, rows=None, used=None):
+def setup_would_refuse(inventory, uuid):
+    """Why setup's drive step would refuse the filesystem `uuid` after the move (a loop
+    device, a filesystem it can't use, an encrypted drive Linux doesn't unlock at start),
+    or None (the 0.46.1 audit: such a move switched, then setup refused, and it could go
+    neither on nor back)."""
+    from modules import storage
+
+    offered = {device['uuid']: device for device in storage.discover_filesystems(inventory)}
+    if uuid not in offered:
+        return storage.not_offered(inventory, uuid) or 'not a drive setup can use'
+    return storage.boot_unlock_problem(offered[uuid])
+
+
+def targets(config, drive, rows=None, used=None, inventory=None):
     """The filesystems `drive` can move to: a supported type, not mounted, on a disk of
     its own (not the old drive's, the other drive's, the USB backup drive's or the
     system's), big enough, and for the SSD on this PC (setup refuses a NAS disk for it).
     Each as (uuid, fstype, size, name); the reasons the others are left out, as words."""
-    rows = rows if rows is not None else lsblk()
+    if rows is None:
+        from modules.storage import inventory_now
+
+        rows, inventory = lsblk(), inventory_now()
     mount_key = DRIVES[drive][0]
     need = int((used if used is not None else used_bytes(mount_path(config[mount_key]))) * MARGIN)
     taken = set().union(
@@ -187,19 +203,27 @@ def targets(config, drive, rows=None, used=None):
         disks = physical_disks(rows, row.get('name'))
         if not row.get('uuid') or row.get('fstype') not in FILESYSTEMS or disks & (taken | system):
             continue
-        why = why_not(row, need)
-        if disks & backup_disks:
-            why = 'the USB backup drive (a backup must stay on a drive of its own)'
-        elif drive == 'data_ssd' and on_nas(rows, disks):
-            why = (
-                'a disk on the network storage box; the SSD for the apps must be connected to this PC '
-                '(it holds the databases)'
-            )
+        why = refused_target(row, need, inventory) or kept_for(drive, rows, disks, backup_disks)
         if why:
             left_out.append(f'{row.get("name")}: {why}')
         else:
             found.append((row['uuid'], row['fstype'], int(row['size']), row.get('name')))
     return found, left_out
+
+
+def refused_target(row, need, inventory):
+    """Why the filesystem can't take the drive (mounted, too small, or one setup would
+    refuse), or None. `inventory`: lsblk's tree, for setup's own checks."""
+    return why_not(row, need) or (inventory is not None and setup_would_refuse(inventory, row['uuid'])) or None
+
+
+def kept_for(drive, rows, disks, backup_disks):
+    """Why a disk is kept out for this drive: the USB backup's, or a NAS disk for the SSD."""
+    if disks & backup_disks:
+        return 'the USB backup drive (a backup must stay on a drive of its own)'
+    if drive == 'data_ssd' and on_nas(rows, disks):
+        return 'a disk on the network storage box; the SSD for the apps must be connected to this PC (it holds the databases)'
+    return None
 
 
 def why_not(row, need):
@@ -841,9 +865,15 @@ def resume_held(settings, out, journal, staging, fstab):
         # Not switched yet, and what the move stopped runs again (a restart started it on
         # the old drive): what was written since is not on the new drive, so switching to
         # it would lose it. The move starts over instead (its copy is quick the second time).
+        again = (
+            'Go back again (sudo python3 migrate.py back)'
+            if saved.get('direction') == 'back'
+            else 'Start the move again (sudo python3 migrate.py move ...): it goes on with the copy already there, '
+            'so only what changed is copied'
+        )
         return stopped_safely(
-            'the apps ran again on the old drive before it switched (a restart, say), so the new drive\'s '
-            'copy is not up to date. Start the move again (sudo python3 migrate.py move ...): it goes on with the copy already there, so only what changed is copied',
+            'the apps ran again on the old drive before it switched (a restart, say), or that cannot be ruled '
+            f"out, so the new drive's copy may not be up to date. {again}",
             'drive',
             journal,
             staging,

@@ -49,7 +49,7 @@ The daily check also looks for new NekoServer releases on GitHub, on your channe
 - `"beta"`, the default while every release is a beta, offers the newest release, stable or beta.
 - `"stable"` offers stable releases only (README.md, "Release channels").
 
-Only a release with newer numbers is offered. The stable release of the numbers you run (`v0.46.1` on a server running `v0.46.1Beta`) is the same NekoServer as far as an upgrade goes: both keep their files in the same folder on the SSD, so one can't be the way back to the other.
+Only a release with newer numbers is offered. The stable release of the numbers you run (`v0.46.2` on a server running `v0.46.2Beta`) is the same NekoServer as far as an upgrade goes: both keep their files in the same folder on the SSD, so one can't be the way back to the other.
 
 A release is never installed by itself. The **Updates** page, **NekoServer** tab, shows it with its release notes. **Upgrade NekoServer** (with the PIN) starts `nekoserver-upgrade@<release>.service`, which runs `upgrade.py`. It goes on if you close the page, and the tab shows how it went:
 

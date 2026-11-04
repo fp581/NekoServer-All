@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.46.1Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.46.2Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -53,7 +53,7 @@ JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')
 MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
 FORMAT = 'neko-upgrade-v1'
 ARCHIVE = 'https://codeload.github.com/fp581/NekoServer-All/tar.gz/refs/tags/{tag}'
-TAG = re.compile(r'v(\d+)\.(\d+)\.(\d+)(Beta)?')
+TAG = re.compile(r'v(\d+)\.(\d+)\.(\d+)(Beta|-beta)?')  # a beta written either way (0.46.1 was v0.46.1-beta)
 SETUP_LOCK = Path('/run/nekoserver-setup.lock')
 # The status the installer records for a step that worked (installer.py
 # complete_status); a step waiting for you (Tailscale's sign-in, say) was waiting
@@ -66,7 +66,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.46.1Beta" or "0.46.1"; None for anything else."""
+    """(0, 44, 0) from "v0.46.2Beta" or "0.46.2"; None for anything else."""
     match = TAG.fullmatch(text if text.startswith('v') else 'v' + text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -458,7 +458,7 @@ def keep_report(path, row):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('run', 'resume'))
-    parser.add_argument('--tag', help='with run: the release, such as v0.46.1Beta')
+    parser.add_argument('--tag', help='with run: the release, such as v0.46.2Beta')
     parser.add_argument(
         '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
     )
@@ -466,7 +466,7 @@ def main():
     if os.geteuid() != 0:
         parser.error('Run it with sudo')
     if args.action == 'run' and not (args.tag and TAG.fullmatch(args.tag)):
-        parser.error('run needs --tag with a release, such as v0.46.1Beta')
+        parser.error('run needs --tag with a release, such as v0.46.2Beta')
     config = json.loads(settings_path(args.config).read_text())
     if args.action == 'resume':
         return reported(config, RESUME_UNIT, lambda out: resume(args.config, out))

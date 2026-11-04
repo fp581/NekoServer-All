@@ -164,6 +164,26 @@ class ImmichComposeTests(unittest.TestCase):
         ):
             self.refused(change)
 
+    def test_the_snapshot_check_and_the_runtime_agree(self):
+        """The 0.46.1 audit: the update took files the snapshot check refused (and the
+        other way round), so a later setup run or snapshot failed."""
+        import recovery_tools
+
+        unconfined = copy.deepcopy(MODEL)
+        unconfined['services']['redis']['security_opt'] = ['seccomp=unconfined']
+        with self.assertRaises(RuntimeError):
+            recovery_tools.validate_model(unconfined, UPLOAD, DB)
+        self.refused(lambda m: m['services']['redis'].update(security_opt=['seccomp=unconfined']))
+        # Immich running as another user, or its photos bound elsewhere: refused by both.
+        self.refused(lambda m: m['services']['immich-server'].update(user='1000:1000'))
+        self.refused(lambda m: m['services']['immich-server']['volumes'][0].update(target='/photos'))
+        # A cache volume of its own for redis: taken by both.
+        cache = lambda m: (  # noqa: E731
+            m['services']['redis'].update(volumes=[{'type': 'volume', 'source': 'redis-data', 'target': '/data'}]),
+            m['volumes'].update({'redis-data': {'name': 'neko-immich_redis-data'}}),
+        )
+        self.check(cache)
+
     def test_setup_checks_the_file_before_starting_it(self):
         source = (ROOT / 'modules/photos.py').read_text()
         self.assertNotIn('def chip_only', source)  # no second copy of the rules

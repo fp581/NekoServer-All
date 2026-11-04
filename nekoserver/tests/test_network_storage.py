@@ -367,6 +367,59 @@ class StepTests(unittest.TestCase):
             result = nas.run(ctx)
         return ctx, result, logged_in, chap_saved, tool
 
+    def test_a_chap_login_saved_by_0_46_0_is_noted_and_watched(self):
+        """The audit of 0.46.1: settings from 0.46.0 say nothing about CHAP, so a target
+        whose login was there went untracked, and losing it later went unnoticed."""
+        config = {'network_storage': {'wanted': True, 'portal': PORTAL, 'targets': [IQN, BACKUP]}}
+        with mock.patch.object(nas, 'chap_kept', side_effect=lambda iqn, portal: iqn == IQN):
+            ctx = self.Ctx(config)
+            with (
+                mock.patch.object(nas.os, 'geteuid', return_value=0),
+                mock.patch('sys.stdin.isatty', return_value=False),
+                mock.patch.object(nas, 'install_tools'),
+                mock.patch.object(nas, 'kept_initiator', return_value='iqn.2004-10.com.ubuntu:01:laptop'),
+                mock.patch.object(nas, 'answers', return_value=True),
+                mock.patch.object(nas, 'discovered', return_value=[(IQN, PORTAL), (BACKUP, PORTAL)]),
+                mock.patch.object(nas, 'log_in'),
+                mock.patch.object(nas, 'known_at'),
+                mock.patch.object(nas, 'install_rule'),
+                mock.patch.object(nas, 'wait_online_unit', return_value='NetworkManager-wait-online.service'),
+                mock.patch.object(nas, 'run_tool', return_value=done()),
+                mock.patch.object(nas, 'listed_disks', return_value=[]),
+            ):
+                nas.run(ctx)
+        self.assertEqual(config['network_storage']['chap'], [IQN])
+        # Lost since: noticed, and with no one to type it, setup stops.
+        again = self.Ctx(config)
+        with mock.patch.object(nas, 'chap_kept', return_value=False), mock.patch.object(nas, 'known_at'):
+            with self.assertRaisesRegex(RuntimeError, 'no longer in its iSCSI settings'):
+                nas.logged_in(again, IQN, PORTAL, False, True, False)
+
+    def test_a_backup_drive_alone_on_the_nas_gets_the_nas_check(self):
+        from modules import server_os
+
+        self.assertTrue(server_os.on_a_nas({'network_storage': {'wanted': True}, 'storage': {}}))
+        self.assertFalse(server_os.on_a_nas({'storage': {'media_hdd': {'uuid': 'x'}}}))
+
+    def test_the_backup_drive_on_the_nas_is_the_nas_disk_it_was(self):
+        """The audit of 0.46.1: only the SSD and the HDD were checked by their WWN."""
+        from modules import photo_backup
+        import native_runtime
+
+        inventory = {'blockdevices': [
+            {'name': 'sdc', 'type': 'disk', 'tran': 'iscsi', 'wwn': '0x6001', 'children': [
+                {'name': 'sdc1', 'type': 'part', 'uuid': 'bk-11111', 'fstype': 'ext4'}]}
+        ]}  # fmt: skip
+        self.assertEqual(photo_backup.nas_identity(inventory, 'bk-11111'), '0x6001')
+        self.assertIsNone(photo_backup.nas_identity(inventory, 'other'))
+        photos = {}
+        photo_backup.same_nas_disk(photos, '0x6001')  # noted the first time
+        self.assertEqual(photos['external_backup_network']['wwn'], '0x6001')
+        with self.assertRaisesRegex(RuntimeError, 'on another NAS disk than before'):
+            photo_backup.same_nas_disk(photos, '0x6002')
+        config = {'data_mount': '/srv/n', 'media_mount': '/mnt/m', 'storage': {}, 'photos': photos}
+        self.assertEqual(native_runtime.storage_config(config)['backup_drive'], {'wwn': '0x6001'})
+
     def test_a_refused_login_asks_for_the_chap_login(self):
         """The 0.46.0 review: after Linux was installed again the saved targets skipped the
         CHAP question, and the NAS refused the login with no way to give it."""
@@ -547,6 +600,33 @@ class DriveStepTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'which NekoServer did not write'):
             storage.existing_line([theirs], 'nas-1', '/mnt/nekoserver-media', local)
 
+    def test_a_btrfs_nas_drive_pinned_to_its_subvolume_keeps_its_network_options(self):
+        """The 0.46.1 audit: the second fstab write (pinning the default subvolume) left out
+        the NAS options, so the drive was mounted before the network and the login."""
+        config = {
+            'data_mount': '/srv/nekoserver',
+            'media_mount': '/mnt/nekoserver-media',
+            'storage': {
+                'data_ssd': {'uuid': 'ssd-11111', 'fstype': 'ext4'},
+                'media_hdd': {'uuid': 'nas-11111', 'fstype': 'btrfs', 'network': {'transport': 'iscsi'}},
+            },
+        }
+        context = mock.Mock(config=config, log=lambda line: None)
+        with tempfile.TemporaryDirectory() as d:
+            fstab = Path(d) / 'fstab'
+            fstab.write_text('')
+            found = {'/srv/nekoserver': None, '/mnt/nekoserver-media': '/@media'}
+            with (
+                mock.patch.object(storage, 'call'),
+                mock.patch.object(storage, 'mount_and_check', side_effect=lambda u, t, *a: found[t]),
+                mock.patch.object(storage, 'raid_note', return_value=None),
+                mock.patch.object(storage, 'save_storage'),
+            ):
+                storage.mount_all(context, storage.mount_specs(config), fstab)
+            media = next(line for line in fstab.read_text().splitlines() if 'nas-11111' in line)
+        self.assertIn('subvol=/@media', media)
+        self.assertIn('_netdev', media)
+
     def test_a_drive_is_found_on_the_nas_from_its_uuid(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -606,12 +686,15 @@ class ReadOnlyCheckTests(unittest.TestCase):
         self.codes = {}
         self.busy = None
         self.lock = contextlib.nullcontext()
+        self.mounted = 'nas-0001'  # the drive findmnt finds at the folder
 
     def run_(self, argv, **kwargs):
         self.calls.append(argv)
         if argv[0] == 'systemctl' and argv[1] == 'start' and argv[2].endswith('.mount'):
             self.writable['/mnt/nekoserver-media'] = True  # mounted again, repaired
         out = 'mnt-nekoserver\\x2dmedia.mount\n' if argv[0] == 'systemd-escape' else 'clean\n'
+        if argv[0] == 'findmnt':
+            out = (self.mounted if argv[-1] == '/mnt/nekoserver-media' else 'ssd-0001') + '\n'
         return mock.Mock(returncode=self.codes.get(argv[0], 0), stdout=out, stderr='')
 
     def check(self, answers):
@@ -634,10 +717,26 @@ class ReadOnlyCheckTests(unittest.TestCase):
     def test_the_drive_is_unmounted_checked_mounted_and_the_apps_started_in_that_order(self):
         self.check(['y', 'y'])
         order = [c[0] if c[0] != 'systemctl' else c[0] + ' ' + c[1] for c in self.calls]
-        self.assertEqual(order, ['systemctl stop', 'umount', 'e2fsck', 'systemd-escape', 'systemctl start', 'apps'])
-        self.assertEqual(self.calls[1], ['umount', '/mnt/nekoserver-media'])  # never -f or -l
-        self.assertEqual(self.calls[2], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/nas-0001'])
+        self.assertEqual(
+            order, ['findmnt', 'systemctl stop', 'umount', 'e2fsck', 'systemd-escape', 'systemctl start', 'apps']
+        )
+        self.assertEqual(self.calls[2], ['umount', '/mnt/nekoserver-media'])  # never -f or -l
+        self.assertEqual(self.calls[3], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/nas-0001'])
         self.assertIn('takes writes', self.said[-1])
+
+    def test_a_repair_cut_off_or_on_another_drive_is_never_called_a_success(self):
+        """The review of 0.46.1: e2fsck killed (a negative code) passed as repaired, and the
+        drive mounted at the folder was never checked to be the one the settings name."""
+        self.codes['e2fsck'] = -9
+        with self.assertRaisesRegex(RuntimeError, 'e2fsck was stopped before it finished'):
+            self.check(['y', 'y'])
+        self.assertNotIn(['apps'], self.calls)
+        self.calls.clear()
+        self.codes.clear()
+        self.mounted = 'other-0001'
+        with self.assertRaisesRegex(RuntimeError, 'holds another drive than the settings name'):
+            self.check(['y'])
+        self.assertEqual([c[0] for c in self.calls], ['findmnt'])  # nothing stopped or unmounted
 
     def test_nothing_is_done_without_a_yes_or_when_every_drive_writes(self):
         self.check(['n'])
@@ -672,14 +771,45 @@ class ReadOnlyCheckTests(unittest.TestCase):
         with mock.patch('upgrade.nothing_at_work', return_value='An app update is not finished yet'):
             self.assertEqual(self.wizard.repair_blocked(self.config, run), 'An app update is not finished yet')
 
+    def test_a_test_write_that_waits_for_the_nas_stops_the_check(self):
+        """The audit of 0.46.1: with the NAS away the menu froze on its test write."""
+        import threading
+
+        never = threading.Event()
+        with mock.patch.object(self.wizard, 'test_write', side_effect=lambda folder: never.wait(5)):
+            with self.assertRaisesRegex(RuntimeError, 'is still waiting after 0.1 s'):
+                self.wizard.takes_writes('/mnt/x', wait=0.1)
+        with mock.patch.object(self.wizard, 'test_write', return_value=True):
+            self.assertTrue(self.wizard.takes_writes('/mnt/x'))
+
+    def test_the_apps_started_again_through_the_nas_check_are_said_as_they_are(self):
+        """The audit of 0.46.1: "started again" was said even when the NAS check refused."""
+        said, ran = [], []
+        with tempfile.TemporaryDirectory() as d:
+            state, lock = Path(d) / 'state.json', Path(d) / 'lock'
+
+            def run(argv, **k):
+                ran.append(argv)
+                return mock.Mock(returncode=1)  # the check refused (a drive check failed)
+
+            with (
+                mock.patch.object(self.wizard, 'NAS_WATCH_STATE', state),
+                mock.patch.object(self.wizard, 'NAS_WATCH_LOCK', str(lock)),
+                mock.patch.object(self.wizard.Path, 'is_file', return_value=True),
+            ):
+                self.wizard.start_apps(run, said.append)
+            self.assertTrue(json.loads(state.read_text())['held'])
+        self.assertIn(['systemctl', 'start', self.wizard.NAS_WATCH], ran)
+        self.assertIn('were not started yet', said[-1])
+
     def test_a_drive_that_still_writes_but_had_errors_is_checked_too(self):
         """0.46.1: a local drive with filesystem errors (a loose cable) may still take
         writes; Linux's error count says it needs a check."""
         self.writable['/mnt/nekoserver-media'] = True
         self.errors['/srv/nekoserver'] = 3
         self.check(['y', 'y'])
-        self.assertEqual(self.calls[1], ['umount', '/srv/nekoserver'])
-        self.assertEqual(self.calls[2], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/ssd-0001'])
+        self.assertEqual(self.calls[2], ['umount', '/srv/nekoserver'])
+        self.assertEqual(self.calls[3], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/ssd-0001'])
 
     def test_the_error_count_is_read_from_the_mounted_filesystem(self):
         with tempfile.TemporaryDirectory() as d:
@@ -740,11 +870,39 @@ class LocationTests(unittest.TestCase):
         said = '\n'.join(ctx.lines)
         self.assertIn('the media drive: 1800 GB free, the most room  (recommended)', said)
         self.assertIn('The backups follow wherever you choose', said)
+        # The audit of 0.46.1: photos on the media drive have their archive copy there too.
+        self.assertIn('so is their weekly archive copy', said)
         self.assertEqual(ctx.saved, 1)
         # A big SSD: photos and music there.
         self.config.pop('locations')
         self.ask([], ssd_gb=900, interactive=False)
         self.assertEqual(self.config['locations'], {'photos': 'ssd', 'music': 'ssd', 'cloud': 'media'})
+
+    def test_a_server_set_up_before_keeps_its_layout_when_no_one_is_asked(self):
+        """The audit of 0.46.1: a 0.45 server updated without anyone at the keyboard, with an
+        empty music folder and a small SSD, had its music quietly put on the media drive."""
+        (self.root / 'srv/appdata/jellyfin').mkdir(parents=True)
+        self.ask([], ssd_gb=230, interactive=False)
+        self.assertEqual(self.config['locations'], {'photos': 'ssd', 'music': 'ssd', 'cloud': 'media'})
+
+    def test_setup_in_a_terminal_asks_with_the_keyboard(self):
+        ctx = self.Ctx(self.config)
+        with (
+            mock.patch.object(storage, 'free_gb', lambda f: 230 if f.endswith('srv') else 1800),
+            mock.patch('builtins.input', side_effect=['2', '', '']),
+        ):
+            storage.choose_locations(ctx, None, True)
+        self.assertEqual(self.config['locations']['photos'], 'ssd')  # the second offer, typed
+
+    def test_the_usb_backup_drive_is_never_offered_as_the_ssd_or_the_hdd(self):
+        items = [
+            {'uuid': 'hdd-1111', 'mountpoint': None, 'name': 'sdb'},
+            {'uuid': 'usb-1111', 'mountpoint': None, 'name': 'sdc'},
+        ]
+        config = {**self.config, 'photos': {'external_backup_uuid': 'usb-1111'}}
+        with mock.patch.object(storage, 'ask_drive', side_effect=lambda options, *a: options):
+            offered = storage.choose_new(config, {}, items, set(), 'media_hdd', 'HDD', None, None)
+        self.assertEqual([v['uuid'] for v in offered], ['hdd-1111'])
 
     def test_files_already_on_a_drive_stay_there_and_a_wrong_setting_stops_setup(self):
         library = self.root / 'srv/photos/immich-library'

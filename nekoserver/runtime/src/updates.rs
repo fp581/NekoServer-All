@@ -302,10 +302,11 @@ pub(crate) fn for_dashboard(data: &Path, settle_days: u64, now: f64) -> Value {
 pub(crate) const RELEASES: &str =
     "https://api.github.com/repos/fp581/NekoServer-All/releases?per_page=30";
 const RELEASE_FILE: &str = "nekoserver.json";
-/// "v0.43.0" (stable) or "v0.43.0Beta" (beta), as README.md "Release channels" says: the
-/// numbers, and whether it is a beta. Any other tag (a typo) is no release.
+/// "v0.43.0" (stable) or "v0.43.0Beta" (beta; also written "v0.43.0-beta", as the
+/// 0.46.1 release was), as README.md "Release channels" says: the numbers, and whether it
+/// is a beta. Any other tag (a typo) is no release.
 pub(crate) fn release_version(tag: &str) -> Option<((u64, u64, u64), bool)> {
-    let caps = regex::Regex::new(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)(Beta)?$")
+    let caps = regex::Regex::new(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)(Beta|-beta)?$")
         .ok()?
         .captures(tag)?;
     let n = |i: usize| caps[i].parse::<u64>().ok();
@@ -553,7 +554,18 @@ mod tests {
             {"tag_name": "v0.42.0Bata", "prerelease": false},
             {"tag_name": "V0.50.0Beta", "prerelease": false},
             {"tag_name": "v0.41.0Beta", "prerelease": true},
+            {"tag_name": "v0.42.0-beta", "prerelease": false},
         ]);
+        // The 0.46.1 release was tagged "v0.46.1-beta" (and GitHub left it unmarked): a
+        // beta all the same, so the stable channel never gets it.
+        assert_eq!(release_version("v0.46.1-beta"), Some(((0, 46, 1), true)));
+        let dashed =
+            json!([{"tag_name": "v0.46.1-beta", "prerelease": false}, {"tag_name": "v0.46.0Beta"}]);
+        assert_eq!(
+            newest_release(&dashed, "beta", "0.46.0").unwrap()["tag"],
+            "v0.46.1-beta"
+        );
+        assert!(newest_release(&dashed, "stable", "0.46.0").is_none());
         // Beta: the newest beta or stable, never a draft or a typo.
         assert_eq!(
             newest_release(&list, "beta", "0.42.1").unwrap()["tag"],

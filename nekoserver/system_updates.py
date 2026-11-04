@@ -105,6 +105,13 @@ def restart_needed(family, run=call, running=None, modules=Path('/usr/lib/module
         unknown.append(f'{modules} is not there, so the installed kernels cannot be compared with the running one')
     elif not (modules / kernel).is_dir():
         needed.append(f'the running Linux kernel ({kernel}) was replaced by an update')
+    elif family == 'debian':
+        # Debian keeps the running kernel's modules when a newer kernel is installed, and
+        # writes /run/reboot-required only with update-notifier: a newer kernel of the same
+        # kind waiting is a restart needed too (the review of 0.46.1).
+        newer = newer_kernel(kernel, [p.name for p in modules.iterdir() if p.is_dir()])
+        if newer:
+            needed.append(f'a newer Linux kernel ({newer}) is installed and starts at the next restart')
     if family == 'debian' and Path(flag).exists():
         needed.append('the system says so (/run/reboot-required)')
     if family in RESTART_CHECKS:
@@ -119,6 +126,28 @@ def restart_needed(family, run=call, running=None, modules=Path('/usr/lib/module
     if needed:
         return REQUIRED, needed
     return (UNKNOWN, unknown) if unknown else (NOT_REQUIRED, [])
+
+
+def newer_kernel(running, installed):
+    """The newest of `installed` (kernel versions, as /usr/lib/modules names them) that is
+    of the running kernel's kind (amd64, rt-amd64, generic...) and newer than it, or None."""
+
+    def parts(name):
+        """((6, 1, 0, 26), '-amd64') from '6.1.0-26-amd64'; None for another form."""
+        version, _, rest = name.partition('-')
+        numbers = version.split('.')
+        if not all(n.isdigit() for n in numbers):
+            return None
+        build, _, kind = rest.partition('-')
+        if not build.isdigit():
+            build, kind = '0', rest
+        return (*map(int, numbers), int(build)), kind
+
+    mine = parts(running)
+    if mine is None:
+        return None
+    newer = [(p[0], name) for name in installed if (p := parts(name)) and p[1] == mine[1] and p[0] > mine[0]]
+    return max(newer)[1] if newer else None
 
 
 def mark_security(family, found, run=call):

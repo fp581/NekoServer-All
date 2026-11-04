@@ -331,7 +331,12 @@ def nas_watch_units(binary):
 
 
 def on_a_nas(config):
-    return any(isinstance(r, dict) and r.get('network') for r in config.get('storage', {}).values())
+    """A drive on a NAS: the SSD or the HDD, or only the backup drive (the NAS check
+    logs in to it again when it drops out too)."""
+    return (
+        any(isinstance(r, dict) and r.get('network') for r in config.get('storage', {}).values())
+        or config.get('network_storage', {}).get('wanted') is True
+    )
 
 
 def install_drive_return(config, project, run=subprocess.run):

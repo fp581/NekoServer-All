@@ -166,16 +166,22 @@ pub fn run(a: &crate::Args) -> Result<()> {
     common::require_root()?;
     let cfgpath = a.path("config")?;
     let cfg = common::json(&cfgpath, 64000);
+    // One at a time with the recovery menu, which writes "held" here too (the 0.46.1
+    // audit: a check already running wrote over the menu's note, and the apps the menu
+    // stopped were never started).
+    let _turn = state_lock()?;
     let drives = nas_drives(&cfg)?;
+    let states: Vec<Health> = drives.iter().map(|(p, u, _)| health(p, u)).collect();
+    // Logged in again when a drive is gone, or a target NekoServer uses has no session
+    // (the backup drive's too, which no drive above shows: the 0.46.1 audit).
+    if states.contains(&Health::Absent) || !missing_sessions(&cfg, &sessions()).is_empty() {
+        log_in_again(&cfg);
+    }
     if drives.is_empty() {
         return Ok(());
     }
     let state = common::json(Path::new(*STATE), 64000);
     let held = state["held"] == true;
-    let states: Vec<Health> = drives.iter().map(|(p, u, _)| health(p, u)).collect();
-    if states.contains(&Health::Absent) {
-        log_in_again(&cfg);
-    }
     let mut seen = serde_json::Map::new();
     for ((path, _, _), h) in drives.iter().zip(&states) {
         let key = if *path == common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))? {
@@ -244,8 +250,18 @@ pub fn run(a: &crate::Args) -> Result<()> {
             }
             let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
             let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
+            // The right drives first: until they are, the apps stay held (tried again in a
+            // minute).
+            crate::backup::guard(&cfgpath, &data, &media)?;
             println!("NAS watch: the drives on the network storage box take writes again; starting the apps");
-            drive_return::start_again(&cfgpath, &data, &media, "NAS watch")?;
+            if let Err(e) = drive_return::start_again(&cfgpath, &data, &media, "NAS watch") {
+                // The drives are fine; something the start runs failed (an app that won't
+                // start, a job's own resume). No longer held: retrying every minute would
+                // restart everything each time (the 0.46.1 audit). Said, and kept for the
+                // dashboard.
+                println!("NAS watch: not everything started again ({e}); see the journal of the service named");
+                record["resume_failed"] = json!(e.to_string());
+            }
             record["held"] = json!(false);
             record["since"] = Value::Null;
             record["stopped_for"] = Value::Null;
@@ -302,6 +318,37 @@ fn log_in_again(cfg: &Value) {
         Err(e) => println!("NAS watch: logging in to the network storage box did not work yet ({e})"),
     }
 }
+/// The lock on this check's record (shared.json nas_watch.lock), waited for.
+fn state_lock() -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(common::shared("nas_watch", "lock"))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(Error::new("The NAS check's lock could not be taken"));
+    }
+    Ok(file)
+}
+/// What `iscsiadm -m session` lists now ("" when no session, or it can't say).
+fn sessions() -> String {
+    common::command(&["iscsiadm", "-m", "session"], 15)
+        .map(|(_, out)| out)
+        .unwrap_or_default()
+}
+/// The targets in the settings (network_storage.targets) with no session in `listed`.
+fn missing_sessions<'a>(cfg: &'a Value, listed: &str) -> Vec<&'a str> {
+    cfg["network_storage"]["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|iqn| !listed.split_whitespace().any(|word| word == *iqn))
+        .collect()
+}
 /// The NAS answers at `portal` (host:port, the settings' network_storage.portal) within 3 s.
 fn answers(portal: &str) -> bool {
     use std::net::{TcpStream, ToSocketAddrs};
@@ -311,6 +358,16 @@ fn answers(portal: &str) -> bool {
     addresses
         .take(4)
         .any(|a| TcpStream::connect_timeout(&a, Duration::from_secs(3)).is_ok())
+}
+/// True when every NAS drive in the settings takes writes now (none on a NAS: true). The
+/// drive-return service starts the apps only then: a NAS drive that turned read-only just
+/// before, and that this check hasn't seen yet, would get them for up to a minute.
+pub(crate) fn all_take_writes(cfg: &Value) -> bool {
+    nas_drives(cfg).is_ok_and(|drives| {
+        drives
+            .iter()
+            .all(|(path, uuid, _)| health(path, uuid) == Health::Writes)
+    })
 }
 /// True when this check stopped the apps for a NAS drive that does not take writes: they
 /// stay stopped until it does (it starts them itself then), whoever else would start them.
@@ -360,6 +417,17 @@ mod tests {
         std::fs::write(&state, r#"{"held": false}"#).unwrap();
         assert!(!held_in(&state));
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn a_target_without_a_session_is_noticed() {
+        let cfg = json!({"network_storage": {"targets": ["iqn.x:media", "iqn.x:backup"]}});
+        let both = "tcp: [1] 10.0.0.2:3260,1 iqn.x:backup (non-flash)\ntcp: [2] 10.0.0.2:3260,1 iqn.x:media (non-flash)\n";
+        assert!(missing_sessions(&cfg, both).is_empty());
+        // The 0.46.1 audit: the backup drive's target gone while the media drive is fine.
+        let media_only = "tcp: [2] 10.0.0.2:3260,1 iqn.x:media (non-flash)\n";
+        assert_eq!(missing_sessions(&cfg, media_only), ["iqn.x:backup"]);
+        assert_eq!(missing_sessions(&cfg, "").len(), 2);
+        assert!(missing_sessions(&json!({}), "").is_empty());
     }
     /// The 0.46.0 review, H06: a refused stop was recorded as done.
     #[test]

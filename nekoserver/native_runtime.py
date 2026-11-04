@@ -265,6 +265,10 @@ def storage_config(config):
         'downloads': str(music_downloads(config)),
         'cloud': str(cloud_files(config)),
     }
+    backup = (config.get('photos', {}).get('external_backup_network') or {}).get('wwn')
+    if backup:
+        # The backup drive's NAS disk: the weekly copy checks it is that one (backup.rs).
+        found['backup_drive'] = {'wwn': backup}
     nas = config.get('network_storage') or {}
     if nas.get('wanted') is True:
         # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).

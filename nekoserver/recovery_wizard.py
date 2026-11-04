@@ -78,6 +78,7 @@ MENU = [
 
 
 MONTHLY_DIR = 'backups/monthly'  # monthly snapshots, on the HDD
+PASSWORD_LISTS = 'backups/password-lists'  # the lists setup makes, on the HDD (backup.rs seal_passwords)
 USB_PASSWORDS = 'passwords'  # the weekly copy's folder on the USB drive for the newest password lists
 MANIFEST = 'manifest.json'  # what every monthly snapshot folder must contain
 SEALED = 'secrets.tar.cms'  # a monthly snapshot's encrypted password list
@@ -1436,13 +1437,22 @@ def archive_problem(run, name):
 
 
 def password_snapshots(config):
-    """(path, label) of monthly snapshots holding the password list, newest first."""
-    runs = monthly_snapshots(Path(config['media_mount']) / MONTHLY_DIR)
-    return [
+    """(path, label) of the password lists on the HDD, newest first: the monthly
+    snapshots' and the ones setup makes after each run (so there is one before the first
+    monthly snapshot, and a newer one when passwords changed since)."""
+    media = Path(config['media_mount'])
+    monthly = [
         (p, d + ('' if (p / SEALED).is_file() else ' (not encrypted: made without a backup key)'))
-        for p, d in runs
+        for p, d in monthly_snapshots(media / MONTHLY_DIR)
         if (p / SEALED).is_file() or plain_password_list(p)
     ]
+    made = [(p, d + ' (made by setup)') for p, d in monthly_snapshots(media / PASSWORD_LISTS, need=SEALED)]
+    return newest_first(monthly + made)
+
+
+def newest_first(runs):
+    """(path, label) runs from several folders, newest first by the time in their names."""
+    return sorted(runs, key=lambda run: run_time(MONTHLY.match(run[0].name)[1]), reverse=True)
 
 
 def usb_password_lists(usb):
@@ -1454,22 +1464,20 @@ def usb_password_lists(usb):
 
 
 def restore_passwords(config, prompt, output):
-    """From the HDD's monthly snapshots; with none there (the HDD broke too, say), from
-    the USB drive's copies of the newest lists."""
-    runs = password_snapshots(config)
-    if runs:
-        return restore_password_list(config, runs, prompt, output)
-    output('No monthly snapshot with a password list on the HDD; looking on the USB drive.')
+    """Every password list there is, newest first: the HDD's (the monthly snapshots' and
+    setup's) and the USB drive's copies, when it is plugged in (the review of 0.46.1: with
+    any list on the HDD, a newer one on the USB drive was never offered)."""
+    hdd = password_snapshots(config)
     with Usb(config) as usb:
-        runs = usb_password_lists(usb)
+        runs = newest_first(hdd + usb_password_lists(usb))
         if not runs:
-            output('No password list on the USB drive either (or it is not plugged in).')
+            output('No password list on the HDD, nor on the USB drive (or it is not plugged in).')
             return
         return restore_password_list(config, runs, prompt, output)
 
 
 def restore_password_list(config, runs, prompt, output):
-    run = choose('Restore the password list from which monthly snapshot?', [(p, d) for p, d in runs], prompt, output)
+    run = choose('Restore which password list (newest first)?', [(p, d) for p, d in runs], prompt, output)
     if run is None:
         return
     target = new_folder(unused(Path('/root') / f'nekoserver-passwords-{stamp()}'), prompt, output, backup_trees(config))
@@ -2079,12 +2087,34 @@ def repair_job(job, hints, asking, resolved):
 WRITERS = tuple(SHARED['writers'])
 NAS_WATCH = SHARED['nas_watch']['service']
 NAS_WATCH_STATE = Path(SHARED['nas_watch']['state'])
+NAS_WATCH_LOCK = SHARED['nas_watch']['lock']  # its record's lock (nas_watch.rs state_lock)
 PROBE_DIR = SHARED['nas_watch']['probe_dir']
 
 
-def takes_writes(folder):
+WRITE_WAIT = 20  # seconds a test write may take (as nas_watch.rs): a NAS away makes it wait
+
+
+def takes_writes(folder, wait=WRITE_WAIT):
     """A small file written, synced and removed at the drive's top (nas_watch.rs does the
-    same): Linux still shows an aborted ext4 as mounted read-write, so only a write tells."""
+    same): Linux still shows an aborted ext4 as mounted read-write, so only a write tells.
+    A write still waiting after `wait` seconds (the NAS away, within its ten-minute wait)
+    stops the check with a message instead of freezing the menu."""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as StillWaiting
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(test_write, folder).result(timeout=wait)
+    except StillWaiting:
+        raise RuntimeError(
+            f'A test write to {folder} is still waiting after {wait} s: the network storage box is not answering '
+            '(writes wait up to ten minutes for it). Check it is on and connected, then choose this again.'
+        ) from None
+    finally:
+        pool.shutdown(wait=False)  # a write still waiting finishes (or fails) by itself
+
+
+def test_write(folder):
+    """takes_writes' write itself: True when it worked."""
     probe = Path(folder) / PROBE_DIR
     try:
         probe.mkdir(mode=0o700, exist_ok=True)
@@ -2189,6 +2219,16 @@ def checked_drive(config, prompt, output, run, writes, errors):
     if busy:
         output(f'{busy}: check the drive once it has finished. Nothing was changed.')
         return
+    mounted = run(
+        ['findmnt', '-no', 'UUID', '--mountpoint', str(folder)], capture_output=True, text=True, timeout=30, check=False
+    )
+    if (mounted.stdout or '').strip() != uuid:
+        # The review of 0.46.1: with another drive mounted there (or settings out of date),
+        # one filesystem was unmounted and another, the saved UUID's, checked.
+        raise RuntimeError(
+            f'{folder} holds another drive than the settings name (UUID {(mounted.stdout or "").strip() or "unknown"}, '
+            f'not {uuid}). Nothing was changed; run  sudo bash install.sh  so setup sees which drive it is.'
+        )
     run(['systemctl', 'stop', *WRITERS], capture_output=True, text=True, timeout=600, check=False)
     unmounted(folder, run)
     repaired(folder, f'/dev/disk/by-uuid/{uuid}', fstype, prompt, output, run)
@@ -2223,10 +2263,17 @@ def repaired(folder, device, fstype, prompt, output, run):
     output('Checking (on a large drive this takes a few minutes)...')
     fsck = run(['e2fsck', '-f', '-p', device], capture_output=True, text=True, timeout=6 * 3600, check=False)
     output((fsck.stdout or '').strip()[-1500:])
-    if fsck.returncode >= 4:
+    # 0: clean, 1: repaired, 2: repaired, restart advised. Anything else, also a negative
+    # code (e2fsck killed part-way, the review of 0.46.1), is not a finished repair.
+    if fsck.returncode not in (0, 1, 2):
+        what = (
+            'was stopped before it finished'
+            if fsck.returncode < 0
+            else f'found problems it does not fix without asking (exit {fsck.returncode})'
+        )
         raise RuntimeError(
-            f'e2fsck found problems it does not fix without asking (exit {fsck.returncode}). Run  sudo e2fsck -f '
-            f'{device}  yourself: it asks before each change. Then run  sudo bash install.sh  to mount the drive again.'
+            f'e2fsck {what}. Run  sudo e2fsck -f {device}  yourself: it asks before each change. Then run  sudo bash '
+            'install.sh  to mount the drive again.'
         )
 
 
@@ -2251,18 +2298,39 @@ def start_apps(run, output):
     once every drive on the NAS takes writes, through the drive-return checks), else the
     services that write to the drives, those switched on."""
     if Path('/etc/systemd/system', NAS_WATCH).is_file():
-        try:
-            saved = json.loads(NAS_WATCH_STATE.read_text())
-        except (OSError, ValueError):
-            saved = {}
-        saved = saved if isinstance(saved, dict) else {}
-        atomic_json(NAS_WATCH_STATE, {**saved, "held": True})
-        run(['systemctl', 'start', NAS_WATCH], capture_output=True, text=True, timeout=1200, check=False)
+        # Under the check's own lock (a check at work would write over the note), then a
+        # check of its own, which starts them through the drive checks.
+        with open(NAS_WATCH_LOCK, 'a') as turn:
+            fcntl.flock(turn, fcntl.LOCK_EX)
+            saved = nas_watch_state()
+            atomic_json(NAS_WATCH_STATE, {**saved, 'held': True})
+        ran = run(['systemctl', 'start', NAS_WATCH], capture_output=True, text=True, timeout=1200, check=False)
+        if ran.returncode or nas_watch_state().get('held'):
+            output(
+                'The apps were not started yet: the NAS check refused (see  journalctl -u '
+                f'{NAS_WATCH} ). They start by themselves once every drive on the NAS checks out.'
+            )
+            return
     else:
-        for unit in WRITERS:
-            if run(['systemctl', 'is-enabled', '--quiet', unit], timeout=30, check=False).returncode == 0:
-                run(['systemctl', 'start', unit], capture_output=True, text=True, timeout=300, check=False)
+        failed = [
+            unit
+            for unit in WRITERS
+            if run(['systemctl', 'is-enabled', '--quiet', unit], timeout=30, check=False).returncode == 0
+            and run(['systemctl', 'start', unit], capture_output=True, text=True, timeout=300, check=False).returncode
+        ]
+        if failed:
+            output(f'Not everything started again: {", ".join(failed)} (see  journalctl -u {failed[0]} ).')
+            return
     output('The apps are started again.')
+
+
+def nas_watch_state():
+    """What the NAS check wrote last ({} when nothing, or it can't be read)."""
+    try:
+        saved = json.loads(NAS_WATCH_STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
 
 
 def repair_backups(config, prompt, output):

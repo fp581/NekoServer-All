@@ -583,7 +583,12 @@ def connected(context, options, interactive):
     targets = chosen_targets(found, options.get('targets', []), input, context.log)
     install_rule()
     first_time = set(targets) - set(options.get('targets', []))
-    had_chap = set(options.get('chap', []))
+    if 'chap' in options:
+        had_chap = set(options['chap'])
+    else:
+        # Settings from 0.46.0 don't say which target has a CHAP login: the ones whose
+        # saved record holds one are noted now, so a login lost later is noticed.
+        had_chap = {iqn for iqn in targets if iqn not in first_time and chap_kept(iqn, portal)}
     chap = [iqn for iqn in targets if logged_in(context, iqn, portal, iqn in first_time, iqn in had_chap, interactive)]
     options.update(portal=portal, targets=targets, chap=sorted(chap))
     if hasattr(context, 'persist_config'):

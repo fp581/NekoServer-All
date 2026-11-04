@@ -44,6 +44,26 @@ CONFIG = {
 
 
 class TargetTests(unittest.TestCase):
+    def test_a_drive_setup_would_refuse_is_never_offered(self):
+        """The 0.46.1 audit: an encrypted drive opened by hand (not in /etc/crypttab) or a
+        loop device was offered; after the switch setup refused it, and the move could go
+        neither on nor back."""
+        rows = [*ROWS, row('/dev/mapper/newcrypt', 'crypt-0001', 'ext4', 8000 * GB, '/dev/sdh'),
+                row('/dev/loop3', 'loop-0001', 'ext4', 8000 * GB, None)]  # fmt: skip
+        inventory = {'blockdevices': [
+            {'name': 'sdc', 'type': 'disk', 'children': [{'name': 'sdc1', 'type': 'part', 'uuid': 'newbig-0001', 'fstype': 'ext4', 'size': '8T'}]},
+            {'name': 'sdh', 'type': 'disk', 'children': [{'name': 'sdh1', 'type': 'part', 'fstype': 'crypto_LUKS', 'children': [
+                {'name': 'newcrypt', 'type': 'crypt', 'uuid': 'crypt-0001', 'fstype': 'ext4', 'size': '8T'}]}]},
+            {'name': 'loop3', 'type': 'loop', 'uuid': 'loop-0001', 'fstype': 'ext4', 'size': '8T'},
+        ]}  # fmt: skip
+        with mock.patch('modules.storage.unlocked_at_boot', return_value=False):
+            found, left_out = migrate.targets(CONFIG, 'media_hdd', rows, used=1000 * GB, inventory=inventory)
+        self.assertEqual([t[0] for t in found], ['newbig-0001'])
+        said = ' '.join(left_out)
+        self.assertIn('/dev/mapper/newcrypt', said)
+        self.assertIn('/etc/crypttab', said)
+        self.assertIn('/dev/loop3', said)
+
     def test_the_backup_drive_and_a_nas_disk_for_the_ssd_are_never_offered(self):
         """The 0.46.0 review: the move offered the USB backup drive, and a NAS disk for
         the SSD, both of which setup refuses, so the trouble came after the copy."""
@@ -455,7 +475,7 @@ class MoveTests(unittest.TestCase):
         with mock.patch.object(migrate, 'active', lambda units: [u for u in units if u == 'docker.service']):
             self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
         self.assertIn('UUID=hdd-0001', self.fstab.read_text())  # never switched
-        self.assertIn("copy is not up to date. Start the move again", self.said[-1])
+        self.assertIn("copy may not be up to date. Start the move again", self.said[-1])
         self.assertFalse(self.journal.exists())
         # The 0.46.0 review: a record without the boot and the time (one written before
         # 0.45.8) can't tell whether the apps ran again since, so it starts over too.

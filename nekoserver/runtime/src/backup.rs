@@ -2317,17 +2317,39 @@ fn snapshot_stamp(name: &str) -> Option<u64> {
 }
 /// Below this a stamp is in seconds (the year 33658 in seconds; 1970-01-12 in µs).
 const SECONDS_BEFORE: u64 = 1_000_000_000_000;
+/// How old a "<time>-<number>" folder is, as the other backups count it
+/// (`common::age_key`): one dated more than a day ahead was made while the clock was
+/// wrong, so it counts as older than anything made since, never as the newest for good.
+fn list_age(name: &str) -> Option<common::AgeKey> {
+    let number = name.split_once('-')?.1.parse::<u128>().ok()?;
+    Some(common::age_key(u128::from(snapshot_stamp(name)?), number))
+}
 /// The monthly snapshots in `folder` ("<time>-<number>" folders), oldest first.
-fn snapshot_folders(folder: &Path) -> Vec<(u64, PathBuf)> {
-    let mut runs: Vec<(u64, PathBuf)> = fs::read_dir(folder)
+fn snapshot_folders(folder: &Path) -> Vec<(common::AgeKey, PathBuf)> {
+    let mut runs: Vec<(common::AgeKey, PathBuf)> = fs::read_dir(folder)
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir()))
-        .filter_map(|e| Some((snapshot_stamp(&e.file_name().to_string_lossy())?, e.path())))
+        .filter_map(|e| Some((list_age(&e.file_name().to_string_lossy())?, e.path())))
         .collect();
     runs.sort();
     runs
+}
+/// The newest `keep` password lists in `folder` kept, the older ones removed. A folder
+/// without its manifest (a copy or a list cut off part-way; the manifest is written last)
+/// is removed first, so it never takes the place of a good one.
+fn keep_newest_lists(folder: &Path, keep: usize) -> Result<()> {
+    let (complete, cut_off): (Vec<_>, Vec<_>) = snapshot_folders(folder)
+        .into_iter()
+        .partition(|(_, path)| path.join("manifest.json").is_file());
+    for (_, old) in cut_off
+        .iter()
+        .chain(complete.iter().take(complete.len().saturating_sub(keep)))
+    {
+        fs::remove_dir_all(common::safe(old)?)?;
+    }
+    Ok(())
 }
 /// The newest monthly snapshot on the HDD with an encrypted password list (the three
 /// files there, their checksums in its manifest), with that manifest.
@@ -2366,9 +2388,7 @@ fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>
     let newest = sources
         .iter()
         .filter_map(|folder| newest_sealed_snapshot(folder))
-        .max_by_key(|(path, _)| {
-            snapshot_stamp(&path.file_name().unwrap_or_default().to_string_lossy())
-        });
+        .max_by_key(|(path, _)| list_age(&path.file_name().unwrap_or_default().to_string_lossy()));
     let Some((source, manifest)) = newest else {
         println!("USB: {NO_PASSWORD_LIST}");
         return Ok(Some(NO_PASSWORD_LIST.to_string()));
@@ -2403,13 +2423,7 @@ fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>
         &common::bytes(&source.join("manifest.json"), 2_000_000)?,
         0o600,
     )?;
-    let kept = snapshot_folders(&folder);
-    for (_, old) in kept
-        .iter()
-        .take(kept.len().saturating_sub(USB_PASSWORD_LISTS))
-    {
-        fs::remove_dir_all(common::safe(old)?)?;
-    }
+    keep_newest_lists(&folder, USB_PASSWORD_LISTS)?;
     let date = chrono::DateTime::from_timestamp_micros(snapshot_stamp(&run).unwrap_or(0) as i64)
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| run.clone());
@@ -2491,13 +2505,7 @@ fn seal_passwords_at(data: &Path, lists: &Path, key_dir: &Path, now: f64) -> Res
         let _ = fs::remove_dir_all(common::safe(&folder)?);
         return Err(e);
     }
-    let kept = snapshot_folders(lists);
-    for (_, old) in kept
-        .iter()
-        .take(kept.len().saturating_sub(USB_PASSWORD_LISTS))
-    {
-        fs::remove_dir_all(common::safe(old)?)?;
-    }
+    keep_newest_lists(lists, USB_PASSWORD_LISTS)?;
     common::atomic_json(&state, &json!({"run": run, "contents": contents}))?;
     Ok(Sealed::Made(run))
 }
@@ -4108,6 +4116,27 @@ impl UsbRun {
             return Err(Error::new("External drive missing"));
         }
         own_disk(&device, &self.data, &self.media)?;
+        // On a NAS: the NAS disk setup chose, as for the SSD and the HDD (the 0.46.1 audit).
+        let wwn = common::json(&self.cfg, 64000)["backup_drive"]["wwn"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if !wwn.is_empty() {
+            let (_, shown) = common::command(
+                &[
+                    "lsblk",
+                    "-n",
+                    "-s",
+                    "-o",
+                    "TYPE,WWN",
+                    &device.to_string_lossy(),
+                ],
+                10,
+            )?;
+            if let Some(problem) = other_nas_disk(&self.dest, &wwn, &shown) {
+                return Err(Error::new(&problem));
+            }
+        }
         let (code, s) = common::command(
             &[
                 "blkid",
@@ -4832,19 +4861,19 @@ mod tests {
         // The 0.46.0 review: setup's lists were named in seconds, the monthly snapshots in
         // microseconds, so an old monthly list outranked setup's newer one (and the USB
         // drive's retention removed the new copy at once).
-        assert_eq!(snapshot_stamp("1800000000-0"), Some(1_800_000_000_000_000));
+        assert_eq!(snapshot_stamp("1750000000-0"), Some(1_750_000_000_000_000));
         assert_eq!(
             snapshot_stamp("1700000000000000-4242"),
             Some(1_700_000_000_000_000)
         );
-        assert!(snapshot_stamp("1800000000-0") > snapshot_stamp("1700000000000000-4242"));
+        assert!(snapshot_stamp("1750000000-0") > snapshot_stamp("1700000000000000-4242"));
         let root = scratch("usb-units");
         let usb = root.join("usb").join(USB_PASSWORDS);
         for run in [
             "1690000000000000-7",
             "1700000000000000-8",
             "1710000000000000-9",
-            "1800000000-0",
+            "1750000000-0",
         ] {
             fs::create_dir_all(usb.join(run)).unwrap();
         }
@@ -4852,7 +4881,39 @@ mod tests {
             .into_iter()
             .map(|(_, p)| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
-        assert_eq!(order.last().unwrap(), "1800000000-0", "{order:?}");
+        assert_eq!(order.last().unwrap(), "1750000000-0", "{order:?}");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_list_from_a_wrong_clock_or_cut_off_never_takes_a_good_ones_place() {
+        // The 0.46.1 audit: a list dated in the future (the clock was wrong) stayed "the
+        // newest" for good, and a list cut off before its manifest took one of the kept places.
+        let ahead = ((common::now() + 30.0 * 86400.0) * 1e6) as u64;
+        let now = (common::now() * 1e6) as u64;
+        assert!(list_age(&format!("{ahead}-1")) < list_age(&format!("{now}-0")));
+        let root = scratch("lists-kept");
+        let lists = root.join("lists");
+        for (run, complete) in [
+            (format!("{}-0", now - 3_000_000), true),
+            (format!("{}-0", now - 2_000_000), true),
+            (format!("{}-0", now - 1_000_000), true),
+            (format!("{now}-0"), false),
+        ] {
+            fs::create_dir_all(lists.join(&run)).unwrap();
+            if complete {
+                fs::write(lists.join(&run).join("manifest.json"), b"{}").unwrap();
+            }
+        }
+        keep_newest_lists(&lists, 3).unwrap();
+        let kept: Vec<String> = snapshot_folders(&lists)
+            .into_iter()
+            .map(|(_, p)| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(kept.len(), 3, "{kept:?}");
+        assert!(
+            !kept.contains(&format!("{now}-0")),
+            "the cut-off one goes, not a good one"
+        );
         let _ = fs::remove_dir_all(root);
     }
     fn dump_name(days_ago: f64) -> String {

@@ -598,10 +598,14 @@ def choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)
     """The drive for `key`, asked for among those not chosen yet and not in use elsewhere."""
     # A drive the desktop opened by itself (/run/media/...) is still eligible.
     folder = config.get('data_mount' if key == 'data_ssd' else 'media_mount')
+    # The USB backup drive is never offered as the SSD or the HDD (the 0.46.1 audit: chosen
+    # when a replaced HDD was picked again, it was refused only later, by the backup step).
+    backup = config.get('photos', {}).get('external_backup_uuid')
     options = [
         v
         for v in items
         if v['uuid'] not in selected
+        and v['uuid'] != backup
         and (
             not v['mountpoint']
             or v['mountpoint'] == folder
@@ -1135,7 +1139,7 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
         context.log(f'Mounted UUID={uuid} on {target}; fstab configured for reboot')
     if pinned:
         save_storage(context)
-        install_fstab(mount_specs(context.config), fstab, context.log)
+        install_fstab(mount_specs(context.config), fstab, context.log, network_uuids(context.config))
         call(['systemctl', 'daemon-reload'])
 
 
@@ -1285,23 +1289,64 @@ def choose_locations(context, input_fn=None, interactive=None):
         if chosen.get(what) in DRIVE_WORDS:
             same_place(context, what, words, chosen[what], kept)
             continue
-        if len(kept) > 1:
-            raise RuntimeError(
-                f'{words.capitalize()} have files on both the SSD and the media drive, and setup can\'t tell '
-                'which ones the app uses. Look in both folders, then say which one it is: put '
-                f'"locations": {{"{what}": "ssd"}} (or "media") in my-config.json and run setup again. '
-                'The other folder is left as it is. Nothing was changed.'
-            )
         if kept:
-            context.log(f'{words.capitalize()}: kept where they already are, on {DRIVE_WORDS[kept[0]]}')
-            chosen[what] = kept[0]
+            chosen[what] = where_kept(context, what, words, kept)
         else:
-            best = recommended(room['ssd'], threshold)
-            chosen[what] = asked_location(context, words, best, room, on_nas, input_fn) if interactive else best
+            chosen[what] = new_place(
+                context, what, (words, threshold), (room, on_nas), interactive and (input_fn or input)
+            )
             context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
         changed = True
+    if chosen.get('photos') == 'media':
+        context.log(PHOTOS_ON_MEDIA)
     if changed and hasattr(context, 'persist_config'):
         context.persist_config()
+
+
+# Said when the photos are on the media drive: its weekly photo archive is on that drive
+# too (backup.rs), so only the USB copy is on another drive (the 0.46.1 audit).
+PHOTOS_ON_MEDIA = (
+    "Immich's photos are on the media drive, and so is their weekly archive copy: it keeps older versions, "
+    'but does not survive losing that drive. Your only copy on another drive is the weekly USB backup, so '
+    'set it up (setup asks for the USB drive next).'
+)
+
+
+def new_place(context, what, asked, drives, input_fn):
+    """The drive for `what`, which has no files yet. Asked (`input_fn`, False when no one is
+    at the keyboard): the better drive is offered first. Not asked: the better one on a new
+    server, and on one set up before 0.46.0 the layout it had, so nothing moves without
+    being asked (the 0.46.1 audit)."""
+    from neko_common import LOCATIONS
+
+    words, threshold = asked
+    room, on_nas = drives
+    best = recommended(room['ssd'], threshold)
+    if not input_fn:
+        return LOCATIONS[what][0] if set_up_before(context.config) else best
+    return asked_location(context, words, best, room, on_nas, input_fn)
+
+
+def where_kept(context, what, words, kept):
+    """The drive that already holds `what`'s files; with files on both, setup stops."""
+    if len(kept) > 1:
+        raise RuntimeError(
+            f'{words.capitalize()} have files on both the SSD and the media drive, and setup can\'t tell '
+            'which ones the app uses. Look in both folders, then say which one it is: put '
+            f'"locations": {{"{what}": "ssd"}} (or "media") in my-config.json and run setup again. '
+            'The other folder is left as it is. Nothing was changed.'
+        )
+    context.log(f'{words.capitalize()}: kept where they already are, on {DRIVE_WORDS[kept[0]]}')
+    return kept[0]
+
+
+def set_up_before(config):
+    """True when apps were set up on this SSD before (their settings are there)."""
+    appdata = Path(config['data_mount']) / 'appdata'
+    try:
+        return appdata.is_dir() and any(appdata.iterdir())
+    except OSError:
+        return False
 
 
 def same_place(context, what, words, chosen, kept):
