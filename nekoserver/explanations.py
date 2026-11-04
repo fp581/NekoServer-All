@@ -7,6 +7,7 @@ module adds the one-line explanation under each."""
 # What each step does, in one line a person who never ran a server can follow.
 STEP_EXPLANATIONS = {
     'system': 'Checks this PC: processor, memory, Python, Docker, firewall and the Linux it runs.',
+    'network_storage': 'Connects the drives on your network storage box (NAS) over iSCSI, when you switched that on.',
     'storage': 'Asks which drive is the SSD (apps), the HDD (your media) and the USB drive (backups), and mounts them.',
     'capacity': 'Makes sure each drive has room for what will go on it.',
     'recovery': 'Keeps a copy of NekoServer and your settings on the SSD, so a reinstall can find them.',
@@ -63,11 +64,23 @@ PACKAGES = {
     'bluez': 'Bluetooth, for controllers and headphones',
     'bluez-utils': 'The Bluetooth command-line tools',
     'python3': 'The language setup is written in',
+    'open-iscsi': "Connects this PC to the disks on your network storage box (iSCSI)",
 }
 
 # The parts a person can leave out. `section`/`key` is where the choice is saved in
 # my-config.json; `on_default` is what setup assumes when nothing was chosen.
 EXTRAS = (
+    {
+        'id': 'network_storage',
+        'section': 'network_storage',
+        'key': 'wanted',
+        'on_default': False,
+        'step': 'network_storage',
+        'title': 'My media and backup drives are in a network storage box (NAS)',
+        'explanation': 'For a NAS that offers iSCSI disks (a WD My Cloud EX, Synology, QNAP...). The SSD for the apps '
+        "stays on this PC. Setup asks for the NAS's address and which of its disks to use; it never formats one.",
+        'installs': ('open-iscsi',),
+    },
     {
         'id': 'tv',
         'section': 'tv',

@@ -659,7 +659,7 @@ const severity = urgent => (urgent ? 'critical' : 'warning');
 const ALERT_GUIDES = [
   [id => id === 'job:maintenance', 'updates'], // the monthly run: backup, then updates
   [id => id.startsWith('integrity:'), 'integrity'],
-  [id => /^(mount|space|smart|array-[a-z]+):/.test(id), 'storage'],
+  [id => /^(mount|space|smart|nas|array-[a-z]+):/.test(id), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
   [id => id.includes('heartbeat'), 'heartbeat'],
@@ -801,6 +801,22 @@ function driveIssues(s, add) {
         'Check the drive is connected. Never format a drive to make this go away.',
         'storage',
         'critical'
+      );
+    } else if (disk.read_only === true) {
+      add(
+        'mount:' + disk.id,
+        name + ' turned read-only',
+        'Linux stopped writing to it after errors; the apps that write there are stopped. Check it with  sudo bash install.sh --recover  ("Check a drive that turned read-only").',
+        'storage',
+        'critical'
+      );
+    } else if (disk.waiting === true) {
+      add(
+        'mount:' + disk.id,
+        name + ' is waiting for the network storage box',
+        'The NAS does not answer. Check that it is on and on the network.',
+        'storage',
+        'warning'
       );
     } else if (count(disk.used_percent) >= 90) {
       add(
@@ -3208,10 +3224,35 @@ function driveBadge(disk, old) {
   if (old) {
     return badge('unknown', 'Old reading');
   }
+  if (disk.status === 'mounted' && disk.read_only === true) {
+    return badge('fail', 'Read-only');
+  }
+  if (disk.status === 'mounted' && disk.waiting === true) {
+    return badge('warning', 'Waiting for the NAS');
+  }
   if (disk.status === 'mounted') {
     return badge('pass', 'Connected');
   }
   return badge('fail', disk.status === 'wrong_drive' ? 'Wrong drive' : 'Missing');
+}
+/* How this PC's connection to the network storage box is (status.network_storage). */
+const NAS_STATES = {
+  connected: 'connected',
+  reconnecting: 'reconnecting',
+  lost: 'lost: the NAS does not answer',
+  not_connected: 'not connected'
+};
+function nasLine() {
+  const nas = object(state.status?.network_storage);
+  const targets = list(nas.targets);
+  if (!targets.length) {
+    return null;
+  }
+  const down = targets.filter(t => t.state !== 'connected');
+  const said = down.length
+    ? down.map(t => text(t.target) + ' ' + (NAS_STATES[t.state] || 'unknown')).join('; ')
+    : 'connected';
+  return el('p', down.length ? 'reason' : '', 'On the network storage box (' + text(nas.portal, 'NAS') + '): ' + said);
 }
 function fullness(percent) {
   return firstOf(
@@ -3225,6 +3266,9 @@ function fullness(percent) {
 function smartLine(smart) {
   const temperature = numeric(smart.temperature) ? ' · ' + smart.temperature + ' °C' : '';
   const checked = smart.checked_at ? ' · checked ' + ago(smart.checked_at) : '';
+  if (smart.status === 'nas') {
+    return el('p', '', 'Health: watched by the network storage box (keep its own alerts on)');
+  }
   const fine = smart.status === 'pass' || smart.status === 'unknown';
   return el(
     'p',
@@ -3277,8 +3321,24 @@ function driveCard(disk, old, arrays) {
     el('p', '', bytes(disk.used) + ' used of ' + bytes(disk.total)),
     smartLine(smart)
   );
-  if (smart.reason && smart.status !== 'pass') {
+  if (smart.reason && !['pass', 'nas'].includes(smart.status)) {
     card.append(hint(text(smart.reason)));
+  }
+  if (disk.network === true) {
+    const nas = nasLine();
+    if (nas) {
+      card.append(nas);
+    }
+  }
+  if (disk.read_only === true) {
+    card.append(
+      hint(
+        'It does not take writes: Linux turned it read-only after errors. The apps that write there are stopped. ' +
+          'Check it with  sudo bash install.sh --recover  ("Check a drive that turned read-only").'
+      )
+    );
+  } else if (disk.waiting === true) {
+    card.append(hint('The NAS does not answer; reads and writes to this drive wait for it (up to ten minutes).'));
   }
   for (const a of list(arrays).filter(a => words(a.holds).includes(disk.id))) {
     card.append(arrayLine(a));

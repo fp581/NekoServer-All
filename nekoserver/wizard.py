@@ -28,6 +28,7 @@ RELEASE = re.compile(r'v(\d{1,9})\.(\d{1,9})\.(\d{1,9})')
 
 STEPS = {
     'system': 'System check',
+    'network_storage': 'Drives on the network storage box',
     'storage': 'Drives',
     'capacity': 'Drive space',
     'recovery': 'Recovery copy of NekoServer',

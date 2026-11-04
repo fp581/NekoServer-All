@@ -122,6 +122,8 @@ SYSTEM_GLOBS = (
     'var/lib/systemd/timers/stamp-nekoserver-*.timer',
     # the copy the gateway step keeps of an earlier install's unit before rewriting it
     'etc/systemd/system/nekoserver-*.before-*',
+    # the longer waits for disks on a network storage box (network_storage.py)
+    'etc/udev/rules.d/90-nekoserver-*.rules',
 )
 # Setup's own record of its steps and its log, kept on the system disk while the SSD is not
 # mounted (installer.py DEFAULT_STATE, for setup run with sudo): moved to the SSD later,

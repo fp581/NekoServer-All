@@ -15,6 +15,7 @@ mod live;
 mod maintenance;
 mod media;
 mod music_backup;
+mod nas_watch;
 mod notify;
 mod openrgb;
 mod os_policy;
@@ -98,12 +99,13 @@ fn entry() -> Result<()> {
         return serve::hardware();
     }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, maintenance, maintenance-resume, update-check, update-apps\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, nas-watch, maintenance, maintenance-resume, update-check, update-apps\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {
-        "storage-guard" | "gateway-guard" | "drive-return" | "heartbeat" | "hdd-policy"
-        | "host-snapshot" | "host-resume" | "immich-resume" | "cloud-resume" | "seal-passwords" => {
+        "storage-guard" | "gateway-guard" | "drive-return" | "nas-watch" | "heartbeat"
+        | "hdd-policy" | "host-snapshot" | "host-resume" | "immich-resume" | "cloud-resume"
+        | "seal-passwords" => {
             vec!["config"]
         }
         "music-backup" | "app-snapshot" | "app-resume" | "maintenance" | "maintenance-resume"
@@ -189,6 +191,7 @@ fn entry() -> Result<()> {
         "storage-guard" => startup::run(&a, false),
         "gateway-guard" => startup::run(&a, true),
         "drive-return" => drive_return::run(&a),
+        "nas-watch" => nas_watch::run(&a),
         "heartbeat" => heartbeat::run(&a),
         "host-snapshot" => host_snapshot::run(&a),
         "host-resume" => host_snapshot::resume_command(&a),

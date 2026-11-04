@@ -65,6 +65,7 @@ MENU = [
     ('apps', 'App settings (nightly backup)'),
     ('host', 'Steam and Samba settings (nightly backup)'),
     ('monthly', 'Everything from a monthly snapshot (for rebuilding a server)'),
+    ('read_only', 'Check a drive that turned read-only (after the NAS or a cable was away)'),
     ('repair', 'Repair damaged backup copies (found by the checksum checks)'),
 ]
 
@@ -2050,6 +2051,126 @@ def repair_job(job, hints, asking, resolved):
                 resolved[name].append(key)
 
 
+# What writes to NekoServer's drives: stopped before a drive is checked, started again after.
+WRITERS = ('docker.socket', 'docker.service', 'smbd.service', 'smb.service', 'nekoserver-gateway-lan.service')
+NAS_WATCH = 'nekoserver-nas-watch.service'
+NAS_WATCH_STATE = Path('/run/nekoserver-nas-watch.json')
+PROBE_DIR = '.nekoserver-check'  # nas_watch.rs PROBE_DIR
+
+
+def takes_writes(folder):
+    """A small file written, synced and removed at the drive's top (nas_watch.rs does the
+    same): Linux still shows an aborted ext4 as mounted read-write, so only a write tells."""
+    probe = Path(folder) / PROBE_DIR
+    try:
+        probe.mkdir(mode=0o700, exist_ok=True)
+        if probe.is_symlink():
+            return False
+        target = probe / f'menu-{os.getpid()}'
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, b'NekoServer checks that this drive takes writes\n')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        target.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def drive_rows(config):
+    """(name, folder, its settings) of the SSD and the media drive."""
+    storage = config.get('storage', {})
+    return [
+        ('the application SSD', Path(config['data_mount']), storage.get('data_ssd', {})),
+        ('the media drive', Path(config['media_mount']), storage.get('media_hdd', {})),
+    ]
+
+
+def check_read_only(config, prompt, output, run=subprocess.run, writes=takes_writes):
+    """A drive Linux turned read-only after write errors (a NAS away for over ten minutes,
+    a loose cable): the apps stopped, the drive unmounted (never by force), its filesystem
+    checked and repaired with your yes (e2fsck, ext4), mounted again, checked to take
+    writes, then the apps started again."""
+    failing = [(n, f, r) for n, f, r in drive_rows(config) if os.path.ismount(f) and not writes(f)]
+    if not failing:
+        output('Both drives take writes: nothing to check.')
+        return
+    name, folder, record = failing[0]
+    uuid, fstype = record.get('uuid', ''), record.get('fstype', '')
+    if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid or ''):
+        raise RuntimeError(f'{name} has no drive identity in the settings')
+    say(
+        output,
+        f'\n{name.capitalize()} ({folder}) does not take writes: Linux stopped writing to it after errors.',
+        'To check it, the apps that write there are stopped, the drive is unmounted (never by force),',
+        'its filesystem checked and repaired, then mounted again and the apps started.',
+    )
+    if not ask('Stop the apps and check the drive now?', prompt, output):
+        output('Nothing was changed.')
+        return
+    run(['systemctl', 'stop', *WRITERS], capture_output=True, text=True, timeout=600, check=False)
+    done = run(['umount', str(folder)], capture_output=True, text=True, timeout=120, check=False)
+    if done.returncode:
+        users = run(['fuser', '-vm', str(folder)], capture_output=True, text=True, timeout=30, check=False)
+        raise RuntimeError(
+            f'{folder} could not be unmounted ({(done.stderr or "").strip()[:200]}); a program still uses it:\n'
+            + ((users.stderr or '') + (users.stdout or '')).strip()[:1500]
+            + '\nClose it (or restart the PC), then choose this again. The apps stay stopped until then.'
+        )
+    device = f'/dev/disk/by-uuid/{uuid}'
+    if fstype != 'ext4':
+        command = {'xfs': f'sudo xfs_repair {device}', 'btrfs': f'sudo btrfs check {device}'}.get(fstype, '')
+        raise RuntimeError(
+            f'{folder} is unmounted. Its filesystem ({fstype}) is checked with  {command} ; then run  sudo bash '
+            'install.sh  to mount it again and start the apps.'
+        )
+    if not ask(f'Check and repair its filesystem now (e2fsck: it changes only what is broken)?', prompt, output):
+        raise RuntimeError(f'{folder} is unmounted and not checked; run  sudo bash install.sh  to mount it again.')
+    output('Checking (on a large drive this takes a few minutes)...')
+    fsck = run(['e2fsck', '-f', '-p', device], capture_output=True, text=True, timeout=6 * 3600, check=False)
+    output((fsck.stdout or '').strip()[-1500:])
+    if fsck.returncode >= 4:
+        raise RuntimeError(
+            f'e2fsck found problems it does not fix without asking (exit {fsck.returncode}). Run  sudo e2fsck -f '
+            f'{device}  yourself: it asks before each change. Then run  sudo bash install.sh  to mount the drive again.'
+        )
+    unit = run(
+        ['systemd-escape', '--path', '--suffix=mount', str(folder)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    ).stdout.strip()
+    run(['systemctl', 'start', unit], capture_output=True, text=True, timeout=300, check=True)
+    if not writes(folder):
+        raise RuntimeError(
+            f'{folder} is mounted again but still does not take writes; check the drive (or the NAS) and its cable'
+        )
+    output(f'{folder} is checked, mounted again and takes writes.')
+    start_apps(run, output)
+
+
+def start_apps(run, output):
+    """The apps started again: through the NAS check when it is there (it starts them only
+    once every drive on the NAS takes writes, through the drive-return checks), else the
+    services that write to the drives, those switched on."""
+    if Path('/etc/systemd/system', NAS_WATCH).is_file():
+        try:
+            saved = json.loads(NAS_WATCH_STATE.read_text())
+        except (OSError, ValueError):
+            saved = {}
+        saved = saved if isinstance(saved, dict) else {}
+        atomic_json(NAS_WATCH_STATE, {**saved, "held": True})
+        run(['systemctl', 'start', NAS_WATCH], capture_output=True, text=True, timeout=1200, check=False)
+    else:
+        for unit in WRITERS:
+            if run(['systemctl', 'is-enabled', '--quiet', unit], timeout=30, check=False).returncode == 0:
+                run(['systemctl', 'start', unit], capture_output=True, text=True, timeout=300, check=False)
+    output('The apps are started again.')
+
+
 def repair_backups(config, prompt, output):
     """Fix the files the checksum checks reported, from a copy that still matches. Only
     drives that are the ones the settings name are read or written (see Tree)."""
@@ -2155,6 +2276,7 @@ def run(prompt=input, output=print, config_path=None):
         'host': lambda c, p, o: restore_nightly(c, 'host', p, o),
         'monthly': restore_monthly,
         'repair': repair_backups,
+        'read_only': check_read_only,
     }
     started = False
     try:

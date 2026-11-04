@@ -41,7 +41,7 @@ fn decide(mounted: Option<&str>, alive: bool, present: bool) -> Step {
 /// Said when the drives came back under a running setup, which brings the apps back itself.
 const LEFT_TO_SETUP: &str = "Drive return: setup (sudo bash install.sh) is running and starts the apps itself once the drives are in place; nothing to do here";
 
-const SERVICES: [&str; 4] = [
+pub(crate) const SERVICES: [&str; 4] = [
     "docker.service",
     "smbd.service",
     "smb.service",
@@ -260,15 +260,21 @@ pub fn run(a: &Args) -> Result<()> {
         return Ok(());
     }
     let paths: Vec<PathBuf> = drives.into_iter().map(|(p, _, _)| p).collect();
-    // Anything is started again only with both drives in place and the right ones.
-    backup::guard(&cfgpath, &paths[0], &paths[1])?;
+    start_again(&cfgpath, &paths[0], &paths[1], "Drive return")
+}
+
+/// The services NekoServer keeps on its drives started again (those switched on), their
+/// views of the drives refreshed, then each job a missing drive cut off finished. Only
+/// with both drives in place and the right ones. `who` begins each line said.
+pub(crate) fn start_again(cfgpath: &Path, data: &Path, media: &Path, who: &str) -> Result<()> {
+    backup::guard(cfgpath, data, media)?;
     for unit in SERVICES {
         let enabled = common::command(&["systemctl", "is-enabled", "--quiet", unit], 15)?.0 == 0;
         let active = common::command(&["systemctl", "is-active", "--quiet", unit], 15)?.0 == 0;
         if enabled && !active {
             let _ = common::command(&["systemctl", "reset-failed", unit], 15);
             run_ok(&["systemctl", "start", unit], 300)?;
-            println!("Drive return: started {unit} again");
+            println!("{who}: started {unit} again");
         }
     }
     let enabled = |unit: &str| {
@@ -281,8 +287,8 @@ pub fn run(a: &Args) -> Result<()> {
     for args in refresh_commands(enabled, installed) {
         // Not being able to set the drive's power, say, never stops the apps coming back.
         match run_ok(&args, 240) {
-            Ok(_) => println!("Drive return: {} {}", args[1], args[args.len() - 1]),
-            Err(e) => println!("Drive return: {e}"),
+            Ok(_) => println!("{who}: {} {}", args[1], args[args.len() - 1]),
+            Err(e) => println!("{who}: {e}"),
         }
     }
     finish_interrupted_jobs(installed, |unit| {

@@ -413,13 +413,15 @@ fn answered_within<T: Send + 'static>(
 /// A drive's space. Asking a hung drive blocks until it answers, so the question is
 /// asked aside: no answer within 5 seconds shows the drive as unavailable, and the
 /// rest of the dashboard carries on.
-fn usage(path: &Path) -> Option<(u64, u64)> {
+fn usage(path: &Path) -> Option<(u64, u64, bool)> {
     let owned = path.to_path_buf();
     answered_within(path, std::time::Duration::from_secs(5), move || {
         statvfs_usage(&owned)
     })
 }
-fn statvfs_usage(path: &Path) -> Option<(u64, u64)> {
+/// (space, used, mounted read-only): a drive that met write errors (a NAS disk that lost
+/// its connection for long, say) is turned read-only by Linux, and the apps' writes fail.
+fn statvfs_usage(path: &Path) -> Option<(u64, u64, bool)> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let s = CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -428,7 +430,8 @@ fn statvfs_usage(path: &Path) -> Option<(u64, u64)> {
         return None;
     }
     let stat = unsafe { stat.assume_init() };
-    space(stat.f_blocks, stat.f_bfree, stat.f_bavail, stat.f_frsize)
+    let (total, used) = space(stat.f_blocks, stat.f_bfree, stat.f_bavail, stat.f_frsize)?;
+    Some((total, used, stat.f_flag & libc::ST_RDONLY != 0))
 }
 /// (space the apps can use, used), as `df` counts them: the part of the drive kept for
 /// the system (5% on ext4 unless changed) is not free for the apps, so a drive they
@@ -439,6 +442,50 @@ fn space(blocks: u64, free: u64, available: u64, block: u64) -> Option<(u64, u64
         used.checked_add(available.min(free).checked_mul(block)?)?,
         used,
     ))
+}
+/// Said of a drive on a NAS in place of its SMART health.
+const NAS_HEALTH: &str =
+    "Its disks' health (SMART) and RAID are watched by the network storage box: keep the NAS's own alerts on";
+/// The drive `key` was chosen on a network storage box (storage.<key>.network, setup).
+fn on_nas(cfg: &Value, key: &str) -> bool {
+    key != "os" && cfg["storage"][key]["network"].is_object()
+}
+/// The NAS connections this PC keeps (network_storage.targets in the settings) and how
+/// each is, from Linux's iSCSI sessions (/sys/class/iscsi_session/session<n>): null when
+/// no drive is on a NAS.
+fn network_storage(cfg: &Value, sessions: &Path) -> Value {
+    let wanted: Vec<&str> = cfg["network_storage"]["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|t| t.len() <= 223 && t.bytes().all(|b| b.is_ascii_graphic()))
+        .collect();
+    if cfg["network_storage"]["wanted"] != true || wanted.is_empty() {
+        return Value::Null;
+    }
+    let mut seen = std::collections::BTreeMap::new();
+    for entry in fs::read_dir(sessions).into_iter().flatten().flatten() {
+        let read = |name: &str| {
+            common::bytes(&entry.path().join(name), 4096)
+                .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+                .unwrap_or_default()
+        };
+        seen.insert(read("targetname"), read("state"));
+    }
+    let targets: Vec<Value> = wanted
+        .iter()
+        .map(|t| {
+            let state = seen.get(*t).map(String::as_str).unwrap_or("");
+            json!({"target": t, "state": match state {
+                "LOGGED_IN" => "connected",
+                "FAILED" | "FREE" => "lost",
+                "" => "not_connected",
+                _ => "reconnecting",
+            }})
+        })
+        .collect();
+    json!({"portal": chars(text(&cfg["network_storage"]["portal"]), 80), "targets": targets})
 }
 fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value>, bool, bool)> {
     let rows = [
@@ -466,11 +513,14 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
         let info = mount_info(&path, expected, fs);
         let mut r = json!({"id":key,"name":name,"mount":path,"status":info["status"],"total":null,"used":null,"used_percent":null,"smart":{"status":"unknown","checked_at":null}});
         if info["status"] == "mounted" {
-            if let Some((total, used)) = usage(&path) {
+            if let Some((total, used, read_only)) = usage(&path) {
                 if total > 0 {
                     r["total"] = json!(total);
                     r["used"] = json!(used);
                     r["used_percent"] = json!(round(100.0 * used as f64 / total as f64));
+                    if read_only && key != "os" {
+                        r["read_only"] = json!(true);
+                    }
                 } else {
                     r["status"] = json!("unavailable")
                 }
@@ -479,15 +529,42 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
             }
             let source = text(&info["source"]);
             mounted.push(json!({"id":key,"name":name,"source":source,"mount":path,"fstype":fs,"uuid":expected.unwrap_or("")}));
-            r["smart"] = smart(
-                source,
-                expected.unwrap_or(source),
-                cache,
-                now,
-                cfg["dashboard"]["smart_interval_seconds"]
+            r["smart"] = if on_nas(cfg, key) {
+                // This PC sees no SMART or RAID state through iSCSI: the NAS does.
+                json!({"status":"nas","reason":NAS_HEALTH,"checked_at":null})
+            } else {
+                smart(
+                    source,
+                    expected.unwrap_or(source),
+                    cache,
+                    now,
+                    cfg["dashboard"]["smart_interval_seconds"]
+                        .as_f64()
+                        .unwrap_or(1800.0),
+                )
+            };
+        }
+        if on_nas(cfg, key) {
+            r["network"] = json!(true);
+            // Linux still shows an aborted ext4 as mounted "rw" (statvfs says so too, seen
+            // in the lab): only a write tells. Only for drives on a NAS: a test write to a
+            // drive here would keep it from ever spinning down.
+            // The check runs as its own service (nas_watch.rs: this collector sees the drives
+            // read-only) and says what it found; one older than three minutes says nothing.
+            if r["status"] == "mounted" {
+                let seen = common::json(Path::new(crate::nas_watch::STATE), 64000);
+                let fresh = seen["at"]
                     .as_f64()
-                    .unwrap_or(1800.0),
-            );
+                    .is_some_and(|t| (now - 180.0..=now + 60.0).contains(&t));
+                match seen["drives"][key].as_str().filter(|_| fresh) {
+                    Some("fails") => r["read_only"] = json!(true),
+                    Some("waits") => r["waiting"] = json!(true),
+                    _ => {}
+                }
+                if seen["held"] == true {
+                    r["held_by_nas_watch"] = json!(true);
+                }
+            }
         }
         if key == "data_ssd" {
             data_ok = r["status"] == "mounted";
@@ -2002,6 +2079,24 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     format!("{name} unavailable"),
                     &detail,
                 );
+            } else if d["waiting"] == true {
+                add(
+                    format!("mount:{id}"),
+                    "warning",
+                    format!("{name} is waiting for the network storage box"),
+                    "The NAS does not answer, so the apps' reads and writes to this drive wait for it (for up to ten minutes; nothing is lost while they wait). Check that the NAS is on and on the network.",
+                );
+            } else if d["read_only"] == true {
+                add(
+                    format!("mount:{id}"),
+                    "critical",
+                    format!("{name} turned read-only"),
+                    if d["network"] == true {
+                        "Linux stopped writing to it after errors (the connection to the network storage box was lost for a while, most likely), so the apps' changes fail. Nothing more is written; do not restart the apps yet. Check the NAS and the network, then in a terminal: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\"."
+                    } else {
+                        "Linux stopped writing to it after errors, so the apps' changes fail. Check its cable and health, then in a terminal: sudo bash install.sh --recover, and choose \"Check a drive that turned read-only\"."
+                    },
+                );
             } else if d["used_percent"].as_f64().unwrap_or(0.0) >= 90.0 {
                 let full = d["used_percent"].as_f64().unwrap_or(0.0) >= 97.0;
                 add(
@@ -2028,6 +2123,24 @@ pub(crate) fn alerts(s: &Value) -> Value {
                     text(&d["smart"]["reason"]),
                 );
             }
+        }
+    }
+    for t in s["network_storage"]["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if t["state"] != "connected" {
+            add(
+                format!("nas:{}", text(&t["target"])),
+                "critical",
+                "The connection to the network storage box is down".into(),
+                &format!(
+                    "This PC has no working connection to {} on the NAS ({}), so the drives on it can't be read or written. Check that the NAS is on and on the network. Once it answers, the connection comes back by itself; if a drive then shows as read-only, follow its alert.",
+                    text(&t["target"]),
+                    text(&s["network_storage"]["portal"])
+                ),
+            );
         }
     }
     for a in s["arrays"].as_array().into_iter().flatten() {
@@ -2389,6 +2502,7 @@ pub fn run(a: &Args) -> Result<()> {
     result["integrity"] = integrity(data, ok, away);
     result["backup_key"] = json!(backup_key_ready());
     result["tailscale"] = tailscale_login(now);
+    result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
     result["alerts"] = alerts(&result);
     // The readings are published even when the SSD can't keep the collector's own state
@@ -3367,6 +3481,70 @@ mod round_two_tests {
         assert!(!shown_as_pool(0, 1, "unknown"));
         assert!(!shown_as_pool(1, 1, "healthy"));
         assert!(shown_as_pool(1, 1, "warning"));
+    }
+    /// 0.46.0: drives on a network storage box. The NAS connection is shown from Linux's
+    /// iSCSI sessions; a drive that turned read-only or waits for the NAS gets an alert;
+    /// the SMART health of a NAS drive is the NAS's to watch.
+    #[test]
+    fn the_network_storage_box_is_shown_and_its_troubles_alerted() {
+        let root = std::env::temp_dir().join(format!("neko-nas-sessions-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for (n, target, state) in [
+            (1, "iqn.2026-11.lab.nas:media", "LOGGED_IN"),
+            (2, "iqn.2026-11.lab.nas:backup", "FAILED"),
+        ] {
+            let session = root.join(format!("session{n}"));
+            fs::create_dir_all(&session).unwrap();
+            fs::write(session.join("targetname"), format!("{target}\n")).unwrap();
+            fs::write(session.join("state"), format!("{state}\n")).unwrap();
+        }
+        let cfg = json!({"network_storage": {"wanted": true, "portal": "10.0.2.2:3260",
+            "targets": ["iqn.2026-11.lab.nas:media", "iqn.2026-11.lab.nas:backup", "iqn.2026-11.lab.nas:gone"]}});
+        let shown = network_storage(&cfg, &root);
+        let states: Vec<&str> = shown["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| text(&t["state"]))
+            .collect();
+        assert_eq!(states, ["connected", "lost", "not_connected"]);
+        assert_eq!(network_storage(&json!({}), &root), Value::Null);
+        let raised = alerts(&json!({"network_storage": shown,
+        "storage": [
+            {"id": "media_hdd", "name": "Media HDD", "status": "mounted", "read_only": true, "network": true},
+            {"id": "data_ssd", "name": "Application SSD", "status": "mounted", "waiting": true},
+        ]}));
+        let ids: Vec<&str> = raised
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| text(&a["id"]))
+            .collect();
+        assert!(
+            ids.contains(&"nas:iqn.2026-11.lab.nas:backup")
+                && ids.contains(&"nas:iqn.2026-11.lab.nas:gone"),
+            "{ids:?}"
+        );
+        assert!(!ids.contains(&"nas:iqn.2026-11.lab.nas:media"));
+        let read_only = raised
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["title"] == "Media HDD turned read-only")
+            .unwrap();
+        assert!(text(&read_only["detail"]).contains("Check a drive that turned read-only"));
+        assert!(raised
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["title"] == "Application SSD is waiting for the network storage box"));
+        // A NAS drive's health is the NAS's: never a SMART alert from here.
+        assert!(on_nas(
+            &json!({"storage": {"media_hdd": {"network": {"transport": "iscsi"}}}}),
+            "media_hdd"
+        ));
+        assert!(!on_nas(&json!({"storage": {"media_hdd": {}}}), "media_hdd"));
+        let _ = fs::remove_dir_all(root);
     }
     /// QA after 0.40.2: "1 file", never "1 files".
     #[test]

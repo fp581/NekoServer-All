@@ -23,6 +23,10 @@ HDD_UNIT = 'nekoserver-hdd-policy.service'
 # Brings the apps back when the SSD or HDD returns after a drop-out (see runtime drive_return.rs).
 DRIVE_UNIT = 'nekoserver-drive-return.service'
 DRIVE_SETTINGS = Path('/etc/nekoserver-os/drives.json')
+# Checks the drives on a network storage box every minute (runtime nas_watch.rs).
+NAS_WATCH = 'nekoserver-nas-watch.service'
+NAS_WATCH_TIMER = 'nekoserver-nas-watch.timer'
+
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Disable OS sleep, bound system logs and configure verified media HDD standby'
@@ -312,14 +316,44 @@ def drive_unit(binary, devices):
     )
 
 
+def nas_watch_units(binary):
+    """The check, every minute, of the drives on a network storage box (nas_watch.rs):
+    the apps stopped once when one stops taking writes, started again once all do."""
+    return {
+        NAS_WATCH: '[Unit]\nDescription=NekoServer check the drives on the network storage box\n'
+        'After=remote-fs.target\n[Service]\nType=oneshot\n'
+        f'ExecStart={binary} nas-watch --config {DRIVE_SETTINGS}\n'
+        # Its test write waits at most 20 s; a start of the apps again, longer.
+        'TimeoutStartSec=15min\n' + SANDBOX,
+        NAS_WATCH_TIMER: '[Unit]\nDescription=NekoServer check the drives on the network storage box every minute\n'
+        '[Timer]\nOnBootSec=3min\nOnUnitInactiveSec=1min\nAccuracySec=10s\n[Install]\nWantedBy=timers.target\n',
+    }
+
+
+def on_a_nas(config):
+    return any(isinstance(r, dict) and r.get('network') for r in config.get('storage', {}).values())
+
+
 def install_drive_return(config, project, run=subprocess.run):
     binary = native_runtime.deploy(project, config, Path('/usr/local/lib/nekoserver-os') / ('v' + VERSION))
-    check_units([DRIVE_UNIT], 'Drive return')
+    check_units([DRIVE_UNIT, NAS_WATCH, NAS_WATCH_TIMER], 'Drive return')
     atomic_json(safe_path(DRIVE_SETTINGS), native_runtime.storage_config(config))
-    write_units({DRIVE_UNIT: drive_unit(binary, drive_devices(config, run))})
+    units = {DRIVE_UNIT: drive_unit(binary, drive_devices(config, run))}
+    if on_a_nas(config):
+        units.update(nas_watch_units(binary))
+    write_units(units)
     run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
     # Re-enabled each run: the drives' IDs (and so the devices it waits for) may change.
     run(['systemctl', 'reenable', DRIVE_UNIT], check=True, capture_output=True, timeout=30)
+    if on_a_nas(config):
+        run(['systemctl', 'enable', '--now', NAS_WATCH_TIMER], check=True, capture_output=True, timeout=30)
+    else:
+        # No drive on a NAS (any more): no check of one.
+        run(['systemctl', 'disable', '--now', NAS_WATCH_TIMER], check=False, capture_output=True, timeout=30)
+        for name in (NAS_WATCH, NAS_WATCH_TIMER):
+            unit = Path('/etc/systemd/system') / name
+            if unit.is_file() and unit.read_text().startswith('[Unit]\nDescription=NekoServer check the drives'):
+                unit.unlink()
 
 
 def unit(binary, guard, config):

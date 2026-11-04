@@ -31,6 +31,15 @@ fn label(id: &str) -> Option<String> {
         _ => {}
     }
     let (kind, key) = id.split_once(':')?;
+    if kind == "nas" {
+        // nas:<target's iSCSI name>: only a plain name is said.
+        let plain = !key.is_empty()
+            && key.len() <= 223
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".:-_".contains(&b));
+        return plain.then(|| "Network storage box: connection lost".to_string());
+    }
     if kind == "startup" {
         // startup:<unit> (won't start after a restart) or startup:<unit>:failed.
         let (unit, failed) = match key.strip_suffix(":failed") {
@@ -242,7 +251,7 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     }
     for row in s["storage"].as_array().unwrap() {
         let id = row["id"].as_str().unwrap_or("");
-        if row["status"] == "mounted" {
+        if row["status"] == "mounted" && row["read_only"] != true && row["waiting"] != true {
             unknown.remove(&format!("mount:{id}"));
             if row["used_percent"].is_number() {
                 unknown.remove(&format!("space:{id}"));
@@ -283,6 +292,16 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
         unknown.insert("tailscale:expiry".into());
     } else if tailscale == "NeedsLogin" {
         unknown.insert("tailscale:expiry".into());
+    }
+    // A NAS connection is back only when Linux says its session is logged in.
+    for t in s["network_storage"]["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if t["state"] != "connected" {
+            unknown.insert(format!("nas:{}", t["target"].as_str().unwrap_or("")));
+        }
     }
     if s["media"]["status"] != "current" {
         unknown.insert("media-failure".into());
@@ -405,12 +424,21 @@ fn plan(
         .flatten()
         .filter_map(|r| r["id"].as_str().map(String::from))
         .collect();
+    // The NAS connections still kept: one no longer kept (its drive moved off the NAS, or
+    // the setting switched off) has nothing to recover.
+    let nas_listed: BTreeSet<String> = s["network_storage"]["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["target"].as_str().map(String::from))
+        .collect();
     for id in keys {
         // An array gone from the list was stopped or taken out on purpose: its alert is
         // dropped without a "RECOVERED" (nothing recovered).
         let vanished = fresh
             && id.split_once(':').is_some_and(|(kind, key)| {
-                kind.starts_with("array-") && !arrays_listed.contains(key)
+                (kind.starts_with("array-") && !arrays_listed.contains(key))
+                    || (kind == "nas" && !nas_listed.contains(key))
             });
         if label(&id).is_none() || ((gone.contains(&id) || vanished) && !active.contains_key(&id)) {
             state["entries"].as_object_mut().unwrap().remove(&id);
@@ -710,6 +738,36 @@ mod tests {
             e.is_empty() && state["entries"]["heartbeat:delivery"].is_null(),
             "{e:?}"
         );
+    }
+    /// 0.46.0: a NAS connection recovers only when Linux says it is logged in again, and
+    /// a connection no longer kept is dropped quietly; a read-only drive is not "back".
+    #[test]
+    fn a_nas_connection_recovers_only_when_logged_in_again() {
+        let id = "nas:iqn.2026-11.lab.nas:media";
+        assert_eq!(
+            label(id).as_deref(),
+            Some("Network storage box: connection lost")
+        );
+        assert!(label("nas:x;rm").is_none());
+        let opened = json!({"format":"neko-notifications-v1","attempts":0,
+            "entries":{id:{"first_seen":0.0,"last_sent":10.0,"sent_level":"critical"}}});
+        let mut s = snapshot(1000., json!([]));
+        s["network_storage"] =
+            json!({"targets": [{"target": "iqn.2026-11.lab.nas:media", "state": "reconnecting"}]});
+        let (_, e) = plan(&s, &opened, 1000., 180, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        s["network_storage"]["targets"][0]["state"] = json!("connected");
+        let (_, e) = plan(&s, &opened, 1000., 180, 43200);
+        assert_eq!(e[0].0, id);
+        s["network_storage"] = Value::Null;
+        let (state, e) = plan(&s, &opened, 1000., 180, 43200);
+        assert!(e.is_empty() && state["entries"][id].is_null(), "{e:?}");
+        let mount = json!({"format":"neko-notifications-v1","attempts":0,
+            "entries":{"mount:media_hdd":{"first_seen":0.0,"last_sent":10.0,"sent_level":"critical"}}});
+        let mut s = snapshot(1000., json!([]));
+        s["storage"] = json!([{"id": "media_hdd", "status": "mounted", "read_only": true}]);
+        let (_, e) = plan(&s, &mount, 1000., 180, 43200);
+        assert!(e.is_empty(), "{e:?}");
     }
     #[test]
     fn rejects_destination_injection() {

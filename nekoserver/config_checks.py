@@ -12,6 +12,7 @@ from modules import (
     nextcloud,
     maintenance,
     music,
+    network_storage,
 )
 
 
@@ -32,6 +33,7 @@ def validate(config, plan):
     nextcloud_default(config, plan)
     validators = {
         'music': music.options,
+        'network_storage': network_storage.options,
         'nextcloud': nextcloud.options,
         'maintenance': maintenance.options,
         'server_os': server_os.settings,
