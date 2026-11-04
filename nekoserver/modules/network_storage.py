@@ -38,10 +38,16 @@ INITIATOR = Path('/etc/iscsi/initiatorname.iscsi')
 NODE_ROOTS = (Path('/etc/iscsi/nodes'), Path('/var/lib/iscsi/nodes'))
 BY_PATH = Path('/dev/disk/by-path')
 # iSCSI names (RFC 3720): iqn.<year-month>.<reversed domain>[:name], or eui./naa. forms.
-IQN = re.compile(
-    r'(iqn\.\d{4}-\d{2}\.[a-z0-9][a-z0-9.-]*(:[A-Za-z0-9.:_-]+)?|eui\.[0-9A-Fa-f]{16}|naa\.[0-9A-Fa-f]{16,32})'
-)
-HOST = re.compile(r'([0-9]{1,3}(\.[0-9]{1,3}){3}|[A-Za-z0-9]([A-Za-z0-9-]{0,62}\.)*[A-Za-z0-9-]{1,63})')
+IQN_NAME = re.compile(r'iqn\.\d{4}-\d{2}\.[a-z0-9][a-z0-9.-]*(:[\w.:-]+)?')
+IQN_OTHER = re.compile(r'(eui\.[0-9A-Fa-f]{16}|naa\.[0-9A-Fa-f]{16,32})')
+HOST = re.compile(r'(\d{1,3}(\.\d{1,3}){3}|[A-Za-z0-9][A-Za-z0-9.-]{0,252})')
+
+
+def iqn_ok(name):
+    """An iSCSI name in one of RFC 3720's forms (iqn., eui. or naa.)."""
+    return isinstance(name, str) and bool(IQN_NAME.fullmatch(name) or IQN_OTHER.fullmatch(name))
+
+
 # How long a disk takes to show up here after the login.
 APPEAR_WAIT = 30
 # "already logged in" (ISCSI_ERR_SESS_EXISTS) is no failure.
@@ -82,7 +88,7 @@ def options(config):
     if portal and (not isinstance(portal, str) or portal_of(portal) is None):
         raise RuntimeError("network_storage.portal must be the NAS's address, such as 192.168.1.20:3260")
     targets = values.get('targets', [])
-    if not isinstance(targets, list) or not all(isinstance(t, str) and IQN.fullmatch(t) for t in targets):
+    if not isinstance(targets, list) or not all(iqn_ok(t) for t in targets):
         raise RuntimeError('network_storage.targets must be iSCSI names (iqn.2013-03.com.example:target)')
     return values
 
@@ -120,12 +126,12 @@ def initiator_name(path=INITIATOR, run=subprocess.run):
         for line in Path(path).read_text().splitlines():
             if line.startswith('InitiatorName='):
                 name = line.split('=', 1)[1].strip()
-                if IQN.fullmatch(name):
+                if iqn_ok(name):
                     return name
     except OSError:
         pass
     made = run_tool(['iscsi-iname'], 30, run).stdout.strip()
-    if not IQN.fullmatch(made):
+    if not iqn_ok(made):
         raise RuntimeError('Could not make an iSCSI name for this PC (iscsi-iname gave none)')
     atomic_write(Path(path), f'InitiatorName={made}\n', 0o644)
     return made
@@ -145,7 +151,7 @@ def discovered(portal, run=subprocess.run):
     for line in done.stdout.splitlines():
         # "192.168.1.20:3260,1 iqn.2013-03.com.wdc:ex4100:media"
         parts = line.split()
-        if len(parts) == 2 and IQN.fullmatch(parts[1]):
+        if len(parts) == 2 and iqn_ok(parts[1]):
             found.append((parts[1], parts[0].split(',')[0]))
     return found
 
@@ -157,14 +163,19 @@ def node_record(iqn, portal, roots=NODE_ROOTS):
     host, _, port = portal.rpartition(':')
     for root in roots:
         folder = Path(root) / iqn
-        if not folder.is_dir():
-            continue
-        for entry in sorted(folder.iterdir()):
-            if entry.name.startswith(f'{host},{port},') and not entry.is_symlink():
-                record = entry / 'default' if entry.is_dir() else entry
-                if record.is_file() and not record.is_symlink():
-                    return record
+        entries = sorted(folder.iterdir()) if folder.is_dir() else []
+        found = next((r for e in entries if (r := record_in(e, f'{host},{port},'))), None)
+        if found:
+            return found
     return None
+
+
+def record_in(entry, prefix):
+    """The settings file a portal's entry holds (a folder with "default", or the file)."""
+    if not entry.name.startswith(prefix) or entry.is_symlink():
+        return None
+    record = entry / 'default' if entry.is_dir() else entry
+    return record if record.is_file() and not record.is_symlink() else None
 
 
 def with_chap(text, user, password):
@@ -260,12 +271,24 @@ def disks_of(iqn, by_path=BY_PATH):
     folder = Path(by_path)
     if not folder.is_dir():
         return found
-    pattern = re.compile(r'ip-(.+)-iscsi-(.+)-lun-(\d+)')
     for link in sorted(folder.iterdir()):
-        match = pattern.fullmatch(link.name)
-        if match and match.group(2) == iqn:
-            found.append({'lun': int(match.group(3)), 'device': str(link.resolve()), 'path': str(link)})
+        named = by_path_name(link.name)
+        if named and named['iqn'] == iqn:
+            found.append({'lun': named['lun'], 'device': str(link.resolve()), 'path': str(link)})
     return found
+
+
+def by_path_name(name):
+    """{'portal', 'iqn', 'lun'} from a /dev/disk/by-path name of an iSCSI disk
+    ("ip-192.168.1.20:3260-iscsi-iqn.2013-03.com.wdc:media-lun-1"), or None. Read by
+    splitting, never by a pattern that could backtrack on a long name."""
+    if not name.startswith('ip-') or '-iscsi-' not in name or '-lun-' not in name:
+        return None
+    rest, _, lun = name[3:].rpartition('-lun-')
+    portal, _, iqn = rest.partition('-iscsi-')
+    if not (portal and iqn and lun.isdigit()):
+        return None
+    return {'portal': portal, 'iqn': iqn, 'lun': int(lun)}
 
 
 def where(disk, by_path=BY_PATH):
@@ -274,11 +297,10 @@ def where(disk, by_path=BY_PATH):
     folder = Path(by_path)
     if not folder.is_dir():
         return None
-    pattern = re.compile(r'ip-(.+)-iscsi-(.+)-lun-(\d+)')
     for link in sorted(folder.iterdir()):
-        match = pattern.fullmatch(link.name)
-        if match and link.resolve().name == disk:
-            return {'portal': match.group(1), 'iqn': match.group(2), 'lun': int(match.group(3))}
+        named = by_path_name(link.name)
+        if named and link.resolve().name == disk:
+            return named
     return None
 
 
@@ -409,25 +431,41 @@ def run(context):
     config = context.config
     if not wanted(config):
         context.log('Drives on a network storage box: not used (all drives are connected to this PC)')
-        return
-    options = config.setdefault(SECTION, {})
+        return None
     if not context.apply:
         context.log('Drives on a NAS over iSCSI: connected with --apply')
-        return
+        return None
     if os.geteuid() != 0:
         raise RuntimeError('Connecting network drives requires root')
-    import getpass
     import sys
 
+    options = config.setdefault(SECTION, {})
     interactive = sys.stdin.isatty()
     install_tools(context.log)
-    name = initiator_name()
+    say_initiator(context.log)
+    portal, targets = connected(context, options, interactive)
+    empty = listed_disks(context, portal, targets)
+    wait_for_network(context.log)
     context.log(
-        f"This PC's iSCSI name (initiator): {name}\n"
+        'Both NAS drives are in one box: a fault of the NAS (its power supply, a setting) can take the media '
+        'and the backup at once. Keep a second copy of what matters elsewhere when you can.'
+    )
+    return unformatted(empty)
+
+
+def say_initiator(log):
+    log(
+        f"This PC's iSCSI name (initiator): {initiator_name()}\n"
         "  On the NAS, allow only this name on each iSCSI target NekoServer uses (in WD's My Cloud page: "
         'Storage > iSCSI, the target, Access). Each disk then belongs to this PC alone: another computer '
         'mounting it at the same time would damage it.'
     )
+
+
+def connected(context, options, interactive):
+    """The NAS's address and the targets NekoServer uses, logged in to (and saved)."""
+    import getpass
+
     if not options.get('portal') and not interactive:
         raise RuntimeError("The NAS's address is not saved yet; run  sudo bash install.sh  in a terminal")
     portal = asked_portal(options.get('portal'), input, context.log)
@@ -450,6 +488,11 @@ def run(context):
     options.update(portal=portal, targets=targets)
     if hasattr(context, 'persist_config'):
         context.persist_config()
+    return portal, targets
+
+
+def listed_disks(context, portal, targets):
+    """Each target's disks said, with what is on them; the empty ones returned."""
     empty = []
     for iqn in targets:
         disks = wait_for_disks(iqn)
@@ -464,26 +507,31 @@ def run(context):
             context.log('  ' + described(disk, row))
             if not row.get('fstype') and not row.get('children'):
                 empty.append((disk, iqn))
+    return empty
+
+
+def wait_for_network(log):
     waiter = wait_online_unit()
     if waiter:
         run_tool(['systemctl', 'enable', waiter], 60)
-        context.log(f'At every start, the drives on the NAS are mounted once the network is up ({waiter})')
+        log(f'At every start, the drives on the NAS are mounted once the network is up ({waiter})')
     else:
-        context.log(
+        log(
             'Neither NetworkManager nor systemd-networkd runs here, so the start-up cannot wait for the '
             'network: the NAS drives may show as missing after a restart until the network is up'
         )
-    context.log(
-        'Both NAS drives are in one box: a fault of the NAS (its power supply, a setting) can take the media '
-        'and the backup at once. Keep a second copy of what matters elsewhere when you can.'
-    )
-    if empty:
-        commands = '\n'.join('  ' + format_command(d, iqn) for d, iqn in empty)
-        return {
-            'status': 'needs_setup',
-            'reason': (
-                'These NAS disks have no filesystem yet, and NekoServer never formats a drive by itself. '
-                'Check each is the one you mean (its size and LUN above), then make its filesystem (this '
-                f'erases that LUN):\n{commands}\nThen run  sudo bash install.sh  again.'
-            ),
-        }
+
+
+def unformatted(empty):
+    """The step waits for you when a LUN has no filesystem yet: the command for each."""
+    if not empty:
+        return None
+    commands = '\n'.join('  ' + format_command(d, iqn) for d, iqn in empty)
+    return {
+        'status': 'needs_setup',
+        'reason': (
+            'These NAS disks have no filesystem yet, and NekoServer never formats a drive by itself. '
+            'Check each is the one you mean (its size and LUN above), then make its filesystem (this '
+            f'erases that LUN):\n{commands}\nThen run  sudo bash install.sh  again.'
+        ),
+    }

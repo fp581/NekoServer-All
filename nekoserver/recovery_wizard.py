@@ -2133,7 +2133,7 @@ def check_read_only(config, prompt, output, run=subprocess.run, writes=takes_wri
             f'{folder} is unmounted. Its filesystem ({fstype}) is checked with  {command} ; then run  sudo bash '
             'install.sh  to mount it again and start the apps.'
         )
-    if not ask(f'Check and repair its filesystem now (e2fsck: it changes only what is broken)?', prompt, output):
+    if not ask('Check and repair its filesystem now (e2fsck: it changes only what is broken)?', prompt, output):
         raise RuntimeError(f'{folder} is unmounted and not checked; run  sudo bash install.sh  to mount it again.')
     output('Checking (on a large drive this takes a few minutes)...')
     fsck = run(['e2fsck', '-f', '-p', device], capture_output=True, text=True, timeout=6 * 3600, check=False)

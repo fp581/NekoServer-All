@@ -412,9 +412,14 @@ fn valid_model(
     media: &Path,
     locations: &Value,
 ) -> Result<()> {
-    let photos = common::located(locations, "photos", data, media).join("photos/immich-library");
-    let cloud_files = common::located(locations, "cloud", data, media).join("cloud/files");
-    let music = common::located(locations, "music", data, media);
+    let places = Places {
+        name,
+        data,
+        media,
+        photos: common::located(locations, "photos", data, media).join("photos/immich-library"),
+        cloud: common::located(locations, "cloud", data, media).join("cloud/files"),
+        music: common::located(locations, "music", data, media).to_path_buf(),
+    };
     let services = model["services"]
         .as_object()
         .ok_or_else(|| Error::new("Compose services missing"))?;
@@ -437,59 +442,83 @@ fn valid_model(
         ));
     }
     for (service, v) in services {
-        if !expected_service(name, service)
-            || v["privileged"] == true
-            || v.get("network_mode").is_some()
-            || v.get("pid").is_some()
-            || v.get("ipc").is_some()
-            || v.get("build").is_some()
-            || widens_rights(v)
-            || !gpu_only(service, v)
-        {
+        if !isolated(name, service, v) {
             return Err(Error::new("Unsupported Compose isolation"));
         }
         for volume in v["volumes"].as_array().cloned().unwrap_or_default() {
-            if volume["type"] == "bind" {
-                let source = Path::new(string(&volume, "source")?);
-                let p = if source == Path::new("/etc/localtime") && volume["read_only"] == true {
-                    source.to_path_buf()
-                } else {
-                    common::safe(source)?
-                };
-                let allowed = p == data.join("appdata").join(name)
-                    || p.starts_with(data.join("appdata").join(name));
-                let photo = name == "immich" && p == photos;
-                let cloud = name == "nextcloud" && p == cloud_files;
-                let library = p == media.join("library")
-                    || (name == "jellyfin"
-                        && ["movies", "tv"]
-                            .iter()
-                            .any(|n| p == media.join("library").join(n)))
-                    || (name == "navidrome" && p == music.join("library/music"))
-                    || (name == "lidarr" && p == music.join("library"))
-                    || (name == "qbittorrent" && p == music.join("library/downloads/music"));
-                let localtime = p == Path::new("/etc/localtime") && volume["read_only"] == true;
-                if !(allowed || photo || cloud || library || localtime) {
-                    return Err(Error::new("Uncovered container bind mount"));
-                }
-            } else if volume["type"] != "volume"
-                || !(service == "redis" || service == "immich-machine-learning")
-            {
-                return Err(Error::new("Uncovered persistent volume"));
-            }
+            places.volume_ok(service, &volume)?;
         }
-        if service == name || service == "immich-server" {
-            let ports = v["ports"]
-                .as_array()
-                .ok_or_else(|| Error::new("Application port missing"))?;
-            let peer = peer_port(service, v);
-            let public = |p: &Value| p["host_ip"] != "127.0.0.1" && !is_peer_binding(p, peer);
-            if ports.is_empty() || ports.iter().any(public) {
-                return Err(Error::new("Loopback application ports required"));
+        published_ok(name, service, v)?;
+    }
+    Ok(())
+}
+/// A service of the app's own that keeps to NekoServer's isolation.
+fn isolated(name: &str, service: &str, v: &Value) -> bool {
+    expected_service(name, service)
+        && v["privileged"] != true
+        && ["network_mode", "pid", "ipc", "build"]
+            .iter()
+            .all(|key| v.get(*key).is_none())
+        && !widens_rights(v)
+        && gpu_only(service, v)
+}
+/// The folders one app may bind: its own settings, and your files where setup put them.
+struct Places<'a> {
+    name: &'a str,
+    data: &'a Path,
+    media: &'a Path,
+    photos: PathBuf,
+    cloud: PathBuf,
+    music: PathBuf,
+}
+impl Places<'_> {
+    fn volume_ok(&self, service: &str, volume: &Value) -> Result<()> {
+        if volume["type"] == "bind" {
+            let source = Path::new(string(volume, "source")?);
+            let localtime = source == Path::new("/etc/localtime") && volume["read_only"] == true;
+            let p = if localtime {
+                source.to_path_buf()
+            } else {
+                common::safe(source)?
+            };
+            if !(localtime || self.bind_ok(&p)) {
+                return Err(Error::new("Uncovered container bind mount"));
             }
-        } else if v["ports"].as_array().is_some_and(|p| !p.is_empty()) {
-            return Err(Error::new("Unexpected supporting service publication"));
+        } else if volume["type"] != "volume"
+            || !(service == "redis" || service == "immich-machine-learning")
+        {
+            return Err(Error::new("Uncovered persistent volume"));
         }
+        Ok(())
+    }
+    fn bind_ok(&self, p: &Path) -> bool {
+        let name = self.name;
+        let own = self.data.join("appdata").join(name);
+        let library = self.media.join("library");
+        p.starts_with(&own)
+            || (name == "immich" && p == self.photos)
+            || (name == "nextcloud" && p == self.cloud)
+            || p == library
+            || (name == "jellyfin" && ["movies", "tv"].iter().any(|n| p == library.join(n)))
+            || (name == "navidrome" && p == self.music.join("library/music"))
+            || (name == "lidarr" && p == self.music.join("library"))
+            || (name == "qbittorrent" && p == self.music.join("library/downloads/music"))
+    }
+}
+/// The app's own port on this PC only (qBittorrent's peer port excepted); its helpers
+/// publish nothing.
+fn published_ok(name: &str, service: &str, v: &Value) -> Result<()> {
+    if service == name || service == "immich-server" {
+        let ports = v["ports"]
+            .as_array()
+            .ok_or_else(|| Error::new("Application port missing"))?;
+        let peer = peer_port(service, v);
+        let public = |p: &Value| p["host_ip"] != "127.0.0.1" && !is_peer_binding(p, peer);
+        if ports.is_empty() || ports.iter().any(public) {
+            return Err(Error::new("Loopback application ports required"));
+        }
+    } else if v["ports"].as_array().is_some_and(|p| !p.is_empty()) {
+        return Err(Error::new("Unexpected supporting service publication"));
     }
     Ok(())
 }
@@ -5045,9 +5074,19 @@ mod tests {
         ] {
             assert!(widens_rights(&extra), "{extra}");
         }
-        let source = include_str!("maintenance.rs");
-        let check = &source[source.find("fn valid_model(").unwrap()..];
-        assert!(check[..check.find("\n}\n").unwrap()].contains("|| widens_rights(v)"));
+        // The update's check refuses them: a model that asks for one is not used.
+        let port = json!([{"host_ip": "127.0.0.1", "published": "8096", "target": 8096}]);
+        let (data, media) = (Path::new("/srv/neko"), Path::new("/mnt/neko"));
+        let plain = json!({"services": {"jellyfin": {"image": "sha256:8", "ports": port}}});
+        assert!(valid_model(&plain, "jellyfin", data, media, &Value::Null).is_ok());
+        let mut wider = plain.clone();
+        wider["services"]["jellyfin"]["cap_add"] = json!(["SYS_ADMIN"]);
+        assert_eq!(
+            valid_model(&wider, "jellyfin", data, media, &Value::Null)
+                .unwrap_err()
+                .to_string(),
+            "Unsupported Compose isolation"
+        );
     }
     #[test]
     fn an_updates_media_check_waits_for_the_hourly_one() {

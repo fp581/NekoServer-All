@@ -450,6 +450,28 @@ const NAS_HEALTH: &str =
 fn on_nas(cfg: &Value, key: &str) -> bool {
     key != "os" && cfg["storage"][key]["network"].is_object()
 }
+/// A drive on a NAS: marked so, and what the NAS check (nas_watch.rs) found when it last
+/// ran: it runs as its own service (this collector sees the drives read-only), and one
+/// older than three minutes says nothing. Linux still shows an aborted ext4 as mounted
+/// "rw" (statvfs says so too, seen in the lab): only a write tells.
+fn nas_drive(r: &mut Value, key: &str, now: f64) {
+    r["network"] = json!(true);
+    if r["status"] != "mounted" {
+        return;
+    }
+    let seen = common::json(Path::new(crate::nas_watch::STATE), 64000);
+    let fresh = seen["at"]
+        .as_f64()
+        .is_some_and(|t| (now - 180.0..=now + 60.0).contains(&t));
+    match seen["drives"][key].as_str().filter(|_| fresh) {
+        Some("fails") => r["read_only"] = json!(true),
+        Some("waits") => r["waiting"] = json!(true),
+        _ => {}
+    }
+    if seen["held"] == true {
+        r["held_by_nas_watch"] = json!(true);
+    }
+}
 /// The NAS connections this PC keeps (network_storage.targets in the settings) and how
 /// each is, from Linux's iSCSI sessions (/sys/class/iscsi_session/session<n>): null when
 /// no drive is on a NAS.
@@ -545,26 +567,7 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
             };
         }
         if on_nas(cfg, key) {
-            r["network"] = json!(true);
-            // Linux still shows an aborted ext4 as mounted "rw" (statvfs says so too, seen
-            // in the lab): only a write tells. Only for drives on a NAS: a test write to a
-            // drive here would keep it from ever spinning down.
-            // The check runs as its own service (nas_watch.rs: this collector sees the drives
-            // read-only) and says what it found; one older than three minutes says nothing.
-            if r["status"] == "mounted" {
-                let seen = common::json(Path::new(crate::nas_watch::STATE), 64000);
-                let fresh = seen["at"]
-                    .as_f64()
-                    .is_some_and(|t| (now - 180.0..=now + 60.0).contains(&t));
-                match seen["drives"][key].as_str().filter(|_| fresh) {
-                    Some("fails") => r["read_only"] = json!(true),
-                    Some("waits") => r["waiting"] = json!(true),
-                    _ => {}
-                }
-                if seen["held"] == true {
-                    r["held_by_nas_watch"] = json!(true);
-                }
-            }
+            nas_drive(&mut r, key, now);
         }
         if key == "data_ssd" {
             data_ok = r["status"] == "mounted";

@@ -375,6 +375,35 @@ fn retired(s: &Value) -> BTreeSet<String> {
     }
     out
 }
+/// What the status lists now, for alerts about things that may go away on purpose.
+struct Listed {
+    arrays: BTreeSet<String>,
+    nas: BTreeSet<String>,
+}
+impl Listed {
+    fn of(s: &Value) -> Self {
+        let ids = |rows: &Value, key: &str| -> BTreeSet<String> {
+            rows.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r[key].as_str().map(String::from))
+                .collect()
+        };
+        Listed {
+            arrays: ids(&s["arrays"], "id"),
+            nas: ids(&s["network_storage"]["targets"], "target"),
+        }
+    }
+    /// An array gone from the list was stopped or taken out on purpose, and a NAS
+    /// connection no longer kept (its drive moved off the NAS, the setting switched off)
+    /// has nothing to recover: their alerts are dropped without a "RECOVERED".
+    fn vanished(&self, id: &str) -> bool {
+        id.split_once(':').is_some_and(|(kind, key)| {
+            (kind.starts_with("array-") && !self.arrays.contains(key))
+                || (kind == "nas" && !self.nas.contains(key))
+        })
+    }
+}
 /// Pure transition logic; only successfully delivered events advance deduplication.
 fn plan(
     s: &Value,
@@ -418,28 +447,9 @@ fn plan(
         .cloned()
         .collect::<Vec<_>>();
     let gone = if fresh { retired(s) } else { BTreeSet::new() };
-    let arrays_listed: BTreeSet<String> = s["arrays"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|r| r["id"].as_str().map(String::from))
-        .collect();
-    // The NAS connections still kept: one no longer kept (its drive moved off the NAS, or
-    // the setting switched off) has nothing to recover.
-    let nas_listed: BTreeSet<String> = s["network_storage"]["targets"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|t| t["target"].as_str().map(String::from))
-        .collect();
+    let listed = Listed::of(s);
     for id in keys {
-        // An array gone from the list was stopped or taken out on purpose: its alert is
-        // dropped without a "RECOVERED" (nothing recovered).
-        let vanished = fresh
-            && id.split_once(':').is_some_and(|(kind, key)| {
-                (kind.starts_with("array-") && !arrays_listed.contains(key))
-                    || (kind == "nas" && !nas_listed.contains(key))
-            });
+        let vanished = fresh && listed.vanished(&id);
         if label(&id).is_none() || ((gone.contains(&id) || vanished) && !active.contains_key(&id)) {
             state["entries"].as_object_mut().unwrap().remove(&id);
             continue;

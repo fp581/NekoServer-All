@@ -206,9 +206,15 @@ def replacement(name, dest, template, rendered, values):
 def render(template, data, media, uid, gid, tz, bind, music=None):
     """A template with this server's values. `music`: the drive that holds the music and
     its downloads (setup's choice, neko_common.files_root); the SSD when not given."""
-    substitutions = dict(
-        DATA=str(data), MEDIA=str(media), UID=str(uid), GID=str(gid), TZ=tz, BIND=bind, MUSIC=str(music or data)
-    )
+    substitutions = {
+        'DATA': str(data),
+        'MEDIA': str(media),
+        'UID': str(uid),
+        'GID': str(gid),
+        'TZ': tz,
+        'BIND': bind,
+        'MUSIC': str(music or data),
+    }
     output = template
     for key, value in substitutions.items():
         output = output.replace('${NEKO_' + key + '}', value)

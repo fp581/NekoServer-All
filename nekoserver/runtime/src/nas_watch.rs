@@ -26,7 +26,7 @@ use std::time::Duration;
 
 /// What the last check found for each drive ("writes", "fails", "waits", for the
 /// dashboard) and whether this stopped the apps (gone after a restart: setup and the
-/// drive-return service start them then). Readable by all: it names no files.
+/// drive-return service start them then).
 pub(crate) const STATE: &str = "/run/nekoserver-nas-watch.json";
 /// The folder at each drive's top that holds the test file.
 pub(crate) const PROBE_DIR: &str = ".nekoserver-check";
@@ -219,11 +219,9 @@ pub fn run(a: &crate::Args) -> Result<()> {
         }
     }
 }
+/// Root's alone (the dashboard's collector and the recovery menu run as root).
 fn save(record: &Value) -> Result<()> {
-    common::atomic_json(Path::new(STATE), record)?;
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(STATE, fs::Permissions::from_mode(0o644))?;
-    Ok(())
+    common::atomic_json(Path::new(STATE), record)
 }
 
 #[cfg(test)]

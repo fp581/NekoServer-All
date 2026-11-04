@@ -1233,10 +1233,10 @@ WHERE = (
 )
 
 
-def recommended(what, ssd_gb, threshold):
-    """The better drive for `what` on this server: the SSD (faster) when it is big enough
-    to hold it for years (`threshold` GB), else the media drive (bigger). Nextcloud's
-    files always on the media drive: they grow without limit and need no speed."""
+def recommended(ssd_gb, threshold):
+    """The better drive on this server: the SSD (faster) when it is big enough to hold it
+    for years (`threshold` GB), else the media drive (bigger). No threshold (Nextcloud's
+    files, which grow without limit and need no speed): the media drive."""
     return 'ssd' if threshold is not None and ssd_gb >= threshold else 'media'
 
 
@@ -1267,6 +1267,9 @@ def free_gb(folder):
     return found.f_bavail * found.f_frsize // 10**9
 
 
+DRIVE_WORDS = {'ssd': 'the SSD', 'media': 'the media drive'}
+
+
 def choose_locations(context, input_fn=None, interactive=None):
     """Where each app keeps your files, asked once (saved as "locations"): the SSD or the
     media drive, the better one pre-selected. The backups, restores and checks all follow
@@ -1274,54 +1277,55 @@ def choose_locations(context, input_fn=None, interactive=None):
     config = context.config
     chosen = config.setdefault('locations', {})
     interactive = sys.stdin.isatty() if interactive is None else interactive
-    ssd_gb = free_gb(config['data_mount'])
-    media_gb = free_gb(config['media_mount'])
-    nas = ' (on the network storage box)' if config.get('storage', {}).get('media_hdd', {}).get('network') else ''
+    room = {'ssd': free_gb(config['data_mount']), 'media': free_gb(config['media_mount'])}
+    on_nas = bool(config.get('storage', {}).get('media_hdd', {}).get('network'))
     changed = False
     for what, words, threshold in WHERE:
         kept = kept_location(config, what)
-        if chosen.get(what) in ('ssd', 'media'):
-            if kept and kept != chosen[what]:
-                where = {'ssd': 'the SSD', 'media': 'the media drive'}
-                raise RuntimeError(
-                    f'The settings put {words} on {where[chosen[what]]}, but they are on {where[kept]}: the app '
-                    f'would start with an empty folder. Put "locations": {{"{what}": "{kept}"}} back in '
-                    'my-config.json (moving them is a job of its own, with the apps stopped), then run setup '
-                    'again. Nothing was changed.'
-                )
+        if chosen.get(what) in DRIVE_WORDS:
+            same_place(what, words, chosen[what], kept)
             continue
         if kept:
+            context.log(f'{words.capitalize()}: kept where they already are, on {DRIVE_WORDS[kept]}')
             chosen[what] = kept
-            context.log(
-                f'{words.capitalize()}: kept where they already are, on the {"SSD" if kept == "ssd" else "media drive"}'
-            )
-            changed = True
-            continue
-        best = recommended(what, ssd_gb, threshold)
-        options = [
-            ('media', f'the media drive{nas}: {media_gb} GB free, the most room'),
-            ('ssd', f'the SSD: {ssd_gb} GB free, faster'),
-        ]
-        options.sort(key=lambda o: o[0] != best)
-        pick = best
-        if interactive:
-            context.log(f'Where should {words} be kept? (The backups follow wherever you choose.)')
-            for n, (drive, said) in enumerate(options, 1):
-                context.log(f'  {n}) {said}' + ('  (recommended)' if drive == best else ''))
-            for _ in range(3):
-                try:
-                    answer = (input_fn or input)('Number (Enter for the recommended one): ').strip()
-                except EOFError:
-                    answer = ''
-                if answer in ('', '1', '2'):
-                    pick = options[int(answer) - 1][0] if answer else best
-                    break
-                context.log('Type 1 or 2, or press Enter.')
-        chosen[what] = pick
-        context.log(f'{words.capitalize()}: on the {"SSD" if pick == "ssd" else "media drive"}')
+        else:
+            best = recommended(room['ssd'], threshold)
+            chosen[what] = asked_location(context, words, best, room, on_nas, input_fn) if interactive else best
+            context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
         changed = True
     if changed and hasattr(context, 'persist_config'):
         context.persist_config()
+
+
+def same_place(what, words, chosen, kept):
+    """A saved choice must be where the files are: the app would start on an empty folder."""
+    if kept and kept != chosen:
+        raise RuntimeError(
+            f'The settings put {words} on {DRIVE_WORDS[chosen]}, but they are on {DRIVE_WORDS[kept]}: the app '
+            f'would start with an empty folder. Put "locations": {{"{what}": "{kept}"}} back in my-config.json '
+            '(moving them is a job of its own, with the apps stopped), then run setup again. Nothing was changed.'
+        )
+
+
+def asked_location(context, words, best, room, on_nas, input_fn=None):
+    """The drive for `words`, asked: the better one first, Enter takes it."""
+    said = {
+        'media': f'the media drive{" (on the network storage box)" if on_nas else ""}: {room["media"]} GB free, the most room',
+        'ssd': f'the SSD: {room["ssd"]} GB free, faster',
+    }
+    options = [best, 'ssd' if best == 'media' else 'media']
+    context.log(f'Where should {words} be kept? (The backups follow wherever you choose.)')
+    for n, drive in enumerate(options, 1):
+        context.log(f'  {n}) {said[drive]}' + ('  (recommended)' if drive == best else ''))
+    for _ in range(3):
+        try:
+            answer = (input_fn or input)('Number (Enter for the recommended one): ').strip()
+        except EOFError:
+            answer = ''
+        if answer in ('', '1', '2'):
+            return options[int(answer) - 1] if answer else best
+        context.log('Type 1 or 2, or press Enter.')
+    return best
 
 
 def choose_usb(context):
