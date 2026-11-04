@@ -1691,6 +1691,17 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('(copy on the USB drive)', said)
         self.assertEqual(restored[0][:3], ('backup_secrets.py', '--restore', str(usb / 'passwords/100-1')))
 
+    def test_the_lists_setup_makes_on_the_hdd_are_offered_newest_first(self):
+        """The 0.46.1 audit: the menu looked only at the monthly snapshots, so setup's newer
+        list (and the only one before the first monthly snapshot) was never offered."""
+        self.write('hdd/backups/monthly/1700000000000000-4/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('hdd/backups/monthly/1700000000000000-4/secrets.tar.cms', b'older')
+        self.write('hdd/backups/password-lists/1800000000000000-0/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('hdd/backups/password-lists/1800000000000000-0/secrets.tar.cms', b'newer')
+        runs = recovery_wizard.password_snapshots(self.config)
+        self.assertEqual([p.name for p, _ in runs], ['1800000000000000-0', '1700000000000000-4'])
+        self.assertIn('(made by setup)', runs[0][1])
+
     def test_no_password_list_anywhere_is_said(self):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),

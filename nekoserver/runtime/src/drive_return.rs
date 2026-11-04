@@ -263,7 +263,7 @@ pub fn run(a: &Args) -> Result<()> {
     // The NAS check stopped the apps for a NAS drive that does not take writes: they stay
     // stopped (the 0.46.0 review: plugging the SSD in again started them). That check
     // starts them once every drive takes writes.
-    if crate::nas_watch::held() {
+    if crate::nas_watch::held() || !crate::nas_watch::all_take_writes(&cfg) {
         println!("{HELD_FOR_NAS}");
         return Ok(());
     }

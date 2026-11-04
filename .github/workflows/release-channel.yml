@@ -1,5 +1,5 @@
 # Release channels (README.md "Release channels"): a tag vX.Y.Z is a stable release and
-# vX.Y.ZBeta a beta. GitHub's own "pre-release" mark has to agree, because anything that
+# vX.Y.ZBeta (or vX.Y.Z-beta) a beta. GitHub's own "pre-release" mark has to agree, because anything that
 # asks GitHub for the latest release (an updater, say) gets the newest one not marked
 # pre-release: a beta left unmarked would be handed out as stable. This job marks each
 # release as its tag says, and fails on a tag that is neither (a typo such as "V0.41.0Beta"
@@ -25,12 +25,12 @@ jobs:
           MARKED: ${{ github.event.release.prerelease }}
           REPO: ${{ github.repository }}
         run: |
-          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+Beta$ ]]; then
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(Beta|-beta)$ ]]; then
             want=true
           elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             want=false
           else
-            echo "::error::Tag $TAG is neither a stable release (vX.Y.Z) nor a beta (vX.Y.ZBeta); fix the tag (README.md, Release channels)"
+            echo "::error::Tag $TAG is neither a stable release (vX.Y.Z) nor a beta (vX.Y.ZBeta or vX.Y.Z-beta); fix the tag (README.md, Release channels)"
             exit 1
           fi
           if [ "$MARKED" != "$want" ]; then

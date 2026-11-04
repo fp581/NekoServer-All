@@ -312,7 +312,7 @@ fn image_id(s: &str) -> bool {
 /// option other than no-new-privileges is refused too. A downloaded Compose file (a new
 /// Immich release) with one is not used.
 fn widens_rights(v: &Value) -> bool {
-    let allowed = ["no-new-privileges:true", "no-new-privileges"];
+    let allowed = common::shared_list(&["compose", "security_opt"]);
     let known = common::shared_list(&["compose", "service_keys"]);
     v.as_object().is_none_or(|o| {
         o.iter().any(|(k, value)| {
@@ -480,6 +480,7 @@ fn valid_model(
             "Unexpected services; automated maintenance refused",
         ));
     }
+    networks_ok(name, model)?;
     for (service, v) in services {
         if !isolated(name, service, v) {
             return Err(Error::new("Unsupported Compose isolation"));
@@ -488,6 +489,130 @@ fn valid_model(
             places.volume_ok(service, &volume)?;
         }
         published_ok(name, service, v)?;
+    }
+    if name == "immich" {
+        immich_ok(services, data, &places.photos)?;
+    }
+    Ok(())
+}
+/// The networks a model may use: its project's own (`neko-<app>_<key>`, made by Compose
+/// with no driver or options of its own), and for the media apps the shared
+/// `nekoserver-media` they reach each other on. Never the host's network, one bridged
+/// straight onto the home network (macvlan), another app's, nor a name or alias on the
+/// shared network that could answer for another app (the 0.46.1 audit).
+fn networks_ok(name: &str, model: &Value) -> Result<()> {
+    let refused = || Err(Error::new("Unsupported Compose network"));
+    let shared = MEDIA.contains(&name);
+    let mut known = vec![];
+    for (key, v) in model["networks"].as_object().into_iter().flatten() {
+        let Some(o) = v.as_object() else {
+            return refused();
+        };
+        let ipam_empty = o
+            .get("ipam")
+            .is_none_or(|i| i.as_object().is_some_and(|m| m.is_empty()));
+        let own = o
+            .get("name")
+            .is_none_or(|n| n.as_str() == Some(format!("neko-{name}_{key}").as_str()))
+            && o.get("external").is_none_or(|e| *e == false)
+            && o.keys()
+                .all(|k| ["name", "ipam", "external", "labels"].contains(&k.as_str()));
+        let shared_network = shared
+            && o.get("external") == Some(&json!(true))
+            && o.get("name") == Some(&json!("nekoserver-media"))
+            && o.keys()
+                .all(|k| ["name", "ipam", "external"].contains(&k.as_str()));
+        if !ipam_empty || !(own || shared_network) {
+            return refused();
+        }
+        known.push(key.as_str());
+    }
+    for v in model["services"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(_, v)| v)
+    {
+        if shared && v.get("container_name").is_some() {
+            return refused(); // a name of its own on the shared network
+        }
+        let joined: Vec<&str> = match &v["networks"] {
+            Value::Null => vec![],
+            Value::Array(list) => list.iter().filter_map(Value::as_str).collect(),
+            Value::Object(map) => {
+                if map.values().any(|n| {
+                    n.as_object().is_some_and(|o| !o.is_empty()) || !(n.is_null() || n.is_object())
+                }) {
+                    return refused(); // aliases, a fixed address, a MAC, driver options
+                }
+                map.keys().map(String::as_str).collect()
+            }
+            _ => return refused(),
+        };
+        if joined.iter().any(|n| *n != "default" && !known.contains(n)) {
+            return refused();
+        }
+    }
+    Ok(())
+}
+/// What a snapshot and a restore of Immich rely on (recovery_tools.py validate_model),
+/// checked here too so an update never installs a file the snapshot would then refuse:
+/// the photos and the database bound where Immich looks for them, no other user, and
+/// Immich's server talking to its own database and cache.
+fn immich_ok(services: &serde_json::Map<String, Value>, data: &Path, photos: &Path) -> Result<()> {
+    let database = data.join("appdata/immich/postgres");
+    let wanted: [(&str, &Path, &[&str]); 2] = [
+        ("immich-server", photos, &["/data", "/usr/src/app/upload"]),
+        ("database", &database, &["/var/lib/postgresql/data"]),
+    ];
+    for (service, v) in services {
+        if v.get("user").is_some() {
+            return Err(Error::new(
+                "Immich running as another user is not covered by its snapshot",
+            ));
+        }
+        let binds: Vec<&Value> = v["volumes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["type"] == "bind" && m["source"] != "/etc/localtime")
+            .collect();
+        let expected = wanted.iter().find(|(s, _, _)| s == service);
+        let fits = |m: &&Value| {
+            expected.is_some_and(|(_, source, targets)| {
+                Path::new(m["source"].as_str().unwrap_or("")) == *source
+                    && targets.contains(&m["target"].as_str().unwrap_or(""))
+            })
+        };
+        if !binds.iter().all(fits) || (expected.is_some() && binds.is_empty()) {
+            return Err(Error::new(
+                "Immich's photos or database are not where its snapshot looks",
+            ));
+        }
+    }
+    let env = |service: &str, key: &str| {
+        services[service]["environment"][key]
+            .as_str()
+            .map(str::to_string)
+    };
+    let routed = env("immich-server", "DB_URL").is_none()
+        && env("immich-server", "REDIS_URL").is_none()
+        && env("immich-server", "DB_HOSTNAME").is_none_or(|h| h == "database")
+        && env("immich-server", "REDIS_HOSTNAME").is_none_or(|h| h == "redis");
+    let same = [
+        ("DB_USERNAME", "POSTGRES_USER", Some("postgres")),
+        ("DB_DATABASE_NAME", "POSTGRES_DB", Some("immich")),
+        ("DB_PASSWORD", "POSTGRES_PASSWORD", None),
+    ]
+    .iter()
+    .all(|(key, db_key, default)| {
+        let or = |v: Option<String>| v.or(default.map(str::to_string));
+        or(env("immich-server", key)) == or(env("database", db_key))
+    });
+    if !(routed && same) {
+        return Err(Error::new(
+            "Immich's server does not use its own database and cache",
+        ));
     }
     Ok(())
 }
@@ -507,6 +632,14 @@ struct Places<'a> {
 impl Places<'_> {
     fn volume_ok(&self, service: &str, volume: &Value) -> Result<()> {
         if volume["type"] == "bind" {
+            // A bind's own options: only these two (propagation could carry mounts out).
+            let options_ok = volume["bind"].as_object().is_none_or(|o| {
+                o.keys()
+                    .all(|k| ["create_host_path", "selinux"].contains(&k.as_str()))
+            });
+            if !options_ok {
+                return Err(Error::new("Uncovered container bind mount"));
+            }
             let source = Path::new(string(volume, "source")?);
             let localtime = source == Path::new("/etc/localtime") && volume["read_only"] == true;
             let p = if localtime {
@@ -531,7 +664,7 @@ impl Places<'_> {
         p.starts_with(&own)
             || (name == "immich" && p == self.photos)
             || (name == "nextcloud" && p == self.cloud)
-            || p == library
+            || (["radarr", "sonarr", "qbittorrent"].contains(&name) && p == library)
             || (name == "jellyfin" && ["movies", "tv"].iter().any(|n| p == library.join(n)))
             || (name == "navidrome" && p == self.music.join("library/music"))
             || (name == "lidarr" && p == self.music.join("library"))
@@ -3209,6 +3342,7 @@ fn download_updates(
                 let current = data.join("compose/immich");
                 let model = source_model(&current, name)?;
                 valid_model(&model, name, data, media, &cfg["locations"])?;
+                volumes_ours(name, &model)?;
                 model
             }
             Err(e) => return Err(e),
@@ -4404,6 +4538,8 @@ fn load_candidate(
         Path::new(string(cfg, "media_mount")?),
         &cfg["locations"],
     )?;
+    // Checked again when it is installed: a volume of its name may have been made since.
+    volumes_ours(app, &model)?;
     Ok(Some(Candidate {
         app: app.to_string(),
         sig,
@@ -5150,6 +5286,70 @@ mod tests {
             "photos"
         )
         .is_err());
+    }
+    #[test]
+    fn a_model_keeps_to_its_own_networks() {
+        // The 0.46.1 audit: the networks were never looked at.
+        let port = json!([{"host_ip": "127.0.0.1", "published": "5055", "target": 5055}]);
+        let (data, media) = (Path::new("/srv/neko"), Path::new("/mnt/neko"));
+        let seerr = |networks: Value, service: Value| {
+            let mut m = json!({"services": {"seerr": {"image": "sha256:1", "ports": port}}, "networks": networks});
+            for (k, v) in service.as_object().unwrap() {
+                m["services"]["seerr"][k] = v.clone();
+            }
+            valid_model(&m, "seerr", data, media, &Value::Null)
+        };
+        let shared =
+            json!({"neko-media": {"name": "nekoserver-media", "ipam": {}, "external": true}});
+        assert!(seerr(shared.clone(), json!({"networks": {"neko-media": null}})).is_ok());
+        assert!(seerr(shared.clone(), json!({"networks": ["neko-media"]})).is_ok());
+        for (networks, service) in [
+            (
+                json!({"hostnet": {"external": true, "name": "host"}}),
+                json!({"networks": ["hostnet"]}),
+            ),
+            (
+                json!({"default": {"driver": "macvlan", "driver_opts": {"parent": "eth0"}}}),
+                json!({}),
+            ),
+            (
+                json!({"x": {"external": true, "name": "neko-nextcloud_default"}}),
+                json!({}),
+            ),
+            (
+                json!({"default": {"ipam": {"config": [{"subnet": "192.168.1.0/24"}]}}}),
+                json!({}),
+            ),
+            (
+                shared.clone(),
+                json!({"networks": {"neko-media": {"aliases": ["sonarr", "prowlarr"]}}}),
+            ),
+            (
+                shared.clone(),
+                json!({"container_name": "radarr", "networks": ["neko-media"]}),
+            ),
+            (shared.clone(), json!({"networks": ["elsewhere"]})),
+        ] {
+            assert!(
+                seerr(networks.clone(), service.clone()).is_err(),
+                "{networks} {service}"
+            );
+        }
+        // Immich's own file: its project's default network, its own container names.
+        let immich = json!({"default": {"name": "neko-immich_default", "ipam": {}}});
+        assert!(networks_ok("immich", &json!({"networks": immich, "services": {"database": {"container_name": "immich_postgres", "networks": {"default": null}}}})).is_ok());
+        // Only the download apps see the whole media library.
+        let library = |name: &str| {
+            let m = json!({"services": {name: {"image": "sha256:1", "ports": port,
+                "volumes": [{"type": "bind", "source": "/mnt/neko/library", "target": "/lib"}]}}});
+            valid_model(&m, name, data, media, &Value::Null).is_ok()
+        };
+        assert!(library("radarr") && library("sonarr") && library("qbittorrent"));
+        assert!(!library("seerr") && !library("prowlarr") && !library("navidrome"));
+        // A bind's propagation could carry mounts out of the container.
+        let m = json!({"services": {"seerr": {"image": "sha256:1", "ports": port, "volumes": [
+            {"type": "bind", "source": "/srv/neko/appdata/seerr", "target": "/c", "bind": {"propagation": "rshared"}}]}}});
+        assert!(valid_model(&m, "seerr", data, media, &Value::Null).is_err());
     }
     #[test]
     fn only_the_volume_compose_made_for_the_app_is_used() {
@@ -7005,11 +7205,34 @@ mod tests {
             );
         }
         let mut photos = models()["immich"].clone();
+        let at = |source: &Path, target: &str| json!([{"type": "bind", "source": source, "target": target}]);
         photos["services"]["immich-server"]["volumes"] =
-            bind(&data.join("photos/immich-library"), false);
+            at(&data.join("photos/immich-library"), "/data");
+        fs::create_dir_all(data.join("appdata/immich/postgres")).unwrap();
+        photos["services"]["database"]["volumes"] = at(
+            &data.join("appdata/immich/postgres"),
+            "/var/lib/postgresql/data",
+        );
         valid_model(&photos, "immich", &data, &media, &Value::Null).unwrap();
+        let immich_model = photos.clone();
         photos["services"]["immich-server"]["volumes"] = bind(&media.join("cloud/files"), false);
         assert_eq!(refused(&photos, "immich"), "Uncovered container bind mount");
+        // The 0.46.1 audit: what Immich's snapshot needs is checked by the update too.
+        let mut moved = photos.clone();
+        moved["services"]["immich-server"]["volumes"] =
+            at(&data.join("photos/immich-library"), "/elsewhere");
+        assert!(refused(&moved, "immich").contains("not where its snapshot looks"));
+        let mut user = photos.clone();
+        user["services"]["immich-server"]["volumes"] =
+            at(&data.join("photos/immich-library"), "/data");
+        user["services"]["immich-server"]["user"] = json!("1000:1000");
+        assert!(refused(&user, "immich").contains("another user"));
+        let mut routed = photos.clone();
+        routed["services"]["immich-server"]["volumes"] =
+            at(&data.join("photos/immich-library"), "/data");
+        routed["services"]["immich-server"]["environment"]["DB_URL"] =
+            json!("postgres://elsewhere");
+        assert!(refused(&routed, "immich").contains("own database"));
         let mut cloud = models()["nextcloud"].clone();
         valid_model(&cloud, "nextcloud", &data, &media, &Value::Null).unwrap();
         cloud["services"]["nextcloud"]["volumes"] = bind(&media.join("cloud/files"), false);
@@ -7057,7 +7280,7 @@ mod tests {
             refused(&with("ports", json!([])), "jellyfin"),
             "Loopback application ports required"
         );
-        let mut immich = models()["immich"].clone();
+        let mut immich = immich_model;
         valid_model(&immich, "immich", &data, &media, &Value::Null).unwrap();
         immich["services"]["redis"]["ports"] = port.clone();
         assert_eq!(

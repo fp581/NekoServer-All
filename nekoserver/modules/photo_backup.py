@@ -158,7 +158,9 @@ def select_external(config, inventory, input_fn=input, out_fn=print):
     chosen = pick_drive(candidates, 'the USB backup drive', input_fn, out_fn, skippable=True)
     if chosen is None:
         return None  # skipped for now, as offered
-    config.setdefault('photos', {}).update(external_backup_uuid=chosen['uuid'], external_backup_fstype=chosen['fstype'])
+    photos = config.setdefault('photos', {})
+    photos.update(external_backup_uuid=chosen['uuid'], external_backup_fstype=chosen['fstype'])
+    photos.pop('external_backup_network', None)  # an earlier drive's; check_drive notes this one's
     return chosen
 
 
@@ -185,16 +187,47 @@ def command_line(config, binary, guard, uuid, fstype, source, dest):
 
 
 def check_drive(config, uuid, fstype):
-    """The saved USB drive is a disk of its own, of a filesystem it may use."""
+    """The saved USB drive is a disk of its own, of a filesystem it may use, and when it is
+    a disk on a NAS, the same NAS disk as before (its WWN)."""
     from modules.storage import inventory_now
 
-    problem = shared_disk(config, inventory_now(), uuid)
+    inventory = inventory_now()
+    problem = shared_disk(config, inventory, uuid)
     if problem:
         raise RuntimeError(problem)
+    same_nas_disk(config.setdefault('photos', {}), nas_identity(inventory, uuid))
     if fstype not in BACKUP_FILESYSTEMS:
         raise RuntimeError('Unexpected backup filesystem')
     if uuid in {config.get('storage', {}).get(key, {}).get('uuid') for key in ('data_ssd', 'media_hdd')}:
         raise RuntimeError('USB UUID must differ from SSD/HDD')
+
+
+def nas_identity(inventory, uuid):
+    """The WWN of the NAS disk (iSCSI) the filesystem `uuid` is on; None when it is not
+    on a NAS, or not plugged in now."""
+    rows, _, _ = disk_layout({}, inventory)
+    disks = {row.get('name'): row for row, _ in rows if row.get('type') == 'disk'}
+    for row, physical in rows:
+        disk = disks.get(physical) or {}
+        if row.get('uuid') == uuid and disk.get('tran') == 'iscsi':
+            return disk.get('wwn') or ''
+    return None
+
+
+def same_nas_disk(photos, wwn):
+    """A backup drive on a NAS is the NAS disk it was (the 0.46.1 audit: a restored or copied
+    LUN carries the same filesystem UUID). Saved the first time (also for settings from
+    before 0.46.2), and checked by the weekly copy (backup.rs) through the drives file."""
+    saved = (photos.get('external_backup_network') or {}).get('wwn')
+    if wwn is None:
+        return
+    if saved and wwn and saved != wwn:
+        raise RuntimeError(
+            f'The USB backup drive has its UUID, but it is on another NAS disk than before ({wwn}, not {saved}): '
+            'a restored or copied LUN, most likely. Choose which one to use: remove "external_backup_uuid" '
+            'under "photos" in my-config.json and run setup again. Nothing was changed.'
+        )
+    photos['external_backup_network'] = {'transport': 'iscsi', 'wwn': wwn or saved}
 
 
 def chosen_drive(ctx, opts):

@@ -598,10 +598,14 @@ def choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)
     """The drive for `key`, asked for among those not chosen yet and not in use elsewhere."""
     # A drive the desktop opened by itself (/run/media/...) is still eligible.
     folder = config.get('data_mount' if key == 'data_ssd' else 'media_mount')
+    # The USB backup drive is never offered as the SSD or the HDD (the 0.46.1 audit: chosen
+    # when a replaced HDD was picked again, it was refused only later, by the backup step).
+    backup = config.get('photos', {}).get('external_backup_uuid')
     options = [
         v
         for v in items
         if v['uuid'] not in selected
+        and v['uuid'] != backup
         and (
             not v['mountpoint']
             or v['mountpoint'] == folder
@@ -1135,7 +1139,7 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
         context.log(f'Mounted UUID={uuid} on {target}; fstab configured for reboot')
     if pinned:
         save_storage(context)
-        install_fstab(mount_specs(context.config), fstab, context.log)
+        install_fstab(mount_specs(context.config), fstab, context.log, network_uuids(context.config))
         call(['systemctl', 'daemon-reload'])
 
 
@@ -1274,6 +1278,8 @@ def choose_locations(context, input_fn=None, interactive=None):
     """Where each app keeps your files, asked once (saved as "locations"): the SSD or the
     media drive, the better one pre-selected. The backups, restores and checks all follow
     the choice (neko_common.files_root). A place already holding files stays as it is."""
+    from neko_common import LOCATIONS
+
     config = context.config
     chosen = config.setdefault('locations', {})
     interactive = sys.stdin.isatty() if interactive is None else interactive
@@ -1297,11 +1303,35 @@ def choose_locations(context, input_fn=None, interactive=None):
             chosen[what] = kept[0]
         else:
             best = recommended(room['ssd'], threshold)
-            chosen[what] = asked_location(context, words, best, room, on_nas, input_fn) if interactive else best
+            # Asked: the better drive is offered first. Not asked: the better one on a new
+            # server, and on one set up before 0.46.0 the layout it had, so nothing moves
+            # without being asked (the 0.46.1 audit).
+            unasked = LOCATIONS[what][0] if set_up_before(config) else best
+            chosen[what] = asked_location(context, words, best, room, on_nas, input_fn) if interactive else unasked
             context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
         changed = True
+    if chosen.get('photos') == 'media':
+        context.log(PHOTOS_ON_MEDIA)
     if changed and hasattr(context, 'persist_config'):
         context.persist_config()
+
+
+# Said when the photos are on the media drive: its weekly photo archive is on that drive
+# too (backup.rs), so only the USB copy is on another drive (the 0.46.1 audit).
+PHOTOS_ON_MEDIA = (
+    "Immich's photos are on the media drive, and so is their weekly archive copy: it keeps older versions, "
+    'but does not survive losing that drive. Your only copy on another drive is the weekly USB backup, so '
+    'set it up (setup asks for the USB drive next).'
+)
+
+
+def set_up_before(config):
+    """True when apps were set up on this SSD before (their settings are there)."""
+    appdata = Path(config['data_mount']) / 'appdata'
+    try:
+        return appdata.is_dir() and any(appdata.iterdir())
+    except OSError:
+        return False
 
 
 def same_place(context, what, words, chosen, kept):

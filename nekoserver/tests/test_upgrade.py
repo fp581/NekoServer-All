@@ -100,6 +100,12 @@ class UpgradeTests(unittest.TestCase):
             lock=self.dir / 'setup.lock',
         )
 
+    def test_a_beta_tag_is_read_either_way_it_is_written(self):
+        """0.46.1 was published as v0.46.1-beta, which the upgrade refused as no release."""
+        self.assertEqual(upgrade.numbers('v0.46.1-beta'), (0, 46, 1))
+        self.assertEqual(upgrade.numbers('v0.46.1Beta'), (0, 46, 1))
+        self.assertIsNone(upgrade.numbers('v0.46.1-bata'))
+
     def test_a_good_release_is_set_up_and_checked(self):
         self.assertEqual(self.upgrade(self.setup(1)), 0)  # 1: a step still waits for you
         self.assertEqual(self.ran, [('nekoserver', 'neko', 'installing')])
