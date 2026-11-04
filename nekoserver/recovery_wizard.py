@@ -1464,22 +1464,20 @@ def usb_password_lists(usb):
 
 
 def restore_passwords(config, prompt, output):
-    """From the HDD's lists (the monthly snapshots' and setup's); with none there (the HDD
-    broke too, say), from the USB drive's copies of the newest lists."""
-    runs = password_snapshots(config)
-    if runs:
-        return restore_password_list(config, runs, prompt, output)
-    output('No password list on the HDD; looking on the USB drive.')
+    """Every password list there is, newest first: the HDD's (the monthly snapshots' and
+    setup's) and the USB drive's copies, when it is plugged in (the review of 0.46.1: with
+    any list on the HDD, a newer one on the USB drive was never offered)."""
+    hdd = password_snapshots(config)
     with Usb(config) as usb:
-        runs = usb_password_lists(usb)
+        runs = newest_first(hdd + usb_password_lists(usb))
         if not runs:
-            output('No password list on the USB drive either (or it is not plugged in).')
+            output('No password list on the HDD, nor on the USB drive (or it is not plugged in).')
             return
         return restore_password_list(config, runs, prompt, output)
 
 
 def restore_password_list(config, runs, prompt, output):
-    run = choose('Restore the password list from which monthly snapshot?', [(p, d) for p, d in runs], prompt, output)
+    run = choose('Restore which password list (newest first)?', [(p, d) for p, d in runs], prompt, output)
     if run is None:
         return
     target = new_folder(unused(Path('/root') / f'nekoserver-passwords-{stamp()}'), prompt, output, backup_trees(config))
@@ -2221,6 +2219,16 @@ def checked_drive(config, prompt, output, run, writes, errors):
     if busy:
         output(f'{busy}: check the drive once it has finished. Nothing was changed.')
         return
+    mounted = run(
+        ['findmnt', '-no', 'UUID', '--mountpoint', str(folder)], capture_output=True, text=True, timeout=30, check=False
+    )
+    if (mounted.stdout or '').strip() != uuid:
+        # The review of 0.46.1: with another drive mounted there (or settings out of date),
+        # one filesystem was unmounted and another, the saved UUID's, checked.
+        raise RuntimeError(
+            f'{folder} holds another drive than the settings name (UUID {(mounted.stdout or "").strip() or "unknown"}, '
+            f'not {uuid}). Nothing was changed; run  sudo bash install.sh  so setup sees which drive it is.'
+        )
     run(['systemctl', 'stop', *WRITERS], capture_output=True, text=True, timeout=600, check=False)
     unmounted(folder, run)
     repaired(folder, f'/dev/disk/by-uuid/{uuid}', fstype, prompt, output, run)
@@ -2255,10 +2263,17 @@ def repaired(folder, device, fstype, prompt, output, run):
     output('Checking (on a large drive this takes a few minutes)...')
     fsck = run(['e2fsck', '-f', '-p', device], capture_output=True, text=True, timeout=6 * 3600, check=False)
     output((fsck.stdout or '').strip()[-1500:])
-    if fsck.returncode >= 4:
+    # 0: clean, 1: repaired, 2: repaired, restart advised. Anything else, also a negative
+    # code (e2fsck killed part-way, the review of 0.46.1), is not a finished repair.
+    if fsck.returncode not in (0, 1, 2):
+        what = (
+            'was stopped before it finished'
+            if fsck.returncode < 0
+            else f'found problems it does not fix without asking (exit {fsck.returncode})'
+        )
         raise RuntimeError(
-            f'e2fsck found problems it does not fix without asking (exit {fsck.returncode}). Run  sudo e2fsck -f '
-            f'{device}  yourself: it asks before each change. Then run  sudo bash install.sh  to mount the drive again.'
+            f'e2fsck {what}. Run  sudo e2fsck -f {device}  yourself: it asks before each change. Then run  sudo bash '
+            'install.sh  to mount the drive again.'
         )
 
 

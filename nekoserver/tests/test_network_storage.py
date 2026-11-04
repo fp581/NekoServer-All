@@ -686,12 +686,15 @@ class ReadOnlyCheckTests(unittest.TestCase):
         self.codes = {}
         self.busy = None
         self.lock = contextlib.nullcontext()
+        self.mounted = 'nas-0001'  # the drive findmnt finds at the folder
 
     def run_(self, argv, **kwargs):
         self.calls.append(argv)
         if argv[0] == 'systemctl' and argv[1] == 'start' and argv[2].endswith('.mount'):
             self.writable['/mnt/nekoserver-media'] = True  # mounted again, repaired
         out = 'mnt-nekoserver\\x2dmedia.mount\n' if argv[0] == 'systemd-escape' else 'clean\n'
+        if argv[0] == 'findmnt':
+            out = (self.mounted if argv[-1] == '/mnt/nekoserver-media' else 'ssd-0001') + '\n'
         return mock.Mock(returncode=self.codes.get(argv[0], 0), stdout=out, stderr='')
 
     def check(self, answers):
@@ -714,10 +717,26 @@ class ReadOnlyCheckTests(unittest.TestCase):
     def test_the_drive_is_unmounted_checked_mounted_and_the_apps_started_in_that_order(self):
         self.check(['y', 'y'])
         order = [c[0] if c[0] != 'systemctl' else c[0] + ' ' + c[1] for c in self.calls]
-        self.assertEqual(order, ['systemctl stop', 'umount', 'e2fsck', 'systemd-escape', 'systemctl start', 'apps'])
-        self.assertEqual(self.calls[1], ['umount', '/mnt/nekoserver-media'])  # never -f or -l
-        self.assertEqual(self.calls[2], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/nas-0001'])
+        self.assertEqual(
+            order, ['findmnt', 'systemctl stop', 'umount', 'e2fsck', 'systemd-escape', 'systemctl start', 'apps']
+        )
+        self.assertEqual(self.calls[2], ['umount', '/mnt/nekoserver-media'])  # never -f or -l
+        self.assertEqual(self.calls[3], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/nas-0001'])
         self.assertIn('takes writes', self.said[-1])
+
+    def test_a_repair_cut_off_or_on_another_drive_is_never_called_a_success(self):
+        """The review of 0.46.1: e2fsck killed (a negative code) passed as repaired, and the
+        drive mounted at the folder was never checked to be the one the settings name."""
+        self.codes['e2fsck'] = -9
+        with self.assertRaisesRegex(RuntimeError, 'e2fsck was stopped before it finished'):
+            self.check(['y', 'y'])
+        self.assertNotIn(['apps'], self.calls)
+        self.calls.clear()
+        self.codes.clear()
+        self.mounted = 'other-0001'
+        with self.assertRaisesRegex(RuntimeError, 'holds another drive than the settings name'):
+            self.check(['y'])
+        self.assertEqual([c[0] for c in self.calls], ['findmnt'])  # nothing stopped or unmounted
 
     def test_nothing_is_done_without_a_yes_or_when_every_drive_writes(self):
         self.check(['n'])
@@ -789,8 +808,8 @@ class ReadOnlyCheckTests(unittest.TestCase):
         self.writable['/mnt/nekoserver-media'] = True
         self.errors['/srv/nekoserver'] = 3
         self.check(['y', 'y'])
-        self.assertEqual(self.calls[1], ['umount', '/srv/nekoserver'])
-        self.assertEqual(self.calls[2], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/ssd-0001'])
+        self.assertEqual(self.calls[2], ['umount', '/srv/nekoserver'])
+        self.assertEqual(self.calls[3], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/ssd-0001'])
 
     def test_the_error_count_is_read_from_the_mounted_filesystem(self):
         with tempfile.TemporaryDirectory() as d:

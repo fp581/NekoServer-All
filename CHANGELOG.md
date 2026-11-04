@@ -2,7 +2,7 @@
 
 ## v0.46.2 — 2026-11-04
 
-A stabilization release: fixes only. They come from a new audit of 0.46.1 (four separate reviews: the NAS code, the Compose checks, backups and restores, drive moves and setup) and the project owner's review of `v0.46.1-beta`. Each fix has a test that fails on 0.46.1.
+A stabilization release: fixes only. They come from a new audit of 0.46.1 (four separate reviews: the NAS code, the Compose checks, backups and restores, drive moves and setup) and the project owner's two reviews of `v0.46.1-beta`. Each fix has a test that fails on 0.46.1.
 
 ### Fixed: Compose files can't reach further than the app
 - **Networks are checked** (P1). The check looked at a model's networks only as a key name. These passed:
@@ -31,10 +31,12 @@ A stabilization release: fixes only. They come from a new audit of 0.46.1 (four 
 - **CHAP logins saved by 0.46.0 are noted**, so a login lost later is noticed. Settings from 0.46.0 didn't say which target had one.
 - **A NAS holding only the backup drive gets the minute check**, and a target without a session is logged in to again, also the backup drive's while the media drive is fine.
 - **The backup drive on a NAS is checked by its NAS disk identity (WWN)**, like the SSD and the HDD. Setup notes it; the weekly copy refuses a restored or cloned LUN with the same UUID.
+- **A drive repair cut off is never called a success.** e2fsck killed part-way returns a negative code, which passed as "repaired"; the drive was mounted again and the apps started. Only 0, 1 and 2 count now.
+- **The repair checks it has the drive the settings name** before stopping anything: with another drive mounted at the folder (or settings out of date), it unmounted one filesystem and checked another.
 - STORAGE.md says the read-only protection and the repair are for ext4.
 
 ### Fixed: backups and recovery
-- **The recovery menu offers the password lists setup makes**, newest first with the monthly snapshots' lists. It looked only at the monthly snapshots, so a newer list, and the only one before the first monthly snapshot, was never offered.
+- **The recovery menu offers every password list, newest first:** the monthly snapshots', the ones setup makes, and the USB drive's copies when it is plugged in. It looked only at the monthly snapshots, so a newer list from setup (and the only one before the first monthly snapshot) was never offered, and the USB drive was looked at only when the HDD had none.
 - **A password list dated in the future (a wrong clock) is never the newest for good**, and one cut off before its manifest no longer takes the place of a good one.
 - **Photos on the media drive:** setup and STORAGE.md say that their weekly archive copy is on the same drive, so the USB backup is the only copy on another drive.
 - STORAGE.md says a missed week is caught up when the PC starts again, as the timers do. It said the opposite.
@@ -44,6 +46,9 @@ A stabilization release: fixes only. They come from a new audit of 0.46.1 (four 
 - **Setup never offers the USB backup drive as the SSD or the HDD.**
 - **A server set up before 0.46.0, updated with no one at the keyboard, keeps its layout.** An empty music or photo folder was quietly put on the media drive.
 - A cut-off `back` is told to go back again, not to start a move, and STORAGE.md says when a move cut off during its switch starts over.
+
+### Fixed: the System tab
+- **Debian shows a restart is needed when a newer kernel waits.** Debian keeps the running kernel's modules when a newer kernel is installed, and writes `/run/reboot-required` only with update-notifier, so "no restart required" was shown. A newer installed kernel of the same kind now counts.
 
 ### Fixed: releases
 - **A beta tagged `v0.46.1-beta`** (as 0.46.1 was) is read as a beta by the updates page, the upgrade and the release-channel check. The updater accepted only `v0.46.1Beta`, and the check failed, leaving that beta marked as stable on GitHub. Both spellings are betas now (README.md, Release channels).

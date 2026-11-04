@@ -135,6 +135,23 @@ class ReadTests(unittest.TestCase):
                 s.REQUIRED,
             )
 
+    def test_a_newer_debian_kernel_waiting_means_a_restart(self):
+        """The review of 0.46.1: Debian keeps the running kernel's modules when a newer
+        kernel is installed, and with no update-notifier there is no flag either."""
+        with tempfile.TemporaryDirectory() as tmp:
+            modules = Path(tmp) / 'modules'
+            for name in ('6.1.0-25-amd64', '6.1.0-26-amd64', '6.1.0-27-rt-amd64'):
+                (modules / name).mkdir(parents=True)
+            flag = Path(tmp) / 'reboot-required'
+            quiet = lambda argv, timeout=600: (0, '')  # noqa: E731
+            state, why = s.restart_needed('debian', quiet, '6.1.0-25-amd64', modules, flag)
+            self.assertEqual(state, s.REQUIRED)
+            self.assertIn('6.1.0-26-amd64', why[0])
+            # The newest of its kind already runs (another kind's newer one doesn't count).
+            self.assertEqual(s.restart_needed('debian', quiet, '6.1.0-26-amd64', modules, flag), (s.NOT_REQUIRED, []))
+        self.assertEqual(s.newer_kernel('6.10.2-1-amd64', ['6.9.12-1-amd64', '6.10.11-1-amd64']), '6.10.11-1-amd64')
+        self.assertIsNone(s.newer_kernel('weird', ['6.1.0-1-amd64']))
+
     def test_the_answer_is_never_written_where_the_ssd_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings = Path(tmp) / 'config.json'

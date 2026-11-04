@@ -1687,7 +1687,6 @@ class RecoveryWizardTests(unittest.TestCase):
             out = []
             recovery_wizard.restore_passwords(self.config, answers('1'), out.append)
         said = '\n'.join(out)
-        self.assertIn('looking on the USB drive', said)
         self.assertIn('(copy on the USB drive)', said)
         self.assertEqual(restored[0][:3], ('backup_secrets.py', '--restore', str(usb / 'passwords/100-1')))
 
@@ -1702,6 +1701,22 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertEqual([p.name for p, _ in runs], ['1800000000000000-0', '1700000000000000-4'])
         self.assertIn('(made by setup)', runs[0][1])
 
+    def test_a_newer_list_on_the_usb_drive_is_offered_first(self):
+        """The review of 0.46.1: with any list on the HDD, the USB drive was not looked at."""
+        self.write('hdd/backups/monthly/1700000000000000-4/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('hdd/backups/monthly/1700000000000000-4/secrets.tar.cms', b'older')
+        self.write('usb/passwords/1750000000000000-0/manifest.json', b'{"format":"neko-maintenance-v1"}')
+        self.write('usb/passwords/1750000000000000-0/secrets.tar.cms', b'newer')
+        restored = []
+        with (
+            mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=self.root / 'usb'),
+            mock.patch.object(recovery_wizard.Usb, '__exit__', return_value=None),
+            mock.patch.object(recovery_wizard, 'tool', side_effect=lambda *a: restored.append(a) or True),
+            mock.patch.object(recovery_wizard, 'new_folder', return_value=self.root / 'out'),
+        ):
+            recovery_wizard.restore_passwords(self.config, answers('1'), [].append)
+        self.assertEqual(restored[0][2], str(self.root / 'usb/passwords/1750000000000000-0'))
+
     def test_no_password_list_anywhere_is_said(self):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),
@@ -1709,7 +1724,7 @@ class RecoveryWizardTests(unittest.TestCase):
         ):
             out = []
             recovery_wizard.restore_passwords(self.config, answers(), out.append)
-        self.assertIn('No password list on the USB drive either', out[-1])
+        self.assertIn('No password list on the HDD, nor on the USB drive', out[-1])
 
     def test_a_drive_that_fills_up_mid_restore_says_what_is_there(self):
         import errno
