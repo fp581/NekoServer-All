@@ -105,9 +105,10 @@ def load_settings(settings):
 
 
 def lsblk():
-    """Every filesystem lsblk knows: name, UUID, type, size, mounted where, its disk."""
+    """Every filesystem lsblk knows: name, UUID, type, size, mounted where, its disk, and
+    how a disk is connected (TRAN: iscsi for a disk on a NAS)."""
     shown = json.loads(
-        run(['lsblk', '-J', '-b', '-p', '-o', 'NAME,UUID,FSTYPE,SIZE,MOUNTPOINTS,PKNAME,TYPE'], 60).stdout
+        run(['lsblk', '-J', '-b', '-p', '-o', 'NAME,UUID,FSTYPE,SIZE,MOUNTPOINTS,PKNAME,TYPE,TRAN'], 60).stdout
     )
 
     def walk(rows):
@@ -162,16 +163,24 @@ def disk_of(rows, uuid):
     return physical_disks(rows, row['name']) if row else set()
 
 
+def on_nas(rows, disks):
+    """True when one of `disks` is a disk on a network storage box (iSCSI)."""
+    return any(r.get('tran') == 'iscsi' for r in rows if r.get('name') in disks)
+
+
 def targets(config, drive, rows=None, used=None):
     """The filesystems `drive` can move to: a supported type, not mounted, on a disk of
-    its own (not the old drive's, the other drive's or the system's), big enough. Each
-    as (uuid, fstype, size, name); the reasons the others are left out, as words."""
+    its own (not the old drive's, the other drive's, the USB backup drive's or the
+    system's), big enough, and for the SSD on this PC (setup refuses a NAS disk for it).
+    Each as (uuid, fstype, size, name); the reasons the others are left out, as words."""
     rows = rows if rows is not None else lsblk()
     mount_key = DRIVES[drive][0]
     need = int((used if used is not None else used_bytes(mount_path(config[mount_key]))) * MARGIN)
     taken = set().union(
         *(disk_of(rows, config['storage'][k]['uuid']) for k in DRIVES if config.get('storage', {}).get(k))
     )
+    backup = config.get('photos', {}).get('external_backup_uuid')
+    backup_disks = disk_of(rows, backup) if backup else set()
     system = system_disks(rows)
     found, left_out = [], []
     for row in rows:
@@ -179,6 +188,13 @@ def targets(config, drive, rows=None, used=None):
         if not row.get('uuid') or row.get('fstype') not in FILESYSTEMS or disks & (taken | system):
             continue
         why = why_not(row, need)
+        if disks & backup_disks:
+            why = 'the USB backup drive (a backup must stay on a drive of its own)'
+        elif drive == 'data_ssd' and on_nas(rows, disks):
+            why = (
+                'a disk on the network storage box; the SSD for the apps must be connected to this PC '
+                '(it holds the databases)'
+            )
         if why:
             left_out.append(f'{row.get("name")}: {why}')
         else:
@@ -291,12 +307,15 @@ def monotonic_usec():
 
 def started_since(units, since):
     """Those of `units` started after `since` (monotonic_usec, this boot): running now,
-    or started and stopped again meanwhile (by you, or by a recovery that stopped them)."""
+    or started and stopped again meanwhile (by you, or by a recovery that stopped them).
+    None when systemd could not say for one of them: then nobody knows."""
     started = []
     for unit in units:
         shown = run(['systemctl', 'show', '--property=InactiveExitTimestampMonotonic', unit], 30, check=False)
         value = (getattr(shown, 'stdout', '') or '').strip().partition('=')[2]
-        if value.isdigit() and int(value) > since:
+        if getattr(shown, 'returncode', 0) or not value.isdigit():
+            return None
+        if int(value) > since:
             started.append(unit)
     return started
 
@@ -802,10 +821,15 @@ def ran_again_on_old(saved, fstab):
     stopped = [u for u in saved.get('stopped') or [] if isinstance(u, str) and UNIT.fullmatch(u)]
     if active(stopped):
         return True
-    boot, since = saved.get('boot'), saved.get('since')
-    if isinstance(boot, str) and boot and boot != this_boot():
+    # What can't be known counts as "ran again" (the 0.46.0 review): a record without the
+    # boot and the time (one written before 0.45.8), this boot's ID unreadable, or systemd
+    # not saying when a service last started. Starting over only copies again; switching
+    # to a copy that is out of date would lose what was saved since.
+    boot, since, now = saved.get('boot'), saved.get('since'), this_boot()
+    if not (isinstance(boot, str) and boot and now and type(since) is int) or boot != now:
         return True
-    return isinstance(since, int) and bool(started_since(stopped, since))
+    started = started_since(stopped, since)
+    return started is None or bool(started)
 
 
 def resume_held(settings, out, journal, staging, fstab):

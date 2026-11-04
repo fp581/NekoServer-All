@@ -111,88 +111,38 @@ def usable_additions(compose, log=print, gpu=None):
     return kept
 
 
-# What a service may not ask for (the monthly update refuses the same, maintenance.rs
-# widens_rights): more rights, another runtime, or devices beyond the graphics chip.
-WIDER = ('cap_add', 'userns_mode', 'cgroup', 'cgroup_parent', 'uts', 'device_cgroup_rules', 'gpus', 'runtime')
-SAFE_OPTIONS = ('no-new-privileges:true', 'no-new-privileges')
-CHIP = re.compile(r'/dev/dri(/(renderD|card)\d{1,4})?')
-
-
-def device_parts(device):
-    """(source, target, permissions) of one device as Compose shows it, or None."""
-    if isinstance(device, str):
-        parts = device.split(':')
-        if len(parts) > 3:
-            return None
-        return parts[0], parts[1] if len(parts) > 1 else parts[0], parts[2] if len(parts) > 2 else 'rwm'
-    if isinstance(device, dict) and set(device) <= {'source', 'target', 'permissions'}:
-        source = device.get('source')
-        return source, device.get('target', source), device.get('permissions', 'rwm')
-    return None
-
-
-def chip_only(devices):
-    """Devices as Compose shows them ("/dev/dri:/dev/dri[:rwm]" or {source, target,
-    permissions}): only the graphics chip, at the same place."""
-    if not isinstance(devices, list):
-        return False
-    for device in devices:
-        source, target, rights = device_parts(device) or (None, None, None)
-        if not (isinstance(source, str) and CHIP.fullmatch(source) and source == target):
-            return False
-        if not (isinstance(rights, str) and rights and set(rights) <= set('rwm')):
-            return False
-    return True
-
-
-def plain_volume(volume):
-    """A named volume on Docker's own storage: never one defined to bind a folder of this
-    PC (driver_opts "o: bind", "device: /"), another driver's, or an external one."""
-    if volume is None:
-        return True
-    return (
-        isinstance(volume, dict)
-        and set(volume) <= {'name', 'driver', 'driver_opts', 'external', 'labels'}
-        and volume.get('driver', 'local') == 'local'
-        and not volume.get('driver_opts')
-        and volume.get('external', False) is False
-    )
-
-
-def widened(name, service):
-    """What one service asks for beyond what NekoServer gives it; its graphics chip
-    mapping, once checked, is taken out (recovery_tools.validate_model refuses any)."""
-    wider = [key for key in WIDER if key in service]
-    options = service.get('security_opt', [])
-    if not isinstance(options, list) or any(o not in SAFE_OPTIONS for o in options):
-        wider.append('security_opt')
-    devices = service.pop('devices', None)
-    if devices is not None and not (name == 'immich-server' and chip_only(devices)):
-        wider.append('devices')
-    ports = service.get('ports', [])
-    if not isinstance(ports, list) or any(not isinstance(p, dict) or p.get('host_ip') != '127.0.0.1' for p in ports):
-        wider.append('ports beyond this PC')
-    return wider
-
-
-def checked_model(model, upload, db):
+def checked_model(model, upload, db, config, ask=None):
     """The downloaded Immich release's Compose file, as Docker reads it, before anything
-    starts: the four standard services with the folders NekoServer gave them
-    (recovery_tools.validate_model), the app's port on this PC only, no more rights, no
-    device but the graphics chip (for the server), and named volumes on Docker's own
-    storage. An altered file is refused before it can reach this PC's files."""
+    starts. Checked with the monthly update's own rules, which live once, in the runtime
+    (`nekoserver-runtime check-compose`, maintenance.rs valid_model):
+    - the four standard services, and no more rights
+    - the app's port on this PC only
+    - no device but the graphics chip
+    - named volumes on Docker's own storage, under Immich's own name, and one that already
+      exists only when Compose made it for Immich
+    - binds only to the folders NekoServer gave Immich
+    Then the snapshot's needs (recovery_tools.validate_model): the folders where Immich
+    looks for them, one database it can be restored into."""
     import copy
+    import tempfile
+
+    import native_runtime
     import recovery_tools
 
-    model = copy.deepcopy(model)
     refused = 'The downloaded Immich Compose file asks for more than NekoServer gives Immich ({}); nothing was started'
-    volumes = model.get('volumes', {})
-    if not isinstance(volumes, dict) or not all(plain_volume(v) for v in volumes.values()):
-        raise RuntimeError(refused.format('a volume that is not on Docker\'s own storage'))
-    for name, service in (model.get('services') or {}).items():
-        wider = widened(name, service) if isinstance(service, dict) else []
-        if wider:
-            raise RuntimeError(refused.format(name + ': ' + ', '.join(wider)))
+    with tempfile.TemporaryDirectory(prefix='neko-compose-') as work:
+        settings, models = Path(work) / 'settings.json', Path(work) / 'model.json'
+        settings.write_text(json.dumps({k: config.get(k) for k in ('data_mount', 'media_mount', 'locations')}))
+        models.write_text(json.dumps(model))
+        args = ['check-compose', '--config', str(settings), '--app', 'immich', '--model', str(models)]
+        code, said = (ask or native_runtime.ask_runtime)(Path(__file__).resolve().parents[1], config, args)
+    if code != 0:
+        raise RuntimeError(refused.format(said.splitlines()[-1] if said else f'exit {code}'))
+    model = copy.deepcopy(model)
+    # The graphics chip, which the runtime's check allows, is no part of the snapshot.
+    for service in (model.get('services') or {}).values():
+        if isinstance(service, dict):
+            service.pop('devices', None)
     try:
         recovery_tools.validate_model(model, upload, db)
     except RuntimeError as exc:
@@ -350,7 +300,7 @@ def _run(ctx):
         *usable_additions(compose, ctx.log),
     ]
     shown = checked_run([*base, 'config', '--format', 'json'], 60, 'Immich (docker compose config)')
-    checked_model(json.loads(shown.stdout), upload, db)
+    checked_model(json.loads(shown.stdout), upload, db, cfg)
     compose_up(base, 'Immich', ctx.log, 1200)
     ctx.log(
         'Immich deployed; upload library and permanent photo archive are separate. Configure phone settings and verify no deletion sync before use.'

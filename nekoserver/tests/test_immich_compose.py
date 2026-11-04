@@ -3,6 +3,10 @@ the same rules as the monthly update (maintenance.rs valid_model): an altered fi
 no more of this PC than NekoServer gives Immich."""
 
 import copy
+import json
+import os
+import subprocess
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -41,15 +45,84 @@ MODEL = {
 }
 
 
+CONFIG = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
+BINARY = ROOT / 'runtime/bin/nekoserver-runtime'
+
+
+# A stand-in for Docker: the volumes that exist now (NEKO_TEST_VOLUMES, as `docker volume
+# inspect` shows them), so the check of existing volumes runs without a Docker daemon.
+FAKE_DOCKER = """#!/usr/bin/env python3
+import json, os, sys
+volumes = json.loads(os.environ.get('NEKO_TEST_VOLUMES', '[]'))
+args = [a for a in sys.argv[1:] if not a.startswith('--host') and not a.startswith('unix:')]
+if args[:2] == ['volume', 'ls']:
+    print('\\n'.join(v['Name'] for v in volumes))
+elif args[:2] == ['volume', 'inspect']:
+    print(json.dumps([v for v in volumes if v['Name'] == args[2]]))
+else:
+    sys.exit(1)
+"""
+
+
+def runtime(project, config, args, volumes=()):
+    """The runtime built from these sources (as CI builds it), asked directly."""
+    with tempfile.TemporaryDirectory() as bin_dir:
+        docker = Path(bin_dir) / 'docker'
+        docker.write_text(FAKE_DOCKER)
+        docker.chmod(0o755)
+        env = {
+            **os.environ,
+            'PATH': f'{bin_dir}:{os.environ.get("PATH", "")}',
+            'NEKO_TEST_VOLUMES': json.dumps(volumes),
+        }
+        done = subprocess.run([str(BINARY), *args], capture_output=True, text=True, timeout=60, check=False, env=env)
+    return done.returncode, (done.stdout + done.stderr).strip()
+
+
+def volume(**labels):
+    """A volume as `docker volume inspect` shows it."""
+    return {'Name': 'neko-immich_model-cache', 'Driver': 'local', 'Options': None, 'Labels': labels or None}
+
+
+OURS = {'com.docker.compose.project': 'neko-immich', 'com.docker.compose.volume': 'model-cache'}
+
+
+@unittest.skipUnless(BINARY.is_file(), 'the runtime is not built (python3 runtime/build.py)')
 class ImmichComposeTests(unittest.TestCase):
-    def check(self, change):
+    """0.46.1: the rules live once, in the runtime (check-compose); these run the real one."""
+
+    def check(self, change, volumes=()):
         model = copy.deepcopy(MODEL)
         change(model)
-        photos.checked_model(model, UPLOAD, DB)
+        photos.checked_model(model, UPLOAD, DB, CONFIG, ask=lambda *a: runtime(*a, volumes=volumes))
 
-    def refused(self, change):
+    def refused(self, change, volumes=()):
         with self.assertRaisesRegex(RuntimeError, 'asks for more than NekoServer gives Immich'):
-            self.check(change)
+            self.check(change, volumes)
+
+    def test_keys_that_give_more_access_are_refused(self):
+        """The 0.46.0 review, P1: Docker's own socket, lifecycle hooks with every right, and
+        secrets or configs read from this PC's files all passed both checks."""
+        server = lambda **kw: lambda m: m['services']['immich-server'].update(**kw)  # noqa: E731
+        for change in (
+            server(use_api_socket=True),
+            server(post_start=[{'command': 'sh -c id', 'user': 'root', 'privileged': True}]),
+            server(pre_stop=[{'command': 'sh', 'privileged': True}]),
+            server(secrets=[{'source': 'key', 'target': 'key'}]),
+            lambda m: m.update(secrets={'key': {'file': '/root/.ssh/id_ed25519'}}),
+            lambda m: m.update(configs={'shadow': {'file': '/etc/shadow'}}),
+        ):
+            self.refused(change)
+
+    def test_only_a_volume_compose_made_for_immich_is_used(self):
+        """The 0.46.0 review: any volume name passed, and Compose uses an existing volume of
+        that name as it is (another app's files, or a bind of this PC's folders)."""
+        self.check(lambda m: None)  # not there yet: Compose makes it
+        self.check(lambda m: None, [volume(**OURS)])
+        self.refused(lambda m: None, [volume()])  # made by hand
+        bound = {**volume(**OURS), 'Options': {'type': 'none', 'o': 'bind', 'device': '/root'}}
+        self.refused(lambda m: None, [bound])
+        self.refused(lambda m: m['volumes']['model-cache'].update(name='someone-elses-files'))
 
     def test_immichs_own_file_and_the_graphics_chip_pass(self):
         self.check(lambda m: None)
@@ -93,8 +166,9 @@ class ImmichComposeTests(unittest.TestCase):
 
     def test_setup_checks_the_file_before_starting_it(self):
         source = (ROOT / 'modules/photos.py').read_text()
+        self.assertNotIn('def chip_only', source)  # no second copy of the rules
         self.assertLess(
-            source.index('checked_model(json.loads(shown.stdout), upload, db)'),
+            source.index('checked_model(json.loads(shown.stdout), upload, db, cfg)'),
             source.index("compose_up(base, 'Immich', ctx.log, 1200)"),
         )
 

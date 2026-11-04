@@ -52,6 +52,8 @@ def iqn_ok(name):
 APPEAR_WAIT = 30
 # "already logged in" (ISCSI_ERR_SESS_EXISTS) is no failure.
 SESSION_EXISTS = 15
+# The NAS refused the login (ISCSI_ERR_LOGIN_AUTH_FAILED): not allowed, or a wrong CHAP login.
+AUTH_REFUSED = 24
 # How long this PC waits for a NAS that stopped answering before its writes fail (open-
 # iscsi's replacement timeout, 120 s by default). Tried in the lab: a break of up to two
 # minutes only paused the writes, but a longer one failed them and ext4 aborted its
@@ -90,6 +92,9 @@ def options(config):
     targets = values.get('targets', [])
     if not isinstance(targets, list) or not all(iqn_ok(t) for t in targets):
         raise RuntimeError('network_storage.targets must be iSCSI names (iqn.2013-03.com.example:target)')
+    chap = values.get('chap', [])
+    if not isinstance(chap, list) or not all(t in targets for t in chap):
+        raise RuntimeError('network_storage.chap must list targets of network_storage.targets')
     return values
 
 
@@ -137,9 +142,34 @@ def initiator_name(path=INITIATOR, run=subprocess.run):
     return made
 
 
+def kept_initiator(options, log, path=INITIATOR, run=subprocess.run):
+    """This PC's iSCSI name, the same one the NAS allows: saved in the settings
+    (`network_storage.initiator`), so after Linux is installed again (which makes a new
+    name) setup puts the saved one back instead of the NAS refusing the new one."""
+    name = initiator_name(path, run)
+    saved = options.get('initiator')
+    if isinstance(saved, str) and iqn_ok(saved) and saved != name:
+        atomic_write(Path(path), f'InitiatorName={saved}\n', 0o644)
+        import host
+
+        restarted = run_tool(['systemctl', 'restart', host.current().service('iscsid')], 120, run)
+        if restarted.returncode:
+            raise RuntimeError(
+                f'Could not restart iscsid with the saved iSCSI name: {(restarted.stderr or "").strip()[:200]}'
+            )
+        log(f'iSCSI name: {name} replaced by the saved one the NAS allows ({saved})')
+        name = saved
+    options['initiator'] = name
+    return name
+
+
 def discovered(portal, run=subprocess.run):
-    """The targets the NAS offers at `portal`: [(target IQN, portal as the NAS gave it)]."""
-    done = run_tool(['iscsiadm', '-m', 'discovery', '-t', 'sendtargets', '-p', portal], 60, run)
+    """The targets the NAS offers at `portal`: [(target IQN, portal as the NAS gave it)].
+    Only listed (`-o nonpersistent`): open-iscsi's plain discovery also rewrites the saved
+    record of every target it finds from the defaults, which took a target's CHAP login
+    away at a repeat setup (the 0.46.0 review, H05). Records are made only for the
+    targets chosen (known_at), and never rewritten."""
+    done = run_tool(['iscsiadm', '-m', 'discovery', '-t', 'sendtargets', '-p', portal, '-o', 'nonpersistent'], 60, run)
     if done.returncode:
         said = (done.stderr or done.stdout or '').strip().splitlines()
         raise RuntimeError(
@@ -164,15 +194,17 @@ def node_record(iqn, portal, roots=NODE_ROOTS):
     for root in roots:
         folder = Path(root) / iqn
         entries = sorted(folder.iterdir()) if folder.is_dir() else []
-        found = next((r for e in entries if (r := record_in(e, f'{host},{port},'))), None)
+        found = next((r for e in entries if (r := record_in(e, f'{host},{port}'))), None)
         if found:
             return found
     return None
 
 
 def record_in(entry, prefix):
-    """The settings file a portal's entry holds (a folder with "default", or the file)."""
-    if not entry.name.startswith(prefix) or entry.is_symlink():
+    """The settings file a portal's entry holds (a folder with "default", or the file).
+    Named <host>,<port>,<tpgt> when discovery made it, <host>,<port> when made by hand
+    (`-o new`, known_at: seen in the lab, where the first match missed it)."""
+    if not (entry.name == prefix or entry.name.startswith(prefix + ',')) or entry.is_symlink():
         return None
     record = entry / 'default' if entry.is_dir() else entry
     return record if record.is_file() and not record.is_symlink() else None
@@ -198,11 +230,17 @@ def chap_ok(user, password):
     return bool(plain.fullmatch(user or '') and plain.fullmatch(password or '')) and len(password) >= 12
 
 
-def set_chap(iqn, portal, user, password, roots=NODE_ROOTS):
+def set_chap(iqn, portal, user, password, roots=NODE_ROOTS, run=None):
+    """The CHAP login written in the target's saved record, then read back through
+    iscsiadm (which shows the password as stars): never taken on trust."""
     record = node_record(iqn, portal, roots)
     if record is None:
         raise RuntimeError(f'The settings of {iqn} were not found after it was discovered; run setup again')
     atomic_write(record, with_chap(record.read_text(), user, password), 0o600)
+    if run is not None:
+        shown = run_tool(['iscsiadm', '-m', 'node', '-T', iqn, '-p', portal], 30, run).stdout or ''
+        if 'node.session.auth.authmethod = CHAP' not in shown or f'node.session.auth.username = {user}' not in shown:
+            raise RuntimeError(f'The CHAP login of {iqn} did not stay in its iSCSI settings; run setup again')
 
 
 def known_at(iqn, portal, run=subprocess.run):
@@ -218,27 +256,69 @@ def known_at(iqn, portal, run=subprocess.run):
             raise RuntimeError(f'Could not save {iqn} at {portal}' + (f' ({said[-1][:200]})' if said else ''))
 
 
+class LoginRefused(RuntimeError):
+    """The NAS refused this PC's login (a CHAP login missing or wrong, or this PC not
+    allowed on the target)."""
+
+
 def log_in(iqn, portal, run=subprocess.run):
     """Log in to a target, and again at every start of this PC (node.startup automatic)."""
     node = ['iscsiadm', '-m', 'node', '-T', iqn, '-p', portal]
-    for name, value in (
-        ('node.startup', 'automatic'),
-        ('node.conn[0].startup', 'automatic'),
-        ('node.session.timeo.replacement_timeout', str(REPLACEMENT_TIMEOUT)),
-    ):
-        run_tool([*node, '-o', 'update', '-n', name, '-v', value], 30, run)
+    for name, value in KEPT.items():
+        updated = run_tool([*node, '-o', 'update', '-n', name, '-v', value], 30, run)
+        if updated.returncode:
+            raise RuntimeError(
+                f'The setting {name} of {iqn} could not be saved ({last_said(updated)}), so the drive would not '
+                'come back by itself after a restart. Nothing was mounted; run setup again.'
+            )
+    saved_settings(iqn, portal, run)
     done = run_tool([*node, '--login'], 90, run)
     if done.returncode not in (0, SESSION_EXISTS):
-        said = (done.stderr or done.stdout or '').strip().splitlines()
-        reason = said[-1][:200] if said else f'exit {done.returncode}'
-        hint = (
-            'the NAS refused the login: check that this PC is allowed on that target (its initiator name, above) '
-            'and the CHAP user name and password'
-            if 'auth' in reason.lower()
-            else 'check the NAS'
-        )
-        raise RuntimeError(f'Could not log in to {iqn} ({reason}); {hint}, then run setup again')
+        raise login_failed(iqn, done)
     patient(iqn)
+
+
+def last_said(done):
+    """The last line a tool said, or its exit code."""
+    said = (done.stderr or done.stdout or '').strip().splitlines()
+    return said[-1][:200] if said else f'exit {done.returncode}'
+
+
+def login_failed(iqn, done):
+    """The error for a login iscsiadm refused: LoginRefused when the NAS said no (24;
+    iscsiadm's last line says only "Could not log into all portals", seen in the lab with
+    a wrong CHAP password)."""
+    said = ((done.stderr or '') + '\n' + (done.stdout or '')).strip()
+    lines = [line for line in said.splitlines() if line.strip()]
+    reason = lines[0][:200] if lines else f'exit {done.returncode}'
+    if done.returncode == AUTH_REFUSED or 'authoriz' in said.lower():
+        return LoginRefused(
+            f'Could not log in to {iqn} ({reason}); the NAS refused the login: check that this PC is allowed on '
+            'that target (its initiator name, above) and the CHAP user name and password, then run setup again'
+        )
+    return RuntimeError(f'Could not log in to {iqn} ({reason}); check the NAS, then run setup again')
+
+
+# What each target's saved record must say: logged in at every start, and the ten-minute
+# wait for a NAS that stops answering.
+KEPT = {
+    'node.startup': 'automatic',
+    'node.conn[0].startup': 'automatic',
+    'node.session.timeo.replacement_timeout': str(REPLACEMENT_TIMEOUT),
+}
+
+
+def saved_settings(iqn, portal, run=subprocess.run):
+    """The settings read back from the target's saved record: an update that said it
+    worked but left another value would only show after a restart (H01)."""
+    shown = run_tool(['iscsiadm', '-m', 'node', '-T', iqn, '-p', portal], 30, run)
+    values = {k: v for k, _, v in (line.partition(' = ') for line in (shown.stdout or '').splitlines()) if _}
+    wrong = [name for name, value in KEPT.items() if values.get(name, '').strip() != value]
+    if shown.returncode or wrong:
+        raise RuntimeError(
+            f'The saved settings of {iqn} do not say what setup wrote ({", ".join(wrong) or "unreadable"}), so the '
+            'drive would not come back as it should after a restart. Nothing was mounted; run setup again.'
+        )
 
 
 def patient(iqn, sessions=SESSIONS, block=Path('/sys/block'), by_path=BY_PATH):
@@ -381,9 +461,16 @@ def ask(prompt, input_fn):
 def chosen_targets(found, saved, input_fn, out_fn):
     """The targets NekoServer uses: those saved before (still offered), or those picked now."""
     names = [iqn for iqn, _ in found]
-    kept = [iqn for iqn in saved if iqn in names]
-    if kept:
-        return kept
+    missing = [iqn for iqn in saved if iqn not in names]
+    if missing:
+        # Never saved without them: the drive on it would be forgotten (H02).
+        raise RuntimeError(
+            'The NAS does not offer ' + ', '.join(missing) + ' now, which NekoServer uses. Check on the NAS that the '
+            'target is there and allows this PC, then run setup again. To stop using it on purpose, take it out of '
+            '"targets" under "network_storage" in my-config.json first. Nothing was changed.'
+        )
+    if saved:
+        return list(saved)
     out_fn('The NAS offers these iSCSI targets:')
     for n, iqn in enumerate(names, 1):
         out_fn(f'  {n}) {iqn}')
@@ -409,10 +496,27 @@ def asked_portal(saved, input_fn, out_fn):
     raise RuntimeError("No NAS address was given; run setup again to give it. Nothing was changed.")
 
 
-def asked_chap(iqn, portal, input_fn, out_fn, secret_fn):
-    answer = ask(f'Does the NAS ask for a CHAP user name and password for {iqn}? [y/N]: ', input_fn).lower()
-    if answer not in ('y', 'yes'):
-        return
+def chap_kept(iqn, portal, roots=NODE_ROOTS):
+    """The target's saved record still has its CHAP login."""
+    record = node_record(iqn, portal, roots)
+    try:
+        text = record.read_text() if record else ''
+    except OSError:
+        text = ''
+    return 'node.session.auth.authmethod = CHAP' in text and 'node.session.auth.password = ' in text
+
+
+def asked_chap(iqn, portal, input_fn, out_fn, secret_fn, again=False):
+    """A CHAP login for the target, when the NAS asks for one: True when one was saved.
+    `again`: why it is asked once more ('missing', or 'refused' by the NAS)."""
+    if again == 'refused':
+        out_fn(f'The NAS refused the login to {iqn}.')
+    if again == 'missing':
+        out_fn(f'The CHAP login of {iqn} is missing from its iSCSI settings; give it again.')
+    else:
+        answer = ask(f'Does the NAS ask for a CHAP user name and password for {iqn}? [y/N]: ', input_fn).lower()
+        if answer not in ('y', 'yes'):
+            return False
     for _ in range(3):
         user = ask('CHAP user name: ', input_fn)
         try:
@@ -420,11 +524,18 @@ def asked_chap(iqn, portal, input_fn, out_fn, secret_fn):
         except EOFError:
             password = ''
         if chap_ok(user, password):
-            set_chap(iqn, portal, user, password)
+            set_chap(iqn, portal, user, password, run=subprocess.run)
             out_fn(f'CHAP login saved for {iqn} (in its iSCSI settings, readable by root only)')
-            return
+            return True
         out_fn('The user name and password must be one line each, without = or #; the password 12 characters or more.')
     raise RuntimeError('No usable CHAP login was given; run setup again. Nothing was changed.')
+
+
+# SUPPORT.md: drives on a NAS are experimental until they have run on real servers.
+EXPERIMENTAL = (
+    'Drives on a NAS are experimental (SUPPORT.md): tried in a test lab, not yet on many real NAS boxes. '
+    'Keep a backup you have tried restoring before the NAS holds the only copy of anything.'
+)
 
 
 def run(context):
@@ -437,15 +548,16 @@ def run(context):
         return None
     if os.geteuid() != 0:
         raise RuntimeError('Connecting network drives requires root')
+    context.log(EXPERIMENTAL)
     import sys
 
     options = config.setdefault(SECTION, {})
     interactive = sys.stdin.isatty()
     install_tools(context.log)
-    say_initiator(context.log)
+    wait_for_network(context.log)
+    say_initiator(context.log, kept_initiator(options, context.log))
     portal, targets = connected(context, options, interactive)
     empty = listed_disks(context, portal, targets)
-    wait_for_network(context.log)
     context.log(
         'Both NAS drives are in one box: a fault of the NAS (its power supply, a setting) can take the media '
         'and the backup at once. Keep a second copy of what matters elsewhere when you can.'
@@ -453,9 +565,9 @@ def run(context):
     return unformatted(empty)
 
 
-def say_initiator(log):
+def say_initiator(log, name):
     log(
-        f"This PC's iSCSI name (initiator): {initiator_name()}\n"
+        f"This PC's iSCSI name (initiator): {name}\n"
         "  On the NAS, allow only this name on each iSCSI target NekoServer uses (in WD's My Cloud page: "
         'Storage > iSCSI, the target, Access). Each disk then belongs to this PC alone: another computer '
         'mounting it at the same time would damage it.'
@@ -464,31 +576,63 @@ def say_initiator(log):
 
 def connected(context, options, interactive):
     """The NAS's address and the targets NekoServer uses, logged in to (and saved)."""
-    import getpass
-
-    if not options.get('portal') and not interactive:
-        raise RuntimeError("The NAS's address is not saved yet; run  sudo bash install.sh  in a terminal")
-    portal = asked_portal(options.get('portal'), input, context.log)
-    if not answers(portal):
-        raise RuntimeError(
-            f'Nothing answers on {portal}: check that the NAS is on, its address, that iSCSI is switched on in '
-            'its settings, and that this PC is on the same network. Then run setup again.'
-        )
+    portal = reached_portal(options, interactive, context.log)
     found = discovered(portal)
     if not found:
         raise RuntimeError(f'The NAS at {portal} offers no iSCSI targets yet. Make one with a LUN on each pool first.')
     targets = chosen_targets(found, options.get('targets', []), input, context.log)
     install_rule()
     first_time = set(targets) - set(options.get('targets', []))
-    for iqn in targets:
-        known_at(iqn, portal)
-        if iqn in first_time and interactive:
-            asked_chap(iqn, portal, input, context.log, getpass.getpass)
-        log_in(iqn, portal)
-    options.update(portal=portal, targets=targets)
+    had_chap = set(options.get('chap', []))
+    chap = [iqn for iqn in targets if logged_in(context, iqn, portal, iqn in first_time, iqn in had_chap, interactive)]
+    options.update(portal=portal, targets=targets, chap=sorted(chap))
     if hasattr(context, 'persist_config'):
         context.persist_config()
     return portal, targets
+
+
+def reached_portal(options, interactive, log):
+    """The NAS's address (saved, or asked), checked to answer."""
+    if not options.get('portal') and not interactive:
+        raise RuntimeError("The NAS's address is not saved yet; run  sudo bash install.sh  in a terminal")
+    portal = asked_portal(options.get('portal'), input, log)
+    if not answers(portal):
+        raise RuntimeError(
+            f'Nothing answers on {portal}: check that the NAS is on, its address, that iSCSI is switched on in '
+            'its settings, and that this PC is on the same network. Then run setup again.'
+        )
+    return portal
+
+
+def logged_in(context, iqn, portal, first_time, had_chap, interactive):
+    """One target logged in to, with its CHAP login when the NAS asks for one: True when
+    it has one."""
+    import getpass
+
+    def asked(again=False):
+        return interactive and asked_chap(iqn, portal, input, context.log, getpass.getpass, again=again)
+
+    known_at(iqn, portal)
+    chap = had_chap
+    if first_time:
+        chap = asked() or had_chap
+    elif had_chap and not chap_kept(iqn, portal) and not asked('missing'):
+        # Taken away since (by hand, or a plain discovery of 0.46.0), and no one to ask.
+        raise RuntimeError(
+            f'The CHAP login of {iqn} is no longer in its iSCSI settings, so the NAS would refuse this PC '
+            'after the next restart. Run  sudo bash install.sh  in a terminal to give it again.'
+        )
+    try:
+        log_in(iqn, portal)
+    except LoginRefused:
+        # After Linux was installed again its iSCSI settings, CHAP logins included, are
+        # gone (settings from 0.46.0 don't say which target had one): asked, then once
+        # more. Refused again, or no one to ask: the message says what to check.
+        if not asked('refused'):
+            raise
+        chap = True
+        log_in(iqn, portal)
+    return chap
 
 
 def listed_disks(context, portal, targets):
@@ -511,15 +655,25 @@ def listed_disks(context, portal, targets):
 
 
 def wait_for_network(log):
+    """The start-up waits for the network before it logs in to the NAS. Without a network
+    manager that can say when the network is up, NekoServer can't manage drives on a
+    NAS safely: refused, before anything is mounted, rather than left to chance."""
     waiter = wait_online_unit()
-    if waiter:
-        run_tool(['systemctl', 'enable', waiter], 60)
-        log(f'At every start, the drives on the NAS are mounted once the network is up ({waiter})')
-    else:
-        log(
-            'Neither NetworkManager nor systemd-networkd runs here, so the start-up cannot wait for the '
-            'network: the NAS drives may show as missing after a restart until the network is up'
+    if not waiter:
+        raise RuntimeError(
+            'Neither NetworkManager nor systemd-networkd runs on this PC, so its start-up cannot wait for the '
+            'network before it connects to the NAS. NekoServer supports drives on a NAS only with one of them '
+            '(every desktop has NetworkManager; Ubuntu Server has systemd-networkd). Switch one on, or connect '
+            'the drives to this PC, then run setup again. Nothing was mounted.'
         )
+    enabled = run_tool(['systemctl', 'enable', waiter], 60)
+    if enabled.returncode or run_tool(['systemctl', 'is-enabled', '--quiet', waiter], 30).returncode:
+        raise RuntimeError(
+            f'{waiter} could not be switched on ({(enabled.stderr or "").strip()[:200] or "it is not enabled"}), so '
+            'this PC would not wait for the network before connecting to the NAS. Nothing was mounted; check it '
+            f'(sudo systemctl enable {waiter}), then run setup again.'
+        )
+    log(f'At every start, the drives on the NAS are mounted once the network is up ({waiter})')
 
 
 def unformatted(empty):

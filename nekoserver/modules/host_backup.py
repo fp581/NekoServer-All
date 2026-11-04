@@ -33,6 +33,10 @@ HOST_FILES = (
     '/etc/passwd',
     '/etc/group',
     '/etc/docker/daemon.json',
+    # This PC's iSCSI name, the one the NAS allows (also saved in the settings, which setup
+    # puts back). The targets' own records are not kept: they hold the CHAP password in
+    # plain text, and setup asks for it again after Linux is installed again.
+    '/etc/iscsi/initiatorname.iscsi',
     # The i2c driver OpenRGB needs for memory and motherboard lighting.
     '/etc/modules-load.d/nekoserver-i2c.conf',
     # OpenRGB's own settings, not its whole folder: the server writes a log there

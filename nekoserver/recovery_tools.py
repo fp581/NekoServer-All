@@ -533,7 +533,15 @@ def compose_args(config):
 IMMICH_BINDINGS = {'immich-server': ('/data', '/usr/src/app/upload'), 'database': ('/var/lib/postgresql/data',)}
 
 
+# What a Compose file may hold (runtime/src/shared.json "compose", the update's own list):
+# anything else (use_api_socket, post_start hooks, secrets or configs from this PC's files)
+# is refused before a snapshot or a restore test uses the file.
+COMPOSE_KEYS = neko_common.SHARED['compose']
+
+
 def validate_model(model, upload, database):
+    if not isinstance(model, dict) or set(model) - set(COMPOSE_KEYS['file_keys']):
+        raise RuntimeError('Custom Immich Compose settings (secrets, configs...) require manual isolated recovery')
     services = model.get('services', {})
     if set(services) != SERVICES:
         raise RuntimeError(
@@ -542,23 +550,9 @@ def validate_model(model, upload, database):
     for name, svc in services.items():
         if not isinstance(svc, dict) or not isinstance(svc.get('image'), str):
             raise RuntimeError('Invalid Immich service')
-        if any(
-            key in svc
-            for key in (
-                'build',
-                'privileged',
-                'devices',
-                'cap_add',
-                'network_mode',
-                'pid',
-                'ipc',
-                'user',
-                'secrets',
-                'configs',
-                'volumes_from',
-                'extends',
-            )
-        ):
+        # A snapshot also leaves out the graphics chip and another user (restore tests run
+        # without them).
+        if set(svc) - set(COMPOSE_KEYS['service_keys']) or {'devices', 'user'} & set(svc):
             raise RuntimeError('Custom Immich runtime settings require manual isolated recovery')
         seen = set()
         for volume in svc.get('volumes', []):

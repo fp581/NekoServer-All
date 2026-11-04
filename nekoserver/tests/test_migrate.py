@@ -44,6 +44,22 @@ CONFIG = {
 
 
 class TargetTests(unittest.TestCase):
+    def test_the_backup_drive_and_a_nas_disk_for_the_ssd_are_never_offered(self):
+        """The 0.46.0 review: the move offered the USB backup drive, and a NAS disk for
+        the SSD, both of which setup refuses, so the trouble came after the copy."""
+        rows = [*ROWS, {**row('/dev/sdg', None, None, 8000 * GB, None), 'type': 'disk', 'tran': 'iscsi'}]
+        rows.append(row('/dev/sdg1', 'lun-0001', 'ext4', 8000 * GB, '/dev/sdg'))
+        config = {**CONFIG, 'photos': {'external_backup_uuid': 'newbig-0001'}}
+        found, left_out = migrate.targets(config, 'data_ssd', rows, used=500 * GB)
+        self.assertNotIn('newbig-0001', [t[0] for t in found])
+        self.assertNotIn('lun-0001', [t[0] for t in found])
+        said = ' '.join(left_out)
+        self.assertIn('/dev/sdc1: the USB backup drive', said)
+        self.assertIn('/dev/sdg1: a disk on the network storage box', said)
+        # The media drive may move to the NAS.
+        found, _ = migrate.targets(config, 'media_hdd', rows, used=500 * GB)
+        self.assertIn('lun-0001', [t[0] for t in found])
+
     def test_only_an_empty_big_enough_filesystem_on_a_disk_of_its_own_is_offered(self):
         found, left_out = migrate.targets(CONFIG, 'media_hdd', ROWS, used=3000 * GB)
         self.assertEqual([t[0] for t in found], ['newbig-0001'])
@@ -326,8 +342,9 @@ class MoveTests(unittest.TestCase):
             'new': {'uuid': 'newbig-0001', 'fstype': 'ext4'},
             'stopped': [],
         }
-        migrate.record(self.journal, phase='switching', **cut_off)
-        self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+        migrate.record(self.journal, phase='switching', boot='this-boot', since=5, **cut_off)
+        with mock.patch.object(migrate, 'this_boot', return_value='this-boot'):
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
         self.assertIn('UUID=newbig-0001', self.fstab.read_text())
         # Cut off again after the fstab was switched: finishing it gives the same result.
         migrate.record(self.journal, phase='setup', **cut_off)
@@ -440,9 +457,19 @@ class MoveTests(unittest.TestCase):
         self.assertIn('UUID=hdd-0001', self.fstab.read_text())  # never switched
         self.assertIn("copy is not up to date. Start the move again", self.said[-1])
         self.assertFalse(self.journal.exists())
-        # Nothing ran again (no restart): the switch is finished as before.
+        # The 0.46.0 review: a record without the boot and the time (one written before
+        # 0.45.8) can't tell whether the apps ran again since, so it starts over too.
         migrate.record(self.journal, phase='switching', **cut_off)
         with mock.patch.object(migrate, 'active', return_value=[]):
+            self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
+        self.assertIn('UUID=hdd-0001', self.fstab.read_text())
+        # Nothing ran again, as the record and systemd show: the switch is finished as before.
+        migrate.record(self.journal, phase='switching', boot='this-boot', since=5, **cut_off)
+        with (
+            mock.patch.object(migrate, 'active', return_value=[]),
+            mock.patch.object(migrate, 'this_boot', return_value='this-boot'),
+            mock.patch.object(migrate, 'started_since', return_value=[]),
+        ):
             self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
         self.assertIn('UUID=newbig-0001', self.fstab.read_text())
 
@@ -473,6 +500,18 @@ class MoveTests(unittest.TestCase):
         ):
             self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1)
         self.assertIn('UUID=hdd-0001', self.fstab.read_text())
+        # The 0.46.0 review: systemd could not say when Docker last started, or this boot's
+        # ID could not be read: nobody knows, so it starts over.
+        for unknown in (
+            mock.patch.object(migrate, 'started_since', return_value=None),
+            mock.patch.object(migrate, 'this_boot', return_value=''),
+        ):
+            migrate.record(self.journal, phase='switching', boot='this-boot', since=5, **cut_off)
+            with quiet, mock.patch.object(migrate, 'this_boot', return_value='this-boot'), unknown:
+                self.assertEqual(
+                    migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 1
+                )
+            self.assertIn('UUID=hdd-0001', self.fstab.read_text())
         # Nothing ran since: the switch is finished.
         migrate.record(self.journal, phase='switching', boot='this-boot', since=5, **cut_off)
         with (
@@ -488,8 +527,11 @@ class MoveTests(unittest.TestCase):
             'docker.service': 'InactiveExitTimestampMonotonic=900\n',
             'smbd.service': 'InactiveExitTimestampMonotonic=0\n',
         }
-        with mock.patch.object(migrate, 'run', lambda argv, *a, **k: mock.Mock(stdout=shown[argv[-1]])):
+        with mock.patch.object(migrate, 'run', lambda argv, *a, **k: mock.Mock(returncode=0, stdout=shown[argv[-1]])):
             self.assertEqual(migrate.started_since(['docker.service', 'smbd.service'], 500), ['docker.service'])
+        # systemd could not say: None, never "not started".
+        with mock.patch.object(migrate, 'run', return_value=mock.Mock(returncode=1, stdout='')):
+            self.assertIsNone(migrate.started_since(['docker.service'], 500))
         self.assertTrue(migrate.this_boot())
 
     def test_a_move_started_again_goes_on_with_its_own_copy(self):

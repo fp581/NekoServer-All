@@ -1,6 +1,7 @@
 """Drives on a network storage box (a NAS) over iSCSI: the connection step
 (modules/network_storage.py) and what the drive step does with such a disk."""
 
+import contextlib
 import json
 import os
 import stat
@@ -24,6 +25,15 @@ PORTAL = '192.168.1.20:3260'
 
 def done(code=0, out='', err=''):
     return mock.Mock(returncode=code, stdout=out, stderr=err)
+
+
+# A target's saved record as `iscsiadm -m node -T … -p …` shows it, with setup's settings.
+RECORD = 'node.name = x\n' + ''.join(f'{k} = {v}\n' for k, v in nas.KEPT.items())
+
+
+def node_shown(argv):
+    """True for the command that shows a target's saved record."""
+    return argv[:3] == ['iscsiadm', '-m', 'node'] and '-o' not in argv and '--login' not in argv
 
 
 class ConnectionTests(unittest.TestCase):
@@ -53,7 +63,7 @@ class ConnectionTests(unittest.TestCase):
 
         def run(argv, **kwargs):
             calls.append(argv)
-            return done(nas.SESSION_EXISTS if '--login' in argv else 0)
+            return done(nas.SESSION_EXISTS if '--login' in argv else 0, RECORD if node_shown(argv) else '')
 
         with mock.patch.object(nas, 'patient'):
             nas.log_in(IQN, PORTAL, run)
@@ -76,11 +86,21 @@ class ConnectionTests(unittest.TestCase):
             self.assertEqual((block / 'sdc' / 'device' / 'timeout').read_text(), '120')
             self.assertEqual((Path(d) / 'session1' / 'recovery_tmo').read_text(), '600')
             self.assertEqual((Path(d) / 'session2' / 'recovery_tmo').read_text(), '120\n')
-        refused = lambda argv, **k: done(
-            24 if '--login' in argv else 0, err='iscsiadm: Login failed: authorization failure'
-        )  # noqa: E731
+        refused = lambda argv, **k: done(  # noqa: E731
+            24 if '--login' in argv else 0,
+            RECORD if node_shown(argv) else '',
+            err='iscsiadm: Login failed: authorization failure',
+        )
         with self.assertRaisesRegex(RuntimeError, 'allowed on that target .*CHAP'), mock.patch.object(nas, 'patient'):
             nas.log_in(IQN, PORTAL, refused)
+        # As iscsiadm really says it (the lab, a wrong CHAP password): exit 24, a vague last line.
+        vague = lambda argv, **k: done(  # noqa: E731
+            24 if '--login' in argv else 0,
+            RECORD if node_shown(argv) else 'Logging in to [iface: default, target: x]',
+            err='iscsiadm: Could not log into all portals',
+        )
+        with self.assertRaisesRegex(RuntimeError, 'NAS refused the login'), mock.patch.object(nas, 'patient'):
+            nas.log_in(IQN, PORTAL, vague)
 
     def test_disks_on_a_nas_wait_for_it_at_every_start(self):
         self.assertIn('KERNELS=="session[0-9]*"', nas.RULE)  # iSCSI disks only
@@ -92,6 +112,68 @@ class ConnectionTests(unittest.TestCase):
             tool.assert_called_once_with(['udevadm', 'control', '--reload'], 30)
             nas.install_rule(rule)
             self.assertEqual(tool.call_count, 1)
+
+    def test_discovery_only_lists_and_never_rewrites_saved_records(self):
+        """The 0.46.0 review, H05: open-iscsi's plain discovery rewrote each target's saved
+        record from the defaults, taking its CHAP login away at a repeat setup."""
+        calls = []
+        nas.discovered(PORTAL, run=lambda argv, **k: calls.append(argv) or done(out=f'{PORTAL},1 {IQN}\n'))
+        self.assertEqual(calls[0][-2:], ['-o', 'nonpersistent'])
+
+    def test_a_lost_chap_login_is_asked_again_or_stops_setup(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d) / IQN / '192.168.1.20,3260,1'
+            folder.mkdir(parents=True)
+            (folder / 'default').write_text('node.session.auth.authmethod = None\n')
+            self.assertFalse(nas.chap_kept(IQN, PORTAL, (Path(d),)))
+            nas.set_chap(IQN, PORTAL, 'neko', 'a-long-secret-1', roots=(Path(d),))
+            self.assertTrue(nas.chap_kept(IQN, PORTAL, (Path(d),)))
+        ctx = StepTests.Ctx({'network_storage': {'wanted': True, 'portal': PORTAL, 'targets': [IQN], 'chap': [IQN]}})
+        with (
+            mock.patch.object(nas, 'answers', return_value=True),
+            mock.patch.object(nas, 'discovered', return_value=[(IQN, PORTAL)]),
+            mock.patch.object(nas, 'install_rule'),
+            mock.patch.object(nas, 'known_at'),
+            mock.patch.object(nas, 'chap_kept', return_value=False),
+            mock.patch.object(nas, 'log_in') as logged_in,
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'CHAP login of .* is no longer in its iSCSI settings'):
+                nas.connected(ctx, ctx.config['network_storage'], False)
+            logged_in.assert_not_called()
+
+    def test_a_target_the_nas_no_longer_offers_is_never_forgotten(self):
+        """H02: with one of two saved targets missing, setup saved the shorter list."""
+        with self.assertRaisesRegex(RuntimeError, f'does not offer {BACKUP} now.*Nothing was changed'):
+            nas.chosen_targets([(IQN, PORTAL)], [IQN, BACKUP], None, print)
+        self.assertEqual(
+            nas.chosen_targets([(IQN, PORTAL), (BACKUP, PORTAL)], [IQN, BACKUP], None, print), [IQN, BACKUP]
+        )
+
+    def test_a_setting_that_was_not_saved_stops_the_login(self):
+        """H01: the updates' results were not looked at, and a login that worked hid it."""
+        failing = lambda argv, **k: done(13 if '-o' in argv else 0, err='iscsiadm: could not write record')  # noqa: E731
+        with self.assertRaisesRegex(RuntimeError, 'could not be saved'):
+            nas.log_in(IQN, PORTAL, failing)
+        stale = RECORD.replace('= 600', '= 120')
+        quiet = lambda argv, **k: done(0, stale if node_shown(argv) else '')  # noqa: E731
+        with self.assertRaisesRegex(RuntimeError, 'do not say what setup wrote .*replacement_timeout'):
+            nas.log_in(IQN, PORTAL, quiet)
+
+    def test_a_network_wait_that_could_not_be_switched_on_stops_setup(self):
+        """H03: a failed enable was reported as the wait being in place."""
+        with (
+            mock.patch.object(nas, 'wait_online_unit', return_value='systemd-networkd-wait-online.service'),
+            mock.patch.object(nas, 'run_tool', side_effect=lambda argv, *a: done(1 if argv[1] == 'enable' else 0)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'could not be switched on'):
+                nas.wait_for_network(print)
+        said = []
+        with (
+            mock.patch.object(nas, 'wait_online_unit', return_value='systemd-networkd-wait-online.service'),
+            mock.patch.object(nas, 'run_tool', return_value=done()),
+        ):
+            nas.wait_for_network(said.append)
+        self.assertIn('once the network is up', said[0])
 
     def test_a_target_listed_at_another_address_is_saved_at_the_one_given(self):
         # Found in the lab: the target listed itself at 127.0.0.1, so the login at the
@@ -120,6 +202,18 @@ class ConnectionTests(unittest.TestCase):
             self.assertIn('node.session.auth.password = a-long-secret-1', text)
             self.assertNotIn('authmethod = None', text)
             self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
+            # A record made by hand (`-o new`) has no third part in its name (seen in the lab).
+            (folder / 'default').unlink()
+            folder.rmdir()
+            plain = Path(d) / IQN / '192.168.1.20,3260'
+            plain.mkdir()
+            (plain / 'default').write_text('node.name = x\n')
+            self.assertEqual(nas.node_record(IQN, PORTAL, (Path(d),)), plain / 'default')
+            self.assertIsNone(nas.node_record(IQN, '192.168.1.2:3260', (Path(d),)))
+            (plain / 'default').unlink()
+            plain.rmdir()
+            folder.mkdir()
+            (folder / 'default').write_text('node.name = x\n')
             # The older layout: the portal entry is the file itself.
             (folder / 'default').unlink()
             folder.rmdir()
@@ -176,6 +270,34 @@ class ConnectionTests(unittest.TestCase):
             self.assertEqual(made, 'iqn.2005-03.org.open-iscsi:1234abcd')
             self.assertIn('InitiatorName=' + made, path.read_text())
 
+    def test_the_name_the_nas_allows_is_kept_after_linux_is_installed_again(self):
+        """The 0.46.0 review: a new Linux makes a new iSCSI name, which the NAS refuses; the
+        host backups didn't keep the old one either."""
+        ran = []
+
+        def run(argv, **kwargs):
+            ran.append(argv)
+            return done()
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'initiatorname.iscsi'
+            path.write_text('InitiatorName=iqn.2004-10.com.ubuntu:01:new\n')
+            options, said = {}, []
+            self.assertEqual(nas.kept_initiator(options, said.append, path, run), 'iqn.2004-10.com.ubuntu:01:new')
+            self.assertEqual(options['initiator'], 'iqn.2004-10.com.ubuntu:01:new')
+            self.assertEqual(ran, [])
+            options = {'initiator': 'iqn.2004-10.com.ubuntu:01:laptop'}
+            with mock.patch('host.current', return_value=mock.Mock(service=lambda name: name)):
+                self.assertEqual(
+                    nas.kept_initiator(options, said.append, path, run), 'iqn.2004-10.com.ubuntu:01:laptop'
+                )
+            self.assertEqual(path.read_text(), 'InitiatorName=iqn.2004-10.com.ubuntu:01:laptop\n')
+            self.assertIn(['systemctl', 'restart', 'iscsid'], ran)
+            self.assertIn('replaced by the saved one the NAS allows', said[-1])
+        from modules import host_backup
+
+        self.assertIn('/etc/iscsi/initiatorname.iscsi', host_backup.HOST_FILES)
+
     def test_the_wait_for_the_network_follows_the_network_manager(self):
         enabled = {'systemd-networkd.service'}
 
@@ -214,7 +336,7 @@ class StepTests(unittest.TestCase):
         def persist_config(self):
             self.saved += 1
 
-    def step(self, config, answers=(), rows=None, chap=None):
+    def step(self, config, answers=(), rows=None, chap=None, log_in=None):
         ctx = self.Ctx(config)
         typed = iter(answers)
         logged_in = []
@@ -232,17 +354,48 @@ class StepTests(unittest.TestCase):
             mock.patch.object(nas, 'initiator_name', return_value='iqn.2004-10.com.ubuntu:01:laptop'),
             mock.patch.object(nas, 'answers', return_value=True),
             mock.patch.object(nas, 'discovered', return_value=[(IQN, PORTAL), (BACKUP, PORTAL)]),
-            mock.patch.object(nas, 'log_in', side_effect=lambda iqn, portal: logged_in.append(iqn)),
+            mock.patch.object(nas, 'log_in', side_effect=log_in or (lambda iqn, portal: logged_in.append(iqn))),
             mock.patch.object(nas, 'known_at'),
             mock.patch.object(nas, 'install_rule'),
             mock.patch.object(nas, 'set_chap') as chap_saved,
             mock.patch.object(nas, 'wait_for_disks', side_effect=lambda iqn: disks[iqn]),
             mock.patch.object(nas, 'lsblk_row', side_effect=lambda device: rows[Path(device).name]),
             mock.patch.object(nas, 'wait_online_unit', return_value='NetworkManager-wait-online.service'),
-            mock.patch.object(nas, 'run_tool') as tool,
+            mock.patch.object(nas, 'run_tool', return_value=done()) as tool,
+            mock.patch.object(nas, 'chap_kept', return_value=True),
         ):
             result = nas.run(ctx)
         return ctx, result, logged_in, chap_saved, tool
+
+    def test_a_refused_login_asks_for_the_chap_login(self):
+        """The 0.46.0 review: after Linux was installed again the saved targets skipped the
+        CHAP question, and the NAS refused the login with no way to give it."""
+        tries = []
+
+        def log_in(iqn, portal):
+            tries.append(iqn)
+            if tries.count(iqn) == 1:
+                raise nas.LoginRefused('Could not log in')
+
+        config = {'network_storage': {'wanted': True, 'portal': PORTAL, 'targets': [IQN]}}
+        ctx, _, _, chap_saved, _ = self.step(config, ['y', 'neko'], chap='a-long-password', log_in=log_in)
+        self.assertEqual(tries, [IQN, IQN])
+        self.assertEqual(config['network_storage']['chap'], [IQN])
+        self.assertIn(f'The NAS refused the login to {IQN}.', ctx.lines)
+
+    def test_without_a_network_manager_to_wait_for_it_is_refused_before_connecting(self):
+        """0.46.1: it was only a warning, and the drives went missing after each restart."""
+        ctx = self.Ctx({'network_storage': {'wanted': True, 'portal': PORTAL}})
+        with (
+            mock.patch.object(nas.os, 'geteuid', return_value=0),
+            mock.patch('sys.stdin.isatty', return_value=False),
+            mock.patch.object(nas, 'install_tools'),
+            mock.patch.object(nas, 'wait_online_unit', return_value=None),
+            mock.patch.object(nas, 'connected') as connected,
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'cannot wait for the network.*Nothing was mounted'):
+                nas.run(ctx)
+        connected.assert_not_called()
 
     def test_switched_off_it_does_nothing(self):
         ctx = self.Ctx({})
@@ -258,9 +411,18 @@ class StepTests(unittest.TestCase):
         ctx, result, logged_in, chap_saved, tool = self.step(
             config, ['192.168.1.20', '1,2', 'y', 'neko', 'n'], rows, chap='a-long-secret-1'
         )
-        self.assertEqual(config['network_storage'], {'wanted': True, 'portal': PORTAL, 'targets': [IQN, BACKUP]})
+        self.assertEqual(
+            config['network_storage'],
+            {
+                'wanted': True,
+                'portal': PORTAL,
+                'targets': [IQN, BACKUP],
+                'chap': [IQN],
+                'initiator': 'iqn.2004-10.com.ubuntu:01:laptop',
+            },
+        )
         self.assertEqual(logged_in, [IQN, BACKUP])
-        chap_saved.assert_called_once_with(IQN, PORTAL, 'neko', 'a-long-secret-1')
+        chap_saved.assert_called_once_with(IQN, PORTAL, 'neko', 'a-long-secret-1', run=mock.ANY)
         self.assertGreaterEqual(ctx.saved, 1)
         said = '\n'.join(ctx.lines)
         self.assertIn('iqn.2004-10.com.ubuntu:01:laptop', said)  # to allow on the NAS
@@ -289,6 +451,7 @@ class StepTests(unittest.TestCase):
             mock.patch.object(nas, 'install_tools'),
             mock.patch.object(nas, 'initiator_name', return_value='iqn.2004-10.com.ubuntu:01:laptop'),
             mock.patch.object(nas, 'answers', return_value=False),
+            mock.patch.object(nas, 'wait_for_network'),
         ):
             with self.assertRaisesRegex(RuntimeError, 'Nothing answers on 192.168.1.20:3260: check that the NAS is on'):
                 nas.run(ctx)
@@ -433,10 +596,16 @@ class ReadOnlyCheckTests(unittest.TestCase):
         self.config = {
             'data_mount': '/srv/nekoserver',
             'media_mount': '/mnt/nekoserver-media',
-            'storage': {'data_ssd': {'uuid': 'ssd-0001'}, 'media_hdd': {'uuid': 'nas-0001', 'fstype': 'ext4'}},
+            'storage': {
+                'data_ssd': {'uuid': 'ssd-0001', 'fstype': 'ext4'},
+                'media_hdd': {'uuid': 'nas-0001', 'fstype': 'ext4'},
+            },
         }
         self.writable = {'/srv/nekoserver': True, '/mnt/nekoserver-media': False}
+        self.errors = {}
         self.codes = {}
+        self.busy = None
+        self.lock = contextlib.nullcontext()
 
     def run_(self, argv, **kwargs):
         self.calls.append(argv)
@@ -450,9 +619,16 @@ class ReadOnlyCheckTests(unittest.TestCase):
         with (
             mock.patch.object(self.wizard.os.path, 'ismount', return_value=True),
             mock.patch.object(self.wizard, 'start_apps', side_effect=lambda run, out: self.calls.append(['apps'])),
+            mock.patch.object(self.wizard, 'repair_blocked', side_effect=lambda c, r: self.busy),
         ):
             self.wizard.check_read_only(
-                self.config, lambda q='': next(typed), self.said.append, self.run_, lambda f: self.writable[str(f)]
+                self.config,
+                lambda q='': next(typed),
+                self.said.append,
+                self.run_,
+                lambda f: self.writable[str(f)],
+                lambda f: self.errors.get(str(f), 0),
+                hold=lambda lock: self.lock,
             )
 
     def test_the_drive_is_unmounted_checked_mounted_and_the_apps_started_in_that_order(self):
@@ -470,6 +646,52 @@ class ReadOnlyCheckTests(unittest.TestCase):
         self.check([])
         self.assertEqual(self.calls, [])
         self.assertIn('nothing to check', self.said[-1])
+
+    def test_nothing_is_touched_while_another_operation_is_at_work(self):
+        """The 0.46.0 review, H07: the repair stopped the apps and unmounted a drive with no
+        look at a move, an upgrade, an update or a backup at work."""
+        self.lock = None  # a drive move or an upgrade holds the operation lock
+        self.check([])
+        self.assertEqual(self.calls, [])
+        self.assertIn('drive move or a NekoServer upgrade is at work', self.said[-1])
+        self.lock = contextlib.nullcontext()
+        self.busy = 'nekoserver-photo-backup.service is at work'
+        self.check(['y'])
+        self.assertEqual(self.calls, [])
+        self.assertIn('photo-backup.service is at work: check the drive once it has finished', self.said[-1])
+
+    def test_a_job_at_work_or_an_unfinished_update_blocks_the_repair(self):
+        listed = 'nekoserver-photo-backup.service loaded activating start\nnekoserver-nas-watch.service loaded activating x\n'
+        run = lambda argv, **k: mock.Mock(returncode=0, stdout=listed)  # noqa: E731
+        with mock.patch('upgrade.nothing_at_work', return_value=None):
+            self.assertEqual(self.wizard.repair_blocked(self.config, run), 'nekoserver-photo-backup.service is at work')
+            quiet = lambda argv, **k: mock.Mock(
+                returncode=0, stdout='nekoserver-nas-watch.service loaded activating x\n'
+            )  # noqa: E731
+            self.assertIsNone(self.wizard.repair_blocked(self.config, quiet))
+        with mock.patch('upgrade.nothing_at_work', return_value='An app update is not finished yet'):
+            self.assertEqual(self.wizard.repair_blocked(self.config, run), 'An app update is not finished yet')
+
+    def test_a_drive_that_still_writes_but_had_errors_is_checked_too(self):
+        """0.46.1: a local drive with filesystem errors (a loose cable) may still take
+        writes; Linux's error count says it needs a check."""
+        self.writable['/mnt/nekoserver-media'] = True
+        self.errors['/srv/nekoserver'] = 3
+        self.check(['y', 'y'])
+        self.assertEqual(self.calls[1], ['umount', '/srv/nekoserver'])
+        self.assertEqual(self.calls[2], ['e2fsck', '-f', '-p', '/dev/disk/by-uuid/ssd-0001'])
+
+    def test_the_error_count_is_read_from_the_mounted_filesystem(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'sdb1').mkdir()
+            (Path(d) / 'sdb1' / 'errors_count').write_text('2\n')
+            with (
+                mock.patch.object(self.wizard, 'findmnt', return_value='/dev/sdb1'),
+                mock.patch.object(self.wizard.os.path, 'realpath', return_value='/dev/sdb1'),
+            ):
+                self.assertEqual(self.wizard.ext4_errors('/srv/x', Path(d)), 2)
+            with mock.patch.object(self.wizard, 'findmnt', return_value=None):
+                self.assertEqual(self.wizard.ext4_errors('/srv/x', Path(d)), 0)
 
     def test_a_drive_in_use_is_never_forced_and_bad_damage_is_left_to_you(self):
         self.codes['umount'] = 32
@@ -534,6 +756,19 @@ class LocationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'would start with an empty folder'):
             self.ask([])
 
+    def test_files_on_both_drives_are_never_guessed(self):
+        """The 0.46.0 review: with photos on both drives the SSD won without a word."""
+        for drive in ('srv', 'mnt'):
+            (self.root / drive / 'photos/immich-library/upload').mkdir(parents=True)
+        with self.assertRaisesRegex(RuntimeError, 'files on both the SSD and the media drive'):
+            self.ask(['', ''])
+        self.assertNotIn('photos', self.config.get('locations', {}))
+        # Once the settings say which one, it is used, and the other is named as left alone.
+        self.config['locations'] = {'photos': 'media'}
+        ctx = self.ask(['', ''])
+        self.assertEqual(self.config['locations']['photos'], 'media')
+        self.assertIn('The SSD holds another folder of them too', '\n'.join(ctx.lines))
+
     def test_every_path_follows_the_choice(self):
         import neko_common
 
@@ -551,6 +786,30 @@ class LocationTests(unittest.TestCase):
 
         config['storage'] = {}
         self.assertEqual(native_runtime.storage_config(config)['locations'], config['locations'])
+        # The folders setup decided are written down for the runtime (common::saved_path), so
+        # the USB copy takes Nextcloud's files from where setup put them (the review, H04).
+        self.assertEqual(
+            native_runtime.storage_config(config)['paths'],
+            {
+                'photos': '/mnt/nekoserver-media/photos/immich-library',
+                'music': '/mnt/nekoserver-media/library/music',
+                'downloads': '/mnt/nekoserver-media/library/downloads/music',
+                'cloud': '/srv/nekoserver/cloud/files',
+            },
+        )
+        # The NAS check gets what it needs to log in again, never a password.
+        config['network_storage'] = {
+            'wanted': True,
+            'portal': '192.168.1.20',
+            'targets': ['iqn.x:a'],
+            'chap': ['iqn.x:a'],
+        }
+        self.assertEqual(
+            native_runtime.storage_config(config)['network_storage'],
+            {'wanted': True, 'portal': '192.168.1.20', 'targets': ['iqn.x:a']},
+        )
+        config['network_storage']['wanted'] = False
+        self.assertNotIn('network_storage', native_runtime.storage_config(config))
         cmd = photo_backup.command_line(
             {**config, 'nextcloud': {'enabled': True}}, 'bin', 'guard', 'u', 'ext4', None, '/mnt/usb'
         )

@@ -41,6 +41,10 @@ class RefreshTests(unittest.TestCase):
         self.systemctl = mock.patch.object(photo_backup.subprocess, 'run')
         self.guard.start()
         self.calls = self.systemctl.start()
+        self.enabled = True  # the timer, as `systemctl is-enabled` says
+        self.calls.side_effect = lambda argv, **k: mock.Mock(
+            returncode=0 if argv[1] != 'is-enabled' or self.enabled else 1, stdout='', stderr=''
+        )
         self.addCleanup(mock.patch.stopall)
 
     def install(self):
@@ -96,6 +100,7 @@ class RefreshTests(unittest.TestCase):
         # The USB drive gets the app passwords from the first week on: setup makes an
         # encrypted list on the HDD (seal-passwords) after every run, where passwords change.
         self.install()
+        self.calls.side_effect = None
         self.calls.return_value = mock.Mock(returncode=0, stdout='Password list: the one on the HDD is current\n')
         self.refresh()
         self.assertIn(
@@ -106,6 +111,28 @@ class RefreshTests(unittest.TestCase):
         self.calls.return_value = mock.Mock(returncode=1, stdout='', stderr='Drive check failed')
         self.refresh()
         self.assertTrue(any('Password list: not made (Drive check failed)' in line for line in self.logged))
+
+    def test_switched_off_then_an_app_set_up_again_switches_it_on_again(self):
+        """The 0.46.0 review: with the copy itself unchanged, refresh never switched the
+        timer on again after it was switched off for having nothing to copy."""
+        self.install()
+        self.config['photos']['deploy_immich'] = False
+        self.refresh()  # switched off
+        self.enabled = False
+        self.config['photos']['deploy_immich'] = True  # Immich set up again: the same copy
+        self.calls.reset_mock()
+        self.assertTrue(self.refresh())
+        self.assertIn(['systemctl', 'enable', '--now', self.timer.name], [c.args[0] for c in self.calls.call_args_list])
+
+    def test_a_new_day_or_time_is_installed(self):
+        """The 0.46.0 review: a schedule changed in the settings left the old day and time."""
+        self.install()
+        self.assertIn('OnCalendar=Sun *-*-* 03:00:00', self.timer.read_text())
+        self.config['photos']['backup_weekday'] = 'Wed'
+        day, when = photo_backup.schedule(self.config['photos'])
+        self.assertTrue(self.refresh())
+        self.assertIn(f'OnCalendar={day} *-*-* {when}:00', self.timer.read_text())
+        self.assertFalse(self.refresh())
 
     def test_nothing_happens_without_an_installed_copy(self):
         self.assertFalse(self.refresh())

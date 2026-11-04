@@ -1,7 +1,7 @@
 # NekoServer
 
 <p align="center">
-  <img src="docs/media/nekoserver-overview.webp" alt="NekoServer: turn your Linux PC into a home media server. Movies and TV, requests and downloads, music, phone photo backup, private files, a live hardware dashboard, backups and recovery, private remote access, guided setup." width="820">
+  <img src="docs/media/nekoserver-overview.webp" alt="NekoServer: turn your Linux PC into a home media server. Movies and TV, requests and downloads, music, phone photo backup, private files, a live hardware dashboard, backups and recovery, private remote access, guided setup." width="480">
 </p>
 
 **Turn a Linux PC into a home media server**, with your own video library, phone photo backup, music streaming and private cloud drive, set up by one guided installer that creates every account, connects the apps to each other and walks you through anything that needs you, one yes/no step at a time. It never formats a drive.
@@ -13,28 +13,29 @@
 | 🎵 **Music** | Navidrome (with Lidarr) |
 | ☁️ **Files** | Nextcloud: your own cloud drive, and Samba folders on the home network |
 | 🛡️ **Backups** | Nightly app backups, weekly photo and file copies to an HDD and a USB drive, monthly restore tests, rollback after a failed update |
+| 🗄️ **NAS** | The media and backup drives can be on a network storage box over iSCSI (experimental) |
 | 🏠 **Access** | Secure at home, and optionally from anywhere with Tailscale |
 | 🖥️ **Dashboard** | Apps, drives, temperatures, fan curves and RGB lighting, from any phone or browser at home |
 
 ## See it
 
-Every recording below is a real run on the test rig (openSUSE Tumbleweed under WSL), as it happened. Nothing is staged.
+Every recording below is a real run on the test rig (openSUSE Tumbleweed under WSL), as it happened. Nothing is staged. They were made with earlier releases, so a few words on screen may differ from today's.
 
 **The installation.** One command. Setup checks the PC, asks for the drives, creates the accounts, deploys the apps and tells you what it did and what still needs you.
 
-<p align="center"><img src="docs/media/install.webp" alt="sudo bash install.sh: the guided installation in the terminal" width="820"></p>
+<p align="center"><img src="docs/media/install.webp" alt="sudo bash install.sh: the guided installation in the terminal" width="720"></p>
 
 **The setup window.** The same questions, answered in a small window instead of the terminal if you prefer, with what each step installs and why, in plain words.
 
-<p align="center"><img src="docs/media/setup-window.webp" alt="The setup window: choose what to install, follow each step, answer the questions" width="820"></p>
+<p align="center"><img src="docs/media/setup-window.webp" alt="The setup window: choose what to install, follow each step, answer the questions" width="720"></p>
 
 **The dashboard.** Your apps, drives, backups, hardware and what needs your attention, on the PC and on your phone.
 
-<p align="center"><img src="docs/media/dashboard.webp" alt="The NekoServer dashboard: home, apps, hardware, backups, server health, fans and lights, needs attention" width="820"></p>
+<p align="center"><img src="docs/media/dashboard.webp" alt="The NekoServer dashboard: home, apps, hardware, backups, server health, fans and lights, needs attention" width="720"></p>
 
 **The uninstaller.** NekoServer off the PC, what you choose, after two confirmations. Nothing is formatted.
 
-<p align="center"><img src="docs/media/uninstall.webp" alt="sudo bash uninstall.sh: the checklist, the plan, two confirmations, the removal" width="820"></p>
+<p align="center"><img src="docs/media/uninstall.webp" alt="sudo bash uninstall.sh: the checklist, the plan, two confirmations, the removal" width="720"></p>
 
 ## Get started
 
@@ -44,9 +45,11 @@ You need a 64-bit PC with one of those installed, and **three drives besides the
 
 | Drive | For | Size |
 | --- | --- | --- |
-| **SSD** | apps, photos, music | at least 20 GB free, 100 GB or more recommended |
-| **HDD** | movies, shows, Nextcloud files, backups | at least 50 GB free, 500 GB or more recommended |
+| **SSD** | the apps' settings and databases; photos and music when it is big enough | at least 20 GB free, 100 GB or more recommended |
+| **HDD** (the media drive) | movies, shows, Nextcloud files, backups; photos and music on a small SSD | at least 50 GB free, 500 GB or more recommended |
 | **USB drive** | a weekly copy of your photos and Nextcloud files | at least 16 GB, and room for those files |
+
+Setup asks where photos, music and Nextcloud's files go, and the backups follow your choice. **The HDD and the USB drive can be disks on a NAS** (a WD My Cloud EX, Synology, QNAP or any box that offers iSCSI); the SSD stays on the PC. Drives on a NAS are experimental: [SUPPORT.md](nekoserver/SUPPORT.md) says what is tested, what is experimental and what setup refuses, and [STORAGE.md](nekoserver/STORAGE.md#drives-on-a-network-storage-box-nas) shows how to set the NAS up.
 
 In a terminal (Ctrl+Alt+T on most desktops):
 
@@ -80,5 +83,6 @@ A check on GitHub (the "Release channel" job) marks each new release as its tag 
 ## More
 
 - What changed in each version: [CHANGELOG.md](CHANGELOG.md)
+- What is tested, experimental or not supported: [SUPPORT.md](nekoserver/SUPPORT.md)
 - How support for another Linux family is added: [PORTING.md](nekoserver/PORTING.md)
 - Every change is tested automatically in GitHub Actions. The tests simulate the hardware, so try a full round on your own PC (play a video, upload a photo, restore a file) before trusting it with your only copy of anything.

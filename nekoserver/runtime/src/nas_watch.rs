@@ -27,9 +27,11 @@ use std::time::Duration;
 /// What the last check found for each drive ("writes", "fails", "waits", for the
 /// dashboard) and whether this stopped the apps (gone after a restart: setup and the
 /// drive-return service start them then).
-pub(crate) const STATE: &str = "/run/nekoserver-nas-watch.json";
+pub(crate) static STATE: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| common::shared("nas_watch", "state"));
 /// The folder at each drive's top that holds the test file.
-pub(crate) const PROBE_DIR: &str = ".nekoserver-check";
+pub(crate) static PROBE_DIR: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| common::shared("nas_watch", "probe_dir"));
 /// A test write that takes longer than this is "no answer".
 const PROBE_WAIT: Duration = Duration::from_secs(20);
 
@@ -41,12 +43,16 @@ pub(crate) enum Health {
     Fails,
     /// No answer yet: the NAS is away and the write waits.
     Waits,
+    /// Not mounted, and its disk is not connected either: the NAS was away when this PC
+    /// started (or logged it out). The apps on it are stopped already (Docker is bound to
+    /// its drives); drive-return mounts it and starts them when the disk appears.
+    Absent,
 }
 
 /// One test write at `top` (a drive's folder): written, synced and removed.
 pub(crate) fn write_test(top: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let dir = top.join(PROBE_DIR);
+    let dir = top.join(*PROBE_DIR);
     match fs::DirBuilder::new().mode(0o700).create(&dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -78,7 +84,12 @@ pub(crate) fn health(top: &Path, uuid: &str) -> Health {
         .flatten()
         .is_some_and(|u| u.trim() == uuid);
     if !mounted {
-        return Health::Fails;
+        let connected = Path::new("/dev/disk/by-uuid").join(uuid).exists();
+        return if connected {
+            Health::Fails
+        } else {
+            Health::Absent
+        };
     }
     let owned = top.to_path_buf();
     let handle = std::thread::spawn(move || write_test(&owned).is_ok());
@@ -94,12 +105,22 @@ pub(crate) fn health(top: &Path, uuid: &str) -> Health {
 enum Act {
     Nothing,
     Hold,
+    /// Stopped before, the drive still failing: the writers must still be stopped.
+    StillHeld,
     Resume,
 }
 fn decide(states: &[Health], held: bool) -> Act {
-    if states.contains(&Health::Fails) {
+    if held && states.iter().any(|h| *h != Health::Writes) {
+        // Held until every drive takes writes again: a drive gone or waiting meanwhile
+        // never lets a writer that started again (drive-return, by hand) carry on (the
+        // 0.46.0 review).
+        Act::StillHeld
+    } else if states.contains(&Health::Absent) {
+        // Nothing to stop (see Absent) and nothing to start yet: drive-return does that.
+        Act::Nothing
+    } else if states.contains(&Health::Fails) {
         if held {
-            Act::Nothing
+            Act::StillHeld
         } else {
             Act::Hold
         }
@@ -137,13 +158,9 @@ pub(crate) fn nas_drives(cfg: &Value) -> Result<Vec<(PathBuf, String, &'static s
 
 /// The services this stops: what writes to the drives (the apps in Docker, the shared
 /// folders, the home gateway). Docker's socket too, so a command can't wake it.
-const WRITERS: [&str; 5] = [
-    "docker.socket",
-    "docker.service",
-    "smbd.service",
-    "smb.service",
-    "nekoserver-gateway-lan.service",
-];
+fn writers() -> Vec<&'static str> {
+    common::shared_list(&["writers"])
+}
 
 pub fn run(a: &crate::Args) -> Result<()> {
     common::require_root()?;
@@ -153,9 +170,12 @@ pub fn run(a: &crate::Args) -> Result<()> {
     if drives.is_empty() {
         return Ok(());
     }
-    let state = common::json(Path::new(STATE), 64000);
+    let state = common::json(Path::new(*STATE), 64000);
     let held = state["held"] == true;
     let states: Vec<Health> = drives.iter().map(|(p, u, _)| health(p, u)).collect();
+    if states.contains(&Health::Absent) {
+        log_in_again(&cfg);
+    }
     let mut seen = serde_json::Map::new();
     for ((path, _, _), h) in drives.iter().zip(&states) {
         let key = if *path == common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))? {
@@ -169,6 +189,7 @@ pub fn run(a: &crate::Args) -> Result<()> {
                 Health::Writes => "writes",
                 Health::Fails => "fails",
                 Health::Waits => "waits",
+                Health::Absent => "absent",
             }),
         );
     }
@@ -190,17 +211,30 @@ pub fn run(a: &crate::Args) -> Result<()> {
                 "NAS watch: {} does not take writes (it turned read-only after the network storage box was away for long, most likely). Stopping the apps so nothing carries on half-written; check the drive with  sudo bash install.sh --recover  (\"Check a drive that turned read-only\")",
                 failing.join(", ")
             );
-            // --no-block: a stop that waits for the drive must never hang this check.
-            let mut args = vec!["systemctl", "stop", "--no-block"];
-            args.extend(WRITERS);
-            let (code, _) = common::command(&args, 60)?;
-            // 5: one of them is not installed here (Debian has smbd, Arch smb): the rest stop.
-            if code != 0 && code != 5 {
-                println!("NAS watch: systemctl stop exited {code}");
+            if !stop_writers()? {
+                // Not "held": the next check (in a minute) stops them again (the 0.46.0
+                // review, H06: a failed stop was recorded as done and never tried again).
+                record["stop_failed"] = json!(true);
+                return save(&record);
             }
             record["held"] = json!(true);
             record["since"] = json!(common::now());
             record["stopped_for"] = json!(failing);
+            save(&record)
+        }
+        Act::StillHeld => {
+            // A writer started again since (by hand, or a stop that didn't finish): stopped
+            // again, so "held" always means stopped.
+            let running = running_writers();
+            if !running.is_empty() {
+                println!(
+                    "NAS watch: {} still running while the drive does not take writes; stopping it again",
+                    running.join(", ")
+                );
+                if !stop_writers()? {
+                    record["stop_failed"] = json!(true);
+                }
+            }
             save(&record)
         }
         Act::Resume => {
@@ -219,9 +253,76 @@ pub fn run(a: &crate::Args) -> Result<()> {
         }
     }
 }
+/// The writers asked to stop. False when systemctl refused (anything but 5: one of them
+/// not installed here, as Debian has smbd and Arch smb). --no-block: a stop that waits for
+/// the drive must never hang this check; whether they stopped is looked at next time
+/// (running_writers).
+fn stop_writers() -> Result<bool> {
+    stop_writers_with(&|args| common::command(args, 60))
+}
+/// How a command is run (systemctl here; a stand-in in the tests): its exit code and output.
+type Run<'a> = &'a dyn Fn(&[&str]) -> Result<(i32, String)>;
+fn stop_writers_with(systemctl: Run) -> Result<bool> {
+    let mut args = vec!["systemctl", "stop", "--no-block"];
+    args.extend(writers());
+    let (code, _) = systemctl(&args)?;
+    if code != 0 && code != 5 {
+        println!("NAS watch: stopping the apps did not work (systemctl exited {code}); trying again in a minute");
+        return Ok(false);
+    }
+    Ok(true)
+}
+/// The writers that are running (or starting) now.
+fn running_writers() -> Vec<&'static str> {
+    writers()
+        .into_iter()
+        .filter(|unit| {
+            common::command(&["systemctl", "is-active", "--quiet", unit], 15)
+                .is_ok_and(|(code, _)| code == 0)
+                || common::command(&["systemctl", "is-active", unit], 15)
+                    .is_ok_and(|(_, out)| out.trim() == "activating")
+        })
+        .collect()
+}
+/// A NAS drive is not connected: the NAS was away when this PC started, and open-iscsi
+/// gives up its logins after about two minutes (seen in the lab: the drive then stayed
+/// missing for good once the NAS came on). Once the NAS answers on its iSCSI port again,
+/// every target saved to log in at start is logged in again; the disk then appears, and
+/// drive-return mounts it and starts the apps.
+fn log_in_again(cfg: &Value) {
+    let portal = cfg["network_storage"]["portal"].as_str().unwrap_or("");
+    if !answers(portal) {
+        return;
+    }
+    match common::command(&["iscsiadm", "-m", "node", "--loginall=automatic"], 60) {
+        Ok((0, _)) => println!("NAS watch: the network storage box answers again; logged in to its drives"),
+        // 15: logged in already.
+        Ok((15, _)) => {}
+        Ok((code, _)) => println!("NAS watch: logging in to the network storage box did not work yet (iscsiadm exited {code}); trying again in a minute"),
+        Err(e) => println!("NAS watch: logging in to the network storage box did not work yet ({e})"),
+    }
+}
+/// The NAS answers at `portal` (host:port, the settings' network_storage.portal) within 3 s.
+fn answers(portal: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let Some(addresses) = portal.to_socket_addrs().ok() else {
+        return false;
+    };
+    addresses
+        .take(4)
+        .any(|a| TcpStream::connect_timeout(&a, Duration::from_secs(3)).is_ok())
+}
+/// True when this check stopped the apps for a NAS drive that does not take writes: they
+/// stay stopped until it does (it starts them itself then), whoever else would start them.
+pub(crate) fn held() -> bool {
+    held_in(Path::new(*STATE))
+}
+fn held_in(state: &Path) -> bool {
+    common::json(state, 64000)["held"] == true
+}
 /// Root's alone (the dashboard's collector and the recovery menu run as root).
 fn save(record: &Value) -> Result<()> {
-    common::atomic_json(Path::new(STATE), record)
+    common::atomic_json(Path::new(*STATE), record)
 }
 
 #[cfg(test)]
@@ -232,12 +333,52 @@ mod tests {
         use Health::*;
         assert_eq!(decide(&[Writes], false), Act::Nothing);
         assert_eq!(decide(&[Fails], false), Act::Hold);
-        assert_eq!(decide(&[Fails], true), Act::Nothing); // once
-        assert_eq!(decide(&[Writes, Fails], true), Act::Nothing);
+        // Held: the writers are made sure of (stopped again if one runs), not left alone.
+        assert_eq!(decide(&[Fails], true), Act::StillHeld);
+        assert_eq!(decide(&[Writes, Fails], true), Act::StillHeld);
         // Still away: the writes wait, nothing is done either way.
         assert_eq!(decide(&[Waits], false), Act::Nothing);
-        assert_eq!(decide(&[Waits, Writes], true), Act::Nothing);
+        // The 0.46.0 review: held, with a drive gone or waiting, a writer started again
+        // (the SSD plugged in again, drive-return starting the apps) was left running.
+        assert_eq!(decide(&[Waits, Writes], true), Act::StillHeld);
+        assert_eq!(decide(&[Absent], true), Act::StillHeld);
         assert_eq!(decide(&[Writes, Writes], true), Act::Resume);
+        // 0.46.1: a drive not connected at all (the NAS was away at start) stops nothing
+        // and starts nothing: drive-return does that when the disk appears.
+        assert_eq!(decide(&[Absent], false), Act::Nothing);
+        assert_eq!(decide(&[Absent, Fails], false), Act::Nothing);
+        assert_eq!(decide(&[Absent, Writes], false), Act::Nothing);
+    }
+    #[test]
+    fn a_hold_is_read_from_the_checks_record() {
+        let dir = std::env::temp_dir().join(format!("neko-held-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = dir.join("state.json");
+        assert!(!held_in(&state)); // never ran
+        std::fs::write(&state, r#"{"held": true}"#).unwrap();
+        assert!(held_in(&state));
+        std::fs::write(&state, r#"{"held": false}"#).unwrap();
+        assert!(!held_in(&state));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    /// The 0.46.0 review, H06: a refused stop was recorded as done.
+    #[test]
+    fn a_refused_stop_is_never_taken_for_a_stop() {
+        let asked = std::cell::RefCell::new(vec![]);
+        let asked = &asked;
+        let answer = |code: i32| {
+            move |args: &[&str]| {
+                asked.borrow_mut().push(args.join(" "));
+                Ok((code, String::new()))
+            }
+        };
+        assert!(!stop_writers_with(&answer(1)).unwrap());
+        assert!(stop_writers_with(&answer(0)).unwrap());
+        // 5: one of them is not installed here (smb on Debian): the rest stopped.
+        assert!(stop_writers_with(&answer(5)).unwrap());
+        assert!(
+            asked.borrow()[0].starts_with("systemctl stop --no-block docker.socket docker.service")
+        );
     }
     #[test]
     fn a_test_write_leaves_nothing_and_refuses_a_link() {
@@ -245,12 +386,15 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         write_test(&root).unwrap();
-        assert_eq!(fs::read_dir(root.join(PROBE_DIR)).unwrap().count(), 0);
-        fs::remove_dir(root.join(PROBE_DIR)).unwrap();
-        std::os::unix::fs::symlink("/tmp", root.join(PROBE_DIR)).unwrap();
+        assert_eq!(fs::read_dir(root.join(*PROBE_DIR)).unwrap().count(), 0);
+        fs::remove_dir(root.join(*PROBE_DIR)).unwrap();
+        std::os::unix::fs::symlink("/tmp", root.join(*PROBE_DIR)).unwrap();
         assert!(write_test(&root).is_err());
-        // Not mounted at its folder: failing (never a write onto the system disk).
-        assert_eq!(health(&root, "not-this-uuid"), Health::Fails);
+        // Not mounted at its folder, and no such disk connected: absent (never a write
+        // onto the system disk).
+        assert_eq!(health(&root, "not-this-uuid"), Health::Absent);
+        assert!(!answers("not a portal"));
+        assert!(!answers(""));
         let _ = fs::remove_dir_all(&root);
     }
     #[test]

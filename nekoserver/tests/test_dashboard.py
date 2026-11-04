@@ -805,11 +805,11 @@ class PreservedBundleTest(unittest.TestCase):
         # The bundle keeps the server's own settings instead of config.json; ruff.toml only lays the code out.
         skipped = {Path('config.json'), Path('ruff.toml')}
         release = {path.relative_to(ROOT) for path in ROOT.rglob('*') if path.is_file()}
-        # Not part of a release: tests, build output and tool caches.
+        # Not part of a release: tests, the NAS test lab, build output and tool caches.
         release = {
             rel
             for rel in release
-            if rel.parts[0] != 'tests'
+            if rel.parts[0] not in ('tests', 'lab')
             and rel.parts[:2] != ('runtime', 'target')
             and not any(part == '__pycache__' or part.startswith('.') for part in rel.parts)
         }

@@ -78,7 +78,8 @@ EXTRAS = (
         'step': 'network_storage',
         'title': 'My media and backup drives are in a network storage box (NAS)',
         'explanation': 'For a NAS that offers iSCSI disks (a WD My Cloud EX, Synology, QNAP...). The SSD for the apps '
-        "stays on this PC. Setup asks for the NAS's address and which of its disks to use; it never formats one.",
+        "stays on this PC. Setup asks for the NAS's address and which of its disks to use; it never formats one. "
+        'Experimental: tried in a test lab, not yet on many real NAS boxes (SUPPORT.md).',
         'installs': ('open-iscsi',),
     },
     {

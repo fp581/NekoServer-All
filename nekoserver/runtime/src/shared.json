@@ -1,0 +1,19 @@
+{
+  "_about": "Facts both halves of NekoServer use: the runtime builds this file in (common::SHARED), setup reads it (neko_common.SHARED). One copy, so the two can never disagree.",
+  "locations": {
+    "photos": {"default": "ssd", "folders": ["photos/immich-library"]},
+    "music": {"default": "ssd", "folders": ["library/music", "library/downloads/music"]},
+    "cloud": {"default": "media", "folders": ["cloud/files"]}
+  },
+  "nas_watch": {
+    "state": "/run/nekoserver-nas-watch.json",
+    "probe_dir": ".nekoserver-check",
+    "service": "nekoserver-nas-watch.service"
+  },
+  "compose": {
+    "_about": "What a Compose file may hold, as `docker compose config --format json` shows it. Anything else (use_api_socket, post_start/pre_stop hooks, secrets, configs, cap_add, a new key Docker adds later) is refused until NekoServer knows what it gives the app. Checked by maintenance.rs valid_model, for setup (check-compose) and the monthly update.",
+    "file_keys": ["name", "services", "volumes", "networks"],
+    "service_keys": ["image", "container_name", "command", "entrypoint", "environment", "healthcheck", "depends_on", "networks", "ports", "restart", "volumes", "security_opt", "devices", "user", "init", "shm_size", "labels", "hostname", "stop_grace_period", "stop_signal", "working_dir", "expose", "tmpfs", "ulimits", "pull_policy"]
+  },
+  "writers": ["docker.socket", "docker.service", "smbd.service", "smb.service", "nekoserver-gateway-lan.service"]
+}

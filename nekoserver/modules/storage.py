@@ -1248,15 +1248,15 @@ def has_files(folder):
 
 
 def kept_location(config, what):
-    """Where `what` already is, when its folder holds files on one drive: it stays there
-    (moving it is a job of its own), or None when it is nowhere yet."""
+    """The drives where `what` already holds files: [] when it is nowhere yet, one drive
+    when it stays there (moving it is a job of its own), or both."""
     from neko_common import DRIVE_KEYS, LOCATIONS
 
-    for drive in ('ssd', 'media'):
-        root = Path(config[DRIVE_KEYS[drive]])
-        if any(has_files(root / rel) for rel in LOCATIONS[what][1]):
-            return drive
-    return None
+    return [
+        drive
+        for drive in ('ssd', 'media')
+        if any(has_files(Path(config[DRIVE_KEYS[drive]]) / rel) for rel in LOCATIONS[what][1])
+    ]
 
 
 def free_gb(folder):
@@ -1283,11 +1283,18 @@ def choose_locations(context, input_fn=None, interactive=None):
     for what, words, threshold in WHERE:
         kept = kept_location(config, what)
         if chosen.get(what) in DRIVE_WORDS:
-            same_place(what, words, chosen[what], kept)
+            same_place(context, what, words, chosen[what], kept)
             continue
+        if len(kept) > 1:
+            raise RuntimeError(
+                f'{words.capitalize()} have files on both the SSD and the media drive, and setup can\'t tell '
+                'which ones the app uses. Look in both folders, then say which one it is: put '
+                f'"locations": {{"{what}": "ssd"}} (or "media") in my-config.json and run setup again. '
+                'The other folder is left as it is. Nothing was changed.'
+            )
         if kept:
-            context.log(f'{words.capitalize()}: kept where they already are, on {DRIVE_WORDS[kept]}')
-            chosen[what] = kept
+            context.log(f'{words.capitalize()}: kept where they already are, on {DRIVE_WORDS[kept[0]]}')
+            chosen[what] = kept[0]
         else:
             best = recommended(room['ssd'], threshold)
             chosen[what] = asked_location(context, words, best, room, on_nas, input_fn) if interactive else best
@@ -1297,13 +1304,19 @@ def choose_locations(context, input_fn=None, interactive=None):
         context.persist_config()
 
 
-def same_place(what, words, chosen, kept):
+def same_place(context, what, words, chosen, kept):
     """A saved choice must be where the files are: the app would start on an empty folder."""
-    if kept and kept != chosen:
+    if kept and chosen not in kept:
         raise RuntimeError(
-            f'The settings put {words} on {DRIVE_WORDS[chosen]}, but they are on {DRIVE_WORDS[kept]}: the app '
-            f'would start with an empty folder. Put "locations": {{"{what}": "{kept}"}} back in my-config.json '
+            f'The settings put {words} on {DRIVE_WORDS[chosen]}, but they are on {DRIVE_WORDS[kept[0]]}: the app '
+            f'would start with an empty folder. Put "locations": {{"{what}": "{kept[0]}"}} back in my-config.json '
             '(moving them is a job of its own, with the apps stopped), then run setup again. Nothing was changed.'
+        )
+    if len(kept) > 1:
+        other = DRIVE_WORDS['media' if chosen == 'ssd' else 'ssd']
+        context.log(
+            f'{words.capitalize()}: used from {DRIVE_WORDS[chosen]}, as your settings say. {other[0].upper()}{other[1:]} '
+            'holds another folder of them too; NekoServer leaves it alone and does not back it up.'
         )
 
 

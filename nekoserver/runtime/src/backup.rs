@@ -2298,14 +2298,25 @@ const SECRETS_FILES: [(&str, &str); 3] = [
     ("secrets_key", crate::maintenance::SECRETS_KEY),
     ("secrets_cert", crate::maintenance::SECRETS_CERT),
 ];
-/// A monthly snapshot folder's name: the run's time and number.
+/// A monthly snapshot folder's name: the run's time and number. The time in
+/// microseconds: a monthly snapshot's name has them, and so have setup's password lists
+/// since 0.46.1; one made before, in seconds, is read as its microseconds, so the newest
+/// list is the newest whatever made it (the 0.46.0 review: older monthly lists outranked
+/// setup's newer one, and the USB drive's retention removed the new copy at once).
 fn snapshot_stamp(name: &str) -> Option<u64> {
     let (stamp, number) = name.split_once('-')?;
     if number.is_empty() || !number.bytes().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    stamp.parse().ok()
+    let stamp: u64 = stamp.parse().ok()?;
+    Some(if stamp < SECONDS_BEFORE {
+        stamp.saturating_mul(1_000_000)
+    } else {
+        stamp
+    })
 }
+/// Below this a stamp is in seconds (the year 33658 in seconds; 1970-01-12 in µs).
+const SECONDS_BEFORE: u64 = 1_000_000_000_000;
 /// The monthly snapshots in `folder` ("<time>-<number>" folders), oldest first.
 fn snapshot_folders(folder: &Path) -> Vec<(u64, PathBuf)> {
     let mut runs: Vec<(u64, PathBuf)> = fs::read_dir(folder)
@@ -2332,6 +2343,13 @@ fn newest_sealed_snapshot(monthly: &Path) -> Option<(PathBuf, Value)> {
                 });
             sealed.then_some((path, manifest))
         })
+}
+/// Each file of the password list in `folder` matches its checksum in `manifest`.
+fn intact(folder: &Path, manifest: &Value) -> bool {
+    SECRETS_FILES.iter().all(|(key, file)| {
+        common::digest(&folder.join(file))
+            .is_ok_and(|d| manifest["sha256"][key].as_str() == Some(d.as_str()))
+    })
 }
 /// Where the HDD keeps password lists: the monthly snapshots, and the lists setup makes
 /// (seal_passwords) so there is one before the first monthly snapshot.
@@ -2361,12 +2379,10 @@ fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>
         .to_string_lossy()
         .to_string();
     let expected = |key: &str| manifest["sha256"][key].as_str().unwrap_or("").to_string();
-    for (key, file) in SECRETS_FILES {
-        if common::digest(&source.join(file))? != expected(key) {
-            return Ok(Some(format!(
-                "the password list in the newest monthly snapshot ({run}) is damaged ({file} does not match its checksum) and was not copied to the USB drive"
-            )));
-        }
+    if !intact(&source, &manifest) {
+        return Ok(Some(format!(
+            "the newest password list on the HDD ({run}) is damaged (a file does not match its checksum) and was not copied to the USB drive; run  sudo bash install.sh  to make a new one"
+        )));
     }
     let folder = usb.join(USB_PASSWORDS);
     common::directory(&folder, 0o700)?;
@@ -2394,7 +2410,7 @@ fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>
     {
         fs::remove_dir_all(common::safe(old)?)?;
     }
-    let date = chrono::DateTime::from_timestamp(snapshot_stamp(&run).unwrap_or(0) as i64, 0)
+    let date = chrono::DateTime::from_timestamp_micros(snapshot_stamp(&run).unwrap_or(0) as i64)
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| run.clone());
     println!("USB: password list of {date} (encrypted; the recovery menu's \"App password list\" opens it with the backup password)");
@@ -2437,18 +2453,22 @@ fn seal_passwords_at(data: &Path, lists: &Path, key_dir: &Path, now: f64) -> Res
     let contents = sealed_contents(data, key_dir)?;
     let state = data.join(PASSWORD_LIST_STATE);
     let saved = common::json(&state, 64000);
+    // Current: the passwords are as they were, and that list is the newest on the HDD and
+    // undamaged (each file still matches its manifest's checksum; the 0.46.0 review: a
+    // damaged list was kept as current, and every weekly USB copy was incomplete).
     let current = saved["contents"].as_str() == Some(contents.as_str())
         && saved["run"]
             .as_str()
             .filter(|run| snapshot_stamp(run).is_some())
             .is_some_and(|run| {
-                newest_sealed_snapshot(lists).is_some_and(|(p, _)| p == lists.join(run))
+                newest_sealed_snapshot(lists)
+                    .is_some_and(|(p, manifest)| p == lists.join(run) && intact(&p, &manifest))
             });
     if current {
         return Ok(Sealed::Current);
     }
     // "-0": made by setup (a monthly snapshot's number is 1 or more).
-    let run = format!("{}-0", now.max(0.0) as u64);
+    let run = format!("{}-0", (now.max(0.0) * 1e6) as u64);
     common::directory(lists, 0o700)?;
     let folder = lists.join(&run);
     common::directory(&folder, 0o700)?;
@@ -2957,7 +2977,38 @@ fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &s
 fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
     let found =
         common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10)?.unwrap_or_default();
-    drive_check(c, key, path, &found)
+    let uuid = drive_check(c, key, path, &found)?;
+    // A drive on a NAS is also the same NAS disk (its WWN) setup chose: a restored or
+    // cloned LUN carries the same filesystem UUID (the 0.46.0 review).
+    let wwn = c["storage"][key]["network"]["wwn"].as_str().unwrap_or("");
+    if !wwn.is_empty() {
+        let source = found.split_whitespace().nth(2).unwrap_or("");
+        let device = source.split('[').next().unwrap_or("");
+        let (_, shown) = common::command(&["lsblk", "-n", "-s", "-o", "TYPE,WWN", device], 10)?;
+        if let Some(problem) = other_nas_disk(path, wwn, &shown) {
+            return Err(Error::new(&problem));
+        }
+    }
+    Ok(uuid)
+}
+/// Why the drive at `path` is not on the NAS disk with `wwn`, or None. `shown`: lsblk's
+/// "TYPE WWN" from the mounted device down to its disk (-s).
+fn other_nas_disk(path: &Path, wwn: &str, shown: &str) -> Option<String> {
+    let found = shown.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        (fields.next() == Some("disk")).then(|| fields.next().unwrap_or("").to_string())
+    });
+    match found.as_deref() {
+        Some(seen) if seen == wwn => None,
+        Some(seen) if !seen.is_empty() => Some(format!(
+            "Drive check failed: {} has the right UUID but is on another NAS disk ({seen}, not {wwn}): a restored or copied LUN, most likely. Run  sudo bash install.sh  to choose which one to use",
+            path.display()
+        )),
+        _ => Some(format!(
+            "Drive check failed: the NAS disk under {} can't be told apart (Linux shows no WWN for it), so it is not used",
+            path.display()
+        )),
+    }
 }
 /// `checked_drive` for what findmnt said at `path` ("UUID FSTYPE SOURCE", empty when
 /// nothing is mounted there).
@@ -3988,9 +4039,25 @@ impl UsbRun {
             }
         };
         let source = inside_media("source", "Archive outside media mount")?;
-        let cloud = inside_media("cloud", "Nextcloud folder outside media mount")?;
+        let cfg = a.path("config")?;
+        // Nextcloud's files are where setup put them (on the media drive or the SSD): the
+        // folder given must be that one, read from the settings setup wrote (the 0.46.0
+        // review, H04: it had to be on the media drive, which refused the SSD choice and
+        // stopped the whole copy, photos included).
+        let cloud = match a.value("cloud", "").as_str() {
+            "" => None,
+            value => {
+                let given = common::safe(Path::new(value))?;
+                if given != common::saved_path(&common::json(&cfg, 64000), "cloud")? {
+                    return Err(Error::new(
+                        "The Nextcloud folder given is not the one in the settings",
+                    ));
+                }
+                Some(given)
+            }
+        };
         Ok(UsbRun {
-            cfg: a.path("config")?,
+            cfg,
             data: common::mount_path(a.get("data")?)?,
             dest: common::mount_path(a.get("dest")?)?,
             media,
@@ -4279,7 +4346,73 @@ fn cloud_to_usb(run: &UsbRun, cloud: &Path) -> Result<CloudPart> {
 }
 #[cfg(test)]
 mod tests {
+    /// The 0.46.0 review, H04: with Nextcloud's files on the SSD, the USB copy refused its
+    /// own folder ("outside media mount") and copied nothing, photos included. The folder
+    /// must be the one setup decided, on whichever drive.
+    #[test]
+    fn the_usb_copy_takes_nextclouds_folder_where_setup_put_it() {
+        let root = scratch("usb-cloud-place");
+        let args = |cfg: &Value, cloud: &str| {
+            let file = root.join("settings.json");
+            fs::write(&file, cfg.to_string()).unwrap();
+            Args(std::collections::BTreeMap::from([
+                ("uuid".to_string(), "usb-00000001".to_string()),
+                ("fstype".to_string(), "ext4".to_string()),
+                ("config".to_string(), file.to_string_lossy().into_owned()),
+                ("media-root".to_string(), "/mnt/neko".to_string()),
+                ("data".to_string(), "/srv/neko".to_string()),
+                ("dest".to_string(), "/mnt/usb".to_string()),
+                ("source".to_string(), "/mnt/neko/photos/archive".to_string()),
+                ("cloud".to_string(), cloud.to_string()),
+            ]))
+        };
+        let on_ssd = json!({"data_mount": "/srv/neko", "media_mount": "/mnt/neko",
+            "paths": {"cloud": "/srv/neko/cloud/files"}});
+        assert!(
+            UsbRun::from_args(&args(&on_ssd, "/srv/neko/cloud/files"), Check::Quick, true).is_ok()
+        );
+        assert!(
+            UsbRun::from_args(&args(&on_ssd, "/srv/neko/cloud/files"), Check::Full, false).is_ok()
+        );
+        // Not the decided folder: refused, on either drive.
+        assert!(
+            UsbRun::from_args(&args(&on_ssd, "/mnt/neko/cloud/files"), Check::Quick, true).is_err()
+        );
+        assert!(
+            UsbRun::from_args(&args(&on_ssd, "/srv/neko/elsewhere"), Check::Quick, true).is_err()
+        );
+        // Settings from before 0.46.1 (no "paths"): the same rule, on the media drive.
+        let older = json!({"data_mount": "/srv/neko", "media_mount": "/mnt/neko"});
+        assert!(
+            UsbRun::from_args(&args(&older, "/mnt/neko/cloud/files"), Check::Quick, true).is_ok()
+        );
+        let with_choice = json!({"data_mount": "/srv/neko", "media_mount": "/mnt/neko", "locations": {"cloud": "ssd"}});
+        assert!(UsbRun::from_args(
+            &args(&with_choice, "/srv/neko/cloud/files"),
+            Check::Quick,
+            true
+        )
+        .is_ok());
+        // A saved folder off both drives is refused.
+        let odd = json!({"data_mount": "/srv/neko", "media_mount": "/mnt/neko", "paths": {"cloud": "/etc/cloud"}});
+        assert!(UsbRun::from_args(&args(&odd, "/etc/cloud"), Check::Quick, true).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
     use super::*;
+    #[test]
+    fn a_nas_drive_is_the_nas_disk_setup_chose() {
+        // The 0.46.0 review: a restored or cloned LUN, same filesystem UUID, passed.
+        let path = Path::new("/mnt/nekoserver-media");
+        let ours = "part \ndisk 0x6001405abc\n";
+        assert_eq!(other_nas_disk(path, "0x6001405abc", ours), None);
+        let other = other_nas_disk(path, "0x6001405abc", "part\ndisk 0x6001405def\n").unwrap();
+        assert!(
+            other.contains("another NAS disk (0x6001405def, not 0x6001405abc)"),
+            "{other}"
+        );
+        assert!(other_nas_disk(path, "0x6001405abc", "part\ndisk\n").is_some());
+        assert!(other_nas_disk(path, "0x6001405abc", "").is_some());
+    }
     #[test]
     fn every_member_of_a_btrfs_pool_counts_as_its_disk() {
         let listed = "/dev/sda\n/dev/sda2 pool\n/dev/sdb\n/dev/sdb1 pool\n/dev/sdc1 usb\n";
@@ -4692,6 +4825,34 @@ mod tests {
             .map(|(_, p)| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
         assert_eq!(kept, ["500-1", "600-1", "700-1"]);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_list_named_in_seconds_and_one_in_microseconds_are_compared_as_times() {
+        // The 0.46.0 review: setup's lists were named in seconds, the monthly snapshots in
+        // microseconds, so an old monthly list outranked setup's newer one (and the USB
+        // drive's retention removed the new copy at once).
+        assert_eq!(snapshot_stamp("1800000000-0"), Some(1_800_000_000_000_000));
+        assert_eq!(
+            snapshot_stamp("1700000000000000-4242"),
+            Some(1_700_000_000_000_000)
+        );
+        assert!(snapshot_stamp("1800000000-0") > snapshot_stamp("1700000000000000-4242"));
+        let root = scratch("usb-units");
+        let usb = root.join("usb").join(USB_PASSWORDS);
+        for run in [
+            "1690000000000000-7",
+            "1700000000000000-8",
+            "1710000000000000-9",
+            "1800000000-0",
+        ] {
+            fs::create_dir_all(usb.join(run)).unwrap();
+        }
+        let order: Vec<String> = snapshot_folders(&usb)
+            .into_iter()
+            .map(|(_, p)| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(order.last().unwrap(), "1800000000-0", "{order:?}");
         let _ = fs::remove_dir_all(root);
     }
     fn dump_name(days_ago: f64) -> String {
@@ -7237,12 +7398,21 @@ mod tests {
         }
         assert_eq!(
             seal_passwords_at(&data, &lists, &keys, 100.0).unwrap(),
-            Sealed::Made("100-0".into())
+            Sealed::Made("100000000-0".into())
         );
         // Unchanged passwords: no new list. A changed one: a new list.
         assert_eq!(
             seal_passwords_at(&data, &lists, &keys, 200.0).unwrap(),
             Sealed::Current
+        );
+        // The 0.46.0 review: a damaged list was still "current". It is made again.
+        let archive = lists
+            .join("100000000-0")
+            .join(crate::maintenance::SECRETS_ARCHIVE);
+        fs::write(&archive, b"damaged").unwrap();
+        assert_eq!(
+            seal_passwords_at(&data, &lists, &keys, 250.0).unwrap(),
+            Sealed::Made("250000000-0".into())
         );
         write(
             &data.join("secrets/accounts/APP-CREDENTIALS.txt"),
@@ -7250,14 +7420,14 @@ mod tests {
         );
         assert_eq!(
             seal_passwords_at(&data, &lists, &keys, 300.0).unwrap(),
-            Sealed::Made("300-0".into())
+            Sealed::Made("300000000-0".into())
         );
         // The SSD's record holds no password, nor does the HDD's list (it is encrypted).
         let state = fs::read_to_string(data.join(PASSWORD_LIST_STATE)).unwrap();
         assert!(!state.contains("pw2") && !state.contains("secret"));
         let sealed = fs::read(
             lists
-                .join("300-0")
+                .join("300000000-0")
                 .join(crate::maintenance::SECRETS_ARCHIVE),
         )
         .unwrap();
@@ -7271,7 +7441,7 @@ mod tests {
             .is_none());
         assert!(usb
             .join(USB_PASSWORDS)
-            .join("300-0/manifest.json")
+            .join("300000000-0/manifest.json")
             .is_file());
         // Only the newest lists are kept on the HDD.
         for (n, at) in [400.0, 500.0, 600.0].into_iter().enumerate() {
@@ -7285,7 +7455,7 @@ mod tests {
             .into_iter()
             .map(|(_, p)| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
-        assert_eq!(kept, ["400-0", "500-0", "600-0"]);
+        assert_eq!(kept, ["400000000-0", "500000000-0", "600000000-0"]);
         let _ = fs::remove_dir_all(root);
     }
     /// Docker as the weekly Immich backup sees it, recording what was done.

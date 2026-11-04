@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shlex
 import signal
 import stat
 import subprocess
@@ -24,6 +25,9 @@ import zlib
 
 import guided_setup
 from neko_common import (
+    OPERATION_LOCK,
+    SHARED,
+    hold_operation,
     cloud_files,
     location,
     photo_library,
@@ -140,6 +144,14 @@ def steam_left_out(run):
         return False
 
 
+def run_time(stamp):
+    """A monthly snapshot's (or password list's) time in microseconds. Setup named its
+    password lists in seconds before 0.46.1: read as microseconds, so the newest list is
+    the newest whatever made it (as the runtime's backup.rs snapshot_stamp)."""
+    stamp = int(stamp)
+    return stamp * 1_000_000 if stamp < 10**12 else stamp
+
+
 def monthly_snapshots(folder, need=None):
     """(path, label) for complete monthly snapshots, newest first; `need` = required file."""
     folder = Path(folder)
@@ -153,7 +165,7 @@ def monthly_snapshots(folder, need=None):
             and (path / MANIFEST).is_file()
             and (need is None or (path / need).is_file())
         ):
-            found.append((int(match[1]), path))
+            found.append((run_time(match[1]), path))
     return [(path, when(stamp)) for stamp, path in sorted(found, reverse=True)]
 
 
@@ -1161,6 +1173,10 @@ def restore_photos(config, prompt, output):
         'files from that folder (for thousands of files, the Immich command-line uploader is',
         'faster: see https://immich.app/docs/features/command-line-interface).',
         f'Your current Immich library ({photo_library(config)}) was not touched.',
+        'Rebuilding Immich after losing its drive (RECOVERY.md, "Rebuild Immich from the',
+        'USB drive")? Then put both folders into the library Immich uses instead:',
+        f'  sudo cp -a {shlex.quote(str(target / "upload"))} {shlex.quote(str(target / "library"))} '
+        f'{shlex.quote(str(photo_library(config)))}/',
     )
 
 
@@ -2059,10 +2075,11 @@ def repair_job(job, hints, asking, resolved):
 
 
 # What writes to NekoServer's drives: stopped before a drive is checked, started again after.
-WRITERS = ('docker.socket', 'docker.service', 'smbd.service', 'smb.service', 'nekoserver-gateway-lan.service')
-NAS_WATCH = 'nekoserver-nas-watch.service'
-NAS_WATCH_STATE = Path('/run/nekoserver-nas-watch.json')
-PROBE_DIR = '.nekoserver-check'  # nas_watch.rs PROBE_DIR
+# The same names the runtime's NAS check uses (runtime/src/shared.json).
+WRITERS = tuple(SHARED['writers'])
+NAS_WATCH = SHARED['nas_watch']['service']
+NAS_WATCH_STATE = Path(SHARED['nas_watch']['state'])
+PROBE_DIR = SHARED['nas_watch']['probe_dir']
 
 
 def takes_writes(folder):
@@ -2086,6 +2103,18 @@ def takes_writes(folder):
         return False
 
 
+def ext4_errors(folder, sys_ext4=Path('/sys/fs/ext4')):
+    """The errors Linux counted on the ext4 filesystem mounted at `folder` (common.rs
+    ext4_errors): kept until the filesystem is checked and repaired. 0 when unknown."""
+    source = (findmnt('SOURCE', folder) or '').split('[')[0]
+    if not source.startswith('/dev/'):
+        return 0
+    try:
+        return int((sys_ext4 / Path(os.path.realpath(source)).name / 'errors_count').read_text().strip())
+    except (OSError, ValueError):
+        return 0
+
+
 def drive_rows(config):
     """(name, folder, its settings) of the SSD and the media drive."""
     storage = config.get('storage', {})
@@ -2095,14 +2124,51 @@ def drive_rows(config):
     ]
 
 
-def check_read_only(config, prompt, output, run=subprocess.run, writes=takes_writes):
+AT_WORK = 'activating,deactivating,reloading'
+
+
+def repair_blocked(config, run=subprocess.run):
+    """Why a drive can't be checked now, or None: a drive move, an upgrade, an unfinished
+    app update, setup, or a backup or job at work (the 0.46.0 review, H07: the repair
+    stopped the apps and unmounted a drive under them). The backups' lock is on the SSD,
+    so it is only tried here, never held: holding it would keep the SSD from unmounting."""
+    import upgrade
+
+    recovery = Path(config['data_mount']) / 'installer/recovery.lock'
+    busy = upgrade.nothing_at_work(recovery=recovery if recovery.parent.is_dir() else None)
+    if busy:
+        return busy
+    listed = run(
+        ['systemctl', 'list-units', '--plain', '--no-legend', '--state=' + AT_WORK, 'nekoserver-*'],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    working = [line.split()[0] for line in (listed.stdout or '').splitlines() if line.split()]
+    working = [unit for unit in working if unit != NAS_WATCH]
+    return (', '.join(working) + ' is at work') if working else None
+
+
+def check_read_only(config, prompt, output, run=subprocess.run, writes=takes_writes, errors=ext4_errors, hold=None):
+    """See checked_drive: the same, holding the operation lock (in /run, which drive moves
+    and upgrades take too) from start to end, so none of them can start meanwhile."""
+    held = (hold or hold_operation)(OPERATION_LOCK)
+    if held is None:
+        output('A drive move or a NekoServer upgrade is at work; check the drive once it has finished.')
+        return
+    with held:
+        checked_drive(config, prompt, output, run, writes, errors)
+
+
+def checked_drive(config, prompt, output, run, writes, errors):
     """A drive Linux turned read-only after write errors (a NAS away for over ten minutes,
     a loose cable): the apps stopped, the drive unmounted (never by force), its filesystem
     checked and repaired with your yes (e2fsck, ext4), mounted again, checked to take
     writes, then the apps started again."""
-    failing = [(n, f, r) for n, f, r in drive_rows(config) if os.path.ismount(f) and not writes(f)]
+    failing = [(n, f, r) for n, f, r in drive_rows(config) if os.path.ismount(f) and (not writes(f) or errors(f))]
     if not failing:
-        output('Both drives take writes: nothing to check.')
+        output('Both drives take writes and Linux counted no errors on them: nothing to check.')
         return
     name, folder, record = failing[0]
     uuid, fstype = record.get('uuid', ''), record.get('fstype', '')
@@ -2110,14 +2176,29 @@ def check_read_only(config, prompt, output, run=subprocess.run, writes=takes_wri
         raise RuntimeError(f'{name} has no drive identity in the settings')
     say(
         output,
-        f'\n{name.capitalize()} ({folder}) does not take writes: Linux stopped writing to it after errors.',
+        f'\n{name.capitalize()} ({folder}): Linux met errors writing to it'
+        + ('' if writes(folder) else ', and it does not take writes any more')
+        + '.',
         'To check it, the apps that write there are stopped, the drive is unmounted (never by force),',
         'its filesystem checked and repaired, then mounted again and the apps started.',
     )
     if not ask('Stop the apps and check the drive now?', prompt, output):
         output('Nothing was changed.')
         return
+    busy = repair_blocked(config, run)
+    if busy:
+        output(f'{busy}: check the drive once it has finished. Nothing was changed.')
+        return
     run(['systemctl', 'stop', *WRITERS], capture_output=True, text=True, timeout=600, check=False)
+    unmounted(folder, run)
+    repaired(folder, f'/dev/disk/by-uuid/{uuid}', fstype, prompt, output, run)
+    mounted_again(folder, run, writes)
+    output(f'{folder} is checked, mounted again and takes writes.')
+    start_apps(run, output)
+
+
+def unmounted(folder, run):
+    """The drive unmounted, never by force: a program still using it is named."""
     done = run(['umount', str(folder)], capture_output=True, text=True, timeout=120, check=False)
     if done.returncode:
         users = run(['fuser', '-vm', str(folder)], capture_output=True, text=True, timeout=30, check=False)
@@ -2126,7 +2207,11 @@ def check_read_only(config, prompt, output, run=subprocess.run, writes=takes_wri
             + ((users.stderr or '') + (users.stdout or '')).strip()[:1500]
             + '\nClose it (or restart the PC), then choose this again. The apps stay stopped until then.'
         )
-    device = f'/dev/disk/by-uuid/{uuid}'
+
+
+def repaired(folder, device, fstype, prompt, output, run):
+    """The unmounted drive's filesystem checked and repaired with your yes (ext4; another
+    filesystem gets the command to check it with)."""
     if fstype != 'ext4':
         command = {'xfs': f'sudo xfs_repair {device}', 'btrfs': f'sudo btrfs check {device}'}.get(fstype, '')
         raise RuntimeError(
@@ -2143,6 +2228,10 @@ def check_read_only(config, prompt, output, run=subprocess.run, writes=takes_wri
             f'e2fsck found problems it does not fix without asking (exit {fsck.returncode}). Run  sudo e2fsck -f '
             f'{device}  yourself: it asks before each change. Then run  sudo bash install.sh  to mount the drive again.'
         )
+
+
+def mounted_again(folder, run, writes):
+    """The drive mounted again by its own mount unit, and taking writes."""
     unit = run(
         ['systemd-escape', '--path', '--suffix=mount', str(folder)],
         capture_output=True,
@@ -2155,8 +2244,6 @@ def check_read_only(config, prompt, output, run=subprocess.run, writes=takes_wri
         raise RuntimeError(
             f'{folder} is mounted again but still does not take writes; check the drive (or the NAS) and its cable'
         )
-    output(f'{folder} is checked, mounted again and takes writes.')
-    start_apps(run, output)
 
 
 def start_apps(run, output):
