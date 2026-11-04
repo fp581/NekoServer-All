@@ -128,19 +128,20 @@ def restart_needed(family, run=call, running=None, modules=Path('/usr/lib/module
     return (UNKNOWN, unknown) if unknown else (NOT_REQUIRED, [])
 
 
-KERNEL = re.compile(r'(\d+(?:\.\d+)*)(?:-(\d+))?(.*)')
-
-
 def newer_kernel(running, installed):
     """The newest of `installed` (kernel versions, as /usr/lib/modules names them) that is
     of the running kernel's kind (amd64, rt-amd64, generic...) and newer than it, or None."""
 
     def parts(name):
-        found = KERNEL.fullmatch(name)
-        if not found:
+        """((6, 1, 0, 26), '-amd64') from '6.1.0-26-amd64'; None for another form."""
+        version, _, rest = name.partition('-')
+        numbers = version.split('.')
+        if not all(n.isdigit() for n in numbers):
             return None
-        numbers = tuple(int(n) for n in found[1].split('.')) + (int(found[2] or 0),)
-        return numbers, found[3]
+        build, _, kind = rest.partition('-')
+        if not build.isdigit():
+            build, kind = '0', rest
+        return (*map(int, numbers), int(build)), kind
 
     mine = parts(running)
     if mine is None:
