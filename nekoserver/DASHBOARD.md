@@ -132,7 +132,7 @@ The rest of this page is the technical reference.
 
 ### Remote access and the port
 
-The Tailscale address only works for devices signed in to your own Tailscale account (Tailscale Serve, never Funnel). To keep the dashboard on the server only, set `"remote": false` under `"dashboard"` in your settings and run `sudo bash install.sh` again. Connecting Tailscale after the dashboard was installed is fine: the next setup run gives the dashboard its Tailscale address. The port 8787 can be changed with `"port"` under `"dashboard"`; when another program on the server already uses it, setup takes the next free port from 8788-8799 by itself, writes it there and says so (the end of setup and the app menu entry show the right address).
+The Tailscale address only works for devices signed in to your own Tailscale account (Tailscale Serve, never Funnel). The dashboard's port is held by systemd from the start of the computer (`nekoserver-dashboard.socket`), so no other program on the server can take it and pose as the dashboard. To keep the dashboard on the server only, set `"remote": false` under `"dashboard"` in your settings and run `sudo bash install.sh` again. Connecting Tailscale after the dashboard was installed is fine: the next setup run gives the dashboard its Tailscale address. The port 8787 can be changed with `"port"` under `"dashboard"`; when another program on the server already uses it, setup takes the next free port from 8788-8799 by itself, writes it there and says so (the end of setup and the app menu entry show the right address).
 
 ### How sensors are found
 

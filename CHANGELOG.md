@@ -2,7 +2,7 @@
 
 ## v0.46.2 — 2026-11-04
 
-A stabilization release: fixes only. They come from a new audit of 0.46.1 (four separate reviews: the NAS code, the Compose checks, backups and restores, drive moves and setup) and the project owner's two reviews of `v0.46.1-beta`. Each fix has a test that fails on 0.46.1.
+A stabilization release: fixes only. They come from a new audit of 0.46.1 (four separate reviews: the NAS code, the Compose checks, backups and restores, drive moves and setup) the project owner's two reviews of `v0.46.1-beta`, and a second audit (four more reviews: 0.46.2's own changes, the dashboard and control service, installing and upgrading, the apps and restores). Each fix has a test that fails on 0.46.1.
 
 ### Fixed: Compose files can't reach further than the app
 - **Networks are checked** (P1). The check looked at a model's networks only as a key name. These passed:
@@ -24,18 +24,20 @@ A stabilization release: fixes only. They come from a new audit of 0.46.1 (four 
 
 ### Fixed: drives on a NAS
 - **A Btrfs NAS drive keeps its network mount options** when its default subvolume is pinned. The second fstab write left them out, so at the next start the drive was mounted before the network and the login.
-- **A failed start after the NAS returns no longer keeps the apps held.** One app that wouldn't start left "held" set, so every minute everything was restarted again. Once the drives check out, the hold ends; what failed is said and kept for the dashboard.
-- **Drive-return starts the apps only when every NAS drive takes writes**, not only when the NAS check holds them.
+- **A failed start after the NAS returns no longer keeps the apps held.** One app that wouldn't start left "held" set, so every minute everything was restarted again. Once the drives check out, the hold ends; what failed is said in the check's log.
+- **With only the backup drive on the NAS, the apps start again after a repair.** The menu left the start to the NAS check, which has no drive to look at then, so its hold was never lifted. The menu starts them itself then, and the check lifts a hold left from before.
+- **Drive-return doesn't start the apps on a NAS drive that fails writes.** It holds them as the NAS check would, and that check starts them once the drive takes writes. A drive only waiting for the NAS is no reason to wait.
 - **The recovery menu and the NAS check take turns.** The menu's note that the apps should start again could be written over by a check already at work, and the apps stayed stopped. The menu now says when the check refused, instead of always "started again".
-- **The menu's test write gives up after 20 s** with a message when the NAS isn't answering, instead of freezing.
+- **The menu's test write gives up after 20 s** with a message when the NAS isn't answering, instead of freezing, and quitting the menu doesn't wait for it.
 - **CHAP logins saved by 0.46.0 are noted**, so a login lost later is noticed. Settings from 0.46.0 didn't say which target had one.
 - **A NAS holding only the backup drive gets the minute check**, and a target without a session is logged in to again, also the backup drive's while the media drive is fine.
-- **The backup drive on a NAS is checked by its NAS disk identity (WWN)**, like the SSD and the HDD. Setup notes it; the weekly copy refuses a restored or cloned LUN with the same UUID.
+- **The backup drive on a NAS is checked by its NAS disk identity (WWN)**, like the SSD and the HDD. Setup notes it; the weekly copy and the recovery menu refuse a restored or cloned LUN with the same UUID.
 - **A drive repair cut off is never called a success.** e2fsck killed part-way returns a negative code, which passed as "repaired"; the drive was mounted again and the apps started. Only 0, 1 and 2 count now.
 - **The repair checks it has the drive the settings name** before stopping anything: with another drive mounted at the folder (or settings out of date), it unmounted one filesystem and checked another.
 - STORAGE.md says the read-only protection and the repair are for ext4.
 
 ### Fixed: backups and recovery
+- **The USB drive busy (the weekly copy) never hides the HDD's password lists.**
 - **The recovery menu offers every password list, newest first:** the monthly snapshots', the ones setup makes, and the USB drive's copies when it is plugged in. It looked only at the monthly snapshots, so a newer list from setup (and the only one before the first monthly snapshot) was never offered, and the USB drive was looked at only when the HDD had none.
 - **A password list dated in the future (a wrong clock) is never the newest for good**, and one cut off before its manifest no longer takes the place of a good one.
 - **Photos on the media drive:** setup and STORAGE.md say that their weekly archive copy is on the same drive, so the USB backup is the only copy on another drive.
@@ -46,6 +48,28 @@ A stabilization release: fixes only. They come from a new audit of 0.46.1 (four 
 - **Setup never offers the USB backup drive as the SSD or the HDD.**
 - **A server set up before 0.46.0, updated with no one at the keyboard, keeps its layout.** An empty music or photo folder was quietly put on the media drive.
 - A cut-off `back` is told to go back again, not to start a move, and STORAGE.md says when a move cut off during its switch starts over.
+
+### Fixed: the dashboard
+- **No other program can take the dashboard's port and catch the PIN** (P1). The dashboard bound its port itself, after waiting for its first readings at start-up. Any account on the PC could take `127.0.0.1:8787` first (a `@reboot` job) and serve a copy of the page to the phones, reading the PIN they type. systemd now holds the port from the start of the computer (`nekoserver-dashboard.socket`) and hands it to the dashboard, which also checks it is the right port.
+- **Close app and Force close never stop a program started with sudo from the app.** Setup or a system update run with sudo in a terminal sits in the terminal's group, and Force close killed it. Only the desktop user's own processes are closed now.
+- **Slow connections hold the dashboard less.** A request's 3 seconds count from when it was accepted, so one that waited in the queue is closed at once instead of taking a worker for its own 3 seconds.
+- **A process naming itself with a byte that is not UTF-8 is still listed** on the Processes page (it was left out).
+- **An upgrade from a `-beta` tag is shown as at work** while it runs.
+
+### Fixed: upgrades
+- **A copy kept beside a unit file no longer fails every upgrade.** The gateway keeps a `.before-<time>` copy of a unit it rewrites. That copy named an old release, so the check after an upgrade failed, and so did the check after putting the release back. Only real unit files are looked at now.
+- **Putting a release back removes the units the newer one added.** The older setup rewrites only its own units, so a new one kept running the newer release's program.
+- **An upgrade waits for a pending restart.** Setup stops at once when a system update waits for a restart, the old release's setup too, so the upgrade failed and then failed to go back. It now says to restart first and changes nothing.
+- The upgrade says what it checks: the release's version, from this project's GitHub tag over HTTPS. Releases are not signed yet.
+
+### Fixed: apps and restores
+- **A Nextcloud setting that can't be read is never overwritten.** occ timing out (or a PHP warning before its answer) was taken for an empty list of trusted domains, and the first one (`localhost`, or the other gateway's address) was replaced. Only "not set" counts as empty now; anything else stops the step.
+- **A restore test left behind no longer blocks the next one on its port.** A failed or stopped test kept its network, and Docker refused the next test's network of the same name. A left network is now removed (with its stopped containers) before the next test, and the advice says `down`.
+- **A restore test's own network is never offered as the home network** (in setup's choice of network, and at start-up).
+- The Nextcloud fallback install's comment says its passwords are briefly in its process's arguments, as with the image's own first start.
+
+### Fixed: Linux families
+- **A Fedora derivative that also names `rhel` (Nobara, say) is not taken for RHEL**, whose repositories have no release of its number. It is refused as not supported.
 
 ### Fixed: the System tab
 - **Debian shows a restart is needed when a newer kernel waits.** Debian keeps the running kernel's modules when a newer kernel is installed, and writes `/run/reboot-required` only with update-notifier, so "no restart required" was shown. A newer installed kernel of the same kind now counts.

@@ -143,6 +143,11 @@ HTTPS = 'https://'
 OCC_GET, OCC_SET, OCC_DELETE = 'config:system:get', 'config:system:set', 'config:system:delete'
 
 
+# What command() says for a command that failed without a word: occ's answer for a
+# setting that is not set (exit 1, nothing printed).
+UNSAID = 'no reason given'
+
+
 def command(args, timeout=30, env=None):
     what = ' '.join(args[:3])
     try:
@@ -153,7 +158,7 @@ def command(args, timeout=30, env=None):
         raise RuntimeError(f'Gateway command took over {timeout} seconds ({what})') from None
     if p.returncode:
         # The command's own last error line says what to fix (no values are in it).
-        last = next((line.strip() for line in reversed(p.stderr.splitlines()) if line.strip()), 'no reason given')
+        last = next((line.strip() for line in reversed(p.stderr.splitlines()) if line.strip()), UNSAID)
         raise RuntimeError(f'Gateway command failed ({what}): {last[-300:]}')
     return p.stdout
 
@@ -906,10 +911,7 @@ def configure_cloud_origin(config, host, port):
     base = compose + ['exec', '-T', '--user', 'www-data', 'nextcloud', 'php', 'occ']
 
     def get(key):
-        try:
-            return json.loads(command(base + [OCC_GET, key, '--output=json']))
-        except (RuntimeError, ValueError):
-            return None
+        return occ_value(base, key)
 
     values, free = listed(get('trusted_domains'))
     if values is None:
@@ -932,6 +934,25 @@ def configure_cloud_origin(config, host, port):
     if known not in [*values, host] or known in ('localhost', '127.0.0.1'):
         command(base + [OCC_SET, 'overwrite.cli.url', '--value=https://' + host + ':' + str(port)])
     trust_gateway_proxies(base, get('trusted_proxies'), cloud_proxies(compose))
+
+
+def occ_value(base, key):
+    """A Nextcloud setting as occ shows it, or None when it is not set (occ exits 1 with
+    nothing said). Anything else (a timeout, an error occ explains, output that is not
+    JSON, such as a PHP warning before it) raises: a setting that could not be read is
+    never taken for an empty one (the audit of 0.46.2: the trusted domains' first entry
+    was then overwritten)."""
+    try:
+        return json.loads(command(base + [OCC_GET, key, '--output=json'], timeout=60))
+    except RuntimeError as exc:
+        if str(exc).endswith(UNSAID):
+            return None
+        raise RuntimeError(f"Nextcloud's {key} setting could not be read ({exc}); nothing was changed") from None
+    except ValueError:
+        raise RuntimeError(
+            f"Nextcloud's {key} setting could not be read (occ did not answer in JSON); nothing was changed. "
+            'Check that Nextcloud runs, then run setup again.'
+        ) from None
 
 
 def trust_gateway_proxies(base, saved, wanted):

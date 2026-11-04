@@ -10,7 +10,9 @@ What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says ho
 it got, so a power cut at any point is put right at the next start):
 1. Checks nothing else is at work: no setup, no unfinished app update or monthly check,
    no other upgrade. App updates and the monthly check wait while the record is there.
-2. Downloads the release from GitHub and checks it is the release it says it is.
+2. Downloads the release from GitHub (over HTTPS, from this project's tag) and checks it
+   names the version it should. Releases are not signed yet: whoever can push a tag to
+   the project's GitHub can publish a release (as for `git pull`).
 3. Runs that release's setup with your saved settings, without questions. It never
    updates the system packages (that is a separate job you start yourself); on Arch a
    release that needs a new package stops and says to run setup in a terminal.
@@ -123,8 +125,8 @@ def owner(config):
 
 
 def download(tag, work, get=fetch):
-    """The release, unpacked into `work`/<tag>, checked to be that release: returns its
-    nekoserver folder."""
+    """The release, unpacked into `work`/<tag>, checked to name that version (not signed:
+    see the top of this file): returns its nekoserver folder."""
     ensure_directory(work, 0o700)
     archive = safe_path(work / (tag + '.tar.gz'))
     payload = get(ARCHIVE.format(tag=tag), 'NekoServer ' + tag, LIMIT + 1, timeout=300)
@@ -255,7 +257,7 @@ def services_behind(version, units=UNITS):
     release's files (each release has its own folder: /v<version>/): every backup worker,
     the dashboard and the rest must run `version`."""
     behind = []
-    for unit in sorted(Path(units).glob('nekoserver-*')):
+    for unit in installed_units(units):
         try:
             text = unit.read_text(errors='replace') if unit.is_file() else ''
         except OSError:
@@ -263,6 +265,49 @@ def services_behind(version, units=UNITS):
         if any(found != version for found in RELEASE_IN_PATH.findall(text)):
             behind.append(unit.name)
     return behind
+
+
+UNIT_KINDS = ('.service', '.timer', '.socket')  # as the uninstaller (uninstaller.UNIT_KINDS)
+
+
+def restart_pending(root='/'):
+    """Why the upgrade can't start: an earlier system update waits for a restart. Setup
+    then stops before changing anything (install.sh, exit 3), the new release's and the
+    old one's alike, so the upgrade would only fail, then fail to go back (the audit of
+    0.46.2). None when none waits, or it can't be told."""
+    import host
+
+    try:
+        family = host.current()
+    except (host.Unsupported, OSError):
+        return None
+    if family.reboot_pending(root):
+        return 'This computer waits for a restart after a system update (restart it first)'
+    return None
+
+
+def installed_units(units=None):
+    """NekoServer's unit files (`nekoserver-*` services, timers and sockets): never the
+    copies kept beside them (`.before-<time>`, the audit of 0.46.2: such a copy names an old
+    release and failed every upgrade's check)."""
+    return sorted(p for p in Path(units or UNITS).glob('nekoserver-*') if p.suffix in UNIT_KINDS and p.is_file())
+
+
+def added_units(before, units=None, run=None):
+    """The units the newer release added (not there before the upgrade), switched off and
+    removed when its release is put back: the older setup writes only its own, so the new
+    ones would keep running the newer release's program."""
+    run = run or subprocess.run
+    removed = []
+    for unit in installed_units(units):
+        if unit.name in before:
+            continue
+        run(['systemctl', 'disable', '--now', unit.name], capture_output=True, text=True, timeout=120, check=False)
+        unit.unlink(missing_ok=True)
+        removed.append(unit.name)
+    if removed:
+        run(['systemctl', 'daemon-reload'], capture_output=True, text=True, timeout=120, check=False)
+    return removed
 
 
 BUSY_MOVE = 'A drive move (migrate.py) or another upgrade is at work'
@@ -287,7 +332,7 @@ def upgrade_held(
     if not numbers(tag) or numbers(tag) <= numbers(VERSION):
         out(f'{tag} is not newer than this release ({VERSION}); nothing was changed')
         return 2
-    busy = nothing_at_work(lock=lock, journal=journal, recovery=recovery)
+    busy = nothing_at_work(lock=lock, journal=journal, recovery=recovery) or restart_pending()
     if busy:
         out(busy + '; the upgrade did not start, nothing was changed. Try again later.')
         return 2
@@ -301,7 +346,15 @@ def upgrade_held(
     account = owner(config)
     before = steps_done(config)
     log_file = work / (tag + '.log')
-    record('downloading', journal, to=tag, previous=str(previous), log=str(log_file), before=sorted(before))
+    record(
+        'downloading',
+        journal,
+        to=tag,
+        previous=str(previous),
+        log=str(log_file),
+        before=sorted(before),
+        units=[unit.name for unit in installed_units()],
+    )
     try:
         project = download(tag, work, get)
     except DOWNLOAD_ERRORS as exc:
@@ -350,8 +403,11 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
     every service run that release. Only then is the upgrade's record removed; otherwise
     it stays, and nothing else (app updates, the monthly check) starts until you have
     finished it."""
-    record('going_back', journal)
+    saved = record('going_back', journal)
     config = json.loads(settings_path(settings).read_text())
+    if isinstance(saved.get('units'), list):
+        for name in added_units(set(saved['units'])):
+            out(f'Removed {name}: the newer release added it')
     problem = setup_problem(setup, previous, settings, account, log_file)
     if problem is None:
         problem = checked(check or (lambda: verify(config, previous.name, before)))

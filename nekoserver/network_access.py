@@ -55,7 +55,8 @@ def lan(config):
 # br-<12 hex> for each Docker network), Podman's, libvirt's virtual networks, container
 # veths, Tailscale and VPN tunnels. A bridge of your own that carries the home network
 # (br0, bridge0, br-lan) is not one of them. (startup.rs internal_interface is the same.)
-INTERNAL_PREFIXES = ('lo', 'docker', 'veth', 'virbr', 'podman', 'cni-', 'tailscale', 'tun', 'tap', 'wg')
+# neko-rt-: an isolated restore test's own network (recovery_tools.test_bridge).
+INTERNAL_PREFIXES = ('lo', 'docker', 'veth', 'virbr', 'podman', 'cni-', 'tailscale', 'tun', 'tap', 'wg', 'neko-rt-')
 DOCKER_NETWORK_BRIDGE = re.compile(r'br-[0-9a-f]{12}')
 
 

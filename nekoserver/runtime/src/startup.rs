@@ -93,6 +93,8 @@ fn internal_interface(name: &str) -> bool {
             "tun",
             "tap",
             "wg",
+            // An isolated restore test's own network (recovery_tools.py test_bridge).
+            "neko-rt-",
         ]
         .iter()
         .any(|s| name.starts_with(s))

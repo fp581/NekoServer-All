@@ -217,7 +217,8 @@ if "$apply"; then
       echo 'Upgrade the system first (sudo dnf system-upgrade), then run  sudo bash install.sh  again.' >&2
       exit 1
     fi
-  elif [[ "$distro" == *' rhel '* ]] && command -v dnf >/dev/null; then
+  elif [[ "$distro" == *' rhel '* ]] && command -v dnf >/dev/null && ! { [[ "$distro" == *' fedora '* && " rhel rocky almalinux centos " != *" ${ID:-} "* && "${VERSION_ID%%.*}" =~ ^[0-9]+$ ]] && ((${VERSION_ID%%.*} >= 30)); }; then
+    # (A Fedora derivative that also names rhel, version 30 and up, is not RHEL: below.)
     # RHEL and its rebuilds (Rocky Linux, AlmaLinux, CentOS Stream), which all name rhel
     # in ID or ID_LIKE: Docker's and Tailscale's packages for them, Caddy from EPEL.
     family=rhel

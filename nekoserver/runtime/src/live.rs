@@ -56,13 +56,15 @@ impl Default for Live {
     }
 }
 
-/// A small text file from /proc or /sys (they never need more than this).
+/// A small text file from /proc or /sys (they never need more than this). Read as bytes:
+/// a process naming itself with a byte that is not UTF-8 must still be listed (the audit
+/// of 0.46.2: read as text it came back empty, and the process was left out).
 fn read(path: &Path) -> String {
-    let mut text = String::new();
+    let mut bytes = vec![];
     if let Ok(file) = fs::File::open(path) {
-        let _ = file.take(65536).read_to_string(&mut text);
+        let _ = file.take(65536).read_to_end(&mut bytes);
     }
-    text.trim().to_string()
+    String::from_utf8_lossy(&bytes).trim().to_string()
 }
 fn number(path: &Path) -> Option<f64> {
     read(path).parse::<f64>().ok().filter(|v| v.is_finite())
@@ -898,6 +900,14 @@ fn container_of(cgroup: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_file_that_is_not_utf8_is_still_read() {
+        let dir = std::env::temp_dir().join(format!("neko-live-utf8-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("comm"), b"\xffhidden\n").unwrap();
+        assert_eq!(read(&dir.join("comm")), "\u{fffd}hidden");
+        let _ = fs::remove_dir_all(dir);
+    }
 
     struct Tree(PathBuf);
     impl Tree {

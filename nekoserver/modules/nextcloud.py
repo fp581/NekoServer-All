@@ -440,7 +440,10 @@ def command(args):
 
 
 # What the image itself runs on its first start (entrypoint.sh), with the settings it is
-# given in its environment, so no password is on a command line.
+# given in its environment: no password is on NekoServer's own command lines. occ takes
+# the passwords only as options, so for the few seconds this install runs they are in
+# its process's arguments (inside the container, also seen by `ps` on this PC), as with
+# the image's own first start. It runs only when that first start gave up.
 INSTALL = (
     'php occ maintenance:install -n --admin-user "$NEXTCLOUD_ADMIN_USER" --admin-pass "$NEXTCLOUD_ADMIN_PASSWORD" '
     '--database pgsql --database-name "$POSTGRES_DB" --database-user "$POSTGRES_USER" '

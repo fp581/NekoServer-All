@@ -177,11 +177,16 @@ pub fn run(a: &crate::Args) -> Result<()> {
     if states.contains(&Health::Absent) || !missing_sessions(&cfg, &sessions()).is_empty() {
         log_in_again(&cfg);
     }
-    if drives.is_empty() {
-        return Ok(());
-    }
     let state = common::json(Path::new(*STATE), 64000);
     let held = state["held"] == true;
+    if drives.is_empty() {
+        // No NAS drive to hold the apps for (only the backup drive is on the NAS): a hold
+        // left from before is lifted, or nothing would ever lift it (the audit of 0.46.2).
+        if held {
+            save(&json!({"at": common::now(), "drives": {}, "held": false}))?;
+        }
+        return Ok(());
+    }
     let mut seen = serde_json::Map::new();
     for ((path, _, _), h) in drives.iter().zip(&states) {
         let key = if *path == common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))? {
@@ -257,10 +262,8 @@ pub fn run(a: &crate::Args) -> Result<()> {
             if let Err(e) = drive_return::start_again(&cfgpath, &data, &media, "NAS watch") {
                 // The drives are fine; something the start runs failed (an app that won't
                 // start, a job's own resume). No longer held: retrying every minute would
-                // restart everything each time (the 0.46.1 audit). Said, and kept for the
-                // dashboard.
+                // restart everything each time (the 0.46.1 audit). Said, in this check's log.
                 println!("NAS watch: not everything started again ({e}); see the journal of the service named");
-                record["resume_failed"] = json!(e.to_string());
             }
             record["held"] = json!(false);
             record["since"] = Value::Null;
@@ -359,15 +362,30 @@ fn answers(portal: &str) -> bool {
         .take(4)
         .any(|a| TcpStream::connect_timeout(&a, Duration::from_secs(3)).is_ok())
 }
-/// True when every NAS drive in the settings takes writes now (none on a NAS: true). The
-/// drive-return service starts the apps only then: a NAS drive that turned read-only just
-/// before, and that this check hasn't seen yet, would get them for up to a minute.
-pub(crate) fn all_take_writes(cfg: &Value) -> bool {
-    nas_drives(cfg).is_ok_and(|drives| {
-        drives
-            .iter()
-            .all(|(path, uuid, _)| health(path, uuid) == Health::Writes)
-    })
+/// For drive-return, before it starts the apps: when a NAS drive fails writes now (it
+/// turned read-only just before, and this check hasn't seen it yet), the apps are held,
+/// as this check would hold them, and true is returned. This check starts them once every
+/// NAS drive takes writes. A drive only waiting for the NAS is no reason: its writes wait.
+pub(crate) fn hold_if_failing(cfg: &Value) -> Result<bool> {
+    let drives = nas_drives(cfg)?;
+    let failing: Vec<String> = drives
+        .iter()
+        .filter(|(path, uuid, _)| health(path, uuid) == Health::Fails)
+        .map(|(path, _, name)| format!("{name} ({})", path.display()))
+        .collect();
+    if failing.is_empty() {
+        return Ok(false);
+    }
+    let _turn = state_lock()?;
+    let mut state = common::json(Path::new(*STATE), 64000);
+    if !state.is_object() {
+        state = json!({});
+    }
+    state["held"] = json!(true);
+    state["since"] = json!(common::now());
+    state["stopped_for"] = json!(failing);
+    save(&state)?;
+    Ok(true)
 }
 /// True when this check stopped the apps for a NAS drive that does not take writes: they
 /// stay stopped until it does (it starts them itself then), whoever else would start them.
