@@ -1278,8 +1278,6 @@ def choose_locations(context, input_fn=None, interactive=None):
     """Where each app keeps your files, asked once (saved as "locations"): the SSD or the
     media drive, the better one pre-selected. The backups, restores and checks all follow
     the choice (neko_common.files_root). A place already holding files stays as it is."""
-    from neko_common import LOCATIONS
-
     config = context.config
     chosen = config.setdefault('locations', {})
     interactive = sys.stdin.isatty() if interactive is None else interactive
@@ -1294,12 +1292,9 @@ def choose_locations(context, input_fn=None, interactive=None):
         if kept:
             chosen[what] = where_kept(context, what, words, kept)
         else:
-            best = recommended(room['ssd'], threshold)
-            # Asked: the better drive is offered first. Not asked: the better one on a new
-            # server, and on one set up before 0.46.0 the layout it had, so nothing moves
-            # without being asked (the 0.46.1 audit).
-            unasked = LOCATIONS[what][0] if set_up_before(config) else best
-            chosen[what] = asked_location(context, words, best, room, on_nas, input_fn) if interactive else unasked
+            chosen[what] = new_place(
+                context, what, (words, threshold), (room, on_nas), interactive and (input_fn or input)
+            )
             context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
         changed = True
     if chosen.get('photos') == 'media':
@@ -1315,6 +1310,21 @@ PHOTOS_ON_MEDIA = (
     'but does not survive losing that drive. Your only copy on another drive is the weekly USB backup, so '
     'set it up (setup asks for the USB drive next).'
 )
+
+
+def new_place(context, what, asked, drives, input_fn):
+    """The drive for `what`, which has no files yet. Asked (`input_fn`, False when no one is
+    at the keyboard): the better drive is offered first. Not asked: the better one on a new
+    server, and on one set up before 0.46.0 the layout it had, so nothing moves without
+    being asked (the 0.46.1 audit)."""
+    from neko_common import LOCATIONS
+
+    words, threshold = asked
+    room, on_nas = drives
+    best = recommended(room['ssd'], threshold)
+    if not input_fn:
+        return LOCATIONS[what][0] if set_up_before(context.config) else best
+    return asked_location(context, words, best, room, on_nas, input_fn)
 
 
 def where_kept(context, what, words, kept):

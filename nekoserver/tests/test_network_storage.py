@@ -866,6 +866,15 @@ class LocationTests(unittest.TestCase):
         self.ask([], ssd_gb=230, interactive=False)
         self.assertEqual(self.config['locations'], {'photos': 'ssd', 'music': 'ssd', 'cloud': 'media'})
 
+    def test_setup_in_a_terminal_asks_with_the_keyboard(self):
+        ctx = self.Ctx(self.config)
+        with (
+            mock.patch.object(storage, 'free_gb', lambda f: 230 if f.endswith('srv') else 1800),
+            mock.patch('builtins.input', side_effect=['2', '', '']),
+        ):
+            storage.choose_locations(ctx, None, True)
+        self.assertEqual(self.config['locations']['photos'], 'ssd')  # the second offer, typed
+
     def test_the_usb_backup_drive_is_never_offered_as_the_ssd_or_the_hdd(self):
         items = [
             {'uuid': 'hdd-1111', 'mountpoint': None, 'name': 'sdb'},
