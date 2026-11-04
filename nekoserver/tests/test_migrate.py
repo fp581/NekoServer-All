@@ -530,7 +530,7 @@ class MoveTests(unittest.TestCase):
         with mock.patch.object(migrate, 'run', lambda argv, *a, **k: mock.Mock(returncode=0, stdout=shown[argv[-1]])):
             self.assertEqual(migrate.started_since(['docker.service', 'smbd.service'], 500), ['docker.service'])
         # systemd could not say: None, never "not started".
-        with mock.patch.object(migrate, 'run', lambda argv, *a, **k: mock.Mock(returncode=1, stdout='')):
+        with mock.patch.object(migrate, 'run', return_value=mock.Mock(returncode=1, stdout='')):
             self.assertIsNone(migrate.started_since(['docker.service'], 500))
         self.assertTrue(migrate.this_boot())
 

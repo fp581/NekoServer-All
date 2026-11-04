@@ -15,7 +15,7 @@ plays the apps' writer. Then each scenario interrupts it and checks what NekoSer
 Needs: qemu-system-x86, qemu-utils, debootstrap, tgt, iptables, e2fsprogs, and a runtime
 built from these sources (python3 runtime/build.py, or cargo build --release). Uses the
 kernel installed on this PC (linux-image-generic). Everything lives in --work (default
-/var/tmp/neko-nas-lab); the NAS's disks are sparse files there.
+/var/lib/neko-nas-lab); the NAS's disks are sparse files there.
 
 Each scenario prints PASS or FAIL with what it saw; the exit code is the number failed."""
 
@@ -31,6 +31,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
 PORT = 3260
+WRITER_LOG = 'writer.log'  # in the share: the writer's tries, one line each
 TARGETS = {1: 'iqn.2026-11.lab.nas:media', 2: 'iqn.2026-11.lab.nas:backup'}
 GB = 10**9
 PACKAGES = (
@@ -113,9 +114,9 @@ class Lab:
         run writes to a copy-on-write layer over it), and every disk starts empty, so no
         earlier run's settings, mounts or files are left."""
         self.nas_off()
-        for name in ('run.qcow2', 'ssd.qcow2', 'lun1.img', 'lun2.img', 'writer.log'):
+        for name in ('run.qcow2', 'ssd.qcow2', 'lun1.img', 'lun2.img'):
             (self.work / name).unlink(missing_ok=True)
-        (self.share / 'writer.log').unlink(missing_ok=True)
+        (self.share / WRITER_LOG).unlink(missing_ok=True)
         sh(
             [
                 'qemu-img',
@@ -133,7 +134,7 @@ class Lab:
         sh(['qemu-img', 'create', '-q', '-f', 'qcow2', str(self.work / 'ssd.qcow2'), '250G'])
 
     def boot(self):
-        kernel = sorted(Path('/boot').glob('vmlinuz-*-generic'))[-1]
+        kernel = max(Path('/boot').glob('vmlinuz-*-generic'))
         initrd = Path(str(kernel).replace('vmlinuz', 'initrd.img'))
         for stale in (*self.share.glob('cmd/*'), *self.share.glob('out/*')):
             stale.unlink()
@@ -195,7 +196,7 @@ class Lab:
     def writes(self, since):
         """The writer's tries since `since` (seconds): [(ok, how long it took)]."""
         try:
-            lines = (self.share / 'writer.log').read_text().splitlines()
+            lines = (self.share / WRITER_LOG).read_text().splitlines()
         except OSError:
             return []
         tries = [line.split() for line in lines]
@@ -213,8 +214,8 @@ def build(lab):
     if not (rootfs / 'usr/sbin/iscsiadm').exists():
         shutil.rmtree(rootfs, ignore_errors=True)
         sh(['debootstrap', '--variant=minbase', '--components=main,universe', '--include=' + PACKAGES,
-            'noble', str(rootfs), 'http://archive.ubuntu.com/ubuntu'])  # fmt: skip
-    kernel = sorted(Path('/boot').glob('vmlinuz-*-generic'))[-1].name.removeprefix('vmlinuz-')
+            'noble', str(rootfs), 'http://archive.ubuntu.com/ubuntu'])  # fmt: skip  # NOSONAR: debootstrap checks the archive's signed Release file
+    kernel = max(Path('/boot').glob('vmlinuz-*-generic')).name.removeprefix('vmlinuz-')
     # Into lib/modules/<kernel>: without the folder there, cp would make the copy lib/modules itself.
     (rootfs / 'lib/modules').mkdir(parents=True, exist_ok=True)
     sh(['cp', '-a', f'/lib/modules/{kernel}', str(rootfs / 'lib/modules/')])
@@ -452,7 +453,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('build', 'run', 'list'))
     parser.add_argument('scenarios', nargs='*')
-    parser.add_argument('--work', default='/var/tmp/neko-nas-lab')
+    parser.add_argument('--work', default='/var/lib/neko-nas-lab')  # root's alone, not a shared temp folder
     args = parser.parse_args()
     if args.action == 'list':
         for name, scenario in SCENARIOS.items():

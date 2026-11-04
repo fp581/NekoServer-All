@@ -267,31 +267,36 @@ def log_in(iqn, portal, run=subprocess.run):
     for name, value in KEPT.items():
         updated = run_tool([*node, '-o', 'update', '-n', name, '-v', value], 30, run)
         if updated.returncode:
-            said = (updated.stderr or updated.stdout or '').strip().splitlines()
             raise RuntimeError(
-                f'The setting {name} of {iqn} could not be saved'
-                + (f' ({said[-1][:200]})' if said else f' (exit {updated.returncode})')
-                + ', so the drive would not come back by itself after a restart. Nothing was mounted; run setup again.'
+                f'The setting {name} of {iqn} could not be saved ({last_said(updated)}), so the drive would not '
+                'come back by itself after a restart. Nothing was mounted; run setup again.'
             )
     saved_settings(iqn, portal, run)
     done = run_tool([*node, '--login'], 90, run)
     if done.returncode not in (0, SESSION_EXISTS):
-        said = ((done.stderr or '') + '\n' + (done.stdout or '')).strip()
-        lines = [line for line in said.splitlines() if line.strip()]
-        reason = lines[0][:200] if lines else f'exit {done.returncode}'
-        # 24: the NAS refused this PC (iscsiadm's last line says only "Could not log into
-        # all portals", seen in the lab with a wrong CHAP password).
-        refused = done.returncode == AUTH_REFUSED or 'authoriz' in said.lower()
-        hint = (
-            'the NAS refused the login: check that this PC is allowed on that target (its initiator name, above) '
-            'and the CHAP user name and password'
-            if refused
-            else 'check the NAS'
-        )
-        raise (LoginRefused if refused else RuntimeError)(
-            f'Could not log in to {iqn} ({reason}); {hint}, then run setup again'
-        )
+        raise login_failed(iqn, done)
     patient(iqn)
+
+
+def last_said(done):
+    """The last line a tool said, or its exit code."""
+    said = (done.stderr or done.stdout or '').strip().splitlines()
+    return said[-1][:200] if said else f'exit {done.returncode}'
+
+
+def login_failed(iqn, done):
+    """The error for a login iscsiadm refused: LoginRefused when the NAS said no (24;
+    iscsiadm's last line says only "Could not log into all portals", seen in the lab with
+    a wrong CHAP password)."""
+    said = ((done.stderr or '') + '\n' + (done.stdout or '')).strip()
+    lines = [line for line in said.splitlines() if line.strip()]
+    reason = lines[0][:200] if lines else f'exit {done.returncode}'
+    if done.returncode == AUTH_REFUSED or 'authoriz' in said.lower():
+        return LoginRefused(
+            f'Could not log in to {iqn} ({reason}); the NAS refused the login: check that this PC is allowed on '
+            'that target (its initiator name, above) and the CHAP user name and password, then run setup again'
+        )
+    return RuntimeError(f'Could not log in to {iqn} ({reason}); check the NAS, then run setup again')
 
 
 # What each target's saved record must say: logged in at every start, and the ten-minute
@@ -307,7 +312,7 @@ def saved_settings(iqn, portal, run=subprocess.run):
     """The settings read back from the target's saved record: an update that said it
     worked but left another value would only show after a restart (H01)."""
     shown = run_tool(['iscsiadm', '-m', 'node', '-T', iqn, '-p', portal], 30, run)
-    values = dict(line.split(' = ', 1) for line in (shown.stdout or '').splitlines() if ' = ' in line)
+    values = {k: v for k, _, v in (line.partition(' = ') for line in (shown.stdout or '').splitlines()) if _}
     wrong = [name for name, value in KEPT.items() if values.get(name, '').strip() != value]
     if shown.returncode or wrong:
         raise RuntimeError(
@@ -571,48 +576,63 @@ def say_initiator(log, name):
 
 def connected(context, options, interactive):
     """The NAS's address and the targets NekoServer uses, logged in to (and saved)."""
-    import getpass
-
-    if not options.get('portal') and not interactive:
-        raise RuntimeError("The NAS's address is not saved yet; run  sudo bash install.sh  in a terminal")
-    portal = asked_portal(options.get('portal'), input, context.log)
-    if not answers(portal):
-        raise RuntimeError(
-            f'Nothing answers on {portal}: check that the NAS is on, its address, that iSCSI is switched on in '
-            'its settings, and that this PC is on the same network. Then run setup again.'
-        )
+    portal = reached_portal(options, interactive, context.log)
     found = discovered(portal)
     if not found:
         raise RuntimeError(f'The NAS at {portal} offers no iSCSI targets yet. Make one with a LUN on each pool first.')
     targets = chosen_targets(found, options.get('targets', []), input, context.log)
     install_rule()
     first_time = set(targets) - set(options.get('targets', []))
-    chap = [t for t in options.get('chap', []) if t in targets]
-    for iqn in targets:
-        known_at(iqn, portal)
-        if iqn in first_time and interactive and asked_chap(iqn, portal, input, context.log, getpass.getpass):
-            chap.append(iqn)
-        elif iqn in chap and not chap_kept(iqn, portal):
-            # Taken away since (by hand, or a plain discovery of 0.46.0): asked again.
-            if not interactive or not asked_chap(iqn, portal, input, context.log, getpass.getpass, again='missing'):
-                raise RuntimeError(
-                    f'The CHAP login of {iqn} is no longer in its iSCSI settings, so the NAS would refuse this PC '
-                    'after the next restart. Run  sudo bash install.sh  in a terminal to give it again.'
-                )
-        try:
-            log_in(iqn, portal)
-        except LoginRefused:
-            # After Linux was installed again its iSCSI settings, CHAP logins included, are
-            # gone (settings from 0.46.0 don't say which target had one): asked, then once
-            # more. Refused again, or no one to ask: the message says what to check.
-            if not interactive or not asked_chap(iqn, portal, input, context.log, getpass.getpass, again='refused'):
-                raise
-            chap.append(iqn)
-            log_in(iqn, portal)
-    options.update(portal=portal, targets=targets, chap=sorted(set(chap)))
+    had_chap = set(options.get('chap', []))
+    chap = [iqn for iqn in targets if logged_in(context, iqn, portal, iqn in first_time, iqn in had_chap, interactive)]
+    options.update(portal=portal, targets=targets, chap=sorted(chap))
     if hasattr(context, 'persist_config'):
         context.persist_config()
     return portal, targets
+
+
+def reached_portal(options, interactive, log):
+    """The NAS's address (saved, or asked), checked to answer."""
+    if not options.get('portal') and not interactive:
+        raise RuntimeError("The NAS's address is not saved yet; run  sudo bash install.sh  in a terminal")
+    portal = asked_portal(options.get('portal'), input, log)
+    if not answers(portal):
+        raise RuntimeError(
+            f'Nothing answers on {portal}: check that the NAS is on, its address, that iSCSI is switched on in '
+            'its settings, and that this PC is on the same network. Then run setup again.'
+        )
+    return portal
+
+
+def logged_in(context, iqn, portal, first_time, had_chap, interactive):
+    """One target logged in to, with its CHAP login when the NAS asks for one: True when
+    it has one."""
+    import getpass
+
+    def asked(again=False):
+        return interactive and asked_chap(iqn, portal, input, context.log, getpass.getpass, again=again)
+
+    known_at(iqn, portal)
+    chap = had_chap
+    if first_time:
+        chap = asked() or had_chap
+    elif had_chap and not chap_kept(iqn, portal) and not asked('missing'):
+        # Taken away since (by hand, or a plain discovery of 0.46.0), and no one to ask.
+        raise RuntimeError(
+            f'The CHAP login of {iqn} is no longer in its iSCSI settings, so the NAS would refuse this PC '
+            'after the next restart. Run  sudo bash install.sh  in a terminal to give it again.'
+        )
+    try:
+        log_in(iqn, portal)
+    except LoginRefused:
+        # After Linux was installed again its iSCSI settings, CHAP logins included, are
+        # gone (settings from 0.46.0 don't say which target had one): asked, then once
+        # more. Refused again, or no one to ask: the message says what to check.
+        if not asked('refused'):
+            raise
+        chap = True
+        log_in(iqn, portal)
+    return chap
 
 
 def listed_disks(context, portal, targets):

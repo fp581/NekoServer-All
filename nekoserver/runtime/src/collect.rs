@@ -509,6 +509,49 @@ fn network_storage(cfg: &Value, sessions: &Path) -> Value {
         .collect();
     json!({"portal": chars(text(&cfg["network_storage"]["portal"]), 80), "targets": targets})
 }
+/// A mounted drive's row filled in: its size and use, read-only, filesystem errors and
+/// health. `drive`: (id, folder, device, filesystem type, expected UUID).
+fn mounted_details(
+    r: &mut Value,
+    cfg: &Value,
+    cache: &mut Value,
+    now: f64,
+    drive: (&str, &Path, &str, &str, Option<&str>),
+) {
+    let (key, path, source, fs, expected) = drive;
+    match usage(path) {
+        Some((total, used, read_only)) if total > 0 => {
+            r["total"] = json!(total);
+            r["used"] = json!(used);
+            r["used_percent"] = json!(round(100.0 * used as f64 / total as f64));
+            if read_only && key != "os" {
+                r["read_only"] = json!(true);
+            }
+        }
+        _ => r["status"] = json!("unavailable"),
+    }
+    // Errors Linux met on the filesystem (a cable, a NAS away for long): it may have
+    // turned read-only, or may still hold half-written changes.
+    if fs == "ext4" || key == "os" {
+        if let Some(n) = common::ext4_errors(source, Path::new("/sys/fs/ext4")).filter(|n| *n > 0) {
+            r["fs_errors"] = json!(n);
+        }
+    }
+    r["smart"] = if on_nas(cfg, key) {
+        // This PC sees no SMART or RAID state through iSCSI: the NAS does.
+        json!({"status":"nas","reason":NAS_HEALTH,"checked_at":null})
+    } else {
+        smart(
+            source,
+            expected.unwrap_or(source),
+            cache,
+            now,
+            cfg["dashboard"]["smart_interval_seconds"]
+                .as_f64()
+                .unwrap_or(1800.0),
+        )
+    };
+}
 fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value>, bool, bool)> {
     let rows = [
         ("os", "OS SSD", PathBuf::from("/"), None, ""),
@@ -535,45 +578,9 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
         let info = mount_info(&path, expected, fs);
         let mut r = json!({"id":key,"name":name,"mount":path,"status":info["status"],"total":null,"used":null,"used_percent":null,"smart":{"status":"unknown","checked_at":null}});
         if info["status"] == "mounted" {
-            if let Some((total, used, read_only)) = usage(&path) {
-                if total > 0 {
-                    r["total"] = json!(total);
-                    r["used"] = json!(used);
-                    r["used_percent"] = json!(round(100.0 * used as f64 / total as f64));
-                    if read_only && key != "os" {
-                        r["read_only"] = json!(true);
-                    }
-                } else {
-                    r["status"] = json!("unavailable")
-                }
-            } else {
-                r["status"] = json!("unavailable")
-            }
             let source = text(&info["source"]);
-            // Errors Linux met on the filesystem (a cable, a NAS away for long): it may
-            // have turned read-only, or may still hold half-written changes.
-            if fs == "ext4" || key == "os" {
-                if let Some(n) =
-                    common::ext4_errors(source, Path::new("/sys/fs/ext4")).filter(|n| *n > 0)
-                {
-                    r["fs_errors"] = json!(n);
-                }
-            }
+            mounted_details(&mut r, cfg, cache, now, (key, &path, source, fs, expected));
             mounted.push(json!({"id":key,"name":name,"source":source,"mount":path,"fstype":fs,"uuid":expected.unwrap_or("")}));
-            r["smart"] = if on_nas(cfg, key) {
-                // This PC sees no SMART or RAID state through iSCSI: the NAS does.
-                json!({"status":"nas","reason":NAS_HEALTH,"checked_at":null})
-            } else {
-                smart(
-                    source,
-                    expected.unwrap_or(source),
-                    cache,
-                    now,
-                    cfg["dashboard"]["smart_interval_seconds"]
-                        .as_f64()
-                        .unwrap_or(1800.0),
-                )
-            };
         }
         if on_nas(cfg, key) {
             nas_drive(&mut r, key, now);

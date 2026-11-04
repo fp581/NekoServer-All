@@ -57,11 +57,12 @@ The fixes come from the project owner's reviews of 0.46.0 (H01 to H08, then thre
 
 ### Tried for real
 The new lab (`sudo python3 lab/nas_lab.py run`) builds an Ubuntu 24.04 VM with the real open-iscsi, and a software iSCSI target stands in for the NAS. NekoServer's own NAS step, drive step and units set the VM up. A stand-in service plays the apps' writer. The lab ran in QEMU without KVM, so slowly.
-- **Passed:**
-  - a 30-second network cut and a 200-second network cut: no write failed, and the longest one waited 204 s
-  - a NAS power cut: no write failed
-  - an outage longer than the waits: the minute check stopped the writer and held it, the recovery menu repaired the drive, and the writer started again
-- **A restart, and the NAS switched on after the PC:** the VM's own logs show the drive mounted and the writer started within seconds both times. The drive-return service did it after the late NAS, and passed the new WWN check doing so. The scenario's own pass/fail check had a bug (it read `findmnt`'s table as its answer); it is fixed, and a clean run of every scenario was still going when this was written.
+- **All six scenarios passed** in one clean run, with this release's runtime:
+  - **A restart:** the drive was mounted after the network and the login, the writer started, and the waits setup sets were in place again (120 s, 600 s).
+  - **A 30-second network cut and a 200-second network cut:** no write failed; the longest waited 204 s.
+  - **A NAS power cut:** no write failed.
+  - **The NAS switched on four minutes after the PC:** the drive was missing at start. The minute check logged in again once the NAS answered, and drive-return mounted the drive (passing the new WWN check) and started the writer.
+  - **An outage longer than the waits:** the minute check stopped the writer and held it, the recovery menu repaired the drive, and the writer started again.
 - **CHAP** against a real login (wrong password refused, right one accepted, kept when setup runs again), in the VM, earlier in this release's work.
 - **The lab itself had bugs, now fixed:** it put the kernel modules in the wrong folder (no 9p share in the VM), chose disks by `sdX` names (they change between starts; now by label), kept one run's state for the next (each run now starts from a clean disk), and asked for KVM where there was none.
 

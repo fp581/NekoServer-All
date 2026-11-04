@@ -27,10 +27,10 @@ use std::time::Duration;
 /// What the last check found for each drive ("writes", "fails", "waits", for the
 /// dashboard) and whether this stopped the apps (gone after a restart: setup and the
 /// drive-return service start them then).
-pub(crate) static STATE: std::sync::LazyLock<&'static str> =
+pub(crate) static STATE: std::sync::LazyLock<&str> =
     std::sync::LazyLock::new(|| common::shared("nas_watch", "state"));
 /// The folder at each drive's top that holds the test file.
-pub(crate) static PROBE_DIR: std::sync::LazyLock<&'static str> =
+pub(crate) static PROBE_DIR: std::sync::LazyLock<&str> =
     std::sync::LazyLock::new(|| common::shared("nas_watch", "probe_dir"));
 /// A test write that takes longer than this is "no answer".
 const PROBE_WAIT: Duration = Duration::from_secs(20);

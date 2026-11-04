@@ -2190,6 +2190,15 @@ def checked_drive(config, prompt, output, run, writes, errors):
         output(f'{busy}: check the drive once it has finished. Nothing was changed.')
         return
     run(['systemctl', 'stop', *WRITERS], capture_output=True, text=True, timeout=600, check=False)
+    unmounted(folder, run)
+    repaired(folder, f'/dev/disk/by-uuid/{uuid}', fstype, prompt, output, run)
+    mounted_again(folder, run, writes)
+    output(f'{folder} is checked, mounted again and takes writes.')
+    start_apps(run, output)
+
+
+def unmounted(folder, run):
+    """The drive unmounted, never by force: a program still using it is named."""
     done = run(['umount', str(folder)], capture_output=True, text=True, timeout=120, check=False)
     if done.returncode:
         users = run(['fuser', '-vm', str(folder)], capture_output=True, text=True, timeout=30, check=False)
@@ -2198,7 +2207,11 @@ def checked_drive(config, prompt, output, run, writes, errors):
             + ((users.stderr or '') + (users.stdout or '')).strip()[:1500]
             + '\nClose it (or restart the PC), then choose this again. The apps stay stopped until then.'
         )
-    device = f'/dev/disk/by-uuid/{uuid}'
+
+
+def repaired(folder, device, fstype, prompt, output, run):
+    """The unmounted drive's filesystem checked and repaired with your yes (ext4; another
+    filesystem gets the command to check it with)."""
     if fstype != 'ext4':
         command = {'xfs': f'sudo xfs_repair {device}', 'btrfs': f'sudo btrfs check {device}'}.get(fstype, '')
         raise RuntimeError(
@@ -2215,6 +2228,10 @@ def checked_drive(config, prompt, output, run, writes, errors):
             f'e2fsck found problems it does not fix without asking (exit {fsck.returncode}). Run  sudo e2fsck -f '
             f'{device}  yourself: it asks before each change. Then run  sudo bash install.sh  to mount the drive again.'
         )
+
+
+def mounted_again(folder, run, writes):
+    """The drive mounted again by its own mount unit, and taking writes."""
     unit = run(
         ['systemd-escape', '--path', '--suffix=mount', str(folder)],
         capture_output=True,
@@ -2227,8 +2244,6 @@ def checked_drive(config, prompt, output, run, writes, errors):
         raise RuntimeError(
             f'{folder} is mounted again but still does not take writes; check the drive (or the NAS) and its cable'
         )
-    output(f'{folder} is checked, mounted again and takes writes.')
-    start_apps(run, output)
 
 
 def start_apps(run, output):

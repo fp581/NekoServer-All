@@ -36,6 +36,10 @@ SYSTEM_MOUNTS = ('/', '/boot', '/boot/efi', '/efi', '/home', '/var')  # /efi: wh
 BACKUP_FILESYSTEMS = ('ext4', 'xfs', 'btrfs', 'exfat')
 
 
+# How the weekly copy's command names Nextcloud's files (it copies them when there).
+CLOUD_FLAG = ' --cloud '
+
+
 def disk_layout(config, inventory):
     """([(filesystem row, its physical disk)], disks holding the system, the SSD or the HDD)."""
     forbidden = {u for u in (config.get('storage', {}).get(k, {}).get('uuid') for k in ('data_ssd', 'media_hdd')) if u}
@@ -176,7 +180,7 @@ def command_line(config, binary, guard, uuid, fstype, source, dest):
     )
     if copies(config)[1]:
         # Nextcloud user files get the same add-only weekly copy as photos.
-        cmd += ' --cloud ' + str(cloud_files(config))
+        cmd += CLOUD_FLAG + str(cloud_files(config))
     return cmd
 
 
@@ -267,7 +271,7 @@ def runtime_of(cmd):
 def unit_texts(config, cmd, photos, day, when):
     """The weekly service and its timer, as install_units writes them."""
     binary, guard = runtime_of(cmd)
-    cloud = ' --cloud ' in cmd
+    cloud = CLOUD_FLAG in cmd
     service = (
         '[Unit]\nDescription=NekoServer add-only USB backup of photos and Nextcloud files\nRequiresMountsFor='
         + config['media_mount']
@@ -300,7 +304,7 @@ def install_units(config, cmd, photos, day, when, unit=None, timer=None):
     resume service, beside the weekly one."""
     unit = unit or SERVICE_UNIT
     timer = timer or TIMER_UNIT
-    cloud = ' --cloud ' in cmd
+    cloud = CLOUD_FLAG in cmd
     binary, guard = runtime_of(cmd)
     service, schedule = unit_texts(config, cmd, photos, day, when)
     for path, text in ((unit, service), (timer, schedule)):
