@@ -640,6 +640,17 @@ class UpgradeReportTests(unittest.TestCase):
         stuck = self.report(2, 'Putting it back did not pass either', journal=True)
         self.assertEqual((stuck['status'], stuck['reason']), ('fail', 'Putting it back did not pass either'))
 
+    def test_the_service_fails_only_when_the_upgrade_needs_you(self):
+        """Seen on the rig (0.47.5): an upgrade cut off and put back at the next start ended
+        its service with 1. The service stayed failed, and the dashboard showed "Its
+        service could not run (exit-code, exit 1)", urgent, in place of the report's
+        "This server runs 0.48.2 again"."""
+        for code in (0, 1, 2):  # upgraded, put back, refused: the report says which
+            self.assertEqual(upgrade.service_code(code, self.journal), 0)
+        self.journal.write_text('{}')  # the record is still there: it needs you
+        self.assertEqual(upgrade.service_code(2, self.journal), 2)
+        self.assertIn('return service_code(reported(', (ROOT / 'upgrade.py').read_text())
+
     def test_an_error_still_ends_the_report(self):
         self.journal.write_text('{}')
 

@@ -725,11 +725,18 @@ def main():
         parser.error('run needs --tag with a release, such as v0.47.2Beta')
     config = json.loads(settings_path(args.config).read_text())
     if args.action == 'resume':
-        return reported(config, RESUME_UNIT, lambda out: resume(args.config, out))
+        return service_code(reported(config, RESUME_UNIT, lambda out: resume(args.config, out)))
     recovery = ssd(config) / 'installer/recovery.lock'
-    return reported(
-        config, 'nekoserver-upgrade@' + args.tag, lambda out: upgrade(args.tag, args.config, out, recovery=recovery)
-    )
+    unit = 'nekoserver-upgrade@' + args.tag
+    return service_code(reported(config, unit, lambda out: upgrade(args.tag, args.config, out, recovery=recovery)))
+
+
+def service_code(code, journal=JOURNAL):
+    """What the upgrade's service ends with: a failure only when the upgrade needs you (its
+    record is still there, the report says "fail"). Put back, or nothing changed, is said
+    in the report ("partial"): ending with 1 then left the service failed, and the
+    dashboard showed "Its service could not run (exit 1)" in place of what happened."""
+    return code if code and journal.exists() else 0
 
 
 if __name__ == '__main__':
