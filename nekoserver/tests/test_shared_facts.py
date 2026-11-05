@@ -76,7 +76,7 @@ class SharedUnitNames(unittest.TestCase):
         self.assertEqual(server_os.NAS_WATCH_TIMER, SHARED['nas_watch']['timer'])
 
     def test_a_drive_move_stops_every_shared_writer(self):
-        self.assertTrue(set(SHARED['writers']) <= set(migrate.WRITERS))
+        self.assertLessEqual(set(SHARED['writers']), set(migrate.WRITERS))
         # The gateway writes to the drives too; before 0.47.1 the move left it running.
         self.assertIn('nekoserver-gateway-lan.service', migrate.WRITERS)
 
