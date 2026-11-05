@@ -213,6 +213,16 @@ def upgrade_needs(journal=UPGRADE_JOURNAL):
     return {n for n in names if n}
 
 
+def proven_release(current, journal=UPGRADE_JOURNAL):
+    """The release this server last ran and passed its check with: the one an upgrade at
+    work came from (the release it is setting up has not passed yet), otherwise this one."""
+    try:
+        came = json.loads(Path(journal).read_text()).get('from')
+    except (OSError, ValueError, AttributeError):
+        return current
+    return 'v' + str(came).lstrip('v') if came else current
+
+
 def retire_old(data, log=print, lib=Path('/usr/local/lib'), units=SYSTEMD_UNITS, journal=UPGRADE_JOURNAL):
     """After a setup run finished: remove the runtime copies of earlier releases that no
     installed service uses any more (each release deploys its own copies, which otherwise
@@ -232,7 +242,7 @@ def retire_old(data, log=print, lib=Path('/usr/local/lib'), units=SYSTEMD_UNITS,
     # Docker's start guard (modules/docker.py) has its own per-release folder on the SSD.
     for home in [Path(lib) / name for name in SYSTEM_HOMES] + [data / 'installer/runtime', data / 'installer/guards']:
         old += [p for p in release_folders(home) if p.name != current and not in_use(p, units)]
-    old += retired_bundles(data / 'installer/releases', current, units)
+    old += retired_bundles(data / 'installer/releases', current, units, proven_release(current, journal))
     old = [p for p in old if p.name.split('.replaced-')[0] not in needed]
     for folder in old:
         shutil.rmtree(folder, ignore_errors=True)
@@ -241,15 +251,17 @@ def retire_old(data, log=print, lib=Path('/usr/local/lib'), units=SYSTEMD_UNITS,
     return old
 
 
-def retired_bundles(releases, current, units=SYSTEMD_UNITS):
+def retired_bundles(releases, current, units=SYSTEMD_UNITS, proven=None):
     """The release bundles kept on the SSD that retire_old removes."""
+    folders = release_folders(releases)
+    # The two kept are the last release that passed its check and the one before it. A
+    # newer one is an upgrade still at work (kept: it is this release) or one that was
+    # put back: counted among the two, it pushed out a release that worked.
+    last = release_number(proven or current)
+    ahead = [p for p in folders if release_number(p.name) > last and p.name != current]
+    earlier = [p for p in folders if release_number(p.name) <= last][:-KEEP_BUNDLES]
     # A bundle a service still runs from (the Immich snapshot's boot hook runs recover.py
     # from it while a restart is owed) stays, as the runtime copies above do.
-    folders = release_folders(releases)
-    # A release newer than this one was put back by its upgrade. It is not "the one
-    # before": counted among the newest, it pushed out the release that worked.
-    ahead = [p for p in folders if release_number(p.name) > release_number(current)]
-    earlier = [p for p in folders if p not in ahead][:-KEEP_BUNDLES]
     bundles = [p for p in earlier if p.name != current and not in_use(p, units)]
     # A kept copy set aside by another build of its version (modules/recovery.set_aside) goes with that version,
     # unless it holds settings no remaining folder has (an earlier release set copies aside with them inside).
@@ -258,7 +270,7 @@ def retired_bundles(releases, current, units=SYSTEMD_UNITS):
         for p in (releases.glob('v*.replaced-*') if releases.is_dir() else [])
         if p.is_dir() and p.name.split('.replaced-')[0] != current
     ]
-    # The release that was put back goes the same way: its settings are kept if only it has them.
+    # The release that was put back goes the same way: it stays if only it has some settings.
     spare = [p for p in ahead if not in_use(p, units)] + aside
     kept = [p for p in (releases.iterdir() if releases.is_dir() else []) if p.is_dir() and p not in bundles + spare]
     held = {f.read_bytes() for folder in kept for f in settings_files(folder)}
