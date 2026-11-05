@@ -485,6 +485,67 @@ class UpgradeTests(unittest.TestCase):
         self.assertFalse(self.journal.exists())
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
 
+    def test_a_release_installed_by_hand_over_a_failed_upgrade_is_not_put_back(self):
+        """Seen on the rig: an upgrade from 0.46.2 failed and could not go back, 0.46.3 was
+        then set up by hand, and at the next start its own resume service put 0.46.2 back
+        over it. A server that runs the release the upgrade was for, whole, is done."""
+        older = self.data / 'installer/releases/v0.1.0'
+        older.mkdir()
+        upgrade.record('going_back', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
+        self.assertEqual((self.ran, self.verified), ([], [('v' + VERSION, ['storage'])]))
+        self.assertFalse(self.journal.exists())
+        self.assertIn(f'this server runs {VERSION} and passed its check', self.said[-1])
+        # Not whole (the check fails): the release it had is put back, as before.
+        upgrade.record('installing', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        self.back_problem = 'the dashboard does not answer'
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 2)
+        self.assertEqual(self.ran[-1][0], 'v0.1.0')
+
+    def test_setup_run_by_hand_closes_the_record_of_an_upgrade_that_did_not_finish(self):
+        """Seen on the rig: the record stayed after the setup the upgrade itself asked for,
+        so app updates and the monthly check waited until the next start, or for ever."""
+        config = json.loads(self.settings.read_text())
+        upgrade.record('going_back', self.journal, to=NEWER, previous=str(self.previous), before=['storage'])
+        # The upgrade's own setup run (it holds the operation lock): never.
+        with upgrade.hold_operation(upgrade.OPERATION_LOCK):
+            self.assertFalse(upgrade.settle_after_setup(config, self.said.append, self.journal))
+        self.back_problem = 'these services do not run it'
+        self.assertFalse(upgrade.settle_after_setup(config, self.said.append, self.journal))
+        self.assertTrue(self.journal.exists())
+        # The release it had, put back by hand and whole (what a failed way back asks for).
+        self.back_problem = None
+        self.assertTrue(upgrade.settle_after_setup(config, self.said.append, self.journal))
+        self.assertFalse(self.journal.exists())
+        self.assertFalse(upgrade.settle_after_setup(config, self.said.append, self.journal))  # none left
+        # Some other release than the two the record names: left for the resume service.
+        older = self.data / 'installer/releases/v0.1.0'
+        upgrade.record('failed', self.journal, to=NEWER, previous=str(older))
+        self.assertFalse(upgrade.settle_after_setup(config, self.said.append, self.journal))
+        # At a start, the release it had is set up again even when it looks whole: the
+        # new one may be half set up.
+        upgrade.record('installing', self.journal, to=NEWER, previous=str(self.previous), before=['storage'])
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
+        self.assertEqual(self.ran[-1][0], 'v' + VERSION)
+
+    def test_going_back_from_an_older_upgraders_record_removes_the_new_dashboard_socket(self):
+        """Seen on the rig: 0.46.2's record has no list of units, so 0.46.3's dashboard
+        socket stayed when 0.46.2 was put back, and held its port against its dashboard."""
+        older = self.data / 'installer/releases/v0.46.2'
+        older.mkdir()
+        for name in ('nekoserver-dashboard.service', 'nekoserver-dashboard.socket'):
+            (self.units / name).write_text('x\n')
+        saved = {'to': NEWER}
+        self.assertEqual(upgrade.units_before(saved, older), {'nekoserver-dashboard.service'})
+        self.assertEqual(len(upgrade.units_before(saved, older.with_name('v0.46.3'))), 2)
+        self.assertEqual(upgrade.units_before({'units': ['a.timer']}, older), {'a.timer'})
+        upgrade.record('failed', self.journal, to=NEWER, previous=str(older))
+        ran = []
+        with mock.patch.object(upgrade.subprocess, 'run', side_effect=lambda argv, **k: ran.append(argv)):
+            upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal)
+        self.assertEqual([p.name for p in self.units.iterdir()], ['nekoserver-dashboard.service'])
+        self.assertIn(['systemctl', 'disable', '--now', 'nekoserver-dashboard.socket'], ran)
+
     def test_setup_runs_without_questions_and_without_a_system_update(self):
         project = self.dir / 'project'
         project.mkdir()

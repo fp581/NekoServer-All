@@ -911,6 +911,16 @@ class LocationTests(unittest.TestCase):
         self.ask([], ssd_gb=900, interactive=False)
         self.assertEqual(self.config['locations'], {'photos': 'ssd', 'music': 'ssd', 'cloud': 'media'})
 
+    def test_the_media_drive_is_called_the_most_room_only_when_it_has_it(self):
+        """Seen on the rig: a media drive with 24 GB free was "the most room" beside an SSD
+        with 26 GB free."""
+        ctx = self.Ctx(self.config)
+        with mock.patch.object(storage, 'free_gb', lambda f: 26 if f.endswith('srv') else 24):
+            storage.choose_locations(ctx, lambda prompt='': '', True)
+        said = '\n'.join(ctx.lines)
+        self.assertIn('the media drive: 24 GB free  (recommended)', said)
+        self.assertNotIn('the most room', said)
+
     def test_a_server_set_up_before_keeps_its_layout_when_no_one_is_asked(self):
         """The audit of 0.46.1: a 0.45 server updated without anyone at the keyboard, with an
         empty music folder and a small SSD, had its music quietly put on the media drive."""

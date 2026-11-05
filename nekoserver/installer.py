@@ -488,6 +488,7 @@ def _execute(args, root=ROOT):
         # earlier releases' files would pile up with every upgrade: only folders no service
         # or drop-in names any more go.
         tidy_old_releases(config, states, log)
+        settle_upgrade(config, log)
     # Counted as the finishing screen and the setup window count: steps done, out of the
     # steps this PC can have.
     here = len(plan) - len(unavailable)
@@ -550,6 +551,17 @@ def tidy_old_releases(config, states, log):
         retire_old(data, log)
     except (OSError, RuntimeError, KeyError) as exc:
         log(f'Earlier releases\' files not tidied: {exc}')
+
+
+def settle_upgrade(config, log):
+    """The record of an upgrade that did not finish, closed when this run (started by a
+    person, not by an upgrade) left the server whole (upgrade.settle_after_setup)."""
+    import upgrade
+
+    try:
+        upgrade.settle_after_setup(config, log)
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        log(f'The unfinished upgrade\'s record was not looked at: {exc}')
 
 
 # What an optional step returns when this Linux can't have it (yet).

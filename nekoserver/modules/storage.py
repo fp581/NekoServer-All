@@ -1367,8 +1367,11 @@ def same_place(context, what, words, chosen, kept):
 
 def asked_location(context, words, best, room, on_nas, input_fn=None):
     """The drive for `words`, asked: the better one first, Enter takes it."""
+    # "The most room" only when it has it (seen on the rig: said of a media drive with
+    # 24 GB free beside an SSD with 26).
+    most = ', the most room' if room['media'] > room['ssd'] else ''
     said = {
-        'media': f'the media drive{" (on the network storage box)" if on_nas else ""}: {room["media"]} GB free, the most room',
+        'media': f'the media drive{" (on the network storage box)" if on_nas else ""}: {room["media"]} GB free{most}',
         'ssd': f'the SSD: {room["ssd"]} GB free, faster',
     }
     options = [best, 'ssd' if best == 'media' else 'media']

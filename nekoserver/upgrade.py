@@ -407,6 +407,24 @@ def tidy(work, journal=JOURNAL, keep_logs=KEEP_LOGS):
     return removed
 
 
+# The units a release added, with that release: an upgrade started by a release before
+# 0.46.3 keeps no list of the units it found (`units` in its record), so a way back from
+# there takes these out by name when the release put back is older than theirs. Seen on
+# the rig: 0.46.2 put back with 0.46.3's dashboard socket left holding the port, and its
+# dashboard could never start ("Address already in use").
+ADDED_SINCE = {'nekoserver-dashboard.socket': (0, 46, 3)}
+
+
+def units_before(saved, previous, units=None):
+    """The units that were there before the upgrade: the record's own list, or, for a
+    record without one, every installed unit but those a release newer than `previous`
+    added (ADDED_SINCE)."""
+    if isinstance(saved.get('units'), list):
+        return set(saved['units'])
+    older = numbers(previous.name) or (0, 0, 0)
+    return {u.name for u in installed_units(units) if ADDED_SINCE.get(u.name, (0, 0, 0)) <= older}
+
+
 BUSY_MOVE = 'A drive move (migrate.py) or another upgrade is at work'
 
 
@@ -514,11 +532,9 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
     finished it."""
     saved = record('going_back', journal)
     config = json.loads(settings_path(settings).read_text())
-    stuck = []
-    if isinstance(saved.get('units'), list):
-        removed, stuck = added_units(set(saved['units']))
-        for name in removed:
-            out(f'Removed {name}: the newer release added it')
+    removed, stuck = added_units(units_before(saved, previous))
+    for name in removed:
+        out(f'Removed {name}: the newer release added it')
     if stuck:
         # The older setup never runs beside a newer release's service still at work (it
         # ran first before, and the failure was only said after it: the review of 0.47.2).
@@ -565,11 +581,54 @@ def resume_held(settings, out, setup, journal):
         out('An upgrade was cut off while it downloaded; nothing had changed')
         return 0
     config = json.loads(settings_path(settings).read_text())
+    if settled(config, out, journal, saved=saved):
+        return 0
     previous = kept_release(config, saved.get('previous', ''))
     out('An upgrade was cut off before it was checked; putting ' + previous.name + ' back')
     log_file = ssd(config) / UPGRADES / ((saved.get('to') or 'resume') + '.log')
     before = [step for step in saved.get('before') or [] if isinstance(step, str)]
     return go_back(previous, settings, owner(config), log_file, out, setup, journal, before)
+
+
+def settled(config, out=print, journal=JOURNAL, saved=None, check=None, by_hand=False):
+    """An upgrade's record closed because the server already runs, whole, the release it
+    was for or a newer one: this release (the one running this) is that release, every
+    step that worked before the upgrade works, and the dashboard and every service run it.
+    That is so when a person ran setup themself after an upgrade that did not finish.
+    Seen on the rig: 0.46.3 installed by hand over a failed upgrade to it, and the next
+    start put 0.46.2 back over it. `by_hand` (a person's setup run just ended): the
+    release the server had before counts too, which is what a failed way back asks for.
+    Says so and returns True; otherwise changes nothing."""
+    saved = saved or read(journal)
+    if saved is None or saved.get('phase') == 'downloading':
+        return False
+    wanted, here = numbers(str(saved.get('to') or '')), numbers(VERSION)
+    back = by_hand and here == numbers(Path(str(saved.get('previous') or '')).name)
+    if not wanted or not (here >= wanted or back):
+        return False
+    before = [step for step in saved.get('before') or [] if isinstance(step, str)]
+    if checked(check or (lambda: verify(config, 'v' + VERSION, before))) is not None:
+        return False
+    journal.unlink(missing_ok=True)
+    out(
+        f'The upgrade to {saved["to"]} that did not finish is closed: this server runs {VERSION} and passed its '
+        'check. App updates and the monthly check go on.'
+    )
+    return True
+
+
+def settle_after_setup(config, out=print, journal=JOURNAL, check=None):
+    """After a setup run a person started (never the upgrade's own): an upgrade's record
+    left open is closed when the server now passes the check (settled). Without this the
+    record stayed until the next start, and app updates and the monthly check waited.
+    Nothing happens while an upgrade or a drive move is at work."""
+    if not Path(journal).exists():
+        return False
+    held = hold_operation(OPERATION_LOCK)
+    if held is None:
+        return False
+    with held:
+        return settled(config, out, journal, check=check, by_hand=True)
 
 
 # The upgrade's report, beside the other jobs' (the dashboard's "last upgrade" line and
