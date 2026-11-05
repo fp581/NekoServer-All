@@ -423,3 +423,74 @@ class PhoneLayoutTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(NODE, 'node is not installed')
+class CatCompanionTests(unittest.TestCase):
+    """The cat theme: the cat shows the server's state in a fixed order and never decides
+    it; each panel's cat follows that panel's own information."""
+
+    def readings(self, **job):
+        backup = {
+            'id': 'app-backup',
+            'name': 'Nightly app backup',
+            'status': 'pass',
+            'last_success': 1000.0,
+            'timer': {'installed': True, 'active': True},
+        }
+        return status(
+            backups=[{**backup, **job}],
+            storage=[{'id': 'media_hdd', 'name': 'Media HDD', 'status': 'mounted', 'used_percent': 40}],
+        )
+
+    def test_a_real_problem_comes_first_then_old_readings_then_a_job_then_a_success(self):
+        failed, running, calm = self.readings(status='fail'), self.readings(status='running'), self.readings()
+        moods = page(
+            ('companionMood', {'status': None, 'stale': False, 'done': False}),
+            ('companionMood', {'status': failed, 'stale': True, 'done': True}),
+            ('companionMood', {'status': calm, 'stale': True, 'done': True}),
+            ('companionMood', {'status': running, 'stale': False, 'done': True}),
+            ('companionMood', {'status': calm, 'stale': False, 'done': True}),
+            ('companionMood', {'status': calm, 'stale': False, 'done': False}),
+        )
+        self.assertEqual(moods, ['curious', 'afraid', 'curious', 'playful', 'happy', 'resting'])
+
+    def test_a_backup_problem_scares_only_the_backup_and_attention_cats(self):
+        failed = page(('panelMoods', {'status': self.readings(status='fail'), 'done': False, 'searching': False}))[0]
+        self.assertEqual(failed['backups'], 'afraid')
+        self.assertEqual(failed['attention'], 'afraid')
+        self.assertEqual(
+            (failed['apps'], failed['glance'], failed['hardware'], failed['drives']),
+            ('happy', 'resting', 'resting', 'resting'),
+        )
+        # A drive that is gone scares the drives cat.
+        gone = self.readings()
+        gone['storage'][0]['status'] = 'missing'
+        self.assertEqual(
+            page(('panelMoods', {'status': gone, 'done': False, 'searching': False}))[0]['drives'], 'afraid'
+        )
+        calm, searching, old = page(
+            ('panelMoods', {'status': self.readings(), 'done': False, 'searching': False}),
+            ('panelMoods', {'status': self.readings(), 'done': False, 'searching': True}),
+            ('panelMoods', {'status': self.readings(status='fail'), 'done': False, 'searching': False, 'stale': True}),
+        )
+        self.assertEqual((calm['backups'], calm['attention'], searching['apps']), ('sleeping', 'curious', 'curious'))
+        # Old readings: no panel looks content; one with a problem of its own still says so.
+        self.assertEqual(old, {**{panel: 'curious' for panel in old}, 'backups': 'afraid', 'attention': 'afraid'})
+
+    def test_a_finished_job_is_celebrated_once_and_never_on_the_first_look(self):
+        first, same, newer, again = (
+            self.readings(last_success=1000.0),
+            self.readings(last_success=1000.0),
+            self.readings(last_success=2000.0),
+            self.readings(last_success=2000.0),
+        )
+        self.assertEqual(page(('newlyFinished', [first, same, newer, again])), [[None, None, 'app-backup', None]])
+
+    def test_the_small_cats_are_still_pictures_except_the_sleeping_one(self):
+        files = page(
+            ('catFile', {'mood': 'afraid', 'small': False}),
+            ('catFile', {'mood': 'afraid', 'small': True}),
+            ('catFile', {'mood': 'sleeping', 'small': True}),
+        )
+        self.assertEqual(files, ['cat-afraid.webp', 'cat-afraid.png', 'cat-sleeping-small.webp'])

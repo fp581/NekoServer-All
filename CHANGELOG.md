@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.47.0 — 2026-11-05
+
+A feature release: the dashboard's new look, **Moonlit Neko**.
+
+### New: the cat
+- **Neko, a small black cat, sits at the top of Home** and shows how the server is doing. It is afraid when something needs a look, curious when the readings are not current, playful while a backup runs, happy for a moment when one has just finished, and resting when all is well. The words beside it say the same thing and are what counts; the cat never decides anything (DASHBOARD.md, "The cat").
+- **Panels have a smaller cat of their own** that follows only that panel: the backup cat sleeps between runs, plays while one runs and is afraid when one needs a look; the apps, hardware, drives and attention cats likewise. A backup problem scares only the backup and attention cats.
+- **Less motion:** the small cats are still pictures (the sleeping one breathes), and every cat is a still picture when the device asks for less motion or Settings → *Cat animation* is *Still pictures*.
+- A finished job is celebrated once, when the page sees its last good copy move on; opening the page never replays an old one, and a warning always wins.
+
+### Changed
+- **New colours** for the dashboard in both themes (night and daylight), from the cat theme. The overall status sits beside the cat, and the four summary facts are a compact line instead of four boxes.
+- The README's dashboard recording shows the new look. It was made from the real dashboard program serving example readings: the hardware readings are those of the test machine, and Fans & lights is not in it (there was no fan hardware to control).
+
 ## v0.46.4 — 2026-11-05
 
 A stabilization release: fixes only, from the project owner's reviews of v0.46.3-beta. Each fix has a test that fails on 0.46.3.

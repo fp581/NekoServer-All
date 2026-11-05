@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-    <meta name="theme-color" content="#14151f" />
+    <meta name="theme-color" content="#14141e" />
     <meta name="color-scheme" content="dark light" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -101,19 +101,20 @@
         </div>
 
         <!-- HOME -->
-        <section class="hero" data-page="home">
+        <section class="hero" data-page="home" id="hero" data-mood="curious">
+          <!-- The cat shows the server's state; the words beside it say it. -->
+          <figure class="cat-box main" aria-hidden="true">
+            <img id="hero-cat" src="cat-curious.png" width="160" height="160" alt="" />
+          </figure>
           <div class="hero-copy">
-            <span class="eyebrow">A PLACE FOR EVERYTHING YOU LOVE</span>
-            <h2>Welcome home.</h2>
-            <p>Your movies, music, photos and files. <br />One familiar place to find them.</p>
+            <span class="cat-state" id="hero-state">Checking</span>
+            <h2 id="hero-title">Welcome home.</h2>
+            <p id="hero-text">Neko is waiting for the server's first readings.</p>
             <div class="hero-bottom">
-              <span class="badge unknown" id="overall">Waiting for readings</span
+              <a class="button small" id="hero-action" href="#health">View server health</a
+              ><span class="badge unknown" id="overall">Waiting for readings</span
               ><span id="updated">No readings yet</span>
             </div>
-          </div>
-          <div class="hero-art" aria-hidden="true">
-            <span class="orbit one"></span><span class="orbit two"></span><span class="twinkle a">✧</span
-            ><span class="twinkle b">✦</span><img src="logo.svg" width="136" height="136" alt="" />
           </div>
         </section>
 
@@ -137,7 +138,10 @@
         </section>
 
         <section class="panel" data-page="home attention">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="attention" src="cat-curious.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">NEXT STEPS</span>
               <h2>What needs your attention</h2>
@@ -148,7 +152,10 @@
         </section>
 
         <section class="panel" data-page="home">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="glance" src="cat-resting.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">RIGHT NOW</span>
               <h2>Your server at a glance</h2>
@@ -160,7 +167,10 @@
 
         <!-- APPS -->
         <section class="panel" data-page="home apps">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="apps" src="cat-happy.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">OPEN SOMETHING GOOD</span>
               <h2>Your apps</h2>
@@ -187,7 +197,10 @@
 
         <!-- BACKUPS -->
         <section class="panel" data-page="backups">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="backups" src="cat-sleeping.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">A LITTLE PEACE OF MIND</span>
               <h2>Backups &amp; protection</h2>
@@ -203,7 +216,10 @@
 
         <!-- HARDWARE -->
         <section class="panel" data-page="hardware">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="hardware" src="cat-resting.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">KNOW YOUR HARDWARE</span>
               <h2>How hard it's working</h2>
@@ -354,7 +370,10 @@
 
         <!-- HEALTH -->
         <section class="panel" data-page="health">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="drives" src="cat-resting.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">ROOM TO BREATHE</span>
               <h2>Drives</h2>

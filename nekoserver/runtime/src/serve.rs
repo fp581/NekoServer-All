@@ -86,6 +86,24 @@ const ASSETS: &[(&str, &str, &str)] = &[
     ("/icon-192.png", "icon-192.png", "image/png"),
     ("/icon-512.png", "icon-512.png", "image/png"),
     ("/apple-touch-icon.png", "apple-touch-icon.png", "image/png"),
+    // The cat companion (DASHBOARD.md, "The cat"): an animation and a still per mood.
+    ("/cat-happy.webp", "cat-happy.webp", "image/webp"),
+    ("/cat-happy.png", "cat-happy.png", "image/png"),
+    ("/cat-playful.webp", "cat-playful.webp", "image/webp"),
+    ("/cat-playful.png", "cat-playful.png", "image/png"),
+    ("/cat-resting.webp", "cat-resting.webp", "image/webp"),
+    ("/cat-resting.png", "cat-resting.png", "image/png"),
+    ("/cat-sleeping.webp", "cat-sleeping.webp", "image/webp"),
+    ("/cat-sleeping.png", "cat-sleeping.png", "image/png"),
+    ("/cat-curious.webp", "cat-curious.webp", "image/webp"),
+    ("/cat-curious.png", "cat-curious.png", "image/png"),
+    ("/cat-afraid.webp", "cat-afraid.webp", "image/webp"),
+    ("/cat-afraid.png", "cat-afraid.png", "image/png"),
+    (
+        "/cat-sleeping-small.webp",
+        "cat-sleeping-small.webp",
+        "image/webp",
+    ),
 ];
 #[cfg(test)]
 fn asset_files() -> Vec<&'static str> {

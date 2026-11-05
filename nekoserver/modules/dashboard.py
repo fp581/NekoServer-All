@@ -32,6 +32,13 @@ ASSETS = (
     'icon-192.png',
     'icon-512.png',
     'apple-touch-icon.png',
+    # The cat companion: an animation and a still (for reduced motion) per mood.
+    *(
+        f'cat-{mood}.{kind}'
+        for mood in ('happy', 'playful', 'resting', 'sleeping', 'curious', 'afraid')
+        for kind in ('webp', 'png')
+    ),
+    'cat-sleeping-small.webp',
 )
 # Opens the dashboard in its own window from the desktop's app menu.
 LAUNCHER = Path('/usr/local/bin/nekoserver-dashboard')

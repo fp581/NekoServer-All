@@ -2,19 +2,23 @@
  * wide (sidebar), tablet (icon rail) and phone (bottom tab bar). */
 :root {
   color-scheme: dark;
-  --bg: #14151f;
-  --side: #181923;
-  --surface: #1e1f2c;
-  --raised: #252635;
-  --line: #333445;
-  --text: #eeeaf7;
-  --muted: #b3adc0;
-  --purple: #c4b3fa;
-  --purple-soft: #363047;
+  /* Moonlit Neko: the cat theme's colours (night first, daylight below). */
+  --bg: #14141e;
+  --side: #181722;
+  --surface: #20202c;
+  --raised: #272432;
+  --line: #393244;
+  --text: #f0eae0;
+  --muted: #b0a6bc;
+  --purple: #b59acc;
+  --purple-soft: #2d2839;
+  --peach: #deb99c;
   --pink: #edb7cc;
-  --mint: #a7dcc5;
-  --amber: #f1cf93;
-  --red: #f4a4ae;
+  --mint: #9ec6b1;
+  --amber: #e4bd83;
+  --red: #eb9ba6;
+  /* The cat's box stays warm in both themes, so its dark fur is always easy to see. */
+  --cat-box: #ded3c0;
   --radius: 16px;
   --tabbar: 0px;
   font-family:
@@ -29,19 +33,21 @@
 }
 :root[data-theme='light'] {
   color-scheme: light;
-  --bg: #f5f3f9;
-  --side: #eeebf5;
-  --surface: #fff;
-  --raised: #f4f1f8;
-  --line: #ded9e8;
-  --text: #292437;
-  --muted: #645b74;
-  --purple: #634a94;
-  --purple-soft: #eee7f8;
+  --bg: #f4f1f7;
+  --side: #ebe6f1;
+  --surface: #fffdfd;
+  --raised: #f8f4fa;
+  --line: #ded6e5;
+  --text: #302a3b;
+  --muted: #71667e;
+  --purple: #7356a5;
+  --purple-soft: #efe8f7;
+  --peach: #986645;
   --pink: #a54b72;
-  --mint: #1f7357;
-  --amber: #82591a;
-  --red: #a9324b;
+  --mint: #40765d;
+  --amber: #97601e;
+  --red: #a54353;
+  --cat-box: #e9dfcf;
 }
 * {
   box-sizing: border-box;
@@ -441,33 +447,56 @@ h1 {
 
 /* ---------- hero & summary ---------- */
 .hero {
-  border: 1px solid color-mix(in srgb, var(--purple) 26%, var(--line));
+  border: 1px solid var(--line);
   border-radius: 22px;
   overflow: hidden;
   position: relative;
-  display: flex;
-  min-height: 230px;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 212px;
+  padding: 16px 24px 16px 16px;
   margin-bottom: 18px;
-  background: radial-gradient(ellipse at 87% 50%, #8a61a82b, transparent 65%),
-    linear-gradient(110deg, var(--purple-soft), var(--surface));
+  background: linear-gradient(112deg, var(--raised), var(--surface));
 }
 .hero-copy {
-  padding: 30px 32px;
-  position: relative;
-  z-index: 1;
-  max-width: 66%;
+  padding: 8px 8px 8px 12px;
+  min-width: 0;
+}
+.cat-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--purple);
+  font-size: 13px;
+  font-weight: 600;
+}
+.cat-state::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.hero[data-mood='afraid'] .cat-state {
+  color: var(--amber);
+}
+.hero[data-level='critical'] .cat-state {
+  color: var(--red);
 }
 .hero h2 {
-  font-size: 44px;
-  font-weight: 580;
-  line-height: 1.12;
-  letter-spacing: -1.5px;
-  margin: 12px 0;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -1px;
+  margin: 8px 0 10px;
 }
 .hero p {
-  font-size: 16px;
-  line-height: 1.7;
-  margin-bottom: 20px;
+  font-size: 15px;
+  line-height: 1.65;
+  margin-bottom: 16px;
+  max-width: 560px;
 }
 .hero-bottom {
   display: flex;
@@ -477,67 +506,81 @@ h1 {
   font-size: 13px;
   color: var(--muted);
 }
-.hero-art {
-  position: absolute;
-  right: 3%;
-  top: 0;
-  height: 100%;
-  width: 34%;
+.hero[data-mood='afraid'] #hero-action {
+  background: var(--amber);
+  border-color: var(--amber);
+}
+
+/* ---------- the cat ---------- */
+/* One fixed, centred box per cat: the animations are already framed with their whole
+ * movement inside, so nothing here moves or trims them. */
+.cat-box {
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  aspect-ratio: 1;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  background: var(--cat-box);
 }
-.hero-art img {
-  z-index: 1;
-  transform: rotate(-7deg);
-  filter: drop-shadow(0 18px 22px #0003);
-  border-radius: 38px;
+.cat-box img {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: 1;
+  max-inline-size: 100%;
+  max-block-size: 100%;
+  object-fit: contain;
+  object-position: center;
+  pointer-events: none;
 }
-.orbit {
-  position: absolute;
-  width: 250px;
-  height: 150px;
-  border: 1px solid #ab86ca35;
-  border-radius: 50%;
-  transform: rotate(-25deg);
+.cat-box.main {
+  inline-size: min(100%, 160px);
+  padding: 10px;
+  border-radius: 14px;
+  justify-self: center;
 }
-.orbit.two {
-  transform: rotate(43deg);
-  width: 220px;
-  height: 170px;
+.cat-box.panel-cat {
+  inline-size: 84px;
+  block-size: 84px;
+  flex: 0 0 84px;
+  padding: 6px;
+  border-radius: 12px;
 }
-.twinkle {
-  position: absolute;
-  color: var(--pink);
-  font-size: 28px;
+.section-head.with-cat {
+  align-items: center;
 }
-.twinkle.a {
-  top: 18%;
-  left: 6%;
+.section-head.with-cat > div {
+  flex: 1;
+  min-width: 0;
 }
-.twinkle.b {
-  bottom: 16%;
-  right: 2%;
+.panel[data-alert='true'] {
+  border-color: color-mix(in srgb, var(--amber) 60%, var(--line));
 }
 .summary-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 4px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   margin-bottom: 22px;
 }
 .summary {
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
+  border-radius: 12px;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 18px;
+  padding: 10px 14px;
   min-width: 0;
-  min-height: 72px;
+  min-height: 64px;
 }
 .summary:hover {
-  border-color: var(--purple);
+  background: var(--raised);
 }
 .summary-text {
   min-width: 0;
@@ -550,13 +593,13 @@ h1 {
 .summary strong {
   font-size: 16px;
   display: block;
-  font-weight: 620;
+  font-weight: 560;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .summary-icon {
-  font-size: 24px;
+  font-size: 20px;
   color: var(--purple);
   flex-shrink: 0;
 }
@@ -1741,16 +1784,11 @@ body.tv {
   .card-grid.three {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .hero {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
   .hero h2 {
-    font-size: 38px;
-  }
-  .hero-art img {
-    width: 112px;
-    height: 112px;
-  }
-  .orbit {
-    width: 200px;
-    height: 130px;
+    font-size: 30px;
   }
 }
 
@@ -1844,27 +1882,41 @@ body.tv {
   .hero {
     min-height: 0;
     border-radius: 18px;
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 4px;
+    padding: 12px 14px 12px 10px;
+  }
+  .cat-box.main {
+    padding: 7px;
   }
   .hero-copy {
-    padding: 20px;
-    max-width: 100%;
+    padding: 4px 0 4px 8px;
   }
   .hero h2 {
-    font-size: 30px;
-    margin: 8px 0;
+    font-size: 23px;
+    letter-spacing: -0.6px;
+    margin: 6px 0 8px;
   }
   .hero p {
-    font-size: 15px;
-    margin-bottom: 14px;
+    font-size: 14px;
+    line-height: 1.5;
+    margin-bottom: 12px;
   }
-  .hero p br {
-    display: none;
+  .cat-box.panel-cat {
+    inline-size: 78px;
+    block-size: 78px;
+    flex-basis: 78px;
   }
-  .hero-art {
-    display: none;
+  /* The cat and the words take the row; a link or button beside them goes below. */
+  .section-head.with-cat {
+    flex-wrap: wrap;
+    gap: 12px 14px;
+  }
+  .section-head.with-cat > div {
+    flex-basis: calc(100% - 92px);
   }
   .summary-strip {
-    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     margin-bottom: 18px;
   }
   .summary {

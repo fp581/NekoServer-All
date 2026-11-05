@@ -655,11 +655,13 @@ function serverApps(s) {
   return list(s?.applications).filter(a => Object.hasOwn(CATALOG, a.id) && !CATALOG[a.id].shortcut);
 }
 const severity = urgent => (urgent ? 'critical' : 'warning');
+/* Alerts about a drive: its guide, and the drives panel's cat. */
+const STORAGE_ISSUE = /^(mount|space|smart|nas|array-[a-z]+):/;
 /* Which guide explains an alert, by its id. */
 const ALERT_GUIDES = [
   [id => id === 'job:maintenance', 'updates'], // the monthly run: backup, then updates
   [id => id.startsWith('integrity:'), 'integrity'],
-  [id => /^(mount|space|smart|nas|array-[a-z]+):/.test(id), 'storage'],
+  [id => STORAGE_ISSUE.test(id), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
   [id => id.includes('heartbeat'), 'heartbeat'],
@@ -1135,6 +1137,209 @@ function renderHome() {
   $('updated').textContent = 'Updated ' + ago(s.generated_at);
   renderSummaries(s);
   put('glance', [glanceProcessor(s), glanceMemory(s), glanceTemperature(s), glanceNetwork()]);
+}
+
+/* ---------- the cat ---------- */
+/* Neko shows the server's state, which the words beside it say; it never decides it.
+ * The order (DASHBOARD.md, "The cat"): a real problem, then readings that are not
+ * current, then a job at work, then a job that has just finished, then all well. */
+const CELEBRATE_MS = 3200; // the happy cat's own length: shown once per finished job
+const lastGood = new Map(); // each job's last good copy, as the page last saw it
+let lastLooked = null; // the reading (its time) the page last compared them in
+let finished = null; // the job that has just finished, for CELEBRATE_MS
+let finishedTimer;
+function runningJobs(s) {
+  return list(s?.backups).filter(j => j.status === 'running');
+}
+function jobName(job) {
+  return text(job?.name, text(job?.id, 'A backup'));
+}
+/* A job whose last good copy moved on since the page last looked; never on the first look
+ * (opening the page does not celebrate an old copy), never twice for the same copy. */
+function newlyFinished(s) {
+  let fresh = null;
+  for (const job of list(s?.backups)) {
+    if (!numeric(job.last_success)) {
+      continue;
+    }
+    const before = lastGood.get(job.id);
+    if (numeric(before) && job.last_success > before && job.status !== 'running') {
+      fresh = job;
+    }
+    lastGood.set(job.id, job.last_success);
+  }
+  return fresh;
+}
+function companionMood(s, issues, stale, done) {
+  return firstOf(
+    [
+      [!s, 'curious'],
+      [issues.length, 'afraid'],
+      [stale, 'curious'],
+      [runningJobs(s).length, 'playful'],
+      [done, 'happy']
+    ],
+    'resting'
+  );
+}
+function hot(s) {
+  const t = processorTemperature(s),
+    memory = currentLive()?.memory?.percent ?? s.metrics?.memory_percent;
+  return (numeric(t) && t >= 85) || (numeric(memory) && memory >= 90);
+}
+/* Each panel's own cat, from that panel's own information: a backup that needs a look
+ * scares the backup cat, not the apps or the hardware. On readings that are not current,
+ * a panel without a problem of its own looks for news instead of looking content. */
+function panelMoods(s, issues, done, searching, stale = false) {
+  if (!s) {
+    return {
+      attention: 'curious',
+      apps: 'curious',
+      backups: 'curious',
+      glance: 'curious',
+      hardware: 'curious',
+      drives: 'curious'
+    };
+  }
+  if (stale) {
+    const known = panelMoods(s, issues, false, false);
+    return Object.fromEntries(
+      Object.entries(known).map(([panel, mood]) => [panel, mood === 'afraid' ? mood : 'curious'])
+    );
+  }
+  const down = serverApps(s).filter(a => !APP_OK.has(appState(a)) && appState(a) !== 'not_set_up').length;
+  const bad = list(s.backups).filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
+  const hardware = hot(s) ? 'afraid' : 'resting';
+  const drive = issues.some(i => STORAGE_ISSUE.test(i.id));
+  return {
+    attention: issues.length ? 'afraid' : 'curious',
+    apps: firstOf(
+      [
+        [down, 'afraid'],
+        [searching, 'curious']
+      ],
+      'happy'
+    ),
+    backups: firstOf(
+      [
+        [bad, 'afraid'],
+        [runningJobs(s).length, 'playful'],
+        [done, 'happy']
+      ],
+      'sleeping'
+    ),
+    glance: hardware,
+    hardware,
+    drives: drive ? 'afraid' : 'resting'
+  };
+}
+/* The words beside the cat: [state, title, text, action, where it leads]. */
+function companionWords(mood, s, issues) {
+  if (!s) {
+    return ['Checking', 'Welcome home.', 'Neko is waiting for the server’s first readings.', 'Help', '#help'];
+  }
+  const top = issues.find(i => i.level === 'critical') || issues[0],
+    jobs = runningJobs(s);
+  const words = {
+    afraid: [
+      top?.level === 'critical' ? 'Urgent' : 'Needs a look',
+      issues.length === 1 ? text(top?.title, 'Something needs a look.') : issues.length + ' things need a look.',
+      issues.length === 1
+        ? 'Neko spotted it. “What should I do?” beside it says how to fix it.'
+        : 'The first one: ' + text(top?.title, 'see the list') + '.',
+      'See what to do',
+      '#attention'
+    ],
+    curious: [
+      'Checking',
+      'Waiting for fresh readings.',
+      'The last readings are from ' + ago(s.generated_at) + '. Until new ones arrive, nothing here counts as current.',
+      'What does this mean?',
+      '#help-errors'
+    ],
+    playful: [
+      'Job running',
+      jobs.length === 1 ? jobName(jobs[0]) + ' is running.' : jobs.length + ' jobs are running.',
+      'Neko is keeping an eye on it. How far it got and how it ends show under Backups.',
+      'Open Backups',
+      '#backups'
+    ],
+    happy: [
+      'Finished',
+      jobName(finished) + ' finished.',
+      'Its last good copy is from just now.',
+      'Open Backups',
+      '#backups'
+    ],
+    resting: [
+      'Normal operation',
+      'Everything has its place.',
+      'Nothing needs your attention right now. Neko can take it easy.',
+      'View server health',
+      '#health'
+    ]
+  };
+  return words[mood];
+}
+/* Still pictures instead of animations: the setting, or the device's "reduce motion". */
+function stillCats() {
+  const motion = readStore('motion', 'system');
+  return motion === 'off' || (motion !== 'on' && matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+/* The file for a cat: the big one moves; the small ones are still pictures, except the
+ * sleeping one, which keeps breathing. */
+function catFile(mood, small) {
+  if (stillCats() || (small && mood !== 'sleeping')) {
+    return 'cat-' + mood + '.png';
+  }
+  return small ? 'cat-sleeping-small.webp' : 'cat-' + mood + '.webp';
+}
+/* The picture changes only when the mood does: setting it again would restart it. */
+function showCat(img, mood, small) {
+  const file = catFile(mood, small);
+  if (img.getAttribute('src') !== file) {
+    img.setAttribute('src', file);
+  }
+}
+function noteFinished(s) {
+  if (!s || s.generated_at === lastLooked) {
+    return;
+  }
+  const first = lastLooked === null;
+  lastLooked = s.generated_at;
+  const fresh = newlyFinished(s);
+  if (fresh && !first) {
+    finished = fresh;
+    clearTimeout(finishedTimer);
+    // Then the cat shows the server's state again, whatever it is by then.
+    finishedTimer = setTimeout(() => {
+      finished = null;
+      renderCats();
+    }, CELEBRATE_MS);
+  }
+}
+function renderCats() {
+  const s = state.status,
+    issues = state.issues,
+    stale = !!s && (statusStale() || !!state.statusError);
+  const mood = companionMood(s, issues, stale, !!finished);
+  const hero = $('hero');
+  hero.dataset.mood = mood;
+  hero.dataset.level = mood === 'afraid' && issues.some(i => i.level === 'critical') ? 'critical' : '';
+  showCat($('hero-cat'), mood, false);
+  const [label, title, words, action, where] = companionWords(mood, s, issues);
+  $('hero-state').textContent = label;
+  $('hero-title').textContent = title;
+  $('hero-text').textContent = words;
+  $('hero-action').textContent = action;
+  $('hero-action').setAttribute('href', where);
+  const searching = state.route === 'apps' && !!$('app-search').value.trim();
+  const moods = panelMoods(s, issues, !!finished, searching, stale);
+  for (const img of document.querySelectorAll('[data-cat]')) {
+    const panelMood = moods[img.dataset.cat] || 'resting';
+    showCat(img, panelMood, true);
+    img.closest('.panel')?.toggleAttribute('data-alert', panelMood === 'afraid');
+  }
 }
 
 /* ---------- apps ---------- */
@@ -2925,7 +3130,7 @@ function actionNote(action) {
 /* A backup or update the collector saw running: app restarts wait for it. */
 function runningJob() {
   const job = list(state.status?.backups).find(j => j.status === 'running');
-  return job ? text(job.name, text(job.id, 'A backup')) : null;
+  return job ? jobName(job) : null;
 }
 function menuButton(name, items) {
   const b = button('⋯', e => openMenu(items(), e), 'menu-button');
@@ -4203,6 +4408,7 @@ function applyPreferences() {
   const size = readStore('size', 'normal');
   document.body.classList.toggle('large', size === 'large');
   document.body.classList.toggle('tv', size === 'tv');
+  renderCats();
 }
 function choice(label, key, options, fallback) {
   const wrap = el('label', 'field', label),
@@ -4254,6 +4460,16 @@ function preferences() {
         ['system', 'Same as this device']
       ],
       'dark'
+    ),
+    choice(
+      'Cat animation',
+      'motion',
+      [
+        ['system', 'Same as this device'],
+        ['on', 'Moving'],
+        ['off', 'Still pictures']
+      ],
+      'system'
     ),
     choice(
       'Text size',
@@ -4380,9 +4596,11 @@ function render() {
   if (state.status) {
     state.issues = collectIssues(state.status);
   }
+  noteFinished(state.status);
   withFocus(() => {
     renderChrome();
     PAGES[state.route]();
+    renderCats();
   });
   notify();
 }
@@ -4436,7 +4654,12 @@ function turnProcessPage(change) {
   renderProcesses();
 }
 window.addEventListener('hashchange', route);
-$('app-search').addEventListener('input', () => withFocus(renderApps));
+$('app-search').addEventListener('input', () =>
+  withFocus(() => {
+    renderApps();
+    renderCats();
+  })
+);
 for (const b of document.querySelectorAll('[data-filter]')) {
   b.addEventListener('click', () => chooseFilter(b));
 }
@@ -4465,6 +4688,7 @@ $('problem-link').addEventListener('click', e => {
   location.hash = 'help-errors';
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyPreferences);
+matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', renderCats);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     refreshNow();

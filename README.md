@@ -29,9 +29,9 @@ Every recording below is a real run on the test rig (openSUSE Tumbleweed under W
 
 <p align="center"><img src="docs/media/setup-window.webp" alt="The setup window: choose what to install, follow each step, answer the questions" width="720"></p>
 
-**The dashboard.** Your apps, drives, backups, hardware and what needs your attention, on the PC and on your phone.
+**The dashboard.** Your apps, drives, backups, hardware and what needs your attention, on the PC and on your phone. A small black cat shows how things are going.
 
-<p align="center"><img src="docs/media/dashboard.webp" alt="The NekoServer dashboard: home, apps, hardware, backups, server health, fans and lights, needs attention" width="720"></p>
+<p align="center"><img src="docs/media/dashboard.webp" alt="The NekoServer dashboard and its cat: home while all is well, a backup running and finishing, apps, backups, hardware, server health, then a backup that needs a look" width="720"></p>
 
 **The uninstaller.** NekoServer off the PC, what you choose, after two confirmations. Nothing is formatted.
 
