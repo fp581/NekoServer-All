@@ -11,6 +11,7 @@ import recovery_tools
 from network_access import lan, verify_lan, choose_lan, save_settings
 import host
 from neko_common import (
+    SHARED,
     VERSION,
     safe_path,
     atomic_write,
@@ -24,15 +25,12 @@ from neko_common import (
 
 LOOPBACK = 'http://127.0.0.1:'
 # (name on the phone page, local port, private Tailscale port)
+# (shared.json: the apps with a "tailnet" port are the ones the gateway can publish.)
+PHONE_NAMES = {'navidrome': 'Music'}
 APPS = {
-    app: (name, app_port(app), public)
-    for app, name, public in (
-        ('jellyfin', 'Jellyfin', 8443),
-        ('seerr', 'Seerr', 8444),
-        ('immich', 'Immich', 8445),
-        ('navidrome', 'Music', 8446),
-        ('nextcloud', 'Nextcloud', 8447),
-    )
+    app['id']: (PHONE_NAMES.get(app['id'], app['name']), app_port(app['id']), app['tailnet'])
+    for app in SHARED['apps']
+    if 'tailnet' in app
 }
 ROOT = Path(__file__).resolve().parent
 # The home addresses' usual ports (the app menu, then the apps as in APPS). When another

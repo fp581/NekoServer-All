@@ -48,6 +48,24 @@ class AppCatalogue(unittest.TestCase):
                 self.assertIsNone(names.search(code))
 
 
+class PageCatalogue(unittest.TestCase):
+    def test_the_page_keeps_no_names_or_ports_of_its_own(self):
+        page = (ROOT / 'dashboard/app.js').read_text()
+        catalogue = page[page.index('const CATALOG = {') : page.index('\n};\n', page.index('const CATALOG = {'))]
+        for app in SHARED['apps']:
+            line = next(row for row in catalogue.splitlines() if row.strip().startswith(app['id'] + ':'))
+            with self.subTest(app['id']):
+                self.assertNotIn('port', line)
+                self.assertNotIn('name', line)
+
+    def test_the_gateway_takes_its_apps_and_ports_from_the_shared_list(self):
+        import gateway_tools
+
+        published = {app['id']: app['tailnet'] for app in SHARED['apps'] if 'tailnet' in app}
+        self.assertEqual({app: row[2] for app, row in gateway_tools.APPS.items()}, published)
+        self.assertEqual(gateway_tools.APPS['navidrome'][0], 'Music')
+
+
 class RecoveryRecords(unittest.TestCase):
     PLACES = [record['journal'] for record in SHARED['recovery'].values()] + [SHARED['setup_lock']]
 

@@ -940,7 +940,9 @@ fn applications(
                 json!(mine.iter().map(|u| u.1).sum::<f64>()),
             )
         };
-        out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"responding":responding(report,app,up_for),"url":format!("http://127.0.0.1:{port}/"),"cpu_percent":cpu,"memory_used":memory}));
+        // Its name, description and ports from the shared list: the page shows these
+        // (it kept a copy of its own, already worded differently).
+        out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"responding":responding(report,app,up_for),"url":format!("http://127.0.0.1:{port}/"),"port":port,"tailnet":common::tailnet_port(app),"cpu_percent":cpu,"memory_used":memory}));
     }
     (
         json!(out),

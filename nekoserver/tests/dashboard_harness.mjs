@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 const CALLS = new Set(['collectIssues', 'filesIntact', 'appState', 'validStatus', 'fixedFloor', 'raiseFixed',
   'backupSummary', 'recentCopies', 'integrityResult', 'nextRun', 'shortText', 'pinRefusal', 'guideFor', 'appsSummary',
   'shownApps', 'releaseNotes', 'arrayShown', 'words', 'waitingWhen', 'companionMood', 'panelMoods', 'newlyFinished',
-  'catFile']);
+  'catFile', 'appSpec']);
 /* Calls answered from another function's result, with more of it. */
 const DETAILED = new Set(['issueDetails']);
 const calls = JSON.parse(process.argv[2]);
@@ -75,6 +75,7 @@ const SPECIAL = {
   },
   newlyFinished: argument => argument.map(s => app.newlyFinished(app.validStatus(s))?.id ?? null),
   catFile: argument => app.catFile(argument.mood, argument.small),
+  appSpec: argument => app.appSpec(argument.id, argument.app),
   pinRefusal: argument => app.pinRefusal(argument.answer, argument.now),
   waitingWhen: argument => argument.waiting.map(w => app.waitingWhen(w, argument.waiting, argument.now)),
   releaseNotes: argument => app.releaseNotes(argument.app, argument.version),

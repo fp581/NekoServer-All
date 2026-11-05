@@ -53,11 +53,11 @@ Neko, a small black cat, sits at the top of Home and shows how the server is doi
 | **Happy** | A job has just finished, shown once for about three seconds. Opening the page does not replay an old one. |
 | **Resting** | Everything is fine and nothing needs you. |
 
-Each page also has a smaller cat of its own, with a pose that suits the page while all is well:
+Each of the nine main pages also has a smaller cat of its own, shown on that page only (Home's two lists of apps and of what needs attention show their cats on their own pages), with a pose that suits the page while all is well:
 
 | Page | Its cat |
 | --- | --- |
-| **Home** ("at a glance") | Sits and says hello |
+| **Home** ("at a glance", below Neko) | Sits and says hello |
 | **Your apps** | Peeks into the list (and while you search) |
 | **Backups** | Sleeps between runs, plays while one runs, is happy when one has just finished |
 | **Hardware** | Lies back with a slow tail swish |
@@ -65,7 +65,9 @@ Each page also has a smaller cat of its own, with a pose that suits the page whi
 | **Fans & lights** | Enjoys the breeze of a little fan |
 | **Processes** | Pounces at a ball of yarn (just for fun: it is not a progress bar) |
 | **Server health** | Grooms itself |
-| **Needs attention** | Looks over the list, and is worried only when there is something on it |
+| **Needs attention** | A worried huddle, beside the things to review |
+
+Updates and Help have no cat of their own.
 
 When something on a page is wrong, that page's cat is afraid instead: a backup that needs a look, an app that is down, a drive problem, a processor running hot. A problem on one page never scares the cats of the others. When a page's readings can't be fetched, or all readings are old, its cat looks curious instead of content. The poses are for fun; the page's own words and numbers are what count.
 

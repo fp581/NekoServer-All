@@ -3,6 +3,7 @@ page lists as needing attention, how it reads backup checksums and app states.""
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -147,7 +148,7 @@ class DashboardPageTests(unittest.TestCase):
                         {'id': 'ssd', 'name': 'SSD', 'status': 'mounted', 'used_percent': 95},
                     ],
                     applications=[
-                        {'id': 'jellyfin', 'state': 'running', 'health': 'unhealthy'},
+                        {'id': 'jellyfin', 'name': 'Jellyfin', 'state': 'running', 'health': 'unhealthy'},
                         {'id': 'immich', 'state': 'running', 'responding': True},
                     ],
                     backups=[
@@ -346,7 +347,10 @@ class UserPanelFindingsTests(unittest.TestCase):
 
     def test_apps_setup_never_reached_are_not_set_up_yet(self):
         # D10: one item to finish setup, not "try opening it" for each app.
-        apps = [{'id': 'jellyfin', 'state': 'not_set_up'}, {'id': 'immich', 'state': 'not_set_up'}]
+        apps = [
+            {'id': 'jellyfin', 'name': 'Jellyfin', 'state': 'not_set_up'},
+            {'id': 'immich', 'name': 'Immich', 'state': 'not_set_up'},
+        ]
         scene = status(applications=apps)
         issues, summary, partly = page(
             ('issueDetails', scene),
@@ -456,33 +460,46 @@ class CatCompanionTests(unittest.TestCase):
     def moods(self, readings, **now):
         return page(('panelMoods', {'status': readings, 'now': now}))[0]
 
+    # The nine-panel package's mapping (panel-cat-mapping.json), by route.
+    PACKAGE = {
+        'home': 'happy',
+        'apps': 'curious',
+        'backups': 'sleeping',
+        'hardware': 'resting',
+        'sensors': 'listening',
+        'cooling': 'breezy',
+        'processes': 'playful',
+        'health': 'grooming',
+        'attention': 'afraid',
+    }
+
     def test_each_page_has_its_own_cat_while_all_is_well(self):
-        self.assertEqual(
-            self.moods(self.readings()),
-            {
-                'attention': 'curious',  # nothing to look at: never the worried cat
-                'glance': 'happy',
-                'apps': 'curious',
-                'backups': 'sleeping',
-                'hardware': 'resting',
-                'sensors': 'listening',
-                'cooling': 'breezy',
-                'processes': 'playful',
-                'drives': 'grooming',
-            },
-        )
+        self.assertEqual(self.moods(self.readings()), self.PACKAGE)
+
+    def test_each_of_the_nine_pages_names_one_cat_and_no_other_page_does(self):
+        """The 0.47.1 preview: Home showed four cats (the cats of two panels it shares with
+        Your apps and Needs attention, beside its own and the status cat). Each cat is
+        named once, by its page's route; the page shows it on that page only."""
+        html = (ROOT / 'dashboard/index.html').read_text()
+        named = re.findall(r'data-cat="([a-z]+)"', html)
+        self.assertEqual(sorted(named), sorted(self.PACKAGE))
+        routes = set(re.findall(r'data-route="([a-z]+)"', html))
+        self.assertLessEqual(set(named), routes)
+        app = (ROOT / 'dashboard/app.js').read_text()
+        draw = app[app.index('function renderCats()') : app.index('/* ---------- apps ---------- */')]
+        self.assertIn('head.dataset.cat === state.route', draw)
 
     def test_a_backup_problem_scares_only_the_backup_and_attention_cats(self):
         failed = self.moods(self.readings(status='fail'))
         self.assertEqual((failed['backups'], failed['attention']), ('afraid', 'afraid'))
         self.assertEqual(
-            {panel: failed[panel] for panel in ('apps', 'hardware', 'sensors', 'drives')},
-            {'apps': 'curious', 'hardware': 'resting', 'sensors': 'listening', 'drives': 'grooming'},
+            {panel: failed[panel] for panel in ('apps', 'hardware', 'sensors', 'health')},
+            {'apps': 'curious', 'hardware': 'resting', 'sensors': 'listening', 'health': 'grooming'},
         )
-        # A drive that is gone scares the drives cat.
+        # A drive that is gone scares the Server health cat (its page lists the drives).
         gone = self.readings()
         gone['storage'][0]['status'] = 'missing'
-        self.assertEqual(self.moods(gone)['drives'], 'afraid')
+        self.assertEqual(self.moods(gone)['health'], 'afraid')
         # The backup cat plays while a job runs and is happy once it has finished.
         self.assertEqual(self.moods(self.readings(status='running'))['backups'], 'playful')
         self.assertEqual(self.moods(self.readings(), done=True)['backups'], 'happy')
@@ -514,6 +531,22 @@ class CatCompanionTests(unittest.TestCase):
         )  # noqa: E731
         self.assertEqual(page(('newlyFinished', [check(1000.0), check(2000.0)])), [[None, None]])
 
+    def test_an_apps_name_and_ports_are_the_ones_the_server_sends(self):
+        """The review of 0.47.1: the page kept its own names, descriptions and ports for
+        the apps (worded differently from setup's); they come from each app's row now."""
+        row = {'id': 'jellyfin', 'name': 'Jellyfin', 'description': 'Movies & TV shows', 'port': 8096, 'tailnet': 8443}
+        spec, odd, shortcut = page(
+            ('appSpec', {'id': 'jellyfin', 'app': row}),
+            ('appSpec', {'id': 'jellyfin', 'app': {**row, 'port': 99999, 'tailnet': 'x'}}),
+            ('appSpec', {'id': 'youtube'}),
+        )
+        self.assertEqual(
+            {k: spec[k] for k in ('name', 'description', 'port', 'tailnet', 'icon')},
+            {'name': 'Jellyfin', 'description': 'Movies & TV shows', 'port': 8096, 'tailnet': 8443, 'icon': '▶'},
+        )
+        self.assertEqual((odd['port'], odd['tailnet']), (None, None))
+        self.assertEqual(shortcut['name'], 'YouTube')
+
     def test_apps_held_by_the_nas_check_are_one_alert_not_one_per_app(self):
         """The review of 0.47.0: the collector said the apps were held, and nothing showed
         it. Then the 0.47.1 preview: each held app was its own "Stopped, try opening it"
@@ -530,7 +563,7 @@ class CatCompanionTests(unittest.TestCase):
         ]
         issues = page(('collectIssues', held))[0]
         self.assertEqual([i['id'] for i in issues], ['nas:hold', 'app:seerr'])
-        self.assertEqual(self.moods(held)['drives'], 'afraid')
+        self.assertEqual(self.moods(held)['health'], 'afraid')
         # The page no longer works the hold out itself: without the collector's word, a
         # stopped app is an item of its own.
         held['applications'][0]['held'] = False

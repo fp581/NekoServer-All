@@ -200,6 +200,13 @@ pub static MEDIA_APPS: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new
         .filter_map(|app| app["id"].as_str())
         .collect()
 });
+/// The private Tailscale port the gateway publishes `app` on (shared.json "tailnet"),
+/// for the apps it can publish.
+pub fn tailnet_port(app: &str) -> Option<u16> {
+    SHARED["apps"].as_array()?.iter().find(|a| a["id"] == app)?["tailnet"]
+        .as_u64()
+        .and_then(|p| u16::try_from(p).ok())
+}
 /// The local port of `app`, when it is one of the catalogue's.
 pub fn app_port(app: &str) -> Option<u16> {
     APPS.iter().find(|a| a.0 == app).map(|a| a.3)
@@ -1120,6 +1127,10 @@ mod catalogue_tests {
             !super::MEDIA_APPS.contains(&"immich") && !super::MEDIA_APPS.contains(&"nextcloud")
         );
         assert_eq!(super::app_port("plex"), None);
+        // The private Tailscale ports, for the apps the gateway can publish only.
+        assert_eq!(super::tailnet_port("jellyfin"), Some(8443));
+        assert_eq!(super::tailnet_port("navidrome"), Some(8446));
+        assert_eq!(super::tailnet_port("sonarr"), None);
     }
     #[test]
     fn every_recovery_record_and_the_setup_lock_come_from_the_shared_facts() {
