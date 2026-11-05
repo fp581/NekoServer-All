@@ -928,6 +928,8 @@ class DashboardPortTests(unittest.TestCase):
         with (
             mock.patch.object(dashboard, 'port_free', side_effect=lambda port: port not in (8787, 8788)),
             mock.patch.object(dashboard, 'installed_unit', return_value=None),
+            # Never this PC's own dashboard (the test failed on a server whose socket held 8788).
+            mock.patch.object(dashboard, 'unit_active', return_value=False),
         ):
             self.assertEqual(dashboard.choose_port(ctx, 8787, running=None), 8789)
             self.assertEqual((ctx.config['dashboard']['port'], saved), (8789, [1]))

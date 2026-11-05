@@ -546,7 +546,12 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.units_before({'units': ['a.timer']}, older), {'a.timer'})
         upgrade.record('failed', self.journal, to=NEWER, previous=str(older))
         ran = []
-        with mock.patch.object(upgrade.subprocess, 'run', side_effect=lambda argv, **k: ran.append(argv)):
+
+        def systemctl(argv, **k):
+            ran.append(argv)
+            return subprocess.CompletedProcess(argv, 3 if 'is-active' in argv else 0, '', '')
+
+        with mock.patch.object(upgrade.subprocess, 'run', side_effect=systemctl):
             upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal)
         self.assertEqual([p.name for p in self.units.iterdir()], ['nekoserver-dashboard.service'])
         self.assertIn(['systemctl', 'disable', '--now', 'nekoserver-dashboard.socket'], ran)
