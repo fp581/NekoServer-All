@@ -14,6 +14,9 @@ A stabilization release: fixes from the owner's review of 0.47.2, and a sweep fo
 - **A move never unmounts what someone else mounted.** It refused a staging folder that was already in use, then its clean-up unmounted that folder anyway. Only the move's own new drive is unmounted now.
 - **A drive move record that can't be read is not reported as done.** `migrate.py resume` said all was well and left the record, which still kept upgrades and setup waiting. It now says the record can't be read and what to check.
 
+### Fixed: restoring a monthly snapshot
+- **A staged copy is marked checked only if it came from the archive that was checked.** The archives were checked by checksum, then read again by name for unpacking and for the comparison. An archive changed in between was unpacked, compared with itself, and the copy marked as checked. Each archive is now copied once into a private file, checked by checksum as it is copied, and everything after reads only that copy, which is then removed. Loading the saved app versions (`--load-images`) does the same. Unpacking needs room for one archive's copy more.
+
 ### Fixed: the Immich snapshot (recovery menu)
 - **Immich is not left off by an earlier stop that was still on its way.** When a snapshot's stop of Immich timed out, Docker could still finish it after the restart, and the restart had already cleared its record, so nothing started Immich again. If a recorded service is still running when the restart begins, it now waits longer than the stop's own limit, starts everything again and checks once more before the record goes.
 - **A snapshot checks the drives before it starts Immich from an earlier record.** With a record left from a snapshot that was cut off, it started Immich first and only then rejected a wrong drive.

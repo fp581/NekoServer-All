@@ -35,8 +35,7 @@ def changed(section, key, value):
 
 class ScopeTests(unittest.TestCase):
     def test_the_digest_is_stable(self):
-        digest = scope_digest(SETTINGS)
-        self.assertEqual(digest, STABLE)
+        self.assertEqual(STABLE, scope_digest(SETTINGS))
 
     def test_a_new_usb_drive_archive_or_schedule_makes_it_outdated(self):
         first = scope_digest(SETTINGS)
