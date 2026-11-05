@@ -166,5 +166,49 @@ class DriveCheckTests(unittest.TestCase):
         asked.assert_called_once_with({}, ('data_ssd',))
 
 
+class ImmichContainerTests(unittest.TestCase):
+    """Seen on the rig (0.47.3): the check of Immich's running containers read a list that
+    0.47.1 had removed (recovery_tools.IMMICH_BINDINGS). The error was taken for a bad
+    container, so every Immich container failed, and with it the home addresses' step
+    (gateway_lan) on every server with Immich."""
+
+    def checked(self, server_target, database_target):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(Path(tmp))
+            binds = {
+                'immich-server': (str(acceptance.photo_library(cfg)), server_target),
+                'database': (cfg['data_mount'] + '/appdata/immich/postgres', database_target),
+            }
+            asked = []
+
+            def docker(argv, timeout):
+                if 'ps' in argv:
+                    asked.append(argv[-1].rsplit('=', 1)[1])
+                    return 0, 'a' * 12 + '\n'
+                service = asked[-1]
+                labels = {'com.docker.compose.project': 'neko-immich', 'com.docker.compose.service': service}
+                mounts = [{'Type': 'bind', 'Source': s, 'Destination': t, 'RW': True} for s, t in [binds[service]]] if service in binds else []  # fmt: skip
+                ports = (
+                    {'2283/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '2283'}]} if service == 'immich-server' else {}
+                )
+                state = {'Status': 'running', 'Health': {'Status': 'healthy'}}
+                container = {'Config': {'Labels': labels}, 'State': state, 'Mounts': mounts}
+                return 0, json.dumps([{**container, 'NetworkSettings': {'Ports': ports, 'Networks': {}}}])
+
+            with mock.patch.object(acceptance.health, 'run', side_effect=docker):
+                return {r['id']: r['status'] for r in acceptance.containers(cfg, photos=True)}
+
+    def test_immichs_running_containers_pass_where_the_snapshot_looks(self):
+        for server in ('/data', '/usr/src/app/upload'):  # the newer and the older image
+            states = self.checked(server, '/var/lib/postgresql/data')
+            self.assertEqual(set(states.values()), {'pass'}, states)
+        self.assertEqual(len(states), 4)
+
+    def test_photos_bound_somewhere_else_still_fail(self):
+        states = self.checked('/photos', '/var/lib/postgresql/data')
+        self.assertEqual(states['container:immich-server'], 'fail')
+        self.assertEqual(states['container:database'], 'pass')
+
+
 if __name__ == '__main__':
     unittest.main()
