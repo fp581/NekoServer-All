@@ -4,6 +4,9 @@
 
 Fixes from trying the releases for real on the test rig (an Arch server with the apps running, taken from 0.41.3 through 0.46.2 and 0.46.3 to 0.47.3). All of them are still in 0.47.3. Each fix has a test that fails on 0.47.3.
 
+### Fixed: setup
+- **The home addresses' step works again on a server with Immich** (P1). The check of Immich's running containers read a list that 0.47.1 had removed. The error counted as a failed container, so `gateway_lan` failed with "not verified: Immich / immich-server, Immich / database, …" on every setup run and every upgrade, and the apps' home addresses stayed off. The list is in `shared.json` now, read by the snapshot's rules and this check alike. Since 0.47.1.
+
 ### Fixed: backups
 - **The nightly app backup works with music on the media drive** (P1). qBittorrent's downloads folder (`library/downloads/music` on the media drive) was taken for "unmanaged writable container state", and the backup failed every night. Since 0.46.0.
 
@@ -18,7 +21,7 @@ Fixes from trying the releases for real on the test rig (an Arch server with the
 - **A release put back by an older upgrader no longer loses its dashboard** (P1). 0.46.2's record has no list of the units it found, so the newer release's `nekoserver-dashboard.socket` stayed, held the port, and the 0.46.2 dashboard restarted for ever with "Address already in use". Going back from such a record now removes the units a newer release is known to have added.
 - **A release you set up by hand after a failed upgrade stays** (P1). The upgrade's record stayed open, so app updates and the monthly check waited, and at the next start the resume service put the old release back over the new one. Setup run by hand now closes the record and ends the upgrade's report when the server passes the upgrade's check (every step that worked before, the dashboard and every service on this release), and the resume service does the same before it puts anything back.
 
-### Fixed: setup
+### Fixed: smaller things
 - The question where an app's files go calls the media drive "the most room" only when it has more free space than the SSD.
 - A test of the dashboard's port no longer reads this PC's own dashboard (it failed on a server whose dashboard uses port 8788).
 
