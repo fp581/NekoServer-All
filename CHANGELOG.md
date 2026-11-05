@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.47.2 — 2026-11-05
+
+A stabilization release. It has three parts: the owner's review of 0.47.1's dashboard (the cats, the theme switch), the owner's cat placement package, and another sweep for rules written twice. Each fix has a test that fails on 0.47.1.
+
+### Fixed: the dashboard
+- **Every page has its cat where it belongs** (the owner's cat placement package):
+  - Each page shows its own cat beside its main section, and Home no longer repeats the cats of the panels it shares with Your apps and Needs attention.
+  - Server health's grooming cat moved from the drives to "Checks & monitoring". Updates (grooming) and Help (curious) have cats now.
+  - Needs attention is calm when its list is empty, and worried only beside real issues (then on Home too).
+  - The cats have larger boxes, with room for the pounce and its yarn.
+  - Listening, breeze and grooming now have their full animations too. An animation that can't be loaded shows the same cat's other size before its still picture.
+- **A page's cat is the page's own, not a verdict on it.** Before, Fans & lights showed the curious cat whenever the fan service couldn't be reached, so its breeze cat never appeared in the preview. A problem now outlines the page's panel, and its own words say what is wrong.
+- **The light/dark switch works in the live preview.** The page that hosts the preview keeps its own `data-theme` on the root, which undid every click. The switch now uses its own name (`data-neko-theme`) and sets the colour scheme on the root itself.
+- **The apps' names, descriptions and ports come from the one shared list** (`shared.json`, through the readings). The page kept a copy that already differed from setup's wording. The gateway's Tailscale ports are shared too.
+- **The app portal on your home network** uses the dashboard's colours and follows the device's light or dark setting (it kept the colours of before 0.47.0).
+- **New README recording** of the dashboard, with each cat where it belongs.
+
+### Fixed: rules written twice
+- **The acceptance check asks the runtime whether the drives are the right ones** (`check-drives`, the check every job makes). It compared only the UUID and filesystem, so it passed a drive on the wrong Btrfs subvolume, a copied NAS disk, or one with a copy connected, all of which every backup refuses.
+- **The acceptance check reads the backups', the outage monitor's and the phone alerts' states from the runtime** (new command `job-states`, the dashboard's own rules). Its copy of those rules passed a backup whose worker systemd couldn't start, or a run cut off part-way, and gave the outage monitor no grace after a restart. The copy is gone.
+- **An acceptance run of the `accounts` profile shows on the dashboard.** The collector kept its own list of profiles, without it. Setup now writes the profiles into the dashboard's settings. The collector also no longer works out the settings fingerprint itself: it compares the one setup wrote.
+- A copy of the dashboard's acceptance summary in Python, used only by tests, is gone.
+- install.sh spells out setup's lock and the monthly journal itself, since it runs before Python may be there. A test now checks them against `shared.json`.
+
+### Corrected
+- The 0.47.1 notes said a drive move now stops the gateway too. It already did (it stops every running NekoServer service). That line has been corrected.
+
+### Known, not changed
+- Setup's estimate of the room the weekly USB copy needs still follows the copy's rules by itself (`modules/capacity.py`). It only warns, with 20% to spare. Moving it into the runtime means changing the backup copy itself, so it is left for a release of its own.
+
 ## v0.47.1 — 2026-11-05
 
 A stabilization release: fixes from a review of 0.47.0, and a sweep for rules written twice. Setup (Python) decides once and writes it down; the runtime (Rust) reads it and checks it; a fact both use is in `runtime/src/shared.json`. Where two copies of a rule already disagreed, that was a bug, and it is fixed here. Each fix has a test that fails on 0.47.0.
