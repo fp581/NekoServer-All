@@ -163,8 +163,8 @@
     }
   ],
   "cats": {
-    "_about": "The dashboard's cat (DASHBOARD.md, \"The cat\"): Home's own cat has a big animation for each of its moods; each page's cat a small animation and a still picture. The runtime serves exactly these files, setup installs them.",
-    "home": ["happy", "playful", "resting", "sleeping", "curious", "afraid"],
+    "_about": "The dashboard's cats (DASHBOARD.md, \"The cat\"): each mood has a big animation (\"home\": Home's status cat, the Processes cat, and the stand-in when a small one can't be fetched), a small animation and a still (\"pages\"). The runtime serves exactly these files, setup installs them.",
+    "home": ["happy", "playful", "resting", "sleeping", "curious", "afraid", "listening", "breezy", "grooming"],
     "pages": ["happy", "playful", "resting", "sleeping", "curious", "afraid", "listening", "breezy", "grooming"]
   }
 }

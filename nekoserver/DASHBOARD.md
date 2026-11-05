@@ -53,23 +53,23 @@ Neko, a small black cat, sits at the top of Home and shows how the server is doi
 | **Happy** | A job has just finished, shown once for about three seconds. Opening the page does not replay an old one. |
 | **Resting** | Everything is fine and nothing needs you. |
 
-Each of the nine main pages also has a smaller cat of its own, shown on that page only (Home's two lists of apps and of what needs attention show their cats on their own pages), with a pose that suits the page while all is well:
+Every page also has a smaller cat of its own beside its main section, shown on that page only:
 
 | Page | Its cat |
 | --- | --- |
-| **Home** ("at a glance", below Neko) | Sits and says hello |
-| **Your apps** | Peeks into the list (and while you search) |
-| **Backups** | Sleeps between runs, plays while one runs, is happy when one has just finished |
+| **Home** (beside "Your server at a glance", below Neko) | Sits and says hello |
+| **Your apps** | Peeks in at the apps, from the left |
+| **Backups** | Sleeps between runs, plays while one runs, is happy when one has just finished, and is worried when one needs a look |
 | **Hardware** | Lies back with a slow tail swish |
-| **Sensors** | Listens, ears turning |
+| **Sensors** | Listens, ears turning, beside the temperatures |
 | **Fans & lights** | Enjoys the breeze of a little fan |
-| **Processes** | Pounces at a ball of yarn (just for fun: it is not a progress bar) |
-| **Server health** | Grooms itself |
-| **Needs attention** | A worried huddle, beside the things to review |
+| **Processes** | Pounces at a ball of yarn, with room for it (just for fun: it is not a progress bar) |
+| **Server health** | Grooms itself, beside "Checks & monitoring" |
+| **Updates** | Grooms itself too: care before anything changes |
+| **Needs attention** | Calm while the list is empty, worried beside real issues (on Home too, then) |
+| **Help** | Peeks in at the guides, from the left |
 
-Updates and Help have no cat of their own.
-
-When something on a page is wrong, that page's cat is afraid instead: a backup that needs a look, an app that is down, a drive problem, a processor running hot. A problem on one page never scares the cats of the others. When a page's readings can't be fetched, or all readings are old, its cat looks curious instead of content. The poses are for fun; the page's own words and numbers are what count.
+A page's cat is the page's own, not a verdict on it: when something on a page is wrong, the page's panel is outlined and its own words say what; the cat stays (the breeze cat stays beside Fan control while the fan service can't be reached, say). Only Needs attention's and Backups' cats follow what happens, as above. The poses are for fun; the page's own words and numbers are what count. An animation that can't be loaded shows the same cat's other size, then its still picture.
 
 When the device asks for less motion (or Settings → *Cat animation* is *Still pictures*), every cat is a still picture.
 

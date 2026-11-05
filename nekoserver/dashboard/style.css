@@ -286,8 +286,8 @@ h1 {
 .theme-toggle .sun {
   color: var(--peach);
 }
-:root[data-theme='dark'] .theme-toggle .sun,
-:root[data-theme='light'] .theme-toggle .moon {
+:root[data-neko-theme='dark'] .theme-toggle .sun,
+:root[data-neko-theme='light'] .theme-toggle .moon {
   opacity: 0;
   transform: rotate(-90deg) scale(0.4);
 }
@@ -583,22 +583,60 @@ h1 {
     0 18px 40px -18px #000a,
     inset 0 1px 0 #fff6;
 }
+/* A page's cat (the cat placement package): a 128px stage at the end of its heading
+ * (168px for the pounce and its yarn), the curious cats at the start, looking in at
+ * the apps and the guides. The artwork stays centred and inside its own box. */
 .cat-box.panel-cat {
-  inline-size: 84px;
-  block-size: 84px;
-  flex: 0 0 84px;
-  padding: 6px;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  justify-self: end;
+  inline-size: 128px;
+  block-size: 128px;
+  padding: 7px;
   border-radius: 16px;
   box-shadow:
     0 10px 24px -14px #000c,
     inset 0 1px 0 #fff5;
 }
+.cat-box.panel-cat[hidden] {
+  display: none;
+}
 .section-head.with-cat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 128px;
   align-items: center;
+  gap: 12px 20px;
 }
 .section-head.with-cat > div {
-  flex: 1;
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
+}
+.section-head.with-cat > :is(a, button, .badge) {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  max-width: 100%;
+}
+.section-head.with-cat:is([data-cat='apps'], [data-cat='help']) {
+  grid-template-columns: 128px minmax(0, 1fr) auto;
+}
+.section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > .cat-box.panel-cat {
+  grid-column: 1;
+  justify-self: start;
+}
+.section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > div {
+  grid-column: 2;
+}
+.section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > :is(a, button, .badge) {
+  grid-column: 3;
+}
+.section-head.with-cat[data-cat='processes'] {
+  grid-template-columns: minmax(0, 1fr) auto 168px;
+}
+.section-head.with-cat[data-cat='processes'] > .cat-box.panel-cat {
+  inline-size: 168px;
+  block-size: 168px;
 }
 .summary-strip {
   display: grid;
@@ -2027,18 +2065,28 @@ body.tv {
     line-height: 1.5;
     margin-bottom: 12px;
   }
-  .cat-box.panel-cat {
-    inline-size: 78px;
-    block-size: 78px;
-    flex-basis: 78px;
-  }
   /* The cat and the words take the row; a link or button beside them goes below. */
-  .section-head.with-cat {
-    flex-wrap: wrap;
-    gap: 12px 14px;
+  .section-head.with-cat > .cat-box.panel-cat,
+  .section-head.with-cat[data-cat='processes'] > .cat-box.panel-cat {
+    grid-column: 2;
+    grid-row: 1;
+    inline-size: 108px;
+    block-size: 108px;
+    padding: 6px;
   }
-  .section-head.with-cat > div {
-    flex-basis: calc(100% - 92px);
+  .section-head.with-cat,
+  .section-head.with-cat[data-cat='processes'] {
+    grid-template-columns: minmax(0, 1fr) 108px;
+    gap: 12px;
+  }
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) {
+    grid-template-columns: 108px minmax(0, 1fr);
+  }
+  .section-head.with-cat > :is(a, button, .badge),
+  .section-head.with-cat:is([data-cat='apps'], [data-cat='help']) > :is(a, button, .badge) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
   }
   .summary-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -1073,7 +1073,9 @@ mod tests {
         assert!(again.starts_with("HTTP/1.1 304 Not Modified"), "{again}");
         // The cats are served from shared.json's lists, and nothing else that looks like one.
         assert!(get("/cat-breezy-small.webp", &host).contains("image/webp"));
-        assert!(get("/cat-breezy.webp", &host).contains("E40")); // a page cat: no big one
+        // Every cat has its big animation since 0.47.2 (the stand-in for a small one).
+        assert!(get("/cat-breezy.webp", &host).contains("image/webp"));
+        assert!(get("/cat-tiger.webp", &host).contains("E40")); // not one of the cats
         assert!(get("/cat-../index.html", &host).contains("E40"));
         assert!(again.ends_with("\r\n\r\n"), "{again}");
         let missing = get("/api/status", &host);

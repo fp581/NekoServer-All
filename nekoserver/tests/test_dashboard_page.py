@@ -460,7 +460,7 @@ class CatCompanionTests(unittest.TestCase):
     def moods(self, readings, **now):
         return page(('panelMoods', {'status': readings, 'now': now}))[0]
 
-    # The nine-panel package's mapping (panel-cat-mapping.json), by route.
+    # The cat placement package (placement-map.json), by route: all eleven pages.
     PACKAGE = {
         'home': 'happy',
         'apps': 'curious',
@@ -470,47 +470,71 @@ class CatCompanionTests(unittest.TestCase):
         'cooling': 'breezy',
         'processes': 'playful',
         'health': 'grooming',
-        'attention': 'afraid',
+        'updates': 'grooming',
+        'attention': 'happy',
+        'help': 'curious',
     }
 
     def test_each_page_has_its_own_cat_while_all_is_well(self):
         self.assertEqual(self.moods(self.readings()), self.PACKAGE)
 
-    def test_each_of_the_nine_pages_names_one_cat_and_no_other_page_does(self):
-        """The 0.47.1 preview: Home showed four cats (the cats of two panels it shares with
-        Your apps and Needs attention, beside its own and the status cat). Each cat is
-        named once, by its page's route; the page shows it on that page only."""
+    def test_each_page_names_one_cat_where_the_package_puts_it(self):
+        """The owner's review of 0.47.1: Home showed the cats of the panels it shares with
+        Your apps and Needs attention, grooming sat at the drives, and Updates and Help had
+        none. Each page names one cat, on its own route, in the section the package says."""
         html = (ROOT / 'dashboard/index.html').read_text()
-        named = re.findall(r'data-cat="([a-z]+)"', html)
+        named = dict(
+            re.findall(r'data-cat="([a-z]+)">\s*<div>\s*<span class="eyebrow">[^<]*</span>\s*<h2>([^<]*)</h2>', html)
+        )
         self.assertEqual(sorted(named), sorted(self.PACKAGE))
-        routes = set(re.findall(r'data-route="([a-z]+)"', html))
-        self.assertLessEqual(set(named), routes)
+        self.assertEqual(named['health'], 'Checks &amp; monitoring')
+        self.assertEqual(named['updates'], 'Updates')
+        self.assertEqual(named['help'], 'Help when you need it')
+        self.assertLessEqual(set(named), set(re.findall(r'data-route="([a-z]+)"', html)))
         app = (ROOT / 'dashboard/app.js').read_text()
         draw = app[app.index('function renderCats()') : app.index('/* ---------- apps ---------- */')]
-        self.assertIn('head.dataset.cat === state.route', draw)
+        self.assertIn(
+            "key === state.route || (state.route === 'home' && key === 'attention' && issues.length > 0)", draw
+        )
 
-    def test_a_backup_problem_scares_only_the_backup_and_attention_cats(self):
+    def test_needs_attention_is_worried_only_beside_real_issues(self):
+        self.assertEqual(self.moods(self.readings())['attention'], 'happy')
         failed = self.moods(self.readings(status='fail'))
         self.assertEqual((failed['backups'], failed['attention']), ('afraid', 'afraid'))
-        self.assertEqual(
-            {panel: failed[panel] for panel in ('apps', 'hardware', 'sensors', 'health')},
-            {'apps': 'curious', 'hardware': 'resting', 'sensors': 'listening', 'health': 'grooming'},
-        )
-        # A drive that is gone scares the Server health cat (its page lists the drives).
+
+    def test_a_page_keeps_its_cat_and_a_problem_outlines_its_panel(self):
+        """The package: a page's cat is its identity, not a verdict. A problem marks the
+        panel (and the issue says what is wrong); a reading that can't be fetched (fan
+        control away, E21) keeps the breeze cat beside its error."""
         gone = self.readings()
         gone['storage'][0]['status'] = 'missing'
-        self.assertEqual(self.moods(gone)['health'], 'afraid')
+        self.assertEqual(self.moods(gone)['health'], 'grooming')
+        self.assertTrue(page(('panelAlerts', gone))[0]['health'])
+        unreachable = self.moods(self.readings(), cooling=True, processes=True)
+        self.assertEqual((unreachable['cooling'], unreachable['processes']), ('breezy', 'playful'))
         # The backup cat plays while a job runs and is happy once it has finished.
         self.assertEqual(self.moods(self.readings(status='running'))['backups'], 'playful')
         self.assertEqual(self.moods(self.readings(), done=True)['backups'], 'happy')
+        self.assertEqual(self.moods(self.readings(status='running'), stale=True)['backups'], 'sleeping')
 
-    def test_readings_that_could_not_be_fetched_or_are_old_make_the_cats_look_for_news(self):
-        unreachable = self.moods(self.readings(), cooling=True, processes=True)
-        self.assertEqual((unreachable['cooling'], unreachable['processes']), ('curious', 'curious'))
-        self.assertEqual(unreachable['sensors'], 'listening')
-        old = self.moods(self.readings(status='fail'), stale=True)
-        # No cat looks content on old readings; one with a problem of its own still says so.
-        self.assertEqual(old, {**{panel: 'curious' for panel in old}, 'backups': 'afraid', 'attention': 'afraid'})
+    def test_a_missing_animation_tries_the_same_cats_other_size_before_its_still(self):
+        app = (ROOT / 'dashboard/app.js').read_text()
+        show = app[app.index('function showCat(') : app.index('function noteFinished(')]
+        self.assertIn("[...new Set([file, 'cat-' + mood + '.webp', 'cat-' + mood + '.png'])]", show)
+        self.assertIn('img.dataset.catRequest === file', show)
+        for mood in set(self.PACKAGE.values()) | {'afraid'}:
+            for name in (f'cat-{mood}.webp', f'cat-{mood}-small.webp', f'cat-{mood}.png'):
+                self.assertTrue((ROOT / 'dashboard' / name).is_file(), name)
+
+    def test_the_theme_switch_is_its_own_and_set_on_the_root(self):
+        """The owner's review of 0.47.1: the switch did nothing in the live preview, whose
+        host page keeps its own data-theme on the root. The switch uses a name of its own
+        and sets the colour scheme on the root itself."""
+        app = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn('document.documentElement.dataset.nekoTheme = shown', app)
+        self.assertIn('document.documentElement.style.colorScheme = shown', app)
+        for name in ('dashboard/app.js', 'dashboard/style.css', 'dashboard/theme.css', 'dashboard/index.html'):
+            self.assertNotIn('data-theme=', (ROOT / name).read_text().replace('data-neko-theme=', ''), name)
 
     def test_a_finished_job_is_celebrated_once_and_never_on_the_first_look(self):
         first, same, newer, again = (
@@ -563,7 +587,7 @@ class CatCompanionTests(unittest.TestCase):
         ]
         issues = page(('collectIssues', held))[0]
         self.assertEqual([i['id'] for i in issues], ['nas:hold', 'app:seerr'])
-        self.assertEqual(self.moods(held)['health'], 'afraid')
+        self.assertTrue(page(('panelAlerts', held))[0]['health'])
         # The page no longer works the hold out itself: without the collector's word, a
         # stopped app is an item of its own.
         held['applications'][0]['held'] = False

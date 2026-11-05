@@ -1180,10 +1180,12 @@ function hot(s) {
  * current, a cat with no problem of its own looks for news instead of looking content.
  * `now` holds the rest the page knows: a job just finished, an app search, old readings,
  * and the readings that could not be fetched (fans and lights, processes). */
-/* Each of the nine pages' own cat, by its route (the nine-panel package's mapping): one
- * cat per page, shown on that page only. A panel shown on two pages (Your apps and What
- * needs your attention are on Home too) shows its cat on its own page, not on Home
- * (0.47.1 showed four cats on Home, and Needs attention had the curious one). */
+/* Each page's own cat, by its route (the cat placement package of 5 November): a
+ * page's identity, not a verdict on it, so a reading that can't be fetched (fan control
+ * away: E21) keeps the breeze cat, and its own message says what is wrong. Updates and
+ * Help reuse grooming and curious. A panel shown on two pages (Your apps, What needs your
+ * attention) shows its cat on its own page; on Home only the issues list's, and only
+ * when there is something on it (renderCats). */
 const PAGE_CATS = {
   home: 'happy',
   apps: 'curious',
@@ -1193,48 +1195,51 @@ const PAGE_CATS = {
   cooling: 'breezy',
   processes: 'playful',
   health: 'grooming',
-  attention: 'afraid'
+  updates: 'grooming',
+  attention: 'happy',
+  help: 'curious'
 };
+/* The cat each page shows. Two follow what happens: Needs attention is worried only
+ * beside real issues (calm when empty, curious before the first reading), and Backups
+ * plays while a job runs, is happy once one has finished, and is worried when one needs
+ * a look. */
 function panelMoods(s, issues, now = {}) {
-  if (!s) {
-    return Object.fromEntries(Object.keys(PAGE_CATS).map(panel => [panel, 'curious']));
-  }
-  const down = serverApps(s).filter(a => !APP_OK.has(appState(a)) && appState(a) !== 'not_set_up').length;
-  const bad = list(s.backups).filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
-  const warm = hot(s);
-  const problems = {
-    attention: issues.length > 0,
-    home: warm,
-    apps: down > 0,
-    backups: bad > 0,
-    hardware: warm,
-    sensors: warm,
-    health: issues.some(i => STORAGE_ISSUE.test(i.id))
-  };
-  const unknown = { cooling: !!now.cooling, processes: !!now.processes };
-  const moods = {};
-  for (const [panel, identity] of Object.entries(PAGE_CATS)) {
-    moods[panel] = firstOf(
-      [
-        [problems[panel], 'afraid'],
-        [now.stale || unknown[panel], 'curious']
-      ],
-      identity
-    );
-  }
-  if (!now.stale && !problems.backups) {
+  const moods = { ...PAGE_CATS };
+  moods.attention = firstOf(
+    [
+      [!s, 'curious'],
+      [issues.length > 0, 'afraid']
+    ],
+    'happy'
+  );
+  if (s) {
+    const bad = list(s.backups).some(j => ['fail', 'partial', 'stale'].includes(j.status));
     moods.backups = firstOf(
       [
-        [runningJobs(s).length, 'playful'],
-        [now.done, 'happy']
+        [bad, 'afraid'],
+        [!now.stale && runningJobs(s).length, 'playful'],
+        [!now.stale && now.done, 'happy']
       ],
       'sleeping'
     );
   }
-  if (now.searching && !problems.apps) {
-    moods.apps = 'curious';
-  }
   return moods;
+}
+/* The pages with something wrong on them: their panel is outlined (data-alert). */
+function panelAlerts(s, issues) {
+  if (!s) {
+    return {};
+  }
+  const warm = hot(s);
+  return {
+    attention: issues.length > 0,
+    home: warm,
+    apps: serverApps(s).some(a => !APP_OK.has(appState(a)) && appState(a) !== 'not_set_up'),
+    backups: list(s.backups).some(j => ['fail', 'partial', 'stale'].includes(j.status)),
+    hardware: warm,
+    sensors: warm,
+    health: issues.some(i => STORAGE_ISSUE.test(i.id))
+  };
 }
 /* The words beside the cat: [state, title, text, action, where it leads]. */
 function companionWords(mood, s, issues) {
@@ -1297,29 +1302,30 @@ function catFile(mood, small) {
   }
   return 'cat-' + mood + (small ? '-small.webp' : '.webp');
 }
-/* The picture changes only when the mood does: setting it again would restart it. */
+/* The picture changes only when the mood does: setting it again would restart it. An
+ * animation that can't be fetched tries the same cat's other size, then its still (offline:
+ * only the stills are saved); never another cat. */
 function showCat(img, mood, small) {
   const file = catFile(mood, small);
-  if (img.getAttribute('src') !== file) {
-    // An animation that can't be fetched (offline: only the stills are saved) shows the still.
-    img.onerror = () => {
+  if (img.dataset.catRequest === file) {
+    return; // compared with what was asked for, not a stand-in shown meanwhile
+  }
+  img.dataset.catRequest = file;
+  const tries = [...new Set([file, 'cat-' + mood + '.webp', 'cat-' + mood + '.png'])];
+  const order = stillCats() ? ['cat-' + mood + '.png'] : tries;
+  let at = 0;
+  img.onerror = () => {
+    at++;
+    if (at >= order.length) {
       img.onerror = null;
-      img.setAttribute('src', 'cat-' + mood + '.png');
-    };
-    img.setAttribute('src', file);
-    // A new mood fades in, only when motion is welcome (never the same mood again).
-    if (!stillCats() && typeof img.animate === 'function') {
-      img.animate(
-        [
-          { opacity: 0, transform: 'scale(0.94)' },
-          { opacity: 1, transform: 'none' }
-        ],
-        {
-          duration: 450,
-          easing: 'ease-out'
-        }
-      );
+      return;
     }
+    img.setAttribute('src', order[at]);
+  };
+  img.setAttribute('src', order[0]);
+  // A new mood fades in, only when motion is welcome (never the same mood again).
+  if (!stillCats() && typeof img.animate === 'function') {
+    img.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease-out' });
   }
 }
 function noteFinished(s) {
@@ -1368,11 +1374,11 @@ function panelCat(head) {
   const box = el('figure', 'cat-box panel-cat'),
     img = el('img');
   box.setAttribute('aria-hidden', 'true');
-  img.width = 84;
-  img.height = 84;
+  // A roomier stage for the pounce and its yarn; the curious cats sit at the left (CSS).
+  img.width = img.height = head.dataset.cat === 'processes' ? 168 : 128;
   img.alt = '';
   box.append(img);
-  head.prepend(box);
+  head.append(box);
   return img;
 }
 function renderCats() {
@@ -1394,30 +1400,23 @@ function renderCats() {
   $('hero-text').textContent = words;
   $('hero-action').textContent = action;
   $('hero-action').setAttribute('href', where);
-  const searching = state.route === 'apps' && !!$('app-search').value.trim();
-  const moods = panelMoods(s, issues, {
-    done: !!finished,
-    searching,
-    stale,
-    cooling: !!state.controlError,
-    processes: !!state.processError
-  });
+  const moods = panelMoods(s, issues, { done: !!finished, stale });
+  const alerts = panelAlerts(s, issues);
   for (const head of document.querySelectorAll('[data-cat]')) {
-    // Only this page's own cat: another page's, on a panel shared with this one, stays
-    // hidden, and a cat on a page not shown is not loaded (each visit would fetch them all).
-    const own = head.dataset.cat === state.route && !head.closest('[data-page]')?.hidden;
-    head.classList.toggle('with-cat', own);
+    const key = head.dataset.cat;
+    // This page's own cat only; on Home also the issues list's, while it lists some. A
+    // cat on a page not shown is not loaded (each visit would fetch them all).
+    const own = key === state.route || (state.route === 'home' && key === 'attention' && issues.length > 0);
+    const shown = own && !head.closest('[data-page]')?.hidden;
+    head.classList.toggle('with-cat', shown);
+    head.closest('.panel')?.toggleAttribute('data-alert', shown && !!alerts[key]);
     const made = head.querySelector(':scope > .cat-box');
     if (made) {
-      made.hidden = !own;
+      made.hidden = !shown;
     }
-    if (!own) {
-      head.closest('.panel')?.removeAttribute('data-alert');
-      continue;
+    if (shown) {
+      showCat(panelCat(head), moods[key], key !== 'processes');
     }
-    const panelMood = moods[head.dataset.cat] || PAGE_CATS[head.dataset.cat] || 'resting';
-    showCat(panelCat(head), panelMood, true);
-    head.closest('.panel')?.toggleAttribute('data-alert', panelMood === 'afraid' && state.route !== 'attention');
   }
 }
 
@@ -4484,7 +4483,10 @@ function applyPreferences() {
   if (!['light', 'dark', 'system'].includes(theme)) {
     theme = 'dark';
   }
-  document.documentElement.dataset.theme = theme === 'system' ? systemTheme() : theme;
+  const shown = theme === 'system' ? systemTheme() : theme;
+  document.documentElement.dataset.nekoTheme = shown;
+  // On the root itself too: no stylesheet (of a page this one is shown in) outranks it.
+  document.documentElement.style.colorScheme = shown;
   labelThemeToggle();
   // The phone's browser bar (and the installed app's title bar) in the page's own colour.
   const bar = document.querySelector('meta[name="theme-color"]');
@@ -4503,7 +4505,7 @@ function applyPreferences() {
  * colours ease over where crossfading is not offered; with less motion asked for it
  * simply switches. */
 function shownTheme() {
-  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+  return document.documentElement.dataset.nekoTheme === 'light' ? 'light' : 'dark';
 }
 function labelThemeToggle() {
   const toLight = shownTheme() === 'dark';
@@ -4841,3 +4843,10 @@ setInterval(() => {
 
 applyPreferences();
 route();
+// Back online: the animations that could not be fetched are asked for again.
+window.addEventListener('online', () => {
+  for (const img of document.querySelectorAll('.cat-box img')) {
+    delete img.dataset.catRequest;
+  }
+  renderCats();
+});
