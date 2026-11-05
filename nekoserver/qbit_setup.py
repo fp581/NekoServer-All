@@ -12,7 +12,7 @@ from neko_common import app_port, local_opener
 QBITTORRENT_PORT = app_port('qbittorrent')
 # The qBittorrent download-client field that holds the category, per app: each app
 # names it after its own media (there is no field called "category"). Shared by the
-# connector (media-connect.py) and the health audit (media-health.py).
+# connector (media-connect.py); the media check (runtime media.rs) judges by the same fields.
 CATEGORY_FIELDS = {'sonarr': 'tvCategory', 'radarr': 'movieCategory', 'lidarr': 'musicCategory'}
 
 

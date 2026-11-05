@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only deployment inspection. --save writes a report; --manual records witnessed tests."""
 
-import argparse, hashlib, importlib.util, json, os, platform, re, shlex, subprocess, sys, time, uuid
+import argparse, hashlib, json, os, platform, re, shlex, subprocess, sys, time, uuid
 from pathlib import Path
 import status_checks as health
 import installer, recovery_tools
@@ -289,14 +289,25 @@ def containers(config, photos=False):
     return results
 
 
-def media_checks(config):
-    spec = importlib.util.spec_from_file_location('acceptance_media_health', ROOT / 'media-health.py')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    # This audit performs GET/inspection only; do not invoke its output-writing CLI.
+MEDIA_CHECK = 'nekoserver-media-health.service'  # modules/media_monitor.py
+MEDIA_REPORT = 'reports/media/latest.json'
+
+
+def media_checks(config, run=subprocess.run):
+    """The media apps' configuration as the runtime's own check finds it (media.rs, the one
+    the dashboard shows): it is run once now (it only reads), and its report is read. This
+    kept a check of its own before (media-health.py), which already disagreed with the
+    runtime's: a Prowlarr link or a root folder passed here and not there (the review of
+    0.47.0)."""
+    quiet = {'capture_output': True, 'text': True, 'check': False}
+    if run(['systemctl', 'cat', MEDIA_CHECK], timeout=30, **quiet).returncode != 0:
+        return [item('media:audit', 'Current media API checks', 'needs_setup', 'The media check is not set up yet.')]
+    run(['systemctl', 'start', MEDIA_CHECK], timeout=360, **quiet)
     try:
-        report = module.audit(config)
-    except Exception:
+        report = json.loads(safe_path(mount_path(config['data_mount']) / MEDIA_REPORT).read_text())
+        if not isinstance(report, dict):
+            raise ValueError('not a report')
+    except (OSError, ValueError, RuntimeError):
         return [
             item(
                 'media:audit', 'Current media API checks', 'fail', 'Current read-only media checks could not complete.'

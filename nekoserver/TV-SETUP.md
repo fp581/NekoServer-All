@@ -65,13 +65,13 @@ The private report is `/srv/nekoserver/reports/tv-setup.json` with default mount
 
 ## Check current media connections
 
-After completing first-run application web wizards, run the current onboarding command from README.md. To inspect live configuration without changing it:
+After completing first-run application web wizards, run the current onboarding command from README.md. To check the live configuration now without changing it (the same check the dashboard shows, which otherwise runs every hour):
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.47.0/media-health.py --config /srv/nekoserver/installer/releases/v0.47.0/config.json --json-out /srv/nekoserver/reports/media/manual.json
+sudo systemctl start nekoserver-media-health.service
 ```
 
-For hourly monitoring, reapply the `media_monitor` profile from this release. Current checks use existing local application keys for GET requests; missing keys/server linkage stay incomplete. They check configured libraries and existing request-provider connectivity, while authenticated qBittorrent transfers, music playback and a complete request/download/import/playback exercise still need real-server validation. Keep original photos until a full independent Immich restore succeeds.
+Its report is `/srv/nekoserver/reports/media/latest.json`; the dashboard shows it too. If the check is not there, apply the `media_monitor` profile from this release. Current checks use existing local application keys for GET requests; missing keys/server linkage stay incomplete. They check configured libraries and existing request-provider connectivity, while authenticated qBittorrent transfers, music playback and a complete request/download/import/playback exercise still need real-server validation. Keep original photos until a full independent Immich restore succeeds.
 
 ## Taking an app out, or changing the qBittorrent password
 
