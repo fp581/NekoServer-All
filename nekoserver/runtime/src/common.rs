@@ -191,7 +191,7 @@ pub static APPS: std::sync::LazyLock<Vec<App>> = std::sync::LazyLock::new(|| {
         .collect()
 });
 /// The media apps (one Compose project, their own setup checks).
-pub static MEDIA_APPS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+pub static MEDIA_APPS: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new(|| {
     SHARED["apps"]
         .as_array()
         .into_iter()
