@@ -45,7 +45,7 @@ while true; do
     [ -e "$f" ] || continue
     n=$(basename "$f" .sh)
     [ -e /lab/out/$n.done ] && continue
-    bash "$f" > /lab/out/$n.txt 2>&1; echo $? > /lab/out/$n.done
+    bash "$f" > /lab/out/$n.txt 2>&1; echo $? > /lab/out/$n.part; mv /lab/out/$n.part /lab/out/$n.done
   done
   sleep 1
 done
@@ -169,7 +169,9 @@ class Lab:
         (self.share / 'cmd' / f'{name}.sh').write_text(script + '\n')
         done = self.share / 'out' / f'{name}.done'
         deadline = time.time() + wait
-        while not done.exists():
+        # Its exit code in it, not only there: an image built before this agent wrote the
+        # file empty first, and a run read that as a failure (seen in the lab on 0.46.3).
+        while not (done.exists() and done.read_text().strip()):
             if time.time() > deadline:
                 if check:
                     raise RuntimeError(f'the VM did not answer within {wait} s: {script[:80]}')
