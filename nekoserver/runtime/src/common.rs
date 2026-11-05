@@ -217,21 +217,6 @@ pub fn files_root(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
     };
     mount_path(cfg[key].as_str().unwrap_or(""))
 }
-/// The drive folder (`data` or `media`) that holds `what`, from the settings' "locations"
-/// (see files_root), for code that has the two folders already.
-pub fn located<'a>(
-    locations: &serde_json::Value,
-    what: &str,
-    data: &'a Path,
-    media: &'a Path,
-) -> &'a Path {
-    let (default, _) = location_of(what);
-    if locations[what].as_str().unwrap_or(default) == "media" {
-        media
-    } else {
-        data
-    }
-}
 /// How many errors Linux has counted on the ext4 filesystem mounted from `source`
 /// (/dev/sdb1): kept in the filesystem itself until it is checked and repaired (e2fsck
 /// resets it; seen in the lab). Read from /sys without touching the drive, so a sleeping

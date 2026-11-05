@@ -258,21 +258,26 @@ def retired_bundles(releases, current, units=SYSTEMD_UNITS):
     return bundles + [p for p in aside if not any(f.read_bytes() not in held for f in settings_files(p))]
 
 
-def storage_config(config):
-    """The drives as the runtime's jobs read them, with where each app keeps its files."""
+def saved_paths(config):
+    """The folders setup decided for the apps' files, written down for the runtime: it reads
+    them and never works them out again (common::saved_path), so the two halves can't
+    disagree. Every settings file the runtime reads carries them."""
     from neko_common import cloud_files, music_downloads, music_library, photo_library
 
-    found = {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}
-    if config.get('locations'):
-        found['locations'] = config['locations']
-    # The folders setup decided, written down: the runtime reads them and never works them
-    # out again (common::saved_path), so the two halves can't disagree.
-    found['paths'] = {
+    return {
         'photos': str(photo_library(config)),
         'music': str(music_library(config)),
         'downloads': str(music_downloads(config)),
         'cloud': str(cloud_files(config)),
     }
+
+
+def storage_config(config):
+    """The drives as the runtime's jobs read them, with where each app keeps its files."""
+    found = {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}
+    if config.get('locations'):
+        found['locations'] = config['locations']
+    found['paths'] = saved_paths(config)
     backup = (config.get('photos', {}).get('external_backup_network') or {}).get('wwn')
     if backup:
         # The backup drive's NAS disk: the weekly copy checks it is that one (backup.rs).

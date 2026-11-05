@@ -436,20 +436,23 @@ fn volume_is_ours(name: &str, key: &str, v: &Value) -> bool {
 }
 /// `locations`: where setup put the photos, the music and Nextcloud's files (the
 /// settings' "locations"; null: the layout before 0.46.0).
-fn valid_model(
-    model: &Value,
-    name: &str,
-    data: &Path,
-    media: &Path,
-    locations: &Value,
-) -> Result<()> {
+fn valid_model(model: &Value, name: &str, data: &Path, media: &Path, cfg: &Value) -> Result<()> {
+    // The folders setup decided (`paths`, or shared.json's defaults for settings written
+    // before it kept them): read, never worked out again here (the review of 0.47.0).
+    let mut view = cfg.clone();
+    if !view.is_object() {
+        view = json!({});
+    }
+    view["data_mount"] = json!(data);
+    view["media_mount"] = json!(media);
     let places = Places {
         name,
         data,
         media,
-        photos: common::located(locations, "photos", data, media).join("photos/immich-library"),
-        cloud: common::located(locations, "cloud", data, media).join("cloud/files"),
-        music: common::located(locations, "music", data, media).to_path_buf(),
+        photos: common::saved_path(&view, "photos")?,
+        cloud: common::saved_path(&view, "cloud")?,
+        music: common::saved_path(&view, "music")?,
+        downloads: common::saved_path(&view, "downloads")?,
     };
     let services = model["services"]
         .as_object()
@@ -705,7 +708,9 @@ struct Places<'a> {
     media: &'a Path,
     photos: PathBuf,
     cloud: PathBuf,
+    /// The music library and the downloaded music (common::saved_path "music", "downloads").
     music: PathBuf,
+    downloads: PathBuf,
 }
 impl Places<'_> {
     fn volume_ok(&self, service: &str, volume: &Value) -> Result<()> {
@@ -744,9 +749,10 @@ impl Places<'_> {
             || (name == "nextcloud" && p == self.cloud)
             || (["radarr", "sonarr", "qbittorrent"].contains(&name) && p == library)
             || (name == "jellyfin" && ["movies", "tv"].iter().any(|n| p == library.join(n)))
-            || (name == "navidrome" && p == self.music.join("library/music"))
-            || (name == "lidarr" && p == self.music.join("library"))
-            || (name == "qbittorrent" && p == self.music.join("library/downloads/music"))
+            || (name == "navidrome" && p == self.music)
+            // Lidarr sees the folder both music folders are in (it moves downloads in).
+            || (name == "lidarr" && self.music.parent().is_some_and(|top| p == top))
+            || (name == "qbittorrent" && p == self.downloads)
     }
 }
 /// The app's own port on this PC only (qBittorrent's peer port excepted); its helpers
@@ -3196,7 +3202,6 @@ fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>
     let photos = &cfg["photos"];
     let immich = photos["deploy_immich"] == true;
     let media = Path::new(cfg["media_mount"].as_str().unwrap_or(""));
-    let data_root = Path::new(cfg["data_mount"].as_str().unwrap_or(""));
     let archive_dir = photos["archive_dir"]
         .as_str()
         .unwrap_or("photos/archive")
@@ -3234,13 +3239,9 @@ fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>
             );
         }
         if cloud {
-            options.insert(
-                "cloud".into(),
-                common::located(&cfg["locations"], "cloud", data_root, media)
-                    .join("cloud/files")
-                    .to_string_lossy()
-                    .into_owned(),
-            );
+            if let Ok(cloud) = common::saved_path(cfg, "cloud") {
+                options.insert("cloud".into(), cloud.to_string_lossy().into_owned());
+            }
         }
         Args(options)
     });
@@ -3404,7 +3405,7 @@ fn download_updates(
             data.join("compose").join(name)
         };
         let checked = source_model(&source, name).and_then(|m| {
-            valid_model(&m, name, data, media, &cfg["locations"])?;
+            valid_model(&m, name, data, media, cfg)?;
             volumes_ours(name, &m)?;
             Ok(m)
         });
@@ -3419,7 +3420,7 @@ fn download_updates(
                 immich_files = None;
                 let current = data.join("compose/immich");
                 let model = source_model(&current, name)?;
-                valid_model(&model, name, data, media, &cfg["locations"])?;
+                valid_model(&model, name, data, media, cfg)?;
                 volumes_ours(name, &model)?;
                 model
             }
@@ -3773,7 +3774,7 @@ fn running_models(cfg: &Value, names: &[String], snapshot: &Path) -> Result<(Val
     let mut rows = vec![];
     for name in names {
         let mut current = model(cfg, name)?;
-        valid_model(&current, name, data, media, &cfg["locations"])?;
+        valid_model(&current, name, data, media, cfg)?;
         rows.extend(containers(name, &mut current)?);
         common::atomic_json(&snapshot.join(format!("{name}-old.json")), &current)?;
         models[name] = current;
@@ -4270,7 +4271,7 @@ pub fn check_compose(a: &Args) -> Result<()> {
     let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
     let data = common::mount_path(string(&cfg, "data_mount")?)?;
     let media = common::mount_path(string(&cfg, "media_mount")?)?;
-    valid_model(&model, app, &data, &media, &cfg["locations"])?;
+    valid_model(&model, app, &data, &media, &cfg)?;
     volumes_ours(app, &model)?;
     println!("ok");
     Ok(())
@@ -4621,7 +4622,7 @@ fn load_candidate(
         app,
         data,
         Path::new(string(cfg, "media_mount")?),
-        &cfg["locations"],
+        cfg,
     )?;
     // Checked again when it is installed: a volume of its name may have been made since.
     volumes_ours(app, &model)?;
@@ -5136,6 +5137,36 @@ fn committed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The review of 0.47.0: the update's check worked the folders out again (the drive,
+    /// then a fixed name) instead of reading the ones setup wrote down.
+    #[test]
+    fn the_updates_check_reads_the_folders_setup_wrote_down() {
+        let (data, media) = (Path::new("/srv/n"), Path::new("/mnt/m"));
+        let music = |library: &str| {
+            json!({"services": {"navidrome": {"image": "x", "networks": {"default": null},
+                "ports": [{"host_ip": "127.0.0.1", "target": 4533, "published": "4533"}],
+                "volumes": [{"type": "bind", "source": library, "target": "/music", "read_only": true}]}}})
+        };
+        let written = json!({"paths": {"music": "/mnt/m/songs"}});
+        assert!(valid_model(&music("/mnt/m/songs"), "navidrome", data, media, &written).is_ok());
+        assert!(valid_model(
+            &music("/srv/n/library/music"),
+            "navidrome",
+            data,
+            media,
+            &written
+        )
+        .is_err());
+        // Settings from before setup wrote them down: shared.json's own folder.
+        assert!(valid_model(
+            &music("/srv/n/library/music"),
+            "navidrome",
+            data,
+            media,
+            &Value::Null
+        )
+        .is_ok());
+    }
     #[test]
     fn a_snapshots_immich_file_is_checked_with_the_updates_own_rules() {
         let (upload, db) = (
@@ -5380,14 +5411,32 @@ mod tests {
         let on_media = json!({"music": "media"});
         assert!(valid_model(&navidrome(data), "navidrome", data, media, &Value::Null).is_ok());
         assert!(valid_model(&navidrome(media), "navidrome", data, media, &Value::Null).is_err());
-        assert!(valid_model(&navidrome(media), "navidrome", data, media, &on_media).is_ok());
-        assert!(valid_model(&navidrome(data), "navidrome", data, media, &on_media).is_err());
-        assert_eq!(
-            common::located(&json!({"cloud": "ssd"}), "cloud", data, media),
-            data
-        );
-        assert_eq!(common::located(&Value::Null, "cloud", data, media), media);
-        assert_eq!(common::located(&Value::Null, "photos", data, media), data);
+        assert!(valid_model(
+            &navidrome(media),
+            "navidrome",
+            data,
+            media,
+            &json!({"locations": on_media})
+        )
+        .is_ok());
+        assert!(valid_model(
+            &navidrome(data),
+            "navidrome",
+            data,
+            media,
+            &json!({"locations": on_media})
+        )
+        .is_err());
+        let at = |locations: Value, what: &str| {
+            common::saved_path(
+                &json!({"data_mount": data, "media_mount": media, "locations": locations}),
+                what,
+            )
+            .unwrap()
+        };
+        assert!(at(json!({"cloud": "ssd"}), "cloud").starts_with(data));
+        assert!(at(Value::Null, "cloud").starts_with(media));
+        assert!(at(Value::Null, "photos").starts_with(data));
         let cfg = json!({"data_mount": "/srv/neko", "media_mount": "/mnt/neko", "locations": {"photos": "media"}});
         assert_eq!(
             common::photo_library(&cfg).unwrap(),

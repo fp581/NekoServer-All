@@ -234,7 +234,9 @@ def run(ctx):
                 'Backup key not set up: until you run  sudo python3 backup_secrets.py --setup  in a terminal, monthly snapshots keep the app password files '
                 'UNENCRYPTED inside data.tar on the HDD (readable by root only), so a restore still has them'
             )
-    atomic_json(guard, config)
+    # With the folders setup decided (`paths`): the update reads them (common::saved_path)
+    # and never works them out again (the review of 0.47.0: this file had none).
+    atomic_json(guard, {**config, 'paths': native_runtime.saved_paths(config)})
     write_units(units)
     for args in (
         ['systemctl', 'daemon-reload'],

@@ -19,6 +19,8 @@ from neko_common import (
     verify_storage,
     atomic_write,
     host_timezone,
+    music_downloads,
+    music_library,
 )
 
 
@@ -291,8 +293,9 @@ def _run(context):
     context.log('Prepared all media Compose manifests without touching existing projects')
     ensure_directory(media / 'library', 0o755)
     ensure_directory(music / 'library', 0o755)
-    for folder in ('music', 'downloads/music'):
-        target = safe_path(music / 'library' / folder)
+    # The music folders setup decided (neko_common, from shared.json's locations).
+    for target in (music_library(context.config), music_downloads(context.config)):
+        target = safe_path(target)
         if not target.exists():
             ensure_directory(target, 0o2775, uid, gid)
     for folder in ('movies', 'tv', 'downloads'):
