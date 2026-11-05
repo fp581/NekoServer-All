@@ -2010,16 +2010,24 @@ fn held(history: &Value, now: f64, hot: impl Fn(f64) -> bool) -> bool {
         .collect();
     recent.iter().any(|(age, _)| *age >= 290.0) && recent.iter().all(|(_, t)| t.is_some_and(&hot))
 }
+/// A drive on the NAS stopped taking writes and the NAS check holds the apps.
+fn nas_held(s: &Value) -> bool {
+    s["storage"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|d| d["held_by_nas_watch"] == true)
+}
 /// The apps that are stopped (exited, never started or dead) while the app SSD or the
-/// media HDD is missing: storage-guard stops them on purpose, and they start again by
-/// themselves once the drive is back.
+/// media HDD is missing, or while the NAS check holds them: they are stopped on purpose,
+/// and start again by themselves once the drive is back (or takes writes again).
 fn held_apps(s: &Value) -> Vec<&str> {
     let away = s["storage"]
         .as_array()
         .into_iter()
         .flatten()
         .any(|d| d["id"] != "os" && d["status"] != "mounted");
-    if !away {
+    if !away && !nas_held(s) {
         return vec![];
     }
     s["applications"]
@@ -2030,6 +2038,17 @@ fn held_apps(s: &Value) -> Vec<&str> {
         .map(|a| text(&a["name"]))
         .filter(|n| !n.is_empty())
         .collect()
+}
+/// Marks the apps stopped on purpose (`held`), so the page says the drive's one alert
+/// instead of one "stopped" per app: decided here, once.
+fn mark_held(s: &mut Value) {
+    let held: Vec<String> = held_apps(s).into_iter().map(String::from).collect();
+    if let Some(apps) = s["applications"].as_array_mut() {
+        for a in apps {
+            let on_hold = held.iter().any(|n| a["name"] == n.as_str());
+            a["held"] = json!(on_hold);
+        }
+    }
 }
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
@@ -2276,6 +2295,19 @@ pub(crate) fn alerts(s: &Value) -> Value {
             level,
             "CPU temperature is high".into(),
             "Check cooling and current workload.",
+        );
+    }
+    if nas_held(s) {
+        let stopped = if named || held.is_empty() {
+            String::new()
+        } else {
+            format!(" Stopped: {}.", held.join(", "))
+        };
+        add(
+            "nas:hold".into(),
+            "critical",
+            "The apps are held: a drive on the network storage box stopped taking writes".into(),
+            &format!("They are stopped so nothing is written to a drive that fails.{stopped} They start again by themselves once every drive on the NAS takes writes; restarting them by hand is refused until then. If the drive was repaired and they stay stopped, look at  journalctl -u {} .", common::shared("nas_watch", "service")),
         );
     }
     if let Some(apps) = s["applications"].as_array() {
@@ -2560,6 +2592,7 @@ pub fn run(a: &Args) -> Result<()> {
     result["tailscale"] = tailscale_login(now);
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
     result["arrays"] = arrays;
+    mark_held(&mut result);
     result["alerts"] = alerts(&result);
     // The readings are published even when the SSD can't keep the collector's own state
     // (unplugged since the readings began, or remounted read-only after errors): a
@@ -3360,6 +3393,45 @@ mod user_panel_tests {
             .collect();
         assert!(ids.contains(&"app:jellyfin".to_string()), "{ids:?}");
         assert!(ids.contains(&"backup:archive".to_string()), "{ids:?}");
+    }
+    #[test]
+    fn apps_held_by_the_nas_check_are_one_alert_and_marked_held() {
+        // The 0.47.1 preview: each app the hold stopped raised "needs attention, choose
+        // Restart app", which the start guard refuses, and the hold itself had no alert.
+        let mut s = json!({
+        "storage": [{"id": "media_hdd", "name": "Media HDD", "status": "mounted",
+                     "network": true, "held_by_nas_watch": true}],
+        "applications": [
+            {"id": "jellyfin", "name": "Jellyfin", "state": "exited"},
+            {"id": "immich", "name": "Immich", "state": "exited"},
+            {"id": "seerr", "name": "Seerr", "state": "running", "health": "unhealthy"}
+        ]});
+        mark_held(&mut s);
+        let held: Vec<bool> = s["applications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["held"] == true)
+            .collect();
+        assert_eq!(held, [true, true, false]);
+        let shown = alerts(&s);
+        let ids: Vec<&str> = shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| text(&a["id"]))
+            .collect();
+        assert_eq!(ids, ["nas:hold", "app:seerr"], "{shown}");
+        assert_eq!(shown[0]["level"], "critical");
+        let detail = text(&shown[0]["detail"]);
+        assert!(detail.contains("Stopped: Jellyfin, Immich."), "{detail}");
+        assert!(detail.contains("nekoserver-nas-watch.service"), "{detail}");
+        assert!(crate::notify::label_of("nas:hold").is_some_and(|l| l.contains("held")));
+        // The hold lifted: stopped apps are alerts of their own again.
+        s["storage"][0]["held_by_nas_watch"] = json!(false);
+        mark_held(&mut s);
+        assert_eq!(s["applications"][0]["held"], false);
+        assert!(alerts(&s).to_string().contains("app:jellyfin"));
     }
     /// UP-03: with the HDD missing its archive's old "matches" is not shown as current.
     #[test]

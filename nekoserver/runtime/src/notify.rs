@@ -10,9 +10,14 @@ use std::{
     fs,
     path::Path,
 };
+#[cfg(test)]
+pub(crate) fn label_of(id: &str) -> Option<String> {
+    label(id)
+}
 fn label(id: &str) -> Option<String> {
     match id {
         "monitoring-stale" => return Some("Monitoring data unavailable".into()),
+        "nas:hold" => return Some("The apps are held: a NAS drive stopped taking writes".into()),
         "memory-pressure" => return Some("Available RAM is low".into()),
         "temperature" => return Some("CPU temperature is high".into()),
         "media-stale" => return Some("Media connection checks are stale".into()),

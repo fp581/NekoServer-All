@@ -708,21 +708,18 @@ function alertIssues(s, add) {
     );
   }
 }
-/* A drive the apps need (app SSD or media HDD) is missing: the apps on it are stopped
- * on purpose, and the drive's own alert names them (collect.rs held_apps). */
-function driveAway(s) {
-  return s.storage.some(d => d.id !== 'os' && d.status !== 'mounted');
-}
-const HELD_STATES = new Set(['exited', 'created', 'dead']);
-function heldByDrive(s, app) {
-  return driveAway(s) && HELD_STATES.has(app.state);
+/* An app stopped on purpose: a drive it needs is missing, or the NAS check holds the
+ * apps. The collector decides it (collect.rs mark_held) and its drive's alert names the
+ * app, so the page shows that one alert, not one "stopped" per app. */
+function heldByDrive(app) {
+  return app.held === true;
 }
 function appIssues(s, add) {
   const apps = serverApps(s),
     notSetUp = apps.filter(a => appState(a) === 'not_set_up');
   for (const app of apps) {
     const st = appState(app);
-    if (!APP_OK.has(st) && st !== 'not_set_up' && !heldByDrive(s, app)) {
+    if (!APP_OK.has(st) && st !== 'not_set_up' && !heldByDrive(app)) {
       add(
         'app:' + app.id,
         CATALOG[app.id].name + ' · ' + (LABELS[st] || 'Status unknown'),
@@ -791,14 +788,6 @@ function arrayIssues(s, add) {
 }
 function driveIssues(s, add) {
   arrayIssues(s, add);
-  if (s.storage.some(disk => disk.held_by_nas_watch === true)) {
-    add(
-      'nas:hold',
-      'The apps are held: a drive on the network storage box stopped taking writes',
-      'They start again by themselves once every drive on the NAS takes writes. If the drive was repaired and they stay stopped, look at  journalctl -u nekoserver-nas-watch.service .',
-      'storage'
-    );
-  }
   for (const disk of s.storage) {
     const name = text(disk.name, 'Drive'),
       smart = object(disk.smart);
