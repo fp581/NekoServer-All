@@ -81,6 +81,15 @@
           <div class="top-actions">
             <output id="connection" class="badge unknown">Connecting</output>
             <button
+              class="icon-button theme-toggle"
+              id="theme-toggle"
+              type="button"
+              title="Switch to Lamplight"
+              aria-label="Switch to the light theme (Lamplight)"
+            >
+              <span class="moon" aria-hidden="true">☾</span><span class="sun" aria-hidden="true">☀</span>
+            </button>
+            <button
               class="icon-button"
               id="refresh"
               type="button"
@@ -156,7 +165,7 @@
         <section class="panel" data-page="home">
           <header class="section-head with-cat">
             <figure class="cat-box panel-cat" aria-hidden="true">
-              <img data-cat="glance" src="cat-resting.png" width="84" height="84" alt="" />
+              <img data-cat="glance" src="cat-happy.png" width="84" height="84" alt="" />
             </figure>
             <div>
               <span class="eyebrow">RIGHT NOW</span>
@@ -171,7 +180,7 @@
         <section class="panel" data-page="home apps">
           <header class="section-head with-cat">
             <figure class="cat-box panel-cat" aria-hidden="true">
-              <img data-cat="apps" src="cat-happy.png" width="84" height="84" alt="" />
+              <img data-cat="apps" src="cat-curious.png" width="84" height="84" alt="" />
             </figure>
             <div>
               <span class="eyebrow">OPEN SOMETHING GOOD</span>
@@ -248,7 +257,10 @@
 
         <!-- SENSORS -->
         <section class="panel" data-page="sensors">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="sensors" src="cat-listening.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">KEEP YOUR WORLD COOL</span>
               <h2>Temperatures</h2>
@@ -286,7 +298,10 @@
         </section>
         <!-- FANS & LIGHTS -->
         <section class="panel" data-page="cooling">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="cooling" src="cat-breezy.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">COOL AND QUIET</span>
               <h2>Fan control</h2>
@@ -325,7 +340,10 @@
 
         <!-- PROCESSES -->
         <section class="panel" data-page="processes">
-          <header class="section-head">
+          <header class="section-head with-cat">
+            <figure class="cat-box panel-cat" aria-hidden="true">
+              <img data-cat="processes" src="cat-playful.png" width="84" height="84" alt="" />
+            </figure>
             <div>
               <span class="eyebrow">WHAT'S RUNNING</span>
               <h2>Processes</h2>
@@ -374,7 +392,7 @@
         <section class="panel" data-page="health">
           <header class="section-head with-cat">
             <figure class="cat-box panel-cat" aria-hidden="true">
-              <img data-cat="drives" src="cat-resting.png" width="84" height="84" alt="" />
+              <img data-cat="drives" src="cat-grooming.png" width="84" height="84" alt="" />
             </figure>
             <div>
               <span class="eyebrow">ROOM TO BREATHE</span>

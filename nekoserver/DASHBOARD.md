@@ -39,7 +39,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
 | **Help** | Step-by-step guides, the error codes below, installing it as an app, and a privacy-safe summary to share. |
 
-On a phone the main pages are in the bar at the bottom; **More** opens the rest. On a tablet the menu becomes a slim icon rail. Settings (⚙) has a warm light theme (Lamplight), larger text (Large, or TV for across the room) and the cat's animation (moving, or still pictures).
+On a phone the main pages are in the bar at the bottom; **More** opens the rest. On a tablet the menu becomes a slim icon rail. The ☾ / ☀ button at the top right switches between the night theme and the warm light one (Lamplight). Settings (⚙) has the same choice (or follow the device), larger text (Large, or TV for across the room) and the cat's animation (moving, or still pictures).
 
 ## The cat
 
@@ -53,9 +53,23 @@ Neko, a small black cat, sits at the top of Home and shows how the server is doi
 | **Happy** | A job has just finished, shown once for about three seconds. Opening the page does not replay an old one. |
 | **Resting** | Everything is fine and nothing needs you. |
 
-Some panels have a smaller cat of their own that follows only that panel's information. The backup cat sleeps while the backups wait for their next run, plays while one runs and is afraid when one needs a look. The apps cat is happy while every app runs. The hardware and drives cats rest while all is well. The attention cat looks at the list. A backup that needs a look scares only the backup and attention cats, not the apps or the drives. When the readings are old, a panel cat with no problem of its own looks curious instead of content.
+Each page also has a smaller cat of its own, with a pose that suits the page while all is well:
 
-The small cats are still pictures, except the sleeping one, which breathes. When the device asks for less motion (or Settings → *Cat animation* is *Still pictures*), every cat is a still picture.
+| Page | Its cat |
+| --- | --- |
+| **Home** ("at a glance") | Sits and says hello |
+| **Your apps** | Peeks into the list (and while you search) |
+| **Backups** | Sleeps between runs, plays while one runs, is happy when one has just finished |
+| **Hardware** | Lies back with a slow tail swish |
+| **Sensors** | Listens, ears turning |
+| **Fans & lights** | Enjoys the breeze of a little fan |
+| **Processes** | Pounces at a ball of yarn (just for fun: it is not a progress bar) |
+| **Server health** | Grooms itself |
+| **Needs attention** | Looks over the list, and is worried only when there is something on it |
+
+When something on a page is wrong, that page's cat is afraid instead: a backup that needs a look, an app that is down, a drive problem, a processor running hot. A problem on one page never scares the cats of the others. When a page's readings can't be fetched, or all readings are old, its cat looks curious instead of content. The poses are for fun; the page's own words and numbers are what count.
+
+When the device asks for less motion (or Settings → *Cat animation* is *Still pictures*), every cat is a still picture.
 
 ## Fans & lights
 

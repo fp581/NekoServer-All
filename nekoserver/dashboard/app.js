@@ -1187,51 +1187,63 @@ function hot(s) {
     memory = currentLive()?.memory?.percent ?? s.metrics?.memory_percent;
   return (numeric(t) && t >= 85) || (numeric(memory) && memory >= 90);
 }
-/* Each panel's own cat, from that panel's own information: a backup that needs a look
- * scares the backup cat, not the apps or the hardware. On readings that are not current,
- * a panel without a problem of its own looks for news instead of looking content. */
-function panelMoods(s, issues, done, searching, stale = false) {
+/* Each page's own cat (DASHBOARD.md, "The cat"): one that suits the page while all is well,
+ * replaced by what the page's own information says when something is wrong. A backup that
+ * needs a look scares the backup cat, not the apps or the drives. On readings that are not
+ * current, a cat with no problem of its own looks for news instead of looking content.
+ * `now` holds the rest the page knows: a job just finished, an app search, old readings,
+ * and the readings that could not be fetched (fans and lights, processes). */
+const PAGE_CATS = {
+  attention: 'curious', // worried only when there is something to look at
+  glance: 'happy',
+  apps: 'curious',
+  backups: 'sleeping',
+  hardware: 'resting',
+  sensors: 'listening',
+  cooling: 'breezy',
+  processes: 'playful',
+  drives: 'grooming'
+};
+function panelMoods(s, issues, now = {}) {
   if (!s) {
-    return {
-      attention: 'curious',
-      apps: 'curious',
-      backups: 'curious',
-      glance: 'curious',
-      hardware: 'curious',
-      drives: 'curious'
-    };
-  }
-  if (stale) {
-    const known = panelMoods(s, issues, false, false);
-    return Object.fromEntries(
-      Object.entries(known).map(([panel, mood]) => [panel, mood === 'afraid' ? mood : 'curious'])
-    );
+    return Object.fromEntries(Object.keys(PAGE_CATS).map(panel => [panel, 'curious']));
   }
   const down = serverApps(s).filter(a => !APP_OK.has(appState(a)) && appState(a) !== 'not_set_up').length;
   const bad = list(s.backups).filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
-  const hardware = hot(s) ? 'afraid' : 'resting';
-  const drive = issues.some(i => STORAGE_ISSUE.test(i.id));
-  return {
-    attention: issues.length ? 'afraid' : 'curious',
-    apps: firstOf(
+  const warm = hot(s);
+  const problems = {
+    attention: issues.length > 0,
+    glance: warm,
+    apps: down > 0,
+    backups: bad > 0,
+    hardware: warm,
+    sensors: warm,
+    drives: issues.some(i => STORAGE_ISSUE.test(i.id))
+  };
+  const unknown = { cooling: !!now.cooling, processes: !!now.processes };
+  const moods = {};
+  for (const [panel, identity] of Object.entries(PAGE_CATS)) {
+    moods[panel] = firstOf(
       [
-        [down, 'afraid'],
-        [searching, 'curious']
+        [problems[panel], 'afraid'],
+        [now.stale || unknown[panel], 'curious']
       ],
-      'happy'
-    ),
-    backups: firstOf(
+      identity
+    );
+  }
+  if (!now.stale && !problems.backups) {
+    moods.backups = firstOf(
       [
-        [bad, 'afraid'],
         [runningJobs(s).length, 'playful'],
-        [done, 'happy']
+        [now.done, 'happy']
       ],
       'sleeping'
-    ),
-    glance: hardware,
-    hardware,
-    drives: drive ? 'afraid' : 'resting'
-  };
+    );
+  }
+  if (now.searching && !problems.apps) {
+    moods.apps = 'curious';
+  }
+  return moods;
 }
 /* The words beside the cat: [state, title, text, action, where it leads]. */
 function companionWords(mood, s, issues) {
@@ -1286,13 +1298,13 @@ function stillCats() {
   const motion = readStore('motion', 'system');
   return motion === 'off' || (motion !== 'on' && matchMedia('(prefers-reduced-motion: reduce)').matches);
 }
-/* The file for a cat: the big one moves; the small ones are still pictures, except the
- * sleeping one, which keeps breathing. */
+/* The file for a cat: every cat moves (the small ones from a small animation), unless
+ * still pictures are asked for. */
 function catFile(mood, small) {
-  if (stillCats() || (small && mood !== 'sleeping')) {
+  if (stillCats()) {
     return 'cat-' + mood + '.png';
   }
-  return small ? 'cat-sleeping-small.webp' : 'cat-' + mood + '.webp';
+  return 'cat-' + mood + (small ? '-small.webp' : '.webp');
 }
 /* The picture changes only when the mood does: setting it again would restart it. */
 function showCat(img, mood, small) {
@@ -1347,9 +1359,15 @@ function renderCats() {
   $('hero-action').textContent = action;
   $('hero-action').setAttribute('href', where);
   const searching = state.route === 'apps' && !!$('app-search').value.trim();
-  const moods = panelMoods(s, issues, !!finished, searching, stale);
+  const moods = panelMoods(s, issues, {
+    done: !!finished,
+    searching,
+    stale,
+    cooling: !!state.controlError,
+    processes: !!state.processError
+  });
   for (const img of document.querySelectorAll('[data-cat]')) {
-    const panelMood = moods[img.dataset.cat] || 'resting';
+    const panelMood = moods[img.dataset.cat] || PAGE_CATS[img.dataset.cat] || 'resting';
     showCat(img, panelMood, true);
     img.closest('.panel')?.toggleAttribute('data-alert', panelMood === 'afraid');
   }
@@ -4418,10 +4436,39 @@ function applyPreferences() {
     theme = 'dark';
   }
   document.documentElement.dataset.theme = theme === 'system' ? systemTheme() : theme;
+  labelThemeToggle();
   const size = readStore('size', 'normal');
   document.body.classList.toggle('large', size === 'large');
   document.body.classList.toggle('tv', size === 'tv');
   renderCats();
+}
+/* The toggle at the top right: night or Lamplight, whichever is not showing (a "Same as
+ * this device" setting becomes the one chosen). The page crossfades into it, or its
+ * colours ease over where crossfading is not offered; with less motion asked for it
+ * simply switches. */
+function shownTheme() {
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+function labelThemeToggle() {
+  const toLight = shownTheme() === 'dark';
+  const button = $('theme-toggle');
+  button.title = toLight ? 'Switch to Lamplight' : 'Switch to Neko night';
+  button.setAttribute('aria-label', toLight ? 'Switch to the light theme (Lamplight)' : 'Switch to the dark theme');
+}
+function toggleTheme() {
+  saveStore('theme', shownTheme() === 'dark' ? 'light' : 'dark');
+  const root = document.documentElement;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    applyPreferences();
+    return;
+  }
+  if (typeof document.startViewTransition === 'function') {
+    document.startViewTransition(applyPreferences);
+    return;
+  }
+  root.classList.add('theme-easing');
+  applyPreferences();
+  setTimeout(() => root.classList.remove('theme-easing'), 500);
 }
 function choice(label, key, options, fallback) {
   const wrap = el('label', 'field', label),
@@ -4681,6 +4728,7 @@ for (const b of document.querySelectorAll('[data-guide]')) {
 }
 $('refresh').addEventListener('click', refreshNow);
 $('preferences').addEventListener('click', preferences);
+$('theme-toggle').addEventListener('click', toggleTheme);
 $('more').addEventListener('click', moreMenu);
 $('export').addEventListener('click', diagnostics);
 $('close-dialog').addEventListener('click', () => $('dialog').close());

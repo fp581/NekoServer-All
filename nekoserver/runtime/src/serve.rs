@@ -86,24 +86,68 @@ const ASSETS: &[(&str, &str, &str)] = &[
     ("/icon-192.png", "icon-192.png", "image/png"),
     ("/icon-512.png", "icon-512.png", "image/png"),
     ("/apple-touch-icon.png", "apple-touch-icon.png", "image/png"),
-    // The cat companion (DASHBOARD.md, "The cat"): an animation and a still per mood.
+    // The cat (DASHBOARD.md, "The cat"): the big animations for Home's own cat, and a
+    // small animation and a still picture for each page's cat.
     ("/cat-happy.webp", "cat-happy.webp", "image/webp"),
-    ("/cat-happy.png", "cat-happy.png", "image/png"),
     ("/cat-playful.webp", "cat-playful.webp", "image/webp"),
-    ("/cat-playful.png", "cat-playful.png", "image/png"),
     ("/cat-resting.webp", "cat-resting.webp", "image/webp"),
-    ("/cat-resting.png", "cat-resting.png", "image/png"),
     ("/cat-sleeping.webp", "cat-sleeping.webp", "image/webp"),
-    ("/cat-sleeping.png", "cat-sleeping.png", "image/png"),
     ("/cat-curious.webp", "cat-curious.webp", "image/webp"),
-    ("/cat-curious.png", "cat-curious.png", "image/png"),
     ("/cat-afraid.webp", "cat-afraid.webp", "image/webp"),
-    ("/cat-afraid.png", "cat-afraid.png", "image/png"),
+    (
+        "/cat-happy-small.webp",
+        "cat-happy-small.webp",
+        "image/webp",
+    ),
+    ("/cat-happy.png", "cat-happy.png", "image/png"),
+    (
+        "/cat-playful-small.webp",
+        "cat-playful-small.webp",
+        "image/webp",
+    ),
+    ("/cat-playful.png", "cat-playful.png", "image/png"),
+    (
+        "/cat-resting-small.webp",
+        "cat-resting-small.webp",
+        "image/webp",
+    ),
+    ("/cat-resting.png", "cat-resting.png", "image/png"),
     (
         "/cat-sleeping-small.webp",
         "cat-sleeping-small.webp",
         "image/webp",
     ),
+    ("/cat-sleeping.png", "cat-sleeping.png", "image/png"),
+    (
+        "/cat-curious-small.webp",
+        "cat-curious-small.webp",
+        "image/webp",
+    ),
+    ("/cat-curious.png", "cat-curious.png", "image/png"),
+    (
+        "/cat-afraid-small.webp",
+        "cat-afraid-small.webp",
+        "image/webp",
+    ),
+    ("/cat-afraid.png", "cat-afraid.png", "image/png"),
+    (
+        "/cat-listening-small.webp",
+        "cat-listening-small.webp",
+        "image/webp",
+    ),
+    ("/cat-listening.png", "cat-listening.png", "image/png"),
+    (
+        "/cat-breezy-small.webp",
+        "cat-breezy-small.webp",
+        "image/webp",
+    ),
+    ("/cat-breezy.png", "cat-breezy.png", "image/png"),
+    (
+        "/cat-grooming-small.webp",
+        "cat-grooming-small.webp",
+        "image/webp",
+    ),
+    ("/cat-grooming.png", "cat-grooming.png", "image/png"),
 ];
 #[cfg(test)]
 fn asset_files() -> Vec<&'static str> {

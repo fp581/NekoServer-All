@@ -455,27 +455,46 @@ class CatCompanionTests(unittest.TestCase):
         )
         self.assertEqual(moods, ['curious', 'afraid', 'curious', 'playful', 'happy', 'resting'])
 
-    def test_a_backup_problem_scares_only_the_backup_and_attention_cats(self):
-        failed = page(('panelMoods', {'status': self.readings(status='fail'), 'done': False, 'searching': False}))[0]
-        self.assertEqual(failed['backups'], 'afraid')
-        self.assertEqual(failed['attention'], 'afraid')
+    def moods(self, readings, **now):
+        return page(('panelMoods', {'status': readings, 'now': now}))[0]
+
+    def test_each_page_has_its_own_cat_while_all_is_well(self):
         self.assertEqual(
-            (failed['apps'], failed['glance'], failed['hardware'], failed['drives']),
-            ('happy', 'resting', 'resting', 'resting'),
+            self.moods(self.readings()),
+            {
+                'attention': 'curious',  # nothing to look at: never the worried cat
+                'glance': 'happy',
+                'apps': 'curious',
+                'backups': 'sleeping',
+                'hardware': 'resting',
+                'sensors': 'listening',
+                'cooling': 'breezy',
+                'processes': 'playful',
+                'drives': 'grooming',
+            },
+        )
+
+    def test_a_backup_problem_scares_only_the_backup_and_attention_cats(self):
+        failed = self.moods(self.readings(status='fail'))
+        self.assertEqual((failed['backups'], failed['attention']), ('afraid', 'afraid'))
+        self.assertEqual(
+            {panel: failed[panel] for panel in ('apps', 'hardware', 'sensors', 'drives')},
+            {'apps': 'curious', 'hardware': 'resting', 'sensors': 'listening', 'drives': 'grooming'},
         )
         # A drive that is gone scares the drives cat.
         gone = self.readings()
         gone['storage'][0]['status'] = 'missing'
-        self.assertEqual(
-            page(('panelMoods', {'status': gone, 'done': False, 'searching': False}))[0]['drives'], 'afraid'
-        )
-        calm, searching, old = page(
-            ('panelMoods', {'status': self.readings(), 'done': False, 'searching': False}),
-            ('panelMoods', {'status': self.readings(), 'done': False, 'searching': True}),
-            ('panelMoods', {'status': self.readings(status='fail'), 'done': False, 'searching': False, 'stale': True}),
-        )
-        self.assertEqual((calm['backups'], calm['attention'], searching['apps']), ('sleeping', 'curious', 'curious'))
-        # Old readings: no panel looks content; one with a problem of its own still says so.
+        self.assertEqual(self.moods(gone)['drives'], 'afraid')
+        # The backup cat plays while a job runs and is happy once it has finished.
+        self.assertEqual(self.moods(self.readings(status='running'))['backups'], 'playful')
+        self.assertEqual(self.moods(self.readings(), done=True)['backups'], 'happy')
+
+    def test_readings_that_could_not_be_fetched_or_are_old_make_the_cats_look_for_news(self):
+        unreachable = self.moods(self.readings(), cooling=True, processes=True)
+        self.assertEqual((unreachable['cooling'], unreachable['processes']), ('curious', 'curious'))
+        self.assertEqual(unreachable['sensors'], 'listening')
+        old = self.moods(self.readings(status='fail'), stale=True)
+        # No cat looks content on old readings; one with a problem of its own still says so.
         self.assertEqual(old, {**{panel: 'curious' for panel in old}, 'backups': 'afraid', 'attention': 'afraid'})
 
     def test_a_finished_job_is_celebrated_once_and_never_on_the_first_look(self):
@@ -487,10 +506,14 @@ class CatCompanionTests(unittest.TestCase):
         )
         self.assertEqual(page(('newlyFinished', [first, same, newer, again])), [[None, None, 'app-backup', None]])
 
-    def test_the_small_cats_are_still_pictures_except_the_sleeping_one(self):
+    def test_each_cat_has_its_animation_and_the_page_serves_every_one(self):
         files = page(
             ('catFile', {'mood': 'afraid', 'small': False}),
-            ('catFile', {'mood': 'afraid', 'small': True}),
-            ('catFile', {'mood': 'sleeping', 'small': True}),
+            ('catFile', {'mood': 'breezy', 'small': True}),
         )
-        self.assertEqual(files, ['cat-afraid.webp', 'cat-afraid.png', 'cat-sleeping-small.webp'])
+        self.assertEqual(files, ['cat-afraid.webp', 'cat-breezy-small.webp'])
+        from modules import dashboard
+
+        for mood in dashboard.CAT_MOODS:
+            self.assertIn(f'cat-{mood}-small.webp', dashboard.ASSETS)
+            self.assertIn(f'cat-{mood}.png', dashboard.ASSETS)

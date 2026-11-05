@@ -71,7 +71,7 @@ const SPECIAL = {
   },
   panelMoods: argument => {
     const s = app.validStatus(argument.status);
-    return app.panelMoods(s, app.collectIssues(s), argument.done, argument.searching, argument.stale);
+    return app.panelMoods(s, app.collectIssues(s), argument.now);
   },
   newlyFinished: argument => argument.map(s => app.newlyFinished(app.validStatus(s))?.id ?? null),
   catFile: argument => app.catFile(argument.mood, argument.small),

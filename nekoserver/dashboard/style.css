@@ -3,7 +3,9 @@
 :root {
   color-scheme: dark;
   /* Moonlit Neko: the cat theme's colours, a little warmer (night first; daylight below,
-   * a soft lamplight with no bright white, so switching to it never dazzles). */
+   * a soft lamplight with no bright white, so switching to it never dazzles). Every text
+   * colour reads at 5:1 or better on every surface it sits on, in both themes (WCAG AA is
+   * 4.5:1): Lamplight's accents keep the night's hues, only darker (OKLCH lightness). */
   --bg: #16131b;
   --side: #1a161f;
   --surface: #211c26;
@@ -40,14 +42,14 @@
   --raised: #efe5d9;
   --line: #d6c8b8;
   --text: #33291f;
-  --muted: #6c5f55;
-  --purple: #7356a5;
+  --muted: #574a41;
+  --purple: #5b3e8a;
   --purple-soft: #e6dbe6;
-  --peach: #986645;
-  --pink: #a54b72;
-  --mint: #40765d;
-  --amber: #97601e;
-  --red: #a54353;
+  --peach: #704120;
+  --pink: #842d56;
+  --mint: #1f563f;
+  --amber: #743f00;
+  --red: #89293c;
   --cat-box: #e9dfcf;
 }
 * {
@@ -309,6 +311,49 @@ h1 {
   color: var(--purple);
 }
 
+/* Night or Lamplight in one tap: the moon shows at night, the sun in Lamplight, and the
+ * other one turns in when they swap. */
+.theme-toggle {
+  position: relative;
+  overflow: hidden;
+}
+.theme-toggle span {
+  grid-area: 1 / 1;
+  line-height: 1;
+}
+.theme-toggle .sun {
+  color: var(--peach);
+}
+:root[data-theme='dark'] .theme-toggle .sun,
+:root[data-theme='light'] .theme-toggle .moon {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.4);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .theme-toggle span {
+    transition:
+      opacity 0.35s ease,
+      transform 0.5s cubic-bezier(0.3, 1.4, 0.5, 1);
+  }
+  /* While the theme changes, every colour eases over instead of jumping (toggleTheme in app.js adds
+   * this for a moment; browsers with view transitions crossfade the whole page instead). */
+  :root.theme-easing,
+  :root.theme-easing *,
+  :root.theme-easing *::before,
+  :root.theme-easing *::after {
+    transition:
+      background-color 0.45s ease,
+      color 0.45s ease,
+      border-color 0.45s ease,
+      fill 0.45s ease,
+      box-shadow 0.45s ease !important;
+  }
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 0.45s;
+  }
+}
+
 /* ---------- badges, buttons, banners ---------- */
 .badge {
   display: inline-flex;
@@ -537,7 +582,7 @@ h1 {
 .hero[data-mood='afraid'] #hero-action {
   background: var(--amber);
   border-color: var(--amber);
-  color: #1b1722;
+  color: var(--bg);
 }
 
 /* ---------- the cat ---------- */

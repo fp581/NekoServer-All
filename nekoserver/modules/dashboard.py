@@ -21,6 +21,8 @@ from neko_common import (
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Install the localhost visual dashboard, read-only collector and local alerts'
+# The cat's moods: the first six are Home's own cat, all nine are the pages' cats.
+CAT_MOODS = ('happy', 'playful', 'resting', 'sleeping', 'curious', 'afraid', 'listening', 'breezy', 'grooming')
 # The page's files; runtime/src/serve.rs serves exactly these (checked by a test).
 ASSETS = (
     'index.html',
@@ -32,13 +34,10 @@ ASSETS = (
     'icon-192.png',
     'icon-512.png',
     'apple-touch-icon.png',
-    # The cat companion: an animation and a still (for reduced motion) per mood.
-    *(
-        f'cat-{mood}.{kind}'
-        for mood in ('happy', 'playful', 'resting', 'sleeping', 'curious', 'afraid')
-        for kind in ('webp', 'png')
-    ),
-    'cat-sleeping-small.webp',
+    # The cat: the big animations for Home's own cat, and a small animation and a still
+    # picture (for reduced motion) for each page's cat.
+    *(f'cat-{mood}.webp' for mood in CAT_MOODS[:6]),
+    *(f'cat-{mood}{kind}' for mood in CAT_MOODS for kind in ('-small.webp', '.png')),
 )
 # Opens the dashboard in its own window from the desktop's app menu.
 LAUNCHER = Path('/usr/local/bin/nekoserver-dashboard')
