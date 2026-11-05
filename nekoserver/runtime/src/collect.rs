@@ -1082,7 +1082,7 @@ fn parse_startup(out: &str) -> Vec<Value> {
         .collect()
 }
 /// Why a job is intentionally not part of this server now (its app or backup switched
-/// off), or None when its schedule is expected (status_checks.retired says the same).
+/// off), or None when its schedule is expected.
 fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
     let immich = cfg["photos"]["deploy_immich"] == true;
     match key {
@@ -1097,7 +1097,7 @@ fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
     }
 }
 /// The witnessed restore tests (acceptance.py manual tests) that show this backup can
-/// be restored: one per kind of data it holds (status_checks.restore_tests says the same).
+/// be restored: one per kind of data it holds.
 fn restore_tests(cfg: &Value, key: &str) -> Value {
     let immich = cfg["photos"]["deploy_immich"] == true;
     let cloud = cfg["nextcloud"]["enabled"] == true;
@@ -1233,12 +1233,7 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         } else {
             first_overdue(success.as_f64(), installed, now, max)
         };
-        // A backup that keeps failing stays a failure (urgent) once it is also overdue.
-        let state = if stale && status != "fail" {
-            "stale"
-        } else {
-            status
-        };
+        let state = overdue_state(status, stale);
         let (timer, known) = timer_of(unit);
         if let Some(why) = retired(cfg, key) {
             out.push(json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]}));
@@ -1301,6 +1296,15 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         out.push(row);
     }
     json!(out)
+}
+/// A job's state once it is overdue (`stale`): a backup that keeps failing stays a
+/// failure (urgent), anything else is overdue.
+fn overdue_state(status: &str, stale: bool) -> &str {
+    if stale && status != "fail" {
+        "stale"
+    } else {
+        status
+    }
 }
 /// The service the upgrade's report names, when it is one of the upgrade's own: the
 /// release's (nekoserver-upgrade@v0.45.8Beta) or the resume after a restart.
@@ -2438,6 +2442,12 @@ pub(crate) fn alerts(s: &Value) -> Value {
     }
     json!(out)
 }
+/// The phone alerts' last delivery check is overdue (over 3 minutes old, or dated ahead):
+/// only while their timer runs. A timer switched off by choice ("wanted": false) is not
+/// an overdue delivery check.
+fn delivery_late(timer_active: bool, checked_at: Option<f64>, now: f64) -> bool {
+    timer_active && checked_at.is_none_or(|t| t > now + 30.0 || now - t > 180.0)
+}
 fn notification_status(now: f64) -> Value {
     let saved = common::json(
         Path::new("/run/nekoserver-notifications/delivery.json"),
@@ -2464,15 +2474,47 @@ fn notification_status(now: f64) -> Value {
     } else {
         "unknown"
     };
-    // A timer switched off by choice ("wanted": false) is not an overdue delivery check.
-    if timer["active"] == true
-        && saved["generated_at"]
-            .as_f64()
-            .is_none_or(|t| t > now + 30.0 || now - t > 180.0)
-    {
+    if delivery_late(timer["active"] == true, saved["generated_at"].as_f64(), now) {
         status = "stale";
     }
     json!({"status":status,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
+}
+/// The drive the backups wait for, when one is missing.
+fn away_drive(data_ok: bool, media_ok: bool) -> Option<&'static str> {
+    if !data_ok {
+        Some("Application SSD")
+    } else if !media_ok {
+        Some("Media HDD")
+    } else {
+        None
+    }
+}
+/// The backups', the outage monitor's and the phone alerts' states, worked out as the
+/// dashboard shows them (the same functions), printed as one line of JSON. The acceptance
+/// check asks this instead of judging them itself: it kept a copy of these rules, which
+/// already disagreed (a worker systemd could not start, or a run cut off part-way, passed
+/// there; the review of 0.47.1).
+pub fn job_states(a: &Args) -> Result<()> {
+    common::require_root()?;
+    let cfg = common::json(&a.path("config")?, 2_000_000);
+    let now = common::now();
+    let mounted = |key: &str, mount: &str| -> Result<bool> {
+        let path = common::mount_path(text(&cfg[mount]))?;
+        let spec = &cfg["storage"][key];
+        Ok(
+            mount_info(&path, Some(text(&spec["uuid"])), text(&spec["fstype"]))["status"]
+                == "mounted",
+        )
+    };
+    let ok = mounted("data_ssd", "data_mount")?;
+    let media_ok = mounted("media_hdd", "media_mount")?;
+    let states = json!({
+        "backups": backups(&cfg, now, ok, away_drive(ok, media_ok)),
+        "heartbeat": heartbeat(&cfg, now),
+        "notifications": notification_status(now),
+    });
+    println!("{states}");
+    Ok(())
 }
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
@@ -2528,14 +2570,7 @@ pub fn run(a: &Args) -> Result<()> {
     history.reverse();
     history.push(json!({"at":now,"cpu":host["cpu_percent"],"memory":host["memory_percent"],"temperature":host["temperature"]}));
     let report = media_report(&cfg, now, ok);
-    // The drive the backups wait for, when one is missing.
-    let away = if !ok {
-        Some("Application SSD")
-    } else if !media_ok {
-        Some("Media HDD")
-    } else {
-        None
-    };
+    let away = away_drive(ok, media_ok);
     let (apps, containers, services) = applications(&cfg, report.as_ref(), ok.then_some(data));
     let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":apps,"backups":backups(&cfg,now,ok,away),"media":media(report.as_ref()),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
     result["notifications"] = notification_status(now);
@@ -3393,6 +3428,19 @@ mod user_panel_tests {
             .collect();
         assert!(ids.contains(&"app:jellyfin".to_string()), "{ids:?}");
         assert!(ids.contains(&"backup:archive".to_string()), "{ids:?}");
+    }
+    #[test]
+    fn a_failing_job_stays_a_failure_and_a_switched_off_timer_is_never_late() {
+        // Kept here once the acceptance check's copy of these rules went (0.47.2).
+        assert_eq!(overdue_state("fail", true), "fail");
+        assert_eq!(overdue_state("pass", true), "stale");
+        assert_eq!(overdue_state("pass", false), "pass");
+        assert_eq!(overdue_state("running", true), "stale");
+        assert!(!delivery_late(false, None, 1000.0));
+        assert!(delivery_late(true, None, 1000.0));
+        assert!(delivery_late(true, Some(700.0), 1000.0));
+        assert!(!delivery_late(true, Some(900.0), 1000.0));
+        assert!(delivery_late(true, Some(1100.0), 1000.0)); // dated ahead
     }
     #[test]
     fn apps_held_by_the_nas_check_are_one_alert_and_marked_held() {

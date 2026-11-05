@@ -54,9 +54,8 @@ class CarryTests(unittest.TestCase):
             latest.parent.mkdir(parents=True)
             saved = []
             with (
-                mock.patch.object(
-                    acceptance.health, 'mount_info', side_effect=lambda path, uuid, fs: {'status': 'mounted'}
-                ),
+                mock.patch.object(acceptance, 'drive_problem', return_value=None),
+                mock.patch.object(acceptance, 'job_states', return_value=(None, 'not asked in this test')),
                 mock.patch.object(
                     acceptance, 'save', side_effect=lambda c, r: (latest.write_text(json.dumps(r)), saved.append(r))
                 ),
@@ -84,10 +83,8 @@ class CarryTests(unittest.TestCase):
                 cfg = config(Path(tmp))
                 cfg.setdefault('photos', {})['deploy_immich'] = immich
                 with (
-                    mock.patch.object(
-                        acceptance.health, 'mount_info', side_effect=lambda path, uuid, fs: {'status': 'mounted'}
-                    ),
-                    mock.patch.object(acceptance.health, 'backups', return_value=rows),
+                    mock.patch.object(acceptance, 'drive_problem', return_value=None),
+                    mock.patch.object(acceptance, 'job_states', return_value=({'backups': rows}, None)),
                     mock.patch.object(acceptance, 'save'),
                 ):
                     report = acceptance.inspect(cfg, 'full')

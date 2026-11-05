@@ -63,17 +63,5 @@ class SwitchedOffTests(unittest.TestCase):
         self.assertFalse(_schedules.switched_off({'heartbeat': {}}, 'heartbeat', 'nekoserver-heartbeat', print))
 
 
-class SwitchedOffStatusTests(unittest.TestCase):
-    def test_a_switched_off_timer_is_not_a_missed_check_in(self):
-        for active, expected in (('inactive', 'unknown'), ('active', 'stale')):
-            answer = (0, 'LoadState=loaded\nActiveState=' + active + '\n')
-            with (
-                mock.patch.object(status_checks, 'run', return_value=answer),
-                mock.patch.object(status_checks, 'read_json', return_value={}),
-            ):
-                self.assertEqual(status_checks.heartbeat_status({}, 2_000_000_000.0)['status'], expected)
-                self.assertEqual(status_checks.notification_status(2_000_000_000.0)['status'], expected)
-
-
 if __name__ == '__main__':
     unittest.main()
