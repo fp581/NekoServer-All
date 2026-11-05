@@ -1191,6 +1191,12 @@ fn utc_seconds(shown: &str) -> Option<f64> {
         .ok()
         .map(|t| t.and_utc().timestamp() as f64)
 }
+/// Whether this job runs on a schedule of its own. The upgrade is started by you only:
+/// without this, every upgrade that worked was shown as "needs attention: its schedule is
+/// gone" (seen on the rig).
+fn scheduled(key: &str) -> bool {
+    key != "upgrade"
+}
 /// A schedule that stopped while its job is still wanted: switched off, or gone after it
 /// had run. None while it is in place (or systemd could not be asked).
 fn schedule_stopped(timer: &Value, known: bool, ever_ran: bool) -> Option<String> {
@@ -1299,7 +1305,7 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         let stopped = if ["fail", "running"].contains(&state) {
             None
         } else {
-            schedule_stopped(&timer, known, !success.is_null())
+            schedule_stopped(&timer, known && scheduled(key), !success.is_null())
         };
         let state = if stopped.is_some() { "stale" } else { state };
         let reason = if let Some(why) = unrun {
@@ -2851,6 +2857,9 @@ mod os_tests {
         // Never set up yet, or systemd could not be asked: no evidence.
         assert_eq!(schedule_stopped(&gone, true, false), None);
         assert_eq!(schedule_stopped(&off, false, true), None);
+        // The upgrade has no schedule to lose.
+        assert!(scheduled("applications") && !scheduled("upgrade"));
+        assert_eq!(schedule_stopped(&gone, scheduled("upgrade"), true), None);
     }
     #[test]
     fn a_run_cut_off_by_a_restart_is_not_running() {
