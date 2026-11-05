@@ -93,7 +93,7 @@ class BackupIssuesTests(unittest.TestCase):
         ]
         for name in ('JOB_UNITS', 'LABELS'):
             pieces.append(re.search(rf'^const {name} = \{{.*?\}};', app, re.MULTILINE | re.DOTALL).group(0))
-        for name in ('backupIssues', 'jobUnit'):
+        for name in ('backupIssues', 'jobUnit', 'onDemand'):
             pieces.append(re.search(rf'^function {name}\(.*?^\}}', app, re.MULTILINE | re.DOTALL).group(0))
         script = (
             f'const units = {json.dumps(units)};\n'

@@ -1333,6 +1333,11 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         if undone {
             row["rolled_back"] = json!(true);
         }
+        // Said to the page too: it kept its own rule, and listed "NekoServer upgrade
+        // schedule is off" after every upgrade that worked.
+        if !scheduled(key) {
+            row["scheduled"] = json!(false);
+        }
         if let Some(drive) = away {
             row["blocked"] = json!(format!(
                 "The {drive} is missing, so this backup can't run until it is back."
