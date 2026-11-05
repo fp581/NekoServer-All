@@ -525,83 +525,24 @@ def compose_args(config):
     return DOCKER + ['compose', '-p', 'neko-immich', '-f', str(compose), '--env-file', str(env)]
 
 
-# Where Immich's containers see the photo library (older and newer image) and the database.
-IMMICH_BINDINGS = {'immich-server': ('/data', '/usr/src/app/upload'), 'database': ('/var/lib/postgresql/data',)}
+def validate_model(model, upload, database, ask=None):
+    """The Immich Compose file a snapshot covers and a restore test rebuilds, with its photos
+    at `upload` and its database at `database`: checked by the runtime (check-compose
+    --upload --database, maintenance.rs snapshot_ok), with the update's own rules, so a file
+    the update installs is never one a snapshot refuses. The rules live once, there; this
+    kept a copy of its own, which already disagreed (the review of 0.47.0)."""
+    import tempfile
 
+    import native_runtime
 
-# What a Compose file may hold (runtime/src/shared.json "compose", the update's own list):
-# anything else (use_api_socket, post_start hooks, secrets or configs from this PC's files)
-# is refused before a snapshot or a restore test uses the file.
-COMPOSE_KEYS = neko_common.SHARED['compose']
-
-
-def validate_model(model, upload, database):
-    if not isinstance(model, dict) or set(model) - set(COMPOSE_KEYS['file_keys']):
-        raise RuntimeError('Custom Immich Compose settings (secrets, configs...) require manual isolated recovery')
-    services = model.get('services', {})
-    if set(services) != SERVICES:
-        raise RuntimeError(
-            'Restore currently supports the four standard Immich services; custom services require review'
-        )
-    for name, svc in services.items():
-        if not isinstance(svc, dict) or not isinstance(svc.get('image'), str):
-            raise RuntimeError('Invalid Immich service')
-        # A snapshot also leaves out the graphics chip and another user (restore tests run
-        # without them).
-        security = svc.get('security_opt', [])
-        if (
-            set(svc) - set(COMPOSE_KEYS['service_keys'])
-            or {'devices', 'user'} & set(svc)
-            or not isinstance(security, list)
-            or set(security) - set(COMPOSE_KEYS['security_opt'])
-        ):
-            raise RuntimeError('Custom Immich runtime settings require manual isolated recovery')
-        seen = set()
-        for volume in svc.get('volumes', []):
-            if not isinstance(volume, dict):
-                raise RuntimeError('Canonical Compose volume definitions required')
-            target = volume.get('target')
-            source = volume.get('source')
-            if not isinstance(target, str) or target in seen:
-                raise RuntimeError('Invalid/duplicate Immich volume target')
-            seen.add(target)
-            if volume.get('type') == 'bind':
-                if source == '/etc/localtime' and volume.get('read_only'):
-                    continue
-                expected = upload if name == 'immich-server' else database if name == 'database' else None
-                expected_target = IMMICH_BINDINGS.get(name, ())
-                if expected is None or source != str(expected) or target not in expected_target:
-                    raise RuntimeError('External/custom Immich mounts are not covered; no incomplete snapshot allowed')
-            elif not (
-                volume.get('type') == 'volume'
-                # A cache of its own (as the runtime's check allows): not in a snapshot.
-                and name in ('immich-machine-learning', 'redis')
-                and isinstance(source, str)
-                and re.fullmatch(r'[A-Za-z0-9_-]+', source)
-            ):
-                raise RuntimeError('Unsupported Immich persistent volume')
-        required = IMMICH_BINDINGS.get(name, ())
-        if required and not any(x in seen for x in required):
-            raise RuntimeError('Required Immich storage binding is missing')
-    server_env = services['immich-server'].get('environment', {})
-    db_env = services['database'].get('environment', {})
-    if not isinstance(server_env, dict) or not isinstance(db_env, dict):
-        raise RuntimeError('Canonical Immich environment required')
-    if (
-        server_env.get('DB_URL')
-        or server_env.get('REDIS_URL')
-        or server_env.get('DB_HOSTNAME', 'database') != 'database'
-        or server_env.get('REDIS_HOSTNAME', 'redis') != 'redis'
-    ):
-        raise RuntimeError('Custom database/cache routing requires manual isolated recovery')
-    for key, dbkey, default in [
-        ('DB_USERNAME', 'POSTGRES_USER', 'postgres'),
-        ('DB_DATABASE_NAME', 'POSTGRES_DB', 'immich'),
-        ('DB_PASSWORD', 'POSTGRES_PASSWORD', None),
-    ]:
-        if server_env.get(key, default) != db_env.get(dbkey, default):
-            raise RuntimeError('Immich database credentials/name do not match its database service')
-    return services
+    with tempfile.TemporaryDirectory(prefix='neko-compose-') as work:
+        path = Path(work) / 'model.json'
+        path.write_text(json.dumps(model))
+        args = ['check-compose', '--model', str(path), '--upload', str(upload), '--database', str(database)]
+        code, said = (ask or native_runtime.ask_runtime)(Path(__file__).resolve().parent, {}, args)
+    if code != 0:
+        raise RuntimeError(native_runtime.reason_of(said, f'the Compose check stopped (exit {code})'))
+    return model['services']
 
 
 def freeze_images(base, model):

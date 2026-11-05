@@ -560,10 +560,24 @@ fn networks_ok(name: &str, model: &Value) -> Result<()> {
 /// the photos and the database bound where Immich looks for them, no other user, and
 /// Immich's server talking to its own database and cache.
 fn immich_ok(services: &serde_json::Map<String, Value>, data: &Path, photos: &Path) -> Result<()> {
-    let database = data.join("appdata/immich/postgres");
+    immich_binds_ok(services, photos, &data.join("appdata/immich/postgres"))?;
+    immich_env_ok(services)
+}
+/// Where Immich's containers see the photo library (older and newer image) and the database.
+const IMMICH_TARGETS: [(&str, &[&str]); 2] = [
+    ("immich-server", &["/data", "/usr/src/app/upload"]),
+    ("database", &["/var/lib/postgresql/data"]),
+];
+/// Immich's photos and database are bound where its snapshot looks: `photos` and `database`,
+/// at the places its containers use them, and nothing else (but /etc/localtime).
+fn immich_binds_ok(
+    services: &serde_json::Map<String, Value>,
+    photos: &Path,
+    database: &Path,
+) -> Result<()> {
     let wanted: [(&str, &Path, &[&str]); 2] = [
-        ("immich-server", photos, &["/data", "/usr/src/app/upload"]),
-        ("database", &database, &["/var/lib/postgresql/data"]),
+        ("immich-server", photos, IMMICH_TARGETS[0].1),
+        ("database", database, IMMICH_TARGETS[1].1),
     ];
     for (service, v) in services {
         if v.get("user").is_some() {
@@ -590,6 +604,10 @@ fn immich_ok(services: &serde_json::Map<String, Value>, data: &Path, photos: &Pa
             ));
         }
     }
+    Ok(())
+}
+/// Immich's server uses its own database and cache (the ones its snapshot holds).
+fn immich_env_ok(services: &serde_json::Map<String, Value>) -> Result<()> {
     let env = |service: &str, key: &str| {
         services[service]["environment"][key]
             .as_str()
@@ -615,6 +633,66 @@ fn immich_ok(services: &serde_json::Map<String, Value>, data: &Path, photos: &Pa
         ));
     }
     Ok(())
+}
+/// The Immich Compose file a snapshot covers and a restore test rebuilds, with the photos at
+/// `upload` and the database at `database` (where the snapshot found them): the update's own
+/// keys and isolation (valid_model's), the four standard services, no device or other user
+/// (a restore test runs without them), each folder bound once where Immich looks for it
+/// (and /etc/localtime only read-only), caches only as named volumes of their own, and
+/// Immich's server on its own database and cache. Kept here once: setup asks it (check-compose
+/// --upload --database), and kept a copy of its own before, which already disagreed (the
+/// review of 0.47.0: `privileged: false` refused there, taken here).
+fn snapshot_ok(model: &Value, upload: &Path, database: &Path) -> Result<()> {
+    let file_keys = common::shared_list(&["compose", "file_keys"]);
+    if model
+        .as_object()
+        .is_none_or(|o| o.keys().any(|k| !file_keys.contains(&k.as_str())))
+    {
+        return Err(Error::new(
+            "Custom Immich Compose settings (secrets, configs...) require manual isolated recovery",
+        ));
+    }
+    let services = model["services"]
+        .as_object()
+        .ok_or_else(|| Error::new("Compose services missing"))?;
+    if services.len() != 4 || !services.keys().all(|s| expected_service("immich", s)) {
+        return Err(Error::new(
+            "Restore currently supports the four standard Immich services; custom services require review",
+        ));
+    }
+    let refused = || Error::new("Custom Immich runtime settings require manual isolated recovery");
+    for (service, v) in services {
+        if !v["image"].is_string() || !isolated("immich", service, v) {
+            return Err(refused());
+        }
+        if v.get("devices").is_some() || v.get("user").is_some() {
+            return Err(refused());
+        }
+        let mut targets = vec![];
+        for volume in v["volumes"].as_array().into_iter().flatten() {
+            let target = volume["target"].as_str().unwrap_or("");
+            if target.is_empty() || targets.contains(&target) {
+                return Err(Error::new("Invalid/duplicate Immich volume target"));
+            }
+            targets.push(target);
+            let cache = volume["type"] == "volume"
+                && ["immich-machine-learning", "redis"].contains(&service.as_str())
+                && volume["source"].as_str().is_some_and(|n| {
+                    !n.is_empty()
+                        && n.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                });
+            let clock = volume["type"] == "bind"
+                && volume["source"] == "/etc/localtime"
+                && volume["read_only"] == true;
+            if !(cache || clock || volume["type"] == "bind" && volume["source"] != "/etc/localtime")
+            {
+                return Err(Error::new("Unsupported Immich persistent volume"));
+            }
+        }
+    }
+    immich_binds_ok(services, upload, database)?;
+    immich_env_ok(services)
 }
 /// A service of the app's own that keeps to NekoServer's isolation.
 fn isolated(name: &str, service: &str, v: &Value) -> bool {
@@ -4177,6 +4255,13 @@ fn version_of(app: &str, model: &Value, release: Option<&str>, step: Option<(u64
 /// own rules (valid_model), for setup to use before it first starts an app, so the rules
 /// exist once. Says "ok", or fails with the reason.
 pub fn check_compose(a: &Args) -> Result<()> {
+    if let (Ok(upload), Ok(database)) = (a.path("upload"), a.path("database")) {
+        // A snapshot's Immich file (setup's recovery_tools.validate_model asks this).
+        let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
+        snapshot_ok(&model, &upload, &database)?;
+        println!("ok");
+        return Ok(());
+    }
     let cfg = common::json(&a.path("config")?, 2_000_000);
     let app = a.get("app")?;
     if !["immich", "nextcloud"].contains(&app) && !MEDIA.contains(&app) {
@@ -5051,6 +5136,33 @@ fn committed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_snapshots_immich_file_is_checked_with_the_updates_own_rules() {
+        let (upload, db) = (
+            Path::new("/srv/n/photos/immich-library"),
+            Path::new("/srv/n/appdata/immich/postgres"),
+        );
+        let env = json!({"DB_PASSWORD": "x"});
+        let model = json!({"services": {
+            "immich-server": {"image": "a", "environment": env, "volumes": [
+                {"type": "bind", "source": upload, "target": "/data"},
+                {"type": "bind", "source": "/etc/localtime", "target": "/etc/localtime", "read_only": true}]},
+            "immich-machine-learning": {"image": "b", "volumes": [{"type": "volume", "source": "model-cache", "target": "/cache"}]},
+            "redis": {"image": "c", "privileged": false},
+            "database": {"image": "d", "environment": {"POSTGRES_PASSWORD": "x"}, "volumes": [
+                {"type": "bind", "source": db, "target": "/var/lib/postgresql/data"}]}}});
+        snapshot_ok(&model, upload, db).unwrap();
+        let mut changed = model.clone();
+        changed["services"]["immich-server"]["devices"] = json!(["/dev/dri:/dev/dri"]);
+        assert!(snapshot_ok(&changed, upload, db).is_err()); // a restore test runs without it
+        let mut changed = model.clone();
+        changed["services"]["immich-server"]["volumes"][1]["read_only"] = json!(false);
+        assert!(snapshot_ok(&changed, upload, db).is_err()); // the clock only read-only
+        let mut changed = model.clone();
+        changed["services"]["database"]["environment"]["POSTGRES_PASSWORD"] = json!("y");
+        assert!(snapshot_ok(&changed, upload, db).is_err()); // not its own database
+        assert!(snapshot_ok(&model, upload, Path::new("/elsewhere")).is_err());
+    }
     #[test]
     fn nothing_that_stops_apps_starts_while_nekoserver_is_upgraded() {
         let source = include_str!("maintenance.rs");

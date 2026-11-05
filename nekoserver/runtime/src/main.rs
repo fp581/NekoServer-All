@@ -111,7 +111,7 @@ fn entry() -> Result<()> {
         "music-backup" | "app-snapshot" | "app-resume" | "maintenance" | "maintenance-resume"
         | "update-check" => vec!["config"],
         "update-apps" => vec!["config", "app"],
-        "check-compose" => vec!["config", "app", "model"],
+        "check-compose" => vec!["config", "app", "model", "upload", "database"],
         "check-drives" => vec!["config", "drives"],
         "notify" => vec!["config", "snapshot", "state", "runtime", "test"],
         "media-health" => vec!["config", "output", "checking"],

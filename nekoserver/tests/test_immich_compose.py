@@ -164,6 +164,20 @@ class ImmichComposeTests(unittest.TestCase):
         ):
             self.refused(change)
 
+    def test_a_file_the_update_takes_is_one_the_snapshot_takes(self):
+        """The review of 0.47.0: setup kept its own copy of the snapshot rules, which refused
+        `privileged: false` (what Docker does anyway) while the update installed such a file.
+        Both are the runtime's now (check-compose, snapshot_ok)."""
+        import recovery_tools
+
+        plain = copy.deepcopy(MODEL)
+        plain['services']['redis']['privileged'] = False
+        self.assertEqual(set(recovery_tools.validate_model(plain, UPLOAD, DB)), set(MODEL['services']))
+        moved = copy.deepcopy(MODEL)
+        moved['services']['database']['volumes'][0]['source'] = '/srv/elsewhere'
+        with self.assertRaisesRegex(RuntimeError, 'not where its snapshot looks'):
+            recovery_tools.validate_model(moved, UPLOAD, DB)
+
     def test_the_snapshot_check_and_the_runtime_agree(self):
         """The 0.46.1 audit: the update took files the snapshot check refused (and the
         other way round), so a later setup run or snapshot failed."""
