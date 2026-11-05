@@ -38,6 +38,7 @@ def verify(snapshot):
 
 
 CHUNK = 1024 * 1024
+IMAGES = 'images.tar'  # the saved app versions (Docker images) in a monthly snapshot
 
 
 def private_copy(source, folder, name, expected):
@@ -148,7 +149,7 @@ def load_images(snapshot, manifest):
     import tempfile
 
     snapshot = safe_path(snapshot)
-    images = safe_path(snapshot / 'images.tar')
+    images = safe_path(snapshot / IMAGES)
     docker_root = subprocess.run(
         ['docker', '--host', 'unix:///var/run/docker.sock', 'info', '--format', '{{.DockerRootDir}}'],
         capture_output=True,
@@ -160,7 +161,7 @@ def load_images(snapshot, manifest):
     work = tempfile.mkdtemp(prefix='.neko-images-', dir=snapshot.parent)
     folder = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        held = private_copy(images, folder, 'images.tar', manifest['sha256']['images'])
+        held = private_copy(images, folder, IMAGES, manifest['sha256']['images'])
         try:
             subprocess.run(
                 [
@@ -177,7 +178,7 @@ def load_images(snapshot, manifest):
             )
         finally:
             os.close(held)
-            os.unlink('images.tar', dir_fd=folder)
+            os.unlink(IMAGES, dir_fd=folder)
     finally:
         os.close(folder)
         os.rmdir(work)
