@@ -1299,11 +1299,19 @@ function showCat(img, mood, small) {
   const file = catFile(mood, small);
   if (img.getAttribute('src') !== file) {
     img.setAttribute('src', file);
-    // Fades the new mood in (style.css, only when motion is welcome).
-    const box = img.parentElement;
-    box.classList.remove('arrive');
-    void box.offsetWidth;
-    box.classList.add('arrive');
+    // A new mood fades in, only when motion is welcome (never the same mood again).
+    if (!stillCats() && typeof img.animate === 'function') {
+      img.animate(
+        [
+          { opacity: 0, transform: 'scale(0.94)' },
+          { opacity: 1, transform: 'none' }
+        ],
+        {
+          duration: 450,
+          easing: 'ease-out'
+        }
+      );
+    }
   }
 }
 function noteFinished(s) {

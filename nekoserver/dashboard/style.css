@@ -59,10 +59,17 @@ html {
 }
 body {
   margin: 0;
-  background: var(--bg);
   color: var(--text);
   font-size: 15px;
   line-height: 1.55;
+  background: radial-gradient(
+      1200px 520px at 78% -8%,
+      color-mix(in srgb, var(--purple) 13%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(900px 600px at 12% 108%, color-mix(in srgb, var(--peach) 6%, transparent), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
 }
 button,
 input,
@@ -192,6 +199,7 @@ html [hidden][hidden] {
 .brand img {
   border-radius: 13px;
   flex-shrink: 0;
+  box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--purple) 60%, transparent);
 }
 .nav-list {
   margin-top: 34px;
@@ -220,6 +228,8 @@ html [hidden][hidden] {
   color: var(--purple);
   background: var(--purple-soft);
   font-weight: 620;
+  position: relative;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 22%, transparent);
 }
 .nav:hover {
   background: var(--raised);
@@ -453,13 +463,25 @@ h1 {
   overflow: hidden;
   position: relative;
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
-  min-height: 212px;
   padding: 16px 24px 16px 16px;
   margin-bottom: 18px;
-  background: linear-gradient(112deg, var(--raised), var(--surface));
+  --aura: var(--purple);
+  isolation: isolate;
+  min-height: 240px;
+  grid-template-columns: 236px minmax(0, 1fr);
+  border-color: color-mix(in srgb, var(--aura) 32%, var(--line));
+  background: radial-gradient(
+      420px 260px at 120px 50%,
+      color-mix(in srgb, var(--aura) 22%, transparent),
+      transparent 72%
+    ),
+    linear-gradient(112deg, color-mix(in srgb, var(--raised) 80%, var(--purple-soft)), var(--surface));
+  box-shadow: 0 24px 60px -34px color-mix(in srgb, var(--aura) 55%, transparent);
+  transition:
+    border-color 0.6s,
+    box-shadow 0.6s;
 }
 .hero-copy {
   padding: 8px 8px 8px 12px;
@@ -470,8 +492,12 @@ h1 {
   align-items: center;
   gap: 7px;
   color: var(--purple);
-  font-size: 13px;
   font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  font-size: 12px;
+  letter-spacing: 0.2px;
 }
 .cat-state::before {
   content: '';
@@ -487,11 +513,12 @@ h1 {
   color: var(--red);
 }
 .hero h2 {
-  font-size: 34px;
   font-weight: 600;
   line-height: 1.15;
-  letter-spacing: -1px;
   margin: 8px 0 10px;
+  font-size: 38px;
+  letter-spacing: -1.2px;
+  text-wrap: balance;
 }
 .hero p {
   font-size: 15px;
@@ -541,17 +568,23 @@ h1 {
   pointer-events: none;
 }
 .cat-box.main {
-  inline-size: min(100%, 160px);
   padding: 10px;
-  border-radius: 14px;
   justify-self: center;
+  inline-size: min(100%, 196px);
+  border-radius: 22px;
+  box-shadow:
+    0 18px 40px -18px #000a,
+    inset 0 1px 0 #fff6;
 }
 .cat-box.panel-cat {
   inline-size: 84px;
   block-size: 84px;
   flex: 0 0 84px;
   padding: 6px;
-  border-radius: 12px;
+  border-radius: 16px;
+  box-shadow:
+    0 10px 24px -14px #000c,
+    inset 0 1px 0 #fff5;
 }
 .section-head.with-cat {
   align-items: center;
@@ -598,9 +631,15 @@ h1 {
   text-overflow: ellipsis;
 }
 .summary-icon {
-  font-size: 20px;
   color: var(--purple);
   flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  font-size: 18px;
 }
 .rose {
   color: var(--pink);
@@ -615,33 +654,6 @@ h1 {
 /* ---------- moonlit ---------- */
 /* The night the cat lives in: a faint sky behind the page, a moon behind the cat, and a
  * glow in the colour of its mood. All of it is decoration and says nothing on its own. */
-body {
-  background: radial-gradient(
-      1200px 520px at 78% -8%,
-      color-mix(in srgb, var(--purple) 13%, transparent),
-      transparent 70%
-    ),
-    radial-gradient(900px 600px at 12% 108%, color-mix(in srgb, var(--peach) 6%, transparent), transparent 70%),
-    var(--bg);
-  background-attachment: fixed;
-}
-.hero {
-  --aura: var(--purple);
-  isolation: isolate;
-  min-height: 240px;
-  grid-template-columns: 236px minmax(0, 1fr);
-  border-color: color-mix(in srgb, var(--aura) 32%, var(--line));
-  background: radial-gradient(
-      420px 260px at 120px 50%,
-      color-mix(in srgb, var(--aura) 22%, transparent),
-      transparent 72%
-    ),
-    linear-gradient(112deg, color-mix(in srgb, var(--raised) 80%, var(--purple-soft)), var(--surface));
-  box-shadow: 0 24px 60px -34px color-mix(in srgb, var(--aura) 55%, transparent);
-  transition:
-    border-color 0.6s,
-    box-shadow 0.6s;
-}
 .hero[data-mood='playful'] {
   --aura: var(--mint);
 }
@@ -686,57 +698,23 @@ body {
   z-index: -1;
   transition: box-shadow 0.6s;
 }
-.cat-box.main {
-  inline-size: min(100%, 196px);
-  border-radius: 22px;
-  box-shadow:
-    0 18px 40px -18px #000a,
-    inset 0 1px 0 #fff6;
-}
-.cat-state {
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, currentColor 13%, transparent);
-  font-size: 12px;
-  letter-spacing: 0.2px;
-}
-.hero h2 {
-  font-size: 38px;
-  letter-spacing: -1.2px;
-  text-wrap: balance;
-}
 .hero[data-level='critical'] #hero-action {
   background: var(--red);
   border-color: var(--red);
 }
-.cat-box.panel-cat {
-  border-radius: 16px;
-  box-shadow:
-    0 10px 24px -14px #000c,
-    inset 0 1px 0 #fff5;
-}
 .panel {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--raised) 55%, var(--surface)), var(--surface) 140px);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent);
+  padding: 26px 28px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--raised) 55%, var(--surface)), var(--surface) 140px);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  margin-bottom: 22px;
 }
 .panel[data-alert] {
   border-color: color-mix(in srgb, var(--amber) 55%, var(--line));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent),
     0 0 0 1px color-mix(in srgb, var(--amber) 18%, transparent);
-}
-.summary-icon {
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  background: color-mix(in srgb, currentColor 13%, transparent);
-  font-size: 18px;
-}
-.nav.active {
-  position: relative;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 22%, transparent);
 }
 .nav.active::before {
   content: '';
@@ -749,22 +727,9 @@ body {
   background: var(--purple);
   box-shadow: 0 0 12px var(--purple);
 }
-.brand img {
-  box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--purple) 60%, transparent);
-}
 @media (prefers-reduced-motion: no-preference) {
-  /* A new mood fades in; the same mood is never replayed. */
-  .cat-box.arrive img {
-    animation: cat-arrive 0.45s ease-out;
-  }
   .hero::after {
     animation: twinkle 6s ease-in-out infinite alternate;
-  }
-}
-@keyframes cat-arrive {
-  from {
-    opacity: 0;
-    transform: scale(0.94);
   }
 }
 @keyframes twinkle {
@@ -774,13 +739,6 @@ body {
 }
 
 /* ---------- panels & generic cards ---------- */
-.panel {
-  padding: 26px 28px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  margin-bottom: 22px;
-}
 .section-head {
   display: flex;
   align-items: flex-start;

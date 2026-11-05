@@ -54,39 +54,42 @@ try {
 } finally {
   rmSync(folder, { recursive: true, force: true });
 }
-const answers = calls.map(([name, argument]) => {
-  if (!CALLS.has(name) && !DETAILED.has(name)) throw new Error('Not a function the harness offers: ' + name);
-  if (name === 'collectIssues') {
-    return app.collectIssues(app.validStatus(argument)).map(i => ({ id: i.id, level: i.level, title: i.title }));
-  }
-  if (name === 'issueDetails') {
-    // The same list with what each item says and which guide it opens.
-    return app.collectIssues(app.validStatus(argument)).map(i => ({ id: i.id, level: i.level, title: i.title, detail: i.detail, guide: i.guide }));
-  }
-  if (['backupSummary', 'appsSummary'].includes(name)) { return app[name](app.validStatus(argument)); }
-  // The cat: [mood of the reading, its issues] in, the moods out (state.issues as the page has them).
-  if (name === 'companionMood') {
+/* Calls that take more than the plain argument, by name; every other offered function is
+   called with the argument as it is. */
+const summary = issue => ({ id: issue.id, level: issue.level, title: issue.title });
+const SPECIAL = {
+  collectIssues: argument => app.collectIssues(app.validStatus(argument)).map(summary),
+  // The same list with what each item says and which guide it opens.
+  issueDetails: argument =>
+    app.collectIssues(app.validStatus(argument)).map(i => ({ ...summary(i), detail: i.detail, guide: i.guide })),
+  backupSummary: argument => app.backupSummary(app.validStatus(argument)),
+  appsSummary: argument => app.appsSummary(app.validStatus(argument)),
+  // The cat: a reading in, its moods out (with the issues the page would list for it).
+  companionMood: argument => {
     const s = argument.status && app.validStatus(argument.status);
     return app.companionMood(s, s ? app.collectIssues(s) : [], argument.stale, argument.done);
-  }
-  if (name === 'panelMoods') {
+  },
+  panelMoods: argument => {
     const s = app.validStatus(argument.status);
     return app.panelMoods(s, app.collectIssues(s), argument.done, argument.searching, argument.stale);
-  }
-  if (name === 'newlyFinished') { return argument.map(s => app.newlyFinished(app.validStatus(s))?.id ?? null); }
-  if (name === 'catFile') { return app.catFile(argument.mood, argument.small); }
-  if (name === 'pinRefusal') { return app.pinRefusal(argument.answer, argument.now); }
-  if (name === 'waitingWhen') { return argument.waiting.map(w => app.waitingWhen(w, argument.waiting, argument.now)); }
-  if (name === 'releaseNotes') { return app.releaseNotes(argument.app, argument.version); }
+  },
+  newlyFinished: argument => argument.map(s => app.newlyFinished(app.validStatus(s))?.id ?? null),
+  catFile: argument => app.catFile(argument.mood, argument.small),
+  pinRefusal: argument => app.pinRefusal(argument.answer, argument.now),
+  waitingWhen: argument => argument.waiting.map(w => app.waitingWhen(w, argument.waiting, argument.now)),
+  releaseNotes: argument => app.releaseNotes(argument.app, argument.version),
   // The apps Home offers (this stand-in page is the server's own, 127.0.0.1).
-  if (name === 'shownApps') { return app.shownApps(app.validStatus(argument), true).map(a => a.id); }
-  if (name === 'raiseFixed') {
+  shownApps: argument => app.shownApps(app.validStatus(argument), true).map(a => a.id),
+  raiseFixed: argument => {
     // A stand-in Speed slider: what raiseFixed leaves in it and in the draft.
     const input = { min: 20, value: argument.fixed }, shown = { textContent: '' };
     const field = { querySelector: which => (which === 'input' ? input : shown) };
     app.raiseFixed(field, argument);
     return { min: Number(input.min), value: Number(input.value), fixed: argument.fixed };
-  }
-  return app[name](argument);
+  },
+};
+const answers = calls.map(([name, argument]) => {
+  if (!CALLS.has(name) && !DETAILED.has(name)) throw new Error('Not a function the harness offers: ' + name);
+  return (SPECIAL[name] ?? app[name])(argument);
 });
 process.stdout.write(JSON.stringify(answers));
