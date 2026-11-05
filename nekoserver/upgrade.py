@@ -54,6 +54,7 @@ from neko_common import (
 )
 
 JOURNAL = RECOVERY['upgrade'][0]
+ROOT = Path(__file__).resolve().parent
 MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
 FORMAT = 'neko-upgrade-v1'
 ARCHIVE = 'https://codeload.github.com/fp581/NekoServer-All/tar.gz/refs/tags/{tag}'
@@ -178,16 +179,50 @@ def steps_done(config):
     return {name for name, state in states.items() if isinstance(state, dict) and state.get('status') == DONE}
 
 
+def setup_profile(config, modules=None):
+    """The profile this server's setup runs ("full" from the guided setup; a smaller one,
+    or None for the steps switched on in the settings, when set up so by hand), as setup
+    recorded it. The upgrade and the way back run the same one: they ran "full" for
+    everyone, which set up apps a smaller installation never had (the review of 0.47.2).
+    Not recorded yet (set up before 0.47.3): the smallest profile that covers every step
+    done, so nothing is left out and nothing is added."""
+    import installer
+
+    profiles = config.get('profiles') or {}
+    try:
+        saved = json.loads((ssd(config) / 'installer/state' / installer.PROFILE_FILE).read_text())
+    except (OSError, ValueError, RuntimeError, KeyError):
+        saved = None
+    if isinstance(saved, dict) and saved.get('format') == installer.PROFILE_FORMAT:
+        chosen = saved.get('profile')
+        if chosen is None or chosen in profiles:
+            return chosen
+    done = steps_done(config)
+    modules = modules or installer.load_modules(ROOT / 'modules')
+    fits = []
+    for name, selected in profiles.items():
+        try:
+            plan = installer.ordered(modules, selected)
+        except (KeyError, installer.InstallerError):
+            continue
+        if done <= set(plan):
+            fits.append((len(plan), name != 'full', name))
+    return min(fits)[2] if fits else 'full'
+
+
 def run_setup(project, settings, account, log_file, run=subprocess.run):
     """That release's setup, with the saved settings, without questions and without
-    updating the system. Returns its exit code (1 also when a step only waits for you)."""
+    updating the system, for the steps this server is set up with (setup_profile).
+    Returns its exit code (1 also when a step only waits for you)."""
+    profile = setup_profile(json.loads(settings_path(settings).read_text()))
+    chosen = ['--profile', profile] if profile else []
     atomic_write(project / 'my-config.json', Path(settings).read_bytes(), 0o600)
     env = {**os.environ, 'NEKOSERVER_KEEP_SYSTEM': '1'}
     if account:
         env['SUDO_USER'] = account
     with open(log_file, 'ab') as log:
         return run(
-            ['bash', str(project / 'install.sh'), '--profile', 'full', '--apply'],
+            ['bash', str(project / 'install.sh'), *chosen, '--apply'],
             cwd=project,
             stdin=subprocess.DEVNULL,
             stdout=log,
@@ -337,6 +372,39 @@ def added_units(before, units=None, run=None):
     return removed, stuck
 
 
+KEEP_LOGS = 10
+
+
+def tidy(work, journal=JOURNAL, keep_logs=KEEP_LOGS):
+    """Once an upgrade has finished (its record is gone), its download and the release
+    unpacked from it go, with the release's build folder (gigabytes): the release it set up
+    keeps its own copy on the SSD (installer/releases). Only the newest logs stay. They
+    stayed for good before (the review of 0.47.2). Nothing else in the folder is touched,
+    and nothing while an upgrade is unfinished."""
+    import shutil
+
+    if Path(journal).exists() or not Path(work).is_dir():
+        return []
+    removed = []
+    for entry in sorted(Path(work).iterdir()):
+        archive = entry.name.endswith('.tar.gz') and TAG.fullmatch(entry.name[: -len('.tar.gz')])
+        unpacked = TAG.fullmatch(entry.name) and entry.is_dir() and not entry.is_symlink()
+        if archive and entry.is_file() and not entry.is_symlink():
+            entry.unlink()
+        elif unpacked:
+            shutil.rmtree(entry)
+        else:
+            continue
+        removed.append(entry.name)
+    logs = sorted(
+        (p for p in Path(work).glob('*.log') if p.is_file() and not p.is_symlink()), key=lambda p: p.stat().st_mtime
+    )
+    for old in logs[:-keep_logs] if keep_logs else logs:
+        old.unlink()
+        removed.append(old.name)
+    return removed
+
+
 BUSY_MOVE = 'A drive move (migrate.py) or another upgrade is at work'
 
 
@@ -349,7 +417,19 @@ def upgrade(tag, settings, out=print, **more):
         out(BUSY_MOVE + '; the upgrade did not start, nothing was changed. Try again later.')
         return 2
     with held:
-        return upgrade_held(tag, settings, out, **more)
+        code = upgrade_held(tag, settings, out, **more)
+        tidy_after(settings, more.get('journal', JOURNAL), out)
+        return code
+
+
+def tidy_after(settings, journal, out=print):
+    """tidy for this server's upgrade folder; a folder that can't be tidied never fails
+    the upgrade."""
+    try:
+        config = json.loads(settings_path(settings).read_text())
+        tidy(ssd(config) / 'installer/upgrades', journal)
+    except (OSError, ValueError, RuntimeError, KeyError) as exc:
+        out(f'The finished upgrade\'s files could not be tidied ({exc}); they stay in installer/upgrades')
 
 
 def upgrade_held(
@@ -437,9 +517,17 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
         removed, stuck = added_units(set(saved['units']))
         for name in removed:
             out(f'Removed {name}: the newer release added it')
+    if stuck:
+        # The older setup never runs beside a newer release's service still at work (it
+        # ran first before, and the failure was only said after it: the review of 0.47.2).
+        out(
+            'These services of the newer release did not stop: '
+            + ', '.join(stuck)
+            + f'. Nothing else was changed. Stop them (sudo systemctl stop {" ".join(stuck)}), then run  '
+            'sudo python3 upgrade.py resume  to put the release back. App updates and the monthly check wait until then.'
+        )
+        return 2
     problem = setup_problem(setup, previous, settings, account, log_file)
-    if problem is None and stuck:
-        problem = 'these services of the newer release did not stop: ' + ', '.join(stuck)
     if problem is None:
         problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:
@@ -458,7 +546,9 @@ def resume(settings, out=print, setup=run_setup, journal=JOURNAL):
     nothing; one cut off while it set up or checked the new release is put back on the
     release it had (the new one may be half set up). It waits for the operation lock."""
     with hold_operation(OPERATION_LOCK, wait=True):
-        return resume_held(settings, out, setup, journal)
+        code = resume_held(settings, out, setup, journal)
+        tidy_after(settings, journal, out)
+        return code
 
 
 def resume_held(settings, out, setup, journal):

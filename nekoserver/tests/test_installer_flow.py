@@ -53,6 +53,20 @@ class InstallerFlowTests(unittest.TestCase):
             }
         )
 
+    def test_setup_records_the_profile_it_ran_and_a_single_step_never_changes_it(self):
+        """For the upgrade to run the same steps (upgrade.setup_profile; the review of
+        0.47.2: it ran "full" for everyone)."""
+        settings = json.loads(self.config.read_text())
+        settings['profiles'] = {**settings['profiles'], 'tiny': ['stopper']}
+        self.config.write_text(json.dumps(settings))
+        record = self.state / installer.PROFILE_FILE
+        with mock.patch('config_checks.validate'), mock.patch('builtins.print'), self.assertRaises(KeyboardInterrupt):
+            installer._execute(self.args(profile='tiny', module=None), self.root)
+        self.assertEqual(json.loads(record.read_text()), {'format': installer.PROFILE_FORMAT, 'profile': 'tiny'})
+        with mock.patch('config_checks.validate'), mock.patch('builtins.print'), self.assertRaises(KeyboardInterrupt):
+            installer._execute(self.args(), self.root)  # --module stopper
+        self.assertEqual(json.loads(record.read_text())['profile'], 'tiny')
+
     def test_ctrl_c_records_the_step_and_ends_without_a_traceback(self):
         args = self.args()
         with mock.patch('config_checks.validate'), mock.patch('builtins.print'), self.assertRaises(KeyboardInterrupt):

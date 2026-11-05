@@ -84,6 +84,11 @@ def load_modules(directory):
     return modules
 
 
+# The profile the last setup run used (None: the steps switched on in the settings).
+PROFILE_FILE = 'profile.json'
+PROFILE_FORMAT = 'neko-setup-profile-v1'
+
+
 def ordered(modules, selected):
     result, visited = [], {}
 
@@ -384,6 +389,10 @@ def _execute(args, root=ROOT):
             print('Configuration and dependency graph valid.')
         return 0
     ensure_directory(state_dir, 0o700)
+    if args.apply and not (args.module or args.retry_failed):
+        # The steps this server is set up with, for the upgrade to run the same ones
+        # (upgrade.py setup_profile): it ran "full" for everyone (the review of 0.47.2).
+        atomic_json(safe_path(state_dir / PROFILE_FILE), {'format': PROFILE_FORMAT, 'profile': args.profile})
     if not args.apply:
         state_path = safe_path(state_dir / 'inspection-state.json')
     log_path = safe_path(state_dir / ('install.log' if args.apply else 'inspection.log'))
