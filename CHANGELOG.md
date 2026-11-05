@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.47.4 — 2026-11-05
 
 Fixes from trying the releases for real on the test rig (an Arch server with the apps running, taken from 0.41.3 through 0.46.2 and 0.46.3 to 0.47.3). All of them are still in 0.47.3. Each fix has a test that fails on 0.47.3.
 
