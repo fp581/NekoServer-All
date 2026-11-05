@@ -90,11 +90,23 @@ def apt_updates(text):
 
 
 def dnf_updates(text):
-    """`dnf -q check-update`: "kernel.x86_64   6.11.4-301.fc41   updates" (no current version)."""
+    """`dnf -q check-update`: "kernel.x86_64   6.11.4-301.fc41   updates" (no current version).
+    dnf4 puts a long name on a line of its own and its version and source on the next,
+    indented one (the review of 0.47.0: those updates were left out of the count)."""
     found = []
+    wrapped = None  # a name alone on its line, waiting for its version
     for line in text.splitlines():
         parts = line.split()
-        if len(parts) == 3 and '.' in parts[0] and not line.startswith(' ') and parts[0] != 'Obsoleting':
+        if wrapped and line.startswith(' ') and len(parts) == 2:
+            parts, wrapped = [wrapped, *parts], None
+        elif len(parts) == 1 and '.' in parts[0] and not line.startswith(' '):
+            wrapped = parts[0]
+            continue
+        else:
+            wrapped = None
+            if line.startswith(' '):
+                continue
+        if len(parts) == 3 and '.' in parts[0] and parts[0] != 'Obsoleting':
             found.append({'name': parts[0].rsplit('.', 1)[0], 'from': '', 'to': parts[1], 'security': None})
     return found
 

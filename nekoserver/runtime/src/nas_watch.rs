@@ -259,15 +259,21 @@ pub fn run(a: &crate::Args) -> Result<()> {
             // minute).
             crate::backup::guard(&cfgpath, &data, &media)?;
             println!("NAS watch: the drives on the network storage box take writes again; starting the apps");
+            // No longer held before the start: the start guard of Docker, Samba and the
+            // gateway refuses while held (startup.rs held_back).
+            let held = record.clone();
+            record["held"] = json!(false);
+            save(&record)?;
             if let Err(e) = drive_return::start_again(&cfgpath, &data, &media, "NAS watch") {
-                if !drive_return::services_up() {
-                    // Docker or another of the apps' services did not start: still held, so
+                if !drive_return::apps_up() {
+                    // Docker did not start: held again, so
                     // the next check (in a minute) starts them again (the review of 0.46.3:
                     // the hold was lifted, and nothing started them any more).
                     println!(
                         "NAS watch: the apps did not start again ({e}); trying again in a minute"
                     );
-                    return save(&record);
+                    let _ = stop_writers(); // what did start, stopped again while held
+                    return save(&held);
                 }
                 // The apps' services run; something after them failed (a job's own resume).
                 // No longer held: retrying every minute would restart everything each time
@@ -412,6 +418,19 @@ fn save(record: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The review of 0.47.0: the start guard refuses while held, so the hold is lifted (and
+    /// saved) before the apps are started, and put back when Docker did not start.
+    #[test]
+    fn the_hold_is_lifted_before_the_apps_start_and_put_back_if_they_did_not() {
+        let source = include_str!("nas_watch.rs");
+        let resume = &source[source.find("Act::Resume => {").unwrap()..];
+        let lifted = resume
+            .find("record[\"held\"] = json!(false);\n            save(&record)?;")
+            .unwrap();
+        let started = resume.find("drive_return::start_again(").unwrap();
+        let put_back = resume.find("return save(&held);").unwrap();
+        assert!(lifted < started && started < put_back);
+    }
     #[test]
     fn the_apps_stop_once_on_a_failing_drive_and_start_only_when_all_take_writes() {
         use Health::*;

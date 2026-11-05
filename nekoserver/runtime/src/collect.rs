@@ -460,10 +460,7 @@ fn nas_drive(r: &mut Value, key: &str, now: f64) {
         return;
     }
     let seen = common::json(Path::new(*crate::nas_watch::STATE), 64000);
-    let fresh = seen["at"]
-        .as_f64()
-        .is_some_and(|t| (now - 180.0..=now + 60.0).contains(&t));
-    match seen["drives"][key].as_str().filter(|_| fresh) {
+    match nas_verdict(&seen, key, now, nas_check_busy) {
         Some("fails") => r["read_only"] = json!(true),
         Some("waits") => r["waiting"] = json!(true),
         _ => {}
@@ -471,6 +468,36 @@ fn nas_drive(r: &mut Value, key: &str, now: f64) {
     if seen["held"] == true {
         r["held_by_nas_watch"] = json!(true);
     }
+}
+/// What the NAS check found for drive `key`: its record when recent; with an old record and
+/// a check still at work (`busy`), "waits": its test write hangs, as on a NAS that does not
+/// answer (the review of 0.47.0: "waiting" went, and the phone was told the drive was back).
+fn nas_verdict<'a>(
+    seen: &'a Value,
+    key: &str,
+    now: f64,
+    busy: impl Fn() -> bool,
+) -> Option<&'a str> {
+    let fresh = seen["at"]
+        .as_f64()
+        .is_some_and(|t| (now - 180.0..=now + 60.0).contains(&t));
+    if fresh {
+        seen["drives"][key].as_str()
+    } else {
+        busy().then_some("waits")
+    }
+}
+/// The NAS check is at work right now (its service starting: a check runs as a oneshot).
+fn nas_check_busy() -> bool {
+    common::command(
+        &[
+            "systemctl",
+            "is-active",
+            common::shared("nas_watch", "service"),
+        ],
+        5,
+    )
+    .is_ok_and(|(_, state)| state.trim() == "activating")
 }
 /// The NAS connections this PC keeps (network_storage.targets in the settings) and how
 /// each is, from Linux's iSCSI sessions (/sys/class/iscsi_session/session<n>): null when
@@ -2578,6 +2605,20 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn a_nas_check_stuck_on_its_test_write_still_counts_as_waiting() {
+        let seen = json!({"at": 1000.0, "drives": {"media_hdd": "ok"}});
+        assert_eq!(
+            nas_verdict(&seen, "media_hdd", 1100.0, || false),
+            Some("ok")
+        );
+        // Ten minutes on, the check still at work: its write hangs.
+        assert_eq!(
+            nas_verdict(&seen, "media_hdd", 1600.0, || true),
+            Some("waits")
+        );
+        assert_eq!(nas_verdict(&seen, "media_hdd", 1600.0, || false), None);
+    }
     #[test]
     fn only_the_apps_the_gateway_publishes_get_a_phone_link() {
         // The audit of 0.45.6: a phone got an "Open" link for every app with a Tailscale

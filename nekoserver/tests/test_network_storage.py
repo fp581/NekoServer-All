@@ -573,6 +573,13 @@ class DriveStepTests(unittest.TestCase):
         storage.same_nas_disk(old, {'network': False}, 'the media HDD')
         self.assertNotIn('network', old)
 
+    def test_the_nas_check_is_never_killed_by_a_limit_of_its_own(self):
+        """The review of 0.47.0: 15 minutes, while each resume job it runs may take 3 hours."""
+        from modules import server_os
+
+        unit = server_os.nas_watch_units('/x/nekoserver-runtime')[server_os.NAS_WATCH]
+        self.assertIn('TimeoutStartSec=infinity\n', unit)
+
     def test_a_nas_disk_that_shows_no_wwn_is_refused_as_the_runtime_refuses_it(self):
         """The review of 0.47.0: setup took a NAS disk with no WWN (and kept the saved one, or
         none: the copy check off for good), while the runtime refuses it at every start."""

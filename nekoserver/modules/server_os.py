@@ -323,8 +323,10 @@ def nas_watch_units(binary):
         NAS_WATCH: '[Unit]\nDescription=NekoServer check the drives on the network storage box\n'
         'After=remote-fs.target\n[Service]\nType=oneshot\n'
         f'ExecStart={binary} nas-watch --config {DRIVE_SETTINGS}\n'
-        # Its test write waits at most 20 s; a start of the apps again, longer.
-        'TimeoutStartSec=15min\n' + SANDBOX,
+        # Each step has its own limit: the test write 20 s, each resume job it runs 3 h
+        # (drive_return.rs). A limit of its own killed it mid-rollback, held (the review of
+        # 0.47.0: it was 15 minutes).
+        'TimeoutStartSec=infinity\n' + SANDBOX,
         NAS_WATCH_TIMER: '[Unit]\nDescription=NekoServer check the drives on the network storage box every minute\n'
         '[Timer]\nOnBootSec=3min\nOnUnitInactiveSec=1min\nAccuracySec=10s\n[Install]\nWantedBy=timers.target\n',
     }

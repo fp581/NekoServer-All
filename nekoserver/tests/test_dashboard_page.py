@@ -512,6 +512,14 @@ class CatCompanionTests(unittest.TestCase):
         )  # noqa: E731
         self.assertEqual(page(('newlyFinished', [check(1000.0), check(2000.0)])), [[None, None]])
 
+    def test_apps_held_by_the_nas_check_are_named(self):
+        """The review of 0.47.0: the collector said the apps were held, and nothing showed it."""
+        held = self.readings()
+        held['storage'][0].update(network=True, held_by_nas_watch=True)
+        issues = page(('collectIssues', held))[0]
+        self.assertEqual([i['id'] for i in issues], ['nas:hold'])
+        self.assertEqual(self.moods(held)['drives'], 'afraid')
+
     def test_each_cat_has_its_animation_and_the_page_serves_every_one(self):
         files = page(
             ('catFile', {'mood': 'afraid', 'small': False}),

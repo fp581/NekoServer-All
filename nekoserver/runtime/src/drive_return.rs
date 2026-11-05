@@ -276,29 +276,52 @@ pub fn run(a: &Args) -> Result<()> {
 
 /// True when every one of SERVICES that is switched on runs (the apps' services, started
 /// again by start_again).
-pub(crate) fn services_up() -> bool {
-    services_up_with(&|args| common::command(args, 15).map(|(code, _)| code))
+/// The apps run: Docker, which runs them, is up (when switched on). Samba or the gateway
+/// failing to start is said, but is no reason to keep the apps held: they don't hold the
+/// apps' data, and holding for them stopped every resume for good (the review of 0.47.0).
+pub(crate) fn apps_up() -> bool {
+    apps_up_with(&|args| common::command(args, 15).map(|(code, _)| code))
 }
-fn services_up_with(systemctl: &dyn Fn(&[&str]) -> Result<i32>) -> bool {
-    SERVICES.iter().all(|unit| {
+fn apps_up_with(systemctl: &dyn Fn(&[&str]) -> Result<i32>) -> bool {
+    let unit = SERVICES[0];
+    let enabled = systemctl(&["systemctl", "is-enabled", "--quiet", unit]).is_ok_and(|c| c == 0);
+    !enabled || systemctl(&["systemctl", "is-active", "--quiet", unit]).is_ok_and(|c| c == 0)
+}
+/// Each service switched on and not running is started; every one is tried. Returns the
+/// ones that did not start (the review of 0.47.0: the first failure stopped the rest and
+/// every resume after them).
+fn start_services(who: &str, systemctl: &dyn Fn(&[&str], u64) -> Result<i32>) -> Vec<&'static str> {
+    let mut failed = vec![];
+    for unit in SERVICES {
         let enabled =
-            systemctl(&["systemctl", "is-enabled", "--quiet", unit]).is_ok_and(|c| c == 0);
-        !enabled || systemctl(&["systemctl", "is-active", "--quiet", unit]).is_ok_and(|c| c == 0)
-    })
+            systemctl(&["systemctl", "is-enabled", "--quiet", unit], 15).is_ok_and(|c| c == 0);
+        let active =
+            systemctl(&["systemctl", "is-active", "--quiet", unit], 15).is_ok_and(|c| c == 0);
+        if enabled && !active {
+            let _ = systemctl(&["systemctl", "reset-failed", unit], 15);
+            if systemctl(&["systemctl", "start", unit], 300).is_ok_and(|c| c == 0) {
+                println!("{who}: started {unit} again");
+            } else {
+                println!("{who}: {unit} did not start (journalctl -u {unit})");
+                failed.push(unit);
+            }
+        }
+    }
+    failed
 }
 /// The services NekoServer keeps on its drives started again (those switched on), their
 /// views of the drives refreshed, then each job a missing drive cut off finished. Only
 /// with both drives in place and the right ones. `who` begins each line said.
 pub(crate) fn start_again(cfgpath: &Path, data: &Path, media: &Path, who: &str) -> Result<()> {
     backup::guard(cfgpath, data, media)?;
-    for unit in SERVICES {
-        let enabled = common::command(&["systemctl", "is-enabled", "--quiet", unit], 15)?.0 == 0;
-        let active = common::command(&["systemctl", "is-active", "--quiet", unit], 15)?.0 == 0;
-        if enabled && !active {
-            let _ = common::command(&["systemctl", "reset-failed", unit], 15);
-            run_ok(&["systemctl", "start", unit], 300)?;
-            println!("{who}: started {unit} again");
-        }
+    let failed = start_services(who, &|args, wait| {
+        common::command(args, wait).map(|(code, _)| code)
+    });
+    if failed.contains(&SERVICES[0]) {
+        // Without Docker no app and no resume can run: tried again later.
+        return Err(Error::new(
+            "Docker did not start (journalctl -u docker.service)",
+        ));
     }
     let enabled = |unit: &str| {
         common::command(&["systemctl", "is-enabled", "--quiet", unit], 15)
@@ -314,9 +337,15 @@ pub(crate) fn start_again(cfgpath: &Path, data: &Path, media: &Path, who: &str) 
             Err(e) => println!("{who}: {e}"),
         }
     }
-    finish_interrupted_jobs(installed, |unit| {
+    let resumed = finish_interrupted_jobs(installed, |unit| {
         run_ok(&["systemctl", "start", unit], 3 * 3600).map(|_| ())
-    })
+    });
+    match failed.first() {
+        Some(unit) => Err(Error::new(&format!(
+            "{unit} did not start (journalctl -u {unit})"
+        ))),
+        None => resumed,
+    }
 }
 
 /// A job a drive cut off part-way (the apps it stopped, its journal) is finished now that
@@ -343,7 +372,7 @@ fn finish_interrupted_jobs(
 mod tests {
     use super::*;
     #[test]
-    fn the_apps_count_as_up_only_when_every_service_switched_on_runs() {
+    fn the_apps_count_as_up_when_docker_runs() {
         // The review of 0.46.3: Docker failing to start lifted the NAS hold all the same.
         let docker_down = |args: &[&str]| -> Result<i32> {
             Ok(if args[1] == "is-active" && args[3] == SERVICES[0] {
@@ -352,19 +381,35 @@ mod tests {
                 0
             })
         };
-        assert!(!services_up_with(&docker_down));
-        assert!(services_up_with(&|_args: &[&str]| -> Result<i32> { Ok(0) }));
-        // One not switched on (no Samba here) doesn't count.
-        let off = |args: &[&str]| -> Result<i32> {
-            Ok(if args[1] == "is-enabled" && args[3] == SERVICES[1] {
-                1
-            } else if args[1] == "is-active" && args[3] == SERVICES[1] {
+        assert!(!apps_up_with(&docker_down));
+        assert!(apps_up_with(&|_args: &[&str]| -> Result<i32> { Ok(0) }));
+        // The review of 0.47.0: a broken gateway (or Samba) kept the hold on for good.
+        let gateway_down = |args: &[&str]| -> Result<i32> {
+            Ok(if args[1] == "is-active" && args[3] == SERVICES[3] {
                 3
             } else {
                 0
             })
         };
-        assert!(services_up_with(&off));
+        assert!(apps_up_with(&gateway_down));
+    }
+    #[test]
+    fn every_service_is_tried_even_when_one_does_not_start() {
+        use std::cell::RefCell;
+        let started = RefCell::new(vec![]);
+        let systemctl = |args: &[&str], _wait: u64| -> Result<i32> {
+            Ok(match args[1] {
+                "is-enabled" => 0,
+                "is-active" => 3,
+                "start" => {
+                    started.borrow_mut().push(args[2].to_string());
+                    i32::from(args[2] == SERVICES[1]) // Samba refuses
+                }
+                _ => 0,
+            })
+        };
+        assert_eq!(start_services("test", &systemctl), vec![SERVICES[1]]);
+        assert_eq!(*started.borrow(), SERVICES.map(str::to_string).to_vec());
     }
     #[test]
     fn interrupted_jobs_are_finished_in_order_and_a_failure_is_reported() {

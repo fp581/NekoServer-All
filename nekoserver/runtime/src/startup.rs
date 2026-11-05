@@ -248,8 +248,26 @@ pub fn copies(cfg: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// Why a start of Docker, Samba or the gateway is refused now, or None: the NAS check holds
+/// the apps while an app drive on the NAS fails writes, and it starts them itself once every
+/// drive takes writes. Before, any job that needs Docker (an update, a retry at :17, "Update
+/// now") started it again on the failing drive (the review of 0.47.0).
+fn held_back(cfg: &serde_json::Value, held: bool) -> Option<String> {
+    let on_a_nas = ["data_ssd", "media_hdd"]
+        .iter()
+        .any(|key| cfg["storage"][*key]["network"].is_object());
+    (held && on_a_nas).then(|| {
+        format!(
+            "The apps are held: a drive on the network storage box does not take writes. The NAS check starts them by itself once every drive does (journalctl -u {})",
+            common::shared("nas_watch", "service")
+        )
+    })
+}
 pub fn run(a: &Args, gateway: bool) -> Result<()> {
     let cfg = backup::open_job(a, 64000)?.cfg;
+    if let Some(reason) = held_back(&cfg, crate::nas_watch::held()) {
+        return Err(Error::new(&reason));
+    }
     if gateway {
         let (code, text) = common::command(&["ip", "-j", "address", "show", "up"], 10)?;
         if code != 0 {
@@ -265,6 +283,16 @@ pub fn run(a: &Args, gateway: bool) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn nothing_that_writes_to_the_drives_starts_while_the_nas_check_holds_the_apps() {
+        let nas = json!({"storage":{"data_ssd":{"uuid":"a"},"media_hdd":{"uuid":"b","network":{"transport":"iscsi","wwn":"0x1"}}}});
+        let said = held_back(&nas, true).expect("refused while held");
+        assert!(said.contains("nekoserver-nas-watch.service"), "{said}");
+        assert!(held_back(&nas, false).is_none());
+        // Only the backup drive on a NAS: the check never holds the apps, nothing is refused.
+        let local = json!({"storage":{"data_ssd":{"uuid":"a"},"media_hdd":{"uuid":"b"}}});
+        assert!(held_back(&local, true).is_none());
+    }
     #[test]
     fn physical_lan_only() {
         let cfg = json!({"gateway":{"lan_ip":"192.168.1.20","lan_cidr":"192.168.1.0/24"}});

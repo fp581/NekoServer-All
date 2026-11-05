@@ -2223,6 +2223,19 @@ class PackageReviewTest(unittest.TestCase):
         self.assertEqual(len(family.said), 1)
         self.assertIn('Another program is installing or updating packages', family.said[0])
 
+    def test_a_long_name_dnf4_wraps_onto_its_own_line_is_counted(self):
+        """The review of 0.47.0: dnf4 wraps a long name, and the update was left out."""
+        text = (
+            'kernel.x86_64                     6.11.4-301.fc41          updates\n'
+            'python3-a-very-long-package-name-indeed.noarch\n'
+            '                                  1.2.3-1.fc40             updates\n'
+            'Obsoleting Packages\n'
+            'grub2.x86_64                      2.12-1.fc41              updates\n'
+            '    grub2-old.x86_64              2.06-1.fc40              @updates\n'
+        )
+        names = [u['name'] for u in host.dnf_updates(text)]
+        self.assertEqual(names, ['kernel', 'python3-a-very-long-package-name-indeed', 'grub2'])
+
     def test_dnf5s_transaction_lock_is_waited_out_too(self):
         self.assertTrue(
             host.busy(

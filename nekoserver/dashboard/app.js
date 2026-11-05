@@ -794,6 +794,14 @@ function arrayIssues(s, add) {
 }
 function driveIssues(s, add) {
   arrayIssues(s, add);
+  if (s.storage.some(disk => disk.held_by_nas_watch === true)) {
+    add(
+      'nas:hold',
+      'The apps are held: a drive on the network storage box stopped taking writes',
+      'They start again by themselves once every drive on the NAS takes writes. If the drive was repaired and they stay stopped, look at  journalctl -u nekoserver-nas-watch.service .',
+      'storage'
+    );
+  }
   for (const disk of s.storage) {
     const name = text(disk.name, 'Drive'),
       smart = object(disk.smart);
