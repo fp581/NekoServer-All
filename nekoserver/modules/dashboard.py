@@ -26,6 +26,7 @@ CAT_MOODS = ('happy', 'playful', 'resting', 'sleeping', 'curious', 'afraid', 'li
 # The page's files; runtime/src/serve.rs serves exactly these (checked by a test).
 ASSETS = (
     'index.html',
+    'theme.css',
     'style.css',
     'app.js',
     'sw.js',

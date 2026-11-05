@@ -74,6 +74,7 @@ fn error_body(code: &str) -> (u16, Vec<u8>) {
 const ASSETS: &[(&str, &str, &str)] = &[
     ("/", "index.html", "text/html; charset=utf-8"),
     ("/index.html", "index.html", "text/html; charset=utf-8"),
+    ("/theme.css", "theme.css", "text/css; charset=utf-8"),
     ("/style.css", "style.css", "text/css; charset=utf-8"),
     ("/app.js", "app.js", "text/javascript; charset=utf-8"),
     ("/sw.js", "sw.js", "text/javascript; charset=utf-8"),
@@ -185,6 +186,30 @@ fn reply(stream: &mut TcpStream, code: u16, body: &[u8], mime: &str, head: bool)
     let header=format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: {cache}\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Server-Time: {time:.3}\r\nConnection: close\r\n\r\n",body.len());
     let _ = stream.write_all(header.as_bytes());
     if !head {
+        let _ = stream.write_all(body);
+    }
+}
+/// One of the page's files, with its fingerprint (ETag): the browser keeps a copy and asks
+/// again only whether it changed, so the cats and the rest are not downloaded anew at every
+/// visit (the review of 0.47.0). A copy it already has is answered "304 Not Modified".
+fn reply_asset(stream: &mut TcpStream, body: &[u8], mime: &str, asked: &[&[u8]], head: bool) {
+    let tag = format!("\"{}\"", &common::sha(body)[..32]);
+    let fresh = asked.iter().any(|value| {
+        value
+            .split(|b| *b == b',')
+            .any(|one| one.trim_ascii() == tag.as_bytes() || one.trim_ascii() == b"*")
+    });
+    let (code, reason) = if fresh {
+        (304, "Not Modified")
+    } else {
+        (200, "OK")
+    };
+    let length = if fresh { 0 } else { body.len() };
+    let header = format!(
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {length}\r\nCache-Control: no-cache\r\nETag: {tag}\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n"
+    );
+    let _ = stream.write_all(header.as_bytes());
+    if !head && !fresh {
         let _ = stream.write_all(body);
     }
 }
@@ -690,7 +715,7 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
         _ => match ASSETS.iter().find(|a| a.0 == path) {
             Some((_, file, mime)) => match common::bytes(&server.assets.join(file), 2_000_000) {
                 Ok(b) => {
-                    reply(&mut stream, 200, &b, mime, head);
+                    reply_asset(&mut stream, &b, mime, &values("if-none-match"), head);
                     return;
                 }
                 Err(_) => Err("E40"),
@@ -1053,6 +1078,23 @@ mod tests {
         let host = format!("127.0.0.1:{port}");
         assert!(get("/", &host).ends_with("asset index.html"));
         assert!(get("/manifest.webmanifest", &host).contains("application/manifest+json"));
+        // The review of 0.47.0: a file the browser already has is not sent again.
+        let first = get("/style.css", &host);
+        let tag = first
+            .lines()
+            .find_map(|line| line.strip_prefix("ETag: "))
+            .expect("a fingerprint")
+            .to_string();
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            s,
+            "GET /style.css HTTP/1.1\r\nHost: {host}\r\nIf-None-Match: {tag}\r\n\r\n"
+        )
+        .unwrap();
+        let mut again = String::new();
+        s.read_to_string(&mut again).unwrap();
+        assert!(again.starts_with("HTTP/1.1 304 Not Modified"), "{again}");
+        assert!(again.ends_with("\r\n\r\n"), "{again}");
         let missing = get("/api/status", &host);
         assert!(
             missing.starts_with("HTTP/1.1 503") && missing.contains("\"E10\""),

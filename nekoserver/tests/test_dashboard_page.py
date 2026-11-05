@@ -421,10 +421,6 @@ class PhoneLayoutTests(unittest.TestCase):
         self.assertIn('after five minutes above 95 °C', (ROOT / 'DASHBOARD.md').read_text())
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 @unittest.skipUnless(NODE, 'node is not installed')
 class CatCompanionTests(unittest.TestCase):
     """The cat theme: the cat shows the server's state in a fixed order and never decides
@@ -506,6 +502,16 @@ class CatCompanionTests(unittest.TestCase):
         )
         self.assertEqual(page(('newlyFinished', [first, same, newer, again])), [[None, None, 'app-backup', None]])
 
+    def test_a_first_good_copy_is_celebrated_and_jobs_that_are_not_backups_never_are(self):
+        """The review of 0.47.0: a backup's very first good copy was never celebrated, and the
+        daily update check finishing was celebrated as a backup ("its last good copy")."""
+        never, first = self.readings(last_success=None), self.readings(last_success=1000.0)
+        self.assertEqual(page(('newlyFinished', [never, first])), [[None, 'app-backup']])
+        check = lambda at: status(
+            backups=[{'id': 'update_check', 'name': 'Daily update check', 'status': 'pass', 'last_success': at}]
+        )  # noqa: E731
+        self.assertEqual(page(('newlyFinished', [check(1000.0), check(2000.0)])), [[None, None]])
+
     def test_each_cat_has_its_animation_and_the_page_serves_every_one(self):
         files = page(
             ('catFile', {'mood': 'afraid', 'small': False}),
@@ -517,3 +523,7 @@ class CatCompanionTests(unittest.TestCase):
         for mood in dashboard.CAT_MOODS:
             self.assertIn(f'cat-{mood}-small.webp', dashboard.ASSETS)
             self.assertIn(f'cat-{mood}.png', dashboard.ASSETS)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -33,6 +33,7 @@ PLAIN = 'text/plain'
 JSON = 'application/json'
 HTML = 'text/html; charset=utf-8'
 STATIC = {
+    'theme.css': ('../dashboard/theme.css', 'text/css; charset=utf-8'),
     'setup.css': ('setup.css', 'text/css; charset=utf-8'),
     'setup.js': ('setup.js', 'text/javascript; charset=utf-8'),
     'logo.svg': ('../dashboard/logo.svg', 'image/svg+xml'),

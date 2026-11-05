@@ -13,6 +13,8 @@ A feature release: the dashboard's new look, **Moonlit Neko**.
 ### Changed
 - **The night palette is warmer** (plum-charcoal), and the light theme is now **Lamplight**: soft parchment with no bright white, so switching to it never dazzles. The setup window uses the same colours.
 - **A night/Lamplight switch at the top right** (☾ / ☀). The page crossfades into the other theme; with less motion asked for, it simply switches. The choice is kept in the browser, like the other settings.
+- **One set of colours for the dashboard and the setup window** (`dashboard/theme.css`, each colour written once for both themes), so the two can't drift apart.
+- **The dashboard loads less:** the page's files carry a fingerprint, so the browser keeps them and asks only whether they changed; a page loads only its own cat; offline, the still cats show.
 - **Every text colour is easy to read in both themes:** 5:1 or better against every surface it can sit on, tinted badges included (the common standard, WCAG AA, asks for 4.5:1). Lamplight's accents keep the night's hues, made darker, so lavender, green, amber and red mean the same in both.
 - **A moonlit Home:** a faint night sky behind the page, and a glow behind the cat in the colour of its mood (lavender at rest, mint while a job runs, peach on success, amber or red on a problem). A new mood fades in; nothing moves when motion is turned down. The four summary facts are a compact line instead of four boxes.
 - **New logo and app icons:** Neko peeking in front of a full moon, in the menu, the browser tab and on a phone's home screen (they replace the pink cat face).

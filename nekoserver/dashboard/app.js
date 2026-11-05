@@ -1154,19 +1154,25 @@ function runningJobs(s) {
 function jobName(job) {
   return text(job?.name, text(job?.id, 'A backup'));
 }
-/* A job whose last good copy moved on since the page last looked; never on the first look
- * (opening the page does not celebrate an old copy), never twice for the same copy. */
+/* The jobs in the readings that are not backups: their finishing is no copy to celebrate. */
+const NOT_BACKUPS = new Set(['maintenance', 'updates', 'update_check']);
+/* A backup whose last good copy moved on since the page last looked, or that has its first
+ * one; never on the page's first look (opening the page does not celebrate an old copy),
+ * never twice for the same copy. */
 function newlyFinished(s) {
   let fresh = null;
   for (const job of list(s?.backups)) {
-    if (!numeric(job.last_success)) {
+    if (NOT_BACKUPS.has(job.id)) {
       continue;
     }
-    const before = lastGood.get(job.id);
-    if (numeric(before) && job.last_success > before && job.status !== 'running') {
-      fresh = job;
+    const now = numeric(job.last_success) ? job.last_success : null;
+    if (lastGood.has(job.id) && now !== null && job.status !== 'running') {
+      const before = lastGood.get(job.id);
+      if (before === null || now > before) {
+        fresh = job;
+      }
     }
-    lastGood.set(job.id, job.last_success);
+    lastGood.set(job.id, now);
   }
   return fresh;
 }
@@ -1310,6 +1316,11 @@ function catFile(mood, small) {
 function showCat(img, mood, small) {
   const file = catFile(mood, small);
   if (img.getAttribute('src') !== file) {
+    // An animation that can't be fetched (offline: only the stills are saved) shows the still.
+    img.onerror = () => {
+      img.onerror = null;
+      img.setAttribute('src', 'cat-' + mood + '.png');
+    };
     img.setAttribute('src', file);
     // A new mood fades in, only when motion is welcome (never the same mood again).
     if (!stillCats() && typeof img.animate === 'function') {
@@ -1336,11 +1347,30 @@ function noteFinished(s) {
   if (fresh && !first) {
     finished = fresh;
     clearTimeout(finishedTimer);
-    // Then the cat shows the server's state again, whatever it is by then.
-    finishedTimer = setTimeout(() => {
-      finished = null;
-      renderCats();
-    }, CELEBRATE_MS);
+    finishedTimer = null; // started once the happy picture shows (celebrate)
+  }
+}
+/* The celebration's 3.2 s count from when the happy picture has arrived (on a slow link it
+ * would otherwise be over before it shows), and at most 10 s after the job finished. Then
+ * the cat shows the server's state again, whatever it is by then. */
+function celebrate(img) {
+  if (!finished || finishedTimer) {
+    return;
+  }
+  const over = () => {
+    finished = null;
+    finishedTimer = null;
+    renderCats();
+  };
+  const start = () => {
+    clearTimeout(finishedTimer);
+    finishedTimer = setTimeout(over, CELEBRATE_MS);
+  };
+  finishedTimer = setTimeout(over, 10000);
+  if (img.complete && img.naturalWidth) {
+    start();
+  } else {
+    img.addEventListener('load', start, { once: true });
   }
 }
 function renderCats() {
@@ -1351,7 +1381,11 @@ function renderCats() {
   const hero = $('hero');
   hero.dataset.mood = mood;
   hero.dataset.level = mood === 'afraid' && issues.some(i => i.level === 'critical') ? 'critical' : '';
-  showCat($('hero-cat'), mood, false);
+  // Before the first reading: the still, not a big animation fetched only to be replaced.
+  showCat($('hero-cat'), mood, !s);
+  if (mood === 'happy') {
+    celebrate($('hero-cat'));
+  }
   const [label, title, words, action, where] = companionWords(mood, s, issues);
   $('hero-state').textContent = label;
   $('hero-title').textContent = title;
@@ -1367,6 +1401,9 @@ function renderCats() {
     processes: !!state.processError
   });
   for (const img of document.querySelectorAll('[data-cat]')) {
+    if (img.closest('[data-page]')?.hidden) {
+      continue; // a cat on a page not shown is not loaded (each visit would fetch them all)
+    }
     const panelMood = moods[img.dataset.cat] || PAGE_CATS[img.dataset.cat] || 'resting';
     showCat(img, panelMood, true);
     img.closest('.panel')?.toggleAttribute('data-alert', panelMood === 'afraid');
@@ -4430,13 +4467,19 @@ function diagnostics() {
 function systemTheme() {
   return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
+let themeChoice = null; // the switch's choice, for when this browser cannot store it
 function applyPreferences() {
-  let theme = readStore('theme', 'dark');
+  let theme = themeChoice ?? readStore('theme', 'dark');
   if (!['light', 'dark', 'system'].includes(theme)) {
     theme = 'dark';
   }
   document.documentElement.dataset.theme = theme === 'system' ? systemTheme() : theme;
   labelThemeToggle();
+  // The phone's browser bar (and the installed app's title bar) in the page's own colour.
+  const bar = document.querySelector('meta[name="theme-color"]');
+  if (bar) {
+    bar.setAttribute('content', window.getComputedStyle(document.body).backgroundColor);
+  }
   const size = readStore('size', 'normal');
   document.body.classList.toggle('large', size === 'large');
   document.body.classList.toggle('tv', size === 'tv');
@@ -4456,7 +4499,8 @@ function labelThemeToggle() {
   button.setAttribute('aria-label', toLight ? 'Switch to the light theme (Lamplight)' : 'Switch to the dark theme');
 }
 function toggleTheme() {
-  saveStore('theme', shownTheme() === 'dark' ? 'light' : 'dark');
+  themeChoice = shownTheme() === 'dark' ? 'light' : 'dark';
+  saveStore('theme', themeChoice);
   const root = document.documentElement;
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
     applyPreferences();
@@ -4480,6 +4524,9 @@ function choice(label, key, options, fallback) {
   }
   select.value = readStore(key, fallback);
   select.addEventListener('change', () => {
+    if (key === 'theme') {
+      themeChoice = select.value;
+    }
     saveStore(key, select.value);
     applyPreferences();
   });
