@@ -104,9 +104,10 @@ def check_metadata(row):
         or not 0 <= row['mtime_nsec'] < 10**9
     ):
         raise RuntimeError('Invalid file metadata')
-    # Setuid/setgid file execution is never needed for restored settings.
-    if row['kind'] == 'file' and row['mode'] & 0o6000:
-        raise RuntimeError('Privileged executable metadata refused')
+    # Setuid/setgid file execution is never needed for restored settings: those bits are
+    # never given back (restored_mode). A snapshot that recorded them is still restored
+    # (the review of 0.47.0: nightly app snapshots kept them, and refusing made the whole
+    # snapshot impossible to restore).
 
 
 def check_row(kind, snapshot, row, inventory):
@@ -256,6 +257,13 @@ def copy_row(kind, snapshot, target, row):
         raise RuntimeError('Restored file verification failed; partial directory retained')
 
 
+def restored_mode(row):
+    """The mode a restored entry gets: its own, never with a file's setuid or setgid bits."""
+    if row['kind'] == 'symlink':
+        return 0o600
+    return row['mode'] & ~0o6000 if row['kind'] == 'file' else row['mode']
+
+
 def apply_owners(kind, target, rows):
     """Original owners and modes, deepest entries first so parents stay writable, each
     set on the restored entry itself (opened from the restore folder, `target`)."""
@@ -263,7 +271,7 @@ def apply_owners(kind, target, rows):
         fd = target.entry(relative(kind, row['path']).parts)
         try:
             os.chown(fd, row['uid'], row['gid'])
-            os.chmod(fd, row['mode'] if row['kind'] != 'symlink' else 0o600)
+            os.chmod(fd, restored_mode(row))
         finally:
             os.close(fd)
 

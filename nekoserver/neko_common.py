@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.47.0'
+VERSION = '0.47.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -69,22 +69,13 @@ def host_timezone(config):
     return value
 
 
-# Every app NekoServer can install: (name, what it's for, local port). The one list
-# the installer, checks and dashboard take names and ports from.
-APPS = {
-    'jellyfin': ('Jellyfin', 'Movies & shows', 8096),
-    'immich': ('Immich', 'Photos & memories', 2283),
-    'seerr': ('Seerr', 'Discover & request', 5055),
-    'navidrome': ('Navidrome', 'Your music library', 4533),
-    'sonarr': ('Sonarr', 'Series automation', 8989),
-    'radarr': ('Radarr', 'Movie automation', 7878),
-    'lidarr': ('Lidarr', 'Music automation', 8686),
-    'prowlarr': ('Prowlarr', 'Media sources', 9696),
-    'qbittorrent': ('qBittorrent', 'Download queue', 8080),
-    'nextcloud': ('Nextcloud', 'Your personal files', 8088),
-}
-# The apps with their own setup checks (media services).
-MEDIA_APPS = ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'seerr', 'qbittorrent')
+# The facts setup shares with the runtime (runtime/src/shared.json, built into it): one
+# copy, so the two can never disagree.
+SHARED = json.loads((Path(__file__).resolve().parent / 'runtime/src/shared.json').read_text())
+# Every app NekoServer can install: {id: (name, what it's for, local port)}. The one
+# list the installer, checks, dashboard and runtime take names and ports from.
+APPS = {app['id']: (app['name'], app['role'], app['port']) for app in SHARED['apps']}
+MEDIA_APPS = tuple(app['id'] for app in SHARED['apps'] if app['media'])
 
 
 def app_port(app):
@@ -162,7 +153,12 @@ def write_units(units):
         atomic_write(SYSTEMD_UNITS / name, text, 0o644)
 
 
-MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
+# Each job's recovery record (journal) and the service that finishes it, shared with the
+# runtime, which writes them.
+RECOVERY = {job: (Path(r['journal']), r['service']) for job, r in SHARED['recovery'].items()}
+MAINTENANCE_JOURNAL = RECOVERY['maintenance'][0]
+# Held by a running setup (install.sh keeps it open); the runtime checks the same file.
+SETUP_LOCK = Path(SHARED['setup_lock'])
 # Held for the whole of a NekoServer upgrade (upgrade.py) and a drive move (migrate.py),
 # also while they finish one that was cut off: the two never run at the same time,
 # whether started from the dashboard or a terminal. In /run: a restart lets it go.
@@ -284,6 +280,26 @@ def confirmed(device, label, input_fn, out_fn, attempts=3):
     raise RuntimeError('Drive confirmation failed')
 
 
+def nas_disk_wwn(saved, seen, label, choose):
+    """The WWN to keep for a drive on a NAS disk (iSCSI), as the runtime checks it
+    (backup.rs other_nas_disk): the NAS disk setup chose, never a restored or copied LUN
+    with the same filesystem UUID. `saved` is the WWN kept from before (or None), `seen` the
+    one Linux shows now. A disk that shows none can't be told from a copy, so it is refused
+    here as the runtime refuses it, instead of passing setup and failing every start (the
+    review of 0.47.0). `choose` says how to pick the drive again."""
+    if not seen:
+        raise RuntimeError(
+            f'The {label} is on a NAS disk that Linux shows no WWN for, so a copy of that disk could not be '
+            'told apart from it. Turn on the LUN\'s identifier (WWN/NAA) on the NAS, then run setup again.'
+        )
+    if saved and seen != saved:
+        raise RuntimeError(
+            f'The {label} has its UUID, but it is on another NAS disk than before ({seen}, not {saved}): a '
+            f'restored or copied LUN, most likely. {choose} Nothing was changed.'
+        )
+    return seen
+
+
 def safe_path(path):
     path = Path(path)
     if '..' in path.parts:
@@ -322,13 +338,13 @@ def regular_files(root):
                 yield path, info.st_size
 
 
-def reading_max_age(interval):
-    """How old the dashboard's readings may be before they count as late: two collection
-    intervals plus 30 seconds for a slow run (150 s at the default 60 s). The page uses
-    the same rule (statusStale in dashboard/app.js); `interval` comes from the snapshot."""
-    if type(interval) is not int or not 30 <= interval <= 300:
-        interval = 60
-    return 2 * interval + 30
+def reading_max_age(snapshot):
+    """How old the dashboard's readings may be before they count as late: what the readings
+    say themselves (`late_after`, decided once by the collector, collect.rs), the same
+    answer the page and the phone alerts use. Readings from before they said so: the most
+    it could be (a 5-minute interval)."""
+    value = (snapshot or {}).get('late_after')
+    return value if type(value) is int and 180 <= value <= 630 else 630
 
 
 # exFAT has no owners or permissions (chmod is silently ignored): the mount options
@@ -791,10 +807,7 @@ TOP_FOLDERS = ('mnt', 'srv', 'home', 'var', 'tmp')
 # apps' settings and databases always stay on the SSD, movies and TV on the media drive).
 # Downloads live with the music: Lidarr moves finished downloads into the library, which
 # works only on one drive. A setting missing is the layout before 0.46.0.
-# The facts setup and the runtime share, kept once (runtime/src/shared.json, built into the
-# runtime): where each app's files live by default, the NAS check's file names, the
-# services that write to the drives.
-SHARED = json.loads((Path(__file__).resolve().parent / 'runtime/src/shared.json').read_text())
+# Where each app's files live by default (shared with the runtime).
 LOCATIONS = {what: (place['default'], tuple(place['folders'])) for what, place in SHARED['locations'].items()}
 DRIVE_KEYS = {'ssd': 'data_mount', 'media': 'media_mount'}
 
@@ -1266,131 +1279,33 @@ def mounted_identity(path):
 
 
 def identity_matches(path, expected):
-    """The drive mounted at path is the one `expected` (a storage.<drive> record) names:
-    its UUID and filesystem, and the Btrfs subvolume it is used with. The same filesystem
-    mounted with another subvolume holds another tree."""
+    """The drive mounted at path carries the identity `expected` (a storage.<drive> record)
+    names: its UUID and filesystem, and the Btrfs subvolume it is used with. A quick look
+    for the recovery menu, which asks often while it works; the drive check itself (copies,
+    the NAS disk's WWN) is the runtime's (verify_storage)."""
     found = mounted_identity(path)
     wanted = str(expected.get('subvolume') or '').rstrip('/')
     return found is not None and found == (expected.get('uuid'), expected.get('fstype'), wanted)
 
 
-def devices_with_uuid(uuid, run=None):
-    """The block devices that carry filesystem `uuid` (each once: lsblk lists an LVM
-    volume under every disk it spans), or None when lsblk can't say. LVM snapshots of the
-    drive are left out (lvm_snapshots): they are not copies."""
-    try:
-        result = (run or subprocess.run)(
-            ['lsblk', '-J', '-l', '-o', 'PATH,UUID,TYPE,NAME,KNAME,PKNAME'],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        rows = json.loads(result.stdout or '')['blockdevices'] if result.returncode == 0 else None
-        snapshots = lvm_snapshots(rows)
-        found = [
-            row['path'] for row in rows if row.get('uuid') == uuid and row.get('path') and row['path'] not in snapshots
-        ]
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
-        return None
-    return sorted(set(found))
+def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None):
+    """The drives are the ones setup chose (UUID, filesystem, Btrfs subvolume, the NAS disk's
+    WWN), no copy of one is connected, and the SSD and the HDD are two filesystems: checked
+    by the runtime (`nekoserver-runtime check-drives`, backup.rs), the same check every job
+    and Docker's start guard make. The rules live once, there; setup kept a copy of its own,
+    which already disagreed with it (the review of 0.47.0)."""
+    import tempfile
 
+    import native_runtime
 
-def lvm_layer(name, suffix):
-    """Whether a device-mapper name is LVM's hidden layer `suffix` ('real' or 'cow') of a
-    volume: '<vg>-<lv>-real'. LVM doubles every '-' inside the names, so the dash before
-    the suffix is a separator only when the dashes there are odd in number."""
-    if not name.endswith('-' + suffix):
-        return False
-    stem = name[: -len(suffix)]
-    return (len(stem) - len(stem.rstrip('-'))) % 2 == 1
-
-
-def lvm_snapshots(rows):
-    """The paths of LVM snapshots (lvcreate -s) and their hidden layers, from lsblk's list
-    (TYPE, NAME, KNAME, PKNAME). A volume with snapshots sits on '<origin>-real', and each
-    snapshot on that '-real' and on its own '<snapshot>-cow'; lsblk lists such a volume
-    once under each. A snapshot carries the volume's filesystem UUID, but it is not a copy
-    left connected: Linux mounts the volume itself by that UUID (LVM gives the snapshot's
-    link the lower priority), so it is left out of the copy check. The origin stays in."""
-    names = {row.get('kname'): str(row.get('name') or '') for row in rows if row.get('type') == 'lvm'}
-    found = set()
-    for row in rows:
-        name, parent = str(row.get('name') or ''), names.get(row.get('pkname'), '')
-        if row.get('type') != 'lvm':
-            continue
-        layer = lvm_layer(name, 'real') or lvm_layer(name, 'cow')
-        snapshot = (lvm_layer(parent, 'real') and parent != name + '-real') or parent == name + '-cow'
-        if layer or snapshot:
-            found.add(row.get('path'))
-    return found
-
-
-def btrfs_device_id(device, run=None):
-    """A Btrfs device's own UUID (UUID_SUB), read from the device itself (blkid -p, which
-    needs root), or None when it can't be read."""
-    try:
-        result = (run or subprocess.run)(
-            ['blkid', '-p', '-s', 'UUID_SUB', '-o', 'value', '--', device],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode:
-        return None
-    return (result.stdout or '').strip() or None
-
-
-def look_alikes(uuid, fstype, run=None):
-    """The devices that look like copies of one another among those carrying the drive's
-    UUID (a dd or Clonezilla copy left connected): fstab mounts by UUID, so Linux could
-    mount either. The devices of one Btrfs pool share the UUID but each has a UUID_SUB of
-    its own; a copy of one has the same one. [] when nothing looks copied, or when this
-    can't be checked (lsblk or blkid can't say): a healthy drive is never refused then."""
-    devices = devices_with_uuid(uuid, run) or []
-    if len(devices) < 2:
-        return []
-    if fstype != 'btrfs':
-        return devices
-    ids = [btrfs_device_id(device, run) for device in devices]
-    if None in ids:
-        return []
-    return [device for device, sub in zip(devices, ids) if ids.count(sub) > 1]
-
-
-def copy_problem(record, drive, run=None):
-    """Why the drive `record` (a storage.<drive> record) can't be trusted because a copy
-    of it is connected, or None."""
-    copies = look_alikes(record.get('uuid'), record.get('fstype'), run)
-    if not copies:
-        return None
-    return (
-        f'Two drives look the same (one is probably a copy); unplug the copy and try again. '
-        f'{" and ".join(copies)} carry the same filesystem as the {drive} (UUID {record.get("uuid")}), '
-        'so Linux could use either one.'
-    )
-
-
-def verify_storage(config, keys=('data_ssd', 'media_hdd')):
-    """Fail closed unless dedicated mounts match saved UUID/filesystem identities."""
-    identities = []
-    for key in keys:
-        mount_key = 'data_mount' if key == 'data_ssd' else 'media_mount'
-        path = mount_path(config[mount_key])
-        expected = config['storage'][key]
-        if not expected.get('uuid') or not expected.get('fstype'):
-            raise RuntimeError('Storage identity is not configured')
-        if not identity_matches(path, expected):
-            raise RuntimeError('Storage identity mismatch; refusing private data access')
-        problem = copy_problem(expected, 'SSD' if key == 'data_ssd' else 'HDD')
-        if problem:
-            raise RuntimeError(problem)
-        identities.append(expected['uuid'])
-    if len(set(identities)) != len(identities):
-        raise RuntimeError('Storage filesystems must be distinct')
+    settings = {k: config.get(k) for k in ('data_mount', 'media_mount', 'storage')}
+    with tempfile.TemporaryDirectory(prefix='neko-drives-') as work:
+        path = Path(work) / 'drives.json'
+        path.write_text(json.dumps(settings))
+        args = ['check-drives', '--config', str(path), '--drives', ','.join(keys)]
+        code, said = (ask or native_runtime.ask_runtime)(Path(__file__).resolve().parent, config, args)
+    if code != 0:
+        raise RuntimeError(native_runtime.reason_of(said, f'the drive check stopped (exit {code})'))
 
 
 def compose_image_override(manifest):
@@ -1521,6 +1436,7 @@ class Destination:
             out.flush()
             os.fsync(out.fileno())
         os.replace(part, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        os.fsync(self.fd)  # the folder too, so the new name survives a power cut (as atomic_write)
 
     def close(self):
         os.close(self.fd)

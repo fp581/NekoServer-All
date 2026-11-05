@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.47.1 — 2026-11-05
+
+A stabilization release: fixes from a review of 0.47.0, and a sweep for rules written twice. Setup (Python) decides once and writes it down; the runtime (Rust) reads it and checks it; a fact both use is in `runtime/src/shared.json`. Where two copies of a rule already disagreed, that was a bug, and it is fixed here. Each fix has a test that fails on 0.47.0.
+
+### Fixed
+- **A USB backup disk on a NAS is checked where it is mounted.** The WWN check looked at a disk by its UUID, but two LUNs can share a UUID. The check now looks at the device that is mounted (or about to be), and both the recovery menu and the weekly copy mount exactly the device they checked. A NAS disk that shows no WWN is refused.
+- **While the NAS check holds the apps, nothing else starts them.** An update, the hourly retry or "Update now" could start Docker on the drive that was failing. Docker, Samba and the gateway now refuse to start while the hold is on (for an app drive on the NAS). The check lifts the hold just before it starts them, and puts it back if Docker doesn't start.
+- **A broken gateway no longer keeps the apps held for good.** When a drive came back, one service that failed stopped the rest and skipped every resume job. Every service is tried now, and the resume jobs run whenever Docker is up.
+- **The NAS check is no longer cut off part-way** (it had one overall time limit; each step has its own now). A check stuck on its test write shows the drive as waiting.
+- **A NAS hold is one alert, not one per app.** Each app the hold stopped raised "needs attention, choose Restart app" (on the page and on your phone), advice that couldn't help since the restart is refused, and the hold itself had no alert. Now one urgent alert says the apps are held and names them; the collector decides which apps are held, and the page shows its word.
+- **App snapshots no longer refuse a file with setuid/setgid bits.** The bits are not recorded, and a restore clears them instead of refusing the whole snapshot.
+- **A cut-off Immich snapshot is finished at boot even when another job is running** (it waits up to 3 hours for the lock instead of giving up).
+- **Putting a release back switches off a newer release's template services** (`name@.service`) and checks that none of their instances still run.
+- **Systems with dnf4 (older Fedora and RHEL-like):** an update whose long package name wraps onto its own line is counted.
+- **A drive move stops the gateway too** before its last copy (it writes to the drives; the move had its own list, without it).
+- The restore report's folder is flushed to disk after the report is put in place.
+
+### Changed: one copy of each rule
+- **The drive check is in the runtime only** (`check-drives`): which drive is mounted, that no copy of it is connected, and that the SSD and HDD are two filesystems. Setup asks it. Setup's own copy and `storage-guard.py` are gone; they already disagreed with it (they took a RAID member for a copy).
+- **The snapshot's Compose rules are in the runtime only** (`check-compose --upload --database`). Setup asks it. Its own copy refused `privileged: false`, which the update itself installs.
+- **The media check is in the runtime only.** The acceptance check runs it and reads its report; `media-health.py`, which already disagreed (a Prowlarr link, a root folder), is gone.
+- **The runtime reads the folders setup wrote down** instead of building them again from the drive and a fixed name, so a folder you moved is checked where it is.
+- **When readings count as late is decided once**, by the program that collects them (two intervals plus 30 seconds, never under 3 minutes). The dashboard, the acceptance check and the phone alerts had three rules.
+- **One list of apps** (names, ports, which are media apps), in `shared.json`, read by setup and the runtime; there were ten copies. Also shared now: the recovery records (journals) of each job and their resume services, setup's lock, and the NAS check's service and timer names.
+
 ## v0.47.0 — 2026-11-05
 
 A feature release: the dashboard's new look, **Moonlit Neko**.

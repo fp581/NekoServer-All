@@ -162,7 +162,14 @@ class ReadTests(unittest.TestCase):
         )
 
     def test_the_answer_is_never_written_where_the_ssd_is_missing(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        import neko_common
+
+        said = 'NekoServer runtime failed: Drive check failed: the SSD; nothing is mounted there. No success recorded.'
+        # The runtime's drive check (check-drives), as it answers with no SSD mounted.
+        drives = mock.patch.object(
+            s, 'verify_storage', lambda config, keys: neko_common.verify_storage(config, keys, ask=lambda *a: (1, said))
+        )
+        with tempfile.TemporaryDirectory() as tmp, drives:
             settings = Path(tmp) / 'config.json'
             ssd = Path(tmp) / 'ssd'  # the folder of an SSD that is not mounted
             ssd.mkdir()
@@ -173,7 +180,7 @@ class ReadTests(unittest.TestCase):
                 mock.patch.object(s, 'settings_path', lambda p: Path(p)),
                 mock.patch.object(s, 'mount_path', lambda p: Path(p)),
                 mock.patch.object(s, 'status', return_value={'count': 0}),
-                self.assertRaisesRegex(RuntimeError, 'Storage identity mismatch'),
+                self.assertRaisesRegex(RuntimeError, r'Drive check failed: the SSD; nothing is mounted there\.$'),
             ):
                 s.check(settings)
             self.assertFalse((ssd / 'backups').exists())
@@ -188,7 +195,7 @@ class ReadTests(unittest.TestCase):
                 mock.patch.object(sys, 'stderr', err),
             ):
                 self.assertEqual(s.main(), 1)
-            self.assertIn('System: not checked: Storage identity mismatch', err.getvalue())
+            self.assertIn('System: not checked: Drive check failed: the SSD; nothing is mounted there', err.getvalue())
 
     def test_a_restart_check_that_cannot_answer_is_not_known_never_not_needed(self):
         with tempfile.TemporaryDirectory() as tmp:

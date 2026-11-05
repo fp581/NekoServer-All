@@ -18,7 +18,7 @@ from neko_common import (
     check_units,
     write_units,
 )
-from neko_common import MAINTENANCE_JOURNAL, maintenance_running
+from neko_common import MAINTENANCE_JOURNAL, RECOVERY, maintenance_running
 
 # No photo_backup: since v0.21.1 the monthly snapshot stays on the HDD, so a missing
 # or unconfigured USB drive must not block monthly updates.
@@ -27,14 +27,14 @@ DESCRIPTION = (
     'Daily check for app updates, weekly protected updates (each app on its own, after a snapshot of it), '
     'and a monthly check of every backup copy with a restore test'
 )
-RESUME_SERVICE = 'nekoserver-maintenance-resume.service'
+RESUME_SERVICE = RECOVERY['maintenance'][1]
 RETRY_SERVICE = 'nekoserver-maintenance-retry.service'
 RETRY_TIMER = 'nekoserver-maintenance-retry.timer'
 UPDATES_TIMER = 'nekoserver-updates.timer'
 CHECK_TIMER = 'nekoserver-update-check.timer'
 SYSTEM_TIMER = 'nekoserver-system-check.timer'
 UPGRADE_RESUME = 'nekoserver-upgrade-resume.service'
-UPGRADE_JOURNAL = '/etc/nekoserver-backups/upgrade.json'  # upgrade.py JOURNAL
+UPGRADE_JOURNAL = str(RECOVERY['upgrade'][0])
 DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 
 
@@ -234,7 +234,9 @@ def run(ctx):
                 'Backup key not set up: until you run  sudo python3 backup_secrets.py --setup  in a terminal, monthly snapshots keep the app password files '
                 'UNENCRYPTED inside data.tar on the HDD (readable by root only), so a restore still has them'
             )
-    atomic_json(guard, config)
+    # With the folders setup decided (`paths`): the update reads them (common::saved_path)
+    # and never works them out again (the review of 0.47.0: this file had none).
+    atomic_json(guard, {**config, 'paths': native_runtime.saved_paths(config)})
     write_units(units)
     for args in (
         ['systemctl', 'daemon-reload'],

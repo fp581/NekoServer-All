@@ -38,18 +38,8 @@ def client(category_field, category):
 
 
 class HealthAuditCategoryTests(unittest.TestCase):
-    """Each Arr app names its qBittorrent category field after its media; the audit read
-    a field "category" none of them has, so it said "still to set up" for ever."""
-
-    def test_the_download_client_setup_makes_counts_as_configured(self):
-        health = load('media_health_check', 'media-health.py')
-        for app, field, category in (
-            ('sonarr', 'tvCategory', 'tv'),
-            ('radarr', 'movieCategory', 'movies'),
-            ('lidarr', 'musicCategory', 'music'),
-        ):
-            self.assertTrue(health.configured(app, 'downloadclient', client(field, category), [app]), app)
-            self.assertFalse(health.configured(app, 'downloadclient', client(field, 'other'), [app]), app)
+    """Each Arr app names its qBittorrent category field after its media (the media check,
+    media.rs, judges by that field: tested there); the connector uses the same list."""
 
     def test_one_list_for_the_connector_and_the_audit(self):
         import qbit_setup

@@ -22,7 +22,6 @@ CLIS = (
     'acceptance.py',
     'account-setup.py',
     'music-setup.py',
-    'media-health.py',
     'media-connect.py',
     'onboard.py',
     'recover.py',

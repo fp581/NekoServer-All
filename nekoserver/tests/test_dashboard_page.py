@@ -204,7 +204,7 @@ def hdd_missing():
                 'detail': 'Reconnect it. Stopped until it is back: Jellyfin, Immich, Nextcloud.',
             }
         ],
-        applications=[{'id': app, 'name': name, 'state': 'exited'} for app, name in names.items()],
+        applications=[{'id': app, 'name': name, 'state': 'exited', 'held': True} for app, name in names.items()],
         backups=[
             {
                 'id': job,
@@ -249,6 +249,8 @@ class UserPanelFindingsTests(unittest.TestCase):
         back = hdd_missing()
         back['storage'][1]['status'] = 'mounted'
         back['alerts'] = []
+        for app in back['applications']:
+            app['held'] = False  # the collector no longer holds them
         for job in back['backups']:
             del job['blocked']
         [issues] = page(('collectIssues', back))
@@ -511,6 +513,29 @@ class CatCompanionTests(unittest.TestCase):
             backups=[{'id': 'update_check', 'name': 'Daily update check', 'status': 'pass', 'last_success': at}]
         )  # noqa: E731
         self.assertEqual(page(('newlyFinished', [check(1000.0), check(2000.0)])), [[None, None]])
+
+    def test_apps_held_by_the_nas_check_are_one_alert_not_one_per_app(self):
+        """The review of 0.47.0: the collector said the apps were held, and nothing showed
+        it. Then the 0.47.1 preview: each held app was its own "Stopped, try opening it"
+        item, listed before the cause. The collector decides which apps are held (`held`)
+        and says the hold once; the page shows that, and no item per held app."""
+        held = self.readings()
+        held['storage'][0].update(network=True, held_by_nas_watch=True)
+        held['applications'] = [
+            {'id': 'jellyfin', 'name': 'Jellyfin', 'state': 'exited', 'held': True},
+            {'id': 'seerr', 'name': 'Seerr', 'state': 'exited', 'held': False},
+        ]
+        held['alerts'] = [
+            {'id': 'nas:hold', 'level': 'critical', 'title': 'The apps are held', 'detail': 'Stopped: Jellyfin.'}
+        ]
+        issues = page(('collectIssues', held))[0]
+        self.assertEqual([i['id'] for i in issues], ['nas:hold', 'app:seerr'])
+        self.assertEqual(self.moods(held)['drives'], 'afraid')
+        # The page no longer works the hold out itself: without the collector's word, a
+        # stopped app is an item of its own.
+        held['applications'][0]['held'] = False
+        held['alerts'] = []
+        self.assertIn('app:jellyfin', [i['id'] for i in page(('collectIssues', held))[0]])
 
     def test_each_cat_has_its_animation_and_the_page_serves_every_one(self):
         files = page(

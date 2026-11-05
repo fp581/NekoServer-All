@@ -67,7 +67,7 @@ Background notifications require curl/system CA certificates and a configured nt
 
 Host/user snapshots and Samba recovery use `host-snapshot` and `host-resume`; the Python host-recovery tool runs only on demand. See HOST-BACKUPS.md.
 
-Docker and LAN gateway startup guards use native `storage-guard` and `gateway-guard`. `storage-guard.py` remains as a library for the installer and acceptance checks.
+Docker and LAN gateway startup guards use native `storage-guard` and `gateway-guard`. Setup asks the runtime the same drive check (`check-drives`) instead of keeping its own.
 
 ## Storage workers
 

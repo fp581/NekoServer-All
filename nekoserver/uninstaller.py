@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 import host
+from neko_common import SETUP_LOCK
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
@@ -1189,20 +1190,6 @@ def _stop_samba(plan, call, out):
         )
 
 
-# A NekoServer job that was cut off keeps its recovery record until it is finished (by its
-# resume service, at the next start at the latest): uninstalling then would delete what
-# can finish it, and leave the apps stopped or half restored. (maintenance.rs, backup.rs,
-# app_snapshot.rs, host_snapshot.rs, apps.rs)
-RECOVERY_RECORDS = (
-    ('/etc/nekoserver-backups/app-resume.json', 'nekoserver-app-resume.service'),
-    ('/etc/nekoserver-backups/host-resume.json', 'nekoserver-host-resume.service'),
-    ('/etc/nekoserver-backups/immich-resume.json', 'nekoserver-immich-resume.service'),
-    ('/etc/nekoserver-backups/nextcloud-resume.json', 'nekoserver-nextcloud-resume.service'),
-    ('/etc/nekoserver-backups/upgrade.json', 'nekoserver-upgrade-resume.service'),
-    ('/etc/nekoserver-backups/immich-snapshot-resume.json', 'nekoserver-immich-snapshot-resume.service'),
-)
-
-
 def _admitted(plan, call):
     """Nothing is unfinished or running that removing NekoServer would break: checked
     before anything is stopped, and again with the jobs' lock held (a monthly update can
@@ -1217,8 +1204,13 @@ def _admitted(plan, call):
     if blocked:
         raise Stopped(blocked)
     _maintenance_idle(call)
-    for record, unit in RECOVERY_RECORDS:
-        if plan.at(record).exists():
+    # A NekoServer job that was cut off keeps its recovery record until it is finished (by
+    # its resume service, at the next start at the latest): uninstalling then would delete
+    # what can finish it, and leave the apps stopped or half restored. The monthly
+    # update's record is checked above, with its own message.
+    for job, (path, unit) in neko_common.RECOVERY.items():
+        record = str(path)
+        if job != 'maintenance' and plan.at(record).exists():
             raise Stopped(
                 'A NekoServer job was cut off and is not finished yet: its record ' + record + ' is still there, and '
                 'removing NekoServer now would delete what finishes it. Run  sudo systemctl start '
@@ -1820,7 +1812,7 @@ SKIPPED_HEADING = (
 
 LOCK_SUFFIX = '.lock'
 # Held by a running setup (install.sh, then installer.py): one is enough to wait for.
-SETUP_LOCKS = ('/run/nekoserver-setup.lock', '/run/nekoserver-install.lock')
+SETUP_LOCKS = (str(SETUP_LOCK), '/run/nekoserver-install.lock')
 
 
 LOCK_UNUSABLE = ', so it can\'t keep a setup from starting meanwhile.' + NOTHING_DELETED

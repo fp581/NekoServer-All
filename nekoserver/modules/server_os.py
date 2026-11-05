@@ -9,6 +9,7 @@ import subprocess
 import native_runtime
 import host
 from neko_common import (
+    SHARED,
     SYSTEMD_UNITS,
     VERSION,
     atomic_json,
@@ -24,8 +25,8 @@ HDD_UNIT = 'nekoserver-hdd-policy.service'
 DRIVE_UNIT = 'nekoserver-drive-return.service'
 DRIVE_SETTINGS = Path('/etc/nekoserver-os/drives.json')
 # Checks the drives on a network storage box every minute (runtime nas_watch.rs).
-NAS_WATCH = 'nekoserver-nas-watch.service'
-NAS_WATCH_TIMER = 'nekoserver-nas-watch.timer'
+NAS_WATCH = SHARED['nas_watch']['service']
+NAS_WATCH_TIMER = SHARED['nas_watch']['timer']
 
 
 DEPENDENCIES = ['storage', 'recovery']
@@ -323,8 +324,10 @@ def nas_watch_units(binary):
         NAS_WATCH: '[Unit]\nDescription=NekoServer check the drives on the network storage box\n'
         'After=remote-fs.target\n[Service]\nType=oneshot\n'
         f'ExecStart={binary} nas-watch --config {DRIVE_SETTINGS}\n'
-        # Its test write waits at most 20 s; a start of the apps again, longer.
-        'TimeoutStartSec=15min\n' + SANDBOX,
+        # Each step has its own limit: the test write 20 s, each resume job it runs 3 h
+        # (drive_return.rs). A limit of its own killed it mid-rollback, held (the review of
+        # 0.47.0: it was 15 minutes).
+        'TimeoutStartSec=infinity\n' + SANDBOX,
         NAS_WATCH_TIMER: '[Unit]\nDescription=NekoServer check the drives on the network storage box every minute\n'
         '[Timer]\nOnBootSec=3min\nOnUnitInactiveSec=1min\nAccuracySec=10s\n[Install]\nWantedBy=timers.target\n',
     }

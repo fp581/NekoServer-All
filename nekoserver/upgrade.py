@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.47.0Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.47.1Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -34,6 +34,8 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    RECOVERY,
+    SETUP_LOCK,
     DASHBOARD_DEFAULT_PORT,
     MAINTENANCE_JOURNAL,
     OPERATION_LOCK,
@@ -51,12 +53,11 @@ from neko_common import (
     settings_path,
 )
 
-JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')
+JOURNAL = RECOVERY['upgrade'][0]
 MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
 FORMAT = 'neko-upgrade-v1'
 ARCHIVE = 'https://codeload.github.com/fp581/NekoServer-All/tar.gz/refs/tags/{tag}'
 TAG = re.compile(r'v(\d+)\.(\d+)\.(\d+)(Beta|-beta)?')  # a beta written either way (0.46.1 was v0.46.1-beta)
-SETUP_LOCK = Path('/run/nekoserver-setup.lock')
 # The status the installer records for a step that worked (installer.py
 # complete_status); a step waiting for you (Tailscale's sign-in, say) was waiting
 # before too and is not the upgrade's doing.
@@ -68,7 +69,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.47.0Beta" or "0.47.0"; None for anything else."""
+    """(0, 44, 0) from "v0.47.1Beta" or "0.47.1"; None for anything else."""
     match = TAG.fullmatch(text if text.startswith('v') else 'v' + text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -293,6 +294,27 @@ def installed_units(units=None):
     return sorted(p for p in Path(units or UNITS).glob('nekoserver-*') if p.suffix in UNIT_KINDS and p.is_file())
 
 
+def stopped_for_good(name, run):
+    """`name` switched off and no longer running. A template (`x@.service`) is no unit of its
+    own: systemd can't stop it by that name, so it is switched off and its instances
+    (`x@<anything>.service`) are stopped instead (the review of 0.47.0: the stop of the
+    template's own name always failed, so the way back never passed)."""
+    quiet = {'capture_output': True, 'text': True, 'check': False}
+    if '@.' in name:
+        instances = name.replace('@.', '@*.')
+        off = run(['systemctl', 'disable', name], timeout=120, **quiet)
+        stop = run(['systemctl', 'stop', instances], timeout=120, **quiet)
+        left = run(
+            ['systemctl', 'list-units', '--state=active,activating,deactivating', '--no-legend', '--plain', instances],
+            timeout=60,
+            **quiet,
+        )
+        return not off.returncode and not stop.returncode and not left.returncode and not (left.stdout or '').strip()
+    stop = run(['systemctl', 'disable', '--now', name], timeout=120, **quiet)
+    alive = run(['systemctl', 'is-active', '--quiet', name], timeout=60, **quiet)
+    return not stop.returncode and alive.returncode != 0
+
+
 def added_units(before, units=None, run=None):
     """The units the newer release added (not there before the upgrade), switched off and
     removed when its release is put back: the older setup writes only its own, so the new
@@ -305,13 +327,7 @@ def added_units(before, units=None, run=None):
     for unit in installed_units(units):
         if unit.name in before:
             continue
-        stop = run(
-            ['systemctl', 'disable', '--now', unit.name], capture_output=True, text=True, timeout=120, check=False
-        )
-        alive = run(
-            ['systemctl', 'is-active', '--quiet', unit.name], capture_output=True, text=True, timeout=60, check=False
-        )
-        if stop.returncode or alive.returncode == 0:
+        if not stopped_for_good(unit.name, run):
             stuck.append(unit.name)
             continue
         unit.unlink(missing_ok=True)
@@ -529,7 +545,7 @@ def keep_report(path, row):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('run', 'resume'))
-    parser.add_argument('--tag', help='with run: the release, such as v0.47.0Beta')
+    parser.add_argument('--tag', help='with run: the release, such as v0.47.1Beta')
     parser.add_argument(
         '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
     )
@@ -537,7 +553,7 @@ def main():
     if os.geteuid() != 0:
         parser.error('Run it with sudo')
     if args.action == 'run' and not (args.tag and TAG.fullmatch(args.tag)):
-        parser.error('run needs --tag with a release, such as v0.47.0Beta')
+        parser.error('run needs --tag with a release, such as v0.47.1Beta')
     config = json.loads(settings_path(args.config).read_text())
     if args.action == 'resume':
         return reported(config, RESUME_UNIT, lambda out: resume(args.config, out))

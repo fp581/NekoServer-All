@@ -41,6 +41,9 @@ from neko_common import (
     MAINTENANCE_JOURNAL,
     VERSION,
     OPERATION_LOCK,
+    RECOVERY,
+    SETUP_LOCK,
+    SHARED,
     atomic_json,
     atomic_write,
     checked_settings,
@@ -52,11 +55,10 @@ from neko_common import (
 )
 
 JOURNAL = Path('/etc/nekoserver-backups/migrate.json')
-UPGRADE_JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')
+UPGRADE_JOURNAL = RECOVERY['upgrade'][0]
 FORMAT = 'neko-migrate-v1'
 DRIVES = {'data_ssd': ('data_mount', 'application SSD'), 'media_hdd': ('media_mount', 'media HDD')}
 FILESYSTEMS = ('ext4', 'xfs', 'btrfs')
-SETUP_LOCK = Path('/run/nekoserver-setup.lock')
 STAGING = Path('/mnt/neko-migrate')
 FSTAB = Path('/etc/fstab')
 # Owners, permissions, hard links, ACLs, extended attributes and sparse files kept, by
@@ -66,7 +68,7 @@ RSYNC = ['rsync', '-aHAXS', '--numeric-ids', '-x']
 # Room left free on the new drive beyond what the old one holds.
 MARGIN = 1.05
 # The services stopped for the last copy: everything that writes to the drives.
-WRITERS = ('docker.socket', 'docker.service', 'smb.service', 'smbd.service', 'nmb.service', 'nmbd.service')
+WRITERS = (*SHARED['writers'], 'nmb.service', 'nmbd.service')
 
 
 # What may be passed to a program: a plain word, path, option, UUID= name or a unit

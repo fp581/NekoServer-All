@@ -175,6 +175,40 @@ pub fn mount_path(s: &str) -> Result<PathBuf> {
 pub static SHARED: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(|| {
     serde_json::from_str(include_str!("shared.json")).expect("shared.json is valid JSON")
 });
+/// One app of the shared catalogue: its id, name, what it is for and local port.
+pub type App = (&'static str, &'static str, &'static str, u16);
+/// Every app NekoServer can install, from shared.json (setup reads the same list).
+pub static APPS: std::sync::LazyLock<Vec<App>> = std::sync::LazyLock::new(|| {
+    SHARED["apps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|app| {
+            let text = |key: &str| app[key].as_str().unwrap_or("");
+            let port = app["port"].as_u64().and_then(|p| u16::try_from(p).ok());
+            (text("id"), text("name"), text("role"), port.unwrap_or(0))
+        })
+        .collect()
+});
+/// The media apps (one Compose project, their own setup checks).
+pub static MEDIA_APPS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+    SHARED["apps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|app| app["media"] == true)
+        .filter_map(|app| app["id"].as_str())
+        .collect()
+});
+/// The local port of `app`, when it is one of the catalogue's.
+pub fn app_port(app: &str) -> Option<u16> {
+    APPS.iter().find(|a| a.0 == app).map(|a| a.3)
+}
+/// The recovery record (journal) of `job` (shared.json "recovery"), which its resume
+/// service finishes; setup and the uninstaller look for the same file.
+pub fn journal(job: &str) -> &'static str {
+    SHARED["recovery"][job]["journal"].as_str().unwrap_or("")
+}
 /// A text field of SHARED.
 pub fn shared(section: &str, key: &str) -> &'static str {
     SHARED[section][key].as_str().unwrap_or("")
@@ -216,21 +250,6 @@ pub fn files_root(cfg: &serde_json::Value, what: &str) -> Result<PathBuf> {
         }
     };
     mount_path(cfg[key].as_str().unwrap_or(""))
-}
-/// The drive folder (`data` or `media`) that holds `what`, from the settings' "locations"
-/// (see files_root), for code that has the two folders already.
-pub fn located<'a>(
-    locations: &serde_json::Value,
-    what: &str,
-    data: &'a Path,
-    media: &'a Path,
-) -> &'a Path {
-    let (default, _) = location_of(what);
-    if locations[what].as_str().unwrap_or(default) == "media" {
-        media
-    } else {
-        data
-    }
 }
 /// How many errors Linux has counted on the ext4 filesystem mounted from `source`
 /// (/dev/sdb1): kept in the filesystem itself until it is checked and repaired (e2fsck
@@ -692,7 +711,11 @@ pub fn lock_wait(path: &Path, max: Duration) -> Result<File> {
 }
 /// Setup (`sudo bash install.sh`) holds this lock for as long as it runs: install.sh
 /// opens it and every setup program inherits it.
-pub const SETUP_LOCK: &str = "/run/nekoserver-setup.lock";
+pub static SETUP_LOCK: std::sync::LazyLock<&str> = std::sync::LazyLock::new(|| {
+    SHARED["setup_lock"]
+        .as_str()
+        .expect("shared.json names the setup lock")
+});
 /// How a job begins its message when it gave way to setup. Not a failure: the job ends
 /// without an error (main.rs), so no alert is sent, and it runs at its next time.
 pub const POSTPONED: &str = "Postponed: setup is running";
@@ -704,7 +727,7 @@ pub fn postponed(e: &Error) -> bool {
 /// the one holding it after `while_setup` (at most `max`), the job is postponed
 /// (POSTPONED), not failed: a setup left open at a question must not page you.
 pub fn shared_lock_wait(path: &Path, max: Duration, while_setup: Duration) -> Result<File> {
-    shared_lock_wait_with(path, Path::new(SETUP_LOCK), max, while_setup)
+    shared_lock_wait_with(path, Path::new(*SETUP_LOCK), max, while_setup)
 }
 fn shared_lock_wait_with(
     path: &Path,
@@ -772,7 +795,7 @@ fn held_by(path: &Path, setup: &Path) -> bool {
 /// Whether setup (`sudo bash install.sh`) is running: some process holds its lock.
 /// Read-only, like held_by: a setup starting this moment is never kept from its lock.
 pub fn setup_running() -> bool {
-    setup_held(Path::new(SETUP_LOCK))
+    setup_held(Path::new(*SETUP_LOCK))
 }
 /// install.sh takes its lock with the flock command on a descriptor bash keeps
 /// (`flock -n 9`): the lock's owner is that command, gone at once, so the kernel leaves
@@ -1077,6 +1100,54 @@ pub fn directory(path: &Path, mode: u32) -> Result<()> {
         Err(e) => return Err(e.into()),
     }
     Ok(())
+}
+#[cfg(test)]
+mod catalogue_tests {
+    #[test]
+    fn every_app_of_the_shared_catalogue_is_read_whole() {
+        let listed = super::SHARED["apps"].as_array().unwrap().len();
+        assert_eq!(super::APPS.len(), listed);
+        for &(id, name, role, port) in super::APPS.iter() {
+            assert!(
+                !id.is_empty() && !name.is_empty() && !role.is_empty(),
+                "{id}"
+            );
+            assert!(port > 0, "{id}");
+            assert_eq!(super::app_port(id), Some(port));
+        }
+        assert_eq!(super::MEDIA_APPS.len(), 8);
+        assert!(
+            !super::MEDIA_APPS.contains(&"immich") && !super::MEDIA_APPS.contains(&"nextcloud")
+        );
+        assert_eq!(super::app_port("plex"), None);
+    }
+    #[test]
+    fn every_recovery_record_and_the_setup_lock_come_from_the_shared_facts() {
+        let jobs = super::SHARED["recovery"].as_object().unwrap();
+        for job in [
+            "maintenance",
+            "app",
+            "host",
+            "immich",
+            "nextcloud",
+            "upgrade",
+            "immich_snapshot",
+        ] {
+            let journal = super::journal(job);
+            assert!(
+                journal.starts_with("/etc/nekoserver-backups/") && journal.ends_with(".json"),
+                "{job}"
+            );
+            assert!(
+                jobs[job]["service"].as_str().unwrap().ends_with(".service"),
+                "{job}"
+            );
+        }
+        assert_eq!(*crate::maintenance::JOURNAL, super::journal("maintenance"));
+        assert_eq!(*crate::app_snapshot::JOURNAL, super::journal("app"));
+        assert_eq!(*crate::host_snapshot::JOURNAL, super::journal("host"));
+        assert_eq!(*super::SETUP_LOCK, "/run/nekoserver-setup.lock");
+    }
 }
 #[cfg(test)]
 mod lock_tests {

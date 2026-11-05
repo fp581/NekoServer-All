@@ -1844,7 +1844,11 @@ class ClockAndUsbPrivacyTests(unittest.TestCase):
             }
 
             def run(argv, **kw):
-                out = 'AB-CD rw,relatime,uid=0,gid=0,fmask=0022,dmask=0022' if 'UUID,OPTIONS' in argv else ''
+                out = (
+                    'AB-CD rw,relatime,uid=0,gid=0,fmask=0022,dmask=0022 /dev/sdx1'
+                    if 'UUID,OPTIONS,SOURCE' in argv
+                    else ''
+                )
                 return mock.Mock(returncode=0, stdout=out)
 
             with (
@@ -1857,7 +1861,11 @@ class ClockAndUsbPrivacyTests(unittest.TestCase):
                         pass
 
             def private(argv, **kw):
-                out = 'AB-CD rw,relatime,uid=0,gid=0,fmask=0177,dmask=0077' if 'UUID,OPTIONS' in argv else ''
+                out = (
+                    'AB-CD rw,relatime,uid=0,gid=0,fmask=0177,dmask=0077 /dev/sdx1'
+                    if 'UUID,OPTIONS,SOURCE' in argv
+                    else ''
+                )
                 return mock.Mock(returncode=0, stdout=out)
 
             with (

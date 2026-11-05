@@ -13,17 +13,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-pub(crate) const JOURNAL: &str = "/etc/nekoserver-backups/maintenance-resume.json";
-const MEDIA: [&str; 8] = [
-    "jellyfin",
-    "navidrome",
-    "sonarr",
-    "radarr",
-    "lidarr",
-    "prowlarr",
-    "seerr",
-    "qbittorrent",
-];
+pub(crate) static JOURNAL: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| crate::common::journal("maintenance"));
+use crate::common::MEDIA_APPS as MEDIA;
 fn checked(args: &[&str], seconds: u64) -> Result<String> {
     let (code, output) = common::command(args, seconds)?;
     if code != 0 {
@@ -436,20 +428,23 @@ fn volume_is_ours(name: &str, key: &str, v: &Value) -> bool {
 }
 /// `locations`: where setup put the photos, the music and Nextcloud's files (the
 /// settings' "locations"; null: the layout before 0.46.0).
-fn valid_model(
-    model: &Value,
-    name: &str,
-    data: &Path,
-    media: &Path,
-    locations: &Value,
-) -> Result<()> {
+fn valid_model(model: &Value, name: &str, data: &Path, media: &Path, cfg: &Value) -> Result<()> {
+    // The folders setup decided (`paths`, or shared.json's defaults for settings written
+    // before it kept them): read, never worked out again here (the review of 0.47.0).
+    let mut view = cfg.clone();
+    if !view.is_object() {
+        view = json!({});
+    }
+    view["data_mount"] = json!(data);
+    view["media_mount"] = json!(media);
     let places = Places {
         name,
         data,
         media,
-        photos: common::located(locations, "photos", data, media).join("photos/immich-library"),
-        cloud: common::located(locations, "cloud", data, media).join("cloud/files"),
-        music: common::located(locations, "music", data, media).to_path_buf(),
+        photos: common::saved_path(&view, "photos")?,
+        cloud: common::saved_path(&view, "cloud")?,
+        music: common::saved_path(&view, "music")?,
+        downloads: common::saved_path(&view, "downloads")?,
     };
     let services = model["services"]
         .as_object()
@@ -560,10 +555,24 @@ fn networks_ok(name: &str, model: &Value) -> Result<()> {
 /// the photos and the database bound where Immich looks for them, no other user, and
 /// Immich's server talking to its own database and cache.
 fn immich_ok(services: &serde_json::Map<String, Value>, data: &Path, photos: &Path) -> Result<()> {
-    let database = data.join("appdata/immich/postgres");
+    immich_binds_ok(services, photos, &data.join("appdata/immich/postgres"))?;
+    immich_env_ok(services)
+}
+/// Where Immich's containers see the photo library (older and newer image) and the database.
+const IMMICH_TARGETS: [(&str, &[&str]); 2] = [
+    ("immich-server", &["/data", "/usr/src/app/upload"]),
+    ("database", &["/var/lib/postgresql/data"]),
+];
+/// Immich's photos and database are bound where its snapshot looks: `photos` and `database`,
+/// at the places its containers use them, and nothing else (but /etc/localtime).
+fn immich_binds_ok(
+    services: &serde_json::Map<String, Value>,
+    photos: &Path,
+    database: &Path,
+) -> Result<()> {
     let wanted: [(&str, &Path, &[&str]); 2] = [
-        ("immich-server", photos, &["/data", "/usr/src/app/upload"]),
-        ("database", &database, &["/var/lib/postgresql/data"]),
+        ("immich-server", photos, IMMICH_TARGETS[0].1),
+        ("database", database, IMMICH_TARGETS[1].1),
     ];
     for (service, v) in services {
         if v.get("user").is_some() {
@@ -590,6 +599,10 @@ fn immich_ok(services: &serde_json::Map<String, Value>, data: &Path, photos: &Pa
             ));
         }
     }
+    Ok(())
+}
+/// Immich's server uses its own database and cache (the ones its snapshot holds).
+fn immich_env_ok(services: &serde_json::Map<String, Value>) -> Result<()> {
     let env = |service: &str, key: &str| {
         services[service]["environment"][key]
             .as_str()
@@ -616,6 +629,66 @@ fn immich_ok(services: &serde_json::Map<String, Value>, data: &Path, photos: &Pa
     }
     Ok(())
 }
+/// The Immich Compose file a snapshot covers and a restore test rebuilds, with the photos at
+/// `upload` and the database at `database` (where the snapshot found them): the update's own
+/// keys and isolation (valid_model's), the four standard services, no device or other user
+/// (a restore test runs without them), each folder bound once where Immich looks for it
+/// (and /etc/localtime only read-only), caches only as named volumes of their own, and
+/// Immich's server on its own database and cache. Kept here once: setup asks it (check-compose
+/// --upload --database), and kept a copy of its own before, which already disagreed (the
+/// review of 0.47.0: `privileged: false` refused there, taken here).
+fn snapshot_ok(model: &Value, upload: &Path, database: &Path) -> Result<()> {
+    let file_keys = common::shared_list(&["compose", "file_keys"]);
+    if model
+        .as_object()
+        .is_none_or(|o| o.keys().any(|k| !file_keys.contains(&k.as_str())))
+    {
+        return Err(Error::new(
+            "Custom Immich Compose settings (secrets, configs...) require manual isolated recovery",
+        ));
+    }
+    let services = model["services"]
+        .as_object()
+        .ok_or_else(|| Error::new("Compose services missing"))?;
+    if services.len() != 4 || !services.keys().all(|s| expected_service("immich", s)) {
+        return Err(Error::new(
+            "Restore currently supports the four standard Immich services; custom services require review",
+        ));
+    }
+    let refused = || Error::new("Custom Immich runtime settings require manual isolated recovery");
+    for (service, v) in services {
+        if !v["image"].is_string() || !isolated("immich", service, v) {
+            return Err(refused());
+        }
+        if v.get("devices").is_some() || v.get("user").is_some() {
+            return Err(refused());
+        }
+        let mut targets = vec![];
+        for volume in v["volumes"].as_array().into_iter().flatten() {
+            let target = volume["target"].as_str().unwrap_or("");
+            if target.is_empty() || targets.contains(&target) {
+                return Err(Error::new("Invalid/duplicate Immich volume target"));
+            }
+            targets.push(target);
+            let cache = volume["type"] == "volume"
+                && ["immich-machine-learning", "redis"].contains(&service.as_str())
+                && volume["source"].as_str().is_some_and(|n| {
+                    !n.is_empty()
+                        && n.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                });
+            let clock = volume["type"] == "bind"
+                && volume["source"] == "/etc/localtime"
+                && volume["read_only"] == true;
+            if !(cache || clock || volume["type"] == "bind" && volume["source"] != "/etc/localtime")
+            {
+                return Err(Error::new("Unsupported Immich persistent volume"));
+            }
+        }
+    }
+    immich_binds_ok(services, upload, database)?;
+    immich_env_ok(services)
+}
 /// A service of the app's own that keeps to NekoServer's isolation.
 fn isolated(name: &str, service: &str, v: &Value) -> bool {
     expected_service(name, service) && !widens_rights(v) && gpu_only(service, v)
@@ -627,7 +700,9 @@ struct Places<'a> {
     media: &'a Path,
     photos: PathBuf,
     cloud: PathBuf,
+    /// The music library and the downloaded music (common::saved_path "music", "downloads").
     music: PathBuf,
+    downloads: PathBuf,
 }
 impl Places<'_> {
     fn volume_ok(&self, service: &str, volume: &Value) -> Result<()> {
@@ -666,9 +741,10 @@ impl Places<'_> {
             || (name == "nextcloud" && p == self.cloud)
             || (["radarr", "sonarr", "qbittorrent"].contains(&name) && p == library)
             || (name == "jellyfin" && ["movies", "tv"].iter().any(|n| p == library.join(n)))
-            || (name == "navidrome" && p == self.music.join("library/music"))
-            || (name == "lidarr" && p == self.music.join("library"))
-            || (name == "qbittorrent" && p == self.music.join("library/downloads/music"))
+            || (name == "navidrome" && p == self.music)
+            // Lidarr sees the folder both music folders are in (it moves downloads in).
+            || (name == "lidarr" && self.music.parent().is_some_and(|top| p == top))
+            || (name == "qbittorrent" && p == self.downloads)
     }
 }
 /// The app's own port on this PC only (qBittorrent's peer port excepted); its helpers
@@ -964,7 +1040,7 @@ fn restore_sealed_copy(journal: &Value, data: &Path, stage: &Path) -> Result<()>
 }
 /// Remove the work folders of finished runs (all but the run an unfinished update uses).
 fn clear_work(data: &Path) {
-    let active = load(Path::new(JOURNAL))
+    let active = load(Path::new(*JOURNAL))
         .ok()
         .and_then(|j| j["run"].as_str().map(str::to_string));
     let root = data.join("backups/maintenance-work");
@@ -1179,22 +1255,22 @@ fn curl_inside(pid: &str, url: &str, host: Option<&str>) -> Result<String> {
     checked(&args, 20)
 }
 fn app_port(name: &str) -> Result<(u16, &'static str)> {
-    Ok(match name {
-        "jellyfin" => (8096, "/health"),
-        "navidrome" => (4533, "/ping"),
-        "sonarr" => (8989, "/ping"),
-        "radarr" => (7878, "/ping"),
-        "lidarr" => (8686, "/ping"),
-        "prowlarr" => (9696, "/ping"),
+    let path = match name {
+        "jellyfin" => "/health",
+        "navidrome" | "sonarr" | "radarr" | "lidarr" | "prowlarr" => "/ping",
         // Not /api/v1/status: that makes Seerr ask GitHub whether an update exists, and on
         // the restore test's network (no way out) the question hangs until the probe's
         // own time limit. Its public settings need nothing from outside.
-        "seerr" => (5055, "/api/v1/settings/public"),
-        "qbittorrent" => (8080, "/"),
-        "immich" => (2283, "/api/server/ping"),
-        "nextcloud" => (80, "/status.php"),
+        "seerr" => "/api/v1/settings/public",
+        "qbittorrent" => "/",
+        "immich" => "/api/server/ping",
+        // Probed inside its container, where the web server listens on 80 (the
+        // catalogue's port is the one published on the server).
+        "nextcloud" => return Ok((80, "/status.php")),
         _ => return Err(Error::new("Unknown application probe")),
-    })
+    };
+    let port = common::app_port(name).ok_or_else(|| Error::new("Unknown application probe"))?;
+    Ok((port, path))
 }
 /// Apps whose first start on a new release can update their database for a long time
 /// (Jellyfin's library, Immich's and Nextcloud's databases, the Arr apps'): while one
@@ -1627,12 +1703,12 @@ fn rehearse(
         common::atomic_json(&file, &clone)?;
         let project = format!("neko-rehearsal-{name}");
         // Record cleanup before creating any containers so interruption recovery can remove only these projects.
-        let mut journal = load(Path::new(JOURNAL))?;
+        let mut journal = load(Path::new(*JOURNAL))?;
         journal["rehearsals"]
             .as_array_mut()
             .unwrap()
             .push(json!({"file":file,"project":project}));
-        common::atomic_json(Path::new(JOURNAL), &journal)?;
+        common::atomic_json(Path::new(*JOURNAL), &journal)?;
         let wait = cfg["maintenance"]["health_wait_seconds"]
             .as_u64()
             .unwrap_or(300);
@@ -1730,7 +1806,7 @@ fn restore_images(
     Ok(())
 }
 fn save_journal(value: &Value) -> Result<()> {
-    common::atomic_json(Path::new(JOURNAL), value)
+    common::atomic_json(Path::new(*JOURNAL), value)
 }
 /// A journal this program can finish: the same journal format, for the same drives and
 /// folders. Any release may finish it, not only the one that started it, so a fix to
@@ -1785,11 +1861,11 @@ fn release(text: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some(found)
 }
 fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
-    if !Path::new(JOURNAL).exists() {
+    if !Path::new(*JOURNAL).exists() {
         return Ok(());
     }
-    private(Path::new(JOURNAL))?;
-    let mut journal = load(Path::new(JOURNAL))?;
+    private(Path::new(*JOURNAL))?;
+    let mut journal = load(Path::new(*JOURNAL))?;
     if !resumable(&journal, cfg) {
         return Err(Error::new("Maintenance recovery identity mismatch"));
     }
@@ -1815,8 +1891,8 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             &|file, name| health(file, &format!("neko-{name}"), name, wait, false, &snapshot),
         )?;
         finish_committed(&journal, &snapshot, Path::new(string(cfg, "data_mount")?));
-        fs::remove_file(JOURNAL)?;
-        fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+        fs::remove_file(*JOURNAL)?;
+        fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
         scrub_all(Path::new(string(cfg, "media_mount")?));
         clear_work(Path::new(string(cfg, "data_mount")?));
         return Ok(());
@@ -1975,8 +2051,8 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             }
         }
     }
-    fs::remove_file(JOURNAL)?;
-    fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+    fs::remove_file(*JOURNAL)?;
+    fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
     scrub_all(Path::new(string(cfg, "media_mount")?));
     clear_work(Path::new(string(cfg, "data_mount")?));
     Ok(())
@@ -2079,7 +2155,7 @@ fn scrub_all(media: &Path) {
     }
 }
 fn scrub_folder(hdd: &Path) {
-    let active = load(Path::new(JOURNAL)).ok();
+    let active = load(Path::new(*JOURNAL)).ok();
     for run in runs_in(hdd).unwrap_or_default() {
         let in_use = journal_names(active.as_ref(), &run);
         if !in_use {
@@ -2122,7 +2198,7 @@ fn remove_unarchived(media: &Path) {
     }
 }
 fn remove_unarchived_in(hdd: &Path) {
-    let active = load(Path::new(JOURNAL)).ok();
+    let active = load(Path::new(*JOURNAL)).ok();
     for run in runs_in(hdd).unwrap_or_default() {
         let in_use = journal_names(active.as_ref(), &run);
         let folder = hdd.join(&run);
@@ -2677,7 +2753,7 @@ fn remove_run(path: &Path) -> Result<()> {
 /// once the same run (identical manifest) is on the HDD. The USB drive is not touched
 /// here: the weekly USB job retires the old monthly copies there.
 fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) -> Result<Value> {
-    let journal = load(Path::new(JOURNAL)).ok();
+    let journal = load(Path::new(*JOURNAL)).ok();
     let protected = |run: &str| Some(run) == current || journal_names(journal.as_ref(), run);
     let hdd = media.join("backups/monthly");
     let complete: Vec<String> = monthly_runs(media)?
@@ -2831,7 +2907,7 @@ fn run_of(run: &Path, app: &str) -> bool {
 /// (`<app>.neko-failed-<run>`) go too. Never the one `current` or a journal names, nor a
 /// folder that is not the worker's own.
 fn prune_updates(data: &Path, media: &Path, app: &str, current: Option<&str>) -> Result<Value> {
-    let journal = load(Path::new(JOURNAL)).ok();
+    let journal = load(Path::new(*JOURNAL)).ok();
     let protected = |run: &str| Some(run) == current || journal_names(journal.as_ref(), run);
     let folder = media.join(UPDATE_FOLDER);
     let mine: Vec<String> = update_runs(media)?
@@ -2907,7 +2983,7 @@ fn remove_update_run(
 /// SSD; a complete one is never removed for room. Without this a failed update's
 /// snapshot could take the room the next update needs, and nothing would ever free it.
 fn make_update_room(data: &Path, media: &Path, app: &str, retention: &mut Value) -> Result<()> {
-    let journal = load(Path::new(JOURNAL)).ok();
+    let journal = load(Path::new(*JOURNAL)).ok();
     let folder = media.join(UPDATE_FOLDER);
     let mut removed = vec![];
     for run in update_runs(media)? {
@@ -3118,7 +3194,6 @@ fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>
     let photos = &cfg["photos"];
     let immich = photos["deploy_immich"] == true;
     let media = Path::new(cfg["media_mount"].as_str().unwrap_or(""));
-    let data_root = Path::new(cfg["data_mount"].as_str().unwrap_or(""));
     let archive_dir = photos["archive_dir"]
         .as_str()
         .unwrap_or("photos/archive")
@@ -3156,13 +3231,9 @@ fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>
             );
         }
         if cloud {
-            options.insert(
-                "cloud".into(),
-                common::located(&cfg["locations"], "cloud", data_root, media)
-                    .join("cloud/files")
-                    .to_string_lossy()
-                    .into_owned(),
-            );
+            if let Ok(cloud) = common::saved_path(cfg, "cloud") {
+                options.insert("cloud".into(), cloud.to_string_lossy().into_owned());
+            }
         }
         Args(options)
     });
@@ -3326,7 +3397,7 @@ fn download_updates(
             data.join("compose").join(name)
         };
         let checked = source_model(&source, name).and_then(|m| {
-            valid_model(&m, name, data, media, &cfg["locations"])?;
+            valid_model(&m, name, data, media, cfg)?;
             volumes_ours(name, &m)?;
             Ok(m)
         });
@@ -3341,7 +3412,7 @@ fn download_updates(
                 immich_files = None;
                 let current = data.join("compose/immich");
                 let model = source_model(&current, name)?;
-                valid_model(&model, name, data, media, &cfg["locations"])?;
+                valid_model(&model, name, data, media, cfg)?;
                 volumes_ours(name, &model)?;
                 model
             }
@@ -3695,7 +3766,7 @@ fn running_models(cfg: &Value, names: &[String], snapshot: &Path) -> Result<(Val
     let mut rows = vec![];
     for name in names {
         let mut current = model(cfg, name)?;
-        valid_model(&current, name, data, media, &cfg["locations"])?;
+        valid_model(&current, name, data, media, cfg)?;
         rows.extend(containers(name, &mut current)?);
         common::atomic_json(&snapshot.join(format!("{name}-old.json")), &current)?;
         models[name] = current;
@@ -3728,7 +3799,7 @@ fn night_ended(cfg: &Value, postponed: bool, audit: bool, data_root: &Path) -> E
     Error::new(NIGHT_BEFORE_STOP)
 }
 fn set_phase(phase: &str) -> Result<()> {
-    let mut journal = load(Path::new(JOURNAL))?;
+    let mut journal = load(Path::new(*JOURNAL))?;
     journal["phase"] = json!(phase);
     save_journal(&journal)
 }
@@ -3757,7 +3828,7 @@ fn write_snapshot(
     if sealing {
         // data.tar left these out; keep a private SSD copy so a failed update can be
         // rolled back unattended (the encrypted copy needs the sudo password).
-        let mut journal = load(Path::new(JOURNAL))?;
+        let mut journal = load(Path::new(*JOURNAL))?;
         journal["sealed_copy"] = json!(save_sealed_copy(data, work)?);
         save_journal(&journal)?;
     }
@@ -3865,8 +3936,8 @@ fn clean_images(
 }
 /// The run is over: its journal goes, saved passwords in old snapshots are blanked.
 fn finish(data: &Path, media: &Path, notes: Vec<String>) -> Result<Vec<String>> {
-    fs::remove_file(JOURNAL)?;
-    fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+    fs::remove_file(*JOURNAL)?;
+    fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
     scrub_all(media);
     clear_work(data);
     Ok(notes)
@@ -3915,7 +3986,7 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
     };
     let installed = committed();
     // Read before resume() finishes the run and removes the journal.
-    let cut_in = load(Path::new(JOURNAL))
+    let cut_in = load(Path::new(*JOURNAL))
         .ok()
         .and_then(|j| j["phase"].as_str().map(str::to_string));
     resume(&cfgpath, &cfg)?;
@@ -3956,7 +4027,7 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         // Said first, so the reason survives whatever happens while putting things right.
         println!("Monthly update: {failure}");
         let installed = committed();
-        let phase = load(Path::new(JOURNAL))
+        let phase = load(Path::new(*JOURNAL))
             .ok()
             .and_then(|j| j["phase"].as_str().map(str::to_string));
         if let Err(e) = resume(&cfgpath, &cfg) {
@@ -4060,13 +4131,14 @@ fn job_lock(data: &Path) -> Result<fs::File> {
 const UNFINISHED_UPDATE: &str = "An update is not finished yet, so nothing else is looked at or installed; it is finished by: sudo systemctl start nekoserver-maintenance-resume.service";
 /// A NekoServer upgrade at work or cut off (upgrade.py keeps this record): no app update,
 /// check or monthly run starts until it is over, so the two never overlap.
-pub(crate) const UPGRADE_JOURNAL: &str = "/etc/nekoserver-backups/upgrade.json";
+pub(crate) static UPGRADE_JOURNAL: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| crate::common::journal("upgrade"));
 const UPGRADING: &str = "NekoServer is being upgraded (or an upgrade was cut off and is being put right), so this waits for its next time; the Updates page, NekoServer tab, shows how far it is";
 /// A move of the SSD or the HDD to a new drive at work or cut off (migrate.py).
 pub(crate) const MIGRATE_JOURNAL: &str = "/etc/nekoserver-backups/migrate.json";
 const MOVING: &str = "A drive is being moved to a new one (or a move was cut off: sudo python3 migrate.py resume), so this waits for its next time";
 fn no_upgrade() -> Result<()> {
-    if Path::new(UPGRADE_JOURNAL).exists() {
+    if Path::new(*UPGRADE_JOURNAL).exists() {
         return Err(Error::new(UPGRADING));
     }
     if Path::new(MIGRATE_JOURNAL).exists() {
@@ -4177,6 +4249,13 @@ fn version_of(app: &str, model: &Value, release: Option<&str>, step: Option<(u64
 /// own rules (valid_model), for setup to use before it first starts an app, so the rules
 /// exist once. Says "ok", or fails with the reason.
 pub fn check_compose(a: &Args) -> Result<()> {
+    if let (Ok(upload), Ok(database)) = (a.path("upload"), a.path("database")) {
+        // A snapshot's Immich file (setup's recovery_tools.validate_model asks this).
+        let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
+        snapshot_ok(&model, &upload, &database)?;
+        println!("ok");
+        return Ok(());
+    }
     let cfg = common::json(&a.path("config")?, 2_000_000);
     let app = a.get("app")?;
     if !["immich", "nextcloud"].contains(&app) && !MEDIA.contains(&app) {
@@ -4185,7 +4264,7 @@ pub fn check_compose(a: &Args) -> Result<()> {
     let model: Value = serde_json::from_slice(&common::bytes(&a.path("model")?, 4_000_000)?)?;
     let data = common::mount_path(string(&cfg, "data_mount")?)?;
     let media = common::mount_path(string(&cfg, "media_mount")?)?;
-    valid_model(&model, app, &data, &media, &cfg["locations"])?;
+    valid_model(&model, app, &data, &media, &cfg)?;
     volumes_ours(app, &model)?;
     println!("ok");
     Ok(())
@@ -4201,7 +4280,7 @@ pub fn check_updates(a: &Args) -> Result<()> {
     let _lock = job_lock(&data)?;
     backup::execute_with(Some(&data), "update_check", &cfgpath, || {
         no_upgrade()?;
-        if Path::new(JOURNAL).exists() {
+        if Path::new(*JOURNAL).exists() {
             return Err(Error::new(UNFINISHED_UPDATE));
         }
         mounts(&cfgpath, &cfg, false)?;
@@ -4536,7 +4615,7 @@ fn load_candidate(
         app,
         data,
         Path::new(string(cfg, "media_mount")?),
-        &cfg["locations"],
+        cfg,
     )?;
     // Checked again when it is installed: a volume of its name may have been made since.
     volumes_ours(app, &model)?;
@@ -4697,7 +4776,7 @@ fn install_due(
             Err(failure) => {
                 println!("App update: {app}: {failure}");
                 let installed = committed();
-                let phase = load(Path::new(JOURNAL))
+                let phase = load(Path::new(*JOURNAL))
                     .ok()
                     .and_then(|j| j["phase"].as_str().map(str::to_string));
                 if let Err(e) = resume(cfgpath, cfg) {
@@ -5023,7 +5102,7 @@ fn hourly_retry() -> bool {
 /// No unfinished monthly run: no journal, and the last run's report doesn't still say
 /// "running" (a run cut off before it wrote its journal is marked failed by recovery).
 fn nothing_to_finish(data: &Path) -> bool {
-    !Path::new(JOURNAL).exists()
+    !Path::new(*JOURNAL).exists()
         && ["maintenance", "updates"].iter().all(|job| {
             load(&data.join(format!("reports/jobs/{job}.json")))
                 .map_or(true, |r| r["status"] != "running")
@@ -5046,11 +5125,68 @@ fn cut_off_reason(phase: Option<&str>) -> String {
 }
 /// The update was installed (the journal says so): finishing it never rolls back.
 fn committed() -> bool {
-    load(Path::new(JOURNAL)).is_ok_and(|j| j["phase"] == "committed")
+    load(Path::new(*JOURNAL)).is_ok_and(|j| j["phase"] == "committed")
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The review of 0.47.0: the update's check worked the folders out again (the drive,
+    /// then a fixed name) instead of reading the ones setup wrote down.
+    #[test]
+    fn the_updates_check_reads_the_folders_setup_wrote_down() {
+        let (data, media) = (Path::new("/srv/n"), Path::new("/mnt/m"));
+        let music = |library: &str| {
+            json!({"services": {"navidrome": {"image": "x", "networks": {"default": null},
+                "ports": [{"host_ip": "127.0.0.1", "target": 4533, "published": "4533"}],
+                "volumes": [{"type": "bind", "source": library, "target": "/music", "read_only": true}]}}})
+        };
+        let written = json!({"paths": {"music": "/mnt/m/songs"}});
+        assert!(valid_model(&music("/mnt/m/songs"), "navidrome", data, media, &written).is_ok());
+        assert!(valid_model(
+            &music("/srv/n/library/music"),
+            "navidrome",
+            data,
+            media,
+            &written
+        )
+        .is_err());
+        // Settings from before setup wrote them down: shared.json's own folder.
+        assert!(valid_model(
+            &music("/srv/n/library/music"),
+            "navidrome",
+            data,
+            media,
+            &Value::Null
+        )
+        .is_ok());
+    }
+    #[test]
+    fn a_snapshots_immich_file_is_checked_with_the_updates_own_rules() {
+        let (upload, db) = (
+            Path::new("/srv/n/photos/immich-library"),
+            Path::new("/srv/n/appdata/immich/postgres"),
+        );
+        let env = json!({"DB_PASSWORD": "x"});
+        let model = json!({"services": {
+            "immich-server": {"image": "a", "environment": env, "volumes": [
+                {"type": "bind", "source": upload, "target": "/data"},
+                {"type": "bind", "source": "/etc/localtime", "target": "/etc/localtime", "read_only": true}]},
+            "immich-machine-learning": {"image": "b", "volumes": [{"type": "volume", "source": "model-cache", "target": "/cache"}]},
+            "redis": {"image": "c", "privileged": false},
+            "database": {"image": "d", "environment": {"POSTGRES_PASSWORD": "x"}, "volumes": [
+                {"type": "bind", "source": db, "target": "/var/lib/postgresql/data"}]}}});
+        snapshot_ok(&model, upload, db).unwrap();
+        let mut changed = model.clone();
+        changed["services"]["immich-server"]["devices"] = json!(["/dev/dri:/dev/dri"]);
+        assert!(snapshot_ok(&changed, upload, db).is_err()); // a restore test runs without it
+        let mut changed = model.clone();
+        changed["services"]["immich-server"]["volumes"][1]["read_only"] = json!(false);
+        assert!(snapshot_ok(&changed, upload, db).is_err()); // the clock only read-only
+        let mut changed = model.clone();
+        changed["services"]["database"]["environment"]["POSTGRES_PASSWORD"] = json!("y");
+        assert!(snapshot_ok(&changed, upload, db).is_err()); // not its own database
+        assert!(snapshot_ok(&model, upload, Path::new("/elsewhere")).is_err());
+    }
     #[test]
     fn nothing_that_stops_apps_starts_while_nekoserver_is_upgraded() {
         let source = include_str!("maintenance.rs");
@@ -5064,13 +5200,12 @@ mod tests {
             assert!(body.contains("no_upgrade()?;"), "{start}");
         }
         // The same record upgrade.py keeps, and app restarts wait for it too.
-        assert!(include_str!("../../upgrade.py")
-            .contains("JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')"));
+        assert!(include_str!("../../upgrade.py").contains("JOURNAL = RECOVERY['upgrade'][0]"));
         assert!(UPGRADE_JOURNAL.ends_with("/upgrade.json"));
         assert!(include_str!("../../migrate.py")
             .contains("JOURNAL = Path('/etc/nekoserver-backups/migrate.json')"));
         assert!(MIGRATE_JOURNAL.ends_with("/migrate.json"));
-        assert!(include_str!("apps.rs").contains("Path::new(maintenance::UPGRADE_JOURNAL)"));
+        assert!(include_str!("apps.rs").contains("Path::new(*maintenance::UPGRADE_JOURNAL)"));
     }
     /// An update snapshot of `app` at `at`: installed (`done`) or not, as the weekly
     /// update leaves it.
@@ -5268,14 +5403,32 @@ mod tests {
         let on_media = json!({"music": "media"});
         assert!(valid_model(&navidrome(data), "navidrome", data, media, &Value::Null).is_ok());
         assert!(valid_model(&navidrome(media), "navidrome", data, media, &Value::Null).is_err());
-        assert!(valid_model(&navidrome(media), "navidrome", data, media, &on_media).is_ok());
-        assert!(valid_model(&navidrome(data), "navidrome", data, media, &on_media).is_err());
-        assert_eq!(
-            common::located(&json!({"cloud": "ssd"}), "cloud", data, media),
-            data
-        );
-        assert_eq!(common::located(&Value::Null, "cloud", data, media), media);
-        assert_eq!(common::located(&Value::Null, "photos", data, media), data);
+        assert!(valid_model(
+            &navidrome(media),
+            "navidrome",
+            data,
+            media,
+            &json!({"locations": on_media})
+        )
+        .is_ok());
+        assert!(valid_model(
+            &navidrome(data),
+            "navidrome",
+            data,
+            media,
+            &json!({"locations": on_media})
+        )
+        .is_err());
+        let at = |locations: Value, what: &str| {
+            common::saved_path(
+                &json!({"data_mount": data, "media_mount": media, "locations": locations}),
+                what,
+            )
+            .unwrap()
+        };
+        assert!(at(json!({"cloud": "ssd"}), "cloud").starts_with(data));
+        assert!(at(Value::Null, "cloud").starts_with(media));
+        assert!(at(Value::Null, "photos").starts_with(data));
         let cfg = json!({"data_mount": "/srv/neko", "media_mount": "/mnt/neko", "locations": {"photos": "media"}});
         assert_eq!(
             common::photo_library(&cfg).unwrap(),
@@ -5927,7 +6080,7 @@ mod tests {
     #[test]
     fn a_run_that_failed_before_its_journal_keeps_no_passwords() {
         // Only meaningful without a live journal on this machine (never in CI).
-        if Path::new(JOURNAL).exists() {
+        if Path::new(*JOURNAL).exists() {
             return;
         }
         let root = scratch("early-failure");

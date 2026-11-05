@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from neko_common import mount_path, atomic_json, atomic_write, findmnt, confirmed, safe_path
+from neko_common import mount_path, atomic_json, atomic_write, findmnt, confirmed, nas_disk_wwn, safe_path
 
 DEPENDENCIES = ['system', 'network_storage']
 DESCRIPTION = 'Inspect disks; --apply mounts explicitly identified data SSD and media HDD by UUID'
@@ -694,13 +694,13 @@ def same_nas_disk(record, device, label):
     reports one), and a drive on the NAS is noted as one (chosen before 0.46.0)."""
     saved = record.get('network')
     if device.get('network'):
-        wwn = (saved or {}).get('wwn')
-        if wwn and device.get('wwn') and wwn != device['wwn']:
-            raise RuntimeError(
-                f"The {label} has its UUID, but it is on another NAS disk than before ({device['wwn']}, not {wwn}): "
-                'a copy of the disk, perhaps. Check on the NAS which LUN is which, then run setup again.'
-            )
-        record['network'] = {'transport': 'iscsi', 'wwn': device.get('wwn') or wwn}
+        wwn = nas_disk_wwn(
+            (saved or {}).get('wwn'),
+            device.get('wwn'),
+            label.removeprefix('the '),
+            'Check on the NAS which LUN is which, then run setup again.',
+        )
+        record['network'] = {'transport': 'iscsi', 'wwn': wwn}
     elif saved:
         record.pop('network', None)
 

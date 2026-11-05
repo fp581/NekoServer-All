@@ -5,7 +5,6 @@ import datetime as dt
 import fcntl
 import sys
 import hashlib
-import importlib.util
 import json
 import os
 import platform
@@ -172,16 +171,11 @@ def copy_verified(source, target):
 
 def mounts(config):
     validate_config(config)
-    spec = importlib.util.spec_from_file_location(
-        'recovery_storage_guard', Path(__file__).with_name('storage-guard.py')
-    )
-    guard = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(guard)
-    guard.verify(config)
+    neko_common.verify_storage(config)
 
 
 @contextmanager
-def lock(config, changes_apps=True):
+def lock(config, changes_apps=True, patient=None, limit=1800):
     """The shared lock that backups and monthly updates hold too. A monthly update can
     start (and fail, keeping its journal) while this waits, so whatever changes or starts
     apps checks for an unfinished update again once the lock is held, right before it
@@ -199,7 +193,7 @@ def lock(config, changes_apps=True):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('a') as stream:
         os.fchmod(stream.fileno(), 0o600)
-        wait_for(stream, sys.stdin.isatty())
+        wait_for(stream, sys.stdin.isatty() if patient is None else patient, limit)
         if changes_apps:
             blocked = neko_common.pending_maintenance(
                 neko_common.MAINTENANCE_JOURNAL, 'Setup stopped before changing anything else.'
@@ -238,7 +232,8 @@ def wait_for(stream, patient, limit=1800, sleep=None):
                 raise RuntimeError(BUSY) from None
             if waited == 0:
                 print(
-                    'Waiting for a NekoServer backup that is running right now to finish (up to 30 minutes)...',
+                    'Waiting for a NekoServer backup that is running right now to finish '
+                    f'(up to {limit // 60} minutes)...',
                     flush=True,
                 )
             sleep(5)
@@ -300,7 +295,7 @@ def verify_bundle(bundle, config):
     if (
         not isinstance(entries, dict)
         or not entries
-        or not all(x in entries for x in ('installer.py', 'neko_common.py', 'storage-guard.py', 'modules/docker.py'))
+        or not all(x in entries for x in ('installer.py', 'neko_common.py', 'modules/docker.py'))
     ):
         raise RuntimeError('Incomplete preserved installer manifest')
     for name, expected in entries.items():
@@ -530,83 +525,24 @@ def compose_args(config):
     return DOCKER + ['compose', '-p', 'neko-immich', '-f', str(compose), '--env-file', str(env)]
 
 
-# Where Immich's containers see the photo library (older and newer image) and the database.
-IMMICH_BINDINGS = {'immich-server': ('/data', '/usr/src/app/upload'), 'database': ('/var/lib/postgresql/data',)}
+def validate_model(model, upload, database, ask=None):
+    """The Immich Compose file a snapshot covers and a restore test rebuilds, with its photos
+    at `upload` and its database at `database`: checked by the runtime (check-compose
+    --upload --database, maintenance.rs snapshot_ok), with the update's own rules, so a file
+    the update installs is never one a snapshot refuses. The rules live once, there; this
+    kept a copy of its own, which already disagreed (the review of 0.47.0)."""
+    import tempfile
 
+    import native_runtime
 
-# What a Compose file may hold (runtime/src/shared.json "compose", the update's own list):
-# anything else (use_api_socket, post_start hooks, secrets or configs from this PC's files)
-# is refused before a snapshot or a restore test uses the file.
-COMPOSE_KEYS = neko_common.SHARED['compose']
-
-
-def validate_model(model, upload, database):
-    if not isinstance(model, dict) or set(model) - set(COMPOSE_KEYS['file_keys']):
-        raise RuntimeError('Custom Immich Compose settings (secrets, configs...) require manual isolated recovery')
-    services = model.get('services', {})
-    if set(services) != SERVICES:
-        raise RuntimeError(
-            'Restore currently supports the four standard Immich services; custom services require review'
-        )
-    for name, svc in services.items():
-        if not isinstance(svc, dict) or not isinstance(svc.get('image'), str):
-            raise RuntimeError('Invalid Immich service')
-        # A snapshot also leaves out the graphics chip and another user (restore tests run
-        # without them).
-        security = svc.get('security_opt', [])
-        if (
-            set(svc) - set(COMPOSE_KEYS['service_keys'])
-            or {'devices', 'user'} & set(svc)
-            or not isinstance(security, list)
-            or set(security) - set(COMPOSE_KEYS['security_opt'])
-        ):
-            raise RuntimeError('Custom Immich runtime settings require manual isolated recovery')
-        seen = set()
-        for volume in svc.get('volumes', []):
-            if not isinstance(volume, dict):
-                raise RuntimeError('Canonical Compose volume definitions required')
-            target = volume.get('target')
-            source = volume.get('source')
-            if not isinstance(target, str) or target in seen:
-                raise RuntimeError('Invalid/duplicate Immich volume target')
-            seen.add(target)
-            if volume.get('type') == 'bind':
-                if source == '/etc/localtime' and volume.get('read_only'):
-                    continue
-                expected = upload if name == 'immich-server' else database if name == 'database' else None
-                expected_target = IMMICH_BINDINGS.get(name, ())
-                if expected is None or source != str(expected) or target not in expected_target:
-                    raise RuntimeError('External/custom Immich mounts are not covered; no incomplete snapshot allowed')
-            elif not (
-                volume.get('type') == 'volume'
-                # A cache of its own (as the runtime's check allows): not in a snapshot.
-                and name in ('immich-machine-learning', 'redis')
-                and isinstance(source, str)
-                and re.fullmatch(r'[A-Za-z0-9_-]+', source)
-            ):
-                raise RuntimeError('Unsupported Immich persistent volume')
-        required = IMMICH_BINDINGS.get(name, ())
-        if required and not any(x in seen for x in required):
-            raise RuntimeError('Required Immich storage binding is missing')
-    server_env = services['immich-server'].get('environment', {})
-    db_env = services['database'].get('environment', {})
-    if not isinstance(server_env, dict) or not isinstance(db_env, dict):
-        raise RuntimeError('Canonical Immich environment required')
-    if (
-        server_env.get('DB_URL')
-        or server_env.get('REDIS_URL')
-        or server_env.get('DB_HOSTNAME', 'database') != 'database'
-        or server_env.get('REDIS_HOSTNAME', 'redis') != 'redis'
-    ):
-        raise RuntimeError('Custom database/cache routing requires manual isolated recovery')
-    for key, dbkey, default in [
-        ('DB_USERNAME', 'POSTGRES_USER', 'postgres'),
-        ('DB_DATABASE_NAME', 'POSTGRES_DB', 'immich'),
-        ('DB_PASSWORD', 'POSTGRES_PASSWORD', None),
-    ]:
-        if server_env.get(key, default) != db_env.get(dbkey, default):
-            raise RuntimeError('Immich database credentials/name do not match its database service')
-    return services
+    with tempfile.TemporaryDirectory(prefix='neko-compose-') as work:
+        path = Path(work) / 'model.json'
+        path.write_text(json.dumps(model))
+        args = ['check-compose', '--model', str(path), '--upload', str(upload), '--database', str(database)]
+        code, said = (ask or native_runtime.ask_runtime)(Path(__file__).resolve().parent, {}, args)
+    if code != 0:
+        raise RuntimeError(native_runtime.reason_of(said, f'the Compose check stopped (exit {code})'))
+    return model['services']
 
 
 def freeze_images(base, model):
@@ -691,7 +627,7 @@ def snapshot_plan(config, destination):
 # A manual snapshot stops Immich's services; this record (and a boot hook while it
 # exists) restarts them if the machine stopped before the snapshot could, such as after
 # a power cut or a killed process, where no `finally` runs.
-SNAPSHOT_RESUME = Path('/etc/nekoserver-backups/immich-snapshot-resume.json')
+SNAPSHOT_RESUME = neko_common.RECOVERY['immich_snapshot'][0]
 SNAPSHOT_HOOK = neko_common.SYSTEMD_UNITS / 'nekoserver-immich-snapshot-resume.service'
 
 
@@ -714,6 +650,8 @@ def snapshot_hook(config, config_path):
         + systemd_arg(mount_path(config['data_mount']))
         + '\n'
         'ConditionPathExists=' + str(SNAPSHOT_RESUME) + '\n[Service]\nType=oneshot\n'
+        # Room for resume's wait for the lock (RESUME_WAIT), and its start of Immich after.
+        'TimeoutStartSec=' + str(RESUME_WAIT + 1800) + '\n'
         'ExecStart=' + hook_command(config, config_path) + '\n'
         '[Install]\nWantedBy=multi-user.target\n'
     )
@@ -769,10 +707,16 @@ def restart_owed(config, base=None):
     return services
 
 
+RESUME_WAIT = 3 * 3600  # as the runtime's own resumes wait for the lock
+
+
 def resume(config):
-    """Restart Immich after a manual snapshot that was cut off (boot hook / recover.py resume)."""
+    """Restart Immich after a manual snapshot that was cut off (boot hook / recover.py resume).
+    It waits for the lock, also with no one at the keyboard: at boot a nightly backup that
+    caught up often holds it, and giving up at once left Immich stopped until the next
+    restart (the review of 0.47.0)."""
     require_root()
-    with lock(config):
+    with lock(config, patient=True, limit=RESUME_WAIT):
         mounts(config)
         return {'status': 'pass', 'reason': 'Immich services running', 'restarted': restart_owed(config)}
 

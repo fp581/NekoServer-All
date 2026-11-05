@@ -3,7 +3,7 @@ static release build) and deploy it without compiling as root."""
 
 import hashlib, json, platform, subprocess, sys
 from pathlib import Path
-from neko_common import SYSTEMD_UNITS, VERSION, safe_path, atomic_write, atomic_json
+from neko_common import RECOVERY, SYSTEMD_UNITS, VERSION, safe_path, atomic_write, atomic_json
 
 TARGET = 'x86_64-unknown-linux-musl'  # the static release build
 TARGETS = (TARGET, 'x86_64-unknown-linux-gnu')  # ... or this PC's own, as install.sh builds it
@@ -91,6 +91,14 @@ def ask_runtime(project, config, args, timeout=60, run=subprocess.run):
     binary = safe_path(Path(project) / 'runtime' / 'bin' / NAME)
     done = run([str(binary), *args], capture_output=True, text=True, timeout=timeout, check=False)
     return done.returncode, ((done.stdout or '') + (done.stderr or '')).strip()
+
+
+def reason_of(said, fallback):
+    """Why one of the runtime's checks refused, from what it said: its last line, without
+    the "NekoServer runtime failed:" around it."""
+    line = (said or '').strip().splitlines()[-1].strip() if (said or '').strip() else ''
+    line = line.removeprefix('NekoServer runtime failed: ').removesuffix(' No success recorded.')
+    return line or fallback
 
 
 RECORD_SUFFIX = '.build.json'  # next to each copy NekoServer deploys: the build it came from
@@ -185,7 +193,7 @@ def settings_files(folder):
     return [f for f in Path(folder).glob('config*.json') if f.is_file() and not f.is_symlink()]
 
 
-UPGRADE_JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')  # upgrade.py JOURNAL
+UPGRADE_JOURNAL = RECOVERY['upgrade'][0]
 
 
 def upgrade_needs(journal=UPGRADE_JOURNAL):
@@ -250,21 +258,26 @@ def retired_bundles(releases, current, units=SYSTEMD_UNITS):
     return bundles + [p for p in aside if not any(f.read_bytes() not in held for f in settings_files(p))]
 
 
-def storage_config(config):
-    """The drives as the runtime's jobs read them, with where each app keeps its files."""
+def saved_paths(config):
+    """The folders setup decided for the apps' files, written down for the runtime: it reads
+    them and never works them out again (common::saved_path), so the two halves can't
+    disagree. Every settings file the runtime reads carries them."""
     from neko_common import cloud_files, music_downloads, music_library, photo_library
 
-    found = {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}
-    if config.get('locations'):
-        found['locations'] = config['locations']
-    # The folders setup decided, written down: the runtime reads them and never works them
-    # out again (common::saved_path), so the two halves can't disagree.
-    found['paths'] = {
+    return {
         'photos': str(photo_library(config)),
         'music': str(music_library(config)),
         'downloads': str(music_downloads(config)),
         'cloud': str(cloud_files(config)),
     }
+
+
+def storage_config(config):
+    """The drives as the runtime's jobs read them, with where each app keeps its files."""
+    found = {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}
+    if config.get('locations'):
+        found['locations'] = config['locations']
+    found['paths'] = saved_paths(config)
     backup = (config.get('photos', {}).get('external_backup_network') or {}).get('wwn')
     if backup:
         # The backup drive's NAS disk: the weekly copy checks it is that one (backup.rs).

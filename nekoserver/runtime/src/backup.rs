@@ -2916,7 +2916,7 @@ fn make_room_with(
 /// still be able to start the apps; nor does the settings backup, whose files the
 /// monthly update never rolls back.
 pub(crate) fn no_unfinished_update() -> Result<()> {
-    no_unfinished_update_at(Path::new(crate::maintenance::JOURNAL))
+    no_unfinished_update_at(Path::new(*crate::maintenance::JOURNAL))
 }
 const UNFINISHED: &str = "A monthly update has not finished yet, so this backup waits (it would save half-updated apps). It is finished by: sudo systemctl start nekoserver-maintenance-resume.service";
 fn no_unfinished_update_at(journal: &Path) -> Result<()> {
@@ -2979,6 +2979,36 @@ fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &s
         "Drive check failed: {} should be the {drive} (UUID {uuid}, {fstype}); {found}",
         path.display()
     )
+}
+/// `check-drives`: setup's own check of the drives (neko_common.verify_storage asks it), the
+/// one every job and Docker's start guard make, kept once, here: each drive named in
+/// --drives (both when not given) is the one mounted (UUID, filesystem, Btrfs subvolume, the
+/// NAS disk's WWN), no copy of it is connected, and the SSD and the HDD are two filesystems.
+/// Setup kept a copy of these rules of its own, which already disagreed (a RAID member was a
+/// "copy" there, the review of 0.47.0).
+pub fn check_drives(a: &crate::Args) -> Result<()> {
+    let cfg = common::json(&a.path("config")?, 2_000_000);
+    let keys = a.get("drives").unwrap_or("data_ssd,media_hdd");
+    let keys: Vec<&str> = keys.split(',').collect();
+    let mut seen: Vec<String> = vec![];
+    for key in &keys {
+        let mount = match *key {
+            "data_ssd" => "data_mount",
+            "media_hdd" => "media_mount",
+            _ => return Err(Error::new("Unknown drive")),
+        };
+        let path = common::mount_path(cfg[mount].as_str().unwrap_or(""))?;
+        let uuid = checked_drive(&cfg, key, &path)?;
+        if seen.contains(&uuid) {
+            return Err(Error::new(
+                "The SSD and the HDD must be two different filesystems",
+            ));
+        }
+        seen.push(uuid);
+    }
+    crate::startup::copies_of(&cfg, &keys)?;
+    println!("ok");
+    Ok(())
 }
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
@@ -3342,27 +3372,35 @@ impl Integrity {
         }
     }
 }
-/// The weekly Immich backup stops Immich's writers for a moment, so its photo copy and
-/// its database copy are of one point in time (a restore from them never lists a photo
-/// it has no file for, nor leaves out one it has). Written before anything is stopped:
-/// the containers to start again, so a power cut or a stopped job at any point still
-/// gets Immich running again (the job's ExecStopPost, the boot-time resume service, and
-/// the next run all finish it).
-pub(crate) const IMMICH_JOURNAL: &str = "/etc/nekoserver-backups/immich-resume.json";
-/// The same for the weekly USB copy of Nextcloud's files (see paused_cloud).
-pub(crate) const CLOUD_JOURNAL: &str = "/etc/nekoserver-backups/nextcloud-resume.json";
 /// An app a weekly backup pauses for a moment: its Compose project, the services that
 /// write its files (the database and Redis keep running: the dump needs the database),
 /// the journal that names what was stopped, and the service that starts it again.
+///
+/// The weekly Immich backup stops Immich's writers, so its photo copy and its database
+/// copy are of one point in time (a restore from them never lists a photo it has no file
+/// for, nor leaves out one it has); the weekly USB copy of Nextcloud's files does the
+/// same (see paused_cloud). The journal is written before anything is stopped, so a
+/// power cut or a stopped job at any point still gets the app running again (the job's
+/// ExecStopPost, the boot-time resume service, and the next run all finish it).
 pub(crate) struct Paused {
     name: &'static str,
     project: &'static str,
     writers: &'static [&'static str],
-    journal: &'static str,
+    /// Its recovery record and resume service (shared.json "recovery").
+    job: &'static str,
     format: &'static str,
-    resume: &'static str,
     /// What the pause keeps at one point in time, and what waits meanwhile.
     holds: &'static str,
+}
+impl Paused {
+    fn journal(&self) -> &'static str {
+        common::journal(self.job)
+    }
+    fn resume(&self) -> &'static str {
+        common::SHARED["recovery"][self.job]["service"]
+            .as_str()
+            .unwrap_or("")
+    }
 }
 pub(crate) const IMMICH: Paused = Paused {
     name: "Immich",
@@ -3372,9 +3410,8 @@ pub(crate) const IMMICH: Paused = Paused {
         "immich-microservices",
         "immich-machine-learning",
     ],
-    journal: IMMICH_JOURNAL,
+    job: "immich",
     format: "neko-immich-resume-v1",
-    resume: "nekoserver-immich-resume.service",
     holds:
         "its photos and its database are copied at one point in time; uploads wait until it is back",
 };
@@ -3383,9 +3420,8 @@ pub(crate) const NEXTCLOUD: Paused = Paused {
     name: "Nextcloud",
     project: "label=com.docker.compose.project=neko-nextcloud",
     writers: &["nextcloud", "cron"],
-    journal: CLOUD_JOURNAL,
+    job: "nextcloud",
     format: "neko-nextcloud-resume-v1",
-    resume: "nekoserver-nextcloud-resume.service",
     holds:
         "its files and its database are copied at one point in time; it is offline until it is back",
 };
@@ -3463,7 +3499,7 @@ impl Containers for AppDocker {
                     "{service}: its container from before the backup is gone and {} are there now; start {} again (sudo bash install.sh), then remove {}",
                     found.len(),
                     app.name,
-                    app.journal
+                    app.journal()
                 )))
             }
         };
@@ -3545,7 +3581,7 @@ fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> 
         return Err(Error::new(&format!(
             "{} could not be started again after its backup; it is retried by: sudo systemctl start {} ({})",
             app.name,
-            app.resume,
+            app.resume(),
             problems.join("; ")
         )));
     }
@@ -3663,8 +3699,12 @@ pub fn immich_resume(a: &Args) -> Result<()> {
 pub fn cloud_resume(a: &Args) -> Result<()> {
     resume_paused(&NEXTCLOUD, a)
 }
+/// Starts `app` again as its journal says, with the real Docker.
+fn resume_in_docker(app: &'static Paused) -> Result<()> {
+    resume_app(app, &AppDocker(app), Path::new(app.journal()))
+}
 fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
-    if !Path::new(app.journal).exists() {
+    if !Path::new(app.journal()).exists() {
         return Ok(());
     }
     common::require_root()?;
@@ -3672,7 +3712,7 @@ fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
     let cfg = common::json(&cfgpath, 64000);
     let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
     let _recovery = coordinate_data(&cfgpath, &data)?;
-    resume_app(app, &AppDocker(app), Path::new(app.journal))
+    resume_in_docker(app)
 }
 /// The weekly database copy, made while Immich is paused: kept on the SSD and the HDD,
 /// the newest `keep` in each.
@@ -3721,7 +3761,7 @@ pub fn preservation(a: &Args) -> Result<()> {
     let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
     // Immich left stopped by a weekly run that was cut off is started again first; it
     // needs only the SSD, so a HDD still missing fails the run after that, not before.
-    resume_immich(&IMMICH_DOCKER, Path::new(IMMICH_JOURNAL))?;
+    resume_immich(&IMMICH_DOCKER, Path::new(IMMICH.journal()))?;
     guard(&cfg, &data, &media)?;
     execute_with(
         Some(&data),
@@ -3756,7 +3796,7 @@ pub fn preservation(a: &Args) -> Result<()> {
             }
             let (archived, dumped) = paused_backup(
                 &IMMICH_DOCKER,
-                Path::new(IMMICH_JOURNAL),
+                Path::new(IMMICH.journal()),
                 &data,
                 &library,
                 &archive,
@@ -3892,7 +3932,7 @@ fn pause_lock(cfg: &Path, data: &Path, media: &Path) -> Result<fs::File> {
             guard(cfg, data, media)?;
             return Ok(held);
         }
-        monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+        monthly_admission(&unit_state, Path::new(*crate::maintenance::JOURNAL))?;
         if start.elapsed() >= std::time::Duration::from_secs(30 * 60) {
             return Err(Error::new(
                 "another NekoServer job (a nightly backup, or setup) held the backups' lock for 30 minutes",
@@ -3914,9 +3954,7 @@ pub fn weekly(a: &Args) -> Result<()> {
     let media = common::mount_path(a.get("media-root")?)?;
     // Nextcloud left paused by a weekly copy that was cut off is started again first.
     // Its database copy is made with Nextcloud paused, during the copy (paused_cloud).
-    let resumed = no_monthly_run(&cfg, &data, &media, || {
-        resume_app(&NEXTCLOUD, &AppDocker(&NEXTCLOUD), Path::new(CLOUD_JOURNAL))
-    });
+    let resumed = no_monthly_run(&cfg, &data, &media, || resume_in_docker(&NEXTCLOUD));
     match resumed {
         Ok(()) => usb_copy(a, Check::Quick, true),
         // Setup was working: no failure recorded, the copy runs next week.
@@ -3939,7 +3977,7 @@ fn no_monthly_run<F: FnOnce() -> Result<()>>(
     then: F,
 ) -> Result<()> {
     let _recovery = coordinate(cfg, data, media)?;
-    monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+    monthly_admission(&unit_state, Path::new(*crate::maintenance::JOURNAL))?;
     then()
 }
 fn unit_state(unit: &str) -> String {
@@ -4116,27 +4154,6 @@ impl UsbRun {
             return Err(Error::new("External drive missing"));
         }
         own_disk(&device, &self.data, &self.media)?;
-        // On a NAS: the NAS disk setup chose, as for the SSD and the HDD (the 0.46.1 audit).
-        let wwn = common::json(&self.cfg, 64000)["backup_drive"]["wwn"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        if !wwn.is_empty() {
-            let (_, shown) = common::command(
-                &[
-                    "lsblk",
-                    "-n",
-                    "-s",
-                    "-o",
-                    "TYPE,WWN",
-                    &device.to_string_lossy(),
-                ],
-                10,
-            )?;
-            if let Some(problem) = other_nas_disk(&self.dest, &wwn, &shown) {
-                return Err(Error::new(&problem));
-            }
-        }
         let (code, s) = common::command(
             &[
                 "blkid",
@@ -4155,6 +4172,10 @@ impl UsbRun {
         fs::create_dir_all(dest)?;
         let already = common::mounted(dest);
         if already {
+            // Mounted already: the device mounted there is the one checked (with two LUNs of
+            // one UUID, the UUID's link names only one of them: the review of 0.47.0).
+            let source = common::findmnt("SOURCE", "--mountpoint", dest, 10)?.unwrap_or_default();
+            self.same_nas_disk(source.split('[').next().unwrap_or(""))?;
             let options = common::findmnt("OPTIONS", "--mountpoint", dest, 10)?.unwrap_or_default();
             if read_only(&options) {
                 return Err(Error::new(&format!(
@@ -4168,13 +4189,35 @@ impl UsbRun {
         }
         Ok(already)
     }
+    /// On a NAS: `device` is on the NAS disk setup chose, as for the SSD and the HDD (the
+    /// 0.46.1 audit). Not on a NAS (no WWN saved): nothing to check.
+    fn same_nas_disk(&self, device: &str) -> Result<()> {
+        let wwn = common::json(&self.cfg, 64000)["backup_drive"]["wwn"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if wwn.is_empty() {
+            return Ok(());
+        }
+        let (_, shown) = common::command(&["lsblk", "-n", "-s", "-o", "TYPE,WWN", device], 10)?;
+        match other_nas_disk(&self.dest, &wwn, &shown) {
+            Some(problem) => Err(Error::new(&problem)),
+            None => Ok(()),
+        }
+    }
+    /// Mounts the very device it checked (the UUID's link, followed once), never "UUID=",
+    /// which may pick another LUN of the same UUID.
     fn mount(&self) -> Result<()> {
+        let device = fs::canonicalize(Path::new("/dev/disk/by-uuid").join(&self.uuid))
+            .map_err(|_| Error::new("External drive missing"))?;
+        let device = device.to_string_lossy().to_string();
+        self.same_nas_disk(&device)?;
         success(
             &[
                 "mount",
                 "-o",
                 &usb_mount_options(&self.fstype),
-                &format!("UUID={}", self.uuid),
+                &device,
                 &self.dest.to_string_lossy(),
             ],
             30,
@@ -4195,7 +4238,7 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
         // A monthly run may have started while this waited for the drive (the shared
         // lock was let go after the first check): checked again, now that it is held.
         if check == Check::Quick {
-            monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+            monthly_admission(&unit_state, Path::new(*crate::maintenance::JOURNAL))?;
         }
         let already = run.usb_ready()?;
         let mut mounted_here = false;
@@ -4339,7 +4382,7 @@ fn cloud_to_usb(run: &UsbRun, cloud: &Path) -> Result<CloudPart> {
     if run.weekly && with_database {
         let (second, problem) = paused_cloud(
             &AppDocker(&NEXTCLOUD),
-            Path::new(CLOUD_JOURNAL),
+            Path::new(NEXTCLOUD.journal()),
             || pause_lock(cfg, data, media),
             || nextcloud_dump(cfg, data, media).map(drop),
             || {
@@ -5019,6 +5062,27 @@ mod tests {
         assert!(!data.join("installer/recovery.lock").exists());
         let _ = fs::remove_dir_all(root);
     }
+    /// The review of 0.47.0: with two LUNs of one filesystem UUID, the UUID's link names
+    /// only one of them, so the weekly copy checked that one and then mounted by "UUID=" (or
+    /// used one mounted by hand), which could be the copy.
+    #[test]
+    fn the_usb_drive_checked_on_a_nas_is_the_device_mounted() {
+        let source = include_str!("backup.rs");
+        let body = |entry: &str| {
+            let body = &source[source.find(entry).unwrap()..];
+            body[..body.find("\n    }\n").unwrap()].to_string()
+        };
+        let mount = body("    fn mount(&self) -> Result<()> {");
+        assert!(!mount.contains("UUID={}"), "{mount}");
+        assert!(
+            mount.find("self.same_nas_disk(&device)").unwrap() < mount.find("\"mount\",").unwrap()
+        );
+        let ready = body("    fn usb_ready(&self) -> Result<bool> {");
+        let mounted = ready
+            .find("findmnt(\"SOURCE\"")
+            .expect("the mounted device is looked at");
+        assert!(mounted < ready.find("self.same_nas_disk(").unwrap());
+    }
     #[test]
     fn services_are_resumed_only_after_the_drives_and_the_lock_are_checked() {
         for (file, source) in [
@@ -5645,7 +5709,7 @@ mod tests {
         let gate = weekly
             .find("no_monthly_run(&cfg, &data, &media, ||")
             .unwrap();
-        assert!(gate < weekly.find("resume_app(&NEXTCLOUD").unwrap());
+        assert!(gate < weekly.find("resume_in_docker(&NEXTCLOUD)").unwrap());
         let check = &source[source.find("fn no_monthly_run<").unwrap()..];
         let at = |s: &str| check.find(s).unwrap();
         assert!(at("coordinate(cfg, data, media)?") < at("monthly_admission("));
@@ -7418,7 +7482,7 @@ mod tests {
         let units = include_str!("../../modules/photo_backup.py");
         assert!(units.contains("\"cloud-resume\")}\\nTimeoutStopSec"));
         assert!(units.contains("CLOUD_RESUME = 'nekoserver-nextcloud-resume'"));
-        assert_eq!(NEXTCLOUD.resume, "nekoserver-nextcloud-resume.service");
+        assert_eq!(NEXTCLOUD.resume(), "nekoserver-nextcloud-resume.service");
     }
     #[test]
     fn setup_seals_a_password_list_before_the_first_monthly_snapshot() {
