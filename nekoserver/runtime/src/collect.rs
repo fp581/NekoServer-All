@@ -246,6 +246,20 @@ fn metrics(previous: &Value) -> (Value, Value) {
     }
     (host, current)
 }
+/// mount_info for drive `key`; the app SSD and the media HDD also pass the check every job
+/// makes (UUID, filesystem, Btrfs subvolume, the NAS disk's WWN), or they count as the
+/// wrong drive: nothing is read from them or written to them. With the UUID and filesystem
+/// alone, the page showed the reports of a drive every backup refused as current (the
+/// review of 0.47.2).
+fn app_drive(cfg: &Value, key: &str, path: &Path, expected: Option<&str>, fstype: &str) -> Value {
+    let info = mount_info(path, expected, fstype);
+    let checked = key == "os" || crate::backup::checked_drive(cfg, key, path).is_ok();
+    if info["status"] == "mounted" && !checked {
+        json!({"status": "wrong_drive"})
+    } else {
+        info
+    }
+}
 fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
     if expected == Some("") {
         return json!({"status":"not_configured"});
@@ -598,7 +612,7 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
     let mut data_ok = false;
     let mut media_ok = false;
     for (key, name, path, expected, fs) in rows {
-        let info = mount_info(&path, expected, fs);
+        let info = app_drive(cfg, key, &path, expected, fs);
         let mut r = json!({"id":key,"name":name,"mount":path,"status":info["status"],"total":null,"used":null,"used_percent":null,"smart":{"status":"unknown","checked_at":null}});
         if info["status"] == "mounted" {
             let source = text(&info["source"]);
@@ -2483,7 +2497,10 @@ pub fn job_states(a: &Args) -> Result<()> {
         let path = common::mount_path(text(&cfg[mount]))?;
         Ok(crate::backup::checked_drive(&cfg, key, &path).ok())
     };
-    let (data, media) = (checked("data_ssd", "data_mount")?, checked("media_hdd", "media_mount")?);
+    let (data, media) = (
+        checked("data_ssd", "data_mount")?,
+        checked("media_hdd", "media_mount")?,
+    );
     let apart = !matches!((&data, &media), (Some(a), Some(b)) if a == b);
     let ok = data.is_some() && apart;
     let media_ok = media.is_some() && apart;
@@ -2514,7 +2531,9 @@ pub fn run(a: &Args) -> Result<()> {
     let _lock = common::lock(&parent.join("collector.lock"))?;
     let now = common::now();
     let data = Path::new(text(&cfg["data_mount"]));
-    let first = mount_info(
+    let first = app_drive(
+        &cfg,
+        "data_ssd",
         data,
         Some(text(&cfg["storage"]["data_ssd"]["uuid"])),
         text(&cfg["storage"]["data_ssd"]["fstype"]),
@@ -2613,7 +2632,9 @@ pub fn run(a: &Args) -> Result<()> {
     // failed private write must never freeze the page on an older, healthier reading.
     let mut kept = Ok(());
     if ok {
-        let check = mount_info(
+        let check = app_drive(
+            &cfg,
+            "data_ssd",
             data,
             Some(text(&cfg["storage"]["data_ssd"]["uuid"])),
             text(&cfg["storage"]["data_ssd"]["fstype"]),
@@ -3420,6 +3441,30 @@ mod user_panel_tests {
             .collect();
         assert!(ids.contains(&"app:jellyfin".to_string()), "{ids:?}");
         assert!(ids.contains(&"backup:archive".to_string()), "{ids:?}");
+    }
+    #[test]
+    fn the_app_drives_are_the_ones_every_job_checks_before_anything_is_read() {
+        // The review of 0.47.2: the page read the reports of a drive every backup refused
+        // (the right UUID and filesystem, another Btrfs subvolume or NAS disk).
+        let source = include_str!("collect.rs");
+        let body = |start: &str| {
+            let at = source.find(start).unwrap();
+            &source[at..at + source[at..].find("\n}\n").unwrap()]
+        };
+        assert!(body("fn app_drive(").contains("crate::backup::checked_drive(cfg, key, path)"));
+        assert!(body("fn storage(").contains("app_drive(cfg, key, &path, expected, fs)"));
+        let run = body("pub fn run(a: &Args)");
+        assert_eq!(
+            run.matches("app_drive(").count(),
+            2,
+            "reading and saving the state"
+        );
+        assert!(!run.contains("mount_info("));
+        // The OS drive has no identity to check.
+        assert_eq!(
+            app_drive(&json!({}), "os", Path::new("/nonexistent-neko"), None, "")["status"],
+            "missing"
+        );
     }
     #[test]
     fn a_failing_job_stays_a_failure_and_a_switched_off_timer_is_never_late() {
