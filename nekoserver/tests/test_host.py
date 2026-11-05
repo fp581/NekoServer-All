@@ -1532,6 +1532,12 @@ class FedoraTest(unittest.TestCase):
                 'ID="centos"\nID_LIKE="rhel fedora"\n',
             ):
                 self.assertIs(host.detect(release(tmp, text)), host.Rhel, text)
+            # A Fedora derivative that also names rhel (Nobara 42) is not RHEL: no RHEL 42
+            # has Docker packages (the audit of 0.46.2).
+            self.assertIsNone(host.detect(release(tmp, 'ID=nobara\nID_LIKE="rhel centos fedora"\nVERSION_ID=42\n')))
+            self.assertIs(
+                host.detect(release(tmp, 'ID=rocky\nID_LIKE="rhel centos fedora"\nVERSION_ID=10.0\n')), host.Rhel
+            )
             # Oracle Linux names only fedora, and has its own repositories: not covered.
             self.assertIsNone(host.detect(release(tmp, 'ID="ol"\nID_LIKE="fedora"\n')))
         self.assertEqual(host.Fedora.service('samba'), 'smb.service')

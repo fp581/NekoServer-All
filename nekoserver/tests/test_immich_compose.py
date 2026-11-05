@@ -184,6 +184,31 @@ class ImmichComposeTests(unittest.TestCase):
         )
         self.check(cache)
 
+    def test_a_restore_tests_left_network_is_cleared_before_the_next(self):
+        """The audit of 0.46.2: a failed test left its network (neko-rt-<port>), and Docker
+        refused the next test's network of the same bridge name."""
+        import recovery_tools
+
+        calls = []
+        left = json.dumps([{'Options': {'com.docker.network.bridge.name': 'neko-rt-2284'},
+                            'Labels': {'com.docker.compose.project': 'neko-restore-0123456789ab'}}])  # fmt: skip
+        answers = {'ls': 'net1\n', 'inspect': left, 'ps': ''}
+
+        def run(argv):
+            calls.append(argv[3:])
+            if argv[3:5] == ['ps', '-a']:
+                return 'c1\nc2\n'
+            return answers.get(argv[4] if argv[3] == 'network' else argv[3], '')
+
+        self.assertEqual(recovery_tools.clear_left_bridge(2284, run), ['neko-restore-0123456789ab'])
+        self.assertIn(['rm', 'c1', 'c2'], calls)
+        self.assertIn(['network', 'rm', 'net1'], calls)
+        # Another port's network, or one still running, is left alone.
+        self.assertEqual(recovery_tools.clear_left_bridge(2290, run), [])
+        answers['ps'] = 'running1\n'
+        with self.assertRaisesRegex(RuntimeError, 'still runs'):
+            recovery_tools.clear_left_bridge(2284, run)
+
     def test_setup_checks_the_file_before_starting_it(self):
         source = (ROOT / 'modules/photos.py').read_text()
         self.assertNotIn('def chip_only', source)  # no second copy of the rules

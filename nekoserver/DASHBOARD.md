@@ -132,7 +132,7 @@ The rest of this page is the technical reference.
 
 ### Remote access and the port
 
-The Tailscale address only works for devices signed in to your own Tailscale account (Tailscale Serve, never Funnel). To keep the dashboard on the server only, set `"remote": false` under `"dashboard"` in your settings and run `sudo bash install.sh` again. Connecting Tailscale after the dashboard was installed is fine: the next setup run gives the dashboard its Tailscale address. The port 8787 can be changed with `"port"` under `"dashboard"`; when another program on the server already uses it, setup takes the next free port from 8788-8799 by itself, writes it there and says so (the end of setup and the app menu entry show the right address).
+The Tailscale address only works for devices signed in to your own Tailscale account (Tailscale Serve, never Funnel). The dashboard's port is held by systemd from the start of the computer (`nekoserver-dashboard.socket`), so no other program on the server can take it and pose as the dashboard. To keep the dashboard on the server only, set `"remote": false` under `"dashboard"` in your settings and run `sudo bash install.sh` again. Connecting Tailscale after the dashboard was installed is fine: the next setup run gives the dashboard its Tailscale address. The port 8787 can be changed with `"port"` under `"dashboard"`; when another program on the server already uses it, setup takes the next free port from 8788-8799 by itself, writes it there and says so (the end of setup and the app menu entry show the right address).
 
 ### How sensors are found
 
@@ -146,7 +146,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.46.2/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.46.3/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -190,7 +190,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.46.2` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.46.3` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

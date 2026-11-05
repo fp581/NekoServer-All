@@ -701,7 +701,9 @@ class ReadOnlyCheckTests(unittest.TestCase):
         typed = iter(answers)
         with (
             mock.patch.object(self.wizard.os.path, 'ismount', return_value=True),
-            mock.patch.object(self.wizard, 'start_apps', side_effect=lambda run, out: self.calls.append(['apps'])),
+            mock.patch.object(
+                self.wizard, 'start_apps', side_effect=lambda run, out, config: self.calls.append(['apps'])
+            ),
             mock.patch.object(self.wizard, 'repair_blocked', side_effect=lambda c, r: self.busy),
         ):
             self.wizard.check_read_only(
@@ -771,6 +773,18 @@ class ReadOnlyCheckTests(unittest.TestCase):
         with mock.patch('upgrade.nothing_at_work', return_value='An app update is not finished yet'):
             self.assertEqual(self.wizard.repair_blocked(self.config, run), 'An app update is not finished yet')
 
+    def test_with_only_the_backup_drive_on_the_nas_the_apps_are_started_here(self):
+        """The audit of 0.46.2: the NAS check, with no drive of its own to look at, never
+        lifted the hold the menu set, and the apps stayed stopped."""
+        ran, said = [], []
+        with mock.patch.object(self.wizard.Path, 'is_file', return_value=True):
+            self.wizard.start_apps(
+                lambda argv, **k: ran.append(argv) or mock.Mock(returncode=0), said.append, {'storage': {}}
+            )
+        self.assertNotIn(['systemctl', 'start', self.wizard.NAS_WATCH], ran)
+        self.assertIn(['systemctl', 'start', 'docker.service'], ran)
+        self.assertEqual(said[-1], 'The apps are started again.')
+
     def test_a_test_write_that_waits_for_the_nas_stops_the_check(self):
         """The audit of 0.46.1: with the NAS away the menu froze on its test write."""
         import threading
@@ -797,7 +811,7 @@ class ReadOnlyCheckTests(unittest.TestCase):
                 mock.patch.object(self.wizard, 'NAS_WATCH_LOCK', str(lock)),
                 mock.patch.object(self.wizard.Path, 'is_file', return_value=True),
             ):
-                self.wizard.start_apps(run, said.append)
+                self.wizard.start_apps(run, said.append, {'storage': {'media_hdd': {'network': {'wwn': '0x1'}}}})
             self.assertTrue(json.loads(state.read_text())['held'])
         self.assertIn(['systemctl', 'start', self.wizard.NAS_WATCH], ran)
         self.assertIn('were not started yet', said[-1])

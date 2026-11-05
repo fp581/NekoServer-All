@@ -426,7 +426,79 @@ fn merge_nvidia(value: &mut Value, status: &Value, now: f64) {
         }
     }
 }
-fn handle(mut stream: TcpStream, server: &Server) {
+/// How long a request may take, counted from when it was accepted: one that waited in the
+/// queue is given only what is left (the audit of 0.46.2: queued slow connections each got
+/// a full 3 s once a worker took them, so a few hundred kept every worker busy).
+const REQUEST_TIME: Duration = Duration::from_secs(3);
+/// The request's head (up to its blank line), read until `start` + REQUEST_TIME; None when
+/// it didn't come in time, the connection closed, or it was too long (answered 431).
+fn read_head(stream: &mut TcpStream, start: Instant) -> Option<Vec<u8>> {
+    let mut buf = Vec::with_capacity(4096);
+    while start.elapsed() <= REQUEST_TIME {
+        if buf.len() >= 16384 {
+            reply(stream, 431, b"", "application/json", false);
+            return None;
+        }
+        let mut chunk = [0u8; 2048];
+        let capacity = chunk.len().min(16384 - buf.len());
+        match stream.read(&mut chunk[..capacity]) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+        if buf.windows(4).any(|b| b == b"\r\n\r\n") {
+            return Some(buf);
+        }
+    }
+    None
+}
+/// The body's length from Content-Length: none or 0, or for a POST up to MAX_BODY.
+fn body_length(given: &[&[u8]], post: bool) -> Option<usize> {
+    let length = match given {
+        [] => Some(0),
+        [v] => std::str::from_utf8(v)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok()),
+        _ => None,
+    };
+    length.filter(|n| *n == 0 || (post && *n <= MAX_BODY))
+}
+/// The rest of a body of `length` bytes after what came with the head, read until
+/// `start` + REQUEST_TIME.
+fn read_body(stream: &mut TcpStream, mut body: Vec<u8>, length: usize, start: Instant) -> Vec<u8> {
+    while body.len() < length && start.elapsed() < REQUEST_TIME {
+        let mut chunk = [0u8; 2048];
+        match stream.read(&mut chunk[..(length - body.len()).min(2048)]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => body.extend_from_slice(&chunk[..n]),
+        }
+    }
+    body
+}
+/// The request names the dashboard's own address and comes from its page: one Host the
+/// dashboard answers to, an Origin (at most one) of its own, never cross-site, and for a
+/// change (POST) the page itself (browsers always send Origin with POST), so another site
+/// cannot press the buttons. `known`: the hosts and origins it answers to.
+fn from_the_page(
+    hosts: &[&[u8]],
+    origin: &[&[u8]],
+    fetch: &[&[u8]],
+    post: bool,
+    known: (&[String], &[String]),
+) -> bool {
+    let (allowed_hosts, origins) = known;
+    hosts.len() == 1
+        && allowed_hosts.iter().any(|h| h.as_bytes() == hosts[0])
+        && origin.len() <= 1
+        && origin
+            .first()
+            .is_none_or(|v| origins.iter().any(|o| o.as_bytes() == *v))
+        && !fetch.iter().any(|v| *v == b"cross-site")
+        && !(post && (origin.len() != 1 || fetch.iter().any(|v| *v != b"same-origin")))
+}
+fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
+    if accepted.elapsed() >= REQUEST_TIME {
+        return; // waited out its time in the queue: closed unanswered
+    }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
     if !stream
@@ -436,26 +508,10 @@ fn handle(mut stream: TcpStream, server: &Server) {
     {
         return;
     }
-    let mut buf = Vec::with_capacity(4096);
-    let start = Instant::now();
-    loop {
-        if start.elapsed() > Duration::from_secs(3) {
-            return;
-        }
-        if buf.len() >= 16384 {
-            reply(&mut stream, 431, b"", "application/json", false);
-            return;
-        }
-        let mut chunk = [0u8; 2048];
-        let capacity = chunk.len().min(16384 - buf.len());
-        match stream.read(&mut chunk[..capacity]) {
-            Ok(0) | Err(_) => return,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-        }
-        if buf.windows(4).any(|b| b == b"\r\n\r\n") {
-            break;
-        }
-    }
+    let start = accepted;
+    let Some(buf) = read_head(&mut stream, start) else {
+        return;
+    };
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
     let body_start = match req.parse(&buf) {
@@ -484,29 +540,11 @@ fn handle(mut stream: TcpStream, server: &Server) {
     let origin = values("origin");
     let fetch = values("sec-fetch-site");
     let cl = values("content-length");
-    if hosts.len() != 1
-        || !allowed_hosts.iter().any(|h| h.as_bytes() == hosts[0])
-        || origin.len() > 1
-        || origin
-            .first()
-            .map(|v| !origins.iter().any(|o| o.as_bytes() == *v))
-            .unwrap_or(false)
-        || fetch.iter().any(|v| *v == b"cross-site")
-        // Changes must come from the dashboard page itself (browsers always send
-        // Origin with POST), so another site cannot press the buttons.
-        || (post && (origin.len() != 1 || fetch.iter().any(|v| *v != b"same-origin")))
-    {
+    if !from_the_page(&hosts, &origin, &fetch, post, (&allowed_hosts, &origins)) {
         reply_error(&mut stream, "E41", head);
         return;
     }
-    let length = match cl.as_slice() {
-        [] => Some(0),
-        [v] => std::str::from_utf8(v)
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok()),
-        _ => None,
-    };
-    let Some(length) = length.filter(|n| *n == 0 || (post && *n <= MAX_BODY)) else {
+    let Some(length) = body_length(&cl, post) else {
         reply_error(&mut stream, "E42", head);
         return;
     };
@@ -542,14 +580,7 @@ fn handle(mut stream: TcpStream, server: &Server) {
             .first()
             .and_then(|v| std::str::from_utf8(v).ok())
             .map(str::to_string);
-        let mut body = buf[body_start..].to_vec();
-        while body.len() < length && start.elapsed() < Duration::from_secs(3) {
-            let mut chunk = [0u8; 2048];
-            match stream.read(&mut chunk[..(length - body.len()).min(2048)]) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => body.extend_from_slice(&chunk[..n]),
-            }
-        }
+        let body = read_body(&mut stream, buf[body_start..].to_vec(), length, start);
         let result = control(
             server,
             path,
@@ -655,6 +686,33 @@ fn control(
         .map_err(|_| "E21")
 }
 
+/// The dashboard's socket: the one systemd opened for it at the start of the computer
+/// (nekoserver-dashboard.socket, handed over as fd 3), so no other program can take the
+/// port first and collect the PIN the phones type in (the audit of 0.46.2). Started by
+/// hand (no socket handed over), it binds the port itself, as before.
+fn listener(port: u16) -> Result<TcpListener> {
+    use std::os::unix::io::FromRawFd;
+    let ours = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+        == Some(std::process::id());
+    let count = std::env::var("LISTEN_FDS")
+        .ok()
+        .and_then(|n| n.parse::<u32>().ok())
+        .unwrap_or(0);
+    if !ours || count == 0 {
+        return Ok(TcpListener::bind(("127.0.0.1", port))?);
+    }
+    // SAFETY: systemd hands the listening socket over as fd 3 (SD_LISTEN_FDS_START).
+    let handed = unsafe { TcpListener::from_raw_fd(3) };
+    let address = handed.local_addr()?;
+    if address.port() != port || !address.ip().is_loopback() {
+        return Err(Error::new(&format!(
+            "The dashboard's socket is {address}, not 127.0.0.1:{port}: run setup again"
+        )));
+    }
+    Ok(handed)
+}
 pub fn run(a: &Args) -> Result<()> {
     if common::root() && !cfg!(feature = "test-fixtures") {
         return Err(Error::new("Unprivileged user required"));
@@ -676,7 +734,7 @@ pub fn run(a: &Args) -> Result<()> {
         name if valid_public(name) => Some(name.to_string()),
         _ => return Err(Error::new("Invalid Tailscale dashboard name")),
     };
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let listener = listener(port)?;
     let server = Arc::new(Server {
         assets,
         status,
@@ -689,21 +747,22 @@ pub fn run(a: &Args) -> Result<()> {
     // Each connection holds a worker for at most about 4 s (a 3 s limit for the request,
     // checked after reads that wait at most 1 s). With few workers, a few dozen slow
     // connections kept every one busy and the page got no answer (the audit of 0.45.6).
-    let (tx, rx) = mpsc::sync_channel::<TcpStream>(QUEUE);
+    let (tx, rx) = mpsc::sync_channel::<(TcpStream, Instant)>(QUEUE);
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..WORKERS {
         let rx = rx.clone();
         let server = server.clone();
         thread::spawn(move || loop {
-            let stream = match rx.lock().unwrap().recv() {
+            let (stream, accepted) = match rx.lock().unwrap().recv() {
                 Ok(s) => s,
                 Err(_) => break,
             };
             // A request that panics must not leave one worker fewer each time, until
             // the server takes connections it never answers: exit, and systemd starts
             // a fresh one (Restart=always) within seconds.
-            let served =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(stream, &server)));
+            let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle(stream, &server, accepted)
+            }));
             if served.is_err() {
                 std::process::exit(70);
             }
@@ -712,7 +771,7 @@ pub fn run(a: &Args) -> Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                let _ = tx.try_send(s);
+                let _ = tx.try_send((s, Instant::now()));
             }
             Err(_) => thread::sleep(Duration::from_millis(50)),
         }
@@ -881,10 +940,36 @@ mod tests {
         };
         thread::spawn(move || {
             for s in listener.incoming().flatten() {
-                handle(s, &server);
+                handle(s, &server, Instant::now());
             }
         });
         port
+    }
+    #[test]
+    fn a_connection_that_waited_out_its_time_in_the_queue_is_closed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let root = std::env::temp_dir().join(format!("neko-queue-{}", std::process::id()));
+        let server = Server {
+            assets: root.join("assets"),
+            status: root.join("status.json"),
+            control: root.join("control.sock"),
+            port,
+            public: None,
+            live: Mutex::new(Live::default()),
+            tables: vec![],
+        };
+        let started = Instant::now();
+        handle(accepted, &server, Instant::now() - REQUEST_TIME);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "no worker time spent on it"
+        );
+        let mut answer = vec![];
+        let _ = client.set_read_timeout(Some(Duration::from_secs(1)));
+        assert_eq!(client.read_to_end(&mut answer).unwrap_or(0), 0);
     }
     /// Requests against a real server on a free port, with a temporary snapshot.
     #[test]

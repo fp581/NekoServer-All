@@ -215,6 +215,16 @@ class DashboardInstallTests(unittest.TestCase):
             self.assertIn('9000', mine.read_text())
 
 
+class DashboardSocketTests(unittest.TestCase):
+    def test_the_dashboards_port_is_held_by_systemd_from_the_start(self):
+        """The audit of 0.46.2: any account could take 127.0.0.1:8787 before the dashboard
+        started (it waits for the collector at boot) and read the PIN the phones type."""
+        found = dashboard.units(Path('/srv/n'), Path('/usr/local/lib/x'), Path('/etc/c.json'), 8787, 60)
+        self.assertIn('ListenStream=127.0.0.1:8787', found[dashboard.SOCKET])
+        self.assertIn('WantedBy=sockets.target', found[dashboard.SOCKET])
+        self.assertIn('Requires=' + dashboard.SOCKET, found[dashboard.SERVICE])
+
+
 class FanAndLightControlTests(unittest.TestCase):
     code = Path('/usr/local/lib/nekoserver-dashboard/v1')
 
@@ -352,7 +362,8 @@ class FanAndLightControlTests(unittest.TestCase):
         self.assertEqual(starts, sorted(starts))
         self.assertLess(stop, starts[0])
         self.assertFalse(
-            [c for c in calls if c[0] == 'restart' and c[1] != dashboard.SERVICE], 'nothing is restarted one by one'
+            [c for c in calls if c[0] == 'restart' and c[1] not in (dashboard.SERVICE, dashboard.SOCKET)],
+            'nothing is restarted one by one',
         )
         self.assertNotIn(enabled(dashboard.PROXY), calls)  # its socket starts it
         private.assert_called_once()

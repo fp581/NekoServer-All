@@ -58,6 +58,14 @@ class UpgradeTests(unittest.TestCase):
         # The check after putting the previous release back (verify): what it answers,
         # and what it was asked.
         self.back_problem, self.verified = None, []
+        self.units = self.dir / 'systemd'
+        self.units.mkdir()
+        patched = mock.patch.object(upgrade, 'UNITS', self.units)
+        patched.start()
+        self.addCleanup(patched.stop)
+        waits = mock.patch.object(upgrade, 'restart_pending', return_value=None)
+        waits.start()
+        self.addCleanup(waits.stop)
         for target, value in (
             ('verify', lambda config, tag, before: self.verified.append((tag, sorted(before))) or self.back_problem),
             ('settings_path', lambda p: Path(p)),
@@ -105,6 +113,42 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.numbers('v0.46.1-beta'), (0, 46, 1))
         self.assertEqual(upgrade.numbers('v0.46.1Beta'), (0, 46, 1))
         self.assertIsNone(upgrade.numbers('v0.46.1-bata'))
+
+    def test_a_kept_copy_of_a_unit_is_not_a_service_behind(self):
+        """The audit of 0.46.2: the gateway's `.before-<time>` copy named an old release, so
+        every upgrade failed its check, and so did putting the release back."""
+        (self.units / 'nekoserver-gateway-lan.service').write_text(f'ExecStart=/usr/local/lib/x/v{VERSION}/y\n')
+        (self.units / 'nekoserver-gateway-lan.service.before-20261104').write_text(
+            'ExecStart=/usr/local/lib/x/v0.45.0/y\n'
+        )
+        self.assertEqual(upgrade.services_behind(VERSION, self.units), [])
+
+    def test_going_back_removes_the_units_the_newer_release_added(self):
+        """The audit of 0.46.2: the older setup rewrites only its own units, so a new one
+        kept running the newer release's program after it was put back."""
+        (self.units / 'nekoserver-dashboard.service').write_text('old\n')
+        added = self.units / 'nekoserver-foo.timer'
+
+        def setup_adding(project, settings, account, log_file):
+            if 'nekoserver' in str(project):
+                added.write_text('ExecStart=/usr/local/lib/x/v9.9.9/y\n')
+            return 2
+
+        ran = []
+        with mock.patch.object(upgrade.subprocess, 'run', side_effect=lambda argv, **k: ran.append(argv)):
+            self.upgrade(setup_adding)
+        self.assertFalse(added.exists())
+        self.assertTrue((self.units / 'nekoserver-dashboard.service').exists())
+        self.assertIn(['systemctl', 'disable', '--now', 'nekoserver-foo.timer'], ran)
+
+    def test_an_upgrade_waits_for_a_pending_restart(self):
+        """The audit of 0.46.2: setup stops at once when a restart waits (exit 3), the old
+        release's too, so the upgrade failed and then failed to go back."""
+        with mock.patch.object(upgrade, 'restart_pending', return_value='This computer waits for a restart'):
+            self.assertEqual(self.upgrade(self.setup(0)), 2)
+        self.assertEqual(self.ran, [])
+        self.assertFalse(self.journal.exists())
+        self.assertIn('waits for a restart', self.said[-1])
 
     def test_a_good_release_is_set_up_and_checked(self):
         self.assertEqual(self.upgrade(self.setup(1)), 0)  # 1: a step still waits for you
