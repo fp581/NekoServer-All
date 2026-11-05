@@ -2980,6 +2980,36 @@ fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &s
         path.display()
     )
 }
+/// `check-drives`: setup's own check of the drives (neko_common.verify_storage asks it), the
+/// one every job and Docker's start guard make, kept once, here: each drive named in
+/// --drives (both when not given) is the one mounted (UUID, filesystem, Btrfs subvolume, the
+/// NAS disk's WWN), no copy of it is connected, and the SSD and the HDD are two filesystems.
+/// Setup kept a copy of these rules of its own, which already disagreed (a RAID member was a
+/// "copy" there, the review of 0.47.0).
+pub fn check_drives(a: &crate::Args) -> Result<()> {
+    let cfg = common::json(&a.path("config")?, 2_000_000);
+    let keys = a.get("drives").unwrap_or("data_ssd,media_hdd");
+    let keys: Vec<&str> = keys.split(',').collect();
+    let mut seen: Vec<String> = vec![];
+    for key in &keys {
+        let mount = match *key {
+            "data_ssd" => "data_mount",
+            "media_hdd" => "media_mount",
+            _ => return Err(Error::new("Unknown drive")),
+        };
+        let path = common::mount_path(cfg[mount].as_str().unwrap_or(""))?;
+        let uuid = checked_drive(&cfg, key, &path)?;
+        if seen.contains(&uuid) {
+            return Err(Error::new(
+                "The SSD and the HDD must be two different filesystems",
+            ));
+        }
+        seen.push(uuid);
+    }
+    crate::startup::copies_of(&cfg, &keys)?;
+    println!("ok");
+    Ok(())
+}
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
 fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {

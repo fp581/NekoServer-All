@@ -5,7 +5,6 @@ import datetime as dt
 import fcntl
 import sys
 import hashlib
-import importlib.util
 import json
 import os
 import platform
@@ -172,12 +171,7 @@ def copy_verified(source, target):
 
 def mounts(config):
     validate_config(config)
-    spec = importlib.util.spec_from_file_location(
-        'recovery_storage_guard', Path(__file__).with_name('storage-guard.py')
-    )
-    guard = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(guard)
-    guard.verify(config)
+    neko_common.verify_storage(config)
 
 
 @contextmanager
@@ -301,7 +295,7 @@ def verify_bundle(bundle, config):
     if (
         not isinstance(entries, dict)
         or not entries
-        or not all(x in entries for x in ('installer.py', 'neko_common.py', 'storage-guard.py', 'modules/docker.py'))
+        or not all(x in entries for x in ('installer.py', 'neko_common.py', 'modules/docker.py'))
     ):
         raise RuntimeError('Incomplete preserved installer manifest')
     for name, expected in entries.items():

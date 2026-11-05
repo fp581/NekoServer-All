@@ -975,12 +975,11 @@ class DashboardPortTests(unittest.TestCase):
             mock.patch.object(dashboard, 'record_payload', return_value=b'{}'),
             mock.patch.object(dashboard, 'asset_payloads', return_value={}),
             mock.patch.object(dashboard, 'mount_path', return_value=Path('/srv/nekoserver')),
-            mock.patch.object(dashboard.importlib.util, 'spec_from_file_location') as spec,
+            mock.patch.object(dashboard, 'verify_storage'),
             mock.patch.object(dashboard.os, 'geteuid', return_value=0),
             mock.patch.object(dashboard.shutil, 'which', return_value='/usr/bin/systemctl'),
             mock.patch.object(dashboard.safe_path.__globals__['Path'], 'mkdir'),
         ):
-            spec.return_value.loader.exec_module = lambda module: setattr(module, 'verify', lambda cfg: None)
             ctx = mock.Mock(
                 config={'dashboard': {'port': 8787}, 'data_mount': '/srv/nekoserver', 'media': {}},
                 apply=True,

@@ -237,7 +237,14 @@ fn copy_message(drive: &str, uuid: &str, copies: &[String]) -> String {
 /// subvolume too, so the identity check passes for it, and fstab mounts by UUID: Linux
 /// could have mounted the copy. Refused before Docker starts.
 pub fn copies(cfg: &Value) -> Result<()> {
-    for (key, drive) in [("data_ssd", "SSD"), ("media_hdd", "HDD")] {
+    copies_of(cfg, &["data_ssd", "media_hdd"])
+}
+/// `copies` for the drives named in `keys` (data_ssd, media_hdd).
+pub fn copies_of(cfg: &Value, keys: &[&str]) -> Result<()> {
+    for (key, drive) in [("data_ssd", "SSD"), ("media_hdd", "HDD")]
+        .into_iter()
+        .filter(|(key, _)| keys.contains(key))
+    {
         let uuid = cfg["storage"][key]["uuid"].as_str().unwrap_or("");
         let fstype = cfg["storage"][key]["fstype"].as_str().unwrap_or("");
         let devices = devices_with_uuid(uuid).unwrap_or_default();

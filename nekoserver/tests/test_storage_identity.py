@@ -1,11 +1,10 @@
 """Drive identity: the system disk is recognised from every place it is mounted, only a
-whole drive (or a Btrfs subvolume) is taken as the SSD or HDD, the Python checks compare
-the Btrfs subvolume as the runtime's guard does, Docker's start guard must run on this
+whole drive (or a Btrfs subvolume) is taken as the SSD or HDD, setup asks the runtime's
+drive check (check-drives) instead of keeping its own, Docker's start guard must run on this
 Linux, the space check leaves a busy USB drive alone, and a failed restore says why."""
 
 import fcntl
 import hashlib
-import importlib.util
 import io
 import json
 import os
@@ -141,37 +140,33 @@ MOUNTED = {'/srv/nekoserver': 'aaaa-1111 btrfs /dev/sdb1[/@data]', '/srv/media':
 
 
 class SubvolumeCheckTests(unittest.TestCase):
+    """Setup's drive check is the runtime's (check-drives, backup.rs): the UUID, filesystem
+    and Btrfs subvolume of each drive, the NAS disk's WWN and a copy left connected are
+    checked there once, and tested there (startup.rs: LVM snapshots, Btrfs pools, RAID
+    members; backup.rs: the subvolume). Setup only asks (the review of 0.47.0: its own copy
+    of those rules already disagreed with the runtime's)."""
+
     CONFIG = SUBVOLUME_CONFIG
-    MOUNTED = MOUNTED
 
-    def guard(self):
-        spec = importlib.util.spec_from_file_location('storage_guard_test', ROOT / 'storage-guard.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+    def test_setup_asks_the_runtime_with_the_drives_it_chose(self):
+        asked = []
 
-    def checks(self, mounted):
-        def fake(columns, target, *a, **k):
-            self.assertEqual(columns, 'UUID,FSTYPE,SOURCE')
-            return mounted.get(str(target))
+        def ask(project, config, args):
+            settings = json.loads(Path(args[args.index('--config') + 1]).read_text())
+            asked.append((args[0], args[args.index('--drives') + 1], settings))
+            return 0, 'ok'
 
-        with mock.patch.object(neko_common, 'findmnt', side_effect=fake):
-            yield from (neko_common.verify_storage, self.guard().verify)
+        neko_common.verify_storage(self.CONFIG, ask=ask)
+        neko_common.verify_storage(self.CONFIG, keys=('data_ssd',), ask=ask)
+        self.assertEqual([a[:2] for a in asked], [('check-drives', 'data_ssd,media_hdd'), ('check-drives', 'data_ssd')])
+        self.assertEqual(asked[0][2], {k: self.CONFIG[k] for k in ('data_mount', 'media_mount', 'storage')})
 
-    def test_the_right_subvolume_passes(self):
-        for check in self.checks(self.MOUNTED):
-            check(self.CONFIG)
-
-    def test_another_subvolume_of_the_right_drive_is_refused(self):
-        for mounted in (
-            {**self.MOUNTED, '/srv/nekoserver': 'aaaa-1111 btrfs /dev/sdb1[/@other]'},
-            {**self.MOUNTED, '/srv/nekoserver': 'aaaa-1111 btrfs /dev/sdb1'},
-            {**self.MOUNTED, '/srv/media': 'bbbb-2222 ext4 /dev/sdc1[/films]'},
-            {**self.MOUNTED, '/srv/media': 'cccc-3333 ext4 /dev/sdd1'},
-        ):
-            for check in self.checks(mounted):
-                with self.assertRaises(RuntimeError):
-                    check(self.CONFIG)
+    def test_a_refusal_says_the_runtimes_own_reason(self):
+        said = 'NekoServer runtime failed: Drive check failed: two drives look the same. No success recorded.'
+        with self.assertRaisesRegex(RuntimeError, r'^Drive check failed: two drives look the same\.$'):
+            neko_common.verify_storage(self.CONFIG, ask=lambda *a: (1, said))
+        with self.assertRaisesRegex(RuntimeError, 'exit 2'):
+            neko_common.verify_storage(self.CONFIG, ask=lambda *a: (2, ''))
 
     def test_the_tree_is_read_as_the_runtime_reads_it(self):
         with mock.patch.object(neko_common, 'findmnt', return_value='u btrfs /dev/sdb1[/]'):
@@ -419,122 +414,3 @@ class SavedEncryptedDriveTests(unittest.TestCase):
 
     def test_a_saved_encrypted_drive_unlocked_at_start_passes(self):
         self.assertEqual(self.resolve('secret UUID=2 /root/key luks\n')['data_ssd']['fstype'], 'ext4')
-
-
-def block_devices(rows, sub_ids, blkid_code=0, lsblk_code=0):
-    """subprocess.run replaced with fake_run while the checks run."""
-    return mock.patch.object(neko_common.subprocess, 'run', side_effect=fake_run(rows, sub_ids, blkid_code, lsblk_code))
-
-
-def fake_run(rows, sub_ids, blkid_code=0, lsblk_code=0):
-    """A subprocess.run answering lsblk's device list and blkid's UUID_SUB."""
-
-    def run(argv, **_):
-        if argv[0] == 'lsblk':
-            return mock.Mock(returncode=lsblk_code, stdout=json.dumps({'blockdevices': rows}))
-        return mock.Mock(returncode=blkid_code, stdout=sub_ids.get(argv[-1], '') + '\n')
-
-    return run
-
-
-DEVICES = [
-    {'path': '/dev/sda', 'uuid': None},
-    {'path': '/dev/sdb1', 'uuid': 'aaaa-1111'},
-    {'path': '/dev/sdc1', 'uuid': 'bbbb-2222'},
-]
-
-
-def lvm_row(name, kname, parent, uuid=None):
-    """One row of  lsblk -J -l -o PATH,UUID,TYPE,NAME,KNAME,PKNAME  for an LVM device."""
-    return {'path': '/dev/mapper/' + name, 'uuid': uuid, 'type': 'lvm', 'name': name, 'kname': kname, 'pkname': parent}
-
-
-# The HDD as LVM volume vg0/media on /dev/sdc1, with a snapshot (lvcreate -s -n media-snap),
-# as lsblk lists it: the volume and the snapshot both sit on the hidden vg0-media-real, the
-# snapshot on its own vg0-media--snap-cow too, so it is listed once under each. LVM's udev
-# rules leave the hidden layers unprobed (no UUID); the snapshot carries the volume's UUID.
-HDD = 'bbbb-2222'
-LVM_SNAPSHOT = [
-    {'path': '/dev/sda', 'uuid': None, 'type': 'disk', 'name': 'sda', 'kname': 'sda', 'pkname': None},
-    {'path': '/dev/sdb1', 'uuid': 'aaaa-1111', 'type': 'part', 'name': 'sdb1', 'kname': 'sdb1', 'pkname': 'sdb'},
-    {'path': '/dev/sdc1', 'uuid': 'Xc4Qz1-pv01', 'type': 'part', 'name': 'sdc1', 'kname': 'sdc1', 'pkname': 'sdc'},
-    lvm_row('vg0-media-real', 'dm-1', 'sdc1'),
-    lvm_row('vg0-media', 'dm-0', 'dm-1', HDD),
-    lvm_row('vg0-media--snap', 'dm-3', 'dm-1', HDD),
-    lvm_row('vg0-media--snap-cow', 'dm-2', 'sdc1'),
-    lvm_row('vg0-media--snap', 'dm-3', 'dm-2', HDD),
-]
-
-
-class ConnectedCopyTests(unittest.TestCase):
-    """A copy of the SSD or HDD (dd, Clonezilla) connected after setup carries its UUID
-    too, and fstab mounts by UUID: the start checks refuse, unless the devices are the
-    distinct members of one Btrfs pool, or the check can't be made."""
-
-    CONFIG, MOUNTED = SUBVOLUME_CONFIG, MOUNTED
-    guard, checks = SubvolumeCheckTests.guard, SubvolumeCheckTests.checks
-
-    def run_checks(self, rows, sub_ids=None, blkid_code=0, lsblk_code=0, devices=DEVICES):
-        failures = []
-        with block_devices(devices + rows, sub_ids or {}, blkid_code, lsblk_code):
-            for check in self.checks(self.MOUNTED):
-                try:
-                    check(self.CONFIG)
-                except RuntimeError as exc:
-                    failures.append(str(exc))
-        return failures
-
-    def test_a_copy_of_the_hdd_is_refused(self):
-        failures = self.run_checks([{'path': '/dev/sdd1', 'uuid': 'bbbb-2222'}])
-        self.assertEqual(len(failures), 2)
-        for text in failures:
-            self.assertIn('two drives look the same (one is probably a copy); unplug the copy', text.lower())
-            self.assertIn('/dev/sdc1 and /dev/sdd1', text)
-
-    def test_a_copy_of_one_device_of_a_btrfs_pool_is_refused(self):
-        rows = [{'path': '/dev/sde1', 'uuid': 'aaaa-1111'}]
-        self.assertEqual(len(self.run_checks(rows, {'/dev/sdb1': 'dev-1', '/dev/sde1': 'dev-1'})), 2)
-
-    def test_an_lvm_snapshot_of_the_drive_is_not_a_copy(self):
-        """QA-06: a snapshot (lvcreate -s) of the HDD's volume carries its UUID; it is not a
-        copy left connected, so Docker and the apps still start."""
-        self.assertEqual(self.run_checks([], devices=LVM_SNAPSHOT), [])
-        # A Btrfs volume: the snapshot has the volume's device ID (UUID_SUB) too.
-        same_id = {'/dev/mapper/vg0-media': 'dev-1', '/dev/mapper/vg0-media--snap': 'dev-1'}
-        self.assertEqual(neko_common.look_alikes(HDD, 'btrfs', run=fake_run(LVM_SNAPSHOT, same_id)), [])
-        self.assertEqual(neko_common.devices_with_uuid(HDD, run=fake_run(LVM_SNAPSHOT, {})), ['/dev/mapper/vg0-media'])
-
-    def test_a_real_copy_beside_an_lvm_snapshot_is_still_refused(self):
-        failures = self.run_checks(
-            [{'path': '/dev/sdd1', 'uuid': HDD, 'type': 'part', 'name': 'sdd1', 'kname': 'sdd1', 'pkname': 'sdd'}],
-            devices=LVM_SNAPSHOT,
-        )
-        self.assertEqual(len(failures), 2)
-        for text in failures:
-            self.assertIn('/dev/mapper/vg0-media and /dev/sdd1 carry', text)
-
-    def test_only_lvms_own_layers_and_snapshots_are_left_out(self):
-        self.assertEqual(
-            neko_common.lvm_snapshots(LVM_SNAPSHOT),
-            {'/dev/mapper/vg0-media-real', '/dev/mapper/vg0-media--snap', '/dev/mapper/vg0-media--snap-cow'},
-        )
-        # LVM doubles a '-' inside a name: a volume named "media-real" is no hidden layer.
-        self.assertFalse(neko_common.lvm_layer('vg0-media--real', 'real'))
-        self.assertTrue(neko_common.lvm_layer('vg0-media---real', 'real'))  # the layer of a volume named "media-"
-        self.assertTrue(neko_common.lvm_layer('vg0-media--snap-cow', 'cow'))
-        # Two plain volumes with one UUID (a dd copy from one volume to another) stay a copy.
-        copied = [lvm_row('vg0-media', 'dm-0', 'sdc1', HDD), lvm_row('vg0-copy', 'dm-4', 'sdc1', HDD)]
-        self.assertEqual(neko_common.lvm_snapshots(copied), set())
-        self.assertEqual(
-            neko_common.look_alikes(HDD, 'ext4', run=fake_run(copied, {})),
-            ['/dev/mapper/vg0-copy', '/dev/mapper/vg0-media'],
-        )
-
-    def test_a_pool_an_unreadable_device_id_or_no_lsblk_passes(self):
-        pool = [{'path': '/dev/sde1', 'uuid': 'aaaa-1111'}]
-        self.assertEqual(self.run_checks(pool, {'/dev/sdb1': 'dev-1', '/dev/sde1': 'dev-2'}), [])
-        self.assertEqual(self.run_checks(pool, blkid_code=2), [])
-        self.assertEqual(self.run_checks([{'path': '/dev/sdd1', 'uuid': 'bbbb-2222'}], lsblk_code=1), [])
-        # An LVM volume lsblk lists under each disk it spans is one device.
-        twice = [{'path': '/dev/sdc1', 'uuid': 'bbbb-2222'}]
-        self.assertEqual(self.run_checks(twice), [])

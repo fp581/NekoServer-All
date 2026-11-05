@@ -2,11 +2,12 @@
 
 import native_runtime
 from acceptance_summary import scope_digest
-import getpass, grp, importlib.util, json, os, platform, re, shutil, socket, subprocess, sys, time
+import getpass, grp, json, os, platform, re, shutil, socket, subprocess, sys, time
 from pathlib import Path
 import host
 from neko_common import (
     SHARED,
+    verify_storage,
     APP_PORTS,
     DASHBOARD_DEFAULT_PORT,
     MANAGED_UNIT,
@@ -820,10 +821,7 @@ def run(ctx):
     data = mount_path(cfg['data_mount'])
     project = Path(__file__).resolve().parents[1]
     port = choose_port(ctx, port)
-    spec = importlib.util.spec_from_file_location('dashboard_storage_guard', project / 'storage-guard.py')
-    guard = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(guard)
-    guard.verify(cfg)
+    verify_storage(cfg)
     code = safe_path(Path('/usr/local/lib/nekoserver-dashboard') / ('v' + VERSION))
     config = safe_path(COLLECTOR_SETTINGS)
     payloads = asset_payloads(project, code)

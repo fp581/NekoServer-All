@@ -93,6 +93,14 @@ def ask_runtime(project, config, args, timeout=60, run=subprocess.run):
     return done.returncode, ((done.stdout or '') + (done.stderr or '')).strip()
 
 
+def reason_of(said, fallback):
+    """Why one of the runtime's checks refused, from what it said: its last line, without
+    the "NekoServer runtime failed:" around it."""
+    line = (said or '').strip().splitlines()[-1].strip() if (said or '').strip() else ''
+    line = line.removeprefix('NekoServer runtime failed: ').removesuffix(' No success recorded.')
+    return line or fallback
+
+
 RECORD_SUFFIX = '.build.json'  # next to each copy NekoServer deploys: the build it came from
 
 
