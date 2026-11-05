@@ -30,8 +30,14 @@ def enabled(unit):
 
 
 def served_files():
+    """What serve.rs serves: its table of files, and the cats it names from shared.json
+    (cat_file: a big animation for Home's moods, a small one and a still for the pages')."""
     block = SERVE[SERVE.index('const ASSETS') : SERVE.index('];', SERVE.index('const ASSETS'))]
-    return {m.group(1) for m in re.finditer(r'\(\s*"/[^"]*",\s*"([^"]+)"', block)}
+    files = {m.group(1) for m in re.finditer(r'\(\s*"/[^"]*",\s*"([^"]+)"', block)}
+    cats = json.loads((ROOT / 'runtime/src/shared.json').read_text())['cats']
+    files |= {f'cat-{mood}.webp' for mood in cats['home']}
+    files |= {f'cat-{mood}{kind}' for mood in cats['pages'] for kind in ('-small.webp', '.png')}
+    return files
 
 
 def server_codes():
@@ -93,7 +99,7 @@ class DashboardFilesTests(unittest.TestCase):
             self.assertIn(name, dashboard.ASSETS)
         # The still cats it keeps for offline, each one served.
         cats = re.findall(r"'([a-z]+)'", worker.split('const CATS')[1].split(';')[0])
-        self.assertEqual(sorted(cats), sorted(dashboard.CAT_MOODS))
+        self.assertEqual(sorted(cats), sorted(dashboard.CAT_PAGES))
         for mood in cats:
             self.assertIn(f'cat-{mood}.png', dashboard.ASSETS)
 

@@ -322,7 +322,8 @@ const state = {
   processPage: 0,
   installPrompt: null,
   mine: new Set(),
-  shown: new Set() // app actions started here, and those already announced
+  shown: new Set(), // app actions started here, and those already announced
+  routed: false // a page has been shown (its sections, and only they, visible)
 };
 const savedFavorites = readStore('favorites', []);
 const favorites = new Set(
@@ -1373,6 +1374,23 @@ function celebrate(img) {
     img.addEventListener('load', start, { once: true });
   }
 }
+/* A page's cat: its box, made the first time, at the left of the panel's heading
+ * (index.html names the cat, data-cat on the heading). */
+function panelCat(head) {
+  const made = head.querySelector(':scope > .cat-box img');
+  if (made) {
+    return made;
+  }
+  const box = el('figure', 'cat-box panel-cat'),
+    img = el('img');
+  box.setAttribute('aria-hidden', 'true');
+  img.width = 84;
+  img.height = 84;
+  img.alt = '';
+  box.append(img);
+  head.prepend(box);
+  return img;
+}
 function renderCats() {
   const s = state.status,
     issues = state.issues,
@@ -1400,13 +1418,13 @@ function renderCats() {
     cooling: !!state.controlError,
     processes: !!state.processError
   });
-  for (const img of document.querySelectorAll('[data-cat]')) {
-    if (img.closest('[data-page]')?.hidden) {
+  for (const head of document.querySelectorAll('[data-cat]')) {
+    if (head.closest('[data-page]')?.hidden) {
       continue; // a cat on a page not shown is not loaded (each visit would fetch them all)
     }
-    const panelMood = moods[img.dataset.cat] || PAGE_CATS[img.dataset.cat] || 'resting';
-    showCat(img, panelMood, true);
-    img.closest('.panel')?.toggleAttribute('data-alert', panelMood === 'afraid');
+    const panelMood = moods[head.dataset.cat] || PAGE_CATS[head.dataset.cat] || 'resting';
+    showCat(panelCat(head), panelMood, true);
+    head.closest('.panel')?.toggleAttribute('data-alert', panelMood === 'afraid');
   }
 }
 
@@ -4483,7 +4501,9 @@ function applyPreferences() {
   const size = readStore('size', 'normal');
   document.body.classList.toggle('large', size === 'large');
   document.body.classList.toggle('tv', size === 'tv');
-  renderCats();
+  if (state.routed) {
+    renderCats(); // a new motion setting; before the first route, route() draws them
+  }
 }
 /* The toggle at the top right: night or Lamplight, whichever is not showing (a "Same as
  * this device" setting becomes the one chosen). The page crossfades into it, or its
@@ -4671,6 +4691,7 @@ function route() {
   if (!Object.hasOwn(ROUTES, state.route)) {
     state.route = 'home';
   }
+  state.routed = true; // the other pages are hidden from here on: only this page's cats load
   $('page-title').textContent = ROUTES[state.route];
   document.title = 'NekoServer · ' + ROUTES[state.route];
   markActive();

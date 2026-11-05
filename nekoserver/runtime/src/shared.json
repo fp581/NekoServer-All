@@ -17,5 +17,10 @@
     "file_keys": ["name", "services", "volumes", "networks"],
     "service_keys": ["image", "container_name", "command", "entrypoint", "environment", "healthcheck", "depends_on", "networks", "ports", "restart", "volumes", "security_opt", "devices", "user", "init", "shm_size", "labels", "hostname", "stop_grace_period", "stop_signal", "working_dir", "expose", "tmpfs", "ulimits", "pull_policy"]
   },
-  "writers": ["docker.socket", "docker.service", "smbd.service", "smb.service", "nekoserver-gateway-lan.service"]
+  "writers": ["docker.socket", "docker.service", "smbd.service", "smb.service", "nekoserver-gateway-lan.service"],
+  "cats": {
+    "_about": "The dashboard's cat (DASHBOARD.md, \"The cat\"): Home's own cat has a big animation for each of its moods; each page's cat a small animation and a still picture. The runtime serves exactly these files, setup installs them.",
+    "home": ["happy", "playful", "resting", "sleeping", "curious", "afraid"],
+    "pages": ["happy", "playful", "resting", "sleeping", "curious", "afraid", "listening", "breezy", "grooming"]
+  }
 }

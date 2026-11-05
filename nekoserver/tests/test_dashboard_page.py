@@ -520,7 +520,7 @@ class CatCompanionTests(unittest.TestCase):
         self.assertEqual(files, ['cat-afraid.webp', 'cat-breezy-small.webp'])
         from modules import dashboard
 
-        for mood in dashboard.CAT_MOODS:
+        for mood in dashboard.CAT_PAGES:
             self.assertIn(f'cat-{mood}-small.webp', dashboard.ASSETS)
             self.assertIn(f'cat-{mood}.png', dashboard.ASSETS)
 
