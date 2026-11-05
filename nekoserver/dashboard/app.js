@@ -462,14 +462,11 @@ function remember(live) {
     state.history.shift();
   }
 }
-/* Readings are late after two collection intervals plus 30 s (150 s at the default
- * 60 s). Same rule as reading_max_age in neko_common.py, used by the acceptance check. */
+/* When readings count as late: what they say themselves (late_after, decided once by the
+ * collector, collect.rs), the same answer acceptance and the phone alerts use. Readings
+ * from before they said so: the most it could be (a 5-minute interval). */
 function statusMaxAge(s) {
-  const interval =
-    Number.isInteger(s?.collect_interval) && s.collect_interval >= 30 && s.collect_interval <= 300
-      ? s.collect_interval
-      : 60;
-  return 2 * interval + 30;
+  return Number.isInteger(s?.late_after) && s.late_after >= 180 && s.late_after <= 630 ? s.late_after : 630;
 }
 function statusStale() {
   const s = state.status;

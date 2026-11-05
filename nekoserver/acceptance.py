@@ -361,7 +361,7 @@ def dashboard_check(port, now):
         return (
             value.get('format') == 'neko-dashboard-v1'
             and stamp is not None
-            and now - stamp <= reading_max_age(value.get('collect_interval'))
+            and now - stamp <= reading_max_age(value)
         )
     except (OSError, ValueError, TypeError, AttributeError):
         return False

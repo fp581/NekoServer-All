@@ -149,23 +149,21 @@ fn settings(cfg: &Value, key: &str, default: u64, low: u64, high: u64) -> Result
     }
     Ok(n)
 }
-/// How old the collector's snapshot may be: two collection intervals plus 30 s, the
-/// page's and acceptance's rule (a 5-minute interval is allowed, so a fixed 3 minutes
-/// would call every slower reading "monitoring unavailable" and ignore its alerts).
-/// Never less than the 3 minutes used before.
+/// How old the collector's snapshot may be: what it says itself (collect.rs late_after,
+/// the page's and acceptance's answer too); a snapshot from before it said so, the most
+/// it could be (a 5-minute interval).
 fn max_age(s: &Value) -> f64 {
-    let interval = s["collect_interval"]
+    s["late_after"]
         .as_u64()
-        .filter(|v| (30..=300).contains(v))
-        .unwrap_or(60) as f64;
-    2.0 * interval + 30.0
+        .filter(|v| (180..=630).contains(v))
+        .unwrap_or_else(|| crate::collect::late_after(300)) as f64
 }
 fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<String>, bool) {
-    let oldest = now - max_age(s).max(180.0);
+    let oldest = now - max_age(s);
     let fresh = s["format"] == "neko-dashboard-v1"
         && s["generated_at"]
             .as_f64()
-            .is_some_and(|t| t.is_finite() && t >= oldest && t <= now + 30.0)
+            .is_some_and(|t| t.is_finite() && t >= oldest && t <= now + crate::collect::LATE_AHEAD)
         && s["alerts"].is_array()
         && s["applications"].is_array()
         && s["storage"].is_array()
@@ -1051,7 +1049,7 @@ mod review_tests {
     #[test]
     fn a_slower_collector_is_not_monitoring_unavailable() {
         let now = 10_000.0;
-        let s = json!({"format":"neko-dashboard-v1","generated_at":now-200.0,"collect_interval":300,
+        let s = json!({"format":"neko-dashboard-v1","generated_at":now-200.0,"collect_interval":300,"late_after":crate::collect::late_after(300),
             "alerts":[{"id":"mount:media_hdd","level":"critical"}],"applications":[],"storage":[],"backups":[]});
         let (_, events) = plan(&s, &json!({}), now, 0, 43200);
         assert!(
@@ -1062,9 +1060,11 @@ mod review_tests {
             !events.iter().any(|e| e.0 == "monitoring-stale"),
             "{events:?}"
         );
-        // At the default interval a reading 200 s old is late (never stricter than 3 minutes).
+        // At the default interval a reading 200 s old is late (never stricter than 3
+        // minutes): the snapshot says so itself, as it tells the page (one rule).
         let mut late = s.clone();
         late["collect_interval"] = json!(60);
+        late["late_after"] = json!(crate::collect::late_after(60));
         let (_, events) = plan(&late, &json!({}), now, 0, 43200);
         assert!(
             events.iter().any(|e| e.0 == "monitoring-stale"),

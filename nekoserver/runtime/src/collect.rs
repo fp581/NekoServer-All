@@ -469,6 +469,13 @@ fn nas_drive(r: &mut Value, key: &str, now: f64) {
         r["held_by_nas_watch"] = json!(true);
     }
 }
+/// Seconds after which readings taken every `interval` seconds count as late: two
+/// intervals and 30 s for a slow run, never under 3 minutes (so a slow minute never
+/// alerts). Readers also allow readings up to LATE_AHEAD s ahead, for a clock a little off.
+pub(crate) fn late_after(interval: u64) -> u64 {
+    (2 * interval + 30).max(180)
+}
+pub(crate) const LATE_AHEAD: f64 = 60.0;
 /// What the NAS check found for drive `key`: its record when recent; with an old record and
 /// a check still at work (`busy`), "waits": its test write hangs, as on a NAS that does not
 /// answer (the review of 0.47.0: "waiting" went, and the phone was told the drive was back).
@@ -2515,12 +2522,15 @@ pub fn run(a: &Args) -> Result<()> {
     result["container_services"] = services;
     result["gpu_telemetry"] = gpu_telemetry();
     result["startup"] = startup();
-    // How often readings are taken, so the page and the acceptance check know when they
-    // are late (2 × interval + 30 s; see reading_max_age in neko_common.py).
-    result["collect_interval"] = json!(cfg["dashboard"]["interval_seconds"]
+    // How often readings are taken, and when they count as late: decided here once and
+    // written into the readings, so the page, the acceptance check and the phone alerts
+    // read the same answer (the review of 0.47.0: three rules, which disagreed).
+    let interval = cfg["dashboard"]["interval_seconds"]
         .as_u64()
         .filter(|s| (30..=300).contains(s))
-        .unwrap_or(60));
+        .unwrap_or(60);
+    result["collect_interval"] = json!(interval);
+    result["late_after"] = json!(late_after(interval));
     result["updates"] = updates(&cfg, ok);
     // NekoServer's own release: this one, the newest offered, an upgrade at work.
     result["system_updates"] = if ok {
@@ -2605,6 +2615,12 @@ fn unwritable(result: &mut Value, why: &str) {
 #[cfg(test)]
 mod os_tests {
     use super::*;
+    #[test]
+    fn readings_count_as_late_by_one_rule_written_into_them() {
+        assert_eq!(late_after(60), 180);
+        assert_eq!(late_after(30), 180); // never under 3 minutes
+        assert_eq!(late_after(300), 630);
+    }
     #[test]
     fn a_nas_check_stuck_on_its_test_write_still_counts_as_waiting() {
         let seen = json!({"at": 1000.0, "drives": {"media_hdd": "ok"}});

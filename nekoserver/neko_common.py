@@ -342,13 +342,13 @@ def regular_files(root):
                 yield path, info.st_size
 
 
-def reading_max_age(interval):
-    """How old the dashboard's readings may be before they count as late: two collection
-    intervals plus 30 seconds for a slow run (150 s at the default 60 s). The page uses
-    the same rule (statusStale in dashboard/app.js); `interval` comes from the snapshot."""
-    if type(interval) is not int or not 30 <= interval <= 300:
-        interval = 60
-    return 2 * interval + 30
+def reading_max_age(snapshot):
+    """How old the dashboard's readings may be before they count as late: what the readings
+    say themselves (`late_after`, decided once by the collector, collect.rs), the same
+    answer the page and the phone alerts use. Readings from before they said so: the most
+    it could be (a 5-minute interval)."""
+    value = (snapshot or {}).get('late_after')
+    return value if type(value) is int and 180 <= value <= 630 else 630
 
 
 # exFAT has no owners or permissions (chmod is silently ignored): the mount options

@@ -108,11 +108,14 @@ class ReadingFreshnessTests(unittest.TestCase):
     def test_late_readings_use_the_configured_interval_everywhere(self):
         import neko_common
 
-        self.assertEqual(neko_common.reading_max_age(60), 150)
-        self.assertEqual(neko_common.reading_max_age(300), 630)
-        self.assertEqual(neko_common.reading_max_age('x'), 150)
-        # The page uses the same rule (statusStale in app.js).
-        self.assertIn('return 2 * interval + 30;', APP)
+        # The review of 0.47.0: the collector decides once and writes it into the readings
+        # (collect.rs late_after); acceptance, the page and the phone alerts read it.
+        self.assertEqual(neko_common.reading_max_age({'late_after': 180}), 180)
+        self.assertEqual(neko_common.reading_max_age({'late_after': 630}), 630)
+        self.assertEqual(neko_common.reading_max_age({'collect_interval': 60}), 630)  # from before: the most
+        self.assertEqual(neko_common.reading_max_age({'late_after': 5}), 630)
+        self.assertIn('s.late_after', APP)
+        self.assertNotIn('2 * interval + 30', APP)
         settings = dashboard.collector_settings(
             {
                 'data_mount': '/srv',
@@ -137,8 +140,15 @@ class ReadingFreshnessTests(unittest.TestCase):
         now = time.time()
 
         def answer(age, interval):
+            # As the collector writes it: when its readings count as late (collect.rs).
+            late = max(2 * interval + 30, 180)
             body = json.dumps(
-                {'format': 'neko-dashboard-v1', 'generated_at': now - age, 'collect_interval': interval}
+                {
+                    'format': 'neko-dashboard-v1',
+                    'generated_at': now - age,
+                    'collect_interval': interval,
+                    'late_after': late,
+                }
             ).encode()
             response = mock.MagicMock(status=200)
             response.read = io.BytesIO(body).read
