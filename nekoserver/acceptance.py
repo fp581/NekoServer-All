@@ -359,9 +359,7 @@ def dashboard_check(port, now):
         value = json.loads(payload)
         stamp = health.number(value.get('generated_at'), 0, now + 60)
         return (
-            value.get('format') == 'neko-dashboard-v1'
-            and stamp is not None
-            and now - stamp <= reading_max_age(value)
+            value.get('format') == 'neko-dashboard-v1' and stamp is not None and now - stamp <= reading_max_age(value)
         )
     except (OSError, ValueError, TypeError, AttributeError):
         return False

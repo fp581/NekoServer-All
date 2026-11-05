@@ -1964,8 +1964,10 @@ class KeptCopyTests(unittest.TestCase):
         self.assertEqual(
             native_runtime.retire_old(self.data, self.logged.append, lib=lib, units=units, journal=journal), []
         )
-        # The record's path is upgrade.py's own.
-        self.assertIn("JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')", (ROOT / 'upgrade.py').read_text())
+        # The record's path is upgrade.py's own (both read it from the shared facts).
+        import upgrade
+
+        self.assertEqual(native_runtime.UPGRADE_JOURNAL, upgrade.JOURNAL)
 
     def test_one_set_aside_copy_per_version_and_it_goes_with_its_version(self):
         import native_runtime

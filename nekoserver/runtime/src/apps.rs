@@ -37,7 +37,8 @@ use std::{
 };
 
 /// Written by `recover.py snapshot` while Immich is stopped (recovery_tools.py).
-const IMMICH_SNAPSHOT_RESUME: &str = "/etc/nekoserver-backups/immich-snapshot-resume.json";
+static IMMICH_SNAPSHOT_RESUME: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| crate::common::journal("immich_snapshot"));
 /// Finished actions are shown for this long, then forgotten.
 const KEEP_FINISHED: f64 = 600.0;
 /// How long a restarted app may take to run and answer again.
@@ -180,11 +181,11 @@ pub fn journals() -> [&'static Path; 6] {
         return [Path::new("/nonexistent/neko-tests/journal.json"); 6];
     }
     [
-        Path::new(maintenance::JOURNAL),
-        Path::new(app_snapshot::JOURNAL),
-        Path::new(host_snapshot::JOURNAL),
-        Path::new(IMMICH_SNAPSHOT_RESUME),
-        Path::new(maintenance::UPGRADE_JOURNAL),
+        Path::new(*maintenance::JOURNAL),
+        Path::new(*app_snapshot::JOURNAL),
+        Path::new(*host_snapshot::JOURNAL),
+        Path::new(*IMMICH_SNAPSHOT_RESUME),
+        Path::new(*maintenance::UPGRADE_JOURNAL),
         Path::new(maintenance::MIGRATE_JOURNAL),
     ]
 }
@@ -268,7 +269,7 @@ fn restart_record(dir: &Path, app: &str) -> PathBuf {
 /// record whose containers all start is removed; the others are tried next time.
 pub fn finish_restarts(dir: &Path, start: impl Fn(&str) -> bool) -> usize {
     let mut finished = 0;
-    for (app, ..) in APPS {
+    for &(app, ..) in APPS.iter() {
         let record = restart_record(dir, app);
         if !record.is_file() {
             continue;
@@ -649,7 +650,7 @@ impl Close<'_> {
 mod tests {
     #[test]
     fn no_app_restarts_more_parts_than_the_shutdown_wait_covers() {
-        for (app, ..) in APPS {
+        for &(app, ..) in APPS.iter() {
             assert!(restart_plan(app).len() as u64 <= MOST_PARTS, "{app}");
         }
         assert_eq!(LONGEST_CHANGE_SECS, 510);
@@ -711,7 +712,7 @@ mod tests {
 
     #[test]
     fn a_restart_never_touches_a_database_or_cache() {
-        for (app, ..) in APPS {
+        for &(app, ..) in APPS.iter() {
             let plan = restart_plan(app);
             assert!(!plan.is_empty(), "{app}");
             assert!(
@@ -777,7 +778,8 @@ mod tests {
         );
         let _ = fs::remove_dir_all(root);
         // The same records the jobs themselves write.
-        assert!(include_str!("../../recovery_tools.py").contains(IMMICH_SNAPSHOT_RESUME));
+        assert!(include_str!("../../recovery_tools.py")
+            .contains("SNAPSHOT_RESUME = neko_common.RECOVERY['immich_snapshot'][0]"));
     }
 
     #[test]

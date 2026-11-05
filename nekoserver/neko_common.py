@@ -69,22 +69,13 @@ def host_timezone(config):
     return value
 
 
-# Every app NekoServer can install: (name, what it's for, local port). The one list
-# the installer, checks and dashboard take names and ports from.
-APPS = {
-    'jellyfin': ('Jellyfin', 'Movies & shows', 8096),
-    'immich': ('Immich', 'Photos & memories', 2283),
-    'seerr': ('Seerr', 'Discover & request', 5055),
-    'navidrome': ('Navidrome', 'Your music library', 4533),
-    'sonarr': ('Sonarr', 'Series automation', 8989),
-    'radarr': ('Radarr', 'Movie automation', 7878),
-    'lidarr': ('Lidarr', 'Music automation', 8686),
-    'prowlarr': ('Prowlarr', 'Media sources', 9696),
-    'qbittorrent': ('qBittorrent', 'Download queue', 8080),
-    'nextcloud': ('Nextcloud', 'Your personal files', 8088),
-}
-# The apps with their own setup checks (media services).
-MEDIA_APPS = ('jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'seerr', 'qbittorrent')
+# The facts setup shares with the runtime (runtime/src/shared.json, built into it): one
+# copy, so the two can never disagree.
+SHARED = json.loads((Path(__file__).resolve().parent / 'runtime/src/shared.json').read_text())
+# Every app NekoServer can install: {id: (name, what it's for, local port)}. The one
+# list the installer, checks, dashboard and runtime take names and ports from.
+APPS = {app['id']: (app['name'], app['role'], app['port']) for app in SHARED['apps']}
+MEDIA_APPS = tuple(app['id'] for app in SHARED['apps'] if app['media'])
 
 
 def app_port(app):
@@ -162,7 +153,12 @@ def write_units(units):
         atomic_write(SYSTEMD_UNITS / name, text, 0o644)
 
 
-MAINTENANCE_JOURNAL = Path('/etc/nekoserver-backups/maintenance-resume.json')
+# Each job's recovery record (journal) and the service that finishes it, shared with the
+# runtime, which writes them.
+RECOVERY = {job: (Path(r['journal']), r['service']) for job, r in SHARED['recovery'].items()}
+MAINTENANCE_JOURNAL = RECOVERY['maintenance'][0]
+# Held by a running setup (install.sh keeps it open); the runtime checks the same file.
+SETUP_LOCK = Path(SHARED['setup_lock'])
 # Held for the whole of a NekoServer upgrade (upgrade.py) and a drive move (migrate.py),
 # also while they finish one that was cut off: the two never run at the same time,
 # whether started from the dashboard or a terminal. In /run: a restart lets it go.
@@ -811,10 +807,7 @@ TOP_FOLDERS = ('mnt', 'srv', 'home', 'var', 'tmp')
 # apps' settings and databases always stay on the SSD, movies and TV on the media drive).
 # Downloads live with the music: Lidarr moves finished downloads into the library, which
 # works only on one drive. A setting missing is the layout before 0.46.0.
-# The facts setup and the runtime share, kept once (runtime/src/shared.json, built into the
-# runtime): where each app's files live by default, the NAS check's file names, the
-# services that write to the drives.
-SHARED = json.loads((Path(__file__).resolve().parent / 'runtime/src/shared.json').read_text())
+# Where each app's files live by default (shared with the runtime).
 LOCATIONS = {what: (place['default'], tuple(place['folders'])) for what, place in SHARED['locations'].items()}
 DRIVE_KEYS = {'ssd': 'data_mount', 'media': 'media_mount'}
 

@@ -12,18 +12,10 @@ use std::{
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
-pub(crate) const JOURNAL: &str = "/etc/nekoserver-backups/app-resume.json";
+pub(crate) static JOURNAL: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| crate::common::journal("app"));
 const LOCK: &str = "/run/nekoserver-app-snapshot.lock";
-const SERVICES: [&str; 8] = [
-    "jellyfin",
-    "navidrome",
-    "sonarr",
-    "radarr",
-    "lidarr",
-    "prowlarr",
-    "seerr",
-    "qbittorrent",
-];
+use crate::common::MEDIA_APPS as SERVICES;
 fn docker(args: &[&str]) -> Result<String> {
     let mut command = vec!["docker", "--host", "unix:///var/run/docker.sock"];
     command.extend_from_slice(args);
@@ -50,7 +42,7 @@ fn identity(v: &Value, service: &str, id: &str) -> bool {
         && v["Config"]["Labels"]["com.docker.compose.service"] == service
 }
 fn resume() -> Result<()> {
-    let path = Path::new(JOURNAL);
+    let path = Path::new(*JOURNAL);
     if !path.exists() {
         return Ok(());
     }
@@ -100,7 +92,7 @@ fn found(id: &str, labelled: &[&str]) -> Found {
 }
 /// What to do when the app's container cannot be told apart, so the journal stays.
 fn unclear(service: &str, count: usize) -> String {
-    let start = format!("start it again (sudo bash install.sh sets it up again), then run: sudo systemctl start nekoserver-app-resume.service. If you removed {service} on purpose, delete {JOURNAL} instead");
+    let start = format!("start it again (sudo bash install.sh sets it up again), then run: sudo systemctl start nekoserver-app-resume.service. If you removed {service} on purpose, delete {} instead", *JOURNAL);
     if count == 0 {
         format!("its container from before the backup is gone and no {service} container is there now; {start}")
     } else {
@@ -163,7 +155,7 @@ pub fn resume_command(a: &Args) -> Result<()> {
     let report = job.data.join("reports/jobs/applications.json");
     // Nothing to finish (the usual case: right after a backup that ended well, and at
     // every boot): no lock is waited for, so this never waits on another job.
-    if !backup::needs_resume(Path::new(JOURNAL), &report) {
+    if !backup::needs_resume(Path::new(*JOURNAL), &report) {
         return Ok(());
     }
     // Another resume may be at work (the one run as the cut-off job stopped): wait for
@@ -512,7 +504,7 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
     }
     common::directory(Path::new("/etc/nekoserver-backups"), 0o700)?;
     common::atomic_json(
-        Path::new(JOURNAL),
+        Path::new(*JOURNAL),
         &json!({"format":"neko-app-resume-v1","containers":running}),
     )?;
     let result = (|| {
@@ -618,7 +610,7 @@ mod tests {
         for count in [0, 2] {
             let said = unclear("sonarr", count);
             assert!(said.contains("nekoserver-app-resume.service"), "{said}");
-            assert!(said.contains(JOURNAL), "{said}");
+            assert!(said.contains(*JOURNAL), "{said}");
         }
         assert!(unclear("sonarr", 2).contains("sudo docker ps -a"));
     }

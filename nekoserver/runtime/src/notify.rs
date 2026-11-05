@@ -624,7 +624,7 @@ mod tests {
         for (job, ..) in crate::collect::JOBS {
             assert!(label(&format!("backup:{job}")).is_some(), "backup:{job}");
         }
-        for (app, ..) in crate::collect::APPS {
+        for &(app, ..) in crate::collect::APPS.iter() {
             assert!(label(&format!("app:{app}")).is_some(), "app:{app}");
         }
         for app in ["immich", "nextcloud"] {
@@ -955,7 +955,7 @@ mod tests {
         for (job, ..) in crate::collect::JOBS {
             assert!(unknown.contains(&format!("backup:{job}")), "{job}");
         }
-        for (app, ..) in crate::collect::APPS {
+        for &(app, ..) in crate::collect::APPS.iter() {
             assert!(unknown.contains(&format!("app:{app}")), "{app}");
         }
         for (check, _) in crate::collect::CHECKS {

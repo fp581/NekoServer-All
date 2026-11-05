@@ -34,6 +34,8 @@ import time
 from pathlib import Path
 
 from neko_common import (
+    RECOVERY,
+    SETUP_LOCK,
     DASHBOARD_DEFAULT_PORT,
     MAINTENANCE_JOURNAL,
     OPERATION_LOCK,
@@ -51,12 +53,11 @@ from neko_common import (
     settings_path,
 )
 
-JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')
+JOURNAL = RECOVERY['upgrade'][0]
 MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
 FORMAT = 'neko-upgrade-v1'
 ARCHIVE = 'https://codeload.github.com/fp581/NekoServer-All/tar.gz/refs/tags/{tag}'
 TAG = re.compile(r'v(\d+)\.(\d+)\.(\d+)(Beta|-beta)?')  # a beta written either way (0.46.1 was v0.46.1-beta)
-SETUP_LOCK = Path('/run/nekoserver-setup.lock')
 # The status the installer records for a step that worked (installer.py
 # complete_status); a step waiting for you (Tailscale's sign-in, say) was waiting
 # before too and is not the upgrade's doing.

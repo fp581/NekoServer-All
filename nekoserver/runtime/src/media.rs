@@ -1,7 +1,7 @@
 //! Scheduled, GET-only local API audit. Never persists credentials or raw responses.
 use crate::{
     backup,
-    common::{self, Error, Result},
+    common::{self, Error, Result, MEDIA_APPS},
     Args,
 };
 use serde_json::{json, Value};
@@ -12,25 +12,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-const APPS: [(&str, u16); 8] = [
-    ("jellyfin", 8096),
-    ("navidrome", 4533),
-    ("sonarr", 8989),
-    ("radarr", 7878),
-    ("lidarr", 8686),
-    ("prowlarr", 9696),
-    ("seerr", 5055),
-    ("qbittorrent", 8080),
-];
 const LIMIT: usize = 1_900_000;
 fn text(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
 fn port(app: &str) -> Result<u16> {
-    let value = APPS
-        .iter()
-        .find(|(name, _)| *name == app)
-        .map(|(_, p)| *p)
+    let value = Some(app)
+        .filter(|app| MEDIA_APPS.contains(app))
+        .and_then(common::app_port)
         .ok_or_else(|| Error::new("Unknown media service"))?;
     #[cfg(feature = "test-fixtures")]
     if let Ok(raw) = std::env::var(format!("NEKO_TEST_PORT_{}", app.to_ascii_uppercase())) {
@@ -254,10 +243,7 @@ fn configured(app: &str, endpoint: &str, rows: &[Value], selected: &[&str], data
                 rows.iter().any(|r| {
                     ["addOnly", "fullSync"].contains(&text(&r["syncLevel"]))
                         && text(field(r, "baseUrl")).trim_end_matches('/')
-                            == format!(
-                                "http://{a}:{}",
-                                APPS.iter().find(|(n, _)| n == a).unwrap().1
-                            )
+                            == format!("http://{a}:{}", common::app_port(a).unwrap_or(0))
                         && text(field(r, "prowlarrUrl")).trim_end_matches('/')
                             == "http://prowlarr:9696"
                 })
@@ -311,7 +297,7 @@ fn provider(data: &Path, key: &str, app: &str) -> Result<bool> {
     {
         return Ok(false);
     }
-    let normal_port = APPS.iter().find(|(n, _)| *n == app).unwrap().1;
+    let normal_port = common::app_port(app).unwrap_or(0);
     if p["isDefault"] != true
         || p["hostname"] != app
         || p["port"] != normal_port
@@ -771,11 +757,7 @@ pub fn run(a: &Args) -> Result<()> {
         .iter()
         .map(text)
         .collect::<Vec<_>>();
-    if selected.is_empty()
-        || selected
-            .iter()
-            .any(|a| !APPS.iter().any(|(name, _)| name == a))
-    {
+    if selected.is_empty() || selected.iter().any(|a| !MEDIA_APPS.contains(a)) {
         return Err(Error::new("Invalid media services"));
     }
     let mut services = json!({});

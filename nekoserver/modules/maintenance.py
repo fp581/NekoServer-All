@@ -18,7 +18,7 @@ from neko_common import (
     check_units,
     write_units,
 )
-from neko_common import MAINTENANCE_JOURNAL, maintenance_running
+from neko_common import MAINTENANCE_JOURNAL, RECOVERY, maintenance_running
 
 # No photo_backup: since v0.21.1 the monthly snapshot stays on the HDD, so a missing
 # or unconfigured USB drive must not block monthly updates.
@@ -27,14 +27,14 @@ DESCRIPTION = (
     'Daily check for app updates, weekly protected updates (each app on its own, after a snapshot of it), '
     'and a monthly check of every backup copy with a restore test'
 )
-RESUME_SERVICE = 'nekoserver-maintenance-resume.service'
+RESUME_SERVICE = RECOVERY['maintenance'][1]
 RETRY_SERVICE = 'nekoserver-maintenance-retry.service'
 RETRY_TIMER = 'nekoserver-maintenance-retry.timer'
 UPDATES_TIMER = 'nekoserver-updates.timer'
 CHECK_TIMER = 'nekoserver-update-check.timer'
 SYSTEM_TIMER = 'nekoserver-system-check.timer'
 UPGRADE_RESUME = 'nekoserver-upgrade-resume.service'
-UPGRADE_JOURNAL = '/etc/nekoserver-backups/upgrade.json'  # upgrade.py JOURNAL
+UPGRADE_JOURNAL = str(RECOVERY['upgrade'][0])
 DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 
 

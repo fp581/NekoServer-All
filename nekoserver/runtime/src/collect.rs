@@ -1,3 +1,5 @@
+/// Every monitored app (shared.json); notify.rs names an alert for each (checked by a test).
+pub(crate) use crate::common::APPS;
 use crate::{
     common::{self, num, probe, round, Error, Result},
     Args, VERSION,
@@ -9,19 +11,6 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
-/// Every monitored app; notify.rs names an alert for each (checked by a test).
-pub(crate) const APPS: [(&str, &str, &str, u16); 10] = [
-    ("jellyfin", "Jellyfin", "Movies & shows", 8096),
-    ("immich", "Immich", "Photos & memories", 2283),
-    ("seerr", "Seerr", "Discover & request", 5055),
-    ("navidrome", "Navidrome", "Your music library", 4533),
-    ("sonarr", "Sonarr", "Series automation", 8989),
-    ("radarr", "Radarr", "Movie automation", 7878),
-    ("lidarr", "Lidarr", "Music automation", 8686),
-    ("prowlarr", "Prowlarr", "Media sources", 9696),
-    ("qbittorrent", "qBittorrent", "Download queue", 8080),
-    ("nextcloud", "Nextcloud", "Your personal files", 8088),
-];
 /// Backup trees whose checksum checks the dashboard shows (reports/integrity.json).
 pub(crate) const CHECKS: [(&str, &str); 3] = [
     ("archive", "HDD photo archive"),
@@ -879,7 +868,7 @@ fn applications(
         .cloned()
         .unwrap_or_default();
     let mut out = vec![];
-    for (app, name, description, port) in APPS {
+    for &(app, name, description, port) in APPS.iter() {
         if !selected.iter().any(|v| v == app)
             && !(app == "immich" && cfg["photos"]["deploy_immich"] == true)
             && !(app == "nextcloud" && cfg["nextcloud"]["enabled"] == true)
@@ -2540,7 +2529,7 @@ pub fn run(a: &Args) -> Result<()> {
     };
     result["nekoserver_release"] = if ok {
         let mut shown = crate::updates::release_for_dashboard(data);
-        shown["upgrading"] = json!(Path::new(crate::maintenance::UPGRADE_JOURNAL).exists());
+        shown["upgrading"] = json!(Path::new(*crate::maintenance::UPGRADE_JOURNAL).exists());
         shown
     } else {
         json!({})

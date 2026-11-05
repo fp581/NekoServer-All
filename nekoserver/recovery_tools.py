@@ -627,7 +627,7 @@ def snapshot_plan(config, destination):
 # A manual snapshot stops Immich's services; this record (and a boot hook while it
 # exists) restarts them if the machine stopped before the snapshot could, such as after
 # a power cut or a killed process, where no `finally` runs.
-SNAPSHOT_RESUME = Path('/etc/nekoserver-backups/immich-snapshot-resume.json')
+SNAPSHOT_RESUME = neko_common.RECOVERY['immich_snapshot'][0]
 SNAPSHOT_HOOK = neko_common.SYSTEMD_UNITS / 'nekoserver-immich-snapshot-resume.service'
 
 

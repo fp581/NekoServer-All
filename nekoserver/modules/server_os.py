@@ -9,6 +9,7 @@ import subprocess
 import native_runtime
 import host
 from neko_common import (
+    SHARED,
     SYSTEMD_UNITS,
     VERSION,
     atomic_json,
@@ -24,8 +25,8 @@ HDD_UNIT = 'nekoserver-hdd-policy.service'
 DRIVE_UNIT = 'nekoserver-drive-return.service'
 DRIVE_SETTINGS = Path('/etc/nekoserver-os/drives.json')
 # Checks the drives on a network storage box every minute (runtime nas_watch.rs).
-NAS_WATCH = 'nekoserver-nas-watch.service'
-NAS_WATCH_TIMER = 'nekoserver-nas-watch.timer'
+NAS_WATCH = SHARED['nas_watch']['service']
+NAS_WATCH_TIMER = SHARED['nas_watch']['timer']
 
 
 DEPENDENCIES = ['storage', 'recovery']

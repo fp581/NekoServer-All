@@ -10,7 +10,8 @@ use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
-pub(crate) const JOURNAL: &str = "/etc/nekoserver-backups/host-resume.json";
+pub(crate) static JOURNAL: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| crate::common::journal("host"));
 const LOCK: &str = "/run/nekoserver-host-snapshot.lock";
 fn command(args: &[&str]) -> Result<String> {
     let (code, text) = common::command(args, 90)?;
@@ -53,7 +54,7 @@ fn parse_samba(text: &str) -> Result<(&'static str, String)> {
     Ok(("", "absent".into()))
 }
 fn resume() -> Result<()> {
-    let path = Path::new(JOURNAL);
+    let path = Path::new(*JOURNAL);
     if !path.exists() {
         return Ok(());
     }
@@ -78,7 +79,7 @@ pub fn resume_command(a: &Args) -> Result<()> {
     let report = job.data.join("reports/jobs/host.json");
     // Nothing to finish (the usual case: right after a backup that ended well, and at
     // every boot): no lock is waited for, so this never waits on another job.
-    if !backup::needs_resume(Path::new(JOURNAL), &report) {
+    if !backup::needs_resume(Path::new(*JOURNAL), &report) {
         return Ok(());
     }
     // Another resume may be at work (the one run as the cut-off job stopped): wait for
@@ -436,7 +437,7 @@ fn snapshot(
     };
     common::directory(Path::new("/etc/nekoserver-backups"), 0o700)?;
     common::atomic_json(
-        Path::new(JOURNAL),
+        Path::new(*JOURNAL),
         &json!({"format":"neko-host-resume-v1","smb_was_active":active}),
     )?;
     let result = (|| {

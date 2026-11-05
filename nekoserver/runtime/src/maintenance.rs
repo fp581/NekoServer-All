@@ -13,17 +13,9 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-pub(crate) const JOURNAL: &str = "/etc/nekoserver-backups/maintenance-resume.json";
-const MEDIA: [&str; 8] = [
-    "jellyfin",
-    "navidrome",
-    "sonarr",
-    "radarr",
-    "lidarr",
-    "prowlarr",
-    "seerr",
-    "qbittorrent",
-];
+pub(crate) static JOURNAL: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| crate::common::journal("maintenance"));
+use crate::common::MEDIA_APPS as MEDIA;
 fn checked(args: &[&str], seconds: u64) -> Result<String> {
     let (code, output) = common::command(args, seconds)?;
     if code != 0 {
@@ -1048,7 +1040,7 @@ fn restore_sealed_copy(journal: &Value, data: &Path, stage: &Path) -> Result<()>
 }
 /// Remove the work folders of finished runs (all but the run an unfinished update uses).
 fn clear_work(data: &Path) {
-    let active = load(Path::new(JOURNAL))
+    let active = load(Path::new(*JOURNAL))
         .ok()
         .and_then(|j| j["run"].as_str().map(str::to_string));
     let root = data.join("backups/maintenance-work");
@@ -1263,22 +1255,22 @@ fn curl_inside(pid: &str, url: &str, host: Option<&str>) -> Result<String> {
     checked(&args, 20)
 }
 fn app_port(name: &str) -> Result<(u16, &'static str)> {
-    Ok(match name {
-        "jellyfin" => (8096, "/health"),
-        "navidrome" => (4533, "/ping"),
-        "sonarr" => (8989, "/ping"),
-        "radarr" => (7878, "/ping"),
-        "lidarr" => (8686, "/ping"),
-        "prowlarr" => (9696, "/ping"),
+    let path = match name {
+        "jellyfin" => "/health",
+        "navidrome" | "sonarr" | "radarr" | "lidarr" | "prowlarr" => "/ping",
         // Not /api/v1/status: that makes Seerr ask GitHub whether an update exists, and on
         // the restore test's network (no way out) the question hangs until the probe's
         // own time limit. Its public settings need nothing from outside.
-        "seerr" => (5055, "/api/v1/settings/public"),
-        "qbittorrent" => (8080, "/"),
-        "immich" => (2283, "/api/server/ping"),
-        "nextcloud" => (80, "/status.php"),
+        "seerr" => "/api/v1/settings/public",
+        "qbittorrent" => "/",
+        "immich" => "/api/server/ping",
+        // Probed inside its container, where the web server listens on 80 (the
+        // catalogue's port is the one published on the server).
+        "nextcloud" => return Ok((80, "/status.php")),
         _ => return Err(Error::new("Unknown application probe")),
-    })
+    };
+    let port = common::app_port(name).ok_or_else(|| Error::new("Unknown application probe"))?;
+    Ok((port, path))
 }
 /// Apps whose first start on a new release can update their database for a long time
 /// (Jellyfin's library, Immich's and Nextcloud's databases, the Arr apps'): while one
@@ -1711,12 +1703,12 @@ fn rehearse(
         common::atomic_json(&file, &clone)?;
         let project = format!("neko-rehearsal-{name}");
         // Record cleanup before creating any containers so interruption recovery can remove only these projects.
-        let mut journal = load(Path::new(JOURNAL))?;
+        let mut journal = load(Path::new(*JOURNAL))?;
         journal["rehearsals"]
             .as_array_mut()
             .unwrap()
             .push(json!({"file":file,"project":project}));
-        common::atomic_json(Path::new(JOURNAL), &journal)?;
+        common::atomic_json(Path::new(*JOURNAL), &journal)?;
         let wait = cfg["maintenance"]["health_wait_seconds"]
             .as_u64()
             .unwrap_or(300);
@@ -1814,7 +1806,7 @@ fn restore_images(
     Ok(())
 }
 fn save_journal(value: &Value) -> Result<()> {
-    common::atomic_json(Path::new(JOURNAL), value)
+    common::atomic_json(Path::new(*JOURNAL), value)
 }
 /// A journal this program can finish: the same journal format, for the same drives and
 /// folders. Any release may finish it, not only the one that started it, so a fix to
@@ -1869,11 +1861,11 @@ fn release(text: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some(found)
 }
 fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
-    if !Path::new(JOURNAL).exists() {
+    if !Path::new(*JOURNAL).exists() {
         return Ok(());
     }
-    private(Path::new(JOURNAL))?;
-    let mut journal = load(Path::new(JOURNAL))?;
+    private(Path::new(*JOURNAL))?;
+    let mut journal = load(Path::new(*JOURNAL))?;
     if !resumable(&journal, cfg) {
         return Err(Error::new("Maintenance recovery identity mismatch"));
     }
@@ -1899,8 +1891,8 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             &|file, name| health(file, &format!("neko-{name}"), name, wait, false, &snapshot),
         )?;
         finish_committed(&journal, &snapshot, Path::new(string(cfg, "data_mount")?));
-        fs::remove_file(JOURNAL)?;
-        fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+        fs::remove_file(*JOURNAL)?;
+        fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
         scrub_all(Path::new(string(cfg, "media_mount")?));
         clear_work(Path::new(string(cfg, "data_mount")?));
         return Ok(());
@@ -2059,8 +2051,8 @@ fn resume(cfgpath: &Path, cfg: &Value) -> Result<()> {
             }
         }
     }
-    fs::remove_file(JOURNAL)?;
-    fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+    fs::remove_file(*JOURNAL)?;
+    fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
     scrub_all(Path::new(string(cfg, "media_mount")?));
     clear_work(Path::new(string(cfg, "data_mount")?));
     Ok(())
@@ -2163,7 +2155,7 @@ fn scrub_all(media: &Path) {
     }
 }
 fn scrub_folder(hdd: &Path) {
-    let active = load(Path::new(JOURNAL)).ok();
+    let active = load(Path::new(*JOURNAL)).ok();
     for run in runs_in(hdd).unwrap_or_default() {
         let in_use = journal_names(active.as_ref(), &run);
         if !in_use {
@@ -2206,7 +2198,7 @@ fn remove_unarchived(media: &Path) {
     }
 }
 fn remove_unarchived_in(hdd: &Path) {
-    let active = load(Path::new(JOURNAL)).ok();
+    let active = load(Path::new(*JOURNAL)).ok();
     for run in runs_in(hdd).unwrap_or_default() {
         let in_use = journal_names(active.as_ref(), &run);
         let folder = hdd.join(&run);
@@ -2761,7 +2753,7 @@ fn remove_run(path: &Path) -> Result<()> {
 /// once the same run (identical manifest) is on the HDD. The USB drive is not touched
 /// here: the weekly USB job retires the old monthly copies there.
 fn prune_monthly(data: &Path, media: &Path, keep: u64, current: Option<&str>) -> Result<Value> {
-    let journal = load(Path::new(JOURNAL)).ok();
+    let journal = load(Path::new(*JOURNAL)).ok();
     let protected = |run: &str| Some(run) == current || journal_names(journal.as_ref(), run);
     let hdd = media.join("backups/monthly");
     let complete: Vec<String> = monthly_runs(media)?
@@ -2915,7 +2907,7 @@ fn run_of(run: &Path, app: &str) -> bool {
 /// (`<app>.neko-failed-<run>`) go too. Never the one `current` or a journal names, nor a
 /// folder that is not the worker's own.
 fn prune_updates(data: &Path, media: &Path, app: &str, current: Option<&str>) -> Result<Value> {
-    let journal = load(Path::new(JOURNAL)).ok();
+    let journal = load(Path::new(*JOURNAL)).ok();
     let protected = |run: &str| Some(run) == current || journal_names(journal.as_ref(), run);
     let folder = media.join(UPDATE_FOLDER);
     let mine: Vec<String> = update_runs(media)?
@@ -2991,7 +2983,7 @@ fn remove_update_run(
 /// SSD; a complete one is never removed for room. Without this a failed update's
 /// snapshot could take the room the next update needs, and nothing would ever free it.
 fn make_update_room(data: &Path, media: &Path, app: &str, retention: &mut Value) -> Result<()> {
-    let journal = load(Path::new(JOURNAL)).ok();
+    let journal = load(Path::new(*JOURNAL)).ok();
     let folder = media.join(UPDATE_FOLDER);
     let mut removed = vec![];
     for run in update_runs(media)? {
@@ -3807,7 +3799,7 @@ fn night_ended(cfg: &Value, postponed: bool, audit: bool, data_root: &Path) -> E
     Error::new(NIGHT_BEFORE_STOP)
 }
 fn set_phase(phase: &str) -> Result<()> {
-    let mut journal = load(Path::new(JOURNAL))?;
+    let mut journal = load(Path::new(*JOURNAL))?;
     journal["phase"] = json!(phase);
     save_journal(&journal)
 }
@@ -3836,7 +3828,7 @@ fn write_snapshot(
     if sealing {
         // data.tar left these out; keep a private SSD copy so a failed update can be
         // rolled back unattended (the encrypted copy needs the sudo password).
-        let mut journal = load(Path::new(JOURNAL))?;
+        let mut journal = load(Path::new(*JOURNAL))?;
         journal["sealed_copy"] = json!(save_sealed_copy(data, work)?);
         save_journal(&journal)?;
     }
@@ -3944,8 +3936,8 @@ fn clean_images(
 }
 /// The run is over: its journal goes, saved passwords in old snapshots are blanked.
 fn finish(data: &Path, media: &Path, notes: Vec<String>) -> Result<Vec<String>> {
-    fs::remove_file(JOURNAL)?;
-    fs::File::open(Path::new(JOURNAL).parent().unwrap())?.sync_all()?;
+    fs::remove_file(*JOURNAL)?;
+    fs::File::open(Path::new(*JOURNAL).parent().unwrap())?.sync_all()?;
     scrub_all(media);
     clear_work(data);
     Ok(notes)
@@ -3994,7 +3986,7 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
     };
     let installed = committed();
     // Read before resume() finishes the run and removes the journal.
-    let cut_in = load(Path::new(JOURNAL))
+    let cut_in = load(Path::new(*JOURNAL))
         .ok()
         .and_then(|j| j["phase"].as_str().map(str::to_string));
     resume(&cfgpath, &cfg)?;
@@ -4035,7 +4027,7 @@ pub fn run(a: &Args, recover: bool) -> Result<()> {
         // Said first, so the reason survives whatever happens while putting things right.
         println!("Monthly update: {failure}");
         let installed = committed();
-        let phase = load(Path::new(JOURNAL))
+        let phase = load(Path::new(*JOURNAL))
             .ok()
             .and_then(|j| j["phase"].as_str().map(str::to_string));
         if let Err(e) = resume(&cfgpath, &cfg) {
@@ -4139,13 +4131,14 @@ fn job_lock(data: &Path) -> Result<fs::File> {
 const UNFINISHED_UPDATE: &str = "An update is not finished yet, so nothing else is looked at or installed; it is finished by: sudo systemctl start nekoserver-maintenance-resume.service";
 /// A NekoServer upgrade at work or cut off (upgrade.py keeps this record): no app update,
 /// check or monthly run starts until it is over, so the two never overlap.
-pub(crate) const UPGRADE_JOURNAL: &str = "/etc/nekoserver-backups/upgrade.json";
+pub(crate) static UPGRADE_JOURNAL: std::sync::LazyLock<&str> =
+    std::sync::LazyLock::new(|| crate::common::journal("upgrade"));
 const UPGRADING: &str = "NekoServer is being upgraded (or an upgrade was cut off and is being put right), so this waits for its next time; the Updates page, NekoServer tab, shows how far it is";
 /// A move of the SSD or the HDD to a new drive at work or cut off (migrate.py).
 pub(crate) const MIGRATE_JOURNAL: &str = "/etc/nekoserver-backups/migrate.json";
 const MOVING: &str = "A drive is being moved to a new one (or a move was cut off: sudo python3 migrate.py resume), so this waits for its next time";
 fn no_upgrade() -> Result<()> {
-    if Path::new(UPGRADE_JOURNAL).exists() {
+    if Path::new(*UPGRADE_JOURNAL).exists() {
         return Err(Error::new(UPGRADING));
     }
     if Path::new(MIGRATE_JOURNAL).exists() {
@@ -4287,7 +4280,7 @@ pub fn check_updates(a: &Args) -> Result<()> {
     let _lock = job_lock(&data)?;
     backup::execute_with(Some(&data), "update_check", &cfgpath, || {
         no_upgrade()?;
-        if Path::new(JOURNAL).exists() {
+        if Path::new(*JOURNAL).exists() {
             return Err(Error::new(UNFINISHED_UPDATE));
         }
         mounts(&cfgpath, &cfg, false)?;
@@ -4783,7 +4776,7 @@ fn install_due(
             Err(failure) => {
                 println!("App update: {app}: {failure}");
                 let installed = committed();
-                let phase = load(Path::new(JOURNAL))
+                let phase = load(Path::new(*JOURNAL))
                     .ok()
                     .and_then(|j| j["phase"].as_str().map(str::to_string));
                 if let Err(e) = resume(cfgpath, cfg) {
@@ -5109,7 +5102,7 @@ fn hourly_retry() -> bool {
 /// No unfinished monthly run: no journal, and the last run's report doesn't still say
 /// "running" (a run cut off before it wrote its journal is marked failed by recovery).
 fn nothing_to_finish(data: &Path) -> bool {
-    !Path::new(JOURNAL).exists()
+    !Path::new(*JOURNAL).exists()
         && ["maintenance", "updates"].iter().all(|job| {
             load(&data.join(format!("reports/jobs/{job}.json")))
                 .map_or(true, |r| r["status"] != "running")
@@ -5132,7 +5125,7 @@ fn cut_off_reason(phase: Option<&str>) -> String {
 }
 /// The update was installed (the journal says so): finishing it never rolls back.
 fn committed() -> bool {
-    load(Path::new(JOURNAL)).is_ok_and(|j| j["phase"] == "committed")
+    load(Path::new(*JOURNAL)).is_ok_and(|j| j["phase"] == "committed")
 }
 #[cfg(test)]
 mod tests {
@@ -5207,13 +5200,12 @@ mod tests {
             assert!(body.contains("no_upgrade()?;"), "{start}");
         }
         // The same record upgrade.py keeps, and app restarts wait for it too.
-        assert!(include_str!("../../upgrade.py")
-            .contains("JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')"));
+        assert!(include_str!("../../upgrade.py").contains("JOURNAL = RECOVERY['upgrade'][0]"));
         assert!(UPGRADE_JOURNAL.ends_with("/upgrade.json"));
         assert!(include_str!("../../migrate.py")
             .contains("JOURNAL = Path('/etc/nekoserver-backups/migrate.json')"));
         assert!(MIGRATE_JOURNAL.ends_with("/migrate.json"));
-        assert!(include_str!("apps.rs").contains("Path::new(maintenance::UPGRADE_JOURNAL)"));
+        assert!(include_str!("apps.rs").contains("Path::new(*maintenance::UPGRADE_JOURNAL)"));
     }
     /// An update snapshot of `app` at `at`: installed (`done`) or not, as the weekly
     /// update leaves it.
@@ -6088,7 +6080,7 @@ mod tests {
     #[test]
     fn a_run_that_failed_before_its_journal_keeps_no_passwords() {
         // Only meaningful without a live journal on this machine (never in CI).
-        if Path::new(JOURNAL).exists() {
+        if Path::new(*JOURNAL).exists() {
             return;
         }
         let root = scratch("early-failure");

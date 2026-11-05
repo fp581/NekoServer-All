@@ -2916,7 +2916,7 @@ fn make_room_with(
 /// still be able to start the apps; nor does the settings backup, whose files the
 /// monthly update never rolls back.
 pub(crate) fn no_unfinished_update() -> Result<()> {
-    no_unfinished_update_at(Path::new(crate::maintenance::JOURNAL))
+    no_unfinished_update_at(Path::new(*crate::maintenance::JOURNAL))
 }
 const UNFINISHED: &str = "A monthly update has not finished yet, so this backup waits (it would save half-updated apps). It is finished by: sudo systemctl start nekoserver-maintenance-resume.service";
 fn no_unfinished_update_at(journal: &Path) -> Result<()> {
@@ -3372,27 +3372,35 @@ impl Integrity {
         }
     }
 }
-/// The weekly Immich backup stops Immich's writers for a moment, so its photo copy and
-/// its database copy are of one point in time (a restore from them never lists a photo
-/// it has no file for, nor leaves out one it has). Written before anything is stopped:
-/// the containers to start again, so a power cut or a stopped job at any point still
-/// gets Immich running again (the job's ExecStopPost, the boot-time resume service, and
-/// the next run all finish it).
-pub(crate) const IMMICH_JOURNAL: &str = "/etc/nekoserver-backups/immich-resume.json";
-/// The same for the weekly USB copy of Nextcloud's files (see paused_cloud).
-pub(crate) const CLOUD_JOURNAL: &str = "/etc/nekoserver-backups/nextcloud-resume.json";
 /// An app a weekly backup pauses for a moment: its Compose project, the services that
 /// write its files (the database and Redis keep running: the dump needs the database),
 /// the journal that names what was stopped, and the service that starts it again.
+///
+/// The weekly Immich backup stops Immich's writers, so its photo copy and its database
+/// copy are of one point in time (a restore from them never lists a photo it has no file
+/// for, nor leaves out one it has); the weekly USB copy of Nextcloud's files does the
+/// same (see paused_cloud). The journal is written before anything is stopped, so a
+/// power cut or a stopped job at any point still gets the app running again (the job's
+/// ExecStopPost, the boot-time resume service, and the next run all finish it).
 pub(crate) struct Paused {
     name: &'static str,
     project: &'static str,
     writers: &'static [&'static str],
-    journal: &'static str,
+    /// Its recovery record and resume service (shared.json "recovery").
+    job: &'static str,
     format: &'static str,
-    resume: &'static str,
     /// What the pause keeps at one point in time, and what waits meanwhile.
     holds: &'static str,
+}
+impl Paused {
+    fn journal(&self) -> &'static str {
+        common::journal(self.job)
+    }
+    fn resume(&self) -> &'static str {
+        common::SHARED["recovery"][self.job]["service"]
+            .as_str()
+            .unwrap_or("")
+    }
 }
 pub(crate) const IMMICH: Paused = Paused {
     name: "Immich",
@@ -3402,9 +3410,8 @@ pub(crate) const IMMICH: Paused = Paused {
         "immich-microservices",
         "immich-machine-learning",
     ],
-    journal: IMMICH_JOURNAL,
+    job: "immich",
     format: "neko-immich-resume-v1",
-    resume: "nekoserver-immich-resume.service",
     holds:
         "its photos and its database are copied at one point in time; uploads wait until it is back",
 };
@@ -3413,9 +3420,8 @@ pub(crate) const NEXTCLOUD: Paused = Paused {
     name: "Nextcloud",
     project: "label=com.docker.compose.project=neko-nextcloud",
     writers: &["nextcloud", "cron"],
-    journal: CLOUD_JOURNAL,
+    job: "nextcloud",
     format: "neko-nextcloud-resume-v1",
-    resume: "nekoserver-nextcloud-resume.service",
     holds:
         "its files and its database are copied at one point in time; it is offline until it is back",
 };
@@ -3493,7 +3499,7 @@ impl Containers for AppDocker {
                     "{service}: its container from before the backup is gone and {} are there now; start {} again (sudo bash install.sh), then remove {}",
                     found.len(),
                     app.name,
-                    app.journal
+                    app.journal()
                 )))
             }
         };
@@ -3575,7 +3581,7 @@ fn resume_app(app: &Paused, ctl: &dyn Containers, journal: &Path) -> Result<()> 
         return Err(Error::new(&format!(
             "{} could not be started again after its backup; it is retried by: sudo systemctl start {} ({})",
             app.name,
-            app.resume,
+            app.resume(),
             problems.join("; ")
         )));
     }
@@ -3693,8 +3699,12 @@ pub fn immich_resume(a: &Args) -> Result<()> {
 pub fn cloud_resume(a: &Args) -> Result<()> {
     resume_paused(&NEXTCLOUD, a)
 }
+/// Starts `app` again as its journal says, with the real Docker.
+fn resume_in_docker(app: &'static Paused) -> Result<()> {
+    resume_app(app, &AppDocker(app), Path::new(app.journal()))
+}
 fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
-    if !Path::new(app.journal).exists() {
+    if !Path::new(app.journal()).exists() {
         return Ok(());
     }
     common::require_root()?;
@@ -3702,7 +3712,7 @@ fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
     let cfg = common::json(&cfgpath, 64000);
     let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
     let _recovery = coordinate_data(&cfgpath, &data)?;
-    resume_app(app, &AppDocker(app), Path::new(app.journal))
+    resume_in_docker(app)
 }
 /// The weekly database copy, made while Immich is paused: kept on the SSD and the HDD,
 /// the newest `keep` in each.
@@ -3751,7 +3761,7 @@ pub fn preservation(a: &Args) -> Result<()> {
     let _lock = common::lock(Path::new("/run/nekoserver-photo-preservation.lock"))?;
     // Immich left stopped by a weekly run that was cut off is started again first; it
     // needs only the SSD, so a HDD still missing fails the run after that, not before.
-    resume_immich(&IMMICH_DOCKER, Path::new(IMMICH_JOURNAL))?;
+    resume_immich(&IMMICH_DOCKER, Path::new(IMMICH.journal()))?;
     guard(&cfg, &data, &media)?;
     execute_with(
         Some(&data),
@@ -3786,7 +3796,7 @@ pub fn preservation(a: &Args) -> Result<()> {
             }
             let (archived, dumped) = paused_backup(
                 &IMMICH_DOCKER,
-                Path::new(IMMICH_JOURNAL),
+                Path::new(IMMICH.journal()),
                 &data,
                 &library,
                 &archive,
@@ -3922,7 +3932,7 @@ fn pause_lock(cfg: &Path, data: &Path, media: &Path) -> Result<fs::File> {
             guard(cfg, data, media)?;
             return Ok(held);
         }
-        monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+        monthly_admission(&unit_state, Path::new(*crate::maintenance::JOURNAL))?;
         if start.elapsed() >= std::time::Duration::from_secs(30 * 60) {
             return Err(Error::new(
                 "another NekoServer job (a nightly backup, or setup) held the backups' lock for 30 minutes",
@@ -3944,9 +3954,7 @@ pub fn weekly(a: &Args) -> Result<()> {
     let media = common::mount_path(a.get("media-root")?)?;
     // Nextcloud left paused by a weekly copy that was cut off is started again first.
     // Its database copy is made with Nextcloud paused, during the copy (paused_cloud).
-    let resumed = no_monthly_run(&cfg, &data, &media, || {
-        resume_app(&NEXTCLOUD, &AppDocker(&NEXTCLOUD), Path::new(CLOUD_JOURNAL))
-    });
+    let resumed = no_monthly_run(&cfg, &data, &media, || resume_in_docker(&NEXTCLOUD));
     match resumed {
         Ok(()) => usb_copy(a, Check::Quick, true),
         // Setup was working: no failure recorded, the copy runs next week.
@@ -3969,7 +3977,7 @@ fn no_monthly_run<F: FnOnce() -> Result<()>>(
     then: F,
 ) -> Result<()> {
     let _recovery = coordinate(cfg, data, media)?;
-    monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+    monthly_admission(&unit_state, Path::new(*crate::maintenance::JOURNAL))?;
     then()
 }
 fn unit_state(unit: &str) -> String {
@@ -4230,7 +4238,7 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
         // A monthly run may have started while this waited for the drive (the shared
         // lock was let go after the first check): checked again, now that it is held.
         if check == Check::Quick {
-            monthly_admission(&unit_state, Path::new(crate::maintenance::JOURNAL))?;
+            monthly_admission(&unit_state, Path::new(*crate::maintenance::JOURNAL))?;
         }
         let already = run.usb_ready()?;
         let mut mounted_here = false;
@@ -4374,7 +4382,7 @@ fn cloud_to_usb(run: &UsbRun, cloud: &Path) -> Result<CloudPart> {
     if run.weekly && with_database {
         let (second, problem) = paused_cloud(
             &AppDocker(&NEXTCLOUD),
-            Path::new(CLOUD_JOURNAL),
+            Path::new(NEXTCLOUD.journal()),
             || pause_lock(cfg, data, media),
             || nextcloud_dump(cfg, data, media).map(drop),
             || {
@@ -5701,7 +5709,7 @@ mod tests {
         let gate = weekly
             .find("no_monthly_run(&cfg, &data, &media, ||")
             .unwrap();
-        assert!(gate < weekly.find("resume_app(&NEXTCLOUD").unwrap());
+        assert!(gate < weekly.find("resume_in_docker(&NEXTCLOUD)").unwrap());
         let check = &source[source.find("fn no_monthly_run<").unwrap()..];
         let at = |s: &str| check.find(s).unwrap();
         assert!(at("coordinate(cfg, data, media)?") < at("monthly_admission("));
@@ -7474,7 +7482,7 @@ mod tests {
         let units = include_str!("../../modules/photo_backup.py");
         assert!(units.contains("\"cloud-resume\")}\\nTimeoutStopSec"));
         assert!(units.contains("CLOUD_RESUME = 'nekoserver-nextcloud-resume'"));
-        assert_eq!(NEXTCLOUD.resume, "nekoserver-nextcloud-resume.service");
+        assert_eq!(NEXTCLOUD.resume(), "nekoserver-nextcloud-resume.service");
     }
     #[test]
     fn setup_seals_a_password_list_before_the_first_monthly_snapshot() {

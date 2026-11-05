@@ -3,7 +3,7 @@ static release build) and deploy it without compiling as root."""
 
 import hashlib, json, platform, subprocess, sys
 from pathlib import Path
-from neko_common import SYSTEMD_UNITS, VERSION, safe_path, atomic_write, atomic_json
+from neko_common import RECOVERY, SYSTEMD_UNITS, VERSION, safe_path, atomic_write, atomic_json
 
 TARGET = 'x86_64-unknown-linux-musl'  # the static release build
 TARGETS = (TARGET, 'x86_64-unknown-linux-gnu')  # ... or this PC's own, as install.sh builds it
@@ -193,7 +193,7 @@ def settings_files(folder):
     return [f for f in Path(folder).glob('config*.json') if f.is_file() and not f.is_symlink()]
 
 
-UPGRADE_JOURNAL = Path('/etc/nekoserver-backups/upgrade.json')  # upgrade.py JOURNAL
+UPGRADE_JOURNAL = RECOVERY['upgrade'][0]
 
 
 def upgrade_needs(journal=UPGRADE_JOURNAL):
