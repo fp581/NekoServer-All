@@ -159,7 +159,13 @@ class SubvolumeCheckTests(unittest.TestCase):
         neko_common.verify_storage(self.CONFIG, ask=ask)
         neko_common.verify_storage(self.CONFIG, keys=('data_ssd',), ask=ask)
         self.assertEqual([a[:2] for a in asked], [('check-drives', 'data_ssd,media_hdd'), ('check-drives', 'data_ssd')])
-        self.assertEqual(asked[0][2], {k: self.CONFIG[k] for k in ('data_mount', 'media_mount', 'storage')})
+        given = asked[0][2]
+        self.assertEqual(
+            {k: given[k] for k in ('data_mount', 'media_mount', 'storage')},
+            {k: self.CONFIG[k] for k in ('data_mount', 'media_mount', 'storage')},
+        )
+        # Also the USB drive's identity (check-drives "usb"), never the rest of the settings.
+        self.assertEqual(set(given), {'data_mount', 'media_mount', 'external_backup_mount', 'storage', 'photos'})
 
     def test_a_refusal_says_the_runtimes_own_reason(self):
         said = 'NekoServer runtime failed: Drive check failed: two drives look the same. No success recorded.'

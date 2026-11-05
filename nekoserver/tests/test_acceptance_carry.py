@@ -108,6 +108,8 @@ class ProfileTests(unittest.TestCase):
             written = dashboard.collector_settings(cfg, 1800)
         self.assertEqual(written['acceptance_profiles'], sorted(cfg['profiles']))
         self.assertIn('accounts', written['acceptance_profiles'])
+        # The USB drive now, so a new one's checksum results are its own (collect.rs integrity).
+        self.assertIn('external_backup_uuid', written['photos'])
 
 
 class NextcloudOffTests(unittest.TestCase):

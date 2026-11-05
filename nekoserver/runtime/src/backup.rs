@@ -834,12 +834,27 @@ impl Integrity {
 /// found by the monthly check look repaired. The repair tool clears the files it fixed.
 /// `full_at` says when every copy was last compared; the dashboard trusts only that.
 pub fn save_integrity(data: &Path, section: &str, report: &Integrity, check: Check) -> Result<()> {
+    save_integrity_on(data, section, report, check, "")
+}
+/// `save_integrity` for a copy on the drive with UUID `drive` (the USB drive): what an
+/// earlier check found on another drive is never carried over to this one (the review of
+/// 0.47.2's sweep: after a new USB drive, the old one's full check, and its date, stayed).
+pub fn save_integrity_on(
+    data: &Path,
+    section: &str,
+    report: &Integrity,
+    check: Check,
+    drive: &str,
+) -> Result<()> {
     let path = data.join("reports/integrity.json");
     let mut all = common::json(&path, 20_000_000);
     if all["format"] != "neko-integrity-v1" {
         all = json!({"format": "neko-integrity-v1", "sections": {}});
     }
-    let previous = all["sections"][section].clone();
+    let mut previous = all["sections"][section].clone();
+    if previous["drive"].as_str().is_some_and(|was| was != drive) {
+        previous = Value::Null;
+    }
     let full = check == Check::Full;
     let mut lists = serde_json::Map::new();
     let mut counts = serde_json::Map::new();
@@ -870,6 +885,9 @@ pub fn save_integrity(data: &Path, section: &str, report: &Integrity, check: Che
         "repaired": report.repaired,
         "counts": counts,
     });
+    if !drive.is_empty() {
+        entry["drive"] = json!(drive);
+    }
     for (key, rows) in lists {
         entry[key] = rows;
     }
@@ -4323,10 +4341,16 @@ fn copy_to_usb(run: &UsbRun) -> Result<Option<Value>> {
     validate_external(dest, &run.uuid)?;
     let cloud_copy = cloud.copy;
     if let Some(photos) = &photos {
-        save_integrity(&run.data, "usb_photos", photos, run.check)?;
+        save_integrity_on(&run.data, "usb_photos", photos, run.check, &run.uuid)?;
     }
     if let Some(cloud) = &cloud_copy {
-        save_integrity(&run.data, "usb_nextcloud", &cloud.integrity, run.check)?;
+        save_integrity_on(
+            &run.data,
+            "usb_nextcloud",
+            &cloud.integrity,
+            run.check,
+            &run.uuid,
+        )?;
     }
     // Damage found by the checksum checks fails the job, after everything else was
     // copied: nothing is lost by finishing the run first.
