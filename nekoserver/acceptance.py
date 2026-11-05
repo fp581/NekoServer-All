@@ -28,7 +28,7 @@ from neko_common import (
     default_settings,
     verify_storage,
 )
-from acceptance_summary import scope_digest
+from acceptance_summary import scope_digest, with_data_scope
 
 STATES = {'pass', 'fail', 'needs_setup', 'warning', 'blocked'}
 OPENER = local_opener()
@@ -87,6 +87,7 @@ def fingerprint(config, profile):
         clean[group] = {k: config.get(group, {}).get(k) for k in keys}
     clean['profile'] = profile
     clean['modules'] = config['profiles'].get(profile)
+    clean = with_data_scope(clean, config)
     return hashlib.sha256(json.dumps(clean, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -923,7 +924,9 @@ def inspect(config, profile='full', now=None):
         or 'host_backup' in modules
         or 'music_backup' in modules
     ):
-        states, why = states_now()
+        # Their reports live on the drives: only read from the drives setup chose (the
+        # review of 0.47.2: a refused SSD still gave its reports, and they passed).
+        states, why = states_now() if drives else (None, 'drive verification is required before reading them')
         rows = states['backups'] if states else []
         if not states:
             add('backup:states', 'Backup states', 'blocked', 'The backups could not be judged: ' + why)

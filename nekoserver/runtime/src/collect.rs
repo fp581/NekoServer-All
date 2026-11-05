@@ -2475,16 +2475,18 @@ pub fn job_states(a: &Args) -> Result<()> {
     common::require_root()?;
     let cfg = common::json(&a.path("config")?, 2_000_000);
     let now = common::now();
-    let mounted = |key: &str, mount: &str| -> Result<bool> {
+    // A drive counts only when it passes the check every job makes (UUID, filesystem,
+    // Btrfs subvolume, the NAS disk's WWN), and the two are two filesystems: no report is
+    // read from a drive that is not the one setup chose (the review of 0.47.2: a drive
+    // the acceptance check refused still gave it the backups' reports).
+    let checked = |key: &str, mount: &str| -> Result<Option<String>> {
         let path = common::mount_path(text(&cfg[mount]))?;
-        let spec = &cfg["storage"][key];
-        Ok(
-            mount_info(&path, Some(text(&spec["uuid"])), text(&spec["fstype"]))["status"]
-                == "mounted",
-        )
+        Ok(crate::backup::checked_drive(&cfg, key, &path).ok())
     };
-    let ok = mounted("data_ssd", "data_mount")?;
-    let media_ok = mounted("media_hdd", "media_mount")?;
+    let (data, media) = (checked("data_ssd", "data_mount")?, checked("media_hdd", "media_mount")?);
+    let apart = !matches!((&data, &media), (Some(a), Some(b)) if a == b);
+    let ok = data.is_some() && apart;
+    let media_ok = media.is_some() && apart;
     let states = json!({
         "backups": backups(&cfg, now, ok, away_drive(ok, media_ok)),
         "heartbeat": heartbeat(&cfg, now),

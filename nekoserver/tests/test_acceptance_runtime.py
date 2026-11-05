@@ -98,6 +98,23 @@ class JobStatesTests(unittest.TestCase):
 
 
 class DriveCheckTests(unittest.TestCase):
+    def test_no_backup_report_is_read_past_a_refused_drive(self):
+        """The review of 0.47.2: the SSD's identity was refused, yet its backup reports
+        were read and passed."""
+        now = time.time()
+        rows = [{'id': 'host', 'name': 'Host snapshot', 'status': 'pass', 'last_success': now - 60, 'timer': TIMER}]
+        refused = 'Drive check failed: /srv/nekoserver is mounted with another Btrfs subvolume'
+        checks = inspect({'backups': rows}, problem=lambda keys: refused if 'data_ssd' in keys else None)
+        self.assertEqual(checks['mount:data_ssd']['status'], 'fail')
+        self.assertNotEqual(checks['backup:host']['status'] if 'backup:host' in checks else None, 'pass')
+        self.assertEqual(checks['backup:states']['status'], 'blocked')
+        self.assertIn('drive verification', checks['backup:states']['detail'])
+        # The runtime itself reads them only from drives that pass the check every job makes.
+        source = (ROOT / 'runtime/src/collect.rs').read_text()
+        states = source[source.index('pub fn job_states(') : source.index('pub fn run(a: &Args)')]
+        self.assertIn('crate::backup::checked_drive(', states)
+        self.assertNotIn('mount_info(', states)
+
     def test_a_drive_the_runtime_refuses_is_not_passed(self):
         """A copied LUN has the right UUID and filesystem: the old check here passed it,
         and every backup refused it."""

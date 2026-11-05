@@ -3012,7 +3012,7 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
 }
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
-fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
+pub(crate) fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
     let found =
         common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10)?.unwrap_or_default();
     let uuid = drive_check(c, key, path, &found)?;
