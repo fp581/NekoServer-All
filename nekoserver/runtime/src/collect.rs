@@ -1355,20 +1355,10 @@ fn overdue_state(status: &str, stale: bool) -> &str {
 /// release's (nekoserver-upgrade@v0.45.8Beta) or the resume after a restart.
 fn upgrade_unit(saved: &Value) -> String {
     let unit = text(&saved["unit"]);
+    // A release however its tag is written (updates.rs release_version).
     let release = unit
-        .strip_prefix("nekoserver-upgrade@v")
-        .is_some_and(|tag| {
-            // A beta either way it is written (updates.rs release_version).
-            let digits = tag
-                .strip_suffix("Beta")
-                .or_else(|| tag.strip_suffix("-beta"))
-                .unwrap_or(tag);
-            let parts: Vec<&str> = digits.split('.').collect();
-            parts.len() == 3
-                && parts
-                    .iter()
-                    .all(|p| !p.is_empty() && p.len() <= 6 && p.bytes().all(|b| b.is_ascii_digit()))
-        });
+        .strip_prefix("nekoserver-upgrade@")
+        .is_some_and(|tag| crate::updates::release_version(tag).is_some());
     if release || unit == "nekoserver-upgrade-resume" {
         unit.to_string()
     } else {
@@ -3747,6 +3737,10 @@ mod round_two_tests {
         assert_eq!(
             unit("nekoserver-upgrade@v0.46.3-beta"),
             "nekoserver-upgrade@v0.46.3-beta"
+        );
+        assert_eq!(
+            unit("nekoserver-upgrade@0.47.4-beta"),
+            "nekoserver-upgrade@0.47.4-beta"
         );
         assert_eq!(
             unit("nekoserver-upgrade-resume"),

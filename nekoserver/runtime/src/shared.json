@@ -55,6 +55,7 @@
   },
   "writers": ["docker.socket", "docker.service", "smbd.service", "smb.service", "nekoserver-gateway-lan.service"],
   "setup_lock": "/run/nekoserver-setup.lock",
+  "release_tag": "v?([0-9]{1,6})\\.([0-9]{1,6})\\.([0-9]{1,6})(-?[Bb]eta)?",
   "immich_targets": {
     "_about": "Where Immich's containers see the photo library (older and newer image) and the database. Checked by the snapshot's Compose rules (maintenance.rs immich_binds_ok) and by the acceptance check of the running containers (acceptance.py containers).",
     "immich-server": ["/data", "/usr/src/app/upload"],

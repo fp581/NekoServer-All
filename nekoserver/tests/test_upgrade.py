@@ -113,6 +113,13 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.numbers('v0.46.1-beta'), (0, 46, 1))
         self.assertEqual(upgrade.numbers('v0.46.1Beta'), (0, 46, 1))
         self.assertIsNone(upgrade.numbers('v0.46.1-bata'))
+        # Seen after 0.47.4: published as "0.47.4-beta" (and 0.47.0 as "v0.47.0-Beta"),
+        # which no server was offered. The runtime reads the same rule (updates.rs).
+        self.assertEqual(upgrade.numbers('0.47.4-beta'), (0, 47, 4))
+        self.assertEqual(upgrade.numbers('v0.47.0-Beta'), (0, 47, 0))
+        for typo in ('V0.47.4', 'v0.47', '0.47.4-beta x', 'v0.47.4beta2', 'v0.47.4\n'):
+            self.assertIsNone(upgrade.numbers(typo), typo)
+        self.assertIn('release_tag', (ROOT / 'runtime/src/updates.rs').read_text())
 
     def test_a_kept_copy_of_a_unit_is_not_a_service_behind(self):
         """The audit of 0.46.2: the gateway's `.before-<time>` copy named an old release, so

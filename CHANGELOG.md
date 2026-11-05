@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+More fixes, found after 0.47.5.
+
+### Fixed
+- **A release whose tag was written another way is offered.** 0.47.4 was published as `0.47.4-beta` (no `v`) and 0.47.0 as `v0.47.0-Beta`: neither matched the tag rule, so no server was offered them, and nothing said so. A tag without the `v`, and a beta written `Beta`, `beta`, `-Beta` or `-beta`, is read as the release it is. The dashboard's check and the upgrade read one rule now (`shared.json`), where each had its own copy. Only servers running this release or later read tags this way: until then, publish tags as `vX.Y.Z-beta`.
+
 ## v0.47.5 — 2026-11-05
 
 More fixes from the test rig, found after 0.47.4. Each has a test that fails on 0.47.4.
