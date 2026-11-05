@@ -4116,27 +4116,6 @@ impl UsbRun {
             return Err(Error::new("External drive missing"));
         }
         own_disk(&device, &self.data, &self.media)?;
-        // On a NAS: the NAS disk setup chose, as for the SSD and the HDD (the 0.46.1 audit).
-        let wwn = common::json(&self.cfg, 64000)["backup_drive"]["wwn"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        if !wwn.is_empty() {
-            let (_, shown) = common::command(
-                &[
-                    "lsblk",
-                    "-n",
-                    "-s",
-                    "-o",
-                    "TYPE,WWN",
-                    &device.to_string_lossy(),
-                ],
-                10,
-            )?;
-            if let Some(problem) = other_nas_disk(&self.dest, &wwn, &shown) {
-                return Err(Error::new(&problem));
-            }
-        }
         let (code, s) = common::command(
             &[
                 "blkid",
@@ -4155,6 +4134,10 @@ impl UsbRun {
         fs::create_dir_all(dest)?;
         let already = common::mounted(dest);
         if already {
+            // Mounted already: the device mounted there is the one checked (with two LUNs of
+            // one UUID, the UUID's link names only one of them: the review of 0.47.0).
+            let source = common::findmnt("SOURCE", "--mountpoint", dest, 10)?.unwrap_or_default();
+            self.same_nas_disk(source.split('[').next().unwrap_or(""))?;
             let options = common::findmnt("OPTIONS", "--mountpoint", dest, 10)?.unwrap_or_default();
             if read_only(&options) {
                 return Err(Error::new(&format!(
@@ -4168,13 +4151,35 @@ impl UsbRun {
         }
         Ok(already)
     }
+    /// On a NAS: `device` is on the NAS disk setup chose, as for the SSD and the HDD (the
+    /// 0.46.1 audit). Not on a NAS (no WWN saved): nothing to check.
+    fn same_nas_disk(&self, device: &str) -> Result<()> {
+        let wwn = common::json(&self.cfg, 64000)["backup_drive"]["wwn"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if wwn.is_empty() {
+            return Ok(());
+        }
+        let (_, shown) = common::command(&["lsblk", "-n", "-s", "-o", "TYPE,WWN", device], 10)?;
+        match other_nas_disk(&self.dest, &wwn, &shown) {
+            Some(problem) => Err(Error::new(&problem)),
+            None => Ok(()),
+        }
+    }
+    /// Mounts the very device it checked (the UUID's link, followed once), never "UUID=",
+    /// which may pick another LUN of the same UUID.
     fn mount(&self) -> Result<()> {
+        let device = fs::canonicalize(Path::new("/dev/disk/by-uuid").join(&self.uuid))
+            .map_err(|_| Error::new("External drive missing"))?;
+        let device = device.to_string_lossy().to_string();
+        self.same_nas_disk(&device)?;
         success(
             &[
                 "mount",
                 "-o",
                 &usb_mount_options(&self.fstype),
-                &format!("UUID={}", self.uuid),
+                &device,
                 &self.dest.to_string_lossy(),
             ],
             30,
@@ -5018,6 +5023,27 @@ mod tests {
         );
         assert!(!data.join("installer/recovery.lock").exists());
         let _ = fs::remove_dir_all(root);
+    }
+    /// The review of 0.47.0: with two LUNs of one filesystem UUID, the UUID's link names
+    /// only one of them, so the weekly copy checked that one and then mounted by "UUID=" (or
+    /// used one mounted by hand), which could be the copy.
+    #[test]
+    fn the_usb_drive_checked_on_a_nas_is_the_device_mounted() {
+        let source = include_str!("backup.rs");
+        let body = |entry: &str| {
+            let body = &source[source.find(entry).unwrap()..];
+            body[..body.find("\n    }\n").unwrap()].to_string()
+        };
+        let mount = body("    fn mount(&self) -> Result<()> {");
+        assert!(!mount.contains("UUID={}"), "{mount}");
+        assert!(
+            mount.find("self.same_nas_disk(&device)").unwrap() < mount.find("\"mount\",").unwrap()
+        );
+        let ready = body("    fn usb_ready(&self) -> Result<bool> {");
+        let mounted = ready
+            .find("findmnt(\"SOURCE\"")
+            .expect("the mounted device is looked at");
+        assert!(mounted < ready.find("self.same_nas_disk(").unwrap());
     }
     #[test]
     fn services_are_resumed_only_after_the_drives_and_the_lock_are_checked() {

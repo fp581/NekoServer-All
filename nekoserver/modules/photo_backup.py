@@ -11,6 +11,7 @@ from pathlib import Path
 import native_runtime
 from modules.photo_preservation import resume_command, resume_unit
 from neko_common import (
+    nas_disk_wwn,
     cloud_files,
     MANAGED_UNIT,
     RESUME_TIMEOUT,
@@ -218,16 +219,16 @@ def same_nas_disk(photos, wwn):
     """A backup drive on a NAS is the NAS disk it was (the 0.46.1 audit: a restored or copied
     LUN carries the same filesystem UUID). Saved the first time (also for settings from
     before 0.46.2), and checked by the weekly copy (backup.rs) through the drives file."""
-    saved = (photos.get('external_backup_network') or {}).get('wwn')
     if wwn is None:
         return
-    if saved and wwn and saved != wwn:
-        raise RuntimeError(
-            f'The USB backup drive has its UUID, but it is on another NAS disk than before ({wwn}, not {saved}): '
-            'a restored or copied LUN, most likely. Choose which one to use: remove "external_backup_uuid" '
-            'under "photos" in my-config.json and run setup again. Nothing was changed.'
-        )
-    photos['external_backup_network'] = {'transport': 'iscsi', 'wwn': wwn or saved}
+    saved = (photos.get('external_backup_network') or {}).get('wwn')
+    choose = (
+        'Choose which one to use: remove "external_backup_uuid" under "photos" in my-config.json and run setup again.'
+    )
+    photos['external_backup_network'] = {
+        'transport': 'iscsi',
+        'wwn': nas_disk_wwn(saved, wwn, 'USB backup drive', choose),
+    }
 
 
 def chosen_drive(ctx, opts):

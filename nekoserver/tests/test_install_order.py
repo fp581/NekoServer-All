@@ -1122,6 +1122,25 @@ class SnapshotRestartTests(unittest.TestCase):
         self.assertIn('RequiresMountsFor=', hook)
         self.assertIn(['systemctl', 'enable', '--quiet', 'hook.service'], self.calls)
 
+    def test_the_boot_resume_waits_for_a_backup_holding_the_lock(self):
+        """The review of 0.47.0: at boot, with no terminal, resume gave up at once when a
+        caught-up nightly backup held the lock, and Immich stayed stopped until the next restart."""
+        hook = self.rt.snapshot_hook({'data_mount': str(self.root)}, self.root / 'config.json')
+        self.assertIn('TimeoutStartSec=' + str(self.rt.RESUME_WAIT + 1800), hook)
+        waited = []
+        (self.root / 'installer').mkdir(exist_ok=True)
+        with (
+            mock.patch.object(self.rt, 'require_root'),
+            mock.patch.object(self.rt, 'mounts'),
+            mock.patch.object(self.rt, 'restart_owed', return_value=[]),
+            mock.patch.object(
+                self.rt, 'wait_for', side_effect=lambda stream, patient, limit: waited.append((patient, limit))
+            ),
+            mock.patch.object(self.rt.sys.stdin, 'isatty', return_value=False),
+        ):
+            self.rt.resume({'data_mount': str(self.root)})
+        self.assertEqual(waited, [(True, self.rt.RESUME_WAIT)])
+
     def test_the_hook_works_from_a_folder_with_spaces(self):
         import shlex
 
@@ -1316,7 +1335,7 @@ class UnfinishedMaintenanceTests(unittest.TestCase):
                 mock.patch.object(
                     recovery_tools,
                     'wait_for',
-                    lambda stream, patient: real_wait(stream, True, sleep=lambda s: time.sleep(0.02)),
+                    lambda stream, patient, limit=1800: real_wait(stream, True, sleep=lambda s: time.sleep(0.02)),
                 ),
             ):
                 with lock_file.open('a') as held:  # the monthly update holds the lock

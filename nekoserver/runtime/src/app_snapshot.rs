@@ -210,7 +210,10 @@ fn entries(
         return Ok(());
     }
     // When it was last changed, so a restore can give that time back (as host snapshots do).
-    out.push(json!({"path":name,"kind":if m.is_dir(){"directory"}else{"file"},"mode":m.mode()&0o7777,"uid":m.uid(),"gid":m.gid(),"size":if m.is_file(){m.len()}else{0},"mtime":m.mtime(),"mtime_nsec":m.mtime_nsec()}));
+    // A file's setuid/setgid bits are not kept: a restore never gives them back (the review
+    // of 0.47.0: recorded, they made the whole snapshot refused at restore).
+    let mode = m.mode() & if m.is_file() { 0o1777 } else { 0o7777 };
+    out.push(json!({"path":name,"kind":if m.is_dir(){"directory"}else{"file"},"mode":mode,"uid":m.uid(),"gid":m.gid(),"size":if m.is_file(){m.len()}else{0},"mtime":m.mtime(),"mtime_nsec":m.mtime_nsec()}));
     if out.len() > 200000 {
         return Err(Error::new("Application snapshot file limit exceeded"));
     }
@@ -648,6 +651,37 @@ mod tests {
                 ["docker_version"],
             "29.7.2_ce"
         );
+    }
+    /// The review of 0.47.0: a file's setuid/setgid bits were recorded, and the restore
+    /// refuses any snapshot that has them, so the night's backup could never be restored.
+    #[test]
+    fn a_files_setuid_and_setgid_bits_are_never_recorded() {
+        use std::os::unix::fs::PermissionsExt;
+        let data = scratch("set-id");
+        dir(&data.join("appdata/jellyfin"));
+        let tool = data.join("appdata/jellyfin/tool");
+        fs::write(&tool, b"x").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o6755)).unwrap();
+        let shared = data.join("appdata/jellyfin");
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o2775)).unwrap();
+        let (mut out, mut skipped) = (vec![], vec![]);
+        let device = fs::metadata(&data).unwrap().dev();
+        entries(
+            &data,
+            Path::new("appdata/jellyfin"),
+            device,
+            &mut out,
+            &mut skipped,
+        )
+        .unwrap();
+        let mode = |name: &str| {
+            out.iter().find(|e| e["path"] == name).unwrap()["mode"]
+                .as_u64()
+                .unwrap()
+        };
+        assert_eq!(mode("appdata/jellyfin/tool"), 0o755);
+        assert_eq!(mode("appdata/jellyfin"), 0o2775); // a folder's setgid is kept (new files' group)
+        let _ = fs::remove_dir_all(&data);
     }
     #[test]
     fn a_file_changed_after_listing_is_never_published() {

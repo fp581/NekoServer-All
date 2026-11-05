@@ -573,6 +573,18 @@ class DriveStepTests(unittest.TestCase):
         storage.same_nas_disk(old, {'network': False}, 'the media HDD')
         self.assertNotIn('network', old)
 
+    def test_a_nas_disk_that_shows_no_wwn_is_refused_as_the_runtime_refuses_it(self):
+        """The review of 0.47.0: setup took a NAS disk with no WWN (and kept the saved one, or
+        none: the copy check off for good), while the runtime refuses it at every start."""
+        from modules import photo_backup
+
+        for record in ({'uuid': 'nas-1', 'network': {'transport': 'iscsi', 'wwn': '0xaaa'}}, {'uuid': 'nas-1'}):
+            with self.assertRaisesRegex(RuntimeError, 'The media HDD is on a NAS disk that Linux shows no WWN for'):
+                storage.same_nas_disk(record, {'network': True, 'wwn': ''}, 'the media HDD')
+        for photos in ({'external_backup_network': {'wwn': '0x6001'}}, {}):
+            with self.assertRaisesRegex(RuntimeError, 'shows no WWN for'):
+                photo_backup.same_nas_disk(photos, '')
+
     def test_a_nas_disk_is_mounted_once_the_network_and_the_login_are_up(self):
         with mock.patch.object(storage, 'login_unit', return_value='open-iscsi.service'):
             line = storage.fstab_line('nas-1', 'ext4', '/mnt/nekoserver-media', network=True)

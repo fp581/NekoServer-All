@@ -181,7 +181,7 @@ def mounts(config):
 
 
 @contextmanager
-def lock(config, changes_apps=True):
+def lock(config, changes_apps=True, patient=None, limit=1800):
     """The shared lock that backups and monthly updates hold too. A monthly update can
     start (and fail, keeping its journal) while this waits, so whatever changes or starts
     apps checks for an unfinished update again once the lock is held, right before it
@@ -199,7 +199,7 @@ def lock(config, changes_apps=True):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('a') as stream:
         os.fchmod(stream.fileno(), 0o600)
-        wait_for(stream, sys.stdin.isatty())
+        wait_for(stream, sys.stdin.isatty() if patient is None else patient, limit)
         if changes_apps:
             blocked = neko_common.pending_maintenance(
                 neko_common.MAINTENANCE_JOURNAL, 'Setup stopped before changing anything else.'
@@ -238,7 +238,8 @@ def wait_for(stream, patient, limit=1800, sleep=None):
                 raise RuntimeError(BUSY) from None
             if waited == 0:
                 print(
-                    'Waiting for a NekoServer backup that is running right now to finish (up to 30 minutes)...',
+                    'Waiting for a NekoServer backup that is running right now to finish '
+                    f'(up to {limit // 60} minutes)...',
                     flush=True,
                 )
             sleep(5)
@@ -714,6 +715,8 @@ def snapshot_hook(config, config_path):
         + systemd_arg(mount_path(config['data_mount']))
         + '\n'
         'ConditionPathExists=' + str(SNAPSHOT_RESUME) + '\n[Service]\nType=oneshot\n'
+        # Room for resume's wait for the lock (RESUME_WAIT), and its start of Immich after.
+        'TimeoutStartSec=' + str(RESUME_WAIT + 1800) + '\n'
         'ExecStart=' + hook_command(config, config_path) + '\n'
         '[Install]\nWantedBy=multi-user.target\n'
     )
@@ -769,10 +772,16 @@ def restart_owed(config, base=None):
     return services
 
 
+RESUME_WAIT = 3 * 3600  # as the runtime's own resumes wait for the lock
+
+
 def resume(config):
-    """Restart Immich after a manual snapshot that was cut off (boot hook / recover.py resume)."""
+    """Restart Immich after a manual snapshot that was cut off (boot hook / recover.py resume).
+    It waits for the lock, also with no one at the keyboard: at boot a nightly backup that
+    caught up often holds it, and giving up at once left Immich stopped until the next
+    restart (the review of 0.47.0)."""
     require_root()
-    with lock(config):
+    with lock(config, patient=True, limit=RESUME_WAIT):
         mounts(config)
         return {'status': 'pass', 'reason': 'Immich services running', 'restarted': restart_owed(config)}
 

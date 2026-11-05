@@ -1745,8 +1745,27 @@ class RecoveryWizardTests(unittest.TestCase):
         usb = recovery_wizard.Usb(config)
         with (
             mock.patch.object(recovery_wizard.subprocess, 'run', return_value=mock.Mock(returncode=0)),
-            mock.patch.object(recovery_wizard, 'findmnt', return_value='usb-11111 rw,nosuid,nodev,noexec'),
+            mock.patch.object(recovery_wizard, 'findmnt', return_value='usb-11111 rw,nosuid,nodev,noexec /dev/sdy'),
             mock.patch.object(recovery_wizard, 'nas_disk_of', return_value='0xcopy'),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'on another NAS disk than setup chose'):
+                usb.open()
+
+    def test_the_wwn_check_looks_at_the_mounted_device_not_the_uuids_link(self):
+        """The review of 0.47.0: with two LUNs of one filesystem UUID, the by-uuid link names
+        only one of them, so a copy mounted by hand passed when the link named the right disk."""
+        config = {
+            **self.config,
+            'photos': {'external_backup_uuid': 'usb-11111', 'external_backup_network': {'wwn': '0xgood'}},
+        }
+        disks = {'/dev/sdy': '0xcopy'}  # the copy, mounted; the link's /dev/sdx would say 0xgood
+        usb = recovery_wizard.Usb(config)
+        with (
+            mock.patch.object(recovery_wizard.subprocess, 'run', return_value=mock.Mock(returncode=0)),
+            mock.patch.object(recovery_wizard, 'findmnt', return_value='usb-11111 rw,nosuid,nodev,noexec /dev/sdy[/@]'),
+            mock.patch.object(
+                recovery_wizard, 'nas_disk_of', side_effect=lambda device: disks.get(str(device), '0xgood')
+            ),
         ):
             with self.assertRaisesRegex(RuntimeError, 'on another NAS disk than setup chose'):
                 usb.open()

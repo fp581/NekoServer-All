@@ -148,6 +148,35 @@ class SnapshotRestoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'metadata'):
             sr.verify(sr.HOST, snap)
 
+    def test_a_snapshot_that_recorded_set_id_bits_is_restored_without_them(self):
+        """The review of 0.47.0: nightly app snapshots recorded a file's setuid/setgid bits, and
+        the restore refused the whole snapshot for them."""
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'appdata/a/tool': b'x'})
+        manifest = json.loads((snap / 'manifest.json').read_text())
+        for row in manifest['files']:
+            if row['path'] == 'appdata/a/tool':
+                row['mode'] = 0o6755
+        (snap / 'manifest.json').write_text(json.dumps(manifest))
+        sr.verify(sr.APPS, snap)
+        with mock.patch.object(sr.os, 'geteuid', return_value=0), mock.patch.object(sr.os, 'chown'):
+            out = sr.restore(sr.APPS, snap, self.root / 'new', preserve_owners=True)
+        self.assertEqual((out / 'appdata/a/tool').stat().st_mode & 0o7777, 0o755)
+
+    def test_the_report_is_flushed_with_its_folder(self):
+        """The review of 0.47.0: the report file was flushed, its folder not, so a power cut
+        right after could lose the report's new name."""
+        import neko_common
+
+        folder = self.root / 'new'
+        folder.mkdir()
+        target = neko_common.Destination(folder)
+        real, flushed = os.fsync, []
+        with mock.patch.object(neko_common.os, 'fsync', side_effect=lambda fd: (flushed.append(fd), real(fd))):
+            target.write_json('report.json', {'ok': True})
+        self.assertIn(target.fd, flushed)
+        target.close()
+
     def test_restore_never_reuses_an_existing_folder(self):
         snap = self.root / 'snap'
         make(snap, sr.APPS, {'compose/a.yaml': b'a'})

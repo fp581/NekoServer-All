@@ -284,6 +284,26 @@ def confirmed(device, label, input_fn, out_fn, attempts=3):
     raise RuntimeError('Drive confirmation failed')
 
 
+def nas_disk_wwn(saved, seen, label, choose):
+    """The WWN to keep for a drive on a NAS disk (iSCSI), as the runtime checks it
+    (backup.rs other_nas_disk): the NAS disk setup chose, never a restored or copied LUN
+    with the same filesystem UUID. `saved` is the WWN kept from before (or None), `seen` the
+    one Linux shows now. A disk that shows none can't be told from a copy, so it is refused
+    here as the runtime refuses it, instead of passing setup and failing every start (the
+    review of 0.47.0). `choose` says how to pick the drive again."""
+    if not seen:
+        raise RuntimeError(
+            f'The {label} is on a NAS disk that Linux shows no WWN for, so a copy of that disk could not be '
+            'told apart from it. Turn on the LUN\'s identifier (WWN/NAA) on the NAS, then run setup again.'
+        )
+    if saved and seen != saved:
+        raise RuntimeError(
+            f'The {label} has its UUID, but it is on another NAS disk than before ({seen}, not {saved}): a '
+            f'restored or copied LUN, most likely. {choose} Nothing was changed.'
+        )
+    return seen
+
+
 def safe_path(path):
     path = Path(path)
     if '..' in path.parts:
@@ -1521,6 +1541,7 @@ class Destination:
             out.flush()
             os.fsync(out.fileno())
         os.replace(part, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        os.fsync(self.fd)  # the folder too, so the new name survives a power cut (as atomic_write)
 
     def close(self):
         os.close(self.fd)
