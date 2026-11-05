@@ -147,10 +147,12 @@ class LibraryFolderTests(unittest.TestCase):
     def test_a_folder_docker_made_is_handed_to_the_apps(self):
         downloads = self.folder('downloads')
         inside = self.folder('downloads/music')  # the music downloads' mount point, Docker's too
-        self.assertTrue(self.handed_over(downloads))
-        self.assertIn('made by Docker', self.logged[0])
-        self.assertEqual(inside.stat().st_mode & 0o7777, 0o755)  # its own turn comes
+        # In setup's order: the music downloads' folder first, then the one it is in (the
+        # first fix handed over only the inner one: the outer no longer held "Docker's" only).
         self.assertTrue(self.handed_over(inside))
+        self.assertTrue(self.handed_over(downloads))
+        self.assertEqual(len(self.logged), 2)
+        self.assertIn('made by Docker', self.logged[0])
 
     def test_a_missing_folder_is_made_for_the_apps(self):
         self.assertTrue(self.handed_over(self.library / 'movies'))

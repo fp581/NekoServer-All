@@ -238,14 +238,13 @@ def app_folder(configs, target, uid, gid):
 
 
 def docker_made(folder, root=0):
-    """Docker made this folder and nothing was put in it since. Docker starts an app whose
-    folder is missing by making it: root's, closed to the apps, with only such folders in it."""
-
-    def bare(path):
-        info = path.lstat()
-        return S_ISDIR(info.st_mode) and info.st_uid == root and S_IMODE(info.st_mode) == 0o755
-
-    return bare(folder) and all(bare(inside) for inside in folder.rglob('*'))
+    """Docker made this folder and no file was put in it since. Docker starts an app whose
+    folder is missing by making it: root's and closed to the apps. Folders may be in it
+    (the downloads folder holds the music downloads' own, which setup hands over first)."""
+    info = folder.lstat()
+    if not (S_ISDIR(info.st_mode) and info.st_uid == root and S_IMODE(info.st_mode) == 0o755):
+        return False
+    return all(S_ISDIR(inside.lstat().st_mode) for inside in folder.rglob('*'))
 
 
 def library_folder(target, uid, gid, log=print, root=0):
