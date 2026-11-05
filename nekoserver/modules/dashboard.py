@@ -114,16 +114,39 @@ def own_port(unit):
     return None
 
 
+def socket_port(unit):
+    """The port the installed dashboard socket listens on (None without one)."""
+    for line in (unit or '').split('\n'):
+        if line.startswith('ListenStream=127.0.0.1:'):
+            value = line.rpartition(':')[2].strip()
+            return int(value) if value.isdigit() else None
+    return None
+
+
+def unit_active(unit):
+    return subprocess.run(['systemctl', 'is-active', '--quiet', unit], check=False, timeout=30).returncode == 0
+
+
+def running_port():
+    """The port the dashboard already holds itself: its socket's while the socket is on
+    (systemd keeps the port then even while the service is down, so a repair took it for
+    another program's, the review of 0.46.3), otherwise its running service's."""
+    if unit_active(SOCKET):
+        try:
+            held = socket_port((SYSTEMD_UNITS / SOCKET).read_text())
+        except OSError:
+            held = None
+        if held is not None:
+            return held
+    return own_port(installed_unit()) if unit_active(SERVICE) else None
+
+
 def choose_port(ctx, port, running=None):
     """The dashboard's port: the one in the settings, unless another program on this PC
     has it, then the next free spare (saved, so the address stays the same later). The
-    dashboard's own running service is not "another program"."""
+    dashboard's own socket and service are not "another program"."""
     if running is None:
-        running = (
-            own_port(installed_unit())
-            if subprocess.run(['systemctl', 'is-active', '--quiet', SERVICE], check=False, timeout=30).returncode == 0
-            else None
-        )
+        running = running_port()
     if port == running or port_free(port):
         return port
     taken = {*APP_PORTS, ctx.config.get('media', {}).get('torrent_port')}

@@ -296,18 +296,29 @@ def installed_units(units=None):
 def added_units(before, units=None, run=None):
     """The units the newer release added (not there before the upgrade), switched off and
     removed when its release is put back: the older setup writes only its own, so the new
-    ones would keep running the newer release's program."""
+    ones would keep running the newer release's program. Returns (removed, stuck): a unit
+    that did not stop keeps its file, so it is still seen and the way back does not pass
+    (the review of 0.46.3: a failed stop was ignored and the file removed, so the check
+    after it missed the newer service that still ran)."""
     run = run or subprocess.run
-    removed = []
+    removed, stuck = [], []
     for unit in installed_units(units):
         if unit.name in before:
             continue
-        run(['systemctl', 'disable', '--now', unit.name], capture_output=True, text=True, timeout=120, check=False)
+        stop = run(
+            ['systemctl', 'disable', '--now', unit.name], capture_output=True, text=True, timeout=120, check=False
+        )
+        alive = run(
+            ['systemctl', 'is-active', '--quiet', unit.name], capture_output=True, text=True, timeout=60, check=False
+        )
+        if stop.returncode or alive.returncode == 0:
+            stuck.append(unit.name)
+            continue
         unit.unlink(missing_ok=True)
         removed.append(unit.name)
     if removed:
         run(['systemctl', 'daemon-reload'], capture_output=True, text=True, timeout=120, check=False)
-    return removed
+    return removed, stuck
 
 
 BUSY_MOVE = 'A drive move (migrate.py) or another upgrade is at work'
@@ -405,10 +416,14 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
     finished it."""
     saved = record('going_back', journal)
     config = json.loads(settings_path(settings).read_text())
+    stuck = []
     if isinstance(saved.get('units'), list):
-        for name in added_units(set(saved['units'])):
+        removed, stuck = added_units(set(saved['units']))
+        for name in removed:
             out(f'Removed {name}: the newer release added it')
     problem = setup_problem(setup, previous, settings, account, log_file)
+    if problem is None and stuck:
+        problem = 'these services of the newer release did not stop: ' + ', '.join(stuck)
     if problem is None:
         problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:

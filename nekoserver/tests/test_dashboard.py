@@ -919,6 +919,32 @@ class DashboardPortTests(unittest.TestCase):
         )
         self.assertIsNone(dashboard.own_port(None))
 
+    def test_the_dashboards_own_socket_keeps_its_port_while_the_service_is_down(self):
+        """The review of 0.46.3: with the service down and its socket on, setup took the
+        socket's hold on the port for another program's and moved the dashboard to a spare
+        port (or failed with none free)."""
+        import subprocess
+
+        from modules import dashboard
+
+        saved = []
+        ctx = mock.Mock(config={'dashboard': {'port': 8787}, 'media': {}}, log=lambda m: None)
+        ctx.persist_config = lambda: saved.append(1)
+
+        def systemctl(argv, **k):
+            return subprocess.CompletedProcess(argv, 0 if argv[-1] == dashboard.SOCKET else 3)
+
+        with tempfile.TemporaryDirectory() as units:
+            (Path(units) / dashboard.SOCKET).write_text('[Socket]\nListenStream=127.0.0.1:8787\nAccept=no\n')
+            with (
+                mock.patch.object(dashboard, 'SYSTEMD_UNITS', Path(units)),
+                mock.patch.object(dashboard.subprocess, 'run', side_effect=systemctl),
+                mock.patch.object(dashboard, 'port_free', return_value=False),
+                mock.patch.object(dashboard, 'installed_unit', return_value=None),
+            ):
+                self.assertEqual(dashboard.choose_port(ctx, 8787), 8787)
+        self.assertEqual((ctx.config['dashboard']['port'], saved), (8787, []))
+
     def test_a_page_that_never_answers_fails_the_step_with_the_log_command(self):
         from modules import dashboard
 

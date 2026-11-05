@@ -2,13 +2,16 @@
 
 ## v0.46.4 — 2026-11-05
 
-A stabilization release: fixes only, from the project owner's review of v0.46.3-beta. Each fix has a test that fails on 0.46.3.
+A stabilization release: fixes only, from the project owner's two reviews of v0.46.3-beta. Each fix has a test that fails on 0.46.3.
 
 ### Fixed
 - **Nextcloud's trusted domains are never overwritten after a silent failure.** A read that was killed (exit 137, or any other failure that printed nothing) was taken for "not set", so the first trusted domain could still be replaced. Only occ's own "not set" answer (exit 1 with no output) counts as empty now; anything else stops the step and changes nothing.
 - **The apps on a NAS drive are started again when Docker fails the first time.** After a NAS outage the check lifted its hold even when Docker (or Samba, or the gateway) did not start, so nothing tried again. The hold now stays until every service that was switched on runs, and the check tries again every minute.
 - **A USB backup drive that is already mounted is checked to be the NAS disk setup chose.** The WWN check ran only before mounting, so a copy of the LUN mounted there before was taken as it was.
 - **Debian 13 servers are told when they need a restart for a new kernel.** Debian 13 names its kernels like `6.12.48+deb13-amd64`, and the version check didn't read that form.
+- **Putting a release back no longer reports success while a newer service still runs.** A service the newer release added was switched off without checking that it stopped, and its file was removed, so the check after it couldn't see it. A service that doesn't stop now keeps its file, and the way back says which one to look at.
+- **Two restore tests started at the same time no longer break each other.** The clearing of a left test's network ran before the recovery lock, so a second test could remove the first one's new network and containers before they started. It now runs only while the test holds the lock.
+- **Repairing the dashboard keeps its port while the dashboard is stopped.** systemd's socket keeps holding the port then, and setup took that for another program, moved the dashboard to a spare port, or failed when none was free.
 
 ## v0.46.3 — 2026-11-04
 
