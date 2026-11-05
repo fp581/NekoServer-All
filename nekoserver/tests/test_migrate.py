@@ -340,6 +340,45 @@ class MoveTests(unittest.TestCase):
         # The old drive is never written to: rsync only ever reads it.
         self.assertNotIn('--remove-source-files', ' '.join(migrate.RSYNC))
 
+    def test_a_subvolume_the_settings_name_is_never_swapped_for_the_mounted_one(self):
+        """The review of 0.47.2: the move took the subvolume that was mounted, even when the
+        settings named another one, so another tree could be copied."""
+        config = json.loads(json.dumps(CONFIG))
+        config['storage']['media_hdd']['subvolume'] = '/@media'
+        self.settings.write_text(json.dumps(config))
+        self.mounted['/mnt/nekoserver-media'] = ('hdd-0001', 'ext4', '/@other')
+        self.assertEqual(self.move(), 2)
+        self.assertFalse([c for c in self.calls if c[0] in ('copy', 'stop')])
+        self.assertIn('settings name /@media', self.said[-1])
+        # The one the settings name: the move goes ahead.
+        self.mounted['/mnt/nekoserver-media'] = ('hdd-0001', 'ext4', '/@media')
+        with mock.patch.object(migrate, 'differences', return_value=[]):
+            self.assertEqual(self.move(), 0)
+
+    def test_a_staging_folder_in_use_already_keeps_what_is_mounted_there(self):
+        """The review of 0.47.2: the move refused a staging folder already in use, then its
+        clean-up unmounted it anyway."""
+        self.mounted[str(self.staging)] = ('someone-else', 'ext4', '')
+
+        def in_use(uuid, fstype, staging):
+            raise RuntimeError(f'{staging} is in use already; unmount it first')
+
+        with mock.patch.object(migrate, 'mount_staging', side_effect=in_use):
+            self.assertEqual(self.move(), 1)
+        self.assertNotIn(('umount', str(self.staging)), self.calls)
+        self.assertEqual(self.mounted[str(self.staging)][0], 'someone-else')
+
+    def test_a_record_that_can_not_be_read_is_never_called_done(self):
+        """The review of 0.47.2: resume said all was well and left the record, which still
+        keeps upgrades and setup waiting."""
+        self.journal.write_text('{not json')
+        code = migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab)
+        self.assertEqual(code, 2)
+        self.assertTrue(self.journal.exists())
+        self.assertIn('can not be read', self.said[-1])
+        self.journal.unlink()
+        self.assertEqual(migrate.resume(self.settings, self.said.append, self.journal, self.staging, self.fstab), 0)
+
     def test_a_copy_that_does_not_match_changes_nothing(self):
         with mock.patch.object(migrate, 'differences', return_value=['>fcsT...... photos/a.jpg']):
             self.assertEqual(self.move(), 1)
