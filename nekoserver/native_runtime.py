@@ -245,7 +245,12 @@ def retired_bundles(releases, current, units=SYSTEMD_UNITS):
     """The release bundles kept on the SSD that retire_old removes."""
     # A bundle a service still runs from (the Immich snapshot's boot hook runs recover.py
     # from it while a restart is owed) stays, as the runtime copies above do.
-    bundles = [p for p in release_folders(releases)[:-KEEP_BUNDLES] if p.name != current and not in_use(p, units)]
+    folders = release_folders(releases)
+    # A release newer than this one was put back by its upgrade. It is not "the one
+    # before": counted among the newest, it pushed out the release that worked.
+    ahead = [p for p in folders if release_number(p.name) > release_number(current)]
+    earlier = [p for p in folders if p not in ahead][:-KEEP_BUNDLES]
+    bundles = [p for p in earlier if p.name != current and not in_use(p, units)]
     # A kept copy set aside by another build of its version (modules/recovery.set_aside) goes with that version,
     # unless it holds settings no remaining folder has (an earlier release set copies aside with them inside).
     aside = [
@@ -253,9 +258,11 @@ def retired_bundles(releases, current, units=SYSTEMD_UNITS):
         for p in (releases.glob('v*.replaced-*') if releases.is_dir() else [])
         if p.is_dir() and p.name.split('.replaced-')[0] != current
     ]
-    kept = [p for p in (releases.iterdir() if releases.is_dir() else []) if p.is_dir() and p not in bundles + aside]
+    # The release that was put back goes the same way: its settings are kept if only it has them.
+    spare = [p for p in ahead if not in_use(p, units)] + aside
+    kept = [p for p in (releases.iterdir() if releases.is_dir() else []) if p.is_dir() and p not in bundles + spare]
     held = {f.read_bytes() for folder in kept for f in settings_files(folder)}
-    return bundles + [p for p in aside if not any(f.read_bytes() not in held for f in settings_files(p))]
+    return bundles + [p for p in spare if not any(f.read_bytes() not in held for f in settings_files(p))]
 
 
 def saved_paths(config):

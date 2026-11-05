@@ -550,7 +550,10 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
         problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:
         journal.unlink(missing_ok=True)
-        out(f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check')
+        # The last line said is the report's reason, the one the dashboard shows: it says
+        # why as well (under "needs attention" it only said that the server was fine).
+        why = f'. The upgrade to {saved.get("to")} did not pass: {saved["problem"]}' if saved.get('problem') else ''
+        out(f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check{why}')
         return 1
     out(
         f'Putting {previous.name} back did not pass either: {problem}. Run  sudo bash install.sh  in {previous} '

@@ -313,6 +313,12 @@ class UpgradeTests(unittest.TestCase):
         self.ran.clear()
         self.assertEqual(self.upgrade(self.setup(0, 0), check=lambda: 'the dashboard does not answer'), 1)
         self.assertIn('the dashboard does not answer', ' '.join(self.said))
+        # The last line is the one the dashboard shows: what happened, why, and how the server is now.
+        self.assertEqual(
+            self.said[-1],
+            f'This server runs {VERSION} again, as before the upgrade, and passed its check. '
+            f'The upgrade to {NEWER} did not pass: the dashboard does not answer',
+        )
         # Putting it back failing too: it says what to run, and keeps the record.
         self.ran.clear()
         self.assertEqual(self.upgrade(self.setup(2, 2)), 2)
