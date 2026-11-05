@@ -1991,6 +1991,38 @@ class KeptCopyTests(unittest.TestCase):
         self.assertNotIn(releases / 'v0.1.0', removed)
         self.assertIn(releases / 'v0.2.0', removed)
 
+    def test_a_release_that_was_put_back_does_not_push_out_the_one_that_worked(self):
+        """Seen on the rig (0.47.4): an upgrade failed its check and the release before
+        was put back. The failed release's bundle counted as one of the two newest, so the
+        last release that worked before this one was removed and the failed one stayed."""
+        import native_runtime
+
+        releases = self.data / 'installer/releases'
+        for version in ('v0.1.0', 'v0.2.0', 'v0.3.0', 'v0.9.0', 'v0.9.1'):
+            (releases / version).mkdir(parents=True)
+            (releases / version / 'config.json').write_text('{"storage": "the same"}\n')
+        lib, units = Path(self.tmp.name) / 'lib', Path(self.tmp.name) / 'units'
+        lib.mkdir()
+        units.mkdir()
+        journal = Path(self.tmp.name) / 'upgrade.json'
+        journal.write_text(json.dumps({'phase': 'installing', 'from': '0.3.0', 'previous': str(releases / 'v0.3.0')}))
+
+        def retired(version):
+            with mock.patch.object(native_runtime, 'VERSION', version):
+                removed = native_runtime.retire_old(self.data, print, lib=lib, units=units, journal=journal)
+            return sorted(p.name for p in removed), sorted(p.name for p in releases.iterdir())
+
+        # The setup of 0.9.1, during its upgrade: 0.3.0 and the one before it stay (0.9.0
+        # was put back earlier).
+        self.assertEqual(retired('0.9.1'), (['v0.1.0', 'v0.9.0'], ['v0.2.0', 'v0.3.0', 'v0.9.1']))
+        # It failed its check: the setup of 0.3.0 again, which removes what 0.9.1 left.
+        self.assertEqual(retired('0.3.0'), (['v0.9.1'], ['v0.2.0', 'v0.3.0']))
+        # Settings only the release put back has are kept with it.
+        (releases / 'v0.9.1').mkdir()
+        (releases / 'v0.9.1/config.json').write_text('{"storage": "written by the release put back"}\n')
+        journal.unlink()
+        self.assertEqual(retired('0.3.0'), ([], ['v0.2.0', 'v0.3.0', 'v0.9.1']))
+
     def test_the_release_an_upgrade_would_put_back_is_never_retired(self):
         import native_runtime
 

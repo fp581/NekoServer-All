@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.47.5 — 2026-11-05
+
+More fixes from the test rig, found after 0.47.4. Each has a test that fails on 0.47.4.
+
+### Fixed
+- **The acceptance check passes Docker's drive guard on a newer systemd.** systemd 262 prints a unit name with an escaped dash in quotes (`"mnt-nekoserver\\x2dmedia.mount"`, the usual media drive's), so the guard never matched and the whole check said "failed". Both ways of printing are read now.
+- **A failed upgrade no longer pushes out the release that worked.** Two releases are kept on the SSD: this one and the one before. The files of an upgrade that was put back counted as one of the two, so the earlier release that worked was removed and the failed one stayed. The two are now counted from the last release that passed its check, and the files of a release that was put back go when the earlier release is set up again (they stay if they hold settings no other kept release has). This works from this release on: an upgrade put back by 0.47.4 or earlier still leaves its files.
+- **After an upgrade is put back, the dashboard says why.** Its alert read "NekoServer upgrade needs attention: This server runs 0.47.5 again, as before the upgrade, and passed its check", with the reason only in the log. The reason is said after it now.
+
 ## v0.47.4 — 2026-11-05
 
 Fixes from trying the releases for real on the test rig (an Arch server with the apps running, taken from 0.41.3 through 0.46.2 and 0.46.3 to 0.47.3). All of them are still in 0.47.3. Each fix has a test that fails on 0.47.3.

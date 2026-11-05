@@ -166,6 +166,20 @@ class DriveCheckTests(unittest.TestCase):
         asked.assert_called_once_with({}, ('data_ssd',))
 
 
+class ShownUnitsTests(unittest.TestCase):
+    def test_a_mount_unit_with_a_dash_is_read_as_either_systemd_prints_it(self):
+        """Seen on the rig (systemd 262): `systemctl show` quotes a name with an escaped
+        dash, so the Docker guard of the usual media drive (/mnt/nekoserver-media) never
+        matched and the acceptance check failed."""
+        unit = r'mnt-nekoserver\x2dmedia.mount'
+        older = 'srv-nekoserver.mount ' + unit
+        newer = r'srv-nekoserver.mount "mnt-nekoserver\\x2dmedia.mount"'
+        for shown in (older, newer):
+            self.assertLessEqual({'srv-nekoserver.mount', unit}, acceptance.shown_units(shown))
+        self.assertNotIn(unit, acceptance.shown_units('srv-nekoserver.mount'))
+        self.assertEqual(acceptance.shown_units('a.mount "b'), {'a.mount', '"b'})  # not closed: as printed
+
+
 class ImmichContainerTests(unittest.TestCase):
     """Seen on the rig (0.47.3): the check of Immich's running containers read a list that
     0.47.1 had removed (recovery_tools.IMMICH_BINDINGS). The error was taken for a bad
