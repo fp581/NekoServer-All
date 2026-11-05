@@ -293,6 +293,19 @@ MEDIA_CHECK = 'nekoserver-media-health.service'  # modules/media_monitor.py
 MEDIA_REPORT = 'reports/media/latest.json'
 
 
+# Checks of the end-to-end transfer and playback, done by the witnessed manual tests.
+WITNESSED = (
+    'end_to_end_media',
+    'qbittorrent:authenticated_playback_or_transfer',
+    'navidrome:authenticated_playback_or_transfer',
+)
+
+
+def media_audit(state, detail):
+    """The one row that stands for the whole media check when it gives no rows of its own."""
+    return [item('media:audit', 'Current media API checks', state, detail)]
+
+
 def media_checks(config, run=subprocess.run):
     """The media apps' configuration as the runtime's own check finds it (media.rs, the one
     the dashboard shows): it is run once now (it only reads), and its report is read. This
@@ -301,51 +314,37 @@ def media_checks(config, run=subprocess.run):
     0.47.0)."""
     quiet = {'capture_output': True, 'text': True, 'check': False}
     if run(['systemctl', 'cat', MEDIA_CHECK], timeout=30, **quiet).returncode != 0:
-        return [item('media:audit', 'Current media API checks', 'needs_setup', 'The media check is not set up yet.')]
+        return media_audit('needs_setup', 'The media check is not set up yet.')
     run(['systemctl', 'start', MEDIA_CHECK], timeout=360, **quiet)
     try:
         report = json.loads(safe_path(mount_path(config['data_mount']) / MEDIA_REPORT).read_text())
         if not isinstance(report, dict):
             raise ValueError('not a report')
     except (OSError, ValueError, RuntimeError):
-        return [
-            item(
-                'media:audit', 'Current media API checks', 'fail', 'Current read-only media checks could not complete.'
-            )
-        ]
-    out = []
-    for group in ('services', 'integrations', 'readiness'):
-        values = report.get(group, {})
-        if not isinstance(values, dict):
+        return media_audit('fail', 'Current read-only media checks could not complete.')
+    out = [row for group in ('services', 'integrations', 'readiness') for row in media_rows(group, report.get(group))]
+    return out or media_audit('needs_setup', 'No current media configuration checks are available.')
+
+
+def media_rows(group, values):
+    """The report's results in `group` as rows (at most 50, plain names only)."""
+    if not isinstance(values, dict):
+        return []
+    rows = []
+    for key, value in list(values.items())[:50]:
+        if not isinstance(key, str) or not re.fullmatch(r'[a-z0-9_:]+', key) or not isinstance(value, dict):
             continue
-        for key, value in list(values.items())[:50]:
-            if not isinstance(key, str) or not re.fullmatch(r'[a-z0-9_:]+', key) or not isinstance(value, dict):
-                continue
-            # End-to-end transfer/playback is handled by witnessed manual tests below.
-            if key in (
-                'end_to_end_media',
-                'qbittorrent:authenticated_playback_or_transfer',
-                'navidrome:authenticated_playback_or_transfer',
-            ):
-                continue
-            state = value.get('result')
-            if state in STATES:
-                out.append(
-                    item(
-                        'media:' + group + ':' + key,
-                        key.replace('_', ' ').replace(':', ' / '),
-                        state,
-                        'Current authenticated configuration inspection; complete setup or inspect locally when pending.',
-                    )
-                )
-    return out or [
-        item(
-            'media:audit',
-            'Current media API checks',
-            'needs_setup',
-            'No current media configuration checks are available.',
+        if key in WITNESSED or value.get('result') not in STATES:
+            continue
+        rows.append(
+            item(
+                'media:' + group + ':' + key,
+                key.replace('_', ' ').replace(':', ' / '),
+                value['result'],
+                'Current authenticated configuration inspection; complete setup or inspect locally when pending.',
+            )
         )
-    ]
+    return rows
 
 
 def dashboard_check(port, now):
