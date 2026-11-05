@@ -132,6 +132,34 @@ class DriveCheckTests(unittest.TestCase):
         self.assertEqual(checks['mount:distinct']['status'], 'fail')
         self.assertEqual(checks['mount:distinct']['detail'], both)
 
+    def test_the_usb_drive_is_the_nas_disk_setup_chose(self):
+        """The review of 0.47.2's sweep: the USB backup drive passed on its UUID alone, so a
+        restored or copied NAS LUN mounted in its place passed too."""
+        other = 'Drive check failed: /mnt/usb has the right UUID but is on another NAS disk (0x2, not 0x1)'
+        with mock.patch.object(acceptance.health, 'mount_info', return_value={'status': 'mounted'}):
+            checks = inspect({'backups': []}, problem=lambda keys: other if keys == ('usb',) else None)
+        self.assertEqual(checks['external:identity']['status'], 'fail')
+        self.assertIn('another NAS disk', checks['external:identity']['detail'])
+        with mock.patch.object(acceptance.health, 'mount_info', return_value={'status': 'mounted'}):
+            self.assertEqual(inspect({'backups': []})['external:identity']['status'], 'pass')
+
+    def test_the_drive_check_is_given_the_usb_drives_settings(self):
+        import neko_common
+
+        asked = []
+        cfg = {'data_mount': '/srv/x', 'media_mount': '/mnt/m', 'external_backup_mount': '/mnt/usb', 'storage': {},
+               'photos': {'external_backup_uuid': 'u1', 'external_backup_fstype': 'exfat',
+                          'external_backup_network': {'wwn': '0x1'}, 'deploy_immich': True}}  # fmt: skip
+
+        def ask(project, config, args):
+            asked.append(json.loads(Path(args[args.index('--config') + 1]).read_text()))
+            return 0, 'ok'
+
+        neko_common.verify_storage(cfg, ('usb',), ask=ask)
+        self.assertEqual(asked[0]['external_backup_mount'], '/mnt/usb')
+        self.assertEqual(asked[0]['photos']['external_backup_network'], {'wwn': '0x1'})
+        self.assertNotIn('deploy_immich', asked[0]['photos'])
+
     def test_the_runtimes_drive_check_is_the_one_asked(self):
         with mock.patch.object(acceptance, 'verify_storage', side_effect=RuntimeError('wrong subvolume')) as asked:
             self.assertEqual(acceptance.drive_problem({}, ('data_ssd',)), 'wrong subvolume')

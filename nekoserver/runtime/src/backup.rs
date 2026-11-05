@@ -2995,10 +2995,15 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
         let mount = match *key {
             "data_ssd" => "data_mount",
             "media_hdd" => "media_mount",
+            "usb" => "external_backup_mount",
             _ => return Err(Error::new("Unknown drive")),
         };
         let path = common::mount_path(cfg[mount].as_str().unwrap_or(""))?;
-        let uuid = checked_drive(&cfg, key, &path)?;
+        let uuid = if *key == "usb" {
+            checked_drive(&usb_spec(&cfg), "usb", &path)?
+        } else {
+            checked_drive(&cfg, key, &path)?
+        };
         if seen.contains(&uuid) {
             return Err(Error::new(
                 "The SSD and the HDD must be two different filesystems",
@@ -3009,6 +3014,14 @@ pub fn check_drives(a: &crate::Args) -> Result<()> {
     crate::startup::copies_of(&cfg, &keys)?;
     println!("ok");
     Ok(())
+}
+/// The USB backup drive as a drive to check: its UUID and filesystem from the photo
+/// settings, and its NAS disk (WWN) when it is one: the check the weekly copy makes.
+fn usb_spec(cfg: &Value) -> Value {
+    let photos = &cfg["photos"];
+    let fstype = photos["external_backup_fstype"].as_str().unwrap_or("ext4");
+    json!({"storage": {"usb": {"uuid": photos["external_backup_uuid"], "fstype": fstype,
+        "network": photos["external_backup_network"]}}})
 }
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
@@ -4471,6 +4484,24 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     use super::*;
+    #[test]
+    fn the_usb_drive_is_checked_as_the_weekly_copy_checks_it() {
+        // The review of 0.47.2's sweep: acceptance passed the USB drive on its UUID alone.
+        let cfg = json!({"photos": {"external_backup_uuid": "u1", "external_backup_fstype": "exfat",
+            "external_backup_network": {"wwn": "0x1"}}});
+        let spec = usb_spec(&cfg);
+        assert_eq!(spec["storage"]["usb"]["network"]["wwn"], "0x1");
+        let at = Path::new("/mnt/usb");
+        assert_eq!(
+            drive_check(&spec, "usb", at, "u1 exfat /dev/sdb1").unwrap(),
+            "u1"
+        );
+        assert!(drive_check(&spec, "usb", at, "u1 ext4 /dev/sdb1").is_err());
+        assert!(drive_check(&spec, "usb", at, "u2 exfat /dev/sdb1").is_err());
+        // Without a filesystem named, the weekly copy's default (ext4).
+        let plain = usb_spec(&json!({"photos": {"external_backup_uuid": "u1"}}));
+        assert_eq!(plain["storage"]["usb"]["fstype"], "ext4");
+    }
     #[test]
     fn a_nas_drive_is_the_nas_disk_setup_chose() {
         // The 0.46.0 review: a restored or cloned LUN, same filesystem UUID, passed.

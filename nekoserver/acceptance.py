@@ -966,11 +966,15 @@ def inspect(config, profile='full', now=None):
                 spec.get('external_backup_fstype', 'ext4'),
             )
             state = external['status']
+            # Mounted: also the NAS disk setup chose, as the weekly copy checks it (the
+            # UUID alone passed a restored or copied LUN).
+            problem = drive_problem(config, ('usb',)) if state == 'mounted' else None
             add(
                 'external:identity',
                 'External backup identity',
-                verdict(state == 'mounted', state == 'wrong_drive'),
-                'Connect the intended external drive for this acceptance check; normal offline storage between runs is expected.',
+                verdict(state == 'mounted' and problem is None, state == 'wrong_drive' or problem is not None),
+                problem
+                or 'Connect the intended external drive for this acceptance check; normal offline storage between runs is expected.',
             )
     if drives:
         checks.extend(permission_checks.check(config, modules))
