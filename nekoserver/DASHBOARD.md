@@ -53,21 +53,23 @@ Neko, a small black cat, sits at the top of Home and shows how the server is doi
 | **Happy** | A job has just finished, shown once for about three seconds. Opening the page does not replay an old one. |
 | **Resting** | Everything is fine and nothing needs you. |
 
-Each page also has a smaller cat of its own, with a pose that suits the page while all is well:
+Every page also has a smaller cat of its own beside its main section, shown on that page only:
 
 | Page | Its cat |
 | --- | --- |
-| **Home** ("at a glance") | Sits and says hello |
-| **Your apps** | Peeks into the list (and while you search) |
-| **Backups** | Sleeps between runs, plays while one runs, is happy when one has just finished |
+| **Home** (beside "Your server at a glance", below Neko) | Sits and says hello |
+| **Your apps** | Peeks in at the apps, from the left |
+| **Backups** | Sleeps between runs, plays while one runs, is happy when one has just finished, and is worried when one needs a look |
 | **Hardware** | Lies back with a slow tail swish |
-| **Sensors** | Listens, ears turning |
+| **Sensors** | Listens, ears turning, beside the temperatures |
 | **Fans & lights** | Enjoys the breeze of a little fan |
-| **Processes** | Pounces at a ball of yarn (just for fun: it is not a progress bar) |
-| **Server health** | Grooms itself |
-| **Needs attention** | Looks over the list, and is worried only when there is something on it |
+| **Processes** | Pounces at a ball of yarn, with room for it (just for fun: it is not a progress bar) |
+| **Server health** | Grooms itself, beside "Checks & monitoring" |
+| **Updates** | Grooms itself too: care before anything changes |
+| **Needs attention** | Calm while the list is empty, worried beside real issues (on Home too, then) |
+| **Help** | Peeks in at the guides, from the left |
 
-When something on a page is wrong, that page's cat is afraid instead: a backup that needs a look, an app that is down, a drive problem, a processor running hot. A problem on one page never scares the cats of the others. When a page's readings can't be fetched, or all readings are old, its cat looks curious instead of content. The poses are for fun; the page's own words and numbers are what count.
+A page's cat is the page's own, not a verdict on it: when something on a page is wrong, the page's panel is outlined and its own words say what; the cat stays (the breeze cat stays beside Fan control while the fan service can't be reached, say). Only Needs attention's and Backups' cats follow what happens, as above. The poses are for fun; the page's own words and numbers are what count. An animation that can't be loaded shows the same cat's other size, then its still picture.
 
 When the device asks for less motion (or Settings → *Cat animation* is *Still pictures*), every cat is a still picture.
 
@@ -176,7 +178,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.47.1/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.47.2/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -220,7 +222,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.47.1` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.47.2` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

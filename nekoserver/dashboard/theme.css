@@ -1,6 +1,7 @@
 /* NekoServer's colours (Moonlit Neko), shared by the dashboard and the setup window.
  * Each colour is written once, as light-dark(Lamplight, night): the page picks the theme
- * by its colour scheme. The dashboard sets it with its switch (data-theme on the root),
+ * by its colour scheme. The dashboard sets it with its switch (data-neko-theme on the root:
+ * its own name, so a page that hosts it, as the live preview's does, can't set it back),
  * the setup window follows the device.
  * Night is a warm plum-charcoal; Lamplight a soft parchment with no bright white, so
  * switching to it never dazzles. Every text colour reads at 5:1 or better on every surface
@@ -25,6 +26,6 @@
   --red: light-dark(#89293c, #eb9ba6);
   --cat-box: light-dark(#e9dfcf, #ded3c0);
 }
-:root[data-theme='light'] {
+:root[data-neko-theme='light'] {
   color-scheme: light;
 }

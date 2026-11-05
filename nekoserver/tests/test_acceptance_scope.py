@@ -1,6 +1,7 @@
 """The dashboard's acceptance view is outdated once the USB drive, the photo archive
-folder or the USB copy's schedule changes (the Rust collector computes the same digest:
-collect.rs the_acceptance_scope_names_the_usb_drive_and_archive_like_python)."""
+folder or the USB copy's schedule changes. Setup works the fingerprint out and writes it
+into the dashboard's settings; the collector only compares it (collect.rs
+the_profiles_and_the_scope_are_the_ones_setup_wrote)."""
 
 import sys
 import unittest
@@ -25,7 +26,7 @@ def changed(section, key, value):
 
 
 class ScopeTests(unittest.TestCase):
-    def test_same_digest_as_the_rust_collector(self):
+    def test_the_digest_is_stable(self):
         self.assertEqual(scope_digest(SETTINGS), '4a3c4b125516bde8707230fcae0595b16d6db218ffc0d344dcfcc6394cc5828d')
 
     def test_a_new_usb_drive_archive_or_schedule_makes_it_outdated(self):

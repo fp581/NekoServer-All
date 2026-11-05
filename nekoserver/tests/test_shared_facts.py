@@ -48,6 +48,24 @@ class AppCatalogue(unittest.TestCase):
                 self.assertIsNone(names.search(code))
 
 
+class PageCatalogue(unittest.TestCase):
+    def test_the_page_keeps_no_names_or_ports_of_its_own(self):
+        page = (ROOT / 'dashboard/app.js').read_text()
+        catalogue = page[page.index('const CATALOG = {') : page.index('\n};\n', page.index('const CATALOG = {'))]
+        for app in SHARED['apps']:
+            line = next(row for row in catalogue.splitlines() if row.strip().startswith(app['id'] + ':'))
+            with self.subTest(app['id']):
+                self.assertNotIn('port', line)
+                self.assertNotIn('name', line)
+
+    def test_the_gateway_takes_its_apps_and_ports_from_the_shared_list(self):
+        import gateway_tools
+
+        published = {app['id']: app['tailnet'] for app in SHARED['apps'] if 'tailnet' in app}
+        self.assertEqual({app: row[2] for app, row in gateway_tools.APPS.items()}, published)
+        self.assertEqual(gateway_tools.APPS['navidrome'][0], 'Music')
+
+
 class RecoveryRecords(unittest.TestCase):
     PLACES = [record['journal'] for record in SHARED['recovery'].values()] + [SHARED['setup_lock']]
 
@@ -70,6 +88,32 @@ class RecoveryRecords(unittest.TestCase):
         self.assertEqual(str(neko_common.MAINTENANCE_JOURNAL), SHARED['recovery']['maintenance']['journal'])
 
 
+class ShellCopies(unittest.TestCase):
+    def test_install_sh_names_the_shared_lock_and_journal(self):
+        """install.sh runs before Python may be there, so it writes these two paths out:
+        checked against the shared facts, so they can't drift."""
+        script = (ROOT / 'install.sh').read_text()
+        self.assertIn('exec 9>>' + SHARED['setup_lock'] + '\n', script)
+        self.assertIn('-e ' + SHARED['recovery']['maintenance']['journal'] + ' ]]', script)
+        for path in re.findall(r'/etc/nekoserver-backups/[a-z-]+\.json', script):
+            known = [r['journal'] for r in SHARED['recovery'].values()] + [str(migrate.JOURNAL)]
+            self.assertIn(path, known)
+
+
+class OneColourSet(unittest.TestCase):
+    def test_the_app_portal_uses_the_dashboards_colours(self):
+        """The review of 0.47.1: the gateway's app portal kept the colours of before 0.47.0."""
+        import gateway_tools
+
+        cfg = json.loads((ROOT / 'config.json').read_text())
+        cfg['gateway'] = {'services': ['jellyfin'], 'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'}
+        page = gateway_tools.portal(cfg, '192.168.1.20')
+        self.assertIn((ROOT / 'dashboard/theme.css').read_text(), page)
+        style = page[page.index('<style>') : page.index('</style>')]
+        own = style.replace((ROOT / 'dashboard/theme.css').read_text(), '')
+        self.assertIsNone(re.search(r'#[0-9a-fA-F]{3,6}\b', own), 'a colour of its own')
+
+
 class SharedUnitNames(unittest.TestCase):
     def test_the_nas_watch_units_are_named_once(self):
         self.assertEqual(server_os.NAS_WATCH, SHARED['nas_watch']['service'])
@@ -77,8 +121,6 @@ class SharedUnitNames(unittest.TestCase):
 
     def test_a_drive_move_stops_every_shared_writer(self):
         self.assertLessEqual(set(SHARED['writers']), set(migrate.WRITERS))
-        # The gateway writes to the drives too; before 0.47.1 the move left it running.
-        self.assertIn('nekoserver-gateway-lan.service', migrate.WRITERS)
 
 
 if __name__ == '__main__':

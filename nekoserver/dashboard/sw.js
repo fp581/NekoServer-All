@@ -1,7 +1,7 @@
 'use strict';
 /* Lets the dashboard open like an app and still show its page when the server can't
  * be reached (it then says E01). Readings (/api/...) are never stored. */
-const CACHE = 'neko-shell-v2';
+const CACHE = 'neko-shell-v3';
 /* The still cats too, so the page offline still shows its (curious) cat. */
 const CATS = ['happy', 'playful', 'resting', 'sleeping', 'curious', 'afraid', 'listening', 'breezy', 'grooming'];
 const SHELL = [

@@ -519,6 +519,10 @@ def collector_settings(cfg, smart, interval=60):
     # SSD, it decides whether the page offers Steam Big Picture.
     clean['tv'] = {'wanted': cfg.get('tv', {}).get('wanted')}
     clean['acceptance_scope'] = scope_digest(cfg)
+    # The profiles an acceptance run may name (config.json), for the collector to check.
+    clean['acceptance_profiles'] = sorted(
+        name for name in cfg.get('profiles', {}) if re.fullmatch(r'[a-z_]{1,40}', name)
+    )
     return clean
 
 

@@ -89,77 +89,82 @@
     {
       "id": "jellyfin",
       "name": "Jellyfin",
-      "role": "Movies & shows",
+      "role": "Movies & TV shows",
       "port": 8096,
-      "media": true
+      "media": true,
+      "tailnet": 8443
     },
     {
       "id": "immich",
       "name": "Immich",
-      "role": "Photos & memories",
+      "role": "Your photos & memories",
       "port": 2283,
-      "media": false
+      "media": false,
+      "tailnet": 8445
     },
     {
       "id": "seerr",
       "name": "Seerr",
-      "role": "Discover & request",
+      "role": "Find something to watch",
       "port": 5055,
-      "media": true
+      "media": true,
+      "tailnet": 8444
     },
     {
       "id": "navidrome",
       "name": "Navidrome",
-      "role": "Your music library",
+      "role": "Your music, everywhere",
       "port": 4533,
-      "media": true
+      "media": true,
+      "tailnet": 8446
     },
     {
       "id": "sonarr",
       "name": "Sonarr",
-      "role": "Series automation",
+      "role": "Manage your TV library",
       "port": 8989,
       "media": true
     },
     {
       "id": "radarr",
       "name": "Radarr",
-      "role": "Movie automation",
+      "role": "Manage your movie library",
       "port": 7878,
       "media": true
     },
     {
       "id": "lidarr",
       "name": "Lidarr",
-      "role": "Music automation",
+      "role": "Manage your music library",
       "port": 8686,
       "media": true
     },
     {
       "id": "prowlarr",
       "name": "Prowlarr",
-      "role": "Media sources",
+      "role": "Manage search providers",
       "port": 9696,
       "media": true
     },
     {
       "id": "qbittorrent",
       "name": "qBittorrent",
-      "role": "Download queue",
+      "role": "Check your downloads",
       "port": 8080,
       "media": true
     },
     {
       "id": "nextcloud",
       "name": "Nextcloud",
-      "role": "Your personal files",
+      "role": "Your files & cloud",
       "port": 8088,
-      "media": false
+      "media": false,
+      "tailnet": 8447
     }
   ],
   "cats": {
-    "_about": "The dashboard's cat (DASHBOARD.md, \"The cat\"): Home's own cat has a big animation for each of its moods; each page's cat a small animation and a still picture. The runtime serves exactly these files, setup installs them.",
-    "home": ["happy", "playful", "resting", "sleeping", "curious", "afraid"],
+    "_about": "The dashboard's cats (DASHBOARD.md, \"The cat\"): each mood has a big animation (\"home\": Home's status cat, the Processes cat, and the stand-in when a small one can't be fetched), a small animation and a still (\"pages\"). The runtime serves exactly these files, setup installs them.",
+    "home": ["happy", "playful", "resting", "sleeping", "curious", "afraid", "listening", "breezy", "grooming"],
     "pages": ["happy", "playful", "resting", "sleeping", "curious", "afraid", "listening", "breezy", "grooming"]
   }
 }

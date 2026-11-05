@@ -99,7 +99,7 @@ fn entry() -> Result<()> {
         return serve::hardware();
     }
     if mode == "--help" || mode.is_empty() {
-        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, nas-watch, maintenance, maintenance-resume, update-check, update-apps, check-compose, check-drives\nUse COMMAND --help for options.");
+        println!("nekoserver-runtime {VERSION}\nCommands: serve, control, hardware, collect, archive, copy, preservation, weekly, database, media-health, music-backup, app-snapshot, app-resume, notify, hdd-policy, host-snapshot, host-resume, immich-resume, cloud-resume, seal-passwords, heartbeat, storage-guard, gateway-guard, drive-return, nas-watch, maintenance, maintenance-resume, update-check, update-apps, check-compose, check-drives, job-states\nUse COMMAND --help for options.");
         return Ok(());
     }
     let allowed = match mode.as_str() {
@@ -113,6 +113,7 @@ fn entry() -> Result<()> {
         "update-apps" => vec!["config", "app"],
         "check-compose" => vec!["config", "app", "model", "upload", "database"],
         "check-drives" => vec!["config", "drives"],
+        "job-states" => vec!["config"],
         "notify" => vec!["config", "snapshot", "state", "runtime", "test"],
         "media-health" => vec!["config", "output", "checking"],
         "serve" => vec!["assets", "status", "port", "public-host", "control"],
@@ -189,6 +190,7 @@ fn entry() -> Result<()> {
         "update-apps" => maintenance::update_apps(&a),
         "check-compose" => maintenance::check_compose(&a),
         "check-drives" => backup::check_drives(&a),
+        "job-states" => collect::job_states(&a),
         "hdd-policy" => os_policy::run(&a),
         "music-backup" => music_backup::run(&a),
         "notify" => notify::run(&a),

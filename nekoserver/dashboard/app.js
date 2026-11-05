@@ -151,55 +151,41 @@ function linkSpeed(mbps) {
 }
 
 /* ---------- vocabulary ---------- */
+/* How each app looks on the page: its icon, which group it is in, and their order. Its
+ * name, description and ports are the server's to say (shared.json, which setup and the
+ * runtime read; the collector puts them in each app's row): this kept a copy of its own,
+ * already worded differently (the review of 0.47.1). The two shortcuts are the page's own. */
 const CATALOG = {
-  jellyfin: {
-    name: 'Jellyfin',
-    description: 'Movies & TV shows',
-    icon: '▶',
-    category: 'everyday',
-    port: 8096,
-    tailnet: 8443
-  },
-  immich: {
-    name: 'Immich',
-    description: 'Your photos & memories',
-    icon: '✿',
-    category: 'everyday',
-    port: 2283,
-    tailnet: 8445
-  },
-  navidrome: {
-    name: 'Navidrome',
-    description: 'Your music, everywhere',
-    icon: '♫',
-    category: 'everyday',
-    port: 4533,
-    tailnet: 8446
-  },
-  nextcloud: {
-    name: 'Nextcloud',
-    description: 'Your files & cloud',
-    icon: '☁',
-    category: 'everyday',
-    port: 8088,
-    tailnet: 8447
-  },
-  seerr: {
-    name: 'Seerr',
-    description: 'Find something to watch',
-    icon: '✦',
-    category: 'everyday',
-    port: 5055,
-    tailnet: 8444
-  },
-  sonarr: { name: 'Sonarr', description: 'Manage your TV library', icon: '◎', category: 'manage', port: 8989 },
-  radarr: { name: 'Radarr', description: 'Manage your movie library', icon: '◉', category: 'manage', port: 7878 },
-  lidarr: { name: 'Lidarr', description: 'Manage your music library', icon: '≋', category: 'manage', port: 8686 },
-  prowlarr: { name: 'Prowlarr', description: 'Manage search providers', icon: '◇', category: 'manage', port: 9696 },
-  qbittorrent: { name: 'qBittorrent', description: 'Check your downloads', icon: '↓', category: 'manage', port: 8080 },
+  jellyfin: { icon: '▶', category: 'everyday' },
+  immich: { icon: '✿', category: 'everyday' },
+  navidrome: { icon: '♫', category: 'everyday' },
+  nextcloud: { icon: '☁', category: 'everyday' },
+  seerr: { icon: '✦', category: 'everyday' },
+  sonarr: { icon: '◎', category: 'manage' },
+  radarr: { icon: '◉', category: 'manage' },
+  lidarr: { icon: '≋', category: 'manage' },
+  prowlarr: { icon: '◇', category: 'manage' },
+  qbittorrent: { icon: '↓', category: 'manage' },
   steam: { name: 'Steam Big Picture', description: 'Games on the TV', icon: '◈', category: 'everyday', shortcut: true },
   youtube: { name: 'YouTube', description: 'Watch in your browser', icon: '▶', category: 'everyday', shortcut: true }
 };
+/* An app as the page shows it: its look, with its name, description and ports from its row
+ * in the readings (`app`, or the one in the current readings). */
+function appSpec(id, app) {
+  const look = CATALOG[id];
+  if (!look || look.shortcut) {
+    return look || null;
+  }
+  const row = app || list(state.status?.applications).find(a => a.id === id) || {};
+  const port = n => (Number.isInteger(n) && n > 0 && n < 65536 ? n : null);
+  return {
+    ...look,
+    name: text(row.name, id),
+    description: text(row.description, ''),
+    port: port(row.port),
+    tailnet: port(row.tailnet)
+  };
+}
 const JOB_UNITS = {
   archive: 'nekoserver-photo-preservation.service',
   database: 'nekoserver-immich-db-backup.service',
@@ -722,7 +708,7 @@ function appIssues(s, add) {
     if (!APP_OK.has(st) && st !== 'not_set_up' && !heldByDrive(app)) {
       add(
         'app:' + app.id,
-        CATALOG[app.id].name + ' · ' + (LABELS[st] || 'Status unknown'),
+        appSpec(app.id, app).name + ' · ' + (LABELS[st] || 'Status unknown'),
         'Check the app. Running is not the same as working: try opening it.',
         'apps',
         severity(['unhealthy', 'exited', 'dead'].includes(st))
@@ -731,7 +717,7 @@ function appIssues(s, add) {
   }
   // Setup stopped before it got to these apps: one item saying so, not one per app.
   if (notSetUp.length) {
-    const names = notSetUp.map(a => CATALOG[a.id].name).join(', ');
+    const names = notSetUp.map(a => appSpec(a.id, a).name).join(', ');
     add(
       'setup-unfinished',
       'Setup isn’t finished yet',
@@ -1194,57 +1180,66 @@ function hot(s) {
  * current, a cat with no problem of its own looks for news instead of looking content.
  * `now` holds the rest the page knows: a job just finished, an app search, old readings,
  * and the readings that could not be fetched (fans and lights, processes). */
+/* Each page's own cat, by its route (the cat placement package of 5 November): a
+ * page's identity, not a verdict on it, so a reading that can't be fetched (fan control
+ * away: E21) keeps the breeze cat, and its own message says what is wrong. Updates and
+ * Help reuse grooming and curious. A panel shown on two pages (Your apps, What needs your
+ * attention) shows its cat on its own page; on Home only the issues list's, and only
+ * when there is something on it (renderCats). */
 const PAGE_CATS = {
-  attention: 'curious', // worried only when there is something to look at
-  glance: 'happy',
+  home: 'happy',
   apps: 'curious',
   backups: 'sleeping',
   hardware: 'resting',
   sensors: 'listening',
   cooling: 'breezy',
   processes: 'playful',
-  drives: 'grooming'
+  health: 'grooming',
+  updates: 'grooming',
+  attention: 'happy',
+  help: 'curious'
 };
+/* The cat each page shows. Two follow what happens: Needs attention is worried only
+ * beside real issues (calm when empty, curious before the first reading), and Backups
+ * plays while a job runs, is happy once one has finished, and is worried when one needs
+ * a look. */
 function panelMoods(s, issues, now = {}) {
-  if (!s) {
-    return Object.fromEntries(Object.keys(PAGE_CATS).map(panel => [panel, 'curious']));
-  }
-  const down = serverApps(s).filter(a => !APP_OK.has(appState(a)) && appState(a) !== 'not_set_up').length;
-  const bad = list(s.backups).filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
-  const warm = hot(s);
-  const problems = {
-    attention: issues.length > 0,
-    glance: warm,
-    apps: down > 0,
-    backups: bad > 0,
-    hardware: warm,
-    sensors: warm,
-    drives: issues.some(i => STORAGE_ISSUE.test(i.id))
-  };
-  const unknown = { cooling: !!now.cooling, processes: !!now.processes };
-  const moods = {};
-  for (const [panel, identity] of Object.entries(PAGE_CATS)) {
-    moods[panel] = firstOf(
-      [
-        [problems[panel], 'afraid'],
-        [now.stale || unknown[panel], 'curious']
-      ],
-      identity
-    );
-  }
-  if (!now.stale && !problems.backups) {
+  const moods = { ...PAGE_CATS };
+  moods.attention = firstOf(
+    [
+      [!s, 'curious'],
+      [issues.length > 0, 'afraid']
+    ],
+    'happy'
+  );
+  if (s) {
+    const bad = list(s.backups).some(j => ['fail', 'partial', 'stale'].includes(j.status));
     moods.backups = firstOf(
       [
-        [runningJobs(s).length, 'playful'],
-        [now.done, 'happy']
+        [bad, 'afraid'],
+        [!now.stale && runningJobs(s).length, 'playful'],
+        [!now.stale && now.done, 'happy']
       ],
       'sleeping'
     );
   }
-  if (now.searching && !problems.apps) {
-    moods.apps = 'curious';
-  }
   return moods;
+}
+/* The pages with something wrong on them: their panel is outlined (data-alert). */
+function panelAlerts(s, issues) {
+  if (!s) {
+    return {};
+  }
+  const warm = hot(s);
+  return {
+    attention: issues.length > 0,
+    home: warm,
+    apps: serverApps(s).some(a => !APP_OK.has(appState(a)) && appState(a) !== 'not_set_up'),
+    backups: list(s.backups).some(j => ['fail', 'partial', 'stale'].includes(j.status)),
+    hardware: warm,
+    sensors: warm,
+    health: issues.some(i => STORAGE_ISSUE.test(i.id))
+  };
 }
 /* The words beside the cat: [state, title, text, action, where it leads]. */
 function companionWords(mood, s, issues) {
@@ -1307,29 +1302,30 @@ function catFile(mood, small) {
   }
   return 'cat-' + mood + (small ? '-small.webp' : '.webp');
 }
-/* The picture changes only when the mood does: setting it again would restart it. */
+/* The picture changes only when the mood does: setting it again would restart it. An
+ * animation that can't be fetched tries the same cat's other size, then its still (offline:
+ * only the stills are saved); never another cat. */
 function showCat(img, mood, small) {
   const file = catFile(mood, small);
-  if (img.getAttribute('src') !== file) {
-    // An animation that can't be fetched (offline: only the stills are saved) shows the still.
-    img.onerror = () => {
+  if (img.dataset.catRequest === file) {
+    return; // compared with what was asked for, not a stand-in shown meanwhile
+  }
+  img.dataset.catRequest = file;
+  const tries = [...new Set([file, 'cat-' + mood + '.webp', 'cat-' + mood + '.png'])];
+  const order = stillCats() ? ['cat-' + mood + '.png'] : tries;
+  let at = 0;
+  img.onerror = () => {
+    at++;
+    if (at >= order.length) {
       img.onerror = null;
-      img.setAttribute('src', 'cat-' + mood + '.png');
-    };
-    img.setAttribute('src', file);
-    // A new mood fades in, only when motion is welcome (never the same mood again).
-    if (!stillCats() && typeof img.animate === 'function') {
-      img.animate(
-        [
-          { opacity: 0, transform: 'scale(0.94)' },
-          { opacity: 1, transform: 'none' }
-        ],
-        {
-          duration: 450,
-          easing: 'ease-out'
-        }
-      );
+      return;
     }
+    img.setAttribute('src', order[at]);
+  };
+  img.setAttribute('src', order[0]);
+  // A new mood fades in, only when motion is welcome (never the same mood again).
+  if (!stillCats() && typeof img.animate === 'function') {
+    img.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease-out' });
   }
 }
 function noteFinished(s) {
@@ -1378,11 +1374,11 @@ function panelCat(head) {
   const box = el('figure', 'cat-box panel-cat'),
     img = el('img');
   box.setAttribute('aria-hidden', 'true');
-  img.width = 84;
-  img.height = 84;
+  // A roomier stage for the pounce and its yarn; the curious cats sit at the left (CSS).
+  img.width = img.height = head.dataset.cat === 'processes' ? 168 : 128;
   img.alt = '';
   box.append(img);
-  head.prepend(box);
+  head.append(box);
   return img;
 }
 function renderCats() {
@@ -1404,27 +1400,29 @@ function renderCats() {
   $('hero-text').textContent = words;
   $('hero-action').textContent = action;
   $('hero-action').setAttribute('href', where);
-  const searching = state.route === 'apps' && !!$('app-search').value.trim();
-  const moods = panelMoods(s, issues, {
-    done: !!finished,
-    searching,
-    stale,
-    cooling: !!state.controlError,
-    processes: !!state.processError
-  });
+  const moods = panelMoods(s, issues, { done: !!finished, stale });
+  const alerts = panelAlerts(s, issues);
   for (const head of document.querySelectorAll('[data-cat]')) {
-    if (head.closest('[data-page]')?.hidden) {
-      continue; // a cat on a page not shown is not loaded (each visit would fetch them all)
+    const key = head.dataset.cat;
+    // This page's own cat only; on Home also the issues list's, while it lists some. A
+    // cat on a page not shown is not loaded (each visit would fetch them all).
+    const own = key === state.route || (state.route === 'home' && key === 'attention' && issues.length > 0);
+    const shown = own && !head.closest('[data-page]')?.hidden;
+    head.classList.toggle('with-cat', shown);
+    head.closest('.panel')?.toggleAttribute('data-alert', shown && !!alerts[key]);
+    const made = head.querySelector(':scope > .cat-box');
+    if (made) {
+      made.hidden = !shown;
     }
-    const panelMood = moods[head.dataset.cat] || PAGE_CATS[head.dataset.cat] || 'resting';
-    showCat(panelCat(head), panelMood, true);
-    head.closest('.panel')?.toggleAttribute('data-alert', panelMood === 'afraid');
+    if (shown) {
+      showCat(panelCat(head), moods[key], key !== 'processes');
+    }
   }
 }
 
 /* ---------- apps ---------- */
 function appAddress(id) {
-  const spec = CATALOG[id];
+  const spec = appSpec(id);
   if (!spec) {
     return null;
   }
@@ -1435,7 +1433,7 @@ function appAddress(id) {
     return LOCAL ? 'steam://open/bigpicture' : null;
   }
   if (LOCAL) {
-    return 'http://127.0.0.1:' + spec.port + '/';
+    return spec.port ? 'http://127.0.0.1:' + spec.port + '/' : null;
   }
   const tailnet = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net$/i.test(location.hostname);
   // Only an app the Tailscale gateway publishes: another one's address leads nowhere.
@@ -1451,7 +1449,7 @@ function shownApps(s, onHome) {
   const filter = onHome ? 'all' : state.appFilter;
   const query = onHome ? '' : $('app-search').value.trim().toLowerCase();
   const wanted = a => {
-    const spec = CATALOG[a.id];
+    const spec = appSpec(a.id, a);
     const inFilter = filter === 'all' || (filter === 'favorites' && favorites.has(a.id)) || filter === spec.category;
     return inFilter && (spec.name + ' ' + spec.description + ' ' + a.id).toLowerCase().includes(query);
   };
@@ -1502,7 +1500,7 @@ function openControl(app, spec) {
   );
 }
 function appCard(app, old) {
-  const spec = CATALOG[app.id],
+  const spec = appSpec(app.id, app),
     card = el('article', 'app-card'),
     top = el('div', 'app-top'),
     bottom = el('div', 'app-bottom');
@@ -3114,7 +3112,7 @@ const PROCESS_SORTS = {
   memory: biggestFirst('memory')
 };
 function appName(row) {
-  return row.app && CATALOG[row.app] ? CATALOG[row.app].name : '';
+  return row.app && CATALOG[row.app] ? appSpec(row.app).name : '';
 }
 function processRow(r) {
   const tr = el('tr');
@@ -3219,7 +3217,7 @@ function menuButton(name, items) {
   return b;
 }
 function restartItem(id) {
-  const name = CATALOG[id]?.name || id,
+  const name = appSpec(id)?.name || id,
     busy = runningJob(),
     action = actionFor('app:' + id);
   const why = firstOf(
@@ -3244,7 +3242,7 @@ function appMenu(app) {
     st === 'not_set_up'
       ? { label: 'Restart app', detail: 'Not set up yet: run setup again first', disabled: true }
       : restartItem(app.id);
-  return { title: CATALOG[app.id].name, subtitle: LABELS[st] || 'Status unknown', items: [restart] };
+  return { title: appSpec(app.id, app).name, subtitle: LABELS[st] || 'Status unknown', items: [restart] };
 }
 /* A program started from another app (Firefox from a terminal, say) belongs to that
  * app's group: closing goes to the whole group, so the menu says so. */
@@ -3278,7 +3276,7 @@ function processMenu(r) {
     return desktopMenu(r, name);
   }
   if (r.kind === 'app' || r.kind === 'app_part') {
-    const app = CATALOG[r.app]?.name || r.app;
+    const app = appSpec(r.app)?.name || r.app;
     const items =
       r.kind === 'app_part'
         ? [
@@ -4485,7 +4483,10 @@ function applyPreferences() {
   if (!['light', 'dark', 'system'].includes(theme)) {
     theme = 'dark';
   }
-  document.documentElement.dataset.theme = theme === 'system' ? systemTheme() : theme;
+  const shown = theme === 'system' ? systemTheme() : theme;
+  document.documentElement.dataset.nekoTheme = shown;
+  // On the root itself too: no stylesheet (of a page this one is shown in) outranks it.
+  document.documentElement.style.colorScheme = shown;
   labelThemeToggle();
   // The phone's browser bar (and the installed app's title bar) in the page's own colour.
   const bar = document.querySelector('meta[name="theme-color"]');
@@ -4504,7 +4505,7 @@ function applyPreferences() {
  * colours ease over where crossfading is not offered; with less motion asked for it
  * simply switches. */
 function shownTheme() {
-  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+  return document.documentElement.dataset.nekoTheme === 'light' ? 'light' : 'dark';
 }
 function labelThemeToggle() {
   const toLight = shownTheme() === 'dark';
@@ -4842,3 +4843,10 @@ setInterval(() => {
 
 applyPreferences();
 route();
+// Back online: the animations that could not be fetched are asked for again.
+window.addEventListener('online', () => {
+  for (const img of document.querySelectorAll('.cat-box img')) {
+    delete img.dataset.catRequest;
+  }
+  renderCats();
+});

@@ -940,7 +940,9 @@ fn applications(
                 json!(mine.iter().map(|u| u.1).sum::<f64>()),
             )
         };
-        out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"responding":responding(report,app,up_for),"url":format!("http://127.0.0.1:{port}/"),"cpu_percent":cpu,"memory_used":memory}));
+        // Its name, description and ports from the shared list: the page shows these
+        // (it kept a copy of its own, already worded differently).
+        out.push(json!({"id":app,"name":name,"description":description,"state":state,"health":health,"responding":responding(report,app,up_for),"url":format!("http://127.0.0.1:{port}/"),"port":port,"tailnet":common::tailnet_port(app),"cpu_percent":cpu,"memory_used":memory}));
     }
     (
         json!(out),
@@ -1082,7 +1084,7 @@ fn parse_startup(out: &str) -> Vec<Value> {
         .collect()
 }
 /// Why a job is intentionally not part of this server now (its app or backup switched
-/// off), or None when its schedule is expected (status_checks.retired says the same).
+/// off), or None when its schedule is expected.
 fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
     let immich = cfg["photos"]["deploy_immich"] == true;
     match key {
@@ -1097,7 +1099,7 @@ fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
     }
 }
 /// The witnessed restore tests (acceptance.py manual tests) that show this backup can
-/// be restored: one per kind of data it holds (status_checks.restore_tests says the same).
+/// be restored: one per kind of data it holds.
 fn restore_tests(cfg: &Value, key: &str) -> Value {
     let immich = cfg["photos"]["deploy_immich"] == true;
     let cloud = cfg["nextcloud"]["enabled"] == true;
@@ -1233,12 +1235,7 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         } else {
             first_overdue(success.as_f64(), installed, now, max)
         };
-        // A backup that keeps failing stays a failure (urgent) once it is also overdue.
-        let state = if stale && status != "fail" {
-            "stale"
-        } else {
-            status
-        };
+        let state = overdue_state(status, stale);
         let (timer, known) = timer_of(unit);
         if let Some(why) = retired(cfg, key) {
             out.push(json!({"id":key,"name":name,"status":"disabled","last_success":success,"last_attempt":start,"timer":timer,"reason":why,"restore":[]}));
@@ -1301,6 +1298,15 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         out.push(row);
     }
     json!(out)
+}
+/// A job's state once it is overdue (`stale`): a backup that keeps failing stays a
+/// failure (urgent), anything else is overdue.
+fn overdue_state(status: &str, stale: bool) -> &str {
+    if stale && status != "fail" {
+        "stale"
+    } else {
+        status
+    }
 }
 /// The service the upgrade's report names, when it is one of the upgrade's own: the
 /// release's (nekoserver-upgrade@v0.45.8Beta) or the resume after a restart.
@@ -1722,32 +1728,19 @@ fn recovery(cfg: &Value, data_ok: bool, media_ok: bool) -> Value {
     }
     r
 }
-/// The photo and USB-copy settings in the acceptance scope (acceptance_summary.PHOTO_SCOPE):
-/// a different USB drive or archive folder makes an earlier acceptance run outdated.
-fn photo_scope(cfg: &Value) -> Value {
-    let photos = &cfg["photos"];
-    let mut v = json!({"deploy_immich": photos["deploy_immich"].as_bool().unwrap_or(false)});
-    for key in [
-        "external_backup_uuid",
-        "external_backup_fstype",
-        "archive_dir",
-        "backup_weekday",
-        "backup_time",
-    ] {
-        v[key] = photos[key].clone();
-    }
-    v
-}
-fn scope(cfg: &Value) -> String {
-    if let Some(value) = cfg["acceptance_scope"].as_str().filter(|v| {
-        v.len() == 64
-            && v.bytes()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-    }) {
-        return value.into();
-    }
-    let v = json!({"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"external_backup_mount":cfg["external_backup_mount"],"storage":cfg["storage"],"review_settings":{"server_os":cfg["server_os"],"heartbeat":cfg["heartbeat"],"host_backup":cfg["host_backup"],"tv":cfg["tv"],"networking":cfg["networking"],"dashboard":cfg["dashboard"],"monitoring":cfg["monitoring"],"app_backup":cfg["app_backup"],"nextcloud":cfg["nextcloud"],"maintenance":cfg["maintenance"]},"runtime":{"backend":cfg["runtime"]["backend"]},"gateway":{"services":cfg["gateway"]["services"],"lan_ip":cfg["gateway"]["lan_ip"],"lan_cidr":cfg["gateway"]["lan_cidr"]},"services":cfg["media"]["services"].as_array().cloned().unwrap_or_default(),"photos":photo_scope(cfg)});
-    common::sha(&serde_json::to_vec(&v).unwrap())
+/// The fingerprint of the settings an acceptance run must match: setup works it out
+/// (acceptance_summary.scope_digest) and writes it into these settings; "" when they have
+/// none, which no run matches. This also worked it out itself, a second copy of what it
+/// covers (the review of 0.47.1).
+fn scope(cfg: &Value) -> &str {
+    cfg["acceptance_scope"]
+        .as_str()
+        .filter(|v| {
+            v.len() == 64
+                && v.bytes()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        })
+        .unwrap_or("")
 }
 fn manual(key: &str) -> Option<&'static str> {
     match key {
@@ -1775,35 +1768,23 @@ fn manual(key: &str) -> Option<&'static str> {
 fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
     let mut r = json!({"status":"unknown","profile":null,"generated_at":null,"automatic":{},"manual":{},"manual_checks":[]});
     let profile = text(&saved["profile"]);
+    // The profiles are setup's (config.json), written into these settings: a list kept
+    // here missed "accounts" (the review of 0.47.1).
+    let known = cfg["acceptance_profiles"]
+        .as_array()
+        .is_some_and(|names| names.iter().any(|n| n.as_str() == Some(profile)));
     if saved["format"] != "neko-acceptance-v1"
-        || ![
-            "server_os",
-            "notifications",
-            "app_backup",
-            "host_backup",
-            "heartbeat",
-            "foundation",
-            "media",
-            "music",
-            "cloud",
-            "photos",
-            "full",
-            "network",
-            "networking",
-            "tv",
-            "dashboard",
-            "media_monitor",
-            "lan_access",
-            "remote_access",
-        ]
-        .contains(&profile)
+        || !known
         || num(&saved["generated_at"], 0.0, now + 60.0).is_null()
     {
         return r;
     }
     r["profile"] = json!(profile);
     r["generated_at"] = saved["generated_at"].clone();
-    if saved["version"] != VERSION || text(&saved["dashboard_scope"]) != scope(cfg) {
+    if saved["version"] != VERSION
+        || scope(cfg).is_empty()
+        || text(&saved["dashboard_scope"]) != scope(cfg)
+    {
         r["status"] = json!("outdated");
         return r;
     }
@@ -2438,6 +2419,12 @@ pub(crate) fn alerts(s: &Value) -> Value {
     }
     json!(out)
 }
+/// The phone alerts' last delivery check is overdue (over 3 minutes old, or dated ahead):
+/// only while their timer runs. A timer switched off by choice ("wanted": false) is not
+/// an overdue delivery check.
+fn delivery_late(timer_active: bool, checked_at: Option<f64>, now: f64) -> bool {
+    timer_active && checked_at.is_none_or(|t| t > now + 30.0 || now - t > 180.0)
+}
 fn notification_status(now: f64) -> Value {
     let saved = common::json(
         Path::new("/run/nekoserver-notifications/delivery.json"),
@@ -2464,15 +2451,47 @@ fn notification_status(now: f64) -> Value {
     } else {
         "unknown"
     };
-    // A timer switched off by choice ("wanted": false) is not an overdue delivery check.
-    if timer["active"] == true
-        && saved["generated_at"]
-            .as_f64()
-            .is_none_or(|t| t > now + 30.0 || now - t > 180.0)
-    {
+    if delivery_late(timer["active"] == true, saved["generated_at"].as_f64(), now) {
         status = "stale";
     }
     json!({"status":status,"timer":timer,"last_success":common::shown_time(&saved["last_success"],now),"last_attempt":num(&saved["last_attempt"],0.0,now+30.0),"pending":num(&saved["pending"],0.0,100.0)})
+}
+/// The drive the backups wait for, when one is missing.
+fn away_drive(data_ok: bool, media_ok: bool) -> Option<&'static str> {
+    if !data_ok {
+        Some("Application SSD")
+    } else if !media_ok {
+        Some("Media HDD")
+    } else {
+        None
+    }
+}
+/// The backups', the outage monitor's and the phone alerts' states, worked out as the
+/// dashboard shows them (the same functions), printed as one line of JSON. The acceptance
+/// check asks this instead of judging them itself: it kept a copy of these rules, which
+/// already disagreed (a worker systemd could not start, or a run cut off part-way, passed
+/// there; the review of 0.47.1).
+pub fn job_states(a: &Args) -> Result<()> {
+    common::require_root()?;
+    let cfg = common::json(&a.path("config")?, 2_000_000);
+    let now = common::now();
+    let mounted = |key: &str, mount: &str| -> Result<bool> {
+        let path = common::mount_path(text(&cfg[mount]))?;
+        let spec = &cfg["storage"][key];
+        Ok(
+            mount_info(&path, Some(text(&spec["uuid"])), text(&spec["fstype"]))["status"]
+                == "mounted",
+        )
+    };
+    let ok = mounted("data_ssd", "data_mount")?;
+    let media_ok = mounted("media_hdd", "media_mount")?;
+    let states = json!({
+        "backups": backups(&cfg, now, ok, away_drive(ok, media_ok)),
+        "heartbeat": heartbeat(&cfg, now),
+        "notifications": notification_status(now),
+    });
+    println!("{states}");
+    Ok(())
 }
 pub fn run(a: &Args) -> Result<()> {
     common::require_root()?;
@@ -2528,14 +2547,7 @@ pub fn run(a: &Args) -> Result<()> {
     history.reverse();
     history.push(json!({"at":now,"cpu":host["cpu_percent"],"memory":host["memory_percent"],"temperature":host["temperature"]}));
     let report = media_report(&cfg, now, ok);
-    // The drive the backups wait for, when one is missing.
-    let away = if !ok {
-        Some("Application SSD")
-    } else if !media_ok {
-        Some("Media HDD")
-    } else {
-        None
-    };
+    let away = away_drive(ok, media_ok);
     let (apps, containers, services) = applications(&cfg, report.as_ref(), ok.then_some(data));
     let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":apps,"backups":backups(&cfg,now,ok,away),"media":media(report.as_ref()),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
     result["notifications"] = notification_status(now);
@@ -2793,24 +2805,6 @@ mod os_tests {
         // Never set up yet, or systemd could not be asked: no evidence.
         assert_eq!(schedule_stopped(&gone, true, false), None);
         assert_eq!(schedule_stopped(&off, false, true), None);
-    }
-    /// The same scope as acceptance_summary.scope_digest for the same settings
-    /// (test_acceptance_scope.py checks this digest on the Python side).
-    #[test]
-    fn the_acceptance_scope_names_the_usb_drive_and_archive_like_python() {
-        let mut cfg = json!({"data_mount":"/srv/nekoserver","media_mount":"/mnt/m",
-            "photos":{"deploy_immich":true,"external_backup_uuid":"cccc-3333","archive_dir":"photos/archive"},
-            "media":{"services":["jellyfin"]},"gateway":{"lan_ip":"192.168.1.5"}});
-        assert_eq!(
-            scope(&cfg),
-            "4a3c4b125516bde8707230fcae0595b16d6db218ffc0d344dcfcc6394cc5828d"
-        );
-        let first = scope(&cfg);
-        cfg["photos"]["external_backup_uuid"] = json!("dddd-4444");
-        assert_ne!(scope(&cfg), first);
-        let second = scope(&cfg);
-        cfg["photos"]["archive_dir"] = json!("pictures/archive");
-        assert_ne!(scope(&cfg), second);
     }
     #[test]
     fn a_run_cut_off_by_a_restart_is_not_running() {
@@ -3318,7 +3312,7 @@ mod acceptance_tests {
     /// "stale" is a complete check over a day old; a failed or unfinished one stays so.
     #[test]
     fn only_a_complete_check_turns_stale() {
-        let cfg = json!({});
+        let cfg = json!({"acceptance_scope": "ab".repeat(32), "acceptance_profiles": ["full", "accounts"]});
         let report = |automatic: &str, complete: bool| {
             json!({"format": "neko-acceptance-v1", "profile": "full", "version": VERSION,
                 "generated_at": 1000.0, "dashboard_scope": scope(&cfg), "acceptance_complete": complete,
@@ -3341,6 +3335,37 @@ mod acceptance_tests {
         assert_eq!(
             acceptance(&report("needs_setup", false), &cfg, later)["status"],
             "pending"
+        );
+    }
+    /// The review of 0.47.1: the profiles and the scope are setup's, read from the
+    /// settings. A list kept here missed "accounts", and the scope was worked out twice.
+    #[test]
+    fn the_profiles_and_the_scope_are_the_ones_setup_wrote() {
+        let cfg = json!({"acceptance_scope": "cd".repeat(32), "acceptance_profiles": ["full", "accounts"]});
+        let run = |profile: &str, scope: &str| {
+            json!({"format": "neko-acceptance-v1", "profile": profile, "version": VERSION,
+                "generated_at": 1000.0, "dashboard_scope": scope, "acceptance_complete": true,
+                "automatic": [{"status": "pass"}],
+                "manual": [{"id": "host_restore", "status": "pass", "evidence": "user_reported", "confirmed_at": 900.0}]})
+        };
+        let ours = "cd".repeat(32);
+        assert_eq!(
+            acceptance(&run("accounts", &ours), &cfg, 1100.0)["status"],
+            "complete"
+        );
+        assert_eq!(
+            acceptance(&run("tv", &ours), &cfg, 1100.0)["status"],
+            "unknown"
+        );
+        assert_eq!(
+            acceptance(&run("full", &"ef".repeat(32)), &cfg, 1100.0)["status"],
+            "outdated"
+        );
+        // Settings without a fingerprint match no run.
+        let none = json!({"acceptance_profiles": ["full"]});
+        assert_eq!(
+            acceptance(&run("full", ""), &none, 1100.0)["status"],
+            "outdated"
         );
     }
 }
@@ -3393,6 +3418,19 @@ mod user_panel_tests {
             .collect();
         assert!(ids.contains(&"app:jellyfin".to_string()), "{ids:?}");
         assert!(ids.contains(&"backup:archive".to_string()), "{ids:?}");
+    }
+    #[test]
+    fn a_failing_job_stays_a_failure_and_a_switched_off_timer_is_never_late() {
+        // Kept here once the acceptance check's copy of these rules went (0.47.2).
+        assert_eq!(overdue_state("fail", true), "fail");
+        assert_eq!(overdue_state("pass", true), "stale");
+        assert_eq!(overdue_state("pass", false), "pass");
+        assert_eq!(overdue_state("running", true), "stale");
+        assert!(!delivery_late(false, None, 1000.0));
+        assert!(delivery_late(true, None, 1000.0));
+        assert!(delivery_late(true, Some(700.0), 1000.0));
+        assert!(!delivery_late(true, Some(900.0), 1000.0));
+        assert!(delivery_late(true, Some(1100.0), 1000.0)); // dated ahead
     }
     #[test]
     fn apps_held_by_the_nas_check_are_one_alert_and_marked_held() {

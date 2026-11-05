@@ -54,9 +54,8 @@ class CarryTests(unittest.TestCase):
             latest.parent.mkdir(parents=True)
             saved = []
             with (
-                mock.patch.object(
-                    acceptance.health, 'mount_info', side_effect=lambda path, uuid, fs: {'status': 'mounted'}
-                ),
+                mock.patch.object(acceptance, 'drive_problem', return_value=None),
+                mock.patch.object(acceptance, 'job_states', return_value=(None, 'not asked in this test')),
                 mock.patch.object(
                     acceptance, 'save', side_effect=lambda c, r: (latest.write_text(json.dumps(r)), saved.append(r))
                 ),
@@ -84,10 +83,8 @@ class CarryTests(unittest.TestCase):
                 cfg = config(Path(tmp))
                 cfg.setdefault('photos', {})['deploy_immich'] = immich
                 with (
-                    mock.patch.object(
-                        acceptance.health, 'mount_info', side_effect=lambda path, uuid, fs: {'status': 'mounted'}
-                    ),
-                    mock.patch.object(acceptance.health, 'backups', return_value=rows),
+                    mock.patch.object(acceptance, 'drive_problem', return_value=None),
+                    mock.patch.object(acceptance, 'job_states', return_value=({'backups': rows}, None)),
                     mock.patch.object(acceptance, 'save'),
                 ):
                     report = acceptance.inspect(cfg, 'full')
@@ -98,29 +95,19 @@ class CarryTests(unittest.TestCase):
         self.assertLessEqual({'backup:archive', 'backup:database'}, asked(True))
 
 
-class StaleTests(unittest.TestCase):
-    def test_stale_is_a_complete_check_over_a_day_old_never_a_failed_one(self):
-        import acceptance_summary
-        from neko_common import VERSION
+class ProfileTests(unittest.TestCase):
+    def test_the_dashboard_is_told_every_profile_a_run_may_name(self):
+        """How a run reads on the dashboard (stale, failed, pending) is tested in the
+        collector (collect.rs acceptance_tests). The profiles are setup's: the review of
+        0.47.1 found the collector's own list without "accounts"."""
+        from modules import dashboard
 
-        now = time.time()
-        report = {
-            'format': 'neko-acceptance-v1',
-            'profile': 'full',
-            'version': VERSION,
-            'generated_at': now - 2 * 86400,
-            'dashboard_scope': acceptance_summary.scope_digest({}),
-            'acceptance_complete': True,
-            'automatic': [{'status': 'pass'}],
-            'manual': [
-                {'id': 'host_restore', 'status': 'pass', 'evidence': 'user_reported', 'confirmed_at': now - 2 * 86400}
-            ],
-        }
-        self.assertEqual(acceptance_summary.summarize(report, {}, now)['status'], 'stale')
-        failed = {**report, 'acceptance_complete': False, 'automatic': [{'status': 'fail'}]}
-        self.assertEqual(acceptance_summary.summarize(failed, {}, now)['status'], 'failed')
-        pending = {**report, 'acceptance_complete': False, 'automatic': [{'status': 'needs_setup'}]}
-        self.assertEqual(acceptance_summary.summarize(pending, {}, now)['status'], 'pending')
+        cfg = json.loads((ROOT / 'config.json').read_text())
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg.update(data_mount=tmp, media_mount=tmp, external_backup_mount=tmp)
+            written = dashboard.collector_settings(cfg, 1800)
+        self.assertEqual(written['acceptance_profiles'], sorted(cfg['profiles']))
+        self.assertIn('accounts', written['acceptance_profiles'])
 
 
 class NextcloudOffTests(unittest.TestCase):

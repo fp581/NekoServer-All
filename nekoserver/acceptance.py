@@ -26,6 +26,7 @@ from neko_common import (
     dashboard_port,
     checked_settings,
     default_settings,
+    verify_storage,
 )
 from acceptance_summary import scope_digest
 
@@ -172,6 +173,45 @@ def guard_check(config):
 
 # Where an app sees its library or store inside its container.
 DATA = '/data'
+
+
+def drive_problem(config, keys):
+    """Why the drives under `keys` are not the ones setup chose, or None: the runtime's own
+    check (check-drives: UUID, filesystem, Btrfs subvolume, the NAS disk's WWN, no copy
+    connected, two filesystems), the one every job makes. This compared the UUID and
+    filesystem only, so it passed a drive every backup refused (the review of 0.47.1)."""
+    try:
+        verify_storage(config, keys)
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        return str(exc) or 'the drive check could not run'
+    return None
+
+
+def job_states(config, ask=None):
+    """(states, None) or (None, why): the backups', the outage monitor's and the phone
+    alerts' states as the dashboard shows them, worked out by the runtime
+    (`nekoserver-runtime job-states`, collect.rs). This kept a copy of those rules
+    (status_checks), which already disagreed: a worker systemd could not start, or a run
+    cut off part-way, passed here (the review of 0.47.1)."""
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory(prefix='neko-jobs-') as work:
+            path = Path(work) / 'settings.json'
+            path.write_text(json.dumps(config))
+            code, said = (ask or native_runtime.ask_runtime)(ROOT, config, ['job-states', '--config', str(path)])
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        return None, str(exc) or 'the runtime could not run'
+    if code != 0:
+        return None, native_runtime.reason_of(said, f'the runtime stopped (exit {code})')
+    for line in reversed((said or '').splitlines()):
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value, None
+    return None, 'the runtime said no states'
 
 
 def verdict(good, bad):
@@ -725,24 +765,34 @@ def inspect(config, profile='full', now=None):
         )
         return summarize(run)
     add('configuration', 'Configuration and profile', 'pass', 'Selected profile and dependency plan are valid.')
+    asked = []
+
+    def states_now():
+        """The runtime's job states, asked once per inspection."""
+        if not asked:
+            asked.append(job_states(config))
+        return asked[0]
+
     add('host', 'Supported recovery host', *host_finding(recovery_tools.host_supported()))
     matched = {}
     for role, name in (('data_ssd', 'Application SSD'), ('media_hdd', 'Media HDD')):
-        spec = config['storage'][role]
-        path = config['data_mount' if role == 'data_ssd' else 'media_mount']
-        value = health.mount_info(path, spec['uuid'], spec['fstype'])
-        matched[role] = value['status'] == 'mounted'
+        configured = bool(config['storage'][role].get('uuid'))
+        problem = drive_problem(config, (role,)) if configured else 'not configured'
+        matched[role] = problem is None
         add(
             'mount:' + role,
             name,
-            verdict(matched[role], value['status'] != 'not_configured'),
-            'Configured UUID and filesystem verified.'
+            verdict(matched[role], configured),
+            'The drive setup chose is mounted (the runtime\'s drive check).'
             if matched[role]
-            else 'Configure and mount the intended drive; no private data is inspected on a mismatch.',
+            else 'Configure and mount the intended drive; no private data is inspected on a mismatch ('
+            + problem
+            + ').',
         )
-    drives = all(matched.values()) and config['storage']['data_ssd']['uuid'] != config['storage']['media_hdd']['uuid']
+    distinct = drive_problem(config, ('data_ssd', 'media_hdd')) if all(matched.values()) else 'not checked'
+    drives = distinct is None
     if all(matched.values()) and not drives:
-        add('mount:distinct', 'Separate storage identities', 'fail', 'SSD and HDD must have distinct filesystem UUIDs.')
+        add('mount:distinct', 'Separate storage identities', 'fail', distinct)
     current_boot = boot_id()
     run['boot_id'] = current_boot
     previous = load_json(Path(config['data_mount']) / 'reports/acceptance/latest.json') if matched['data_ssd'] else {}
@@ -873,7 +923,10 @@ def inspect(config, profile='full', now=None):
         or 'host_backup' in modules
         or 'music_backup' in modules
     ):
-        rows = health.backups(config, now, matched['data_ssd'])
+        states, why = states_now()
+        rows = states['backups'] if states else []
+        if not states:
+            add('backup:states', 'Backup states', 'blocked', 'The backups could not be judged: ' + why)
         # The photo archive and Immich's database copy only with Immich set up: with it
         # switched off those jobs are off too, and could never pass.
         immich = config.get('photos', {}).get('deploy_immich', False)
@@ -960,12 +1013,13 @@ def inspect(config, profile='full', now=None):
     if 'dashboard' in modules:
         checks.extend(dashboard_checks(config, now))
     if 'heartbeat' in modules:
-        heartbeat = health.heartbeat_status(config, now)
+        states, why = states_now()
+        heartbeat = (states or {}).get('heartbeat') or {'status': 'unknown', 'last_success': None, 'timer': {}}
         good = (
             heartbeat['status'] == 'pass'
             and heartbeat['last_success'] is not None
-            and heartbeat['timer']['installed']
-            and heartbeat['timer']['active']
+            and heartbeat['timer'].get('installed')
+            and heartbeat['timer'].get('active')
         )
         add(
             'heartbeat:delivery',
@@ -974,8 +1028,9 @@ def inspect(config, profile='full', now=None):
             'A current successful HTTPS request and active timer are required; monitor registration and outside alerts remain witnessed.',
         )
     if 'notifications' in modules:
-        delivery = health.notification_status(now)
-        good = delivery['timer']['installed'] and delivery['timer']['active']
+        states, why = states_now()
+        delivery = (states or {}).get('notifications') or {'status': 'unknown', 'last_success': None, 'timer': {}}
+        good = delivery['timer'].get('installed') and delivery['timer'].get('active')
         add(
             'notifications:timer',
             'Background notification schedule',
