@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.46.4 — 2026-11-05
+
+A stabilization release: fixes only, from the project owner's review of v0.46.3-beta. Each fix has a test that fails on 0.46.3.
+
+### Fixed
+- **Nextcloud's trusted domains are never overwritten after a silent failure.** A read that was killed (exit 137, or any other failure that printed nothing) was taken for "not set", so the first trusted domain could still be replaced. Only occ's own "not set" answer (exit 1 with no output) counts as empty now; anything else stops the step and changes nothing.
+- **The apps on a NAS drive are started again when Docker fails the first time.** After a NAS outage the check lifted its hold even when Docker (or Samba, or the gateway) did not start, so nothing tried again. The hold now stays until every service that was switched on runs, and the check tries again every minute.
+- **A USB backup drive that is already mounted is checked to be the NAS disk setup chose.** The WWN check ran only before mounting, so a copy of the LUN mounted there before was taken as it was.
+- **Debian 13 servers are told when they need a restart for a new kernel.** Debian 13 names its kernels like `6.12.48+deb13-amd64`, and the version check didn't read that form.
+
 ## v0.46.3 — 2026-11-04
 
 A stabilization release: fixes only, from a second audit of 0.46.2. It had four separate reviews: 0.46.2's own changes, the dashboard and control service, installing and upgrading, and the apps and restores. Each fix has a test that fails on 0.46.2.

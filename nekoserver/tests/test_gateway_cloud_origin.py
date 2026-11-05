@@ -20,6 +20,7 @@ class FakeNextcloud:
         self.gateways = gateways
         self.calls = []
         self.unreadable = set()
+        self.killed = set()
 
     def __call__(self, args, timeout=30, env=None):
         self.calls.append(args)
@@ -33,8 +34,10 @@ class FakeNextcloud:
         if action == 'config:system:get':
             if key not in self.system:
                 # occ's answer for a setting that is not set: exit 1, nothing said.
-                raise RuntimeError(
-                    'Gateway command failed (docker --host unix:///var/run/docker.sock): no reason given'
+                raise gateway_tools.CommandFailed('Gateway command failed (docker, exit 1): no reason given', 1, '', '')
+            if key in self.killed:
+                raise gateway_tools.CommandFailed(
+                    'Gateway command failed (docker, exit 137): no reason given', 137, '', ''
                 )
             if key in self.unreadable:
                 raise RuntimeError('Gateway command took over 60 seconds (docker --host unix:///var/run/docker.sock)')
@@ -147,6 +150,15 @@ class CloudOriginTests(unittest.TestCase):
             self.run_gateways(fake, '192.168.1.20')
         self.assertEqual(fake.system['trusted_domains'], ['localhost', '127.0.0.1'])
         self.assertFalse(any('config:system:set' in call for call in fake.calls))
+
+    def test_a_read_killed_without_a_word_is_not_an_unset_setting(self):
+        """The review of 0.46.3: exit 137 (the process killed) said nothing either, and was
+        taken for "not set"; the first trusted domain was overwritten."""
+        fake = FakeNextcloud()
+        fake.killed.add('trusted_domains')
+        with self.assertRaisesRegex(RuntimeError, 'trusted_domains setting could not be read'):
+            self.run_gateways(fake, '192.168.1.20')
+        self.assertEqual(fake.system['trusted_domains'], ['localhost', '127.0.0.1'])
 
     def test_rerun_is_idempotent(self):
         fake = FakeNextcloud()

@@ -1736,6 +1736,21 @@ class RecoveryWizardTests(unittest.TestCase):
         self.assertIn('The USB drive is not looked at', out[0])
         self.assertEqual(restored[0][2], str(self.media / 'backups/monthly/1700000000000000-4'))
 
+    def test_a_backup_drive_already_mounted_is_checked_to_be_the_nas_disk_setup_chose(self):
+        """The review of 0.46.3: a drive mounted there already skipped the WWN check."""
+        config = {
+            **self.config,
+            'photos': {'external_backup_uuid': 'usb-11111', 'external_backup_network': {'wwn': '0xgood'}},
+        }
+        usb = recovery_wizard.Usb(config)
+        with (
+            mock.patch.object(recovery_wizard.subprocess, 'run', return_value=mock.Mock(returncode=0)),
+            mock.patch.object(recovery_wizard, 'findmnt', return_value='usb-11111 rw,nosuid,nodev,noexec'),
+            mock.patch.object(recovery_wizard, 'nas_disk_of', return_value='0xcopy'),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'on another NAS disk than setup chose'):
+                usb.open()
+
     def test_no_password_list_anywhere_is_said(self):
         with (
             mock.patch.object(recovery_wizard.Usb, '__enter__', return_value=None),

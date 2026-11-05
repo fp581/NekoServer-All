@@ -274,6 +274,18 @@ pub fn run(a: &Args) -> Result<()> {
     start_again(&cfgpath, &paths[0], &paths[1], "Drive return")
 }
 
+/// True when every one of SERVICES that is switched on runs (the apps' services, started
+/// again by start_again).
+pub(crate) fn services_up() -> bool {
+    services_up_with(&|args| common::command(args, 15).map(|(code, _)| code))
+}
+fn services_up_with(systemctl: &dyn Fn(&[&str]) -> Result<i32>) -> bool {
+    SERVICES.iter().all(|unit| {
+        let enabled =
+            systemctl(&["systemctl", "is-enabled", "--quiet", unit]).is_ok_and(|c| c == 0);
+        !enabled || systemctl(&["systemctl", "is-active", "--quiet", unit]).is_ok_and(|c| c == 0)
+    })
+}
 /// The services NekoServer keeps on its drives started again (those switched on), their
 /// views of the drives refreshed, then each job a missing drive cut off finished. Only
 /// with both drives in place and the right ones. `who` begins each line said.
@@ -330,6 +342,30 @@ fn finish_interrupted_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_apps_count_as_up_only_when_every_service_switched_on_runs() {
+        // The review of 0.46.3: Docker failing to start lifted the NAS hold all the same.
+        let docker_down = |args: &[&str]| -> Result<i32> {
+            Ok(if args[1] == "is-active" && args[3] == SERVICES[0] {
+                3
+            } else {
+                0
+            })
+        };
+        assert!(!services_up_with(&docker_down));
+        assert!(services_up_with(&|_args: &[&str]| -> Result<i32> { Ok(0) }));
+        // One not switched on (no Samba here) doesn't count.
+        let off = |args: &[&str]| -> Result<i32> {
+            Ok(if args[1] == "is-enabled" && args[3] == SERVICES[1] {
+                1
+            } else if args[1] == "is-active" && args[3] == SERVICES[1] {
+                3
+            } else {
+                0
+            })
+        };
+        assert!(services_up_with(&off));
+    }
     #[test]
     fn interrupted_jobs_are_finished_in_order_and_a_failure_is_reported() {
         use std::cell::RefCell;

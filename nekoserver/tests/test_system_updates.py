@@ -151,6 +151,15 @@ class ReadTests(unittest.TestCase):
             self.assertEqual(s.restart_needed('debian', quiet, '6.1.0-26-amd64', modules, flag), (s.NOT_REQUIRED, []))
         self.assertEqual(s.newer_kernel('6.10.2-1-amd64', ['6.9.12-1-amd64', '6.10.11-1-amd64']), '6.10.11-1-amd64')
         self.assertIsNone(s.newer_kernel('weird', ['6.1.0-1-amd64']))
+        # Debian 13 names its kernels 6.12.48+deb13-amd64 (the review of 0.46.3).
+        self.assertEqual(
+            s.newer_kernel('6.12.43+deb13-amd64', ['6.12.43+deb13-amd64', '6.12.48+deb13-amd64']), '6.12.48+deb13-amd64'
+        )
+        self.assertIsNone(s.newer_kernel('6.12.48+deb13-amd64', ['6.12.43+deb13-amd64', '6.12.48+deb13-cloud-amd64']))
+        # Upgraded from Debian 12, the new release's kernel waiting.
+        self.assertEqual(
+            s.newer_kernel('6.1.0-26-amd64', ['6.1.0-26-amd64', '6.12.48+deb13-amd64']), '6.12.48+deb13-amd64'
+        )
 
     def test_the_answer_is_never_written_where_the_ssd_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
