@@ -55,6 +55,8 @@ from neko_common import (
 
 JOURNAL = RECOVERY['upgrade'][0]
 ROOT = Path(__file__).resolve().parent
+UPGRADES = 'installer/upgrades'  # on the SSD: each upgrade's download, its unpacked release and logs
+ARCHIVE_SUFFIX = '.tar.gz'
 MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
 FORMAT = 'neko-upgrade-v1'
 ARCHIVE = 'https://codeload.github.com/fp581/NekoServer-All/tar.gz/refs/tags/{tag}'
@@ -130,7 +132,7 @@ def download(tag, work, get=fetch):
     """The release, unpacked into `work`/<tag>, checked to name that version (not signed:
     see the top of this file): returns its nekoserver folder."""
     ensure_directory(work, 0o700)
-    archive = safe_path(work / (tag + '.tar.gz'))
+    archive = safe_path(work / (tag + ARCHIVE_SUFFIX))
     payload = get(ARCHIVE.format(tag=tag), 'NekoServer ' + tag, LIMIT + 1, timeout=300)
     if len(payload) > LIMIT:
         raise RuntimeError(f'The download of {tag} is larger than any NekoServer release; nothing was changed')
@@ -387,7 +389,7 @@ def tidy(work, journal=JOURNAL, keep_logs=KEEP_LOGS):
         return []
     removed = []
     for entry in sorted(Path(work).iterdir()):
-        archive = entry.name.endswith('.tar.gz') and TAG.fullmatch(entry.name[: -len('.tar.gz')])
+        archive = entry.name.endswith(ARCHIVE_SUFFIX) and TAG.fullmatch(entry.name.removesuffix(ARCHIVE_SUFFIX))
         unpacked = TAG.fullmatch(entry.name) and entry.is_dir() and not entry.is_symlink()
         if archive and entry.is_file() and not entry.is_symlink():
             entry.unlink()
@@ -427,9 +429,9 @@ def tidy_after(settings, journal, out=print):
     the upgrade."""
     try:
         config = json.loads(settings_path(settings).read_text())
-        tidy(ssd(config) / 'installer/upgrades', journal)
+        tidy(ssd(config) / UPGRADES, journal)
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
-        out(f'The finished upgrade\'s files could not be tidied ({exc}); they stay in installer/upgrades')
+        out(f'The finished upgrade\'s files could not be tidied ({exc}); they stay in ' + UPGRADES)
 
 
 def upgrade_held(
@@ -443,7 +445,7 @@ def upgrade_held(
     if busy:
         out(busy + '; the upgrade did not start, nothing was changed. Try again later.')
         return 2
-    work = ssd(config) / 'installer/upgrades'
+    work = ssd(config) / UPGRADES
     previous = kept_release(config, ssd(config) / RELEASES / ('v' + VERSION))
     if not (previous / 'install.sh').is_file():
         out(
@@ -565,7 +567,7 @@ def resume_held(settings, out, setup, journal):
     config = json.loads(settings_path(settings).read_text())
     previous = kept_release(config, saved.get('previous', ''))
     out('An upgrade was cut off before it was checked; putting ' + previous.name + ' back')
-    log_file = ssd(config) / 'installer/upgrades' / ((saved.get('to') or 'resume') + '.log')
+    log_file = ssd(config) / UPGRADES / ((saved.get('to') or 'resume') + '.log')
     before = [step for step in saved.get('before') or [] if isinstance(step, str)]
     return go_back(previous, settings, owner(config), log_file, out, setup, journal, before)
 

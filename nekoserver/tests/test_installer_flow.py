@@ -60,12 +60,13 @@ class InstallerFlowTests(unittest.TestCase):
         settings['profiles'] = {**settings['profiles'], 'tiny': ['stopper']}
         self.config.write_text(json.dumps(settings))
         record = self.state / installer.PROFILE_FILE
-        with mock.patch('config_checks.validate'), mock.patch('builtins.print'), self.assertRaises(KeyboardInterrupt):
-            installer._execute(self.args(profile='tiny', module=None), self.root)
-        self.assertEqual(json.loads(record.read_text()), {'format': installer.PROFILE_FORMAT, 'profile': 'tiny'})
-        with mock.patch('config_checks.validate'), mock.patch('builtins.print'), self.assertRaises(KeyboardInterrupt):
-            installer._execute(self.args(), self.root)  # --module stopper
-        self.assertEqual(json.loads(record.read_text())['profile'], 'tiny')
+        with mock.patch('config_checks.validate'), mock.patch('builtins.print'):
+            for args in (self.args(profile='tiny', module=None), self.args()):  # then --module stopper
+                with self.assertRaises(KeyboardInterrupt):
+                    installer._execute(args, self.root)
+                self.assertEqual(
+                    json.loads(record.read_text()), {'format': installer.PROFILE_FORMAT, 'profile': 'tiny'}
+                )
 
     def test_ctrl_c_records_the_step_and_ends_without_a_traceback(self):
         args = self.args()

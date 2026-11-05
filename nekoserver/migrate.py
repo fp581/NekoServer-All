@@ -528,6 +528,21 @@ def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING,
     return with_operation(out, lambda: move_held(settings, drive, new_uuid, out, journal, staging, fstab))
 
 
+def other_subvolume(old, mounted, label):
+    """Why the drive is mounted with another Btrfs subvolume than the settings name, or None.
+    A subvolume the settings name must be the one mounted (the review of 0.47.2: the
+    mounted one was taken instead, so another tree could be copied); settings that name
+    none take the mounted one."""
+    named = (old.get('subvolume') or '').rstrip('/')
+    if not named or named == mounted.rstrip('/'):
+        return None
+    return (
+        f'The {label} is mounted with the Btrfs subvolume {mounted or "at the top level"}, but the settings '
+        f'name {named}; nothing was changed. Mount the one the settings name (sudo bash install.sh does), '
+        'then start the move again'
+    )
+
+
 def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     path, config = load_settings(settings)
     if drive not in DRIVES:
@@ -549,16 +564,9 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     if not mounted or mounted[:2] != (old.get('uuid'), old.get('fstype')):
         out(f'The {label} in the settings is not the drive mounted at {mountpoint}; nothing was changed')
         return 2
-    # A Btrfs subvolume the settings name must be the one mounted (the review of 0.47.2:
-    # the mounted one was taken instead, so another tree could be copied); settings that
-    # name none take the mounted one.
-    named = (old.get('subvolume') or '').rstrip('/')
-    if named and named != mounted[2].rstrip('/'):
-        out(
-            f'The {label} is mounted with the Btrfs subvolume {mounted[2] or "at the top level"}, but the settings '
-            f'name {named}; nothing was changed. Mount the one the settings name (sudo bash install.sh does), '
-            'then start the move again'
-        )
+    other = other_subvolume(old, mounted[2], label)
+    if other:
+        out(other)
         return 2
     if mounted[2]:
         old['subvolume'] = mounted[2]

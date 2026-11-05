@@ -1043,11 +1043,19 @@ class SnapshotUnderLockTests(unittest.TestCase):
                 image[0] = 'immich-server@sha256:new'
                 yield
 
+            up = {'immich-server'}
+
             def command(argv, timeout=60, stdin=None, stdout=None):
+                # A stop stops, a start starts, as Docker does: a clean snapshot waits for
+                # no earlier stop (restart_owed).
+                if 'stop' in argv:
+                    up.clear()
+                if 'start' in argv:
+                    up.add('immich-server')
                 if 'inspect' in argv:  # stopped cleanly
                     return json.dumps([{'State': {'Running': False, 'ExitCode': 0, 'OOMKilled': False}}])
                 if 'ps' in argv:
-                    return 'database\nimmich-server\n'
+                    return '\n'.join(['database', *sorted(up)]) + '\n'
                 if 'exec' in argv:
                     stdout.write(
                         b'-- dump made by the database of v2.0.0\n' * 5 + b'-- PostgreSQL database dump complete\n'
@@ -1190,6 +1198,48 @@ class SnapshotRestartTests(unittest.TestCase):
         self.assertFalse((self.root / 'resume.json').exists())
         self.assertFalse((self.root / 'hook.service').exists())
         self.assertIn(['systemctl', 'disable', '--quiet', 'hook.service'], self.calls)
+
+    def test_a_stop_still_on_its_way_is_waited_out_before_the_record_goes(self):
+        """The review of 0.47.2: a stop Docker still carried out after its command ended
+        (it timed out) stopped Immich again after the restart had cleared its record."""
+        config = {'data_mount': str(self.root)}
+        self.rt.owe_restart(config, self.root / 'config.json', ['immich-server', 'redis'])
+        self.running = {'database', 'immich-server', 'redis'}  # the stop has not happened yet
+        waited = []
+
+        def the_stop_lands(seconds):
+            waited.append(seconds)
+            self.running -= {'immich-server', 'redis'}
+
+        self.assertEqual(self.rt.restart_owed(config, sleep=the_stop_lands), ['immich-server', 'redis'])
+        self.assertEqual(waited, [self.rt.STOP_SETTLE])
+        self.assertGreater(self.rt.STOP_SETTLE, 60)  # longer than the snapshot's stop -t 60
+        starts = [c for c in self.calls if 'start' in c and c[0] == 'docker']
+        self.assertEqual(len(starts), 2)  # once now, once after the stop landed
+        self.assertEqual(self.running, {'database', 'immich-server', 'redis'})
+        self.assertFalse((self.root / 'resume.json').exists())
+        # Nothing was running: no stop can be on its way, nothing is waited for.
+        self.rt.owe_restart(config, self.root / 'config.json', ['redis'])
+        self.running = {'database'}
+        self.rt.restart_owed(config, sleep=lambda s: self.fail('waited with nothing to wait for'))
+
+    def test_a_snapshot_checks_the_drives_before_it_starts_immich_from_an_earlier_record(self):
+        """The review of 0.47.2: with a record left from before, the snapshot started Immich
+        and only then rejected a wrong drive."""
+        config = {'data_mount': str(self.root)}
+        order = []
+        with (
+            mock.patch.object(self.rt, 'lock', return_value=mock.MagicMock()),
+            mock.patch.object(
+                self.rt,
+                'mounts',
+                side_effect=lambda c: order.append('mounts') or (_ for _ in ()).throw(RuntimeError('wrong drive')),
+            ),
+            mock.patch.object(self.rt, 'restart_owed', side_effect=lambda c: order.append('restart')),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'wrong drive'):
+                self.rt.snapshot(config, self.root / 'snap', apply=True)
+        self.assertEqual(order, ['mounts'])
 
     def test_a_restart_that_does_not_take_keeps_the_record(self):
         config = {'data_mount': str(self.root)}

@@ -14,6 +14,10 @@ A stabilization release: fixes from the owner's review of 0.47.2, and a sweep fo
 - **A move never unmounts what someone else mounted.** It refused a staging folder that was already in use, then its clean-up unmounted that folder anyway. Only the move's own new drive is unmounted now.
 - **A drive move record that can't be read is not reported as done.** `migrate.py resume` said all was well and left the record, which still kept upgrades and setup waiting. It now says the record can't be read and what to check.
 
+### Fixed: the Immich snapshot (recovery menu)
+- **Immich is not left off by an earlier stop that was still on its way.** When a snapshot's stop of Immich timed out, Docker could still finish it after the restart, and the restart had already cleared its record, so nothing started Immich again. If a recorded service is still running when the restart begins, it now waits longer than the stop's own limit, starts everything again and checks once more before the record goes.
+- **A snapshot checks the drives before it starts Immich from an earlier record.** With a record left from a snapshot that was cut off, it started Immich first and only then rejected a wrong drive.
+
 ### Fixed: drives and the acceptance check
 - **No backup result is read from a drive the acceptance check refused.** The check could reject the SSD and still pass the backup reports on it. It now asks for the backups' states only once both drives passed the drive check. The runtime's `job-states` also counts a drive only when it passes the check every job makes.
 - **Moving data to the other drive makes earlier acceptance runs outdated.** Moving the photos from the SSD to the HDD (or the music, or Nextcloud's files) changed neither of the acceptance check's fingerprints, so a restore witnessed before the move still passed. Both now include where the data is, and the USB copy's NAS disk. A server that never moved anything keeps its fingerprints and its witnessed tests.

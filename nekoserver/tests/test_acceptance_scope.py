@@ -23,6 +23,11 @@ SETTINGS = {
 }
 
 
+# The digest of SETTINGS: it must not move between releases (an earlier run would be
+# called outdated for nothing).
+STABLE = '4a3c4b125516bde8707230fcae0595b16d6db218ffc0d344dcfcc6394cc5828d'
+
+
 def changed(section, key, value):
     cfg = {**SETTINGS, section: {**SETTINGS[section], key: value}}
     return scope_digest(cfg)
@@ -30,7 +35,8 @@ def changed(section, key, value):
 
 class ScopeTests(unittest.TestCase):
     def test_the_digest_is_stable(self):
-        self.assertEqual(scope_digest(SETTINGS), '4a3c4b125516bde8707230fcae0595b16d6db218ffc0d344dcfcc6394cc5828d')
+        digest = scope_digest(SETTINGS)
+        self.assertEqual(digest, STABLE)
 
     def test_a_new_usb_drive_archive_or_schedule_makes_it_outdated(self):
         first = scope_digest(SETTINGS)

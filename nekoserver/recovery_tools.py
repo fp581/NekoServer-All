@@ -668,10 +668,21 @@ def owe_restart(config, config_path, services):
     command(['systemctl', 'enable', '--quiet', SNAPSHOT_HOOK.name])
 
 
-def restart_owed(config, base=None):
+# Longer than the snapshot's stop of a service (`stop -t 60`): a stop the daemon still
+# carries out after its command ended is over by then.
+STOP_SETTLE = 75
+
+
+def restart_owed(config, base=None, sleep=time.sleep):
     """Start the recorded services again and check that they run; only then is the
     record (and the boot hook) removed. Otherwise both stay for the next boot or
-    `recover.py resume`."""
+    `recover.py resume`.
+
+    A recorded service still running when this begins may have an earlier stop on its way
+    (Docker goes on stopping a container after `docker compose stop` timed out or was cut
+    off): it is waited out (STOP_SETTLE), started again and checked once more before the
+    record goes, or that stop left Immich off with nothing to start it (the review of
+    0.47.2)."""
     if not SNAPSHOT_RESUME.exists():
         return []
     try:
@@ -688,9 +699,17 @@ def restart_owed(config, base=None):
     except (OSError, ValueError, KeyError, TypeError):
         raise RuntimeError('Unreadable record of Immich services to restart: ' + str(SNAPSHOT_RESUME)) from None
     base = base or compose_args(config)
+
+    def running_now():
+        return set(command(base + ['ps', '--status', 'running', '--services']).split())
+
+    pending = bool(set(services) & running_now())
     if services:
         command(base + ['start', *services], 180)
-    running = set(command(base + ['ps', '--status', 'running', '--services']).split())
+    if pending:
+        sleep(STOP_SETTLE)
+        command(base + ['start', *services], 180)
+    running = running_now()
     if not set(services) <= running:
         raise RuntimeError(
             'Immich did not start again ('
@@ -767,7 +786,10 @@ def snapshot(config, destination, apply=False, config_path=None):
         }
     require_root()
     with lock(config):
-        restart_owed(config)  # one cut off earlier: Immich runs again before anything else
+        # One cut off earlier: Immich runs again before anything else, once the drives are
+        # the ones setup chose (the review of 0.47.2: it was started before they were checked).
+        mounts(config)
+        restart_owed(config)
         # Everything recorded is read (and the drives re-checked) only now, under the lock.
         base, model, upload, database, version, destination, files, resume = snapshot_plan(config, destination)
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
