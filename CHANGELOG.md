@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.47.3 — 2026-11-05
+
+A stabilization release: fixes from the owner's review of 0.47.2, and a sweep for more of the same kind. Each fix has a test that fails on 0.47.2.
+
+### Fixed: upgrades
+- **An upgrade sets up only what this server has.** Every upgrade, and the way back, ran setup with the `full` profile, so an installation set up with a smaller profile gained Immich, Nextcloud and the rest. Setup now records the profile it runs with, and the upgrade runs the same one. For a server set up before 0.47.3, it uses the smallest profile that covers every step already done.
+- **An upgrade no longer leaves gigabytes behind.** Each upgrade's download, the release unpacked from it and its build folder stayed in `installer/upgrades` for good. Once an upgrade has finished, whether it succeeded or was put back, they are removed; the ten newest logs stay. The release it set up keeps its own copy, as before.
+- **Putting a release back stops before the older setup** when a service of the newer release did not stop. Before, it ran the older setup first and only then said so. Now it changes nothing more, says which services to stop, and `sudo python3 upgrade.py resume` finishes it.
+
+### Fixed: moving a drive
+- **A move never copies another Btrfs subvolume than the settings name.** It took whichever subvolume was mounted, even when the settings named another one. Now it stops and says which one to mount. When the settings name none, it notes the mounted one, as before.
+- **A move never unmounts what someone else mounted.** It refused a staging folder that was already in use, then its clean-up unmounted that folder anyway. Only the move's own new drive is unmounted now.
+- **A drive move record that can't be read is not reported as done.** `migrate.py resume` said all was well and left the record, which still kept upgrades and setup waiting. It now says the record can't be read and what to check.
+
+### Fixed: restoring a monthly snapshot
+- **A staged copy is marked checked only if it came from the archive that was checked.** The archives were checked by checksum, then read again by name for unpacking and for the comparison. An archive changed in between was unpacked, compared with itself, and the copy marked as checked. Each archive is now copied once into a private file, checked by checksum as it is copied, and everything after reads only that copy, which is then removed. Loading the saved app versions (`--load-images`) does the same. Unpacking needs room for one archive's copy more.
+
+### Fixed: the Immich snapshot (recovery menu)
+- **Immich is not left off by an earlier stop that was still on its way.** When a snapshot's stop of Immich timed out, Docker could still finish it after the restart, and the restart had already cleared its record, so nothing started Immich again. If a recorded service is still running when the restart begins, it now waits longer than the stop's own limit, starts everything again and checks once more before the record goes.
+- **A snapshot checks the drives before it starts Immich from an earlier record.** With a record left from a snapshot that was cut off, it started Immich first and only then rejected a wrong drive.
+
+### Fixed: drives and the acceptance check
+- **No backup result is read from a drive the acceptance check refused.** The check could reject the SSD and still pass the backup reports on it. It now asks for the backups' states only once both drives passed the drive check. The runtime's `job-states` also counts a drive only when it passes the check every job makes.
+- **Moving data to the other drive makes earlier acceptance runs outdated.** Moving the photos from the SSD to the HDD (or the music, or Nextcloud's files) changed neither of the acceptance check's fingerprints, so a restore witnessed before the move still passed. Both now include where the data is, and the USB copy's NAS disk. A server that never moved anything keeps its fingerprints and its witnessed tests.
+- **The dashboard reads nothing from a drive every job refuses.** It judged the SSD and HDD by UUID and filesystem only, so a drive on the wrong Btrfs subvolume, or a copied NAS disk, showed its backup reports as current. Such a drive now shows as the wrong drive.
+- **The acceptance check verifies the USB backup drive as the weekly copy does,** including its NAS disk. The UUID alone passed a restored or copied NAS disk mounted in its place.
+- **A new USB drive inherits no checksum result from the old one.** After you switch to a new USB drive, the dashboard no longer shows the old drive's "every copy matched", and the new drive's weekly copies no longer carry the old full check's date forward.
+
+### Not changed
+- The acceptance check keeps two fingerprints of the settings: one decides whether earlier witnessed tests carry over, the other whether the dashboard shows the run as outdated. Each lists the settings it covers, and the two lists differ. Merging them would reset every witnessed test once, so it is left for the owner to decide.
+- Setup's estimate of the room the weekly USB copy needs still follows the copy's rules by itself (see 0.47.2).
+
 ## v0.47.2 — 2026-11-05
 
 A stabilization release. It has three parts: the owner's review of 0.47.1's dashboard (the cats, the theme switch), the owner's cat placement package, and another sweep for rules written twice. Each fix has a test that fails on 0.47.1.

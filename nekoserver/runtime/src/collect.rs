@@ -20,7 +20,9 @@ pub(crate) const CHECKS: [(&str, &str); 3] = [
 /// What the last checksum checks of each backup tree found. `away` names the drive that
 /// is missing (None while both are there): the HDD archive can't be checked or kept up to
 /// date without the HDD, so its row says so instead of an old "matches".
-fn integrity(data: &Path, ok: bool, away: Option<&str>) -> Value {
+/// The checksum checks' results. A USB copy's are shown only when they were made on the USB
+/// drive the settings name now (`usb`): a new drive has had no check of its own yet.
+fn integrity(data: &Path, ok: bool, away: Option<&str>, usb: &str) -> Value {
     let all = if ok {
         common::json(&data.join("reports/integrity.json"), 20_000_000)
     } else {
@@ -29,7 +31,7 @@ fn integrity(data: &Path, ok: bool, away: Option<&str>) -> Value {
     let mut rows = vec![];
     for (id, name) in CHECKS {
         let s = &all["sections"][id];
-        if !s.is_object() {
+        if !s.is_object() || s["drive"].as_str().is_some_and(|drive| drive != usb) {
             continue;
         }
         let count = |key: &str| s["counts"][key].as_u64().unwrap_or(0);
@@ -245,6 +247,20 @@ fn metrics(previous: &Value) -> (Value, Value) {
         host["temperature_crit"] = json!(crit);
     }
     (host, current)
+}
+/// mount_info for drive `key`; the app SSD and the media HDD also pass the check every job
+/// makes (UUID, filesystem, Btrfs subvolume, the NAS disk's WWN), or they count as the
+/// wrong drive: nothing is read from them or written to them. With the UUID and filesystem
+/// alone, the page showed the reports of a drive every backup refused as current (the
+/// review of 0.47.2).
+fn app_drive(cfg: &Value, key: &str, path: &Path, expected: Option<&str>, fstype: &str) -> Value {
+    let info = mount_info(path, expected, fstype);
+    let checked = key == "os" || crate::backup::checked_drive(cfg, key, path).is_ok();
+    if info["status"] == "mounted" && !checked {
+        json!({"status": "wrong_drive"})
+    } else {
+        info
+    }
 }
 fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
     if expected == Some("") {
@@ -598,7 +614,7 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
     let mut data_ok = false;
     let mut media_ok = false;
     for (key, name, path, expected, fs) in rows {
-        let info = mount_info(&path, expected, fs);
+        let info = app_drive(cfg, key, &path, expected, fs);
         let mut r = json!({"id":key,"name":name,"mount":path,"status":info["status"],"total":null,"used":null,"used_percent":null,"smart":{"status":"unknown","checked_at":null}});
         if info["status"] == "mounted" {
             let source = text(&info["source"]);
@@ -2475,16 +2491,21 @@ pub fn job_states(a: &Args) -> Result<()> {
     common::require_root()?;
     let cfg = common::json(&a.path("config")?, 2_000_000);
     let now = common::now();
-    let mounted = |key: &str, mount: &str| -> Result<bool> {
+    // A drive counts only when it passes the check every job makes (UUID, filesystem,
+    // Btrfs subvolume, the NAS disk's WWN), and the two are two filesystems: no report is
+    // read from a drive that is not the one setup chose (the review of 0.47.2: a drive
+    // the acceptance check refused still gave it the backups' reports).
+    let checked = |key: &str, mount: &str| -> Result<Option<String>> {
         let path = common::mount_path(text(&cfg[mount]))?;
-        let spec = &cfg["storage"][key];
-        Ok(
-            mount_info(&path, Some(text(&spec["uuid"])), text(&spec["fstype"]))["status"]
-                == "mounted",
-        )
+        Ok(crate::backup::checked_drive(&cfg, key, &path).ok())
     };
-    let ok = mounted("data_ssd", "data_mount")?;
-    let media_ok = mounted("media_hdd", "media_mount")?;
+    let (data, media) = (
+        checked("data_ssd", "data_mount")?,
+        checked("media_hdd", "media_mount")?,
+    );
+    let apart = !matches!((&data, &media), (Some(a), Some(b)) if a == b);
+    let ok = data.is_some() && apart;
+    let media_ok = media.is_some() && apart;
     let states = json!({
         "backups": backups(&cfg, now, ok, away_drive(ok, media_ok)),
         "heartbeat": heartbeat(&cfg, now),
@@ -2512,7 +2533,9 @@ pub fn run(a: &Args) -> Result<()> {
     let _lock = common::lock(&parent.join("collector.lock"))?;
     let now = common::now();
     let data = Path::new(text(&cfg["data_mount"]));
-    let first = mount_info(
+    let first = app_drive(
+        &cfg,
+        "data_ssd",
         data,
         Some(text(&cfg["storage"]["data_ssd"]["uuid"])),
         text(&cfg["storage"]["data_ssd"]["fstype"]),
@@ -2599,7 +2622,7 @@ pub fn run(a: &Args) -> Result<()> {
     } else {
         json!([])
     };
-    result["integrity"] = integrity(data, ok, away);
+    result["integrity"] = integrity(data, ok, away, text(&cfg["photos"]["external_backup_uuid"]));
     result["backup_key"] = json!(backup_key_ready());
     result["tailscale"] = tailscale_login(now);
     result["network_storage"] = network_storage(&cfg, Path::new("/sys/class/iscsi_session"));
@@ -2611,7 +2634,9 @@ pub fn run(a: &Args) -> Result<()> {
     // failed private write must never freeze the page on an older, healthier reading.
     let mut kept = Ok(());
     if ok {
-        let check = mount_info(
+        let check = app_drive(
+            &cfg,
+            "data_ssd",
             data,
             Some(text(&cfg["storage"]["data_ssd"]["uuid"])),
             text(&cfg["storage"]["data_ssd"]["fstype"]),
@@ -3040,7 +3065,7 @@ mod os_tests {
             crate::backup::Check::Full,
         )
         .unwrap();
-        let rows = integrity(&data, true, None);
+        let rows = integrity(&data, true, None, "");
         assert_eq!(rows.as_array().unwrap().len(), 2);
         let usb = rows
             .as_array()
@@ -3205,7 +3230,7 @@ mod integrity_tests {
         write_old(&library.join("upload/u/b.jpg"), b"photo b");
         let (_, quick) = archive_checked(&library, &hdd, true, 60, Check::Quick).unwrap();
         save_integrity(&data, "archive", &quick, Check::Quick).unwrap();
-        let row = &integrity(&data, true, None)[0];
+        let row = &integrity(&data, true, None, "")[0];
         assert!(
             row["full_at"].is_null(),
             "a quick run is not a full check: {row}"
@@ -3215,12 +3240,12 @@ mod integrity_tests {
         fs::write(hdd.join("upload/u/b.jpg"), b"photo ?").unwrap();
         let (_, full) = archive_checked(&library, &hdd, true, 60, Check::Full).unwrap();
         save_integrity(&data, "archive", &full, Check::Full).unwrap();
-        let found = integrity(&data, true, None)[0].clone();
+        let found = integrity(&data, true, None, "")[0].clone();
         assert_eq!(found["damaged"], 1, "{found}");
         let full_at = found["full_at"].as_f64().unwrap();
         let (_, quick) = archive_checked(&library, &hdd, true, 60, Check::Quick).unwrap();
         save_integrity(&data, "archive", &quick, Check::Quick).unwrap();
-        let after = integrity(&data, true, None)[0].clone();
+        let after = integrity(&data, true, None, "")[0].clone();
         assert_eq!(after["damaged"], 1, "{after}");
         // The status file is readable by every account: counts, never the file names.
         assert!(after.get("files").is_none(), "{after}");
@@ -3240,7 +3265,7 @@ mod integrity_tests {
         fs::write(hdd.join("upload/u/b.jpg"), b"photo b").unwrap();
         let (_, full) = archive_checked(&library, &hdd, true, 60, Check::Full).unwrap();
         save_integrity(&data, "archive", &full, Check::Full).unwrap();
-        assert_eq!(integrity(&data, true, None)[0]["damaged"], 0);
+        assert_eq!(integrity(&data, true, None, "")[0]["damaged"], 0);
         let _ = fs::remove_dir_all(root);
     }
 }
@@ -3420,6 +3445,50 @@ mod user_panel_tests {
         assert!(ids.contains(&"backup:archive".to_string()), "{ids:?}");
     }
     #[test]
+    fn a_new_usb_drive_inherits_no_checksum_result_from_the_old_one() {
+        let data = std::env::temp_dir().join(format!("neko-usb-integrity-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        fs::create_dir_all(&data).unwrap();
+        let clean = crate::backup::Integrity::default();
+        use crate::backup::{save_integrity_on, Check};
+        save_integrity_on(&data, "usb_photos", &clean, Check::Full, "old-uuid").unwrap();
+        let shown = |usb: &str| integrity(&data, true, None, usb);
+        assert_eq!(shown("old-uuid")[0]["id"], "usb_photos");
+        assert!(shown("old-uuid")[0]["full_at"].is_number());
+        // A new drive in the settings: the old drive's check is not shown as its own.
+        assert_eq!(shown("new-uuid"), json!([]));
+        // Its first (quick) copy carries no full check over from the old drive.
+        save_integrity_on(&data, "usb_photos", &clean, Check::Quick, "new-uuid").unwrap();
+        let row = shown("new-uuid")[0].clone();
+        assert_eq!(row["check"], "quick");
+        assert!(row["full_at"].is_null(), "{row}");
+        let _ = fs::remove_dir_all(&data);
+    }
+    #[test]
+    fn the_app_drives_are_the_ones_every_job_checks_before_anything_is_read() {
+        // The review of 0.47.2: the page read the reports of a drive every backup refused
+        // (the right UUID and filesystem, another Btrfs subvolume or NAS disk).
+        let source = include_str!("collect.rs");
+        let body = |start: &str| {
+            let at = source.find(start).unwrap();
+            &source[at..at + source[at..].find("\n}\n").unwrap()]
+        };
+        assert!(body("fn app_drive(").contains("crate::backup::checked_drive(cfg, key, path)"));
+        assert!(body("fn storage(").contains("app_drive(cfg, key, &path, expected, fs)"));
+        let run = body("pub fn run(a: &Args)");
+        assert_eq!(
+            run.matches("app_drive(").count(),
+            2,
+            "reading and saving the state"
+        );
+        assert!(!run.contains("mount_info("));
+        // The OS drive has no identity to check.
+        assert_eq!(
+            app_drive(&json!({}), "os", Path::new("/nonexistent-neko"), None, "")["status"],
+            "missing"
+        );
+    }
+    #[test]
     fn a_failing_job_stays_a_failure_and_a_switched_off_timer_is_never_late() {
         // Kept here once the acceptance check's copy of these rules went (0.47.2).
         assert_eq!(overdue_state("fail", true), "fail");
@@ -3485,7 +3554,7 @@ mod user_panel_tests {
             )
             .unwrap();
         }
-        let rows = integrity(&data, true, Some("Media HDD"));
+        let rows = integrity(&data, true, Some("Media HDD"), "");
         let blocked = |id: &str| {
             rows.as_array()
                 .unwrap()
@@ -3502,7 +3571,7 @@ mod user_panel_tests {
             blocked("usb_photos").is_null(),
             "the USB copy is on its own drive"
         );
-        assert!(integrity(&data, true, None)[0]["blocked"].is_null());
+        assert!(integrity(&data, true, None, "")[0]["blocked"].is_null());
         let _ = fs::remove_dir_all(data);
     }
     /// UP-05: a monthly update undone after the updated apps did not start is said in

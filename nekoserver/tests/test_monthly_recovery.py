@@ -1,6 +1,7 @@
 """monthly-recovery.py --stage: a monthly snapshot unpacked into a new folder, checked
 against its archives, then marked as checked."""
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -40,7 +41,13 @@ class StageTests(unittest.TestCase):
         self.snapshot.mkdir()
         archive(self.snapshot / 'data.tar', {'app/db.sql': b'data'})
         archive(self.snapshot / 'media.tar', {'photo.jpg': b'media'})
-        for target, value in (('verify', lambda s: {}), ('ensure_room', lambda *a: None)):
+        self.checked = {
+            name: hashlib.sha256((self.snapshot / (name + '.tar')).read_bytes()).hexdigest()
+            for name in ('data', 'media')
+        }
+        # verify's answer: the manifest, as it was when the archives were checked.
+        manifest = {'sha256': self.checked}
+        for target, value in (('verify', lambda s: manifest), ('ensure_room', lambda *a: None)):
             patcher = mock.patch.object(monthly, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -88,6 +95,55 @@ class StageTests(unittest.TestCase):
         # Both parts went into the folder that was made, never marked complete.
         self.assertEqual((moved / 'media/photo.jpg').read_bytes(), b'media')
         self.assertFalse((moved / 'verified.json').exists())
+
+    def test_an_archive_changed_after_its_check_is_never_unpacked_or_marked(self):
+        """The review of 0.47.2: unpacking and the comparison read the archive again by its
+        name, so one changed after its checksum check was unpacked, compared with itself, and
+        the copy marked checked."""
+        archive(self.snapshot / 'media.tar', {'photo.jpg': b'something else'})  # after the check
+        out = self.dir / 'staged'
+        with self.assertRaisesRegex(RuntimeError, 'changed after it was checked'):
+            monthly.stage(self.snapshot, out)
+        self.assertFalse((out / 'verified.json').exists())
+        self.assertFalse((out / 'media/photo.jpg').exists())
+        self.assertEqual([p.name for p in out.iterdir() if p.name.startswith('.')], [])
+
+    def test_unpacking_and_the_comparison_read_one_checked_private_copy(self):
+        out = self.dir / 'staged'
+        monthly.stage(self.snapshot, out)
+        tars = [argv for argv in self.calls if argv[0] == 'tar']
+        self.assertEqual(len(tars), 4)
+        for argv in tars:
+            source = argv[argv.index('--file') + 1]
+            self.assertTrue(source.startswith('/proc/self/fd/'), argv)
+            self.assertNotIn(str(self.snapshot), ' '.join(argv))
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ['data', 'media', 'verified.json'])
+
+    def test_the_images_are_loaded_from_a_checked_private_copy(self):
+        images = self.snapshot / 'images.tar'
+        images.write_bytes(b'images')
+        manifest = {'sha256': {'images': hashlib.sha256(b'images').hexdigest()}}
+        seen = []
+
+        def docker(argv, **kwargs):
+            if 'info' in argv:
+                return mock.Mock(stdout=str(self.dir) + '\n')
+            source = argv[argv.index('--input') + 1]
+            seen.append((source, os.read(kwargs['pass_fds'][0], 100)))
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(monthly.subprocess, 'run', docker):
+            monthly.load_images(self.snapshot, manifest)
+            self.assertEqual(len(seen), 1)
+            self.assertTrue(seen[0][0].startswith('/proc/self/fd/'))
+            self.assertEqual(seen[0][1], b'images')
+            self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith('.neko-images-')], [])
+            # Changed after its check: nothing is loaded.
+            images.write_bytes(b'changed')
+            with self.assertRaisesRegex(RuntimeError, 'changed after it was checked'):
+                monthly.load_images(self.snapshot, manifest)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith('.neko-images-')], [])
 
 
 if __name__ == '__main__':

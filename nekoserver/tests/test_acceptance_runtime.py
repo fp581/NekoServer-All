@@ -98,6 +98,23 @@ class JobStatesTests(unittest.TestCase):
 
 
 class DriveCheckTests(unittest.TestCase):
+    def test_no_backup_report_is_read_past_a_refused_drive(self):
+        """The review of 0.47.2: the SSD's identity was refused, yet its backup reports
+        were read and passed."""
+        now = time.time()
+        rows = [{'id': 'host', 'name': 'Host snapshot', 'status': 'pass', 'last_success': now - 60, 'timer': TIMER}]
+        refused = 'Drive check failed: /srv/nekoserver is mounted with another Btrfs subvolume'
+        checks = inspect({'backups': rows}, problem=lambda keys: refused if 'data_ssd' in keys else None)
+        self.assertEqual(checks['mount:data_ssd']['status'], 'fail')
+        self.assertNotEqual(checks['backup:host']['status'] if 'backup:host' in checks else None, 'pass')
+        self.assertEqual(checks['backup:states']['status'], 'blocked')
+        self.assertIn('drive verification', checks['backup:states']['detail'])
+        # The runtime itself reads them only from drives that pass the check every job makes.
+        source = (ROOT / 'runtime/src/collect.rs').read_text()
+        states = source[source.index('pub fn job_states(') : source.index('pub fn run(a: &Args)')]
+        self.assertIn('crate::backup::checked_drive(', states)
+        self.assertNotIn('mount_info(', states)
+
     def test_a_drive_the_runtime_refuses_is_not_passed(self):
         """A copied LUN has the right UUID and filesystem: the old check here passed it,
         and every backup refused it."""
@@ -114,6 +131,34 @@ class DriveCheckTests(unittest.TestCase):
         checks = inspect({'backups': []}, problem=lambda keys: both if len(keys) == 2 else None)
         self.assertEqual(checks['mount:distinct']['status'], 'fail')
         self.assertEqual(checks['mount:distinct']['detail'], both)
+
+    def test_the_usb_drive_is_the_nas_disk_setup_chose(self):
+        """The review of 0.47.2's sweep: the USB backup drive passed on its UUID alone, so a
+        restored or copied NAS LUN mounted in its place passed too."""
+        other = 'Drive check failed: /mnt/usb has the right UUID but is on another NAS disk (0x2, not 0x1)'
+        with mock.patch.object(acceptance.health, 'mount_info', return_value={'status': 'mounted'}):
+            checks = inspect({'backups': []}, problem=lambda keys: other if keys == ('usb',) else None)
+        self.assertEqual(checks['external:identity']['status'], 'fail')
+        self.assertIn('another NAS disk', checks['external:identity']['detail'])
+        with mock.patch.object(acceptance.health, 'mount_info', return_value={'status': 'mounted'}):
+            self.assertEqual(inspect({'backups': []})['external:identity']['status'], 'pass')
+
+    def test_the_drive_check_is_given_the_usb_drives_settings(self):
+        import neko_common
+
+        asked = []
+        cfg = {'data_mount': '/srv/x', 'media_mount': '/mnt/m', 'external_backup_mount': '/mnt/usb', 'storage': {},
+               'photos': {'external_backup_uuid': 'u1', 'external_backup_fstype': 'exfat',
+                          'external_backup_network': {'wwn': '0x1'}, 'deploy_immich': True}}  # fmt: skip
+
+        def ask(project, config, args):
+            asked.append(json.loads(Path(args[args.index('--config') + 1]).read_text()))
+            return 0, 'ok'
+
+        neko_common.verify_storage(cfg, ('usb',), ask=ask)
+        self.assertEqual(asked[0]['external_backup_mount'], '/mnt/usb')
+        self.assertEqual(asked[0]['photos']['external_backup_network'], {'wwn': '0x1'})
+        self.assertNotIn('deploy_immich', asked[0]['photos'])
 
     def test_the_runtimes_drive_check_is_the_one_asked(self):
         with mock.patch.object(acceptance, 'verify_storage', side_effect=RuntimeError('wrong subvolume')) as asked:

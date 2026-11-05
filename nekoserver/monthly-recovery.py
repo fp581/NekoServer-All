@@ -37,9 +37,37 @@ def verify(snapshot):
     return manifest
 
 
+CHUNK = 1024 * 1024
+IMAGES = 'images.tar'  # the saved app versions (Docker images) in a monthly snapshot
+
+
+def private_copy(source, folder, name, expected):
+    """A copy of `source` made in the open `folder` (its descriptor) as `name`, root's
+    alone, hashed while it is written and checked against `expected` (the manifest's
+    SHA-256): an open, read-only descriptor of it. Everything after (unpacking, the
+    comparison, loading the images) reads this one copy, never the snapshot's file again:
+    a file changed after its check would otherwise be unpacked and compared as it is then,
+    and pass (the review of 0.47.2). The caller removes it."""
+    digest = hashlib.sha256()
+    out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+    try:
+        with safe_path(source).open('rb') as read, os.fdopen(out, 'wb', closefd=False) as write:
+            while chunk := read.read(CHUNK):
+                digest.update(chunk)
+                write.write(chunk)
+            write.flush()
+            os.fsync(out)
+    finally:
+        os.close(out)
+    if digest.hexdigest() != expected:
+        os.unlink(name, dir_fd=folder)
+        raise RuntimeError(f'Snapshot checksum mismatch: {Path(source).name} changed after it was checked')
+    return os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
+
+
 def stage(snapshot, destination):
     snapshot, destination = safe_path(snapshot), safe_path(destination)
-    verify(snapshot)
+    manifest = verify(snapshot)
     if (
         not destination.is_absolute()
         or destination.exists()
@@ -47,12 +75,10 @@ def stage(snapshot, destination):
         or snapshot in destination.parents
     ):
         raise RuntimeError('Choose a new, separate absolute recovery directory')
-    # The archives are uncompressed tar files: their size is what extraction writes.
-    ensure_room(
-        destination.parent,
-        sum((snapshot / (n + '.tar')).stat().st_size for n in ('data', 'media')),
-        'Unpacking this snapshot',
-    )
+    # The archives are uncompressed tar files: their size is what extraction writes, with
+    # room for the private copy of the bigger one while it is unpacked.
+    sizes = [(snapshot / (n + '.tar')).stat().st_size for n in ('data', 'media')]
+    ensure_room(destination.parent, sum(sizes) + max(sizes), 'Unpacking this snapshot')
     destination.mkdir(mode=0o700)
     # Everything is written through the folder made just now, opened once: a folder
     # swapped in at its path meanwhile (its parent may be writable by others) gets neither
@@ -62,9 +88,12 @@ def stage(snapshot, destination):
         for name in ('data', 'media'):
             os.mkdir(name, 0o700, dir_fd=root)
             target = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            copy = '.' + name + '.tar.checked'
+            held = private_copy(snapshot / (name + '.tar'), root, copy, manifest['sha256'][name])
             try:
                 into = f'/proc/self/fd/{target}'
-                archive = str(snapshot / (name + '.tar'))
+                archive = f'/proc/self/fd/{held}'
+
                 subprocess.run(
                     [
                         'tar',
@@ -79,10 +108,12 @@ def stage(snapshot, destination):
                         into,
                     ],
                     check=True,
-                    pass_fds=(target,),
+                    pass_fds=(target, held),
                 )
-                subprocess.run(['tar', '--compare', '--file', archive, '-C', into], check=True, pass_fds=(target,))
+                subprocess.run(['tar', '--compare', '--file', archive, '-C', into], check=True, pass_fds=(target, held))
             finally:
+                os.close(held)
+                os.unlink(copy, dir_fd=root)
                 os.close(target)
         here = os.stat(destination, follow_symlinks=False)
         made = os.fstat(root)
@@ -112,6 +143,47 @@ def written_in(folder, name, text):
     os.fsync(folder)
 
 
+def load_images(snapshot, manifest):
+    """Docker loads the saved images from a private, checked copy (private_copy), made in a
+    new root-only folder beside the snapshot and removed afterwards."""
+    import tempfile
+
+    snapshot = safe_path(snapshot)
+    images = safe_path(snapshot / IMAGES)
+    docker_root = subprocess.run(
+        ['docker', '--host', 'unix:///var/run/docker.sock', 'info', '--format', '{{.DockerRootDir}}'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    ensure_room(docker_root, images.stat().st_size, 'Loading the saved app versions')
+    ensure_room(snapshot.parent, images.stat().st_size, 'Checking the saved app versions')
+    work = tempfile.mkdtemp(prefix='.neko-images-', dir=snapshot.parent)
+    folder = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        held = private_copy(images, folder, IMAGES, manifest['sha256']['images'])
+        try:
+            subprocess.run(
+                [
+                    'docker',
+                    '--host',
+                    'unix:///var/run/docker.sock',
+                    'image',
+                    'load',
+                    '--input',
+                    f'/proc/self/fd/{held}',
+                ],
+                check=True,
+                pass_fds=(held,),
+            )
+        finally:
+            os.close(held)
+            os.unlink(IMAGES, dir_fd=folder)
+    finally:
+        os.close(folder)
+        os.rmdir(work)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--snapshot', required=True, type=Path)
@@ -130,7 +202,7 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Root is required to preserve private database ownership')
-    verify(args.snapshot)
+    manifest = verify(args.snapshot)
     if args.stage:
         stage(args.snapshot, args.stage)
     if args.secrets:
@@ -140,25 +212,7 @@ def main():
         done = backup_secrets.restore(args.snapshot, args.secrets, getpass.getpass(backup_secrets.RESTORE_PROMPT))
         print(f'App password files restored to {done}')
     if args.load_images:
-        root = subprocess.run(
-            ['docker', '--host', 'unix:///var/run/docker.sock', 'info', '--format', '{{.DockerRootDir}}'],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-        ensure_room(root, safe_path(args.snapshot / 'images.tar').stat().st_size, 'Loading the saved app versions')
-        subprocess.run(
-            [
-                'docker',
-                '--host',
-                'unix:///var/run/docker.sock',
-                'image',
-                'load',
-                '--input',
-                str(safe_path(args.snapshot / 'images.tar')),
-            ],
-            check=True,
-        )
+        load_images(args.snapshot, manifest)
     print('Monthly backup verified; live data and applications were not replaced.')
 
 

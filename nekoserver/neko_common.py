@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.47.2'
+VERSION = '0.47.3'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -1298,7 +1298,11 @@ def verify_storage(config, keys=('data_ssd', 'media_hdd'), ask=None):
 
     import native_runtime
 
-    settings = {k: config.get(k) for k in ('data_mount', 'media_mount', 'storage')}
+    settings = {k: config.get(k) for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
+    photos = config.get('photos') or {}
+    settings['photos'] = {
+        k: photos.get(k) for k in ('external_backup_uuid', 'external_backup_fstype', 'external_backup_network')
+    }
     with tempfile.TemporaryDirectory(prefix='neko-drives-') as work:
         path = Path(work) / 'drives.json'
         path.write_text(json.dumps(settings))

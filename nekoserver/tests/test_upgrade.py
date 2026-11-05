@@ -170,6 +170,100 @@ class UpgradeTests(unittest.TestCase):
             any('nekoserver-foo.service' in line and 'did not stop' in line for line in self.said), self.said
         )
 
+    def test_the_older_setup_never_runs_beside_a_newer_service_still_at_work(self):
+        """The review of 0.47.2: the way back ran the older setup first, and only then said
+        that the newer release's service had not stopped."""
+        added = self.units / 'nekoserver-foo.service'
+        ran = []
+
+        def setup_adding(project, settings, account, log_file):
+            ran.append(Path(project).name)
+            if 'nekoserver' in str(project):
+                added.write_text('ExecStart=/usr/local/lib/x/v9.9.9/y\n')
+                return 2
+            return 0
+
+        def systemctl(argv, **k):
+            return subprocess.CompletedProcess(argv, 1 if 'disable' in argv else 0, '', 'Failed to stop')
+
+        with mock.patch.object(upgrade.subprocess, 'run', side_effect=systemctl):
+            self.assertEqual(self.upgrade(setup_adding), 2)
+        self.assertNotIn(self.previous.name, ran)  # only the newer release's setup ran
+        self.assertEqual(self.journal_phase(), 'going_back')  # resume tries again
+        self.assertTrue(any('upgrade.py resume' in line for line in self.said), self.said)
+
+    def test_setup_runs_the_profile_this_server_is_set_up_with(self):
+        """The review of 0.47.2: every upgrade ran "full", which set up apps a smaller
+        installation never had."""
+        import installer
+
+        profiles = {'full': ['storage', 'photos', 'nextcloud'], 'media': ['storage']}
+        config = {'data_mount': str(self.data), 'profiles': profiles}
+        modules = {name: {'object': None, 'deps': []} for name in ('storage', 'photos', 'nextcloud')}
+        record = self.data / 'installer/state' / installer.PROFILE_FILE
+        record.write_text(json.dumps({'format': installer.PROFILE_FORMAT, 'profile': 'media'}))
+        self.assertEqual(upgrade.setup_profile(config, modules), 'media')
+        record.write_text(json.dumps({'format': installer.PROFILE_FORMAT, 'profile': None}))
+        self.assertIsNone(upgrade.setup_profile(config, modules))
+        # Not recorded (set up before 0.47.3): the smallest profile covering the steps done.
+        record.unlink()
+        self.state({'storage': 'success'})
+        self.assertEqual(upgrade.setup_profile(config, modules), 'media')
+        self.state({'storage': 'success', 'photos': 'success'})
+        self.assertEqual(upgrade.setup_profile(config, modules), 'full')
+        # And the command setup runs with it.
+        self.settings.write_text(json.dumps(config))
+        record.write_text(json.dumps({'format': installer.PROFILE_FORMAT, 'profile': 'media'}))
+        project = self.dir / 'project'
+        project.mkdir()
+        seen = []
+        upgrade.run_setup(
+            project,
+            self.settings,
+            'neko',
+            self.dir / 'log',
+            run=lambda argv, **k: seen.append(argv) or mock.Mock(returncode=0),
+        )
+        self.assertEqual(seen[0][2:], ['--profile', 'media', '--apply'])
+        record.write_text(json.dumps({'format': installer.PROFILE_FORMAT, 'profile': None}))
+        upgrade.run_setup(
+            project,
+            self.settings,
+            'neko',
+            self.dir / 'log',
+            run=lambda argv, **k: seen.append(argv) or mock.Mock(returncode=0),
+        )
+        self.assertEqual(seen[1][2:], ['--apply'])
+
+    def test_a_finished_upgrade_leaves_only_its_newest_logs(self):
+        """The review of 0.47.2: every upgrade's download, unpacked release and build folder
+        stayed on the SSD for good."""
+        work = self.data / 'installer/upgrades'
+        (work / 'v9.9.9/nekoserver/runtime/target').mkdir(parents=True)
+        (work / 'v9.9.9.tar.gz').write_text('x')
+        (work / 'mine.txt').write_text('someone\'s own')
+        (work / 'elsewhere').mkdir()
+        (work / 'v9.9.8').symlink_to(work / 'elsewhere')
+        for n in range(12):
+            log = work / f'v9.9.{n}.log'
+            log.write_text('log')
+            upgrade.os.utime(log, (1000 + n, 1000 + n))
+        self.journal.parent.mkdir(parents=True, exist_ok=True)
+        self.journal.write_text('{}')
+        self.assertEqual(upgrade.tidy(work, self.journal), [])  # unfinished: nothing goes
+        self.journal.unlink()
+        removed = upgrade.tidy(work, self.journal)
+        self.assertIn('v9.9.9', removed)
+        self.assertIn('v9.9.9.tar.gz', removed)
+        self.assertFalse((work / 'v9.9.9').exists())
+        self.assertEqual(sorted(p.name for p in work.glob('*.log')), sorted(f'v9.9.{n}.log' for n in range(2, 12)))
+        self.assertTrue((work / 'mine.txt').exists())
+        self.assertTrue((work / 'v9.9.8').is_symlink() and (work / 'elsewhere').is_dir())
+        # A finished upgrade tidies by itself.
+        (work / 'v9.9.9').mkdir()
+        self.assertEqual(self.upgrade(self.setup(0)), 0)
+        self.assertFalse((work / 'v9.9.9').exists())
+
     def test_a_template_unit_the_newer_release_added_is_switched_off_with_its_instances(self):
         """The review of 0.47.0: a template (x@.service) can't be stopped by its own name, so
         "disable --now" always failed, the way back never passed, and its instances ran on."""

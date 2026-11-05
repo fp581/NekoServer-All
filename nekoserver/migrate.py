@@ -528,6 +528,21 @@ def move(settings, drive, new_uuid, out=print, journal=JOURNAL, staging=STAGING,
     return with_operation(out, lambda: move_held(settings, drive, new_uuid, out, journal, staging, fstab))
 
 
+def other_subvolume(old, mounted, label):
+    """Why the drive is mounted with another Btrfs subvolume than the settings name, or None.
+    A subvolume the settings name must be the one mounted (the review of 0.47.2: the
+    mounted one was taken instead, so another tree could be copied); settings that name
+    none take the mounted one."""
+    named = (old.get('subvolume') or '').rstrip('/')
+    if not named or named == mounted.rstrip('/'):
+        return None
+    return (
+        f'The {label} is mounted with the Btrfs subvolume {mounted or "at the top level"}, but the settings '
+        f'name {named}; nothing was changed. Mount the one the settings name (sudo bash install.sh does), '
+        'then start the move again'
+    )
+
+
 def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     path, config = load_settings(settings)
     if drive not in DRIVES:
@@ -548,6 +563,10 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     mounted = mounted_identity(mountpoint)
     if not mounted or mounted[:2] != (old.get('uuid'), old.get('fstype')):
         out(f'The {label} in the settings is not the drive mounted at {mountpoint}; nothing was changed')
+        return 2
+    other = other_subvolume(old, mounted[2], label)
+    if other:
+        out(other)
         return 2
     if mounted[2]:
         old['subvolume'] = mounted[2]
@@ -601,9 +620,15 @@ SUBVOLUME = re.compile(r'(/[A-Za-z0-9@._-]+)*')
 def stopped_safely(exc, label, journal, staging, out=print):
     """The move stopped before its switch: the new drive is unmounted and what the move
     stopped (as its record says: also when stopping failed part-way) is started again.
-    The record goes only once all of it runs again; otherwise it stays, with what is left."""
-    run(['umount', str(staging)], 120, check=False)
-    failed = start_again((read(journal) or {}).get('stopped'), out)
+    The record goes only once all of it runs again; otherwise it stays, with what is left.
+    Only the move's own new drive is unmounted: a folder that was in use already (the move
+    refused it) keeps what someone else mounted there (the review of 0.47.2)."""
+    saved = read(journal) or {}
+    ours = (saved.get('new') or {}).get('uuid')
+    there = mounted_identity(staging)
+    if ours and there and there[0] == ours:
+        run(['umount', str(staging)], 120, check=False)
+    failed = start_again(saved.get('stopped'), out)
     if failed:
         record(journal, phase='restart_failed', stopped=failed)
         out(
@@ -861,6 +886,14 @@ def ran_again_on_old(saved, fstab):
 def resume_held(settings, out, journal, staging, fstab):
     saved = read(journal)
     if saved is None:
+        if Path(journal).exists():
+            # A record that can't be read is not "nothing to do": it still keeps upgrades
+            # and setup waiting (the review of 0.47.2: resume said it was done).
+            out(
+                f'The drive move record {journal} can not be read. Nothing was changed. Look at it and at the drives '
+                '(sudo findmnt), then remove the record once the drive is where it should be'
+            )
+            return 2
         return 0
     phase = saved.get('phase')
     if phase == 'switching' and ran_again_on_old(saved, fstab):

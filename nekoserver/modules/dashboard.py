@@ -504,6 +504,8 @@ def collector_settings(cfg, smart, interval=60):
         'deploy_immich': cfg.get('photos', {}).get('deploy_immich', False),
         'archive_interval_minutes': cfg.get('photos', {}).get('archive_interval_minutes', 60),
         'backup_schedule': cfg.get('photos', {}).get('backup_schedule', 'legacy'),
+        # The USB drive now: checksum results made on another one are not shown as its own.
+        'external_backup_uuid': cfg.get('photos', {}).get('external_backup_uuid', ''),
     }
     clean['music'] = {'backup_enabled': cfg.get('music', {}).get('backup_enabled', True)}
     clean['monitoring'] = {
