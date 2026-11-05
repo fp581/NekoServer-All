@@ -1558,6 +1558,38 @@ class UsbCopyWithoutImmichTests(unittest.TestCase):
             result = photo_backup.run(Ctx())
         return result, written
 
+    def test_a_nas_backup_disks_wwn_is_saved_in_the_settings_when_learned(self):
+        """The review of 0.46.3: the WWN was learned in memory only, so a later setup could
+        take a replacement disk for its first look."""
+        from modules import photo_backup
+
+        saved = []
+        Ctx = type(
+            'Ctx',
+            (),
+            {
+                'apply': True,
+                'config': self.config,
+                'log': staticmethod(lambda message: None),
+                'persist_config': lambda me: saved.append(
+                    dict(self.config['photos'].get('external_backup_network') or {})
+                ),
+            },
+        )
+        with (
+            mock.patch.object(photo_backup.os, 'geteuid', return_value=0),
+            mock.patch.object(storage, 'inventory_now', return_value={'blockdevices': []}),
+            mock.patch.object(photo_backup, 'nas_identity', return_value='0x6001'),
+            mock.patch.object(photo_backup.native_runtime, 'deploy', return_value=Path('/rt')),
+            mock.patch.object(photo_backup.native_runtime, 'backup_guard', return_value=Path('/guard.json')),
+            mock.patch.object(photo_backup, 'atomic_write'),
+            mock.patch.object(photo_backup.subprocess, 'run'),
+        ):
+            photo_backup.run(Ctx())
+            self.assertEqual(saved, [{'transport': 'iscsi', 'wwn': '0x6001'}])
+            photo_backup.run(Ctx())  # known now: nothing new to save
+        self.assertEqual(len(saved), 1)
+
     def test_nextcloud_alone_gets_its_weekly_usb_copy(self):
         from modules import photo_backup
 

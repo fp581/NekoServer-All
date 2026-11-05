@@ -383,7 +383,13 @@ def run(ctx):
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
         raise RuntimeError('Set photos.external_backup_uuid from lsblk -f')
     fstype = opts.get('external_backup_fstype', 'ext4')
+    known = opts.get('external_backup_network')
     check_drive(ctx.config, uuid, fstype)
+    if opts.get('external_backup_network') != known and hasattr(ctx, 'persist_config'):
+        # The NAS disk's WWN, learned now, is saved in my-config.json at once: a later setup
+        # must compare against it, never take a replacement disk for a first look (the
+        # review of 0.46.3: it was only in memory and in the runtime's drives file).
+        ctx.persist_config()
     source = archive_source(ctx.config) if photos else None
     # The photos step makes this folder; when it could not run (Docker failed, say),
     # this step waits for it instead of failing on its account.

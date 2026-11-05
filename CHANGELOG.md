@@ -2,7 +2,7 @@
 
 ## v0.46.4 — 2026-11-05
 
-A stabilization release: fixes only, from the project owner's two reviews of v0.46.3-beta. Each fix has a test that fails on 0.46.3.
+A stabilization release: fixes only, from the project owner's reviews of v0.46.3-beta. Each fix has a test that fails on 0.46.3.
 
 ### Fixed
 - **Nextcloud's trusted domains are never overwritten after a silent failure.** A read that was killed (exit 137, or any other failure that printed nothing) was taken for "not set", so the first trusted domain could still be replaced. Only occ's own "not set" answer (exit 1 with no output) counts as empty now; anything else stops the step and changes nothing.
@@ -12,6 +12,8 @@ A stabilization release: fixes only, from the project owner's two reviews of v0.
 - **Putting a release back no longer reports success while a newer service still runs.** A service the newer release added was switched off without checking that it stopped, and its file was removed, so the check after it couldn't see it. A service that doesn't stop now keeps its file, and the way back says which one to look at.
 - **Two restore tests started at the same time no longer break each other.** The clearing of a left test's network ran before the recovery lock, so a second test could remove the first one's new network and containers before they started. It now runs only while the test holds the lock.
 - **Repairing the dashboard keeps its port while the dashboard is stopped.** systemd's socket keeps holding the port then, and setup took that for another program, moved the dashboard to a spare port, or failed when none was free.
+- **A NAS backup disk's identity is saved in your settings as soon as setup learns it.** The disk's WWN was kept only in memory and in the runtime's drives file, so a later setup could take a replacement disk for its first look at the drive. It is now written to `my-config.json` right away.
+- **A restore stays tied to its folder until it has finished.** The folder opened at the start was closed before the report, the owners and the times were written. A folder put at the same path then got them, along with a report saying everything was restored and verified. All three now go through the folder opened at the start, and the restore stops if the path no longer leads there.
 
 ## v0.46.3 — 2026-11-04
 
