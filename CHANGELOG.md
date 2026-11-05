@@ -6,6 +6,7 @@ Fixes from trying the releases for real on the test rig (an Arch server with the
 
 ### Fixed: setup
 - **The home addresses' step works again on a server with Immich** (P1). The check of Immich's running containers read a list that 0.47.1 had removed. The error counted as a failed container, so `gateway_lan` failed with "not verified: Immich / immich-server, Immich / database, …" on every setup run and every upgrade, and the apps' home addresses stayed off. The list is in `shared.json` now, read by the snapshot's rules and this check alike. Since 0.47.1.
+- **The acceptance check passes Docker's drive guard on a newer systemd.** systemd 262 prints a unit name with an escaped dash in quotes (`"mnt-nekoserver\\x2dmedia.mount"`, the usual media drive's), so the guard never matched and the whole check said "failed". Both ways of printing are read now.
 
 ### Fixed: backups
 - **The nightly app backup works with music on the media drive** (P1). qBittorrent's downloads folder (`library/downloads/music` on the media drive) was taken for "unmanaged writable container state", and the backup failed every night. Since 0.46.0.

@@ -138,6 +138,17 @@ def docker_info(config):
     return valid, value.get('ServerVersion') if isinstance(value.get('ServerVersion'), str) else None
 
 
+def shown_units(value):
+    """The unit names in a list `systemctl show` printed. A name with an escaped character
+    (`mnt-nekoserver\\x2dmedia.mount`, the usual media drive's) is printed as it is by an
+    older systemd and quoted, with the backslash doubled, by a newer one (seen on the rig,
+    systemd 262: the Docker guard then failed this check on every such server)."""
+    try:
+        return set(value.split()) | set(shlex.split(value))
+    except ValueError:
+        return set(value.split())
+
+
 def guard_check(config):
     try:
         text = safe_path(DOCKER_STORAGE_DROPIN).read_text()
@@ -172,7 +183,7 @@ def guard_check(config):
             and command in props.get('ExecStartPre', '')
             and 'ignore_errors=no' in props.get('ExecStartPre', '')
             and all(config[k] in props.get('RequiresMountsFor', '').split() for k in ('data_mount', 'media_mount'))
-            and all(u in props.get('BindsTo', '').split() for u in units)
+            and all(u in shown_units(props.get('BindsTo', '')) for u in units)
         )
     except (OSError, RuntimeError, ValueError, KeyError, IndexError, StopIteration, subprocess.SubprocessError):
         return False
