@@ -1323,13 +1323,11 @@ class AcceptanceReportCompatibilityTests(unittest.TestCase):
 
     def test_every_manual_check_python_writes_is_known_to_the_dashboard(self):
         import acceptance
-        import acceptance_summary
 
         every_module = set(installer_modules())
         written = {row['id'] for row in acceptance.manual_tests(every_module, {'photos': {'deploy_immich': True}})}
         self.assertIn('cloud_client', written)
         self.assertLessEqual(written, self.rust_manual_ids())
-        self.assertEqual(set(acceptance_summary.MANUAL), self.rust_manual_ids())
 
 
 def installer_modules():

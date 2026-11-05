@@ -1726,32 +1726,19 @@ fn recovery(cfg: &Value, data_ok: bool, media_ok: bool) -> Value {
     }
     r
 }
-/// The photo and USB-copy settings in the acceptance scope (acceptance_summary.PHOTO_SCOPE):
-/// a different USB drive or archive folder makes an earlier acceptance run outdated.
-fn photo_scope(cfg: &Value) -> Value {
-    let photos = &cfg["photos"];
-    let mut v = json!({"deploy_immich": photos["deploy_immich"].as_bool().unwrap_or(false)});
-    for key in [
-        "external_backup_uuid",
-        "external_backup_fstype",
-        "archive_dir",
-        "backup_weekday",
-        "backup_time",
-    ] {
-        v[key] = photos[key].clone();
-    }
-    v
-}
-fn scope(cfg: &Value) -> String {
-    if let Some(value) = cfg["acceptance_scope"].as_str().filter(|v| {
-        v.len() == 64
-            && v.bytes()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-    }) {
-        return value.into();
-    }
-    let v = json!({"data_mount":cfg["data_mount"],"media_mount":cfg["media_mount"],"external_backup_mount":cfg["external_backup_mount"],"storage":cfg["storage"],"review_settings":{"server_os":cfg["server_os"],"heartbeat":cfg["heartbeat"],"host_backup":cfg["host_backup"],"tv":cfg["tv"],"networking":cfg["networking"],"dashboard":cfg["dashboard"],"monitoring":cfg["monitoring"],"app_backup":cfg["app_backup"],"nextcloud":cfg["nextcloud"],"maintenance":cfg["maintenance"]},"runtime":{"backend":cfg["runtime"]["backend"]},"gateway":{"services":cfg["gateway"]["services"],"lan_ip":cfg["gateway"]["lan_ip"],"lan_cidr":cfg["gateway"]["lan_cidr"]},"services":cfg["media"]["services"].as_array().cloned().unwrap_or_default(),"photos":photo_scope(cfg)});
-    common::sha(&serde_json::to_vec(&v).unwrap())
+/// The fingerprint of the settings an acceptance run must match: setup works it out
+/// (acceptance_summary.scope_digest) and writes it into these settings; "" when they have
+/// none, which no run matches. This also worked it out itself, a second copy of what it
+/// covers (the review of 0.47.1).
+fn scope(cfg: &Value) -> &str {
+    cfg["acceptance_scope"]
+        .as_str()
+        .filter(|v| {
+            v.len() == 64
+                && v.bytes()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        })
+        .unwrap_or("")
 }
 fn manual(key: &str) -> Option<&'static str> {
     match key {
@@ -1779,35 +1766,23 @@ fn manual(key: &str) -> Option<&'static str> {
 fn acceptance(saved: &Value, cfg: &Value, now: f64) -> Value {
     let mut r = json!({"status":"unknown","profile":null,"generated_at":null,"automatic":{},"manual":{},"manual_checks":[]});
     let profile = text(&saved["profile"]);
+    // The profiles are setup's (config.json), written into these settings: a list kept
+    // here missed "accounts" (the review of 0.47.1).
+    let known = cfg["acceptance_profiles"]
+        .as_array()
+        .is_some_and(|names| names.iter().any(|n| n.as_str() == Some(profile)));
     if saved["format"] != "neko-acceptance-v1"
-        || ![
-            "server_os",
-            "notifications",
-            "app_backup",
-            "host_backup",
-            "heartbeat",
-            "foundation",
-            "media",
-            "music",
-            "cloud",
-            "photos",
-            "full",
-            "network",
-            "networking",
-            "tv",
-            "dashboard",
-            "media_monitor",
-            "lan_access",
-            "remote_access",
-        ]
-        .contains(&profile)
+        || !known
         || num(&saved["generated_at"], 0.0, now + 60.0).is_null()
     {
         return r;
     }
     r["profile"] = json!(profile);
     r["generated_at"] = saved["generated_at"].clone();
-    if saved["version"] != VERSION || text(&saved["dashboard_scope"]) != scope(cfg) {
+    if saved["version"] != VERSION
+        || scope(cfg).is_empty()
+        || text(&saved["dashboard_scope"]) != scope(cfg)
+    {
         r["status"] = json!("outdated");
         return r;
     }
@@ -2829,24 +2804,6 @@ mod os_tests {
         assert_eq!(schedule_stopped(&gone, true, false), None);
         assert_eq!(schedule_stopped(&off, false, true), None);
     }
-    /// The same scope as acceptance_summary.scope_digest for the same settings
-    /// (test_acceptance_scope.py checks this digest on the Python side).
-    #[test]
-    fn the_acceptance_scope_names_the_usb_drive_and_archive_like_python() {
-        let mut cfg = json!({"data_mount":"/srv/nekoserver","media_mount":"/mnt/m",
-            "photos":{"deploy_immich":true,"external_backup_uuid":"cccc-3333","archive_dir":"photos/archive"},
-            "media":{"services":["jellyfin"]},"gateway":{"lan_ip":"192.168.1.5"}});
-        assert_eq!(
-            scope(&cfg),
-            "4a3c4b125516bde8707230fcae0595b16d6db218ffc0d344dcfcc6394cc5828d"
-        );
-        let first = scope(&cfg);
-        cfg["photos"]["external_backup_uuid"] = json!("dddd-4444");
-        assert_ne!(scope(&cfg), first);
-        let second = scope(&cfg);
-        cfg["photos"]["archive_dir"] = json!("pictures/archive");
-        assert_ne!(scope(&cfg), second);
-    }
     #[test]
     fn a_run_cut_off_by_a_restart_is_not_running() {
         let now = 10_000.0;
@@ -3353,7 +3310,7 @@ mod acceptance_tests {
     /// "stale" is a complete check over a day old; a failed or unfinished one stays so.
     #[test]
     fn only_a_complete_check_turns_stale() {
-        let cfg = json!({});
+        let cfg = json!({"acceptance_scope": "ab".repeat(32), "acceptance_profiles": ["full", "accounts"]});
         let report = |automatic: &str, complete: bool| {
             json!({"format": "neko-acceptance-v1", "profile": "full", "version": VERSION,
                 "generated_at": 1000.0, "dashboard_scope": scope(&cfg), "acceptance_complete": complete,
@@ -3376,6 +3333,37 @@ mod acceptance_tests {
         assert_eq!(
             acceptance(&report("needs_setup", false), &cfg, later)["status"],
             "pending"
+        );
+    }
+    /// The review of 0.47.1: the profiles and the scope are setup's, read from the
+    /// settings. A list kept here missed "accounts", and the scope was worked out twice.
+    #[test]
+    fn the_profiles_and_the_scope_are_the_ones_setup_wrote() {
+        let cfg = json!({"acceptance_scope": "cd".repeat(32), "acceptance_profiles": ["full", "accounts"]});
+        let run = |profile: &str, scope: &str| {
+            json!({"format": "neko-acceptance-v1", "profile": profile, "version": VERSION,
+                "generated_at": 1000.0, "dashboard_scope": scope, "acceptance_complete": true,
+                "automatic": [{"status": "pass"}],
+                "manual": [{"id": "host_restore", "status": "pass", "evidence": "user_reported", "confirmed_at": 900.0}]})
+        };
+        let ours = "cd".repeat(32);
+        assert_eq!(
+            acceptance(&run("accounts", &ours), &cfg, 1100.0)["status"],
+            "complete"
+        );
+        assert_eq!(
+            acceptance(&run("tv", &ours), &cfg, 1100.0)["status"],
+            "unknown"
+        );
+        assert_eq!(
+            acceptance(&run("full", &"ef".repeat(32)), &cfg, 1100.0)["status"],
+            "outdated"
+        );
+        // Settings without a fingerprint match no run.
+        let none = json!({"acceptance_profiles": ["full"]});
+        assert_eq!(
+            acceptance(&run("full", ""), &none, 1100.0)["status"],
+            "outdated"
         );
     }
 }
