@@ -312,7 +312,9 @@ fn smart_summary(v: &Value, code: i32) -> Value {
     } else {
         return r;
     }
-    r["temperature"] = num(&v["temperature"]["current"], 0.0, 150.0);
+    // A drive with no sensor (a virtual disk, some USB and SAS drives) says 0: that is no
+    // reading, and the page showed "0 °C" for it.
+    r["temperature"] = num(&v["temperature"]["current"], 1.0, 150.0);
     r["wear_percent"] = num(
         &v["nvme_smart_health_information_log"]["percentage_used"],
         0.0,
@@ -369,7 +371,7 @@ fn smart(source: &str, identity: &str, cache: &mut Value, now: f64, interval: f6
             "SMART reports historical/current health errors; inspect the disk",
             "SMART unavailable or drive sleeping; no wake requested",
         ];
-        return json!({"status":old["status"],"temperature":num(&old["temperature"],0.0,150.0),"wear_percent":num(&old["wear_percent"],0.0,1000.0),"checked_at":old["checked_at"],"reason":if reasons.contains(&text(&old["reason"])){text(&old["reason"])}else{"Inspect drive health"}});
+        return json!({"status":old["status"],"temperature":num(&old["temperature"],1.0,150.0),"wear_percent":num(&old["wear_percent"],0.0,1000.0),"checked_at":old["checked_at"],"reason":if reasons.contains(&text(&old["reason"])){text(&old["reason"])}else{"Inspect drive health"}});
     }
     let (code, s) = probe(
         &[
@@ -3724,6 +3726,20 @@ mod round_two_tests {
         let shown = said(&common::sanitize(&long));
         assert!(!shown.contains(".…") && !shown.ends_with(".."), "{shown}");
         assert!(shown.ends_with('.') || shown.ends_with('…'), "{shown}");
+    }
+    /// Seen on the rig (0.47.5): its virtual disks have no temperature sensor and say 0,
+    /// which the Server health page showed as "0 °C".
+    #[test]
+    fn a_drive_with_no_temperature_sensor_shows_no_temperature() {
+        let read = |current: i64| {
+            smart_summary(
+                &json!({"smart_status": {"passed": true}, "temperature": {"current": current, "drive_trip": 0}}),
+                0,
+            )
+        };
+        assert!(read(0)["temperature"].is_null());
+        assert_eq!(read(0)["status"], "pass");
+        assert_eq!(read(34)["temperature"], 34);
     }
     /// 0.45.8: the upgrade runs as nekoserver-upgrade@<release>; the dashboard asked the
     /// unit "nekoserver-upgrade", which does not exist, so a run at work read as cut off.
