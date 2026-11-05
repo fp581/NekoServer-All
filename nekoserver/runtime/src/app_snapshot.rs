@@ -420,6 +420,22 @@ fn short_of_space(media: &Path, have: u128, needed: u128) -> String {
         gb(needed)
     )
 }
+/// Whether a container's mount is one this backup accounts for: read-only, the app's
+/// own folder (`own`, which it copies), or a bind of the media library or a folder in
+/// it, on either drive (the library is not the app backup's to copy). With the music on
+/// the media drive (the choice since 0.46.0) qBittorrent binds the music downloads
+/// folder there beside the library itself; only the library as a whole was taken on
+/// that drive, so every nightly app backup failed.
+fn covered(mount: &Value, own: &Path, data: &Path, media: &Path) -> bool {
+    if mount["RW"] != true {
+        return true;
+    }
+    let source = Path::new(mount["Source"].as_str().unwrap_or(""));
+    mount["Type"] == "bind"
+        && (source == own
+            || source.starts_with(data.join("library"))
+            || source.starts_with(media.join("library")))
+}
 fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Result<()> {
     let mut containers = vec![];
     let mut running = vec![];
@@ -463,16 +479,8 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
             return Err(Error::new("Persistent application mount missing"));
         }
         // Refuse extra writable state: it would make a backup silently incomplete.
-        for m in mounts {
-            if m["RW"] == true
-                && !(m["Type"] == "bind"
-                    && (m["Source"] == expected.to_string_lossy().as_ref()
-                        || m["Source"] == media.join("library").to_string_lossy().as_ref()
-                        || Path::new(m["Source"].as_str().unwrap_or(""))
-                            .starts_with(data.join("library"))))
-            {
-                return Err(Error::new("Unmanaged writable container state"));
-            }
+        if mounts.iter().any(|m| !covered(m, &expected, data, media)) {
+            return Err(Error::new("Unmanaged writable container state"));
         }
         let row = json!({"id":ids[0],"service":name,"image":v["Image"],"was_running":v["State"]["Running"]==true});
         if row["was_running"] == true {
@@ -613,6 +621,37 @@ mod tests {
             assert!(said.contains(*JOURNAL), "{said}");
         }
         assert!(unclear("sonarr", 2).contains("sudo docker ps -a"));
+    }
+    /// Seen on the rig (0.46.2 and 0.46.3, music on the media drive): qBittorrent's
+    /// second writable bind, the music downloads folder in the media drive's library,
+    /// was "unmanaged" and no nightly app backup ran.
+    #[test]
+    fn the_music_downloads_folder_on_the_media_drive_is_part_of_the_library() {
+        let (data, media) = (Path::new("/srv/nekoserver"), Path::new("/mnt/media"));
+        let own = data.join("appdata/qbittorrent");
+        let bind = |source: &str, rw: bool| json!({"Type": "bind", "Source": source, "RW": rw});
+        for source in [
+            "/srv/nekoserver/appdata/qbittorrent",
+            "/mnt/media/library",
+            "/mnt/media/library/downloads/music",
+            "/srv/nekoserver/library/downloads/music",
+        ] {
+            assert!(covered(&bind(source, true), &own, data, media), "{source}");
+        }
+        for source in [
+            "/mnt/media/cloud/files",
+            "/mnt/media/library-old",
+            "/srv/nekoserver/appdata/sonarr",
+            "/home/neko",
+        ] {
+            assert!(!covered(&bind(source, true), &own, data, media), "{source}");
+            assert!(
+                covered(&bind(source, false), &own, data, media),
+                "read-only"
+            );
+        }
+        let volume = json!({"Type": "volume", "Source": "/mnt/media/library", "RW": true});
+        assert!(!covered(&volume, &own, data, media));
     }
     #[test]
     fn a_full_hdd_message_says_what_is_free_and_needed() {

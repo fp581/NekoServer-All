@@ -495,14 +495,39 @@ def preflight(payloads, ledger, copy=LAN_RECORD):
     return aside
 
 
-def set_aside(paths, stamp=None):
+# Where the copy of a unit file is kept: never beside it. A copy in systemd's folder
+# names an old release, and the upgrade's check of 0.46.0 to 0.46.2 counts it as a service
+# that does not run the new one, so every upgrade from those failed (seen on the rig).
+KEPT_UNITS = Path('/etc/nekoserver-backups/units-before')
+
+
+def move_unit_copies(units=SYSTEMD_UNITS, kept=KEPT_UNITS):
+    """The copies of unit files an earlier release's setup kept beside them, moved to
+    their own folder (KEPT_UNITS). The log lines."""
+    notes = []
+    for copy in sorted(Path(units).glob('nekoserver-*.before-*')):
+        if copy.is_symlink() or not copy.is_file():
+            continue
+        ensure_directory(kept, 0o700)
+        shutil.move(copy, Path(kept) / copy.name)
+        notes.append(
+            f'Gateway: the copy {copy} is kept at {Path(kept) / copy.name} now (systemd\'s folder holds units only)'
+        )
+    return notes
+
+
+def set_aside(paths, stamp=None, units=SYSTEMD_UNITS, kept_units=KEPT_UNITS):
     """A copy of each file beside it (name.before-<time>) before setup rewrites it: what an
-    earlier install, or a hand, put there is kept to look at. The log lines."""
+    earlier install, or a hand, put there is kept to look at. A unit file's copy goes to
+    KEPT_UNITS instead. The log lines."""
     stamp = stamp or time.strftime('%Y%m%dT%H%M%S')
     notes = []
     for path in paths:
         p = safe_path(path)
         kept = p.with_name(p.name + '.before-' + stamp)
+        if p.parent == Path(units):
+            ensure_directory(kept_units, 0o700)
+            kept = Path(kept_units) / kept.name
         shutil.copy2(p, kept)
         notes.append(
             f'Gateway: {p} was not as this release writes it and no record says setup wrote it (an earlier install\'s, or '
@@ -622,7 +647,7 @@ def _apply_lan(config):
         ensure_directory(folder, 0o755)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chown(state, user.pw_uid, user.pw_gid, follow_symlinks=False)
-    notes = set_aside(aside)
+    notes = set_aside(aside) + move_unit_copies()
     for p, content in payloads.items():
         atomic_write(p, content, 0o750 if p.name == native_runtime.NAME else 0o644)
     clean = {k: config[k] for k in ('data_mount', 'media_mount', 'storage')}

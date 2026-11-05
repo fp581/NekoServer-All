@@ -2381,13 +2381,23 @@ class GatewayRecordOnTheSystemDiskTests(unittest.TestCase):
             {own: 'new settings', unit: '[Unit]\nnew\n', self.file: 'old settings'}, self.ssd / 'none', self.copy
         )
         self.assertEqual(aside, [str(own), str(unit)])
-        notes = gateway_tools.set_aside(aside, stamp='20261101T001000')
+        kept = Path(self.tmp.name) / 'kept-units'
+        notes = gateway_tools.set_aside(aside, stamp='20261101T001000', units=unit.parent, kept_units=kept)
         self.assertEqual(own.with_name('lan.json.before-20261101T001000').read_text(), 'an earlier release wrote this')
-        self.assertEqual(
-            unit.with_name('nekoserver-gateway-lan.service.before-20261101T001000').read_text(), '[Unit]\nold\n'
-        )
+        # A unit's copy is never kept in systemd's folder: there it named an old release,
+        # and the upgrade's check of 0.46.0 to 0.46.2 failed on it (seen on the rig).
+        self.assertEqual((kept / 'nekoserver-gateway-lan.service.before-20261101T001000').read_text(), '[Unit]\nold\n')
+        self.assertEqual([p.name for p in unit.parent.iterdir()], ['nekoserver-gateway-lan.service'])
         self.assertEqual(len(notes), 2)
         self.assertIn('a copy is kept at ' + str(own) + '.before-20261101T001000', notes[0])
+        # The copies an earlier release left there are moved out.
+        earlier = unit.with_name('nekoserver-gateway-lan.service.before-20261030T120000')
+        earlier.write_text('[Unit]\nolder\n')
+        moved = gateway_tools.move_unit_copies(unit.parent, kept)
+        self.assertEqual((kept / earlier.name).read_text(), '[Unit]\nolder\n')
+        self.assertEqual([p.name for p in unit.parent.iterdir()], ['nekoserver-gateway-lan.service'])
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(gateway_tools.move_unit_copies(unit.parent, kept), [])
         # A file of someone else's (outside NekoServer's name) still stops setup, by name.
         with self.assertRaisesRegex(RuntimeError, f'no record of writing them: {re.escape(str(self.file))}\\. '):
             gateway_tools.preflight({own: 'newer', self.file: 'new settings'}, self.ssd / 'none', self.copy)

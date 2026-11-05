@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.47.4 — 2026-11-05
+
+Fixes from trying the releases for real on the test rig (an Arch server with the apps running, taken from 0.41.3 through 0.46.2 and 0.46.3 to 0.47.3). All of them are still in 0.47.3. Each fix has a test that fails on 0.47.3.
+
+### Fixed: setup
+- **The home addresses' step works again on a server with Immich** (P1). The check of Immich's running containers read a list that 0.47.1 had removed. The error counted as a failed container, so `gateway_lan` failed with "not verified: Immich / immich-server, Immich / database, …" on every setup run and every upgrade, and the apps' home addresses stayed off. The list is in `shared.json` now, read by the snapshot's rules and this check alike. Since 0.47.1.
+
+### Fixed: backups
+- **The nightly app backup works with music on the media drive** (P1). qBittorrent's downloads folder (`library/downloads/music` on the media drive) was taken for "unmanaged writable container state", and the backup failed every night. Since 0.46.0.
+
+### Fixed: the dashboard
+- **No false "turned read-only" alerts for the SSD and the media drive** (P1). The collector runs with the system read-only to it, so Linux reported every drive as read-only in its view, and both drives showed a critical alert on every server with local drives. The drive's own state is read now. Since 0.46.0.
+- **An upgrade that worked no longer shows "NekoServer upgrade needs attention".** The dashboard looked for the upgrade's schedule, found none (you start it yourself) and said "its schedule is gone, run setup again".
+
+### Fixed: upgrades
+- **An upgrade from 0.46.0, 0.46.1 or 0.46.2 no longer fails on a copy kept beside a unit file** (P1).
+  - 0.46.3 taught its own check to skip the gateway's `.before-<time>` copy. But an upgrade is run and checked by the release the server has, so a 0.46.2 server with such a copy still failed its check, then failed to go back.
+  - Setup now keeps a unit's copy in `/etc/nekoserver-backups/units-before/`, and moves the copies already in systemd's folder there. The older release's check then passes.
+- **A release put back by an older upgrader no longer loses its dashboard** (P1). 0.46.2's record has no list of the units it found, so the newer release's `nekoserver-dashboard.socket` stayed, held the port, and the 0.46.2 dashboard restarted for ever with "Address already in use". Going back from such a record now removes the units a newer release is known to have added.
+- **A release you set up by hand after a failed upgrade stays** (P1). The upgrade's record stayed open, so app updates and the monthly check waited, and at the next start the resume service put the old release back over the new one. Setup run by hand now closes the record and ends the upgrade's report when the server passes the upgrade's check (every step that worked before, the dashboard and every service on this release), and the resume service does the same before it puts anything back.
+
+### Fixed: smaller things
+- The question where an app's files go calls the media drive "the most room" only when it has more free space than the SSD.
+- A test of the dashboard's port no longer reads this PC's own dashboard (it failed on a server whose dashboard uses port 8788).
+
 ## v0.47.3 — 2026-11-05
 
 A stabilization release: fixes from the owner's review of 0.47.2, and a sweep for more of the same kind. Each fix has a test that fails on 0.47.2.

@@ -10,6 +10,7 @@ import guided_setup
 import host
 import permission_checks
 import os_checks
+import neko_common
 from modules import docker as docker_module, tv
 from neko_common import (
     files_root,
@@ -53,6 +54,11 @@ def peer_bindings(peer, config):
 
 # A container whose health check has not finished yet (Docker started it a moment ago).
 STARTING = 'Still starting: its health check has not finished yet.'
+# Where Immich's containers see the photo library and the database (shared.json, the list
+# the snapshot's Compose rules use).
+IMMICH_TARGETS = {
+    service: tuple(targets) for service, targets in neko_common.SHARED['immich_targets'].items() if service != '_about'
+}
 
 
 def item(key, name, status, detail):
@@ -273,8 +279,8 @@ def containers(config, photos=False):
                     )
 
                 if app == 'immich':
-                    # The same bindings the snapshot checks (recovery_tools.IMMICH_BINDINGS).
-                    targets = recovery_tools.IMMICH_BINDINGS.get(svc, ())
+                    # The same bindings the snapshot checks (shared.json "immich_targets").
+                    targets = IMMICH_TARGETS.get(svc, ())
                     if svc == 'immich-server':
                         expected = str(photo_library(config))
                     elif svc == 'database':

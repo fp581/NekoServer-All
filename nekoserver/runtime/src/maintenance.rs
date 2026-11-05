@@ -558,11 +558,16 @@ fn immich_ok(services: &serde_json::Map<String, Value>, data: &Path, photos: &Pa
     immich_binds_ok(services, photos, &data.join("appdata/immich/postgres"))?;
     immich_env_ok(services)
 }
-/// Where Immich's containers see the photo library (older and newer image) and the database.
-const IMMICH_TARGETS: [(&str, &[&str]); 2] = [
-    ("immich-server", &["/data", "/usr/src/app/upload"]),
-    ("database", &["/var/lib/postgresql/data"]),
-];
+/// Where Immich's container `service` sees the photo library (older and newer image) or
+/// the database (shared.json "immich_targets"; the acceptance check reads the same list).
+fn immich_targets(service: &str) -> Vec<&'static str> {
+    common::SHARED["immich_targets"][service]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
 /// Immich's photos and database are bound where its snapshot looks: `photos` and `database`,
 /// at the places its containers use them, and nothing else (but /etc/localtime).
 fn immich_binds_ok(
@@ -570,9 +575,9 @@ fn immich_binds_ok(
     photos: &Path,
     database: &Path,
 ) -> Result<()> {
-    let wanted: [(&str, &Path, &[&str]); 2] = [
-        ("immich-server", photos, IMMICH_TARGETS[0].1),
-        ("database", database, IMMICH_TARGETS[1].1),
+    let wanted: [(&str, &Path, Vec<&str>); 2] = [
+        ("immich-server", photos, immich_targets("immich-server")),
+        ("database", database, immich_targets("database")),
     ];
     for (service, v) in services {
         if v.get("user").is_some() {

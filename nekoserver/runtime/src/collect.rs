@@ -436,7 +436,28 @@ fn statvfs_usage(path: &Path) -> Option<(u64, u64, bool)> {
     }
     let stat = unsafe { stat.assume_init() };
     let (total, used) = space(stat.f_blocks, stat.f_bfree, stat.f_bavail, stat.f_frsize)?;
-    Some((total, used, stat.f_flag & libc::ST_RDONLY != 0))
+    let mounts = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    Some((total, used, filesystem_read_only(&mounts, path)))
+}
+/// Whether the filesystem mounted at `path` is itself read-only, from a mountinfo list:
+/// the filesystem's own options (after the " - ", its type and its source), never the
+/// mount's (the sixth field). This collector runs with ProtectSystem=strict, so in its
+/// own view every drive is a read-only mount, and statvfs (ST_RDONLY) says so too: every
+/// server with a drive of its own showed "turned read-only" for the SSD and the HDD, as
+/// critical alerts (seen on the rig, 0.46.2 and 0.46.3). What Linux does after write
+/// errors is turn the filesystem read-only, which shows here. The last line for the
+/// folder counts (a later mount covers an earlier one).
+fn filesystem_read_only(mountinfo: &str, path: &Path) -> bool {
+    let wanted = path.to_string_lossy();
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (mount, filesystem) = line.split_once(" - ")?;
+            (mount.split(' ').nth(4)? == wanted).then_some(filesystem)
+        })
+        .next_back()
+        .and_then(|filesystem| filesystem.split(' ').nth(2))
+        .is_some_and(|options| options.split(',').any(|o| o == "ro"))
 }
 /// (space the apps can use, used), as `df` counts them: the part of the drive kept for
 /// the system (5% on ext4 unless changed) is not free for the apps, so a drive they
@@ -1170,6 +1191,12 @@ fn utc_seconds(shown: &str) -> Option<f64> {
         .ok()
         .map(|t| t.and_utc().timestamp() as f64)
 }
+/// Whether this job runs on a schedule of its own. The upgrade is started by you only:
+/// without this, every upgrade that worked was shown as "needs attention: its schedule is
+/// gone" (seen on the rig).
+fn scheduled(key: &str) -> bool {
+    key != "upgrade"
+}
 /// A schedule that stopped while its job is still wanted: switched off, or gone after it
 /// had run. None while it is in place (or systemd could not be asked).
 fn schedule_stopped(timer: &Value, known: bool, ever_ran: bool) -> Option<String> {
@@ -1278,7 +1305,7 @@ fn backups(cfg: &Value, now: f64, ok: bool, away: Option<&str>) -> Value {
         let stopped = if ["fail", "running"].contains(&state) {
             None
         } else {
-            schedule_stopped(&timer, known, !success.is_null())
+            schedule_stopped(&timer, known && scheduled(key), !success.is_null())
         };
         let state = if stopped.is_some() { "stale" } else { state };
         let reason = if let Some(why) = unrun {
@@ -2830,6 +2857,9 @@ mod os_tests {
         // Never set up yet, or systemd could not be asked: no evidence.
         assert_eq!(schedule_stopped(&gone, true, false), None);
         assert_eq!(schedule_stopped(&off, false, true), None);
+        // The upgrade has no schedule to lose.
+        assert!(scheduled("applications") && !scheduled("upgrade"));
+        assert_eq!(schedule_stopped(&gone, scheduled("upgrade"), true), None);
     }
     #[test]
     fn a_run_cut_off_by_a_restart_is_not_running() {
@@ -3741,6 +3771,36 @@ mod round_two_tests {
         assert!(!shown_as_pool(0, 1, "unknown"));
         assert!(!shown_as_pool(1, 1, "healthy"));
         assert!(shown_as_pool(1, 1, "warning"));
+    }
+    /// Seen on the rig: the collector's own sandbox (ProtectSystem=strict) shows every
+    /// drive as a read-only mount, and both drives got the "turned read-only" alert. Only
+    /// the filesystem's own "ro" counts (what Linux sets after write errors).
+    #[test]
+    fn a_drive_is_read_only_by_its_filesystem_not_by_this_services_view_of_it() {
+        // As /proc/self/mountinfo reads inside the collector's service (Arch, 0.46.2).
+        let sandboxed = "\
+803 771 8:64 / /srv/nekoserver ro,relatime shared:1 - ext4 /dev/sde rw\n\
+804 771 8:80 / /mnt/nekoserver-media ro,relatime shared:2 - ext4 /dev/sdf rw,errors=remount-ro\n\
+805 803 8:64 /dashboard-state /srv/nekoserver/dashboard-state rw,relatime shared:1 - ext4 /dev/sde rw\n";
+        let ssd = Path::new("/srv/nekoserver");
+        let hdd = Path::new("/mnt/nekoserver-media");
+        assert!(!filesystem_read_only(sandboxed, ssd));
+        assert!(!filesystem_read_only(sandboxed, hdd));
+        // After write errors Linux turns the filesystem itself read-only.
+        let failed = "36 25 8:80 / /mnt/nekoserver-media rw,relatime shared:2 - ext4 /dev/sdf ro,errors=remount-ro\n";
+        assert!(filesystem_read_only(failed, hdd));
+        // A later mount on the same folder covers the earlier one; a folder that is not
+        // a mount point, or a list that could not be read, says nothing.
+        let covered = format!("{failed}90 25 8:96 / /mnt/nekoserver-media rw - ext4 /dev/sdg rw\n");
+        assert!(!filesystem_read_only(&covered, hdd));
+        assert!(!filesystem_read_only(
+            failed,
+            Path::new("/mnt/nekoserver-media/library")
+        ));
+        assert!(!filesystem_read_only("", hdd));
+        // "ro" only as a whole option.
+        let named = "36 25 8:80 / /mnt/x rw - ext4 /dev/sdf rw,rootcontext=robot\n";
+        assert!(!filesystem_read_only(named, Path::new("/mnt/x")));
     }
     /// 0.46.0: drives on a network storage box. The NAS connection is shown from Linux's
     /// iSCSI sessions; a drive that turned read-only or waits for the NAS gets an alert;
