@@ -496,6 +496,12 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
         self.assertEqual(self.ran[-1][0], 'v' + VERSION)
         self.assertFalse(self.journal.exists())
+        # The last line is the one the dashboard shows: it says what was put right.
+        self.assertEqual(
+            self.said[-1],
+            f'This server runs {VERSION} again, as before the upgrade, and passed its check. '
+            f'The upgrade to {NEWER} was cut off before it was checked',
+        )
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
 
     def test_a_release_installed_by_hand_over_a_failed_upgrade_is_not_put_back(self):

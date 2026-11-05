@@ -554,8 +554,12 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
         journal.unlink(missing_ok=True)
         # The last line said is the report's reason, the one the dashboard shows: it says
         # why as well (under "needs attention" it only said that the server was fine).
-        why = f'. The upgrade to {saved.get("to")} did not pass: {saved["problem"]}' if saved.get('problem') else ''
-        out(f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check{why}')
+        to = saved.get('to') or 'the newer release'
+        why = f'did not pass: {saved["problem"]}' if saved.get('problem') else 'was cut off before it was checked'
+        out(
+            f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check. '
+            f'The upgrade to {to} {why}'
+        )
         return 1
     out(
         f'Putting {previous.name} back did not pass either: {problem}. Run  sudo bash install.sh  in {previous} '
