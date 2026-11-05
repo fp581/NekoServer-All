@@ -209,6 +209,51 @@ class ImmichComposeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'still runs'):
             recovery_tools.clear_left_bridge(2284, run)
 
+    def test_a_restore_test_clears_a_left_network_only_while_it_holds_the_lock(self):
+        """The review of 0.46.3: the clearing ran before the lock, so a second test started at
+        the same moment removed the first one's new network and containers (made, not yet
+        started) as if a stopped test had left them."""
+        import contextlib
+        import socket
+        from unittest import mock
+
+        import recovery_tools
+
+        order = []
+
+        @contextlib.contextmanager
+        def held(config):
+            order.append('lock')
+            yield
+
+        def stop(argv, *more):
+            raise RuntimeError('stop here')
+
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+        meta = {'database_bytes': 0}
+        with contextlib.ExitStack() as stack:
+            for name, value in {
+                'mounts': lambda config: None,
+                'verify_snapshot': lambda path: (meta, {}),
+                'new_folder': lambda config, path, kind: Path('/nonexistent/recovery-tests/t'),
+                'within': lambda a, b: False,
+                'enough_space': lambda path, size: None,
+                'regular_files': lambda path: [],
+                'isolated_model': lambda *a: {'services': {}},
+                'require_root': lambda: None,
+                'lock': held,
+                'clear_left_bridge': lambda port: order.append('clear'),
+                'command': stop,
+            }.items():
+                stack.enter_context(mock.patch.object(recovery_tools, name, value))
+            with self.assertRaises(RuntimeError):
+                recovery_tools.restore_test(
+                    {}, '/nonexistent/snapshot', '/nonexistent/t', port, apply=True, confirm='RESTORE-ISOLATED'
+                )
+        self.assertEqual(order, ['lock', 'clear'])
+
     def test_setup_checks_the_file_before_starting_it(self):
         source = (ROOT / 'modules/photos.py').read_text()
         self.assertNotIn('def chip_only', source)  # no second copy of the rules

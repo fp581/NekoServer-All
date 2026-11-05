@@ -135,11 +135,40 @@ class UpgradeTests(unittest.TestCase):
             return 2
 
         ran = []
-        with mock.patch.object(upgrade.subprocess, 'run', side_effect=lambda argv, **k: ran.append(argv)):
+
+        def systemctl(argv, **k):
+            ran.append(argv)
+            return subprocess.CompletedProcess(argv, 3 if 'is-active' in argv else 0, '', '')
+
+        with mock.patch.object(upgrade.subprocess, 'run', side_effect=systemctl):
             self.upgrade(setup_adding)
         self.assertFalse(added.exists())
         self.assertTrue((self.units / 'nekoserver-dashboard.service').exists())
         self.assertIn(['systemctl', 'disable', '--now', 'nekoserver-foo.timer'], ran)
+
+    def test_a_newer_service_that_does_not_stop_keeps_the_way_back_from_passing(self):
+        """The review of 0.46.3: a failed stop was ignored and the unit's file removed, so
+        the check after it missed the newer service that still ran, and the way back said
+        it had worked."""
+        (self.units / 'nekoserver-dashboard.service').write_text('old\n')
+        added = self.units / 'nekoserver-foo.service'
+
+        def setup_adding(project, settings, account, log_file):
+            if 'nekoserver' in str(project):
+                added.write_text('ExecStart=/usr/local/lib/x/v9.9.9/y\n')
+                return 2
+            return 0  # the older release's setup works
+
+        def systemctl(argv, **k):
+            return subprocess.CompletedProcess(argv, 1 if 'disable' in argv else 0, '', 'Failed to stop')
+
+        with mock.patch.object(upgrade.subprocess, 'run', side_effect=systemctl):
+            code = self.upgrade(setup_adding)
+        self.assertEqual(code, 2)
+        self.assertTrue(added.exists())
+        self.assertTrue(
+            any('nekoserver-foo.service' in line and 'did not stop' in line for line in self.said), self.said
+        )
 
     def test_an_upgrade_waits_for_a_pending_restart(self):
         """The audit of 0.46.2: setup stops at once when a restart waits (exit 3), the old

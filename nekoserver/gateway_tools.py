@@ -143,9 +143,13 @@ HTTPS = 'https://'
 OCC_GET, OCC_SET, OCC_DELETE = 'config:system:get', 'config:system:set', 'config:system:delete'
 
 
-# What command() says for a command that failed without a word: occ's answer for a
-# setting that is not set (exit 1, nothing printed).
-UNSAID = 'no reason given'
+class CommandFailed(RuntimeError):
+    """A gateway command that ran and exited with an error: its exit code and what it
+    printed (so a caller can tell one answer, such as occ's "not set", from a failure)."""
+
+    def __init__(self, message, code, stdout, stderr):
+        super().__init__(message)
+        self.code, self.stdout, self.stderr = code, stdout or '', stderr or ''
 
 
 def command(args, timeout=30, env=None):
@@ -158,8 +162,8 @@ def command(args, timeout=30, env=None):
         raise RuntimeError(f'Gateway command took over {timeout} seconds ({what})') from None
     if p.returncode:
         # The command's own last error line says what to fix (no values are in it).
-        last = next((line.strip() for line in reversed(p.stderr.splitlines()) if line.strip()), UNSAID)
-        raise RuntimeError(f'Gateway command failed ({what}): {last[-300:]}')
+        last = next((line.strip() for line in reversed(p.stderr.splitlines()) if line.strip()), 'no reason given')
+        raise CommandFailed(f'Gateway command failed ({what}): {last[-300:]}', p.returncode, p.stdout, p.stderr)
     return p.stdout
 
 
@@ -937,16 +941,19 @@ def configure_cloud_origin(config, host, port):
 
 
 def occ_value(base, key):
-    """A Nextcloud setting as occ shows it, or None when it is not set (occ exits 1 with
-    nothing said). Anything else (a timeout, an error occ explains, output that is not
-    JSON, such as a PHP warning before it) raises: a setting that could not be read is
-    never taken for an empty one (the audit of 0.46.2: the trusted domains' first entry
+    """A Nextcloud setting as occ shows it, or None when it is not set: occ exits 1 with
+    nothing printed. Anything else (a timeout, another exit code even with nothing said,
+    such as 137 for a killed process, an error occ explains, output that is not JSON, such
+    as a PHP warning before it) raises: a setting that could not be read is never taken
+    for an empty one (the audits of 0.46.2 and 0.46.3: the trusted domains' first entry
     was then overwritten)."""
     try:
         return json.loads(command(base + [OCC_GET, key, '--output=json'], timeout=60))
-    except RuntimeError as exc:
-        if str(exc).endswith(UNSAID):
+    except CommandFailed as exc:
+        if exc.code == 1 and not exc.stdout.strip() and not exc.stderr.strip():
             return None
+        raise RuntimeError(f"Nextcloud's {key} setting could not be read ({exc}); nothing was changed") from None
+    except RuntimeError as exc:
         raise RuntimeError(f"Nextcloud's {key} setting could not be read ({exc}); nothing was changed") from None
     except ValueError:
         raise RuntimeError(

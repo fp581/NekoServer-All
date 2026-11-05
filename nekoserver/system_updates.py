@@ -133,8 +133,11 @@ def newer_kernel(running, installed):
     of the running kernel's kind (amd64, rt-amd64, generic...) and newer than it, or None."""
 
     def parts(name):
-        """((6, 1, 0, 26), '-amd64') from '6.1.0-26-amd64'; None for another form."""
+        """((6, 1, 0, 26), 'amd64') from '6.1.0-26-amd64' (Debian 12, Ubuntu), and
+        ((6, 12, 48, 0), 'amd64') from '6.12.48+deb13-amd64' (Debian 13: its release tag
+        after a +, the review of 0.46.3); None for another form."""
         version, _, rest = name.partition('-')
+        version = version.partition('+')[0]
         numbers = version.split('.')
         if not all(n.isdigit() for n in numbers):
             return None

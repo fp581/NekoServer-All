@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.46.3Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.46.4Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -68,7 +68,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.46.3Beta" or "0.46.3"; None for anything else."""
+    """(0, 44, 0) from "v0.46.4Beta" or "0.46.4"; None for anything else."""
     match = TAG.fullmatch(text if text.startswith('v') else 'v' + text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -296,18 +296,29 @@ def installed_units(units=None):
 def added_units(before, units=None, run=None):
     """The units the newer release added (not there before the upgrade), switched off and
     removed when its release is put back: the older setup writes only its own, so the new
-    ones would keep running the newer release's program."""
+    ones would keep running the newer release's program. Returns (removed, stuck): a unit
+    that did not stop keeps its file, so it is still seen and the way back does not pass
+    (the review of 0.46.3: a failed stop was ignored and the file removed, so the check
+    after it missed the newer service that still ran)."""
     run = run or subprocess.run
-    removed = []
+    removed, stuck = [], []
     for unit in installed_units(units):
         if unit.name in before:
             continue
-        run(['systemctl', 'disable', '--now', unit.name], capture_output=True, text=True, timeout=120, check=False)
+        stop = run(
+            ['systemctl', 'disable', '--now', unit.name], capture_output=True, text=True, timeout=120, check=False
+        )
+        alive = run(
+            ['systemctl', 'is-active', '--quiet', unit.name], capture_output=True, text=True, timeout=60, check=False
+        )
+        if stop.returncode or alive.returncode == 0:
+            stuck.append(unit.name)
+            continue
         unit.unlink(missing_ok=True)
         removed.append(unit.name)
     if removed:
         run(['systemctl', 'daemon-reload'], capture_output=True, text=True, timeout=120, check=False)
-    return removed
+    return removed, stuck
 
 
 BUSY_MOVE = 'A drive move (migrate.py) or another upgrade is at work'
@@ -405,10 +416,14 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
     finished it."""
     saved = record('going_back', journal)
     config = json.loads(settings_path(settings).read_text())
+    stuck = []
     if isinstance(saved.get('units'), list):
-        for name in added_units(set(saved['units'])):
+        removed, stuck = added_units(set(saved['units']))
+        for name in removed:
             out(f'Removed {name}: the newer release added it')
     problem = setup_problem(setup, previous, settings, account, log_file)
+    if problem is None and stuck:
+        problem = 'these services of the newer release did not stop: ' + ', '.join(stuck)
     if problem is None:
         problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:
@@ -514,7 +529,7 @@ def keep_report(path, row):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=('run', 'resume'))
-    parser.add_argument('--tag', help='with run: the release, such as v0.46.3Beta')
+    parser.add_argument('--tag', help='with run: the release, such as v0.46.4Beta')
     parser.add_argument(
         '--config', type=lambda v: Path(checked_settings(v)), default=default_settings(Path(__file__).parent)
     )
@@ -522,7 +537,7 @@ def main():
     if os.geteuid() != 0:
         parser.error('Run it with sudo')
     if args.action == 'run' and not (args.tag and TAG.fullmatch(args.tag)):
-        parser.error('run needs --tag with a release, such as v0.46.3Beta')
+        parser.error('run needs --tag with a release, such as v0.46.4Beta')
     config = json.loads(settings_path(args.config).read_text())
     if args.action == 'resume':
         return reported(config, RESUME_UNIT, lambda out: resume(args.config, out))

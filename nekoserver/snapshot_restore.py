@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import sys
 
-from neko_common import Destination, safe_path, atomic_json, ensure_room
+from neko_common import Destination, safe_path, ensure_room
 
 
 # What the restore did, written into the new folder next to the files.
@@ -189,8 +189,19 @@ def restore(kind, snapshot, destination, preserve_owners=False):
             target.check(done)
             copy_row(kind, snapshot, target, row)
         target.check(len(rows))
+        finish(kind, manifest, target, preserve_owners)
     finally:
         target.close()
+    return destination
+
+
+def finish(kind, manifest, target, preserve_owners):
+    """The report, owners and times, all through the restore folder opened at the start
+    (the review of 0.46.3: it was closed before them, so a folder put at its path then got
+    the owners and times, and a report saying everything was restored and verified). The
+    path is checked again after each, so the restore never says it worked once the folder
+    it began in is not there any more."""
+    rows = manifest['files']
     # Privately retain evidence before applying original directory permissions. Owners
     # count as restored only after every chown/chmod worked: a failure leaves the
     # report saying so (the command itself fails too).
@@ -208,14 +219,15 @@ def restore(kind, snapshot, destination, preserve_owners=False):
             missing_optional=manifest.get('missing_optional', []),
             left_out=manifest.get('left_out', []),
         )  # Steam's, on a night Steam was open
-    atomic_json(destination / REPORT_NAME, report)
+    target.write_json(REPORT_NAME, report)
     if preserve_owners:
-        apply_owners(kind, destination, rows)
+        apply_owners(kind, target, rows)
+        target.check(len(rows))
         report.update(original_owners_restored=True, ownership='restored')
-        atomic_json(destination / REPORT_NAME, report)
-    report['times_restored'] = apply_times(kind, destination, rows)
-    atomic_json(destination / REPORT_NAME, report)
-    return destination
+        target.write_json(REPORT_NAME, report)
+    report['times_restored'] = apply_times(kind, target, rows)
+    target.check(len(rows))
+    target.write_json(REPORT_NAME, report)
 
 
 def copy_row(kind, snapshot, target, row):
@@ -244,15 +256,19 @@ def copy_row(kind, snapshot, target, row):
         raise RuntimeError('Restored file verification failed; partial directory retained')
 
 
-def apply_owners(kind, destination, rows):
-    """Original owners and modes, deepest entries first so parents stay writable."""
+def apply_owners(kind, target, rows):
+    """Original owners and modes, deepest entries first so parents stay writable, each
+    set on the restored entry itself (opened from the restore folder, `target`)."""
     for row in sorted(rows, key=lambda r: len(relative(kind, r['path']).parts), reverse=True):
-        target = safe_path(destination / relative(kind, row['path']))
-        os.chown(target, row['uid'], row['gid'])
-        os.chmod(target, row['mode'] if row['kind'] != 'symlink' else 0o600)
+        fd = target.entry(relative(kind, row['path']).parts)
+        try:
+            os.chown(fd, row['uid'], row['gid'])
+            os.chmod(fd, row['mode'] if row['kind'] != 'symlink' else 0o600)
+        finally:
+            os.close(fd)
 
 
-def apply_times(kind, destination, rows):
+def apply_times(kind, target, rows):
     """Each file and folder gets back the time it was last changed: synchronisation and
     tools that compare ages would otherwise see every restored file as new. Folders come
     last (deepest first), because putting files into a folder changes its time. The files
@@ -261,12 +277,18 @@ def apply_times(kind, destination, rows):
     dated = [row for row in rows if 'mtime' in row]
     done = True
     for row in sorted(dated, key=lambda r: (r['kind'] == 'directory', -len(relative(kind, r['path']).parts))):
-        target = safe_path(destination / relative(kind, row['path']))
         changed = row['mtime'] * 10**9 + row['mtime_nsec']
         try:
-            os.utime(target, ns=(target.lstat().st_atime_ns, changed), follow_symlinks=False)
+            fd = target.entry(relative(kind, row['path']).parts)
         except OSError:
             done = False
+            continue
+        try:
+            os.utime(fd, ns=(os.fstat(fd).st_atime_ns, changed))
+        except OSError:
+            done = False
+        finally:
+            os.close(fd)
     return done
 
 

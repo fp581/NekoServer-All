@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.46.3'
+VERSION = '0.46.4'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -1488,6 +1488,39 @@ class Destination:
             os.close(fd)
             raise
         return fd
+
+    def entry(self, parts):
+        """An open handle on a file or folder already restored below the restore folder,
+        reached from its open folder without following a link and never made anew, so
+        owners, modes and times go to what was restored. The caller closes it."""
+        fd = os.dup(self.fd)
+        try:
+            for depth, part in enumerate(parts, 1):
+                flags = (
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK if depth == len(parts) else FOLDER_FLAGS
+                )
+                found = os.open(part, flags, dir_fd=fd)
+                os.close(fd)
+                fd = found
+                if os.fstat(fd).st_dev != self.held[0]:
+                    raise DestinationGone(f'"{part}" in {self.path} is on another drive (one mounted there)')
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    def write_json(self, name, payload):
+        """`name` in the restore folder itself, written through its open folder and swapped
+        in whole (as atomic_json does by path)."""
+        part = f'.{name}.part'
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(part, dir_fd=self.fd)
+        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=self.fd)
+        with os.fdopen(fd, 'w') as out:
+            out.write(json.dumps(payload, indent=2) + '\n')
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(part, name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
 
     def close(self):
         os.close(self.fd)

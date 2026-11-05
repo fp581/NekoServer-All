@@ -1204,15 +1204,18 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
             'Nothing was changed: add  --confirm RESTORE-ISOLATED  to the command to build the separate test copy '
             '(it never touches your real Immich)'
         )
-    clear_left_bridge(port)
-    project = 'neko-restore-' + uuid.uuid4().hex[:12]
-    for argv in (
-        DOCKER + ['ps', '-a', '--filter', PROJECT_LABEL + project, '-q'],
-        DOCKER + ['network', 'ls', '--filter', PROJECT_LABEL + project, '-q'],
-    ):
-        if command(argv).strip():
-            raise RuntimeError('Restore project identity already exists')
     with lock(config):
+        # Under the lock: a second test started at the same time waits here, so it never
+        # takes the first one's new network and containers (made, not yet started) for ones
+        # a stopped test left (the review of 0.46.3).
+        clear_left_bridge(port)
+        project = 'neko-restore-' + uuid.uuid4().hex[:12]
+        for argv in (
+            DOCKER + ['ps', '-a', '--filter', PROJECT_LABEL + project, '-q'],
+            DOCKER + ['network', 'ls', '--filter', PROJECT_LABEL + project, '-q'],
+        ):
+            if command(argv).strip():
+                raise RuntimeError('Restore project identity already exists')
         workspace.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         workspace.mkdir(mode=0o700)
         atomic_write(workspace / INCOMPLETE, 'Restore rehearsal incomplete\n')

@@ -1099,6 +1099,15 @@ class Usb:
             self.__exit__()
             raise
 
+    def same_nas_disk(self):
+        """On a NAS: the drive is the NAS disk setup chose (its WWN), never a restored or
+        copied LUN with the same filesystem UUID."""
+        if self.wwn and nas_disk_of(Path('/dev/disk/by-uuid') / self.uuid) != self.wwn:
+            raise RuntimeError(
+                'the USB backup drive has its UUID but is on another NAS disk than setup chose (a restored or '
+                'copied LUN, most likely); run  sudo bash install.sh  to choose which one to use'
+            )
+
     def open(self):
         if (
             subprocess.run(
@@ -1108,11 +1117,7 @@ class Usb:
         ):
             if not (Path('/dev/disk/by-uuid') / self.uuid).exists():
                 return None
-            if self.wwn and nas_disk_of(Path('/dev/disk/by-uuid') / self.uuid) != self.wwn:
-                raise RuntimeError(
-                    'the USB backup drive has its UUID but is on another NAS disk than setup chose (a restored or '
-                    'copied LUN, most likely); run  sudo bash install.sh  to choose which one to use'
-                )
+            self.same_nas_disk()  # before it is mounted
             self.mount.mkdir(parents=True, exist_ok=True)
             options = usb_mount_options(self.fstype, self.writable)
             if (
@@ -1129,6 +1134,9 @@ class Usb:
         found = (findmnt('UUID,OPTIONS', self.mount) or '').split()
         if len(found) != 2 or found[0].lower() != self.uuid.lower():
             return None
+        # Mounted already (by the weekly copy, by hand): checked all the same (the review of
+        # 0.46.3: a copied LUN mounted there before was taken as it was).
+        self.same_nas_disk()
         if not private_mount_options(found[1], self.fstype):
             raise RuntimeError(
                 'the USB drive is mounted so that other accounts on this computer could read '

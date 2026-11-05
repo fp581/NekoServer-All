@@ -260,10 +260,19 @@ pub fn run(a: &crate::Args) -> Result<()> {
             crate::backup::guard(&cfgpath, &data, &media)?;
             println!("NAS watch: the drives on the network storage box take writes again; starting the apps");
             if let Err(e) = drive_return::start_again(&cfgpath, &data, &media, "NAS watch") {
-                // The drives are fine; something the start runs failed (an app that won't
-                // start, a job's own resume). No longer held: retrying every minute would
-                // restart everything each time (the 0.46.1 audit). Said, in this check's log.
-                println!("NAS watch: not everything started again ({e}); see the journal of the service named");
+                if !drive_return::services_up() {
+                    // Docker or another of the apps' services did not start: still held, so
+                    // the next check (in a minute) starts them again (the review of 0.46.3:
+                    // the hold was lifted, and nothing started them any more).
+                    println!(
+                        "NAS watch: the apps did not start again ({e}); trying again in a minute"
+                    );
+                    return save(&record);
+                }
+                // The apps' services run; something after them failed (a job's own resume).
+                // No longer held: retrying every minute would restart everything each time
+                // (the 0.46.1 audit). Said, in this check's log.
+                println!("NAS watch: the apps run again, but not everything finished ({e}); see the journal of the service named");
             }
             record["held"] = json!(false);
             record["since"] = Value::Null;

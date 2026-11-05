@@ -178,6 +178,33 @@ class SnapshotRestoreTests(unittest.TestCase):
         # Also inside one row: a folder on another drive (one mounted there) is refused.
         self.assertIn('st_dev != self.held[0]', (ROOT / 'neko_common.py').read_text())
 
+    def test_a_folder_put_in_its_place_at_the_end_gets_no_report_and_no_metadata(self):
+        """The review of 0.46.3: the restore folder was closed before the report, owners and
+        times, so a folder put at its path then got them, with a report saying the restore
+        was verified."""
+        snap = self.root / 'snap'
+        make(snap, sr.APPS, {'appdata/a/one': b'1'})
+        manifest = json.loads((snap / 'manifest.json').read_text())
+        for row in manifest['files']:
+            row['mtime'], row['mtime_nsec'] = 1_580_000_000, 0
+        (snap / 'manifest.json').write_text(json.dumps(manifest))
+        target, moved = self.root / 'new', self.root / 'moved'
+        real = sr.apply_times
+
+        def swapped_first(kind, opened, rows):
+            os.rename(target, moved)
+            (target / 'appdata/a').mkdir(parents=True)
+            (target / 'appdata/a/one').write_bytes(b'someone else')
+            return real(kind, opened, rows)
+
+        with mock.patch.object(sr, 'apply_times', swapped_first):
+            with self.assertRaisesRegex(RuntimeError, 'is not the folder it began in any more'):
+                sr.restore(sr.APPS, snap, target)
+        self.assertFalse((target / 'restore-report.json').exists())
+        self.assertGreater((target / 'appdata/a/one').stat().st_mtime, 1_700_000_000)
+        self.assertEqual((moved / 'appdata/a/one').stat().st_mtime_ns, 1_580_000_000 * 10**9)
+        self.assertTrue((moved / 'restore-report.json').exists())
+
     def test_a_missing_parent_folder_says_what_to_do(self):
         # IT-16: it said only "No such file or directory".
         snap = self.root / 'snap'
