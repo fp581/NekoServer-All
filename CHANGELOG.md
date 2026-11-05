@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.47.5 — 2026-11-05
 
 More fixes from the test rig, found after 0.47.4. Each has a test that fails on 0.47.4.
 
