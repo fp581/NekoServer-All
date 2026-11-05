@@ -621,14 +621,27 @@ def settle_after_setup(config, out=print, journal=JOURNAL, check=None):
     """After a setup run a person started (never the upgrade's own): an upgrade's record
     left open is closed when the server now passes the check (settled). Without this the
     record stayed until the next start, and app updates and the monthly check waited.
+    The upgrade's report ends with it too ("pass" on the release it was for, "partial" on
+    the one the server had), or the dashboard would go on saying the upgrade needs you.
     Nothing happens while an upgrade or a drive move is at work."""
-    if not Path(journal).exists():
+    saved = read(journal)
+    if saved is None:
         return False
     held = hold_operation(OPERATION_LOCK)
     if held is None:
         return False
+    said = []
     with held:
-        return settled(config, out, journal, check=check, by_hand=True)
+        if not settled(config, said.append, journal, saved, check, by_hand=True):
+            return False
+    out(said[-1])
+    row = {'job': 'upgrade', 'unit': RESUME_UNIT, 'started_at': time.time(), 'finished_at': time.time()}
+    if numbers(VERSION) >= numbers(str(saved['to'])):
+        row.update(status='pass', last_success=row['finished_at'])
+    else:
+        row.update(status='partial', missing=said[-1:], last_partial=row['finished_at'], last_success=None)
+    keep_report(ssd(config) / REPORT, row)
+    return True
 
 
 # The upgrade's report, beside the other jobs' (the dashboard's "last upgrade" line and

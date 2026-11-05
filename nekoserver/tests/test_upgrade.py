@@ -515,8 +515,13 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue(self.journal.exists())
         # The release it had, put back by hand and whole (what a failed way back asks for).
         self.back_problem = None
-        self.assertTrue(upgrade.settle_after_setup(config, self.said.append, self.journal))
+        with mock.patch.object(upgrade, 'keep_report') as kept:
+            self.assertTrue(upgrade.settle_after_setup(config, self.said.append, self.journal))
         self.assertFalse(self.journal.exists())
+        # The report ends too, or the dashboard goes on saying the upgrade needs you.
+        path, row = kept.call_args.args
+        self.assertEqual((path, row['status']), (self.data / 'reports/jobs/upgrade.json', 'partial'))
+        self.assertEqual(row['missing'], [self.said[-1]])
         self.assertFalse(upgrade.settle_after_setup(config, self.said.append, self.journal))  # none left
         # Some other release than the two the record names: left for the resume service.
         older = self.data / 'installer/releases/v0.1.0'
