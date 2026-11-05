@@ -5,6 +5,7 @@
 More fixes, found after 0.47.5.
 
 ### Fixed
+- **The media apps can write to a library Docker made first.** Seen on the rig after the media drive was replaced: the apps started before setup ran on the new drive, so Docker made the folders it binds (`library/movies`, `tv`, `downloads`) itself, owned by root and closed to the apps. Setup made a folder only when it was missing, so every later run left them, and Radarr, Sonarr, qBittorrent and Lidarr could write nothing there. Setup now hands over such a folder (root's, as Docker makes it, with nothing in it but folders like it). A folder with files in it, or with another owner or access, is left as it is.
 - **A release whose tag was written another way is offered.** 0.47.4 was published as `0.47.4-beta` (no `v`) and 0.47.0 as `v0.47.0-Beta`: neither matched the tag rule, so no server was offered them, and nothing said so. A tag without the `v`, and a beta written `Beta`, `beta`, `-Beta` or `-beta`, is read as the release it is. The dashboard's check and the upgrade read one rule now (`shared.json`), where each had its own copy. Only servers running this release or later read tags this way: until then, publish tags as `vX.Y.Z-beta`.
 
 ## v0.47.5 — 2026-11-05

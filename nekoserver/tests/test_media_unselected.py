@@ -3,6 +3,7 @@ containers removed with `docker compose down`, never its volumes); its settings,
 and Compose file stay, so adding it back starts it as it was."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -117,6 +118,55 @@ class MonitorRefreshTests(unittest.TestCase):
             self.assertEqual(json.loads(saved.read_text())['media']['services'], ['jellyfin', 'sonarr'])
             self.assertFalse(media_monitor.refresh(config, logged.append))
         self.assertIn('media_monitor', installer.REFRESHED)
+
+
+class LibraryFolderTests(unittest.TestCase):
+    """Seen on the rig (0.47.5): the media drive was replaced, and the apps started before
+    setup ran on it. Docker made the folders it was told to bind (movies, tv, downloads),
+    root's and closed to the apps, and setup then left them as they "existed": Radarr,
+    Sonarr, qBittorrent and Lidarr could write nothing, through every later run."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.library = Path(self.tmp.name) / 'library'
+        self.library.mkdir()
+        self.me, self.logged = os.getuid(), []
+
+    def folder(self, name, mode=0o755):
+        path = self.library / name
+        path.mkdir(parents=True)
+        path.chmod(mode)
+        return path
+
+    def handed_over(self, path):
+        # The test's own account stands in for root, as the one Docker makes folders as.
+        media.library_folder(path, self.me, os.getgid(), self.logged.append, root=self.me)
+        return path.stat().st_mode & 0o7777 == 0o2775
+
+    def test_a_folder_docker_made_is_handed_to_the_apps(self):
+        downloads = self.folder('downloads')
+        inside = self.folder('downloads/music')  # the music downloads' mount point, Docker's too
+        self.assertTrue(self.handed_over(downloads))
+        self.assertIn('made by Docker', self.logged[0])
+        self.assertEqual(inside.stat().st_mode & 0o7777, 0o755)  # its own turn comes
+        self.assertTrue(self.handed_over(inside))
+
+    def test_a_missing_folder_is_made_for_the_apps(self):
+        self.assertTrue(self.handed_over(self.library / 'movies'))
+        self.assertEqual(self.logged, [])
+
+    def test_a_folder_with_anything_in_it_or_set_up_another_way_is_left_alone(self):
+        films = self.folder('movies')
+        (films / 'Film (2020).mkv').write_text('x')
+        closed = self.folder('tv', 0o750)
+        other = self.folder('downloads')
+        self.assertFalse(self.handed_over(films))
+        self.assertFalse(self.handed_over(closed))
+        # Someone else's folder (not root's): theirs to keep.
+        media.library_folder(other, self.me, os.getgid(), self.logged.append, root=self.me + 1)
+        self.assertEqual(other.stat().st_mode & 0o7777, 0o755)
+        self.assertEqual(self.logged, [])
 
 
 if __name__ == '__main__':
