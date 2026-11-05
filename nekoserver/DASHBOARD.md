@@ -39,7 +39,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
 | **Help** | Step-by-step guides, the error codes below, installing it as an app, and a privacy-safe summary to share. |
 
-On a phone the main pages are in the bar at the bottom; **More** opens the rest. On a tablet the menu becomes a slim icon rail. Settings (⚙) has a light theme, larger text (Large, or TV for across the room) and the cat's animation (moving, or still pictures).
+On a phone the main pages are in the bar at the bottom; **More** opens the rest. On a tablet the menu becomes a slim icon rail. Settings (⚙) has a warm light theme (Lamplight), larger text (Large, or TV for across the room) and the cat's animation (moving, or still pictures).
 
 ## The cat
 

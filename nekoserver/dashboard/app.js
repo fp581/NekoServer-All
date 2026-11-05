@@ -1299,6 +1299,11 @@ function showCat(img, mood, small) {
   const file = catFile(mood, small);
   if (img.getAttribute('src') !== file) {
     img.setAttribute('src', file);
+    // Fades the new mood in (style.css, only when motion is welcome).
+    const box = img.parentElement;
+    box.classList.remove('arrive');
+    void box.offsetWidth;
+    box.classList.add('arrive');
   }
 }
 function noteFinished(s) {
@@ -4456,7 +4461,7 @@ function preferences() {
       'theme',
       [
         ['dark', 'Neko night'],
-        ['light', 'Soft daylight'],
+        ['light', 'Lamplight (soft and warm)'],
         ['system', 'Same as this device']
       ],
       'dark'

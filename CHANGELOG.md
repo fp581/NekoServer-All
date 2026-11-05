@@ -11,8 +11,10 @@ A feature release: the dashboard's new look, **Moonlit Neko**.
 - A finished job is celebrated once, when the page sees its last good copy move on; opening the page never replays an old one, and a warning always wins.
 
 ### Changed
-- **New colours** for the dashboard in both themes (night and daylight), from the cat theme. The overall status sits beside the cat, and the four summary facts are a compact line instead of four boxes.
-- The README's dashboard recording shows the new look. It was made from the real dashboard program serving example readings: the hardware readings are those of the test machine, and Fans & lights is not in it (there was no fan hardware to control).
+- **The night palette is warmer** (plum-charcoal), and the light theme is now **Lamplight**: soft parchment with no bright white, so switching to it never dazzles. The setup window uses the same colours.
+- **A moonlit Home:** a faint night sky behind the page, and a glow behind the cat in the colour of its mood (lavender at rest, mint while a job runs, peach on success, amber or red on a problem). A new mood fades in; nothing moves when motion is turned down. The four summary facts are a compact line instead of four boxes.
+- **New logo and app icons:** Neko peeking in front of a full moon, in the menu, the browser tab and on a phone's home screen (they replace the pink cat face).
+- **New README recordings** of the dashboard and the setup window. Both were made from the real programs: the dashboard program serving example readings (the hardware readings are those of the test machine; Fans & lights is not in it, as there was no fan hardware to control), and the setup window with its real steps while setup's progress was replayed (no real installation ran).
 
 ## v0.46.4 — 2026-11-05
 
