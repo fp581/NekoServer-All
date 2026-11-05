@@ -293,6 +293,27 @@ def installed_units(units=None):
     return sorted(p for p in Path(units or UNITS).glob('nekoserver-*') if p.suffix in UNIT_KINDS and p.is_file())
 
 
+def stopped_for_good(name, run):
+    """`name` switched off and no longer running. A template (`x@.service`) is no unit of its
+    own: systemd can't stop it by that name, so it is switched off and its instances
+    (`x@<anything>.service`) are stopped instead (the review of 0.47.0: the stop of the
+    template's own name always failed, so the way back never passed)."""
+    quiet = {'capture_output': True, 'text': True, 'check': False}
+    if '@.' in name:
+        instances = name.replace('@.', '@*.')
+        off = run(['systemctl', 'disable', name], timeout=120, **quiet)
+        stop = run(['systemctl', 'stop', instances], timeout=120, **quiet)
+        left = run(
+            ['systemctl', 'list-units', '--state=active,activating,deactivating', '--no-legend', '--plain', instances],
+            timeout=60,
+            **quiet,
+        )
+        return not off.returncode and not stop.returncode and not left.returncode and not (left.stdout or '').strip()
+    stop = run(['systemctl', 'disable', '--now', name], timeout=120, **quiet)
+    alive = run(['systemctl', 'is-active', '--quiet', name], timeout=60, **quiet)
+    return not stop.returncode and alive.returncode != 0
+
+
 def added_units(before, units=None, run=None):
     """The units the newer release added (not there before the upgrade), switched off and
     removed when its release is put back: the older setup writes only its own, so the new
@@ -305,13 +326,7 @@ def added_units(before, units=None, run=None):
     for unit in installed_units(units):
         if unit.name in before:
             continue
-        stop = run(
-            ['systemctl', 'disable', '--now', unit.name], capture_output=True, text=True, timeout=120, check=False
-        )
-        alive = run(
-            ['systemctl', 'is-active', '--quiet', unit.name], capture_output=True, text=True, timeout=60, check=False
-        )
-        if stop.returncode or alive.returncode == 0:
+        if not stopped_for_good(unit.name, run):
             stuck.append(unit.name)
             continue
         unit.unlink(missing_ok=True)

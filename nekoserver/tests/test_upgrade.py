@@ -170,6 +170,32 @@ class UpgradeTests(unittest.TestCase):
             any('nekoserver-foo.service' in line and 'did not stop' in line for line in self.said), self.said
         )
 
+    def test_a_template_unit_the_newer_release_added_is_switched_off_with_its_instances(self):
+        """The review of 0.47.0: a template (x@.service) can't be stopped by its own name, so
+        "disable --now" always failed, the way back never passed, and its instances ran on."""
+        (self.units / 'nekoserver-dashboard.service').write_text('old\n')
+        added = self.units / 'nekoserver-foo@.service'
+
+        def setup_adding(project, settings, account, log_file):
+            if 'nekoserver' in str(project):
+                added.write_text('ExecStart=/usr/local/lib/x/v9.9.9/y %i\n')
+                return 2
+            return 0
+
+        ran = []
+
+        def systemctl(argv, **k):
+            ran.append(argv)
+            # systemd: a template's own name can't be stopped ("missing the instance name").
+            refused = '--now' in argv and argv[-1].endswith('@.service')
+            return subprocess.CompletedProcess(argv, 1 if refused else 0, '', '')
+
+        with mock.patch.object(upgrade.subprocess, 'run', side_effect=systemctl):
+            code = self.upgrade(setup_adding)
+        self.assertEqual(code, 1, self.said)
+        self.assertFalse(added.exists())
+        self.assertIn(['systemctl', 'stop', 'nekoserver-foo@*.service'], ran)
+
     def test_an_upgrade_waits_for_a_pending_restart(self):
         """The audit of 0.46.2: setup stops at once when a restart waits (exit 3), the old
         release's too, so the upgrade failed and then failed to go back."""
