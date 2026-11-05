@@ -6,6 +6,7 @@ import getpass, grp, importlib.util, json, os, platform, re, shutil, socket, sub
 from pathlib import Path
 import host
 from neko_common import (
+    SHARED,
     APP_PORTS,
     DASHBOARD_DEFAULT_PORT,
     MANAGED_UNIT,
@@ -21,9 +22,14 @@ from neko_common import (
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Install the localhost visual dashboard, read-only collector and local alerts'
+# The cat's moods (runtime/src/shared.json, which the runtime serves from too): Home's own
+# cat has a big animation for each of its moods; each page's cat a small one and a still.
+CAT_HOME = tuple(SHARED['cats']['home'])
+CAT_PAGES = tuple(SHARED['cats']['pages'])
 # The page's files; runtime/src/serve.rs serves exactly these (checked by a test).
 ASSETS = (
     'index.html',
+    'theme.css',
     'style.css',
     'app.js',
     'sw.js',
@@ -32,6 +38,10 @@ ASSETS = (
     'icon-192.png',
     'icon-512.png',
     'apple-touch-icon.png',
+    # The cat: the big animations for Home's own cat, and a small animation and a still
+    # picture (for reduced motion) for each page's cat.
+    *(f'cat-{mood}.webp' for mood in CAT_HOME),
+    *(f'cat-{mood}{kind}' for mood in CAT_PAGES for kind in ('-small.webp', '.png')),
 )
 # Opens the dashboard in its own window from the desktop's app menu.
 LAUNCHER = Path('/usr/local/bin/nekoserver-dashboard')

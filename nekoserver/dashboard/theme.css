@@ -1,0 +1,30 @@
+/* NekoServer's colours (Moonlit Neko), shared by the dashboard and the setup window.
+ * Each colour is written once, as light-dark(Lamplight, night): the page picks the theme
+ * by its colour scheme. The dashboard sets it with its switch (data-theme on the root),
+ * the setup window follows the device.
+ * Night is a warm plum-charcoal; Lamplight a soft parchment with no bright white, so
+ * switching to it never dazzles. Every text colour reads at 5:1 or better on every surface
+ * it sits on, in both themes (WCAG AA asks 4.5:1): Lamplight's accents keep the night's
+ * hues, only darker (OKLCH lightness). The cat's box stays warm in both, so its dark fur
+ * is always easy to see. */
+:root {
+  color-scheme: dark;
+  --bg: light-dark(#ece3d8, #16131b);
+  --side: light-dark(#e4d9cc, #1a161f);
+  --surface: light-dark(#f4ece2, #211c26);
+  --raised: light-dark(#efe5d9, #29232f);
+  --line: light-dark(#d6c8b8, #3a3140);
+  --text: light-dark(#33291f, #f0eae0);
+  --muted: light-dark(#574a41, #b0a6bc);
+  --purple: light-dark(#5b3e8a, #b59acc);
+  --purple-soft: light-dark(#e6dbe6, #2e2636);
+  --peach: light-dark(#704120, #deb99c);
+  --pink: light-dark(#842d56, #edb7cc);
+  --mint: light-dark(#1f563f, #9ec6b1);
+  --amber: light-dark(#743f00, #e4bd83);
+  --red: light-dark(#89293c, #eb9ba6);
+  --cat-box: light-dark(#e9dfcf, #ded3c0);
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+}

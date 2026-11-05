@@ -322,7 +322,8 @@ const state = {
   processPage: 0,
   installPrompt: null,
   mine: new Set(),
-  shown: new Set() // app actions started here, and those already announced
+  shown: new Set(), // app actions started here, and those already announced
+  routed: false // a page has been shown (its sections, and only they, visible)
 };
 const savedFavorites = readStore('favorites', []);
 const favorites = new Set(
@@ -655,11 +656,13 @@ function serverApps(s) {
   return list(s?.applications).filter(a => Object.hasOwn(CATALOG, a.id) && !CATALOG[a.id].shortcut);
 }
 const severity = urgent => (urgent ? 'critical' : 'warning');
+/* Alerts about a drive: its guide, and the drives panel's cat. */
+const STORAGE_ISSUE = /^(mount|space|smart|nas|array-[a-z]+):/;
 /* Which guide explains an alert, by its id. */
 const ALERT_GUIDES = [
   [id => id === 'job:maintenance', 'updates'], // the monthly run: backup, then updates
   [id => id.startsWith('integrity:'), 'integrity'],
-  [id => /^(mount|space|smart|nas|array-[a-z]+):/.test(id), 'storage'],
+  [id => STORAGE_ISSUE.test(id), 'storage'],
   [id => id.startsWith('job:') || id === 'backup-key', 'backup'],
   [id => id.startsWith('startup:'), 'startup'],
   [id => id.includes('heartbeat'), 'heartbeat'],
@@ -1135,6 +1138,294 @@ function renderHome() {
   $('updated').textContent = 'Updated ' + ago(s.generated_at);
   renderSummaries(s);
   put('glance', [glanceProcessor(s), glanceMemory(s), glanceTemperature(s), glanceNetwork()]);
+}
+
+/* ---------- the cat ---------- */
+/* Neko shows the server's state, which the words beside it say; it never decides it.
+ * The order (DASHBOARD.md, "The cat"): a real problem, then readings that are not
+ * current, then a job at work, then a job that has just finished, then all well. */
+const CELEBRATE_MS = 3200; // the happy cat's own length: shown once per finished job
+const lastGood = new Map(); // each job's last good copy, as the page last saw it
+let lastLooked = null; // the reading (its time) the page last compared them in
+let finished = null; // the job that has just finished, for CELEBRATE_MS
+let finishedTimer;
+function runningJobs(s) {
+  return list(s?.backups).filter(j => j.status === 'running');
+}
+function jobName(job) {
+  return text(job?.name, text(job?.id, 'A backup'));
+}
+/* The jobs in the readings that are not backups: their finishing is no copy to celebrate. */
+const NOT_BACKUPS = new Set(['maintenance', 'updates', 'update_check']);
+/* A backup whose last good copy moved on since the page last looked, or that has its first
+ * one; never on the page's first look (opening the page does not celebrate an old copy),
+ * never twice for the same copy. */
+function newlyFinished(s) {
+  let fresh = null;
+  for (const job of list(s?.backups)) {
+    if (NOT_BACKUPS.has(job.id)) {
+      continue;
+    }
+    const now = numeric(job.last_success) ? job.last_success : null;
+    if (lastGood.has(job.id) && now !== null && job.status !== 'running') {
+      const before = lastGood.get(job.id);
+      if (before === null || now > before) {
+        fresh = job;
+      }
+    }
+    lastGood.set(job.id, now);
+  }
+  return fresh;
+}
+function companionMood(s, issues, stale, done) {
+  return firstOf(
+    [
+      [!s, 'curious'],
+      [issues.length, 'afraid'],
+      [stale, 'curious'],
+      [runningJobs(s).length, 'playful'],
+      [done, 'happy']
+    ],
+    'resting'
+  );
+}
+function hot(s) {
+  const t = processorTemperature(s),
+    memory = currentLive()?.memory?.percent ?? s.metrics?.memory_percent;
+  return (numeric(t) && t >= 85) || (numeric(memory) && memory >= 90);
+}
+/* Each page's own cat (DASHBOARD.md, "The cat"): one that suits the page while all is well,
+ * replaced by what the page's own information says when something is wrong. A backup that
+ * needs a look scares the backup cat, not the apps or the drives. On readings that are not
+ * current, a cat with no problem of its own looks for news instead of looking content.
+ * `now` holds the rest the page knows: a job just finished, an app search, old readings,
+ * and the readings that could not be fetched (fans and lights, processes). */
+const PAGE_CATS = {
+  attention: 'curious', // worried only when there is something to look at
+  glance: 'happy',
+  apps: 'curious',
+  backups: 'sleeping',
+  hardware: 'resting',
+  sensors: 'listening',
+  cooling: 'breezy',
+  processes: 'playful',
+  drives: 'grooming'
+};
+function panelMoods(s, issues, now = {}) {
+  if (!s) {
+    return Object.fromEntries(Object.keys(PAGE_CATS).map(panel => [panel, 'curious']));
+  }
+  const down = serverApps(s).filter(a => !APP_OK.has(appState(a)) && appState(a) !== 'not_set_up').length;
+  const bad = list(s.backups).filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
+  const warm = hot(s);
+  const problems = {
+    attention: issues.length > 0,
+    glance: warm,
+    apps: down > 0,
+    backups: bad > 0,
+    hardware: warm,
+    sensors: warm,
+    drives: issues.some(i => STORAGE_ISSUE.test(i.id))
+  };
+  const unknown = { cooling: !!now.cooling, processes: !!now.processes };
+  const moods = {};
+  for (const [panel, identity] of Object.entries(PAGE_CATS)) {
+    moods[panel] = firstOf(
+      [
+        [problems[panel], 'afraid'],
+        [now.stale || unknown[panel], 'curious']
+      ],
+      identity
+    );
+  }
+  if (!now.stale && !problems.backups) {
+    moods.backups = firstOf(
+      [
+        [runningJobs(s).length, 'playful'],
+        [now.done, 'happy']
+      ],
+      'sleeping'
+    );
+  }
+  if (now.searching && !problems.apps) {
+    moods.apps = 'curious';
+  }
+  return moods;
+}
+/* The words beside the cat: [state, title, text, action, where it leads]. */
+function companionWords(mood, s, issues) {
+  if (!s) {
+    return ['Checking', 'Welcome home.', 'Neko is waiting for the server’s first readings.', 'Help', '#help'];
+  }
+  const top = issues.find(i => i.level === 'critical') || issues[0],
+    jobs = runningJobs(s);
+  const words = {
+    afraid: [
+      top?.level === 'critical' ? 'Urgent' : 'Needs a look',
+      issues.length === 1 ? text(top?.title, 'Something needs a look.') : issues.length + ' things need a look.',
+      issues.length === 1
+        ? 'Neko spotted it. “What should I do?” beside it says how to fix it.'
+        : 'The first one: ' + text(top?.title, 'see the list') + '.',
+      'See what to do',
+      '#attention'
+    ],
+    curious: [
+      'Checking',
+      'Waiting for fresh readings.',
+      'The last readings are from ' + ago(s.generated_at) + '. Until new ones arrive, nothing here counts as current.',
+      'What does this mean?',
+      '#help-errors'
+    ],
+    playful: [
+      'Job running',
+      jobs.length === 1 ? jobName(jobs[0]) + ' is running.' : jobs.length + ' jobs are running.',
+      'Neko is keeping an eye on it. How far it got and how it ends show under Backups.',
+      'Open Backups',
+      '#backups'
+    ],
+    happy: [
+      'Finished',
+      jobName(finished) + ' finished.',
+      'Its last good copy is from just now.',
+      'Open Backups',
+      '#backups'
+    ],
+    resting: [
+      'Normal operation',
+      'Everything has its place.',
+      'Nothing needs your attention right now. Neko can take it easy.',
+      'View server health',
+      '#health'
+    ]
+  };
+  return words[mood];
+}
+/* Still pictures instead of animations: the setting, or the device's "reduce motion". */
+function stillCats() {
+  const motion = readStore('motion', 'system');
+  return motion === 'off' || (motion !== 'on' && matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+/* The file for a cat: every cat moves (the small ones from a small animation), unless
+ * still pictures are asked for. */
+function catFile(mood, small) {
+  if (stillCats()) {
+    return 'cat-' + mood + '.png';
+  }
+  return 'cat-' + mood + (small ? '-small.webp' : '.webp');
+}
+/* The picture changes only when the mood does: setting it again would restart it. */
+function showCat(img, mood, small) {
+  const file = catFile(mood, small);
+  if (img.getAttribute('src') !== file) {
+    // An animation that can't be fetched (offline: only the stills are saved) shows the still.
+    img.onerror = () => {
+      img.onerror = null;
+      img.setAttribute('src', 'cat-' + mood + '.png');
+    };
+    img.setAttribute('src', file);
+    // A new mood fades in, only when motion is welcome (never the same mood again).
+    if (!stillCats() && typeof img.animate === 'function') {
+      img.animate(
+        [
+          { opacity: 0, transform: 'scale(0.94)' },
+          { opacity: 1, transform: 'none' }
+        ],
+        {
+          duration: 450,
+          easing: 'ease-out'
+        }
+      );
+    }
+  }
+}
+function noteFinished(s) {
+  if (!s || s.generated_at === lastLooked) {
+    return;
+  }
+  const first = lastLooked === null;
+  lastLooked = s.generated_at;
+  const fresh = newlyFinished(s);
+  if (fresh && !first) {
+    finished = fresh;
+    clearTimeout(finishedTimer);
+    finishedTimer = null; // started once the happy picture shows (celebrate)
+  }
+}
+/* The celebration's 3.2 s count from when the happy picture has arrived (on a slow link it
+ * would otherwise be over before it shows), and at most 10 s after the job finished. Then
+ * the cat shows the server's state again, whatever it is by then. */
+function celebrate(img) {
+  if (!finished || finishedTimer) {
+    return;
+  }
+  const over = () => {
+    finished = null;
+    finishedTimer = null;
+    renderCats();
+  };
+  const start = () => {
+    clearTimeout(finishedTimer);
+    finishedTimer = setTimeout(over, CELEBRATE_MS);
+  };
+  finishedTimer = setTimeout(over, 10000);
+  if (img.complete && img.naturalWidth) {
+    start();
+  } else {
+    img.addEventListener('load', start, { once: true });
+  }
+}
+/* A page's cat: its box, made the first time, at the left of the panel's heading
+ * (index.html names the cat, data-cat on the heading). */
+function panelCat(head) {
+  const made = head.querySelector(':scope > .cat-box img');
+  if (made) {
+    return made;
+  }
+  const box = el('figure', 'cat-box panel-cat'),
+    img = el('img');
+  box.setAttribute('aria-hidden', 'true');
+  img.width = 84;
+  img.height = 84;
+  img.alt = '';
+  box.append(img);
+  head.prepend(box);
+  return img;
+}
+function renderCats() {
+  const s = state.status,
+    issues = state.issues,
+    stale = !!s && (statusStale() || !!state.statusError);
+  const mood = companionMood(s, issues, stale, !!finished);
+  const hero = $('hero');
+  hero.dataset.mood = mood;
+  hero.dataset.level = mood === 'afraid' && issues.some(i => i.level === 'critical') ? 'critical' : '';
+  // Before the first reading: the still, not a big animation fetched only to be replaced.
+  showCat($('hero-cat'), mood, !s);
+  if (mood === 'happy') {
+    celebrate($('hero-cat'));
+  }
+  const [label, title, words, action, where] = companionWords(mood, s, issues);
+  $('hero-state').textContent = label;
+  $('hero-title').textContent = title;
+  $('hero-text').textContent = words;
+  $('hero-action').textContent = action;
+  $('hero-action').setAttribute('href', where);
+  const searching = state.route === 'apps' && !!$('app-search').value.trim();
+  const moods = panelMoods(s, issues, {
+    done: !!finished,
+    searching,
+    stale,
+    cooling: !!state.controlError,
+    processes: !!state.processError
+  });
+  for (const head of document.querySelectorAll('[data-cat]')) {
+    if (head.closest('[data-page]')?.hidden) {
+      continue; // a cat on a page not shown is not loaded (each visit would fetch them all)
+    }
+    const panelMood = moods[head.dataset.cat] || PAGE_CATS[head.dataset.cat] || 'resting';
+    showCat(panelCat(head), panelMood, true);
+    head.closest('.panel')?.toggleAttribute('data-alert', panelMood === 'afraid');
+  }
 }
 
 /* ---------- apps ---------- */
@@ -2925,7 +3216,7 @@ function actionNote(action) {
 /* A backup or update the collector saw running: app restarts wait for it. */
 function runningJob() {
   const job = list(state.status?.backups).find(j => j.status === 'running');
-  return job ? text(job.name, text(job.id, 'A backup')) : null;
+  return job ? jobName(job) : null;
 }
 function menuButton(name, items) {
   const b = button('⋯', e => openMenu(items(), e), 'menu-button');
@@ -4194,15 +4485,54 @@ function diagnostics() {
 function systemTheme() {
   return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
+let themeChoice = null; // the switch's choice, for when this browser cannot store it
 function applyPreferences() {
-  let theme = readStore('theme', 'dark');
+  let theme = themeChoice ?? readStore('theme', 'dark');
   if (!['light', 'dark', 'system'].includes(theme)) {
     theme = 'dark';
   }
   document.documentElement.dataset.theme = theme === 'system' ? systemTheme() : theme;
+  labelThemeToggle();
+  // The phone's browser bar (and the installed app's title bar) in the page's own colour.
+  const bar = document.querySelector('meta[name="theme-color"]');
+  if (bar) {
+    bar.setAttribute('content', window.getComputedStyle(document.body).backgroundColor);
+  }
   const size = readStore('size', 'normal');
   document.body.classList.toggle('large', size === 'large');
   document.body.classList.toggle('tv', size === 'tv');
+  if (state.routed) {
+    renderCats(); // a new motion setting; before the first route, route() draws them
+  }
+}
+/* The toggle at the top right: night or Lamplight, whichever is not showing (a "Same as
+ * this device" setting becomes the one chosen). The page crossfades into it, or its
+ * colours ease over where crossfading is not offered; with less motion asked for it
+ * simply switches. */
+function shownTheme() {
+  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+}
+function labelThemeToggle() {
+  const toLight = shownTheme() === 'dark';
+  const button = $('theme-toggle');
+  button.title = toLight ? 'Switch to Lamplight' : 'Switch to Neko night';
+  button.setAttribute('aria-label', toLight ? 'Switch to the light theme (Lamplight)' : 'Switch to the dark theme');
+}
+function toggleTheme() {
+  themeChoice = shownTheme() === 'dark' ? 'light' : 'dark';
+  saveStore('theme', themeChoice);
+  const root = document.documentElement;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    applyPreferences();
+    return;
+  }
+  if (typeof document.startViewTransition === 'function') {
+    document.startViewTransition(applyPreferences);
+    return;
+  }
+  root.classList.add('theme-easing');
+  applyPreferences();
+  setTimeout(() => root.classList.remove('theme-easing'), 500);
 }
 function choice(label, key, options, fallback) {
   const wrap = el('label', 'field', label),
@@ -4214,6 +4544,9 @@ function choice(label, key, options, fallback) {
   }
   select.value = readStore(key, fallback);
   select.addEventListener('change', () => {
+    if (key === 'theme') {
+      themeChoice = select.value;
+    }
     saveStore(key, select.value);
     applyPreferences();
   });
@@ -4250,10 +4583,20 @@ function preferences() {
       'theme',
       [
         ['dark', 'Neko night'],
-        ['light', 'Soft daylight'],
+        ['light', 'Lamplight (soft and warm)'],
         ['system', 'Same as this device']
       ],
       'dark'
+    ),
+    choice(
+      'Cat animation',
+      'motion',
+      [
+        ['system', 'Same as this device'],
+        ['on', 'Moving'],
+        ['off', 'Still pictures']
+      ],
+      'system'
     ),
     choice(
       'Text size',
@@ -4348,6 +4691,7 @@ function route() {
   if (!Object.hasOwn(ROUTES, state.route)) {
     state.route = 'home';
   }
+  state.routed = true; // the other pages are hidden from here on: only this page's cats load
   $('page-title').textContent = ROUTES[state.route];
   document.title = 'NekoServer · ' + ROUTES[state.route];
   markActive();
@@ -4380,9 +4724,11 @@ function render() {
   if (state.status) {
     state.issues = collectIssues(state.status);
   }
+  noteFinished(state.status);
   withFocus(() => {
     renderChrome();
     PAGES[state.route]();
+    renderCats();
   });
   notify();
 }
@@ -4436,7 +4782,12 @@ function turnProcessPage(change) {
   renderProcesses();
 }
 window.addEventListener('hashchange', route);
-$('app-search').addEventListener('input', () => withFocus(renderApps));
+$('app-search').addEventListener('input', () =>
+  withFocus(() => {
+    renderApps();
+    renderCats();
+  })
+);
 for (const b of document.querySelectorAll('[data-filter]')) {
   b.addEventListener('click', () => chooseFilter(b));
 }
@@ -4445,6 +4796,7 @@ for (const b of document.querySelectorAll('[data-guide]')) {
 }
 $('refresh').addEventListener('click', refreshNow);
 $('preferences').addEventListener('click', preferences);
+$('theme-toggle').addEventListener('click', toggleTheme);
 $('more').addEventListener('click', moreMenu);
 $('export').addEventListener('click', diagnostics);
 $('close-dialog').addEventListener('click', () => $('dialog').close());
@@ -4465,6 +4817,7 @@ $('problem-link').addEventListener('click', e => {
   location.hash = 'help-errors';
 });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyPreferences);
+matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', renderCats);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     refreshNow();

@@ -1,19 +1,7 @@
-/* NekoServer setup window: the dashboard's palette, made for a short, wide window. */
+/* NekoServer setup window, made for a short, wide window. */
+/* The colours are the dashboard's (theme.css); here they follow the device's light or dark. */
 :root {
-  color-scheme: dark;
-  --bg: #14151f;
-  --side: #181923;
-  --surface: #1e1f2c;
-  --raised: #252635;
-  --line: #333445;
-  --text: #eeeaf7;
-  --muted: #b3adc0;
-  --purple: #c4b3fa;
-  --purple-soft: #363047;
-  --pink: #edb7cc;
-  --mint: #a7dcc5;
-  --amber: #f1cf93;
-  --red: #f4a4ae;
+  color-scheme: light dark;
   --radius: 14px;
   font-family:
     Inter,
@@ -23,24 +11,6 @@
     'Segoe UI',
     Roboto,
     sans-serif;
-}
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f5f3f9;
-    --side: #eeebf5;
-    --surface: #fff;
-    --raised: #f4f1f8;
-    --line: #ded9e8;
-    --text: #292437;
-    --muted: #645b74;
-    --purple: #634a94;
-    --purple-soft: #eee7f8;
-    --pink: #a54b72;
-    --mint: #1f7357;
-    --amber: #82591a;
-    --red: #a9324b;
-  }
 }
 * {
   box-sizing: border-box;

@@ -28,7 +28,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 
 | Page | What you see |
 | --- | --- |
-| **Home** | Overall status, the three most urgent things, apps, storage, uptime and live processor, memory, temperature and network. |
+| **Home** | Overall status (with the cat, below), the three most urgent things, apps, storage, uptime and live processor, memory, temperature and network. |
 | **Your apps** | Every installed app with its health, processor and memory use, and an Open link. Star favourites to keep them first. Right-click an app (on a phone, tap ⋯) to restart it. |
 | **Backups** | Each scheduled backup, whether its copies were checked and found intact, and whether a restore was tried. |
 | **Hardware** | Processor (total, each core, clock, waiting work), memory, every graphics card and AI chip, network traffic, drive activity, batteries and UPS. Updates every 4 seconds. |
@@ -39,7 +39,37 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | **Needs attention** | Everything to look at, most urgent first, each with "What should I do?". |
 | **Help** | Step-by-step guides, the error codes below, installing it as an app, and a privacy-safe summary to share. |
 
-On a phone the main pages are in the bar at the bottom; **More** opens the rest. On a tablet the menu becomes a slim icon rail. Settings (⚙) has a light theme and larger text (Large, or TV for across the room).
+On a phone the main pages are in the bar at the bottom; **More** opens the rest. On a tablet the menu becomes a slim icon rail. The ☾ / ☀ button at the top right switches between the night theme and the warm light one (Lamplight). Settings (⚙) has the same choice (or follow the device), larger text (Large, or TV for across the room) and the cat's animation (moving, or still pictures).
+
+## The cat
+
+Neko, a small black cat, sits at the top of Home and shows how the server is doing. The words beside it say the same thing, and they are what counts: the cat never decides anything and never runs anything.
+
+| Neko is… | When |
+| --- | --- |
+| **Afraid** | Something needs a look. The words name it, and **See what to do** opens the list. This comes first, whatever else is going on. |
+| **Curious** | The readings are not current (or none have arrived yet), so nothing on the page counts as up to date. |
+| **Playful** | A backup or another job is running. |
+| **Happy** | A job has just finished, shown once for about three seconds. Opening the page does not replay an old one. |
+| **Resting** | Everything is fine and nothing needs you. |
+
+Each page also has a smaller cat of its own, with a pose that suits the page while all is well:
+
+| Page | Its cat |
+| --- | --- |
+| **Home** ("at a glance") | Sits and says hello |
+| **Your apps** | Peeks into the list (and while you search) |
+| **Backups** | Sleeps between runs, plays while one runs, is happy when one has just finished |
+| **Hardware** | Lies back with a slow tail swish |
+| **Sensors** | Listens, ears turning |
+| **Fans & lights** | Enjoys the breeze of a little fan |
+| **Processes** | Pounces at a ball of yarn (just for fun: it is not a progress bar) |
+| **Server health** | Grooms itself |
+| **Needs attention** | Looks over the list, and is worried only when there is something on it |
+
+When something on a page is wrong, that page's cat is afraid instead: a backup that needs a look, an app that is down, a drive problem, a processor running hot. A problem on one page never scares the cats of the others. When a page's readings can't be fetched, or all readings are old, its cat looks curious instead of content. The poses are for fun; the page's own words and numbers are what count.
+
+When the device asks for less motion (or Settings → *Cat animation* is *Still pictures*), every cat is a still picture.
 
 ## Fans & lights
 
@@ -146,7 +176,7 @@ There is nothing to configure. The dashboard reads what Linux reports:
 To see everything the dashboard can read on this computer:
 
 ```bash
-/usr/local/lib/nekoserver-dashboard/v0.46.4/nekoserver-runtime hardware
+/usr/local/lib/nekoserver-dashboard/v0.47.0/nekoserver-runtime hardware
 ```
 
 ### Fan control in detail
@@ -190,7 +220,7 @@ The dashboard is part of the normal setup (the full profile installs it). To ins
 sudo bash install.sh --profile dashboard --apply
 ```
 
-Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.46.4` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
+Setup refreshes its service definitions and its menu entry. Its files are kept per release under `/usr/local/lib/nekoserver-dashboard/v0.47.0` (one folder per release, and when a setup run has finished, the folders of earlier releases that no service uses any more are removed; a changed file there stops setup rather than being overwritten). A menu entry or launcher you wrote yourself at the same place is kept.
 
 ### What runs, and what it can see
 

@@ -74,6 +74,7 @@ fn error_body(code: &str) -> (u16, Vec<u8>) {
 const ASSETS: &[(&str, &str, &str)] = &[
     ("/", "index.html", "text/html; charset=utf-8"),
     ("/index.html", "index.html", "text/html; charset=utf-8"),
+    ("/theme.css", "theme.css", "text/css; charset=utf-8"),
     ("/style.css", "style.css", "text/css; charset=utf-8"),
     ("/app.js", "app.js", "text/javascript; charset=utf-8"),
     ("/sw.js", "sw.js", "text/javascript; charset=utf-8"),
@@ -87,10 +88,50 @@ const ASSETS: &[(&str, &str, &str)] = &[
     ("/icon-512.png", "icon-512.png", "image/png"),
     ("/apple-touch-icon.png", "apple-touch-icon.png", "image/png"),
 ];
+/// The cat's pictures (DASHBOARD.md, "The cat"), named from shared.json's lists: a big
+/// animation for each of Home's moods, a small one and a still for each page's. Only names
+/// built from those lists are ever served: (file, type).
+fn cat_file(path: &str) -> Option<(String, &'static str)> {
+    let moods = |key: &str| {
+        common::SHARED["cats"][key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|mood| mood.as_str().map(str::to_string))
+            .collect::<Vec<_>>()
+    };
+    let home = moods("home")
+        .into_iter()
+        .map(|m| (format!("cat-{m}.webp"), "image/webp"));
+    let pages = moods("pages").into_iter().flat_map(|m| {
+        [
+            (format!("cat-{m}-small.webp"), "image/webp"),
+            (format!("cat-{m}.png"), "image/png"),
+        ]
+    });
+    let name = path.strip_prefix('/')?;
+    home.chain(pages).find(|(file, _)| file == name)
+}
 #[cfg(test)]
-fn asset_files() -> Vec<&'static str> {
-    let mut files = ASSETS.iter().map(|a| a.1).collect::<Vec<_>>();
+fn asset_files() -> Vec<String> {
+    let mut files = ASSETS.iter().map(|a| a.1.to_string()).collect::<Vec<_>>();
     files.dedup();
+    for key in ["home", "pages"] {
+        for mood in common::SHARED["cats"][key].as_array().unwrap() {
+            let mood = mood.as_str().unwrap();
+            for name in [
+                format!("/cat-{mood}.webp"),
+                format!("/cat-{mood}-small.webp"),
+                format!("/cat-{mood}.png"),
+            ] {
+                if let Some((file, _)) = cat_file(&name) {
+                    if !files.contains(&file) {
+                        files.push(file);
+                    }
+                }
+            }
+        }
+    }
     files
 }
 
@@ -123,6 +164,30 @@ fn reply(stream: &mut TcpStream, code: u16, body: &[u8], mime: &str, head: bool)
     let header=format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: {cache}\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Server-Time: {time:.3}\r\nConnection: close\r\n\r\n",body.len());
     let _ = stream.write_all(header.as_bytes());
     if !head {
+        let _ = stream.write_all(body);
+    }
+}
+/// One of the page's files, with its fingerprint (ETag): the browser keeps a copy and asks
+/// again only whether it changed, so the cats and the rest are not downloaded anew at every
+/// visit (the review of 0.47.0). A copy it already has is answered "304 Not Modified".
+fn reply_asset(stream: &mut TcpStream, body: &[u8], mime: &str, asked: &[&[u8]], head: bool) {
+    let tag = format!("\"{}\"", &common::sha(body)[..32]);
+    let fresh = asked.iter().any(|value| {
+        value
+            .split(|b| *b == b',')
+            .any(|one| one.trim_ascii() == tag.as_bytes() || one.trim_ascii() == b"*")
+    });
+    let (code, reason) = if fresh {
+        (304, "Not Modified")
+    } else {
+        (200, "OK")
+    };
+    let length = if fresh { 0 } else { body.len() };
+    let header = format!(
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {length}\r\nCache-Control: no-cache\r\nETag: {tag}\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n"
+    );
+    let _ = stream.write_all(header.as_bytes());
+    if !head && !fresh {
         let _ = stream.write_all(body);
     }
 }
@@ -625,10 +690,15 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
         "/api/status" => server.snapshot().map(|(b, _)| b),
         "/api/live" => server.live(),
         "/api/processes" => server.processes(),
-        _ => match ASSETS.iter().find(|a| a.0 == path) {
-            Some((_, file, mime)) => match common::bytes(&server.assets.join(file), 2_000_000) {
+        _ => match ASSETS
+            .iter()
+            .find(|a| a.0 == path)
+            .map(|a| (a.1.to_string(), a.2))
+            .or_else(|| cat_file(path))
+        {
+            Some((file, mime)) => match common::bytes(&server.assets.join(&file), 2_000_000) {
                 Ok(b) => {
-                    reply(&mut stream, 200, &b, mime, head);
+                    reply_asset(&mut stream, &b, mime, &values("if-none-match"), head);
                     return;
                 }
                 Err(_) => Err("E40"),
@@ -978,19 +1048,34 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("assets")).unwrap();
         for file in asset_files() {
-            fs::write(root.join("assets").join(file), format!("asset {file}")).unwrap();
+            fs::write(root.join("assets").join(&file), format!("asset {file}")).unwrap();
         }
         let port = test_server(root.join("assets"), &root, root.join("control.sock"), None);
-        let get = |path: &str, host: &str| {
+        let ask = |path: &str, host: &str, more: &str| {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            write!(s, "GET {path} HTTP/1.1\r\nHost: {host}\r\n\r\n").unwrap();
+            write!(s, "GET {path} HTTP/1.1\r\nHost: {host}\r\n{more}\r\n").unwrap();
             let mut out = String::new();
             s.read_to_string(&mut out).unwrap();
             out
         };
+        let get = |path: &str, host: &str| ask(path, host, "");
         let host = format!("127.0.0.1:{port}");
         assert!(get("/", &host).ends_with("asset index.html"));
         assert!(get("/manifest.webmanifest", &host).contains("application/manifest+json"));
+        // The review of 0.47.0: a file the browser already has is not sent again.
+        let first = get("/style.css", &host);
+        let tag = first
+            .lines()
+            .find_map(|line| line.strip_prefix("ETag: "))
+            .expect("a fingerprint")
+            .to_string();
+        let again = ask("/style.css", &host, &format!("If-None-Match: {tag}\r\n"));
+        assert!(again.starts_with("HTTP/1.1 304 Not Modified"), "{again}");
+        // The cats are served from shared.json's lists, and nothing else that looks like one.
+        assert!(get("/cat-breezy-small.webp", &host).contains("image/webp"));
+        assert!(get("/cat-breezy.webp", &host).contains("E40")); // a page cat: no big one
+        assert!(get("/cat-../index.html", &host).contains("E40"));
+        assert!(again.ends_with("\r\n\r\n"), "{again}");
         let missing = get("/api/status", &host);
         assert!(
             missing.starts_with("HTTP/1.1 503") && missing.contains("\"E10\""),

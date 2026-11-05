@@ -1,20 +1,7 @@
 /* NekoServer dashboard. One stylesheet, three layouts:
  * wide (sidebar), tablet (icon rail) and phone (bottom tab bar). */
+/* The colours are in theme.css (shared with the setup window). */
 :root {
-  color-scheme: dark;
-  --bg: #14151f;
-  --side: #181923;
-  --surface: #1e1f2c;
-  --raised: #252635;
-  --line: #333445;
-  --text: #eeeaf7;
-  --muted: #b3adc0;
-  --purple: #c4b3fa;
-  --purple-soft: #363047;
-  --pink: #edb7cc;
-  --mint: #a7dcc5;
-  --amber: #f1cf93;
-  --red: #f4a4ae;
   --radius: 16px;
   --tabbar: 0px;
   font-family:
@@ -27,22 +14,6 @@
     Roboto,
     sans-serif;
 }
-:root[data-theme='light'] {
-  color-scheme: light;
-  --bg: #f5f3f9;
-  --side: #eeebf5;
-  --surface: #fff;
-  --raised: #f4f1f8;
-  --line: #ded9e8;
-  --text: #292437;
-  --muted: #645b74;
-  --purple: #634a94;
-  --purple-soft: #eee7f8;
-  --pink: #a54b72;
-  --mint: #1f7357;
-  --amber: #82591a;
-  --red: #a9324b;
-}
 * {
   box-sizing: border-box;
 }
@@ -52,10 +23,17 @@ html {
 }
 body {
   margin: 0;
-  background: var(--bg);
   color: var(--text);
   font-size: 15px;
   line-height: 1.55;
+  background: radial-gradient(
+      1200px 520px at 78% -8%,
+      color-mix(in srgb, var(--purple) 13%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(900px 600px at 12% 108%, color-mix(in srgb, var(--peach) 6%, transparent), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
 }
 button,
 input,
@@ -185,6 +163,7 @@ html [hidden][hidden] {
 .brand img {
   border-radius: 13px;
   flex-shrink: 0;
+  box-shadow: 0 6px 18px -6px color-mix(in srgb, var(--purple) 60%, transparent);
 }
 .nav-list {
   margin-top: 34px;
@@ -213,6 +192,8 @@ html [hidden][hidden] {
   color: var(--purple);
   background: var(--purple-soft);
   font-weight: 620;
+  position: relative;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 22%, transparent);
 }
 .nav:hover {
   background: var(--raised);
@@ -290,6 +271,49 @@ h1 {
 .icon-button:hover {
   border-color: var(--purple);
   color: var(--purple);
+}
+
+/* Night or Lamplight in one tap: the moon shows at night, the sun in Lamplight, and the
+ * other one turns in when they swap. */
+.theme-toggle {
+  position: relative;
+  overflow: hidden;
+}
+.theme-toggle span {
+  grid-area: 1 / 1;
+  line-height: 1;
+}
+.theme-toggle .sun {
+  color: var(--peach);
+}
+:root[data-theme='dark'] .theme-toggle .sun,
+:root[data-theme='light'] .theme-toggle .moon {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.4);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .theme-toggle span {
+    transition:
+      opacity 0.35s ease,
+      transform 0.5s cubic-bezier(0.3, 1.4, 0.5, 1);
+  }
+  /* While the theme changes, every colour eases over instead of jumping (toggleTheme in app.js adds
+   * this for a moment; browsers with view transitions crossfade the whole page instead). */
+  :root.theme-easing,
+  :root.theme-easing *,
+  :root.theme-easing *::before,
+  :root.theme-easing *::after {
+    transition:
+      background-color 0.45s ease,
+      color 0.45s ease,
+      border-color 0.45s ease,
+      fill 0.45s ease,
+      box-shadow 0.45s ease;
+  }
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 0.45s;
+  }
 }
 
 /* ---------- badges, buttons, banners ---------- */
@@ -441,33 +465,73 @@ h1 {
 
 /* ---------- hero & summary ---------- */
 .hero {
-  border: 1px solid color-mix(in srgb, var(--purple) 26%, var(--line));
+  border: 1px solid var(--line);
   border-radius: 22px;
   overflow: hidden;
   position: relative;
-  display: flex;
-  min-height: 230px;
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px 16px 16px;
   margin-bottom: 18px;
-  background: radial-gradient(ellipse at 87% 50%, #8a61a82b, transparent 65%),
-    linear-gradient(110deg, var(--purple-soft), var(--surface));
+  --aura: var(--purple);
+  isolation: isolate;
+  min-height: 240px;
+  grid-template-columns: 236px minmax(0, 1fr);
+  border-color: color-mix(in srgb, var(--aura) 32%, var(--line));
+  background: radial-gradient(
+      420px 260px at 120px 50%,
+      color-mix(in srgb, var(--aura) 22%, transparent),
+      transparent 72%
+    ),
+    linear-gradient(112deg, color-mix(in srgb, var(--raised) 80%, var(--purple-soft)), var(--surface));
+  box-shadow: 0 24px 60px -34px color-mix(in srgb, var(--aura) 55%, transparent);
+  transition:
+    border-color 0.6s,
+    box-shadow 0.6s;
 }
 .hero-copy {
-  padding: 30px 32px;
-  position: relative;
-  z-index: 1;
-  max-width: 66%;
+  padding: 8px 8px 8px 12px;
+  min-width: 0;
+}
+.cat-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--purple);
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  font-size: 12px;
+  letter-spacing: 0.2px;
+}
+.cat-state::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.hero[data-mood='afraid'] .cat-state {
+  color: var(--amber);
+}
+.hero[data-level='critical'] .cat-state {
+  color: var(--red);
 }
 .hero h2 {
-  font-size: 44px;
-  font-weight: 580;
-  line-height: 1.12;
-  letter-spacing: -1.5px;
-  margin: 12px 0;
+  font-weight: 600;
+  line-height: 1.15;
+  margin: 8px 0 10px;
+  font-size: 38px;
+  letter-spacing: -1.2px;
+  text-wrap: balance;
 }
 .hero p {
-  font-size: 16px;
-  line-height: 1.7;
-  margin-bottom: 20px;
+  font-size: 15px;
+  line-height: 1.65;
+  margin-bottom: 16px;
+  max-width: 560px;
 }
 .hero-bottom {
   display: flex;
@@ -477,67 +541,85 @@ h1 {
   font-size: 13px;
   color: var(--muted);
 }
-.hero-art {
-  position: absolute;
-  right: 3%;
-  top: 0;
-  height: 100%;
-  width: 34%;
+.hero[data-mood='afraid'] #hero-action {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--bg);
+}
+
+/* ---------- the cat ---------- */
+/* One fixed, centred box per cat: the animations are already framed with their whole
+ * movement inside, so nothing here moves or trims them. */
+.cat-box {
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  aspect-ratio: 1;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--line) 65%, transparent);
+  background: var(--cat-box);
 }
-.hero-art img {
-  z-index: 1;
-  transform: rotate(-7deg);
-  filter: drop-shadow(0 18px 22px #0003);
-  border-radius: 38px;
+.cat-box img {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: 1;
+  max-inline-size: 100%;
+  max-block-size: 100%;
+  object-fit: contain;
+  object-position: center;
+  pointer-events: none;
 }
-.orbit {
-  position: absolute;
-  width: 250px;
-  height: 150px;
-  border: 1px solid #ab86ca35;
-  border-radius: 50%;
-  transform: rotate(-25deg);
+.cat-box.main {
+  padding: 10px;
+  justify-self: center;
+  inline-size: min(100%, 196px);
+  border-radius: 22px;
+  box-shadow:
+    0 18px 40px -18px #000a,
+    inset 0 1px 0 #fff6;
 }
-.orbit.two {
-  transform: rotate(43deg);
-  width: 220px;
-  height: 170px;
+.cat-box.panel-cat {
+  inline-size: 84px;
+  block-size: 84px;
+  flex: 0 0 84px;
+  padding: 6px;
+  border-radius: 16px;
+  box-shadow:
+    0 10px 24px -14px #000c,
+    inset 0 1px 0 #fff5;
 }
-.twinkle {
-  position: absolute;
-  color: var(--pink);
-  font-size: 28px;
+.section-head.with-cat {
+  align-items: center;
 }
-.twinkle.a {
-  top: 18%;
-  left: 6%;
-}
-.twinkle.b {
-  bottom: 16%;
-  right: 2%;
+.section-head.with-cat > div {
+  flex: 1;
+  min-width: 0;
 }
 .summary-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 4px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
   margin-bottom: 22px;
 }
 .summary {
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
+  border-radius: 12px;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 16px 18px;
+  padding: 10px 14px;
   min-width: 0;
-  min-height: 72px;
+  min-height: 64px;
 }
 .summary:hover {
-  border-color: var(--purple);
+  background: var(--raised);
 }
 .summary-text {
   min-width: 0;
@@ -550,15 +632,21 @@ h1 {
 .summary strong {
   font-size: 16px;
   display: block;
-  font-weight: 620;
+  font-weight: 560;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .summary-icon {
-  font-size: 24px;
   color: var(--purple);
   flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  font-size: 18px;
 }
 .rose {
   color: var(--pink);
@@ -570,14 +658,94 @@ h1 {
   color: var(--amber);
 }
 
-/* ---------- panels & generic cards ---------- */
+/* ---------- moonlit ---------- */
+/* The night the cat lives in: a faint sky behind the page, a moon behind the cat, and a
+ * glow in the colour of its mood. All of it is decoration and says nothing on its own. */
+.hero[data-mood='playful'] {
+  --aura: var(--mint);
+}
+.hero[data-mood='happy'] {
+  --aura: var(--peach);
+}
+.hero[data-mood='afraid'] {
+  --aura: var(--amber);
+}
+.hero[data-level='critical'] {
+  --aura: var(--red);
+}
+/* A few stars over the copy's side of the sky. */
+.hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(1.6px 1.6px at 62% 22%, var(--text), transparent),
+    radial-gradient(1.2px 1.2px at 78% 64%, var(--text), transparent),
+    radial-gradient(1.8px 1.8px at 91% 30%, var(--peach), transparent),
+    radial-gradient(1.2px 1.2px at 70% 84%, var(--text), transparent),
+    radial-gradient(1.4px 1.4px at 86% 12%, var(--purple), transparent);
+  opacity: 0.55;
+}
+/* The moon behind the cat. */
+.hero-moon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+}
+.hero-moon::before {
+  content: '';
+  position: absolute;
+  width: min(232px, 122%);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--cat-box) 20%, transparent) 40%, transparent 70%);
+  box-shadow: 0 0 80px 4px color-mix(in srgb, var(--aura) 22%, transparent);
+  z-index: -1;
+  transition: box-shadow 0.6s;
+}
+.hero[data-level='critical'] #hero-action {
+  background: var(--red);
+  border-color: var(--red);
+}
 .panel {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent);
   padding: 26px 28px;
-  background: var(--surface);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--raised) 55%, var(--surface)), var(--surface) 140px);
   border: 1px solid var(--line);
   border-radius: 20px;
   margin-bottom: 22px;
 }
+.panel[data-alert] {
+  border-color: color-mix(in srgb, var(--amber) 55%, var(--line));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--amber) 18%, transparent);
+}
+.nav.active::before {
+  content: '';
+  position: absolute;
+  left: -18px;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--purple);
+  box-shadow: 0 0 12px var(--purple);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .hero::after {
+    animation: twinkle 6s ease-in-out infinite alternate;
+  }
+}
+@keyframes twinkle {
+  to {
+    opacity: 0.25;
+  }
+}
+
+/* ---------- panels & generic cards ---------- */
 .section-head {
   display: flex;
   align-items: flex-start;
@@ -1741,16 +1909,11 @@ body.tv {
   .card-grid.three {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .hero {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
   .hero h2 {
-    font-size: 38px;
-  }
-  .hero-art img {
-    width: 112px;
-    height: 112px;
-  }
-  .orbit {
-    width: 200px;
-    height: 130px;
+    font-size: 30px;
   }
 }
 
@@ -1844,27 +2007,41 @@ body.tv {
   .hero {
     min-height: 0;
     border-radius: 18px;
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 4px;
+    padding: 12px 14px 12px 10px;
+  }
+  .cat-box.main {
+    padding: 7px;
   }
   .hero-copy {
-    padding: 20px;
-    max-width: 100%;
+    padding: 4px 0 4px 8px;
   }
   .hero h2 {
-    font-size: 30px;
-    margin: 8px 0;
+    font-size: 23px;
+    letter-spacing: -0.6px;
+    margin: 6px 0 8px;
   }
   .hero p {
-    font-size: 15px;
-    margin-bottom: 14px;
+    font-size: 14px;
+    line-height: 1.5;
+    margin-bottom: 12px;
   }
-  .hero p br {
-    display: none;
+  .cat-box.panel-cat {
+    inline-size: 78px;
+    block-size: 78px;
+    flex-basis: 78px;
   }
-  .hero-art {
-    display: none;
+  /* The cat and the words take the row; a link or button beside them goes below. */
+  .section-head.with-cat {
+    flex-wrap: wrap;
+    gap: 12px 14px;
+  }
+  .section-head.with-cat > div {
+    flex-basis: calc(100% - 92px);
   }
   .summary-strip {
-    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     margin-bottom: 18px;
   }
   .summary {
