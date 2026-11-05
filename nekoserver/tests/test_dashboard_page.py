@@ -205,6 +205,33 @@ class DashboardPageTests(unittest.TestCase):
         source = (ROOT / 'runtime/src/collect.rs').read_text()
         self.assertIn('row["scheduled"] = json!(false)', source)
 
+    def test_the_updates_page_says_a_jobs_state_in_the_pages_words(self):
+        """Seen on the rig (0.47.5): "Update night: unknown (No recorded successful run)" on
+        a server whose first update night is still to come, and "last upgrade: pass"."""
+        said = page(
+            (
+                'jobLine',
+                ['Update night', {'id': 'updates', 'status': 'unknown', 'reason': 'No recorded successful run'}],
+            ),
+            ('jobLine', ['last upgrade', {'id': 'upgrade', 'status': 'pass', 'last_success': 1000.0}]),
+            (
+                'jobLine',
+                ['last upgrade', {'id': 'upgrade', 'status': 'partial', 'last_success': 1.0, 'reason': 'Put back'}],
+            ),
+            ('jobLine', ['Update night', {'id': 'updates', 'status': 'fail', 'reason': 'Docker is not running'}]),
+            ('jobLine', ['last upgrade', None]),
+        )
+        self.assertEqual(
+            said,
+            [
+                'Update night: has not run yet',
+                'last upgrade: passed',
+                'last upgrade: incomplete (Put back)',
+                'Update night: failed (Docker is not running)',
+                '',
+            ],
+        )
+
     def test_an_unfinished_server_check_is_listed(self):
         [issues] = page(('collectIssues', status(acceptance={'status': 'pending'})))
         self.assertEqual(issues, [{'id': 'acceptance', 'level': 'warning', 'title': 'Finish checking your server'}])
