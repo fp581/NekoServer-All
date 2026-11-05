@@ -360,6 +360,19 @@ def readiness(config, sleep=time.sleep, clock=time.monotonic):
         raise RuntimeError('Selected application containers must be running and healthy before exposure')
 
 
+PORTAL_STYLE = (
+    ':root{color-scheme:light dark}'
+    'body{margin:0;background:var(--bg);color:var(--text);font:18px system-ui}'
+    'main{max-width:850px;margin:8vh auto;padding:30px}svg{width:96px;height:96px}'
+    'h1{font-size:42px;margin-bottom:8px}p{color:var(--muted);line-height:1.6}'
+    'nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;margin:40px 0}'
+    'a{padding:35px;border:1px solid var(--line);border-radius:20px;background:var(--surface);'
+    'color:var(--purple);text-decoration:none;font-weight:600}'
+    'a:hover,a:focus-visible{outline:2px solid var(--purple);background:var(--raised)}'
+    'a span{float:right;color:var(--pink)}small{color:var(--muted)}'
+)
+
+
 def portal(config, host):
     apps = selected(config)
     ports = lan_ports(config)
@@ -368,8 +381,14 @@ def portal(config, host):
         for a in apps
     )
     logo = (ROOT / 'dashboard/logo.svg').read_text()
+    # The dashboard's own colours (dashboard/theme.css, written once), following the
+    # device's light or dark setting: this page kept the colours of before 0.47.0.
+    theme = (ROOT / 'dashboard/theme.css').read_text()
     return (
-        '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NekoServer · Your apps</title><style>body{margin:0;background:#11101b;color:#f3efff;font:18px system-ui}main{max-width:850px;margin:8vh auto;padding:30px}svg{width:96px;height:96px}h1{font-size:42px;margin-bottom:8px}p{color:#b4aabd;line-height:1.6}nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;margin:40px 0}a{padding:35px;border:1px solid #43354f;border-radius:20px;background:#211a30;color:#e5c6fb;text-decoration:none;font-weight:600}a:hover,a:focus-visible{outline:2px solid #d1a1f2;background:#30223f}a span{float:right;color:#e8aac9}small{color:#b4aabd}</style><main>'
+        '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NekoServer · Your apps</title><style>'
+        + theme
+        + PORTAL_STYLE
+        + '</style><main>'
         + logo
         + '<h1>Your world, under one roof.</h1><p>Welcome home. Pick an app and sign in with its account.</p><nav aria-label="Your applications">'
         + cards

@@ -14,7 +14,7 @@ A stabilization release: fixes from a review of 0.47.0, and a sweep for rules wr
 - **A cut-off Immich snapshot is finished at boot even when another job is running** (it waits up to 3 hours for the lock instead of giving up).
 - **Putting a release back switches off a newer release's template services** (`name@.service`) and checks that none of their instances still run.
 - **Systems with dnf4 (older Fedora and RHEL-like):** an update whose long package name wraps onto its own line is counted.
-- **A drive move stops the gateway too** before its last copy (it writes to the drives; the move had its own list, without it).
+- **A drive move reads the list of services that write to the drives from the shared facts** (no behaviour change: the gateway, the one service its own list lacked, was already stopped with the other NekoServer services; this line said otherwise until 0.47.2).
 - The restore report's folder is flushed to disk after the report is put in place.
 
 ### Changed: one copy of each rule
