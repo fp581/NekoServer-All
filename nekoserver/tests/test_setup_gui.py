@@ -150,6 +150,43 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual((hidden['text'], hidden['form']), ('a hidden entry', 'secret'))
         self.assertIs(builtins.input, builtins.__dict__['input'])  # restored afterwards
 
+    def test_a_question_asked_again_keeps_its_list(self):
+        """Seen in the window on a VM: after a wrong number, the window showed only "Choose
+        another one from the list", without the list. The same words asking a new question
+        (the three "where should ... be kept" questions) keep only their own list."""
+        setup_progress.enable()
+        seen = []
+        with (
+            mock.patch(
+                'builtins.input', side_effect=lambda prompt='': seen.append(setup_progress.pending_question()) or '1'
+            ),
+            mock.patch('sys.stdin', mock.Mock(fileno=mock.Mock(side_effect=OSError))),
+            mock.patch('sys.stdout'),
+        ):
+            with setup_progress.watching_prompts():
+                print('Now choose the HDD (movies, shows, Nextcloud files and backups).')
+                print('  1) sdc: 32 GB  - too small, needs 54 GB')
+                print('  2) sdd: 256 GB')
+                builtins.input('Number of the HDD (Enter alone stops setup here): ')
+                print('sdc is 32 GB, too small for the HDD. Choose another one from the list.')
+                builtins.input('Number of the HDD (Enter alone stops setup here): ')
+                self.assertEqual(
+                    seen[1]['context'][-4:],
+                    [
+                        'Now choose the HDD (movies, shows, Nextcloud files and backups).',
+                        '  1) sdc: 32 GB  - too small, needs 54 GB',
+                        '  2) sdd: 256 GB',
+                        'sdc is 32 GB, too small for the HDD. Choose another one from the list.',
+                    ],
+                )
+                for what in ('photos', 'music'):
+                    print(f'Where should the {what} be kept?')
+                    print('  1) the media drive: 255 GB free (recommended)')
+                    print('  2) the SSD: 63 GB free, faster')
+                    builtins.input('Number (Enter for the recommended one): ')
+                self.assertEqual(seen[3]['context'][0], 'Where should the music be kept?')
+                self.assertNotIn('Where should the photos be kept?', seen[3]['context'])
+
     def test_the_window_or_the_terminal_answers_whichever_is_first(self):
         import pty
 

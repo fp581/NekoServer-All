@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Setup window
+- **After a wrong answer, the list to choose from stays in the window.** The setup window showed what the terminal had said since the last answer, so after a wrong drive number it showed only "Choose another one from the list", without the list. A question asked again keeps its list, with the error under it.
+
 ## v0.47.7 — 2026-11-06
 
 Fixes from installing NekoServer from scratch on a clean Debian 13 PC (a virtual machine) with blank drives, as a new user would, and using it from an Android phone over Tailscale. The biggest one: with the music on the media drive, which setup recommends when that drive has more room, connecting the apps never finished. The rest makes setup and the dashboard say clearly what is happening, and stops warnings about things that are fine.
