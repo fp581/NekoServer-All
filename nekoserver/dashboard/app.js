@@ -850,7 +850,12 @@ function backupIssues(s, add) {
         severity(job.status === 'fail'),
         unit
       );
-    } else if (timer.installed && !numeric(job.last_success) && job.status !== 'running') {
+    } else if (
+      timer.installed &&
+      !numeric(job.last_success) &&
+      job.status !== 'running' &&
+      !COPIES_NOTHING.has(job.id) // nothing to rely on before it first runs
+    ) {
       add(
         'job:' + job.id,
         name + ' has not succeeded yet',
@@ -1021,14 +1026,21 @@ function heroStatus() {
     ['pass', 'Everything looks good']
   );
 }
+/* The jobs that make copies and are in use: a backup you switched off, and the jobs that
+ * copy nothing (the update night, the daily check, the upgrade), say nothing about
+ * whether your copies are fine. Their problems are listed with the others. */
+function copyJobs(jobs) {
+  return jobs.filter(j => j.status !== 'disabled' && !COPIES_NOTHING.has(j.id));
+}
 function backupSummary(s) {
-  const bad = s.backups.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
+  const jobs = copyJobs(s.backups);
+  const bad = jobs.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
   return firstOf(
     [
-      [s.backups.some(j => j.blocked), 'Paused: a drive is missing'],
-      [s.backups.some(j => j.status === 'running'), 'Backup running'],
+      [jobs.some(j => j.blocked), 'Paused: a drive is missing'],
+      [jobs.some(j => j.status === 'running'), 'Backup running'],
       [bad, plural(bad, 'needs', 'need') + ' a look'],
-      [s.backups.length && s.backups.every(j => j.status === 'pass'), 'All recent copies OK']
+      [jobs.length && jobs.every(j => j.status === 'pass'), 'All recent copies OK']
     ],
     'Not all checked yet'
   );
@@ -1618,7 +1630,7 @@ function protectionItem(label, [st, title], detail) {
   return box;
 }
 function recentCopies(all) {
-  const jobs = all.filter(j => j.status !== 'disabled'); // an app switched off: its backup is retired
+  const jobs = copyJobs(all);
   const bad = jobs.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
   const unscheduled = j => !onDemand(j) && (!j.timer?.installed || !j.timer?.active);
   const unchecked = !jobs.length || jobs.some(j => !numeric(j.last_success) || unscheduled(j));

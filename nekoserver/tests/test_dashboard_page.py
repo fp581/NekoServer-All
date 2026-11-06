@@ -232,6 +232,36 @@ class DashboardPageTests(unittest.TestCase):
             ],
         )
 
+    def test_only_backups_in_use_say_whether_your_copies_are_fine(self):
+        """Seen on the rig (0.47.6): Home said "Backups: Not all checked yet" and listed
+        "Weekly app updates has not succeeded yet" on a server whose backups had all
+        passed, because the update night had not run yet. With the music backup switched
+        off, Home could never say all was fine. Neither copies anything."""
+        on = {'installed': True, 'active': True}
+        good = {'id': 'applications', 'name': 'Apps', 'status': 'pass', 'last_success': 1000.0, 'timer': on}
+        rows = [
+            good,
+            {'id': 'music', 'name': 'Music', 'status': 'disabled', 'timer': {'installed': False}},
+            {'id': 'updates', 'name': 'Weekly app updates', 'status': 'unknown', 'timer': on},
+            {'id': 'update_check', 'name': 'Daily update check', 'status': 'pass', 'last_success': 1.0, 'timer': on},
+        ]
+        summary, copies, issues = page(
+            ('backupSummary', status(backups=rows)),
+            ('recentCopies', rows),
+            ('collectIssues', status(backups=rows)),
+        )
+        self.assertEqual((summary, copies[1]), ('All recent copies OK', 'All OK'))
+        self.assertEqual(issues, [])
+        # A backup that has not run yet still is one to wait for; a failed update night is listed.
+        first = {**good, 'status': 'unknown', 'last_success': None}
+        failed = {'id': 'updates', 'name': 'Weekly app updates', 'status': 'fail', 'timer': on}
+        summary, issues = page(
+            ('backupSummary', status(backups=[first, failed])),
+            ('collectIssues', status(backups=[first, failed])),
+        )
+        self.assertEqual(summary, 'Not all checked yet')
+        self.assertEqual(sorted(i['id'] for i in issues), ['job:applications', 'job:updates'])
+
     def test_an_unfinished_server_check_is_listed(self):
         [issues] = page(('collectIssues', status(acceptance={'status': 'pending'})))
         self.assertEqual(issues, [{'id': 'acceptance', 'level': 'warning', 'title': 'Finish checking your server'}])

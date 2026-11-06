@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-More fixes, found after 0.47.6.
+### Dashboard
+- **"All recent copies OK" when your backups are fine.** Home said "Backups: Not all checked yet", and listed "Weekly app updates has not succeeded yet", until the first weekly update night had run, which takes up to a week on a new server. With a backup switched off (the music backup, say), Home never said all was fine at all. Only the backups you use count now. A failed update night is still listed with the other things to look at.
 
 ### Tests
-- **The acceptance tests no longer ask the real machine.** A full inspection in the tests asked the real Docker, systemd and Tailscale (some 70 calls per module), and started the media check's own service when it was there. On the rig, with Docker unable to start after a restart, each call waited out its time limit and the suite took over half an hour; on a running server the results depended on its live state. The commands answer as on a PC without them now, and the suite takes about a minute either way.
+- **The acceptance tests no longer touch the server they run on.** They asked the real Docker, systemd and Tailscale, and could start one of the server's own services. On a server where Docker could not start, the test run took over half an hour. They now run the same everywhere, in about a minute.
 
 ## v0.47.6 — 2026-11-06
 
