@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from neko_common import app_ports, safe_path, local_opener, checked_settings, default_settings
+from neko_common import app_ports, safe_path, local_opener, checked_settings, default_settings, music_library
 import qbit_setup
 import account_store
 
@@ -540,11 +540,15 @@ def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'),
         raise RuntimeError('Download-client setup incomplete: ' + ', '.join(failures))
 
 
-def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr')):
+def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr'), music=None):
     failures = []
     for app in apps:
         category = {'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}[app]
-        host = safe_path(Path(root if category == 'music' else media) / 'library' / category)
+        # Music is where setup put it (on the SSD or the media drive); Lidarr sees it as /data/music.
+        if category == 'music':
+            host = safe_path(Path(music) if music else Path(root) / 'library/music')
+        else:
+            host = safe_path(Path(media) / 'library' / category)
         path = '/data/' + category
         try:
             if not host.is_dir():
@@ -593,7 +597,15 @@ def chosen_actions(args, root, config, apps, selected):
         actions.append(
             (
                 'root folders',
-                lambda: configure_root_folders(root, args.media_root or config['media_mount'], args.apply, apps),
+                lambda: configure_root_folders(
+                    root,
+                    args.media_root or config['media_mount'],
+                    args.apply,
+                    apps,
+                    music_library(
+                        {**config, 'data_mount': str(root), 'media_mount': args.media_root or config['media_mount']}
+                    ),
+                ),
             )
         )
     if args.indexers:

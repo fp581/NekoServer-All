@@ -238,13 +238,16 @@ def pending_maintenance(journal=MAINTENANCE_JOURNAL, outcome='Nothing was change
     )
 
 
-def pick_drive(options, label, input_fn=input, out_fn=print, skippable=False, attempts=3):
+def pick_drive(options, label, input_fn=input, out_fn=print, skippable=False, attempts=3, describe=None):
     """The drive chosen by its number, then confirmed by typing its name. A typo is asked
     again. ENTER (or Ctrl+D) stops: None when the choice may be left for later
-    (`skippable`), otherwise "Selection aborted"."""
+    (`skippable`), otherwise "Selection aborted". `describe` words each drive as the
+    other drive questions do (modules/storage.describe)."""
     for n, v in enumerate(options, 1):
         out_fn(
-            f"  {n}) /dev/{v['name']} {v.get('size', '')} {v['fstype']} UUID={v['uuid']} "
+            f'  {n}) ' + describe(v)
+            if describe
+            else f"  {n}) /dev/{v['name']} {v.get('size', '')} {v['fstype']} UUID={v['uuid']} "
             f"mounted={v.get('mountpoint') or '-'}"
         )
     question = (

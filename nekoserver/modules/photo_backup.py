@@ -156,7 +156,10 @@ def select_external(config, inventory, input_fn=input, out_fn=print):
         raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')
     if not candidates:
         raise RuntimeError(no_backup_drive(config, inventory))
-    chosen = pick_drive(candidates, 'the USB backup drive', input_fn, out_fn, skippable=True)
+    from modules.storage import describe
+
+    # Worded as the SSD and HDD lists are (it listed UUIDs and mount points before).
+    chosen = pick_drive(candidates, 'the USB backup drive', input_fn, out_fn, skippable=True, describe=describe)
     if chosen is None:
         return None  # skipped for now, as offered
     photos = config.setdefault('photos', {})

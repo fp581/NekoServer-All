@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Setup
+- **Music on the media drive works.** Setup lets you keep the music on the media drive, and recommends it when that drive has more room. Three parts still looked for the music on the SSD: the library check, Lidarr's music folder, and the import of music you already have. So connecting the apps never finished ("Host library directory missing"), and imported music went where neither Navidrome nor Lidarr look. All three now use the drive you chose.
+- **The USB drive question reads like the other drive questions.** It listed each drive as `/dev/sdc 32G ext4 UUID=… mounted=-`. It now shows size, name and model, as the SSD and HDD questions do.
+
 ### Installation
 - **Installing git on a fresh Debian or Ubuntu works as the README says.** `sudo apt install git` fails there with "Unable to locate package git" until the package lists have been fetched once. The README now says `sudo apt update && sudo apt install git`.
 - **Formatting a drive: the terminal command is given too.** When a drive has no filesystem yet (or one Linux apps can't use), setup suggested only the Disks app or KDE Partition Manager. A server often has no desktop, so it now also gives the command, for example `sudo mkfs.ext4 /dev/sdb`.

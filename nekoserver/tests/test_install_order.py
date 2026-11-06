@@ -1537,6 +1537,9 @@ class UsbPickerTests(unittest.TestCase):
         offered = '\n'.join(shown)
         self.assertNotIn('sdb2', offered)  # second partition of the media HDD
         self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk
+        # Worded as the SSD and HDD lists are, not as UUIDs and mount points (seen on a Debian VM).
+        self.assertIn('  1) sdc1: 1.0 TB, open at /run/media/neko/BACKUP (exfat)', offered)
+        self.assertNotIn('UUID=', offered)
 
     def test_a_typo_in_the_usb_picker_is_asked_again(self):
         import copy

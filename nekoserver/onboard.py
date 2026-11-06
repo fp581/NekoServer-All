@@ -25,6 +25,7 @@ from neko_common import (
     checked_settings,
     default_settings,
     local_opener,
+    music_library,
     safe_path,
 )
 
@@ -40,7 +41,7 @@ def mount_ok(path):
     return Path(path).is_dir() and not Path(path).is_symlink() and os.path.ismount(path)
 
 
-def report(root, media, check_http=True, apps=APPS):
+def report(root, media, check_http=True, apps=APPS, music=None):
     results = []
     for app in apps:
         cfg = safe_path(root / 'appdata' / app)
@@ -60,7 +61,8 @@ def report(root, media, check_http=True, apps=APPS):
                 status = 'needs_setup'
             results.append({'check': f'http:{app}', 'status': status})
     for cat in ('movies', 'tv', 'music', 'downloads'):
-        p = safe_path((root if cat == 'music' else media) / 'library' / cat)
+        # The music library is where setup put it: on the SSD or on the media drive.
+        p = safe_path(music or root / 'library/music') if cat == 'music' else safe_path(media / 'library' / cat)
         results.append(
             {'check': f'library:{cat}', 'status': 'pass' if p.is_dir() and not p.is_symlink() else 'needs_setup'}
         )
@@ -161,7 +163,8 @@ def main(argv=None):
         pending = wait_ready(apps, a.wait)
         if pending:
             print('Startup wait ended; still unavailable:', ', '.join(pending))
-    findings = report(root, media, not a.skip_http, apps)
+    music = music_library({**config, 'data_mount': str(root), 'media_mount': str(media)})
+    findings = report(root, media, not a.skip_http, apps, music)
     output = root / 'reports' / 'onboarding.json'
     safe_report(output, findings)
     for r in findings:
@@ -265,7 +268,7 @@ def main(argv=None):
         provider_results = seerr_providers.configure(root, a.apply, apps)
         for r in provider_results:
             print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
-    findings = report(root, media, not a.skip_http, apps)
+    findings = report(root, media, not a.skip_http, apps, music)
     findings += source_results
     findings += library_results
     findings += provider_results
