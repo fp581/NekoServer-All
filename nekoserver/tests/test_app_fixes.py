@@ -370,7 +370,7 @@ class OnboardingReasonTests(unittest.TestCase):
                 ],
             )
         self.assertEqual(result['status'], 'needs_setup')
-        self.assertIn('Prowlarr, the download client or the library folders', result['reason'])
+        self.assertIn('a quality profile that Enter skipped', result['reason'])
         self.assertIn('sudo bash install.sh', result['reason'])
 
     def test_a_step_still_to_set_up_names_its_reason(self):

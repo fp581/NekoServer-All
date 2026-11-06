@@ -573,7 +573,10 @@ def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr
                         raise RuntimeError('Lidarr has no configured profiles')
                     profile = options[0] if len(options) == 1 else choose(options, 'Choose Lidarr ' + endpoint[1:])
                     if profile is None:
-                        raise RuntimeError('Lidarr profile choice required')
+                        raise RuntimeError(
+                            "Lidarr's quality and metadata profiles were not chosen (Enter skips them). Run  sudo bash "
+                            'install.sh  again and choose one of each'
+                        )
                     payload[field] = profile['id']
             print(f'{app}: root folder {path}', 'APPLY' if apply else 'PREVIEW')
             if apply:
@@ -585,7 +588,7 @@ def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr
                     raise RuntimeError('Root folder was not retained or is inaccessible')
         except (RuntimeError, ValueError, OSError, KeyError) as exc:
             print(f'{app}: root folder incomplete ({exc})')
-            failures.append(app)
+            failures.append(f'{app} ({exc})')
     if failures:
         raise RuntimeError('Root folder setup incomplete: ' + ', '.join(failures))
 

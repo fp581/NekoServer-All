@@ -45,7 +45,9 @@ def choose(values, label, prompt):
         print(f"  {index}. {item['name']}")
     answer = prompt('Choose a number (blank to skip): ').strip()
     if not answer:
-        raise SetupRequired('Profile selection skipped')
+        raise SetupRequired(
+            'No quality profile was chosen for requests (Enter skips it). Run  sudo bash install.sh  again and choose one'
+        )
     if not answer.isdecimal() or not 1 <= int(answer) <= len(values):
         raise SetupRequired('Invalid profile selection; provider unchanged')
     return values[int(answer) - 1]

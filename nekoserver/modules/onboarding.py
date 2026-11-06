@@ -142,7 +142,10 @@ def remove_stale(ctx, release, config):
 
 
 # Said for the connector's row, which has no reason of its own: its messages are above.
-CONNECTOR = 'the app connections (Prowlarr, the download client or the library folders; the messages above say which)'
+CONNECTOR = (
+    'the app connections (Prowlarr, the download client, the library folders, or a quality profile '
+    'that Enter skipped; the messages above say which)'
+)
 
 
 def first_problem(config):
