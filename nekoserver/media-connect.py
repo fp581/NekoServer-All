@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from neko_common import app_ports, safe_path, local_opener, checked_settings, default_settings, music_library
+from neko_common import LOCATIONS, app_ports, safe_path, local_opener, checked_settings, default_settings, music_library
 import qbit_setup
 import account_store
 
@@ -546,7 +546,7 @@ def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr
         category = {'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}[app]
         # Music is where setup put it (on the SSD or the media drive); Lidarr sees it as /data/music.
         if category == 'music':
-            host = safe_path(Path(music) if music else Path(root) / 'library/music')
+            host = safe_path(Path(music) if music else Path(root) / LOCATIONS['music'][1][0])
         else:
             host = safe_path(Path(media) / 'library' / category)
         path = '/data/' + category

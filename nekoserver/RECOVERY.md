@@ -226,7 +226,7 @@ Use this when both the SSD and the HDD are lost. The USB drive holds the photos 
 sudo cp -a /mnt/nekoserver-media/restored/photos-DATE-TIME/upload /mnt/nekoserver-media/restored/photos-DATE-TIME/library /srv/nekoserver/photos/immich-library/
 ```
 
-   Use the folder the menu named. When everything works (step 4), you can delete the restore folder.
+   Use the folder the menu named. If setup put the photos on the media drive, copy them to `/mnt/nekoserver-media/photos/immich-library/` instead (`"photos": "media"` under `"locations"` in `my-config.json`). When everything works (step 4), you can delete the restore folder.
 3. Follow Immich's own "Backup and Restore" guide (immich.app/docs/administration/backup-and-restore) with the newest `immich-<date>.sql` from the USB drive. With NekoServer the Compose files are in `/srv/nekoserver/compose/immich/`, the project name is `neko-immich`, and the dump restores into the `immich` database (it was made with `pg_dump -d immich`).
 4. Start Immich and check that albums, faces and a few photos open before using it again.
 

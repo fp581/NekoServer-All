@@ -19,6 +19,7 @@ import media_libraries
 import media_readiness
 import seerr_providers
 from neko_common import (
+    LOCATIONS,
     MEDIA_APPS,
     app_ports,
     atomic_json,
@@ -62,7 +63,11 @@ def report(root, media, check_http=True, apps=APPS, music=None):
             results.append({'check': f'http:{app}', 'status': status})
     for cat in ('movies', 'tv', 'music', 'downloads'):
         # The music library is where setup put it: on the SSD or on the media drive.
-        p = safe_path(music or root / 'library/music') if cat == 'music' else safe_path(media / 'library' / cat)
+        p = (
+            safe_path(music or root / LOCATIONS['music'][1][0])
+            if cat == 'music'
+            else safe_path(media / 'library' / cat)
+        )
         results.append(
             {'check': f'library:{cat}', 'status': 'pass' if p.is_dir() and not p.is_symlink() else 'needs_setup'}
         )

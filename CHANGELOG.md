@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Setup
+- **The guides say where your files are, wherever you chose.** STORAGE.md said Nextcloud's files always go on the media drive, though setup offers the SSD too. It and the table above it named the SSD as the place for photos and music "by default", though setup offers whichever drive suits the server. RECOVERY.md's "Rebuild Immich from the USB drive" copied the photos back to the SSD only. Each now says where the files go for either choice.
 - **Music on the media drive works.** Setup lets you keep the music on the media drive, and recommends it when that drive has more room. Three parts still looked for the music on the SSD: the library check, Lidarr's music folder, and the import of music you already have. So connecting the apps never finished ("Host library directory missing"), and imported music went where neither Navidrome nor Lidarr look. All three now use the drive you chose.
 - **The USB drive question reads like the other drive questions.** It listed each drive as `/dev/sdc 32G ext4 UUID=… mounted=-`. It now shows size, name and model, as the SSD and HDD questions do.
 
@@ -20,6 +21,7 @@
 - **"All recent copies OK" when your backups are fine.** Home said "Backups: Not all checked yet", and listed "Weekly app updates has not succeeded yet", until the first weekly update night had run, which takes up to a week on a new server. With a backup switched off (the music backup, say), Home never said all was fine at all. Only the backups you use count now. A failed update night is still listed with the other things to look at.
 
 ### Tests
+- **A test keeps paths to the photos, music and Nextcloud files from being written by hand.** Their folders are named once (shared.json) and every path is built from setup's choice of drive. The music-on-the-media-drive bug came from three places that built "SSD + library/music" themselves; the test fails if that happens again.
 - **The acceptance tests no longer touch the server they run on.** They asked the real Docker, systemd and Tailscale, and could start one of the server's own services. On a server where Docker could not start, the test run took over half an hour. They now run the same everywhere, in about a minute.
 
 ## v0.47.6 — 2026-11-06

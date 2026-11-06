@@ -231,6 +231,11 @@ pub fn shared_list(path: &[&str]) -> Vec<&'static str> {
         .collect()
 }
 /// Where `what` is by default ("ssd" or "media") and its folders on that drive.
+/// The `n`th folder shared.json names for `what` ("music": 0 the library, 1 its
+/// downloads), under the drive that holds it: the one place the names are written.
+pub fn shared_folder(what: &str, n: usize) -> &'static str {
+    location_of(what).1.get(n).copied().unwrap_or("")
+}
 fn location_of(what: &str) -> (&'static str, Vec<&'static str>) {
     let place = &SHARED["locations"][what];
     let folders = place["folders"]
