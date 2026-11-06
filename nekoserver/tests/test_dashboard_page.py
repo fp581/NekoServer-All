@@ -252,20 +252,21 @@ class DashboardPageTests(unittest.TestCase):
         )
         self.assertEqual((summary, copies[1]), ('All recent copies OK', 'All OK'))
         self.assertEqual(issues, [])
-        # A backup that has not run yet still is one to wait for; a failed update night is listed.
+        # A failed update night is listed; a backup that has not run yet is not a problem.
         first = {**good, 'status': 'unknown', 'last_success': None}
         failed = {'id': 'updates', 'name': 'Weekly app updates', 'status': 'fail', 'timer': on}
         summary, issues = page(
             ('backupSummary', status(backups=[first, failed])),
             ('collectIssues', status(backups=[first, failed])),
         )
-        self.assertEqual(summary, 'Not all checked yet')
-        self.assertEqual(sorted(i['id'] for i in issues), ['job:applications', 'job:updates'])
+        self.assertEqual(summary, 'First runs to come')
+        self.assertEqual(sorted(i['id'] for i in issues), ['job:updates'])
 
-    def test_backups_not_run_yet_are_one_item_that_says_when(self):
-        """Seen on a fresh Debian VM: Home opened with six items, one per backup, each
-        saying "Wait for (or start) its first run", though the monthly one can't be
-        started by day and first ran weeks later."""
+    def test_a_new_server_is_getting_started_not_in_need_of_a_look(self):
+        """The user's choice after the VM installs: a new server said "2 things need a
+        look" (its backups had not run yet, the server check was not done), though nothing
+        was wrong. They are a "Getting started" note now: no item to review, Home stays
+        green, the Backups tile says when the first run is due."""
         on = {'installed': True, 'active': True}
         new = [
             {'id': job, 'name': name, 'status': 'unknown', 'timer': {**on, 'next_run_at': at}}
@@ -275,14 +276,32 @@ class DashboardPageTests(unittest.TestCase):
                 ('maintenance', 'Monthly check', 1_802_500_000.0),
             )
         ]
-        issues, one = page(('issueDetails', status(backups=new)), ('issueDetails', status(backups=new[:1])))
-        self.assertEqual([i['title'] for i in issues], ['3 backups have not run yet'])
-        self.assertIn('the next is due ', issues[0]['detail'])
-        self.assertNotIn('start', issues[0]['detail'])
-        self.assertEqual((one[0]['id'], one[0]['title']), ('job:applications', 'Apps has not run yet'))
+        fresh = status(backups=new, acceptance={'status': 'unknown'})
+        issues, start, tile, copies, words = page(
+            ('collectIssues', fresh),
+            ('gettingStarted', fresh),
+            ('backupSummary', fresh),
+            ('recentCopies', new),
+            ('companionWords', ['resting', fresh, []]),
+        )
+        self.assertEqual(issues, [])
+        self.assertEqual(len(start), 2)
+        self.assertTrue(start[0].startswith('first backups due '), start)
+        self.assertEqual(start[1], 'finish checking your server')
+        self.assertTrue(tile.startswith('First run '), tile)
+        self.assertEqual(copies[1], 'First runs to come')
+        self.assertEqual(words[0], 'Getting started')
+        self.assertIn('Finish checking your server', words[2].replace('finish', 'Finish'))
+        # Once the backups have run and the check is done, the note goes away.
+        done = status(backups=[{**j, 'status': 'pass', 'last_success': 1.0} for j in new])
+        start, words = page(('gettingStarted', done), ('companionWords', ['resting', done, []]))
+        self.assertEqual((start, words[0]), ([], 'Normal operation'))
 
-    def test_an_unfinished_server_check_is_listed(self):
-        [issues] = page(('collectIssues', status(acceptance={'status': 'pending'})))
+    def test_a_server_check_still_to_do_is_no_problem_but_a_failed_one_is(self):
+        for still in ('pending', 'unknown', 'outdated'):
+            [issues] = page(('collectIssues', status(acceptance={'status': still})))
+            self.assertEqual(issues, [], still)
+        [issues] = page(('collectIssues', status(acceptance={'status': 'failed'})))
         self.assertEqual(issues, [{'id': 'acceptance', 'level': 'warning', 'title': 'Finish checking your server'}])
 
     def test_the_fixed_speed_slider_starts_at_the_never_slower_than_floor(self):
