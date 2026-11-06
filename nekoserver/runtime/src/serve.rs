@@ -565,10 +565,14 @@ fn from_the_page(
         && (navigation || !fetch.iter().any(|v| *v == b"cross-site"))
         && !(post && (origin.len() != 1 || fetch.iter().any(|v| *v != b"same-origin")))
 }
-/// A top-level page load (Sec-Fetch-Mode: navigate, Sec-Fetch-Dest: document) of a page,
-/// never of the readings or buttons under /api/, and never a change (POST).
-fn page_navigation(method: &str, path: &str, mode: &[&[u8]], dest: &[&[u8]]) -> bool {
-    method == "GET" && !path.starts_with("/api/") && mode == [b"navigate"] && dest == [b"document"]
+/// A page load (Sec-Fetch-Mode: navigate) of a page, never of the readings or buttons
+/// under /api/, and never a change (POST). Its Sec-Fetch-Dest is not asked: once the
+/// dashboard's service worker (sw.js) is installed, it passes the page load on itself and
+/// the browser says "empty" instead of "document" (seen on the phone: a second visit from
+/// a link got E41 again). A page's script can't send "navigate" (fetch() refuses it), and
+/// frame-ancestors 'none' keeps another site from showing the page in a frame.
+fn page_navigation(method: &str, path: &str, mode: &[&[u8]]) -> bool {
+    method == "GET" && !path.starts_with("/api/") && mode == [b"navigate"]
 }
 fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
     if accepted.elapsed() >= REQUEST_TIME {
@@ -616,12 +620,7 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
     let fetch = values("sec-fetch-site");
     let cl = values("content-length");
     let wanted = req.path.unwrap_or("").split('?').next().unwrap_or("");
-    let navigation = page_navigation(
-        method,
-        wanted,
-        &values("sec-fetch-mode"),
-        &values("sec-fetch-dest"),
-    );
+    let navigation = page_navigation(method, wanted, &values("sec-fetch-mode"));
     if !from_the_page(
         &hosts,
         &origin,
@@ -1131,6 +1130,11 @@ mod tests {
         assert!(ask("/", &host, link).ends_with("asset index.html"));
         assert!(ask("/api/status", &host, link).contains("\"E41\""));
         assert!(ask("/", "evil.example:80", link).contains("\"E41\""));
+        // The same page load once the service worker passes it on (Dest: empty).
+        let again =
+            "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: empty\r\n";
+        assert!(ask("/", &host, again).ends_with("asset index.html"));
+        assert!(ask("/api/status", &host, again).contains("\"E41\""));
         let fetched =
             "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\n";
         assert!(ask("/", &host, fetched).contains("\"E41\""));
