@@ -262,6 +262,25 @@ class DashboardPageTests(unittest.TestCase):
         self.assertEqual(summary, 'Not all checked yet')
         self.assertEqual(sorted(i['id'] for i in issues), ['job:applications', 'job:updates'])
 
+    def test_backups_not_run_yet_are_one_item_that_says_when(self):
+        """Seen on a fresh Debian VM: Home opened with six items, one per backup, each
+        saying "Wait for (or start) its first run", though the monthly one can't be
+        started by day and first ran weeks later."""
+        on = {'installed': True, 'active': True}
+        new = [
+            {'id': job, 'name': name, 'status': 'unknown', 'timer': {**on, 'next_run_at': at}}
+            for job, name, at in (
+                ('applications', 'Apps', 1_800_003_600.0),
+                ('host', 'Host', 1_800_000_000.0),
+                ('maintenance', 'Monthly check', 1_802_500_000.0),
+            )
+        ]
+        issues, one = page(('issueDetails', status(backups=new)), ('issueDetails', status(backups=new[:1])))
+        self.assertEqual([i['title'] for i in issues], ['3 backups have not run yet'])
+        self.assertIn('the next is due ', issues[0]['detail'])
+        self.assertNotIn('start', issues[0]['detail'])
+        self.assertEqual((one[0]['id'], one[0]['title']), ('job:applications', 'Apps has not run yet'))
+
     def test_an_unfinished_server_check_is_listed(self):
         [issues] = page(('collectIssues', status(acceptance={'status': 'pending'})))
         self.assertEqual(issues, [{'id': 'acceptance', 'level': 'warning', 'title': 'Finish checking your server'}])

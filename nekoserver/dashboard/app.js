@@ -831,6 +831,7 @@ function onDemand(job) {
   return job.scheduled === false;
 }
 function backupIssues(s, add) {
+  const firstRuns = [];
   for (const job of s.backups) {
     if (job.status === 'disabled') {
       continue;
@@ -856,14 +857,7 @@ function backupIssues(s, add) {
       job.status !== 'running' &&
       !COPIES_NOTHING.has(job.id) // nothing to rely on before it first runs
     ) {
-      add(
-        'job:' + job.id,
-        name + ' has not succeeded yet',
-        'Wait for (or start) its first run before relying on it.',
-        'backup',
-        'warning',
-        unit
-      );
+      firstRuns.push(job);
     }
     if (!onDemand(job) && (timer.installed || numeric(job.last_success)) && !timer.active) {
       add(
@@ -876,6 +870,34 @@ function backupIssues(s, add) {
       );
     }
   }
+  firstRunsIssue(firstRuns, add);
+}
+/* The backups that have not run yet, as one item that says when the next one is due. On a
+ * new server it was one item per backup, each saying to wait for or start its first run,
+ * though the monthly one can't be started by day and first runs weeks later. */
+function firstRunsIssue(jobs, add) {
+  if (!jobs.length) {
+    return;
+  }
+  const due = jobs
+    .map(j => object(j.timer).next_run_at)
+    .filter(t => numeric(t) && t > 0)
+    .sort((a, b) => a - b);
+  const one = jobs.length === 1;
+  add(
+    one ? 'job:' + jobs[0].id : 'jobs:first-run',
+    one ? text(jobs[0].name, 'Backup') + ' has not run yet' : jobs.length + ' backups have not run yet',
+    (one ? 'It runs by itself on its schedule' : 'Each runs by itself on its schedule') +
+      (due.length ? '; the next is due ' + localTime(due[0]) : '') +
+      '. Don’t rely on ' +
+      (one ? 'it' : 'them') +
+      ' until ' +
+      (one ? 'it has' : 'they have') +
+      '.',
+    'backup',
+    'warning',
+    one ? jobUnit(jobs[0]) : null
+  );
 }
 function otherIssues(s, add) {
   for (const check of s.integrity.filter(c => integrityBad(c))) {
