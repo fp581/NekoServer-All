@@ -552,12 +552,14 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
         problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:
         journal.unlink(missing_ok=True)
-        # The last line said is the report's reason, the one the dashboard shows: it says
-        # why as well (under "needs attention" it only said that the server was fine).
+        # The last line said is the report's reason, the one the dashboard shows until an
+        # upgrade succeeds: what to do and when it goes away come first (the report keeps
+        # 300 characters), then why the upgrade did not go in.
         to = saved.get('to') or 'the newer release'
         why = f'did not pass: {saved["problem"]}' if saved.get('problem') else 'was cut off before it was checked'
         out(
-            f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check. '
+            f'Nothing was lost: this server runs {previous.name.lstrip("v")} again and passed its check. '
+            "Try the upgrade again when you're ready; this note goes away once one succeeds. "
             f'The upgrade to {to} {why}'
         )
         return 1
