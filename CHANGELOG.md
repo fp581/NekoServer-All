@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## v0.47.7 — 2026-11-06
+
+Fixes from installing NekoServer from scratch on a clean Debian 13 PC (a virtual machine) with blank drives, as a new user would, and using it from an Android phone over Tailscale. The biggest one: with the music on the media drive, which setup recommends when that drive has more room, connecting the apps never finished. The rest makes setup and the dashboard say clearly what is happening, and stops warnings about things that are fine.
+
+### How it was tested
+- Python tests (1400, the dashboard page included) and Rust tests (469) pass; ruff, Prettier, shfmt, rustfmt and clippy are clean.
+- Four fresh installs from a clean Debian 13 snapshot with blank drives, following the README: setup's recommended choices with a USB drive (three times, the last one with every fix in), and photos, music and Nextcloud's files on the SSD without a USB drive. The last one finished every step but the phone test in one run, and its feature check passed (45 checks, plus the monthly check in its night window).
+- The server joined Tailscale through setup's own step, and an emulated Android phone opened all six app addresses and the dashboard (also from a link) over Tailscale.
+- Every backup was run, and app settings, host settings, photos from the USB drive, Nextcloud files and the password list were restored into new folders, with their checksums matching.
+- Covered by tests only: the messages for an ARM board or a Linux without systemd, and the one-network-connection case through a whole setup run (checked on the VM with setup's own chooser and one network card turned off).
+
+### Known limits
+- Not tried yet: signing in to the apps from the phone, the setup window on a real desktop, a monthly snapshot restored onto a fresh install, and an upgrade from 0.47.6 to this release.
+- A monthly check started by hand during the day is refused (it waits for its night), and then shows on the dashboard as needing attention.
 
 ### Restore
 - **The app and host settings restores end in plain words.** They said "live application startup remains untested" and "symbolic links remain inert text". Now they say the files are in a new folder and nothing on the server was changed or restarted.
