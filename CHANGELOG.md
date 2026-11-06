@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Installation
+- **`sudo bash install.sh --help` explains itself.** It began with "usage: installer.py", a file nobody runs, and called itself a "safe phase-one installer framework". It now names the command you typed, says that with no options it runs the guided setup, and explains every option.
+- **Clearer messages on a PC NekoServer can't run on.** A Raspberry Pi or another ARM board was told only "An x86_64 systemd host is required". It now hears that NekoServer needs a 64-bit Intel or AMD PC, and which kind of machine this is. A Linux without systemd (WSL with systemd off, say) is told how to turn it on.
+
 ### Dashboard
 - **"All recent copies OK" when your backups are fine.** Home said "Backups: Not all checked yet", and listed "Weekly app updates has not succeeded yet", until the first weekly update night had run, which takes up to a week on a new server. With a backup switched off (the music backup, say), Home never said all was fine at all. Only the backups you use count now. A failed update night is still listed with the other things to look at.
 

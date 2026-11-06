@@ -2069,3 +2069,21 @@ class KeptCopyTests(unittest.TestCase):
         self.assertIn(other, removed)
         self.assertFalse(other.exists())
         self.assertEqual(len(self.set_aside(dest)), 1)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_the_help_names_the_command_people_run(self):
+        """Seen on the rig: `bash install.sh --help` began "usage: installer.py" (a file
+        nobody runs) and called itself a "safe phase-one installer framework"."""
+        import contextlib
+        import io
+
+        import installer
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            installer.main(['--help'])
+        said = out.getvalue()
+        self.assertTrue(said.startswith('usage: sudo bash install.sh'), said[:80])
+        self.assertIn('guided setup', said)
+        self.assertNotIn('framework', said)
