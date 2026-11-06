@@ -541,6 +541,7 @@ def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'),
 
 
 ROOT_CATEGORY = {'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}
+ROOT_FOLDERS = '/rootfolder'  # the apps' API for their library folders
 
 
 def library_host(category, root, media, music=None):
@@ -576,7 +577,7 @@ def kept(app, key, path):
     """The app lists the root folder, and can reach it."""
     return any(
         r.get('path', '').rstrip('/') == path and r.get('accessible') is not False
-        for r in request(app, key, '/rootfolder')
+        for r in request(app, key, ROOT_FOLDERS)
     )
 
 
@@ -587,7 +588,7 @@ def root_folder(app, root, media, apply, music=None):
     if not library_host(category, root, media, music).is_dir():
         raise RuntimeError('Host library directory missing')
     key = app_key(app, root)
-    found = next((r for r in request(app, key, '/rootfolder') if r.get('path', '').rstrip('/') == path), None)
+    found = next((r for r in request(app, key, ROOT_FOLDERS) if r.get('path', '').rstrip('/') == path), None)
     if found:
         if found.get('accessible') is False:
             raise RuntimeError('Existing root folder is inaccessible')
@@ -598,7 +599,7 @@ def root_folder(app, root, media, apply, music=None):
         payload.update(name='Neko Music', defaultTags=[], **lidarr_profiles(app, key))
     print(f'{app}: root folder {path}', 'APPLY' if apply else 'PREVIEW')
     if apply:
-        request(app, key, '/rootfolder', 'POST', payload)
+        request(app, key, ROOT_FOLDERS, 'POST', payload)
         if not kept(app, key, path):
             raise RuntimeError('Root folder was not retained or is inaccessible')
 
