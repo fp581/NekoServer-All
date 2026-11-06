@@ -400,6 +400,20 @@ class CheckpointKeysTests(unittest.TestCase):
         self.assertIn('Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup.', '\n'.join(shown))
         self.assertEqual(self.run_step(KeyboardInterrupt)[0], 'stopped')
 
+    def test_the_playback_step_says_ctrl_c_skips_it_as_it_does(self):
+        from modules import onboarding
+
+        asked = {}
+
+        def step(*a, **k):
+            asked.update(k)
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as d:
+            ctx = mock.Mock(config={'data_mount': d, 'media': {'services': ['jellyfin']}})
+            onboarding.witness_playback(ctx, checkpoint=step)  # skipped, setup goes on
+        self.assertEqual(asked['keys'], 'Ctrl+C or Ctrl+D skips it and setup goes on.')
+
 
 class SettingsFollowTheAppsTests(unittest.TestCase):
     """An app added later (setup run again with  --module media ) reaches the backups

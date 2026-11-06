@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Setup
-- **The steps you confirm yourself say what Ctrl+C does.** Each one ended with "Ctrl+C leaves it pending", but Ctrl+C stops setup (on purpose since 0.39, as at every question); Ctrl+D is what leaves a step pending while setup goes on. Seen on a VM: Ctrl+C at the phone step ended setup with six steps still to run. The words now say "Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup", and the same for `acceptance --manual` and in GUIDED-SETUP.md and ACCEPTANCE.md. Nothing else changed: the keys do what they did.
+- **The steps you confirm yourself say what Ctrl+C does.** Each one ended with "Ctrl+C leaves it pending", but Ctrl+C stops setup (on purpose since 0.39, as at every question); Ctrl+D is what leaves a step pending while setup goes on. Seen on a VM: Ctrl+C at the phone step ended setup with six steps still to run. The words now say "Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup" (at the optional playback test, which Ctrl+C does skip: "Ctrl+C or Ctrl+D skips it and setup goes on"), and the same for `acceptance --manual` and in GUIDED-SETUP.md and ACCEPTANCE.md. Nothing else changed: the keys do what they did.
 
 ### Setup window
 - **After a wrong answer, the list to choose from stays in the window.** The setup window showed what the terminal had said since the last answer, so after a wrong drive number it showed only "Choose another one from the list", without the list. A question asked again keeps its list, with the error under it.

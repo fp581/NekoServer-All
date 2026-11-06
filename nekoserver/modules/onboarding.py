@@ -196,6 +196,7 @@ def witness_playback(ctx, checkpoint=None):
                 'and reminds you that playback is untested.',
             ],
             [('url', f"http://127.0.0.1:{app_port('jellyfin')}/")],
+            keys=guided_setup.SKIPPABLE,
         )
     except KeyboardInterrupt:
         done = False

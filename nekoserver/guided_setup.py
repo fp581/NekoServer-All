@@ -199,14 +199,15 @@ def launch(ctx, target, kind='url'):
         return False
 
 
-def show_step(output, title, instructions):
+KEYS = 'Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup.'
+SKIPPABLE = 'Ctrl+C or Ctrl+D skips it and setup goes on.'  # a step that catches Ctrl+C itself (playback)
+
+
+def show_step(output, title, instructions, keys=KEYS):
     output('\n=== ' + title + ' ===')
     for number, instruction in enumerate(instructions, 1):
         output(str(number) + '. ' + instruction)
-    output(
-        'Return to the terminal afterward. No reopens this step; Ctrl+D leaves it pending and setup goes on; '
-        'Ctrl+C stops setup.'
-    )
+    output('Return to the terminal afterward. No reopens this step; ' + keys)
 
 
 def prepared_targets(targets, prepare, output):
@@ -246,7 +247,7 @@ def check_passed(verify, output):
     return passed
 
 
-def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, prompt=None, output=None):
+def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, prompt=None, output=None, keys=KEYS):
     """No repeats instructions/opening; yes must also pass any supplied verifier.
 
     EOF (Ctrl+D) leaves this step pending; Ctrl+C stops setup. Background/read-only runs never launch or
@@ -258,7 +259,7 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, 
     output = output or print
     try:
         while True:
-            show_step(output, title, instructions)
+            show_step(output, title, instructions, keys)
             open_targets(ctx, prepared_targets(targets, prepare, output), output)
             answer = yes_no('Have you completed this step successfully?', prompt, output)
             if answer is None:
