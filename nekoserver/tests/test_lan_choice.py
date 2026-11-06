@@ -87,9 +87,37 @@ class LanChoiceTests(unittest.TestCase):
         ):
             network_access.choose_lan(ctx, output=lambda *_: None, interactive=False)
 
+    def test_the_only_network_is_used_without_asking(self):
+        """The user's choice after a fresh Debian VM install: with one network that can be
+        the home network, setup uses it (and says which), with or without a keyboard."""
+        never = mock.Mock(side_effect=AssertionError('asked'))
+        for interactive in (True, False):
+            ctx, saved = self.ctx(lan_ip='auto', lan_cidr='auto')
+            shown = []
+            with mock.patch.object(network_access, 'candidates', return_value=ROWS[:1]):
+                self.assertTrue(network_access.choose_lan(ctx, output=shown.append, ask=never, interactive=interactive))
+            self.assertEqual(ctx.config['gateway'], {'lan_ip': '192.168.1.20', 'lan_cidr': '192.168.1.0/24'})
+            self.assertEqual(shown, ['Home network: enp3s0 · 192.168.1.20 · 192.168.1.0/24'])
+            self.assertEqual(saved, [ctx.config['gateway']])
+        # Two are still asked about; none is still said plainly.
+        asked = []
+        ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
+        with mock.patch.object(network_access, 'candidates', return_value=ROWS):
+            network_access.choose_lan(
+                ctx, output=lambda *_: None, ask=lambda q: asked.append(q) or '2', interactive=True
+            )
+        self.assertEqual((len(asked), ctx.config['gateway']['lan_ip']), (1, '10.0.0.5'))
+        ctx, _ = self.ctx(lan_ip='auto', lan_cidr='auto')
+        with (
+            mock.patch.object(network_access, 'candidates', return_value=[]),
+            self.assertRaisesRegex(RuntimeError, 'no home-network address setup can use'),
+        ):
+            network_access.choose_lan(ctx, output=lambda *_: None, ask=never, interactive=True)
+
     def test_without_anyone_to_choose_nothing_is_guessed(self):
         ctx, saved = self.ctx(lan_ip='auto', lan_cidr='auto')
-        self.assertFalse(network_access.choose_lan(ctx, output=lambda *_: None, interactive=False))
+        with mock.patch.object(network_access, 'candidates', return_value=ROWS):
+            self.assertFalse(network_access.choose_lan(ctx, output=lambda *_: None, interactive=False))
         self.assertEqual((ctx.config['gateway']['lan_ip'], saved), ('auto', []))
         # A wrong number is asked again (not a failed step); three wrong ones, or
         # Ctrl+D, leave the choice for next time.

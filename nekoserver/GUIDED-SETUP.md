@@ -130,15 +130,22 @@ Answer `yes` after each app works on the phone. Answer `no` to see that app's in
 
 ### 12. Your home network
 
-Setup asks which network connection links this PC to your router, for example:
+With one network connection, setup uses it and says which, for example:
+
+```text
+Home network: enp3s0 · 192.168.1.20 · 192.168.1.0/24
+```
+
+With more than one (a cable and Wi-Fi, say), it asks which links this PC to your router:
 
 ```text
 Which network connects this server to your home network (your router)?
 1. enp3s0 · 192.168.1.20 · 192.168.1.0/24
+2. wlan0 · 192.168.1.21 · 192.168.1.0/24
 Choose your home-network interface number:
 ```
 
-Type the number (usually `1`) and press Enter. Other devices at home can then open the apps without Tailscale too. Tip: in your router, reserve this address for the server (often called "DHCP reservation" or "static lease"), so it doesn't change after a restart.
+Type the number and press Enter. Other devices at home can then open the apps without Tailscale too. Tip: in your router, reserve this address for the server (often called "DHCP reservation" or "static lease"), so it doesn't change after a restart.
 
 Setup may then open each app in the browser and ask you to check that it asks for a login. Answer `yes` once you have checked.
 

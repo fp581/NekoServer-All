@@ -97,29 +97,40 @@ def save_settings(ctx):
         atomic_json(ctx.config_path, ctx.config)
 
 
+def shown(row):
+    """A network as listed: "enp3s0 · 192.168.1.20 · 192.168.1.0/24"."""
+    return row['interface'] + ' · ' + row['ip'] + ' · ' + row['cidr']
+
+
 def choose_lan(ctx, ask=input, interactive=None, output=print):
     """The home-network address and subnet (gateway.lan_ip / lan_cidr), chosen once and
     shared by every step that needs it: LAN folder sharing (Samba) and the LAN HTTPS
     gateway. Whichever runs first asks; the other uses the answer. Settings that name
     them already are kept, unless the server no longer has that address (the router gave
-    it another one): then it is asked again. False when nobody is there to choose."""
+    it another one): then it is asked again. With only one network that can be it, that
+    one is used without asking, with or without a keyboard. False when there are several
+    and nobody is there to choose."""
     opts = ctx.config.setdefault('gateway', {})
     interactive = sys.stdin.isatty() if interactive is None else interactive
     if keep_saved(ctx.config, opts, interactive, output):
         return True
-    if not interactive:
-        return False
     rows = candidates()
-    if not rows:
+    if len(rows) == 1:
+        row = rows[0]
+        output('Home network: ' + shown(row))
+    elif not interactive:
+        return False
+    elif not rows:
         raise RuntimeError(
             'This PC has no home-network address setup can use (it is not connected to a router by cable or Wi-Fi, or only to a VPN). Connect it to your home network and run setup again; to name the address yourself, set "lan_ip" and "lan_cidr" under "gateway" in my-config.json'
         )
-    output('Which network connects this server to your home network (your router)?')
-    for i, row in enumerate(rows, 1):
-        output(str(i) + '. ' + row['interface'] + ' · ' + row['ip'] + ' · ' + row['cidr'])
-    row = pick(rows, ask, output=output)
-    if row is None:
-        return False
+    else:
+        output('Which network connects this server to your home network (your router)?')
+        for i, row in enumerate(rows, 1):
+            output(str(i) + '. ' + shown(row))
+        row = pick(rows, ask, output=output)
+        if row is None:
+            return False
     opts.update(lan_ip=row['ip'], lan_cidr=row['cidr'])
     save_settings(ctx)
     return True
