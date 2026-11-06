@@ -382,7 +382,8 @@ def run(ctx):
     if uuid is None:
         return {
             'status': 'needs_setup',
-            'reason': 'Connect the external photo disk and rerun photo_backup interactively to confirm its UUID',
+            'reason': 'No USB backup drive is chosen yet, so the weekly copy of your photos and Nextcloud files waits for one. '
+            'Connect it and run  sudo bash install.sh  again to choose it',
         }
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
         raise RuntimeError('Set photos.external_backup_uuid from lsblk -f')

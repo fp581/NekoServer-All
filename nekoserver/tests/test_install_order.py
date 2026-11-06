@@ -2114,3 +2114,12 @@ class StoppedStepMessageTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / 'modules/tailscale.py').read_text()
         self.assertNotIn('reapply interactively', source)
         self.assertIn('not signed in to Tailscale yet', source)
+
+
+class NoUsbDriveMessageTests(unittest.TestCase):
+    def test_a_skipped_usb_drive_says_what_to_do(self):
+        """Seen on a fresh Debian VM with the USB drive skipped: setup's last screen said
+        "rerun photo_backup interactively to confirm its UUID"."""
+        source = (Path(__file__).resolve().parents[1] / 'modules/photo_backup.py').read_text()
+        self.assertNotIn('rerun photo_backup interactively', source)
+        self.assertIn('No USB backup drive is chosen yet', source)
