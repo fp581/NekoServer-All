@@ -297,6 +297,28 @@ class DashboardPageTests(unittest.TestCase):
         start, words = page(('gettingStarted', done), ('companionWords', ['resting', done, []]))
         self.assertEqual((start, words[0]), ([], 'Normal operation'))
 
+    def test_once_backups_have_run_the_one_still_to_run_is_no_first_run(self):
+        """Seen on the phone after an upgrade: five backups had passed and only the monthly
+        check was still to come, yet the Backups tile said "First run Tue, Dec 1"."""
+        on = {'installed': True, 'active': True}
+        ran = [
+            {'id': job, 'name': job, 'status': 'pass', 'last_success': 1000.0, 'timer': on}
+            for job in ('archive', 'database', 'external', 'applications', 'host')
+        ]
+        monthly = {
+            'id': 'maintenance',
+            'name': 'Monthly',
+            'status': 'unknown',
+            'timer': {**on, 'next_run_at': 1_800_000_000.0},
+        }
+        s = status(backups=ran + [monthly], acceptance={'status': 'complete'})
+        tile, copies, start, issues = page(
+            ('backupSummary', s), ('recentCopies', ran + [monthly]), ('gettingStarted', s), ('collectIssues', s)
+        )
+        self.assertEqual(tile, 'Recent copies OK · 1 still to run')
+        self.assertEqual(copies, ['pass', 'All OK so far'])
+        self.assertEqual((start, issues), ([], []))
+
     def test_a_server_check_still_to_do_is_no_problem_but_a_failed_one_is(self):
         for still in ('pending', 'unknown', 'outdated'):
             [issues] = page(('collectIssues', status(acceptance={'status': still})))

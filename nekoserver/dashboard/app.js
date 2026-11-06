@@ -891,8 +891,9 @@ const CHECK_TO_DO = new Set(['unknown', 'pending', 'outdated']);
  * away once they are done. */
 function gettingStarted(s) {
   const parts = [],
-    jobs = copyJobs(list(s?.backups)).filter(firstRun);
-  if (jobs.length) {
+    all = copyJobs(list(s?.backups)),
+    jobs = all.filter(firstRun);
+  if (jobs.length && noCopyYet(all)) {
     const due = firstDue(jobs);
     parts.push(
       (jobs.length === 1 ? 'first backup ' : 'first backups ') + (due ? 'due ' + localTime(due) : 'on their schedule')
@@ -1060,7 +1061,13 @@ function heroStatus() {
  * unchecked). */
 function onlyFirstRuns(jobs) {
   const waiting = jobs.filter(firstRun);
-  return [waiting.length > 0 && jobs.every(j => j.status === 'pass' || firstRun(j)), firstDue(waiting)];
+  return [waiting.length > 0 && jobs.every(j => j.status === 'pass' || firstRun(j)), firstDue(waiting), waiting.length];
+}
+/* No backup has made a copy yet: a new server. Once one has, the others still to run are
+ * no longer "first backups" (seen after an upgrade: five had passed, and the tile said
+ * "First run" with the monthly check's date). */
+function noCopyYet(jobs) {
+  return !jobs.some(j => numeric(j.last_success));
 }
 /* The jobs that make copies and are in use: a backup you switched off, and the jobs that
  * copy nothing (the update night, the daily check, the upgrade), say nothing about
@@ -1071,14 +1078,15 @@ function copyJobs(jobs) {
 function backupSummary(s) {
   const jobs = copyJobs(s.backups);
   const bad = jobs.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
-  const [starting, due] = onlyFirstRuns(jobs);
+  const [starting, due, waiting] = onlyFirstRuns(jobs);
   return firstOf(
     [
       [jobs.some(j => j.blocked), 'Paused: a drive is missing'],
       [jobs.some(j => j.status === 'running'), 'Backup running'],
       [bad, plural(bad, 'needs', 'need') + ' a look'],
       [jobs.length && jobs.every(j => j.status === 'pass'), 'All recent copies OK'],
-      [starting, due ? 'First run ' + localTime(due) : 'First runs to come']
+      [starting && noCopyYet(jobs), due ? 'First run ' + localTime(due) : 'First runs to come'],
+      [starting, 'Recent copies OK · ' + waiting + ' still to run']
     ],
     'Not all checked yet'
   );
@@ -1689,7 +1697,10 @@ function recentCopies(all) {
     [
       [jobs.some(j => j.blocked), ['warning', 'Can’t run: drive missing']],
       [bad, ['warning', plural(bad, 'needs', 'need') + ' a look']],
-      [starting && !jobs.some(unscheduled), ['unknown', 'First runs to come']],
+      [
+        starting && !jobs.some(unscheduled),
+        noCopyYet(jobs) ? ['unknown', 'First runs to come'] : ['pass', 'All OK so far']
+      ],
       [unchecked, ['unknown', 'Not all checked']]
     ],
     ['pass', 'All OK']
