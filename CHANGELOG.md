@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.47.6 — 2026-11-06
 
 More fixes, found after 0.47.5.
 
