@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## v0.47.8 — 2026-11-06
+
+Fixes from answering setup in the setup window and stopping it halfway, on a clean Debian 13 PC (a virtual machine). After a wrong answer the window lost the list to choose from; a password or PIN question did not say which one it was; and each step you confirm yourself said Ctrl+C leaves it pending, when Ctrl+C stops setup.
+
+### How it was tested
+- Python tests (1404) and Rust tests (469) pass; ruff, Prettier, shfmt, rustfmt and clippy are clean.
+- A fresh install from a clean Debian 13 snapshot, answered in the setup window over an SSH tunnel: Start setup from the window, closing and reopening it, wrong drive numbers and names, a mismatched PIN, Ctrl+C at the playback test and at the phone step, Ctrl+D at the phone step, then `sudo bash install.sh` again, which went on where it stopped and finished. Photos and Nextcloud's files on the SSD and music on the media drive ended up where chosen.
+- A final fresh install from the same snapshot with every fix in: setup finished every step but the phone test, an emulated Android phone opened the six app addresses and the dashboard over Tailscale, and the feature check passed (45 checks, plus the monthly check in its night window).
+- Covered by tests only: what the window shows for a question asked again, and the key words at the playback test.
+
+### Known limits
+- The setup window has only Yes and No at the steps you confirm yourself; leaving one for later needs Ctrl+D in the terminal.
+- Running setup again asks the optional playback test and the indexer question again.
 
 ### Setup
 - **The steps you confirm yourself say what Ctrl+C does.** Each one ended with "Ctrl+C leaves it pending", but Ctrl+C stops setup (on purpose since 0.39, as at every question); Ctrl+D is what leaves a step pending while setup goes on. Seen on a VM: Ctrl+C at the phone step ended setup with six steps still to run. The words now say "Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup" (at the optional playback test, which Ctrl+C does skip: "Ctrl+C or Ctrl+D skips it and setup goes on"), and the same for `acceptance --manual` and in GUIDED-SETUP.md and ACCEPTANCE.md. Nothing else changed: the keys do what they did.

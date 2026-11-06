@@ -1,6 +1,6 @@
 [package]
 name = "nekoserver-runtime"
-version = "0.47.7"
+version = "0.47.8"
 edition = "2021"
 rust-version = "1.85"
 
