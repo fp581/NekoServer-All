@@ -5,8 +5,9 @@ memory for the window's server; also appended to a file when enabled.
 A question setup asks in the terminal is asked in the window too, with the terminal's
 last lines as its context (the list of drives to choose from, say), and the answer can
 come from either: the first one wins and the other is told. Nothing secret is kept: an
-answer is never recorded, and a hidden entry (a password, a PIN) is reported only as
-"a hidden entry"; its answer from the window travels on this PC's loopback alone."""
+answer is never recorded: a hidden entry (a password, a PIN) is reported by its prompt
+alone ("Same PIN again:"), and its answer from the window travels on this PC's loopback
+alone."""
 
 import builtins
 import collections
@@ -164,7 +165,8 @@ def context_for(shown, fresh):
 def question(text, secret=False):
     """A question setup is asking; the window may answer it (answer_from_window)."""
     global _pending
-    shown = 'a hidden entry' if secret else str(text).strip()[:300]
+    # A hidden entry's own words are shown too ("PIN:", "Same PIN again:"): only its answer is secret.
+    shown = str(text).strip()[:300]
     record = event(
         'question',
         text=shown,

@@ -147,7 +147,9 @@ class ProgressTests(unittest.TestCase):
             ['question', 'answered'] * 2 + ['step'] + ['question', 'answered'] * 3,
         )
         hidden = next(e for e in setup_progress.events() if e['kind'] == 'question' and e['secret'])
-        self.assertEqual((hidden['text'], hidden['form']), ('a hidden entry', 'secret'))
+        # Its prompt is shown (seen on a VM: "PIN:" and "Same PIN again:" both read "a hidden
+        # entry" in the window, so the repeat looked like the first ask); its answer never is.
+        self.assertEqual((hidden['text'], hidden['form']), ('PIN:', 'secret'))
         self.assertIs(builtins.input, builtins.__dict__['input'])  # restored afterwards
 
     def test_a_question_asked_again_keeps_its_list(self):

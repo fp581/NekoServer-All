@@ -4,6 +4,7 @@
 
 ### Setup window
 - **After a wrong answer, the list to choose from stays in the window.** The setup window showed what the terminal had said since the last answer, so after a wrong drive number it showed only "Choose another one from the list", without the list. A question asked again keeps its list, with the error under it.
+- **A password or PIN question in the window says which one it is.** The window showed every hidden entry as "a hidden entry", so "Same PIN again" looked like the first PIN question. It now shows the question's own words ("PIN:", "Same PIN again:"); the answer is still never shown or kept.
 
 ## v0.47.7 — 2026-11-06
 
