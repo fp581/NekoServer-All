@@ -45,22 +45,9 @@ def mount_ok(path):
 def report(root, media, check_http=True, apps=APPS, music=None):
     results = []
     for app in apps:
-        cfg = safe_path(root / 'appdata' / app)
-        results.append(
-            {'check': f'appdata:{app}', 'status': 'pass' if cfg.is_dir() and not cfg.is_symlink() else 'needs_setup'}
-        )
+        results.append({'check': f'appdata:{app}', 'status': folder_status(safe_path(root / 'appdata' / app))})
         if check_http:
-            try:
-                with OPENER.open(f'http://127.0.0.1:{PORTS[app]}/', timeout=3) as res:
-                    status = 'pass' if res.status < 500 else 'fail'
-            except urllib.error.HTTPError as exc:
-                # The opener follows no redirects: an app that sends its front page to
-                # its sign-in page (302), or asks for a login (401), is up.
-                status = 'pass' if exc.code < 500 else 'fail'
-                exc.close()
-            except Exception:
-                status = 'needs_setup'
-            results.append({'check': f'http:{app}', 'status': status})
+            results.append({'check': f'http:{app}', 'status': http_status(app)})
     for cat in ('movies', 'tv', 'music', 'downloads'):
         # The music library is where setup put it: on the SSD or on the media drive.
         p = (
@@ -68,10 +55,27 @@ def report(root, media, check_http=True, apps=APPS, music=None):
             if cat == 'music'
             else safe_path(media / 'library' / cat)
         )
-        results.append(
-            {'check': f'library:{cat}', 'status': 'pass' if p.is_dir() and not p.is_symlink() else 'needs_setup'}
-        )
+        results.append({'check': f'library:{cat}', 'status': folder_status(p)})
     return results
+
+
+def folder_status(path):
+    return 'pass' if path.is_dir() and not path.is_symlink() else 'needs_setup'
+
+
+def http_status(app):
+    """Whether the app answers on its own port: 'pass', 'fail' (it answers with an error)
+    or 'needs_setup' (it does not answer)."""
+    try:
+        with OPENER.open(f'http://127.0.0.1:{PORTS[app]}/', timeout=3) as res:
+            return 'pass' if res.status < 500 else 'fail'
+    except urllib.error.HTTPError as exc:
+        # The opener follows no redirects: an app that sends its front page to its
+        # sign-in page (302), or asks for a login (401), is up.
+        exc.close()
+        return 'pass' if exc.code < 500 else 'fail'
+    except Exception:
+        return 'needs_setup'
 
 
 def safe_report(output, results):

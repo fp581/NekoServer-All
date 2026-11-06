@@ -244,31 +244,34 @@ def pick_drive(options, label, input_fn=input, out_fn=print, skippable=False, at
     (`skippable`), otherwise an error that says to run setup again. `describe` words each drive as the
     other drive questions do (modules/storage.describe)."""
     for n, v in enumerate(options, 1):
-        out_fn(
-            f'  {n}) ' + describe(v)
-            if describe
-            else f"  {n}) /dev/{v['name']} {v.get('size', '')} {v['fstype']} UUID={v['uuid']} "
-            f"mounted={v.get('mountpoint') or '-'}"
-        )
+        out_fn(f'  {n}) ' + (describe or drive_words)(v))
     question = (
         f'Choose {label} by number (Enter to skip for now): ' if skippable else 'Choose number (or ENTER to abort): '
     )
     stopped = f'No drive was chosen for {label}. Run  sudo bash install.sh  again to choose it; nothing was changed.'
     for _ in range(attempts):
-        try:
-            choice = input_fn(question).strip()
-        except EOFError:
-            choice = ''
-        if not choice and skippable:
-            return None
+        choice = typed(input_fn, question)
         if not choice:
+            if skippable:
+                return None
             raise RuntimeError(stopped)
         if choice.isdigit() and 1 <= int(choice) <= len(options):
-            break
+            return confirmed(options[int(choice) - 1], label, input_fn, out_fn, attempts)
         out_fn(f'Type a number from 1 to {len(options)}, or press Enter to stop.')
-    else:
-        raise RuntimeError(stopped)
-    return confirmed(options[int(choice) - 1], label, input_fn, out_fn, attempts)
+    raise RuntimeError(stopped)
+
+
+def drive_words(v):
+    """A drive as lsblk names it, when no plainer wording is given."""
+    return f"/dev/{v['name']} {v.get('size', '')} {v['fstype']} UUID={v['uuid']} mounted={v.get('mountpoint') or '-'}"
+
+
+def typed(input_fn, question):
+    """The answer, stripped; Ctrl+D is an empty answer."""
+    try:
+        return input_fn(question).strip()
+    except EOFError:
+        return ''
 
 
 def confirmed(device, label, input_fn, out_fn, attempts=3):

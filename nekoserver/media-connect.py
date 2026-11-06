@@ -540,52 +540,74 @@ def configure_download_clients(root, apply, apps=('sonarr', 'radarr', 'lidarr'),
         raise RuntimeError('Download-client setup incomplete: ' + ', '.join(failures))
 
 
+ROOT_CATEGORY = {'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}
+
+
+def library_host(category, root, media, music=None):
+    """The folder on this PC an app's library is: music where setup put it (on the SSD or
+    the media drive; Lidarr sees it as /data/music), films and shows on the media drive."""
+    if category == 'music':
+        return safe_path(Path(music) if music else Path(root) / LOCATIONS['music'][1][0])
+    return safe_path(Path(media) / 'library' / category)
+
+
+def lidarr_profiles(app, key):
+    """The quality and metadata profiles Lidarr's root folder needs: the only one, or the
+    one chosen."""
+    chosen = {}
+    for endpoint, field in [
+        ('/qualityprofile', 'defaultQualityProfileId'),
+        ('/metadataprofile', 'defaultMetadataProfileId'),
+    ]:
+        options = request(app, key, endpoint)
+        if not options:
+            raise RuntimeError('Lidarr has no configured profiles')
+        profile = options[0] if len(options) == 1 else choose(options, 'Choose Lidarr ' + endpoint[1:])
+        if profile is None:
+            raise RuntimeError(
+                "Lidarr's quality and metadata profiles were not chosen (Enter skips them). Run  sudo bash "
+                'install.sh  again and choose one of each'
+            )
+        chosen[field] = profile['id']
+    return chosen
+
+
+def kept(app, key, path):
+    """The app lists the root folder, and can reach it."""
+    return any(
+        r.get('path', '').rstrip('/') == path and r.get('accessible') is not False
+        for r in request(app, key, '/rootfolder')
+    )
+
+
+def root_folder(app, root, media, apply, music=None):
+    """One app's library folder, made in the app when it is missing."""
+    category = ROOT_CATEGORY[app]
+    path = '/data/' + category
+    if not library_host(category, root, media, music).is_dir():
+        raise RuntimeError('Host library directory missing')
+    key = app_key(app, root)
+    found = next((r for r in request(app, key, '/rootfolder') if r.get('path', '').rstrip('/') == path), None)
+    if found:
+        if found.get('accessible') is False:
+            raise RuntimeError('Existing root folder is inaccessible')
+        print(f'{app}: root folder already present')
+        return
+    payload = {'path': path}
+    if app == 'lidarr':
+        payload.update(name='Neko Music', defaultTags=[], **lidarr_profiles(app, key))
+    print(f'{app}: root folder {path}', 'APPLY' if apply else 'PREVIEW')
+    if apply:
+        request(app, key, '/rootfolder', 'POST', payload)
+        if not kept(app, key, path):
+            raise RuntimeError('Root folder was not retained or is inaccessible')
+
+
 def configure_root_folders(root, media, apply, apps=('sonarr', 'radarr', 'lidarr'), music=None):
     failures = []
     for app in apps:
-        category = {'sonarr': 'tv', 'radarr': 'movies', 'lidarr': 'music'}[app]
-        # Music is where setup put it (on the SSD or the media drive); Lidarr sees it as /data/music.
-        if category == 'music':
-            host = safe_path(Path(music) if music else Path(root) / LOCATIONS['music'][1][0])
-        else:
-            host = safe_path(Path(media) / 'library' / category)
-        path = '/data/' + category
         try:
-            if not host.is_dir():
-                raise RuntimeError('Host library directory missing')
-            key = app_key(app, root)
-            existing = request(app, key, '/rootfolder')
-            found = next((r for r in existing if r.get('path', '').rstrip('/') == path), None)
-            if found:
-                if found.get('accessible') is False:
-                    raise RuntimeError('Existing root folder is inaccessible')
-                print(f'{app}: root folder already present')
-                continue
-            payload = {'path': path}
-            if app == 'lidarr':
-                payload.update(name='Neko Music', defaultTags=[])
-                for endpoint, field in [
-                    ('/qualityprofile', 'defaultQualityProfileId'),
-                    ('/metadataprofile', 'defaultMetadataProfileId'),
-                ]:
-                    options = request(app, key, endpoint)
-                    if not options:
-                        raise RuntimeError('Lidarr has no configured profiles')
-                    profile = options[0] if len(options) == 1 else choose(options, 'Choose Lidarr ' + endpoint[1:])
-                    if profile is None:
-                        raise RuntimeError(
-                            "Lidarr's quality and metadata profiles were not chosen (Enter skips them). Run  sudo bash "
-                            'install.sh  again and choose one of each'
-                        )
-                    payload[field] = profile['id']
-            print(f'{app}: root folder {path}', 'APPLY' if apply else 'PREVIEW')
-            if apply:
-                request(app, key, '/rootfolder', 'POST', payload)
-                if not any(
-                    r.get('path', '').rstrip('/') == path and r.get('accessible') is not False
-                    for r in request(app, key, '/rootfolder')
-                ):
-                    raise RuntimeError('Root folder was not retained or is inaccessible')
+            root_folder(app, root, media, apply, music)
         except (RuntimeError, ValueError, OSError, KeyError) as exc:
             print(f'{app}: root folder incomplete ({exc})')
             failures.append(f'{app} ({exc})')
