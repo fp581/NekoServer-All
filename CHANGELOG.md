@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Restore
+- **The app and host settings restores end in plain words.** They said "live application startup remains untested" and "symbolic links remain inert text". Now they say the files are in a new folder and nothing on the server was changed or restarted.
+
 ### Setup
 - **A skipped quality profile is named as the reason connecting the apps is unfinished.** Pressing Enter at Lidarr's profile questions, or at the quality profile for requests, skips them, as offered. The end screen then blamed "Prowlarr, the download client or the library folders". It now names the skipped profile and says to run setup again and choose one.
 - **When setup stops at a question, its last screen says what to do.** It promises that each item "says how", yet said only "Drives: Drive confirmation failed" (the drive's name typed wrong three times), "Selection aborted", or, for Tailscale, "authorization pending; reapply interactively". Each now says what happened and to run `sudo bash install.sh` again.
