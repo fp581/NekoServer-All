@@ -582,7 +582,9 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
             )
         if not uuid and apply:
             if not interactive:
-                raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
+                raise RuntimeError(
+                    f'No drive is chosen for {label} yet. Run  sudo bash install.sh  in a terminal on the server to choose it.'
+                )
             device = whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
             local_ssd(key, device)
             new_drive(record, device)

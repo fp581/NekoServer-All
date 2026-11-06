@@ -110,7 +110,7 @@ class DrivePickingTests(unittest.TestCase):
     def test_wrong_confirmation_is_refused(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
         answers = iter(['1', 'sdc1', 'sdc1', 'sdc1'])  # another drive's name, three times
-        with self.assertRaisesRegex(RuntimeError, 'confirmation failed'):
+        with self.assertRaisesRegex(RuntimeError, 'was not typed back'):
             storage.resolve_storage_identity(
                 config,
                 self.INVENTORY,
@@ -2092,3 +2092,25 @@ class HelpTextTests(unittest.TestCase):
         self.assertTrue(said.startswith('usage: sudo bash install.sh'), said[:80])
         self.assertIn('guided setup', said)
         self.assertNotIn('framework', said)
+
+
+class StoppedStepMessageTests(unittest.TestCase):
+    """Seen on a fresh Debian VM: setup's last screen said "Drives: Drive confirmation
+    failed" (or "Selection aborted", or Tailscale's "reapply interactively") under a line
+    promising that each item says how to fix it."""
+
+    def test_a_drive_question_left_unanswered_says_what_to_do(self):
+        from neko_common import confirmed, pick_drive
+
+        drive = {'name': 'sdc', 'uuid': 'u1', 'fstype': 'ext4', 'size': '32G'}
+        with self.assertRaisesRegex(RuntimeError, 'sdc was not typed back.*sudo bash install.sh  again'):
+            confirmed(drive, 'the USB backup drive', lambda q='': 'sdx', lambda s: None)
+        with self.assertRaisesRegex(
+            RuntimeError, 'No drive was chosen for the backup drive. Run  sudo bash install.sh'
+        ):
+            pick_drive([drive], 'the backup drive', lambda q='': '', lambda s: None)
+
+    def test_tailscale_waiting_says_how_to_sign_in(self):
+        source = (Path(__file__).resolve().parents[1] / 'modules/tailscale.py').read_text()
+        self.assertNotIn('reapply interactively', source)
+        self.assertIn('not signed in to Tailscale yet', source)
