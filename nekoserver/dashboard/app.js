@@ -825,6 +825,11 @@ function driveIssues(s, add) {
 function jobLabel(job) {
   return job.rolled_back === true ? 'Update undone' : LABELS[job.status];
 }
+/* A job with no schedule of its own (the NekoServer upgrade runs when you choose it): the
+ * server says so, and no schedule of it can be off or missing. */
+function onDemand(job) {
+  return job.scheduled === false;
+}
 function backupIssues(s, add) {
   for (const job of s.backups) {
     if (job.status === 'disabled') {
@@ -855,7 +860,7 @@ function backupIssues(s, add) {
         unit
       );
     }
-    if ((timer.installed || numeric(job.last_success)) && !timer.active) {
+    if (!onDemand(job) && (timer.installed || numeric(job.last_success)) && !timer.active) {
       add(
         'timer:' + job.id,
         name + ' schedule is off',
@@ -1136,7 +1141,9 @@ function jobName(job) {
   return text(job?.name, text(job?.id, 'A backup'));
 }
 /* The jobs in the readings that are not backups: their finishing is no copy to celebrate. */
-const NOT_BACKUPS = new Set(['maintenance', 'updates', 'update_check']);
+const NOT_BACKUPS = new Set(['maintenance', 'updates', 'update_check', 'upgrade']);
+/* Those of them that make no copy at all (the monthly run makes its snapshot). */
+const COPIES_NOTHING = new Set(['updates', 'update_check', 'upgrade']);
 /* A backup whose last good copy moved on since the page last looked, or that has its first
  * one; never on the page's first look (opening the page does not celebrate an old copy),
  * never twice for the same copy. */
@@ -1613,7 +1620,8 @@ function protectionItem(label, [st, title], detail) {
 function recentCopies(all) {
   const jobs = all.filter(j => j.status !== 'disabled'); // an app switched off: its backup is retired
   const bad = jobs.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
-  const unchecked = !jobs.length || jobs.some(j => !numeric(j.last_success) || !j.timer?.installed || !j.timer?.active);
+  const unscheduled = j => !onDemand(j) && (!j.timer?.installed || !j.timer?.active);
+  const unchecked = !jobs.length || jobs.some(j => !numeric(j.last_success) || unscheduled(j));
   return firstOf(
     [
       [jobs.some(j => j.blocked), ['warning', 'Can’t run: drive missing']],
@@ -1753,7 +1761,7 @@ function backupCard(job, fresh) {
     timer = object(job.timer);
   card.append(
     cardHeading(text(job.name, 'Backup'), backupBadge(job, fresh)),
-    el('p', '', 'Last good copy: ' + ago(job.last_success)),
+    el('p', '', (COPIES_NOTHING.has(job.id) ? 'Last good run: ' : 'Last good copy: ') + ago(job.last_success)),
     el('p', '', job.blocked ? 'Runs again once the drive is back.' : nextRun(timer))
   );
   if (job.blocked) {
@@ -3813,12 +3821,17 @@ function lastUpdate(last) {
   const said = { installed: 'last update installed ', undone: 'last update undone ' }[last.result];
   return said ? said + ago(last.at) : '';
 }
+/* "Update night: passed", in the words the Backups page uses for the same job (it said
+ * the report's own: "pass", "partial", "unknown (No recorded successful run)"). */
 function jobLine(label, job) {
   if (!job) {
     return '';
   }
+  if (!numeric(job.last_success) && !['running', 'fail', 'partial', 'stale'].includes(job.status)) {
+    return label + ': has not run yet';
+  }
   const why = job.reason ? ' (' + text(job.reason) + ')' : '';
-  return label + ': ' + text(job.status, 'unknown') + why;
+  return label + ': ' + text(jobLabel(job), LABELS.unknown).toLowerCase() + why;
 }
 function updateCard(u) {
   const app = text(u.app),

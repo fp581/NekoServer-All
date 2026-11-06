@@ -113,6 +113,13 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.numbers('v0.46.1-beta'), (0, 46, 1))
         self.assertEqual(upgrade.numbers('v0.46.1Beta'), (0, 46, 1))
         self.assertIsNone(upgrade.numbers('v0.46.1-bata'))
+        # Seen after 0.47.4: published as "0.47.4-beta" (and 0.47.0 as "v0.47.0-Beta"),
+        # which no server was offered. The runtime reads the same rule (updates.rs).
+        self.assertEqual(upgrade.numbers('0.47.4-beta'), (0, 47, 4))
+        self.assertEqual(upgrade.numbers('v0.47.0-Beta'), (0, 47, 0))
+        for typo in ('V0.47.4', 'v0.47', '0.47.4-beta x', 'v0.47.4beta2', 'v0.47.4\n'):
+            self.assertIsNone(upgrade.numbers(typo), typo)
+        self.assertIn('release_tag', (ROOT / 'runtime/src/updates.rs').read_text())
 
     def test_a_kept_copy_of_a_unit_is_not_a_service_behind(self):
         """The audit of 0.46.2: the gateway's `.before-<time>` copy named an old release, so
@@ -489,6 +496,12 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 1)
         self.assertEqual(self.ran[-1][0], 'v' + VERSION)
         self.assertFalse(self.journal.exists())
+        # The last line is the one the dashboard shows: it says what was put right.
+        self.assertEqual(
+            self.said[-1],
+            f'This server runs {VERSION} again, as before the upgrade, and passed its check. '
+            f'The upgrade to {NEWER} was cut off before it was checked',
+        )
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
 
     def test_a_release_installed_by_hand_over_a_failed_upgrade_is_not_put_back(self):
@@ -632,6 +645,17 @@ class UpgradeReportTests(unittest.TestCase):
         self.assertEqual(refused['status'], 'partial')
         stuck = self.report(2, 'Putting it back did not pass either', journal=True)
         self.assertEqual((stuck['status'], stuck['reason']), ('fail', 'Putting it back did not pass either'))
+
+    def test_the_service_fails_only_when_the_upgrade_needs_you(self):
+        """Seen on the rig (0.47.5): an upgrade cut off and put back at the next start ended
+        its service with 1. The service stayed failed, and the dashboard showed "Its
+        service could not run (exit-code, exit 1)", urgent, in place of the report's
+        "This server runs 0.48.2 again"."""
+        for code in (0, 1, 2):  # upgraded, put back, refused: the report says which
+            self.assertEqual(upgrade.service_code(code, self.journal), 0)
+        self.journal.write_text('{}')  # the record is still there: it needs you
+        self.assertEqual(upgrade.service_code(2, self.journal), 2)
+        self.assertIn('return service_code(reported(', (ROOT / 'upgrade.py').read_text())
 
     def test_an_error_still_ends_the_report(self):
         self.journal.write_text('{}')

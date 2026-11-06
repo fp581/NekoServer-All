@@ -171,6 +171,67 @@ class DashboardPageTests(unittest.TestCase):
         self.assertFalse([i for i in ids if 'music' in i or 'immich' in i or i == 'acceptance'], ids)
         self.assertEqual(next(i for i in issues if i['id'] == 'app:jellyfin')['title'], 'Jellyfin · Not responding')
 
+    def test_the_upgrade_has_no_schedule_to_be_off(self):
+        """Seen on the rig (0.47.5): after an upgrade that worked, Home listed "NekoServer
+        upgrade schedule is off: no new copies are made" for good, the Backups page said
+        "Not all checked", and the upgrade finishing was celebrated as a backup copy. The
+        upgrade runs when you choose it; the server says so ("scheduled": false)."""
+        off = {'installed': False, 'active': False}
+        on = {'installed': True, 'active': True}
+        upgrade = {
+            'id': 'upgrade',
+            'name': 'NekoServer upgrade',
+            'status': 'pass',
+            'last_success': 1000.0,
+            'timer': off,
+        }
+        weekly = {'id': 'weekly', 'name': 'Weekly', 'status': 'pass', 'last_success': 1000.0}
+        said, old, stopped = page(
+            ('collectIssues', status(backups=[{**upgrade, 'scheduled': False}])),
+            ('collectIssues', status(backups=[upgrade])),  # an earlier release's readings
+            ('collectIssues', status(backups=[{**weekly, 'timer': off}])),
+        )
+        self.assertEqual(said, [])
+        self.assertEqual([i['id'] for i in old], ['timer:upgrade'])
+        self.assertEqual([i['id'] for i in stopped], ['timer:weekly'])  # a real schedule still is
+        ok, unchecked = page(
+            ('recentCopies', [{**upgrade, 'scheduled': False}, {**weekly, 'timer': on}]),
+            ('recentCopies', [{**upgrade, 'scheduled': False}, {**weekly, 'timer': off}]),
+        )
+        self.assertEqual((ok[1], unchecked[1]), ('All OK', 'Not all checked'))
+        done = lambda at: status(backups=[{**upgrade, 'scheduled': False, 'last_success': at}])  # noqa: E731
+        self.assertEqual(page(('newlyFinished', [done(1000.0), done(2000.0)])), [[None, None]])
+        # The server's side of it: the row of a job with no schedule says so.
+        source = (ROOT / 'runtime/src/collect.rs').read_text()
+        self.assertIn('row["scheduled"] = json!(false)', source)
+
+    def test_the_updates_page_says_a_jobs_state_in_the_pages_words(self):
+        """Seen on the rig (0.47.5): "Update night: unknown (No recorded successful run)" on
+        a server whose first update night is still to come, and "last upgrade: pass"."""
+        said = page(
+            (
+                'jobLine',
+                ['Update night', {'id': 'updates', 'status': 'unknown', 'reason': 'No recorded successful run'}],
+            ),
+            ('jobLine', ['last upgrade', {'id': 'upgrade', 'status': 'pass', 'last_success': 1000.0}]),
+            (
+                'jobLine',
+                ['last upgrade', {'id': 'upgrade', 'status': 'partial', 'last_success': 1.0, 'reason': 'Put back'}],
+            ),
+            ('jobLine', ['Update night', {'id': 'updates', 'status': 'fail', 'reason': 'Docker is not running'}]),
+            ('jobLine', ['last upgrade', None]),
+        )
+        self.assertEqual(
+            said,
+            [
+                'Update night: has not run yet',
+                'last upgrade: passed',
+                'last upgrade: incomplete (Put back)',
+                'Update night: failed (Docker is not running)',
+                '',
+            ],
+        )
+
     def test_an_unfinished_server_check_is_listed(self):
         [issues] = page(('collectIssues', status(acceptance={'status': 'pending'})))
         self.assertEqual(issues, [{'id': 'acceptance', 'level': 'warning', 'title': 'Finish checking your server'}])

@@ -302,13 +302,14 @@ pub(crate) fn for_dashboard(data: &Path, settle_days: u64, now: f64) -> Value {
 pub(crate) const RELEASES: &str =
     "https://api.github.com/repos/fp581/NekoServer-All/releases?per_page=30";
 const RELEASE_FILE: &str = "nekoserver.json";
-/// "v0.43.0" (stable) or "v0.43.0Beta" (beta; also written "v0.43.0-beta", as the
-/// 0.46.1 release was), as README.md "Release channels" says: the numbers, and whether it
-/// is a beta. Any other tag (a typo) is no release.
+/// "v0.43.0" (stable) or "v0.43.0Beta" (beta), as README.md "Release channels" says: the
+/// numbers, and whether it is a beta. The ways a release was really tagged are read too
+/// ("v0.46.1-beta", "v0.47.0-Beta", "0.47.4-beta" without the v: the last two were
+/// offered to no server). Any other tag (a typo) is no release. The rule is setup's too
+/// (shared.json "release_tag", upgrade.py TAG).
 pub(crate) fn release_version(tag: &str) -> Option<((u64, u64, u64), bool)> {
-    let caps = regex::Regex::new(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)(Beta|-beta)?$")
-        .ok()?
-        .captures(tag)?;
+    let rule = format!("^(?:{})$", common::SHARED["release_tag"].as_str()?);
+    let caps = regex::Regex::new(&rule).ok()?.captures(tag)?;
     let n = |i: usize| caps[i].parse::<u64>().ok();
     Some(((n(1)?, n(2)?, n(3)?), caps.get(4).is_some()))
 }
@@ -559,6 +560,25 @@ mod tests {
         // The 0.46.1 release was tagged "v0.46.1-beta" (and GitHub left it unmarked): a
         // beta all the same, so the stable channel never gets it.
         assert_eq!(release_version("v0.46.1-beta"), Some(((0, 46, 1), true)));
+        // Seen after 0.47.4: it was published as "0.47.4-beta" (and 0.47.0 as
+        // "v0.47.0-Beta"), which no server was offered.
+        assert_eq!(release_version("0.47.4-beta"), Some(((0, 47, 4), true)));
+        assert_eq!(release_version("v0.47.0-Beta"), Some(((0, 47, 0), true)));
+        assert_eq!(release_version("0.48.0"), Some(((0, 48, 0), false)));
+        for typo in [
+            "v0.47.4-bata",
+            "V0.47.4",
+            "v0.47",
+            "0.47.4-beta x",
+            "v0.47.4beta2",
+        ] {
+            assert_eq!(release_version(typo), None, "{typo}");
+        }
+        let unprefixed = json!([{"tag_name": "0.47.4-beta"}, {"tag_name": "v0.47.3-beta"}]);
+        assert_eq!(
+            newest_release(&unprefixed, "beta", "0.47.3").unwrap()["tag"],
+            "0.47.4-beta"
+        );
         let dashed =
             json!([{"tag_name": "v0.46.1-beta", "prerelease": false}, {"tag_name": "v0.46.0Beta"}]);
         assert_eq!(

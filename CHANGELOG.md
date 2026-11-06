@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.47.6 — 2026-11-06
+
+More fixes, found after 0.47.5.
+
+### Fixed
+- **A drive with no temperature sensor no longer shows "0 °C".** A virtual disk, and some USB and SAS drives, answer 0 for a temperature they do not measure; the Server health page showed it as a reading.
+- **An upgrade that was put back no longer leaves a failed service.** Seen on the rig, with an upgrade cut off part-way (as by a power cut) and put right at the next start: the server was back on its release and passed its check, but the upgrade's service ended with an error. It stayed in the list of failed services, and the dashboard showed, as urgent, "NekoServer upgrade needs attention: Its service could not run (exit-code, exit 1)" in place of what had happened. The service now fails only when the upgrade needs you (putting the release back did not work either). The report says what was put right: "The upgrade to v0.48.3-beta was cut off before it was checked". Like the other upgrade fixes, this works once the server runs this release.
+- **The Updates page says a job's state in plain words.** It showed the report's own ("Update night: unknown (No recorded successful run)" before the first update night, "last upgrade: pass"); it says "has not run yet", "passed", "incomplete" now, as the Backups page does. On the Backups page the update night, the daily check and the upgrade say "Last good run", not "Last good copy": they copy nothing.
+- **The dashboard no longer says the NekoServer upgrade's schedule is off.** After an upgrade that worked, Home listed "NekoServer upgrade schedule is off: no new copies are made" for good, the Backups page said "Not all checked", and the upgrade finishing was celebrated as a backup copy. The upgrade runs when you choose it and has no schedule. 0.47.4 fixed this in the server's alerts; the page kept its own copy of the rule. The server now says which job has no schedule, and the page reads that.
+- **The media apps can write to a library Docker made first.** Seen on the rig after the media drive was replaced: the apps started before setup ran on the new drive, so Docker made the folders it binds (`library/movies`, `tv`, `downloads`) itself, owned by root and closed to the apps. Setup made a folder only when it was missing, so every later run left them, and Radarr, Sonarr, qBittorrent and Lidarr could write nothing there. Setup now hands over such a folder (root's, as Docker makes it, with no file anywhere in it). A folder with files in it, or with another owner or access, is left as it is.
+- **A release whose tag was written another way is offered.** 0.47.4 was published as `0.47.4-beta` (no `v`) and 0.47.0 as `v0.47.0-Beta`: neither matched the tag rule, so no server was offered them, and nothing said so. A tag without the `v`, and a beta written `Beta`, `beta`, `-Beta` or `-beta`, is read as the release it is. The dashboard's check and the upgrade read one rule now (`shared.json`), where each had its own copy. Only servers running this release or later read tags this way: until then, publish tags as `vX.Y.Z-beta`.
+
 ## v0.47.5 — 2026-11-05
 
 More fixes from the test rig, found after 0.47.4. Each has a test that fails on 0.47.4.

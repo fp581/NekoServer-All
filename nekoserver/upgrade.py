@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.47.5Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.47.6Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -36,6 +36,7 @@ from pathlib import Path
 from neko_common import (
     RECOVERY,
     SETUP_LOCK,
+    SHARED,
     DASHBOARD_DEFAULT_PORT,
     MAINTENANCE_JOURNAL,
     OPERATION_LOCK,
@@ -60,7 +61,8 @@ ARCHIVE_SUFFIX = '.tar.gz'
 MIGRATE_JOURNAL = Path('/etc/nekoserver-backups/migrate.json')  # migrate.py JOURNAL
 FORMAT = 'neko-upgrade-v1'
 ARCHIVE = 'https://codeload.github.com/fp581/NekoServer-All/tar.gz/refs/tags/{tag}'
-TAG = re.compile(r'v(\d+)\.(\d+)\.(\d+)(Beta|-beta)?')  # a beta written either way (0.46.1 was v0.46.1-beta)
+# A release's tag, the ways one was really written (v0.46.1-beta, 0.47.4-beta): the runtime's rule too.
+TAG = re.compile(SHARED['release_tag'])
 # The status the installer records for a step that worked (installer.py
 # complete_status); a step waiting for you (Tailscale's sign-in, say) was waiting
 # before too and is not the upgrade's doing.
@@ -72,8 +74,8 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.47.5Beta" or "0.47.5"; None for anything else."""
-    match = TAG.fullmatch(text if text.startswith('v') else 'v' + text)
+    """(0, 44, 0) from "v0.47.6Beta" or "0.47.6"; None for anything else."""
+    match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
 
@@ -552,8 +554,12 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
         journal.unlink(missing_ok=True)
         # The last line said is the report's reason, the one the dashboard shows: it says
         # why as well (under "needs attention" it only said that the server was fine).
-        why = f'. The upgrade to {saved.get("to")} did not pass: {saved["problem"]}' if saved.get('problem') else ''
-        out(f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check{why}')
+        to = saved.get('to') or 'the newer release'
+        why = f'did not pass: {saved["problem"]}' if saved.get('problem') else 'was cut off before it was checked'
+        out(
+            f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check. '
+            f'The upgrade to {to} {why}'
+        )
         return 1
     out(
         f'Putting {previous.name} back did not pass either: {problem}. Run  sudo bash install.sh  in {previous} '
@@ -723,11 +729,18 @@ def main():
         parser.error('run needs --tag with a release, such as v0.47.2Beta')
     config = json.loads(settings_path(args.config).read_text())
     if args.action == 'resume':
-        return reported(config, RESUME_UNIT, lambda out: resume(args.config, out))
+        return service_code(reported(config, RESUME_UNIT, lambda out: resume(args.config, out)))
     recovery = ssd(config) / 'installer/recovery.lock'
-    return reported(
-        config, 'nekoserver-upgrade@' + args.tag, lambda out: upgrade(args.tag, args.config, out, recovery=recovery)
-    )
+    unit = 'nekoserver-upgrade@' + args.tag
+    return service_code(reported(config, unit, lambda out: upgrade(args.tag, args.config, out, recovery=recovery)))
+
+
+def service_code(code, journal=JOURNAL):
+    """What the upgrade's service ends with: a failure only when the upgrade needs you (its
+    record is still there, the report says "fail"). Put back, or nothing changed, is said
+    in the report ("partial"): ending with 1 then left the service failed, and the
+    dashboard showed "Its service could not run (exit 1)" in place of what happened."""
+    return code if code and journal.exists() else 0
 
 
 if __name__ == '__main__':

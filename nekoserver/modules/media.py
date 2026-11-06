@@ -6,6 +6,7 @@ import os
 import re
 import time
 import shutil
+from stat import S_IMODE, S_IRWXG, S_ISDIR, S_ISGID
 import subprocess
 from pathlib import Path
 from neko_common import (
@@ -236,6 +237,30 @@ def app_folder(configs, target, uid, gid):
         os.chown(target, uid, gid, follow_symlinks=False)
 
 
+def docker_made(folder, root=0):
+    """Docker made this folder and no file was put in it since. Docker starts an app whose
+    folder is missing by making it: root's and closed to the apps. Folders may be in it
+    (the downloads folder holds the music downloads' own, which setup hands over first)."""
+    info = folder.lstat()
+    if not (S_ISDIR(info.st_mode) and info.st_uid == root and S_IMODE(info.st_mode) == 0o755):
+        return False
+    return all(S_ISDIR(inside.lstat().st_mode) for inside in folder.rglob('*'))
+
+
+def library_folder(target, uid, gid, log=print, root=0):
+    """A folder of the library, the apps' to write in. One Docker made first is handed over
+    (seen on the rig: after a new media drive the apps started before setup ran, and no
+    later run let them write their films, shows or downloads). A folder with anything in
+    it keeps the owner and access it has."""
+    if not target.exists():
+        ensure_directory(target, 0o2775, uid, gid)
+    elif not target.is_symlink() and docker_made(target, root):
+        os.chown(target, uid, gid, follow_symlinks=False)
+        # Group write and setgid added (as setup makes these folders); the rest kept as Docker made it.
+        os.chmod(target, S_IMODE(target.lstat().st_mode) | S_IRWXG | S_ISGID)
+        log(f'{target} was made by Docker, closed to the apps: it is the apps\' now')
+
+
 def _run(context):
     settings = context.config.get('media', {})
     if not context.apply:
@@ -295,16 +320,13 @@ def _run(context):
     ensure_directory(music / 'library', 0o755)
     # The music folders setup decided (neko_common, from shared.json's locations).
     for target in (music_library(context.config), music_downloads(context.config)):
-        target = safe_path(target)
-        if not target.exists():
-            ensure_directory(target, 0o2775, uid, gid)
+        library_folder(safe_path(target), uid, gid, context.log)
     for folder in ('movies', 'tv', 'downloads'):
         target = media / 'library' / folder
         safe_path(target)
         if target.is_symlink():
             raise RuntimeError(f'Refusing symlink media directory: {target}')
-        if not target.exists():
-            ensure_directory(target, 0o2775, uid, gid)
+        library_folder(target, uid, gid, context.log)
     # No recursive chown: preserve existing users and files. Create fresh appdata owned by configured user.
     for name in selected:
         target = configs / name
