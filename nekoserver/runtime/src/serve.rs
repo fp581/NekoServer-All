@@ -542,12 +542,17 @@ fn read_body(stream: &mut TcpStream, mut body: Vec<u8>, length: usize, start: In
 /// The request names the dashboard's own address and comes from its page: one Host the
 /// dashboard answers to, an Origin (at most one) of its own, never cross-site, and for a
 /// change (POST) the page itself (browsers always send Origin with POST), so another site
-/// cannot press the buttons. `known`: the hosts and origins it answers to.
+/// cannot press the buttons. `known`: the hosts and origins it answers to. `navigation`:
+/// opening the page itself (a GET of a page, not of /api/), which may come from a link
+/// anywhere: the QR code on the phone setup page, a link in a chat. Seen with the phone
+/// (0.47.6): Chrome opened from another app says "cross-site", and the dashboard refused
+/// its own address. Its readings and buttons stay refused from another site.
 fn from_the_page(
     hosts: &[&[u8]],
     origin: &[&[u8]],
     fetch: &[&[u8]],
     post: bool,
+    navigation: bool,
     known: (&[String], &[String]),
 ) -> bool {
     let (allowed_hosts, origins) = known;
@@ -557,8 +562,17 @@ fn from_the_page(
         && origin
             .first()
             .is_none_or(|v| origins.iter().any(|o| o.as_bytes() == *v))
-        && !fetch.iter().any(|v| *v == b"cross-site")
+        && (navigation || !fetch.iter().any(|v| *v == b"cross-site"))
         && !(post && (origin.len() != 1 || fetch.iter().any(|v| *v != b"same-origin")))
+}
+/// A page load (Sec-Fetch-Mode: navigate) of a page, never of the readings or buttons
+/// under /api/, and never a change (POST). Its Sec-Fetch-Dest is not asked: once the
+/// dashboard's service worker (sw.js) is installed, it passes the page load on itself and
+/// the browser says "empty" instead of "document" (seen on the phone: a second visit from
+/// a link got E41 again). A page's script can't send "navigate" (fetch() refuses it), and
+/// frame-ancestors 'none' keeps another site from showing the page in a frame.
+fn page_navigation(method: &str, path: &str, mode: &[&[u8]]) -> bool {
+    method == "GET" && !path.starts_with("/api/") && mode == [b"navigate"]
 }
 fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
     if accepted.elapsed() >= REQUEST_TIME {
@@ -605,7 +619,16 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
     let origin = values("origin");
     let fetch = values("sec-fetch-site");
     let cl = values("content-length");
-    if !from_the_page(&hosts, &origin, &fetch, post, (&allowed_hosts, &origins)) {
+    let wanted = req.path.unwrap_or("").split('?').next().unwrap_or("");
+    let navigation = page_navigation(method, wanted, &values("sec-fetch-mode"));
+    if !from_the_page(
+        &hosts,
+        &origin,
+        &fetch,
+        post,
+        navigation,
+        (&allowed_hosts, &origins),
+    ) {
         reply_error(&mut stream, "E41", head);
         return;
     }
@@ -1101,6 +1124,21 @@ mod tests {
         assert!((clock - common::now()).abs() < 60.0);
         assert!(get("/nope", &host).contains("\"E40\""));
         assert!(get("/", "evil.example:80").contains("\"E41\""));
+        // Opened from a link in another app (the phone setup page's QR code, a chat): the
+        // page loads; the readings stay refused from another site, and a wrong Host still is.
+        let link = "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: document\r\n";
+        assert!(ask("/", &host, link).ends_with("asset index.html"));
+        assert!(ask("/api/status", &host, link).contains("\"E41\""));
+        assert!(ask("/", "evil.example:80", link).contains("\"E41\""));
+        // The same page load once the service worker passes it on (Dest: empty).
+        let again =
+            "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: empty\r\n";
+        assert!(ask("/", &host, again).ends_with("asset index.html"));
+        assert!(ask("/api/status", &host, again).contains("\"E41\""));
+        let fetched =
+            "Sec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\n";
+        assert!(ask("/", &host, fetched).contains("\"E41\""));
+        assert!(ask("/api/status", &host, fetched).contains("\"E41\""));
         let live = get("/api/live", &host);
         assert!(live.contains("neko-live-v1"), "{live}");
         assert!(get("/api/processes", &host).contains("neko-processes-v1"));
@@ -1333,6 +1371,12 @@ mod tests {
         assert!(
             post("/api/control/fan", &local, "https://evil.example", "", "{}").contains("\"E41\"")
         );
+        // A form on another site sent as a page load (navigate) is a change all the same.
+        let navigated = "Sec-Fetch-Site: cross-site
+Sec-Fetch-Mode: navigate
+Sec-Fetch-Dest: document
+";
+        assert!(post("/api/control/fan", &local, &here, navigated, "{}").contains("\"E41\""));
         let no_origin = send(format!(
             "POST /api/control/fan HTTP/1.1\r\nHost: {local}\r\nContent-Length: 2\r\n\r\n{{}}"
         ));

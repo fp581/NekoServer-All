@@ -156,7 +156,10 @@ def select_external(config, inventory, input_fn=input, out_fn=print):
         raise RuntimeError('Duplicate external filesystem UUID; identify cloned drives first')
     if not candidates:
         raise RuntimeError(no_backup_drive(config, inventory))
-    chosen = pick_drive(candidates, 'the USB backup drive', input_fn, out_fn, skippable=True)
+    from modules.storage import describe
+
+    # Worded as the SSD and HDD lists are (it listed UUIDs and mount points before).
+    chosen = pick_drive(candidates, 'the USB backup drive', input_fn, out_fn, skippable=True, describe=describe)
     if chosen is None:
         return None  # skipped for now, as offered
     photos = config.setdefault('photos', {})
@@ -379,7 +382,8 @@ def run(ctx):
     if uuid is None:
         return {
             'status': 'needs_setup',
-            'reason': 'Connect the external photo disk and rerun photo_backup interactively to confirm its UUID',
+            'reason': 'No USB backup drive is chosen yet, so the weekly copy of your photos and Nextcloud files waits for one. '
+            'Connect it and run  sudo bash install.sh  again to choose it',
         }
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
         raise RuntimeError('Set photos.external_backup_uuid from lsblk -f')

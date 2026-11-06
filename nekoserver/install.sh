@@ -175,7 +175,7 @@ if "$apply"; then
   # Never use a package manager on an unsupported distribution, and never a partial
   # upgrade on Arch.
   if [[ ! -r /etc/os-release ]]; then
-    echo 'Cannot identify the host distribution.' >&2
+    echo 'Cannot tell which Linux this is: /etc/os-release is missing or unreadable.' >&2
     exit 1
   fi
   . /etc/os-release
@@ -250,8 +250,13 @@ if "$apply"; then
     echo 'Automatic setup supports Arch Linux / Nyarch (with pacman), Debian / Ubuntu (with apt), Fedora and RHEL / Rocky / AlmaLinux (with dnf), and openSUSE (with zypper).' >&2
     exit 1
   fi
-  if [[ "$(uname -m)" != x86_64 ]] || ! command -v systemctl >/dev/null; then
-    echo 'An x86_64 systemd host is required.' >&2
+  if [[ "$(uname -m)" != x86_64 ]]; then
+    echo "NekoServer runs on 64-bit Intel or AMD PCs (x86_64); this one is $(uname -m) (a Raspberry Pi or another ARM board, say)." >&2
+    exit 1
+  fi
+  if ! command -v systemctl >/dev/null; then
+    echo 'NekoServer needs a Linux that starts with systemd, and this one does not (no systemctl).' >&2
+    echo 'Under WSL, turn systemd on in /etc/wsl.conf ([boot] systemd=true), restart WSL, then run  sudo bash install.sh  again.' >&2
     exit 1
   fi
   # Image-based systems (Fedora Silverblue and Kinoite, SteamOS) name their family but

@@ -364,12 +364,13 @@ def media_audit(state, detail):
     return [item('media:audit', 'Current media API checks', state, detail)]
 
 
-def media_checks(config, run=subprocess.run):
+def media_checks(config, run=None):
     """The media apps' configuration as the runtime's own check finds it (media.rs, the one
     the dashboard shows): it is run once now (it only reads), and its report is read. This
     kept a check of its own before (media-health.py), which already disagreed with the
     runtime's: a Prowlarr link or a root folder passed here and not there (the review of
     0.47.0)."""
+    run = run or subprocess.run  # looked up now, so a test's stand-in is the one used
     quiet = {'capture_output': True, 'text': True, 'check': False}
     if run(['systemctl', 'cat', MEDIA_CHECK], timeout=30, **quiet).returncode != 0:
         return media_audit('needs_setup', 'The media check is not set up yet.')
@@ -1239,7 +1240,7 @@ def guided_manual(config, report):
                 'Do not perform destructive storage/restore tests on your only live data. '
                 'Use the documented isolated recovery workflow and independent copies.',
                 'Answer yes only after witnessing this specific result. No repeats the instructions '
-                'and reopens any relevant local pages/apps; Ctrl+C leaves it pending.',
+                'and reopens any relevant local pages/apps; Ctrl+D leaves it pending.',
             ],
             targets,
         )

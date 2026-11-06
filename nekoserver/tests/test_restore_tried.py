@@ -89,7 +89,7 @@ class BackupIssuesTests(unittest.TestCase):
         app = (ROOT / 'dashboard/app.js').read_text()
         pieces = [
             re.search(rf'^const {name} = .*$', app, re.MULTILINE).group(0)
-            for name in ('numeric', 'list', 'values', 'object', 'text', 'severity')
+            for name in ('numeric', 'list', 'values', 'object', 'text', 'severity', 'COPIES_NOTHING')
         ]
         for name in ('JOB_UNITS', 'LABELS'):
             pieces.append(re.search(rf'^const {name} = \{{.*?\}};', app, re.MULTILINE | re.DOTALL).group(0))

@@ -1,4 +1,4 @@
-# NekoServer v0.47.6
+# NekoServer v0.47.8
 
 NekoServer turns a PC running **Arch Linux**, **Nyarch**, **Debian**, **Ubuntu**, **Fedora**, **RHEL** (and Rocky Linux, AlmaLinux) or **openSUSE** into a home media server: your own Netflix-style video library, photo backup from your phone, music streaming, and a private cloud drive. One command sets up the apps, creates their accounts, connects them together, sets up your phone, makes them reachable from anywhere through **Tailscale** (privately, only for your own devices) and schedules backups.
 
@@ -69,7 +69,7 @@ cd NekoServer-All/nekoserver
 sudo bash install.sh
 ```
 
-`git: command not found`? Ubuntu Desktop and some other systems don't come with git. Install it with `sudo apt install git` (Fedora and RHEL: `sudo dnf install git`; openSUSE: `sudo zypper install git`; Arch: `sudo pacman -S git`), then run the three lines again.
+`git: command not found`? Ubuntu Desktop and some other systems don't come with git. Install it with `sudo apt update && sudo apt install git` (Fedora and RHEL: `sudo dnf install git`; openSUSE: `sudo zypper install git`; Arch: `sudo pacman -S git`), then run the three lines again.
 
 That's it: one command does everything. Before its questions start, it works on its own for a while (usually 5 to 15 minutes, longer on a slow connection):
 

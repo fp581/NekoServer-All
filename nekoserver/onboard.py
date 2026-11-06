@@ -19,12 +19,14 @@ import media_libraries
 import media_readiness
 import seerr_providers
 from neko_common import (
+    LOCATIONS,
     MEDIA_APPS,
     app_ports,
     atomic_json,
     checked_settings,
     default_settings,
     local_opener,
+    music_library,
     safe_path,
 )
 
@@ -40,31 +42,40 @@ def mount_ok(path):
     return Path(path).is_dir() and not Path(path).is_symlink() and os.path.ismount(path)
 
 
-def report(root, media, check_http=True, apps=APPS):
+def report(root, media, check_http=True, apps=APPS, music=None):
     results = []
     for app in apps:
-        cfg = safe_path(root / 'appdata' / app)
-        results.append(
-            {'check': f'appdata:{app}', 'status': 'pass' if cfg.is_dir() and not cfg.is_symlink() else 'needs_setup'}
-        )
+        results.append({'check': f'appdata:{app}', 'status': folder_status(safe_path(root / 'appdata' / app))})
         if check_http:
-            try:
-                with OPENER.open(f'http://127.0.0.1:{PORTS[app]}/', timeout=3) as res:
-                    status = 'pass' if res.status < 500 else 'fail'
-            except urllib.error.HTTPError as exc:
-                # The opener follows no redirects: an app that sends its front page to
-                # its sign-in page (302), or asks for a login (401), is up.
-                status = 'pass' if exc.code < 500 else 'fail'
-                exc.close()
-            except Exception:
-                status = 'needs_setup'
-            results.append({'check': f'http:{app}', 'status': status})
+            results.append({'check': f'http:{app}', 'status': http_status(app)})
     for cat in ('movies', 'tv', 'music', 'downloads'):
-        p = safe_path((root if cat == 'music' else media) / 'library' / cat)
-        results.append(
-            {'check': f'library:{cat}', 'status': 'pass' if p.is_dir() and not p.is_symlink() else 'needs_setup'}
+        # The music library is where setup put it: on the SSD or on the media drive.
+        p = (
+            safe_path(music or root / LOCATIONS['music'][1][0])
+            if cat == 'music'
+            else safe_path(media / 'library' / cat)
         )
+        results.append({'check': f'library:{cat}', 'status': folder_status(p)})
     return results
+
+
+def folder_status(path):
+    return 'pass' if path.is_dir() and not path.is_symlink() else 'needs_setup'
+
+
+def http_status(app):
+    """Whether the app answers on its own port: 'pass', 'fail' (it answers with an error)
+    or 'needs_setup' (it does not answer)."""
+    try:
+        with OPENER.open(f'http://127.0.0.1:{PORTS[app]}/', timeout=3) as res:
+            return 'pass' if res.status < 500 else 'fail'
+    except urllib.error.HTTPError as exc:
+        # The opener follows no redirects: an app that sends its front page to its
+        # sign-in page (302), or asks for a login (401), is up.
+        exc.close()
+        return 'pass' if exc.code < 500 else 'fail'
+    except Exception:
+        return 'needs_setup'
 
 
 def safe_report(output, results):
@@ -161,7 +172,8 @@ def main(argv=None):
         pending = wait_ready(apps, a.wait)
         if pending:
             print('Startup wait ended; still unavailable:', ', '.join(pending))
-    findings = report(root, media, not a.skip_http, apps)
+    music = music_library({**config, 'data_mount': str(root), 'media_mount': str(media)})
+    findings = report(root, media, not a.skip_http, apps, music)
     output = root / 'reports' / 'onboarding.json'
     safe_report(output, findings)
     for r in findings:
@@ -265,7 +277,7 @@ def main(argv=None):
         provider_results = seerr_providers.configure(root, a.apply, apps)
         for r in provider_results:
             print(f"{r['status']:>11}  {r['check']}" + (': ' + r['reason'] if r.get('reason') else ''))
-    findings = report(root, media, not a.skip_http, apps)
+    findings = report(root, media, not a.skip_http, apps, music)
     findings += source_results
     findings += library_results
     findings += provider_results

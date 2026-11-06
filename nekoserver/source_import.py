@@ -686,8 +686,11 @@ def run(config, sources, apply=False, verify=None, again=False):
     finished = finished_imports(record_path)
     guards = {data: DriveGuard(data), media: DriveGuard(media)} if apply else {}
     owner = (uid, gid) if apply else (None, None)
+    # Music goes where setup put it (on the SSD or the media drive), where Navidrome and
+    # Lidarr look; it always went to the SSD before.
+    music = neko_common.files_root(config, 'music')
     for index, source in enumerate(sources):
-        root = data if source.get('category') == 'music' else media
+        root = music if source.get('category') == 'music' else media
         result = import_one(source, root, apply, owner, guards.get(root), finished, again)
         # Inventory may contain private URLs; reports never serialize source entries.
         rows.append(dict(source_number=index + 1, category=source.get('category'), **result))

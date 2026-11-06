@@ -674,9 +674,16 @@ def finish_update():
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='NekoServer safe phase-one installer framework')
+    # Named as people run it (install.sh hands its options on), not as this file.
+    parser = argparse.ArgumentParser(
+        prog='sudo bash install.sh',
+        description='Set up NekoServer on this PC. With no options it runs the guided setup (--wizard).',
+        epilog='The other options are for repairs and checks; README.md shows when each is needed.',
+    )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--all', action='store_true', help='Run all enabled modules (default)')
+    mode.add_argument(
+        '--all', action='store_true', help='Run every step switched on in the settings, without questions'
+    )
     mode.add_argument('--profile', metavar='NAME', help='Run named module profile')
     mode.add_argument('--module', metavar='NAME', help='Run a module and its dependencies')
     mode.add_argument(
@@ -701,7 +708,9 @@ def main(argv=None):
     )
     parser.add_argument('--dry-run', action='store_true', help='Preview execution; writes nothing')
     parser.add_argument('--config', help='Settings file (default: my-config.json here, the one the wizard made)')
-    parser.add_argument('--state-dir', default=str(DEFAULT_STATE))
+    parser.add_argument(
+        '--state-dir', default=str(DEFAULT_STATE), help='Where setup records which steps are done (rarely needed)'
+    )
     args = parser.parse_args(argv)
     if args.finish_update:
         return finish_update()

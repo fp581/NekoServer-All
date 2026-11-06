@@ -1086,13 +1086,17 @@ pub(crate) fn stays_running(unit: &str) -> bool {
         && !unit.ends_with("-resume.service")
         && unit != "nekoserver-hdd-policy.service"
 }
+/// The sockets that start a listed service when it is asked for (the dashboard's, since
+/// 0.46.3): asked about too, so a service resting until then is not taken for stopped.
+const STARTUP_SOCKETS: &[&str] = &["nekoserver-dashboard.socket"];
 fn startup() -> Value {
     let mut args = vec![
         "systemctl",
         "show",
-        "--property=Id,LoadState,UnitFileState,ActiveState",
+        "--property=Id,LoadState,UnitFileState,ActiveState,TriggeredBy",
     ];
     args.extend(STARTUP.iter().map(|u| u.0));
+    args.extend(STARTUP_SOCKETS);
     let (code, out) = probe(&args, 15);
     if code != 0 {
         return json!([]);
@@ -1103,12 +1107,21 @@ fn parse_startup(out: &str) -> Vec<Value> {
     // A name that is an alias of another listed unit (Debian's smb.service is a link to
     // smbd.service) is answered with that unit's Id: each unit is listed once.
     let mut seen = std::collections::HashSet::new();
-    out.split("\n\n")
-        .filter_map(|block| {
-            let fields = block
-                .lines()
-                .filter_map(|l| l.split_once('='))
-                .collect::<std::collections::HashMap<_, _>>();
+    let blocks: Vec<std::collections::HashMap<&str, &str>> = out
+        .split("\n\n")
+        .map(|block| block.lines().filter_map(|l| l.split_once('=')).collect())
+        .collect();
+    // Seen on a fresh Debian server: the dashboard rests until its socket starts it, and
+    // read while nobody had it open it was "inactive", so Home said, as urgent, that the
+    // very dashboard showing it was not running. A listening socket stands for it.
+    let listening = |name: &str| {
+        blocks
+            .iter()
+            .any(|b| b.get("Id") == Some(&name) && b.get("ActiveState") == Some(&"active"))
+    };
+    blocks
+        .iter()
+        .filter_map(|fields| {
             let id = *fields.get("Id")?;
             let label = STARTUP.iter().find(|u| u.0 == id)?.1;
             if fields.get("LoadState") != Some(&"loaded") || !seen.insert(id) {
@@ -1117,8 +1130,15 @@ fn parse_startup(out: &str) -> Vec<Value> {
             let file = fields.get("UnitFileState").copied().unwrap_or("");
             // "static" units start because something else needs them.
             let enabled = ["enabled", "enabled-runtime", "static", "alias"].contains(&file);
-            Some(json!({"unit": id, "name": label, "enabled": enabled,
-                "active": fields.get("ActiveState").copied().unwrap_or("unknown")}))
+            let mut active = fields.get("ActiveState").copied().unwrap_or("unknown");
+            let socket = fields.get("TriggeredBy").copied().unwrap_or("");
+            if active == "inactive"
+                && !socket.is_empty()
+                && socket.split_whitespace().any(&listening)
+            {
+                active = "active";
+            }
+            Some(json!({"unit": id, "name": label, "enabled": enabled, "active": active}))
         })
         .collect()
 }
@@ -1999,7 +2019,15 @@ fn login_state(status: &Value, now: f64) -> Value {
         .as_str()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .map(|t| ((t.timestamp() as f64 - now) / 86400.0).floor());
-    json!({"state": state, "days_left": days_left})
+    // A server signed in before keeps its Tailscale name and addresses when the sign-in
+    // runs out; one never signed in has neither.
+    let known = status["Self"]["DNSName"]
+        .as_str()
+        .is_some_and(|n| !n.is_empty())
+        || status["Self"]["TailscaleIPs"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty());
+    json!({"state": state, "days_left": days_left, "signed_in_before": known})
 }
 /// How hot the processor is, as an alert level. Current processors run at 95 °C (AMD)
 /// or 100 °C (Intel) under full load by design, so one such reading is no alarm: urgent
@@ -2093,7 +2121,16 @@ pub(crate) fn alerts(s: &Value) -> Value {
             "This server's check-ins to your outside monitor fail or have stopped, so it cannot warn you of an outage. Check the network and the monitor's ping address.",
         );
     }
-    if s["tailscale"]["state"] == "NeedsLogin" {
+    if s["tailscale"]["state"] == "NeedsLogin" && s["tailscale"]["signed_in_before"] == false {
+        // Seen on a fresh Debian server: it was told its sign-in "ran out", as urgent,
+        // before it had ever been signed in. That is a setup step still to do.
+        add(
+            "tailscale:login".into(),
+            "warning",
+            "Phone access is not set up yet".into(),
+            "This server is not signed in to Tailscale yet, so your phone can't reach the apps away from home. Run  sudo bash install.sh  again: it walks you through it (or run  sudo tailscale up  and open the link it prints).",
+        );
+    } else if s["tailscale"]["state"] == "NeedsLogin" {
         add(
             "tailscale:login".into(),
             "critical",
@@ -2780,10 +2817,36 @@ mod os_tests {
     #[test]
     fn a_tailscale_sign_in_that_runs_out_is_told() {
         let now = 1_792_900_000.0;
-        let signed_out = login_state(&json!({"BackendState":"NeedsLogin"}), now);
+        let signed_out = login_state(
+            &json!({"BackendState":"NeedsLogin","Self":{"DNSName":"neko.tail1.ts.net."}}),
+            now,
+        );
         let shown = alerts(&json!({"tailscale": signed_out}));
         assert_eq!(shown[0]["id"], "tailscale:login");
         assert_eq!(shown[0]["level"], "critical");
+        // A server signed in before, whose sign-in ran out, is told so; one never signed in
+        // is told it is a setup step still to do.
+        let expired = login_state(
+            &json!({"BackendState":"NeedsLogin","Self":{"DNSName":"neko.tail1.ts.net.","TailscaleIPs":["100.64.0.1"]}}),
+            now,
+        );
+        let shown = alerts(&json!({"tailscale": expired}));
+        assert_eq!(
+            (shown[0]["level"].as_str(), shown[0]["title"].as_str()),
+            (
+                Some("critical"),
+                Some("Phone access is signed out of Tailscale")
+            )
+        );
+        let never = login_state(
+            &json!({"BackendState":"NeedsLogin","Self":{"UserID":0,"DNSName":"","TailscaleIPs":null}}),
+            now,
+        );
+        let shown = alerts(&json!({"tailscale": never}));
+        assert_eq!(
+            (shown[0]["level"].as_str(), shown[0]["title"].as_str()),
+            (Some("warning"), Some("Phone access is not set up yet"))
+        );
         let soon = login_state(
             &json!({"BackendState":"Running","Self":{"KeyExpiry":"2026-10-30T00:00:00Z"}}),
             now,
@@ -3024,6 +3087,23 @@ mod os_tests {
             .find(|a| a["id"] == "startup:docker.service")
             .unwrap();
         assert_eq!(row["title"], "Apps (Docker) won't start after a restart");
+        // The dashboard resting until its listening socket starts it is running; with its
+        // socket stopped too, it is not.
+        let resting = |socket: &str| {
+            parse_startup(&format!("Id=nekoserver-dashboard.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\nTriggeredBy=nekoserver-dashboard.socket\n\nId=nekoserver-dashboard.socket\nLoadState=loaded\nUnitFileState=enabled\nActiveState={socket}"))
+        };
+        assert_eq!(resting("active")[0]["active"], "active");
+        assert_eq!(
+            resting("active").len(),
+            1,
+            "the socket itself is not listed"
+        );
+        let shown = alerts(&json!({ "startup": resting("inactive") }));
+        assert!(shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "startup:nekoserver-dashboard.service:failed"));
         // Enabled but failed is not healthy; a finished one-shot is.
         let units = parse_startup("Id=smb.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=failed\n\nId=nekoserver-app-resume.service\nLoadState=loaded\nUnitFileState=enabled\nActiveState=inactive");
         let shown = alerts(&json!({ "startup": units }));

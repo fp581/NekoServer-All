@@ -110,7 +110,7 @@ class DrivePickingTests(unittest.TestCase):
     def test_wrong_confirmation_is_refused(self):
         config = {'data_mount': '/srv/nekoserver', 'media_mount': '/mnt/nekoserver-media'}
         answers = iter(['1', 'sdc1', 'sdc1', 'sdc1'])  # another drive's name, three times
-        with self.assertRaisesRegex(RuntimeError, 'confirmation failed'):
+        with self.assertRaisesRegex(RuntimeError, 'was not typed back'):
             storage.resolve_storage_identity(
                 config,
                 self.INVENTORY,
@@ -235,6 +235,8 @@ class DrivePickingTests(unittest.TestCase):
             )
         message = str(caught.exception)
         self.assertIn('/dev/sdb (2T) has no filesystem yet. To use it, format it as ext4', message)
+        # A server often has no desktop: the terminal's command is given too (seen on a Debian VM).
+        self.assertIn('in a terminal:  sudo mkfs.ext4 /dev/sdb', message)
         self.assertNotIn('No other drive was found', message)
         for name in ('zram0', 'mmcblk0boot0', 'nbd0', 'sdc'):
             self.assertNotIn('/dev/' + name, message)
@@ -1535,6 +1537,9 @@ class UsbPickerTests(unittest.TestCase):
         offered = '\n'.join(shown)
         self.assertNotIn('sdb2', offered)  # second partition of the media HDD
         self.assertNotIn('nvme0n1p3', offered)  # spare partition of the system disk
+        # Worded as the SSD and HDD lists are, not as UUIDs and mount points (seen on a Debian VM).
+        self.assertIn('  1) sdc1: 1.0 TB, open at /run/media/neko/BACKUP (exfat)', offered)
+        self.assertNotIn('UUID=', offered)
 
     def test_a_typo_in_the_usb_picker_is_asked_again(self):
         import copy
@@ -2069,3 +2074,52 @@ class KeptCopyTests(unittest.TestCase):
         self.assertIn(other, removed)
         self.assertFalse(other.exists())
         self.assertEqual(len(self.set_aside(dest)), 1)
+
+
+class HelpTextTests(unittest.TestCase):
+    def test_the_help_names_the_command_people_run(self):
+        """Seen on the rig: `bash install.sh --help` began "usage: installer.py" (a file
+        nobody runs) and called itself a "safe phase-one installer framework"."""
+        import contextlib
+        import io
+
+        import installer
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            installer.main(['--help'])
+        said = out.getvalue()
+        self.assertTrue(said.startswith('usage: sudo bash install.sh'), said[:80])
+        self.assertIn('guided setup', said)
+        self.assertNotIn('framework', said)
+
+
+class StoppedStepMessageTests(unittest.TestCase):
+    """Seen on a fresh Debian VM: setup's last screen said "Drives: Drive confirmation
+    failed" (or "Selection aborted", or Tailscale's "reapply interactively") under a line
+    promising that each item says how to fix it."""
+
+    def test_a_drive_question_left_unanswered_says_what_to_do(self):
+        from neko_common import confirmed, pick_drive
+
+        drive = {'name': 'sdc', 'uuid': 'u1', 'fstype': 'ext4', 'size': '32G'}
+        with self.assertRaisesRegex(RuntimeError, 'sdc was not typed back.*sudo bash install.sh  again'):
+            confirmed(drive, 'the USB backup drive', lambda q='': 'sdx', lambda s: None)
+        with self.assertRaisesRegex(
+            RuntimeError, 'No drive was chosen for the backup drive. Run  sudo bash install.sh'
+        ):
+            pick_drive([drive], 'the backup drive', lambda q='': '', lambda s: None)
+
+    def test_tailscale_waiting_says_how_to_sign_in(self):
+        source = (Path(__file__).resolve().parents[1] / 'modules/tailscale.py').read_text()
+        self.assertNotIn('reapply interactively', source)
+        self.assertIn('not signed in to Tailscale yet', source)
+
+
+class NoUsbDriveMessageTests(unittest.TestCase):
+    def test_a_skipped_usb_drive_says_what_to_do(self):
+        """Seen on a fresh Debian VM with the USB drive skipped: setup's last screen said
+        "rerun photo_backup interactively to confirm its UUID"."""
+        source = (Path(__file__).resolve().parents[1] / 'modules/photo_backup.py').read_text()
+        self.assertNotIn('rerun photo_backup interactively', source)
+        self.assertIn('No USB backup drive is chosen yet', source)

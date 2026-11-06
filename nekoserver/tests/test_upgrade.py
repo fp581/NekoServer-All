@@ -323,7 +323,8 @@ class UpgradeTests(unittest.TestCase):
         # The last line is the one the dashboard shows: what happened, why, and how the server is now.
         self.assertEqual(
             self.said[-1],
-            f'This server runs {VERSION} again, as before the upgrade, and passed its check. '
+            f'Nothing was lost: this server runs {VERSION} again and passed its check. '
+            "Try the upgrade again when you're ready; this note goes away once one succeeds. "
             f'The upgrade to {NEWER} did not pass: the dashboard does not answer',
         )
         # Putting it back failing too: it says what to run, and keeps the record.
@@ -499,7 +500,8 @@ class UpgradeTests(unittest.TestCase):
         # The last line is the one the dashboard shows: it says what was put right.
         self.assertEqual(
             self.said[-1],
-            f'This server runs {VERSION} again, as before the upgrade, and passed its check. '
+            f'Nothing was lost: this server runs {VERSION} again and passed its check. '
+            "Try the upgrade again when you're ready; this note goes away once one succeeds. "
             f'The upgrade to {NEWER} was cut off before it was checked',
         )
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)

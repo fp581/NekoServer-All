@@ -2,11 +2,11 @@
 
 | Content | Working location | Backup policy |
 |---|---|---|
-| Music audio and downloads | `library/music` and `library/downloads/music` on the drive you chose for music (the SSD by default; see "Where each app keeps your files") | No automatic file backup, including monthly snapshots. The opt-in music backup writes to the media drive (`backups/music`): with music on the media drive too, that is history (an older version of a file), not protection against losing that drive |
+| Music audio and downloads | `library/music` and `library/downloads/music` on the drive you chose for music (see "Where each app keeps your files") | No automatic file backup, including monthly snapshots. The opt-in music backup writes to the media drive (`backups/music`): with music on the media drive too, that is history (an older version of a file), not protection against losing that drive |
 | Music application settings/accounts/playlists | SSD appdata | Existing application-state backup policy |
-| Immich photos/videos | `photos/immich-library` on the drive you chose for photos (the SSD by default) | Weekly add-only originals copy to the HDD and to the USB drive; weekly Immich database dump on the SSD and HDD (newest `photos.database_keep` dumps kept, default 4) |
+| Immich photos/videos | `photos/immich-library` on the drive you chose for photos | Weekly add-only originals copy to the HDD and to the USB drive; weekly Immich database dump on the SSD and HDD (newest `photos.database_keep` dumps kept, default 4) |
 | Movies/shows and their downloads | HDD library | No media-file backup; application state remains protected |
-| Nextcloud files | `cloud/files` on the drive you chose for Nextcloud (the media drive by default) | Weekly add-only copy of each user's files to the USB drive, with a list of the files you had at each copy (for "as of" restores, RECOVERY.md) |
+| Nextcloud files | `cloud/files` on the drive you chose for Nextcloud | Weekly add-only copy of each user's files to the USB drive, with a list of the files you had at each copy (for "as of" restores, RECOVERY.md) |
 | Media app settings and databases (Jellyfin, Navidrome, Sonarr, Radarr, Lidarr, Prowlarr, Seerr, qBittorrent) | SSD appdata | Nightly app-state snapshot and monthly pre-update snapshot, both on the HDD |
 | Immich database and settings | SSD appdata | Weekly database dump (see the photos row, also copied to the USB drive) and the monthly pre-update snapshot on the HDD; not in the nightly snapshot |
 | Nextcloud database and settings (users, shares, calendars, contacts) | SSD appdata | Weekly database dump on the HDD, also copied to the USB drive (newest 4 in each place), made by the weekly USB backup, so only when the USB backup is set up; and the monthly pre-update snapshot on the HDD. Not in the nightly snapshot. Without a USB backup only the monthly snapshot has it |
@@ -24,7 +24,7 @@ Navidrome, Lidarr and the qBittorrent music category use the drive chosen for mu
 Setup asks once, after the drives are chosen, where three things go: **Immich's photos and videos**, **the music library** (with its downloads: Lidarr moves finished downloads into the library, which only works on one drive) and **Nextcloud's files**. For each, you choose the SSD (faster) or the media drive (more room). The better one for this server is offered first, and Enter takes it:
 - Photos and music go on the SSD when it is big enough to hold them for years (500 GB or more for photos, 400 GB for music). Otherwise they go on the media drive.
 - **Photos on the media drive:** the weekly photo archive copy (`photos/archive`) is always on the media drive, so it is then on the same drive as the photos. It keeps older versions, but losing that drive (or the NAS it is on) loses both: the weekly USB backup is then your only copy on another drive. Setup says so, and asks for the USB drive.
-- Nextcloud's files always go on the media drive: they keep growing and don't need the speed.
+- Nextcloud's files: the media drive is offered first, because they keep growing and don't need the speed. You can still choose the SSD.
 
 The apps' settings and databases always stay on the SSD, and movies and TV on the media drive. Every backup, restore, check and update follows your choice. The weekly copies, the photo archive, the repair menu, the monthly snapshot and the update's checks all read where the files are from your settings (`"locations"` in `my-config.json`).
 

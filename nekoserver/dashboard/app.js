@@ -850,16 +850,7 @@ function backupIssues(s, add) {
         severity(job.status === 'fail'),
         unit
       );
-    } else if (timer.installed && !numeric(job.last_success) && job.status !== 'running') {
-      add(
-        'job:' + job.id,
-        name + ' has not succeeded yet',
-        'Wait for (or start) its first run before relying on it.',
-        'backup',
-        'warning',
-        unit
-      );
-    }
+    } // a backup that has not run yet is no problem: Home's "Getting started" says when it will
     if (!onDemand(job) && (timer.installed || numeric(job.last_success)) && !timer.active) {
       add(
         'timer:' + job.id,
@@ -871,6 +862,47 @@ function backupIssues(s, add) {
       );
     }
   }
+}
+/* A backup that is set up and has not run yet (nothing went wrong: its first run is still
+ * to come). */
+function firstRun(job) {
+  return (
+    object(job.timer).installed &&
+    !numeric(job.last_success) &&
+    job.status === 'unknown' &&
+    !job.blocked &&
+    !COPIES_NOTHING.has(job.id)
+  );
+}
+/* When the first of them is due, or null. */
+function firstDue(jobs) {
+  const due = jobs
+    .map(j => object(j.timer).next_run_at)
+    .filter(t => numeric(t) && t > 0)
+    .sort((a, b) => a - b);
+  return due.length ? due[0] : null;
+}
+/* The server check is still to do (never run, unfinished, or made for other settings);
+ * a check that found a problem is an issue instead. */
+const CHECK_TO_DO = new Set(['unknown', 'pending', 'outdated']);
+/* What a new server still has to do, none of it a problem (the user's choice, after the VM
+ * installs: it was "2 things need a look" on a server with nothing wrong): its first
+ * backups, and finishing the server check. Shown on Home as "Getting started"; it goes
+ * away once they are done. */
+function gettingStarted(s) {
+  const parts = [],
+    all = copyJobs(list(s?.backups)),
+    jobs = all.filter(firstRun);
+  if (jobs.length && noCopyYet(all)) {
+    const due = firstDue(jobs);
+    parts.push(
+      (jobs.length === 1 ? 'first backup ' : 'first backups ') + (due ? 'due ' + localTime(due) : 'on their schedule')
+    );
+  }
+  if (CHECK_TO_DO.has(s?.acceptance?.status ?? 'unknown')) {
+    parts.push('finish checking your server');
+  }
+  return parts;
 }
 function otherIssues(s, add) {
   for (const check of s.integrity.filter(c => integrityBad(c))) {
@@ -908,6 +940,9 @@ function acceptanceIssue(acceptance, add) {
       );
     }
     return;
+  }
+  if (CHECK_TO_DO.has(status ?? 'unknown')) {
+    return; // still to do, not a problem: Home's "Getting started" says so
   }
   add(
     'acceptance',
@@ -1018,17 +1053,40 @@ function heroStatus() {
       [critical, ['critical', critical + ' urgent']],
       [issues, ['warning', issues + ' to review']]
     ],
-    ['pass', 'Everything looks good']
+    ['pass', state.status && gettingStarted(state.status).length ? 'Getting started' : 'Everything looks good']
   );
 }
+/* Every copy job either passed or has not run yet, and at least one has not: [true, when
+ * the first is due] ("Not all checked yet" said nothing had run yet as if something were
+ * unchecked). */
+function onlyFirstRuns(jobs) {
+  const waiting = jobs.filter(firstRun);
+  return [waiting.length > 0 && jobs.every(j => j.status === 'pass' || firstRun(j)), firstDue(waiting), waiting.length];
+}
+/* No backup has made a copy yet: a new server. Once one has, the others still to run are
+ * no longer "first backups" (seen after an upgrade: five had passed, and the tile said
+ * "First run" with the monthly check's date). */
+function noCopyYet(jobs) {
+  return !jobs.some(j => numeric(j.last_success));
+}
+/* The jobs that make copies and are in use: a backup you switched off, and the jobs that
+ * copy nothing (the update night, the daily check, the upgrade), say nothing about
+ * whether your copies are fine. Their problems are listed with the others. */
+function copyJobs(jobs) {
+  return jobs.filter(j => j.status !== 'disabled' && !COPIES_NOTHING.has(j.id));
+}
 function backupSummary(s) {
-  const bad = s.backups.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
+  const jobs = copyJobs(s.backups);
+  const bad = jobs.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
+  const [starting, due, waiting] = onlyFirstRuns(jobs);
   return firstOf(
     [
-      [s.backups.some(j => j.blocked), 'Paused: a drive is missing'],
-      [s.backups.some(j => j.status === 'running'), 'Backup running'],
+      [jobs.some(j => j.blocked), 'Paused: a drive is missing'],
+      [jobs.some(j => j.status === 'running'), 'Backup running'],
       [bad, plural(bad, 'needs', 'need') + ' a look'],
-      [s.backups.length && s.backups.every(j => j.status === 'pass'), 'All recent copies OK']
+      [jobs.length && jobs.every(j => j.status === 'pass'), 'All recent copies OK'],
+      [starting && noCopyYet(jobs), due ? 'First run ' + localTime(due) : 'First runs to come'],
+      [starting, 'Recent copies OK · ' + waiting + ' still to run']
     ],
     'Not all checked yet'
   );
@@ -1294,6 +1352,18 @@ function companionWords(mood, s, issues) {
       '#health'
     ]
   };
+  const start = mood === 'resting' ? gettingStarted(s) : [];
+  if (start.length) {
+    // A new server with nothing wrong: what is still to come, said as information.
+    const said = start.join(' · ');
+    return [
+      'Getting started',
+      'Your server is set up.',
+      said.charAt(0).toUpperCase() + said.slice(1) + '.',
+      'Open Backups',
+      '#backups'
+    ];
+  }
   return words[mood];
 }
 /* Still pictures instead of animations: the setting, or the device's "reduce motion". */
@@ -1618,14 +1688,19 @@ function protectionItem(label, [st, title], detail) {
   return box;
 }
 function recentCopies(all) {
-  const jobs = all.filter(j => j.status !== 'disabled'); // an app switched off: its backup is retired
+  const jobs = copyJobs(all);
   const bad = jobs.filter(j => ['fail', 'partial', 'stale'].includes(j.status)).length;
   const unscheduled = j => !onDemand(j) && (!j.timer?.installed || !j.timer?.active);
   const unchecked = !jobs.length || jobs.some(j => !numeric(j.last_success) || unscheduled(j));
+  const [starting] = onlyFirstRuns(jobs);
   return firstOf(
     [
       [jobs.some(j => j.blocked), ['warning', 'Can’t run: drive missing']],
       [bad, ['warning', plural(bad, 'needs', 'need') + ' a look']],
+      [
+        starting && !jobs.some(unscheduled),
+        noCopyYet(jobs) ? ['unknown', 'First runs to come'] : ['pass', 'All OK so far']
+      ],
       [unchecked, ['unknown', 'Not all checked']]
     ],
     ['pass', 'All OK']

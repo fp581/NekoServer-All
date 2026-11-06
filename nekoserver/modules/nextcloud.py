@@ -11,6 +11,7 @@ import subprocess
 import time
 
 from neko_common import (
+    LOCATIONS,
     cloud_files,
     files_root,
     atomic_json,
@@ -132,8 +133,8 @@ def adopt_admin(opts, owned, chosen, persist, log):
 # (.ncdata since Nextcloud 31, .ocdata before).
 DATA_MARKERS = ('.ncdata', '.ocdata')
 WWW_DATA = 33
-# Nextcloud's files folder, under the drive that holds it (neko_common.cloud_files).
-FILES_FOLDER = 'cloud/files'
+# Nextcloud's files folder, under the drive that holds it (neko_common.cloud_files): the one name, from shared.json.
+FILES_FOLDER = LOCATIONS['cloud'][1][0]
 # Setup's note, beside Nextcloud's settings on the SSD, that the files folder was given
 # back on a new HDD and its accounts' folders are still to be made. Written before the
 # folder is made and removed only once the accounts' folders exist and Nextcloud's file

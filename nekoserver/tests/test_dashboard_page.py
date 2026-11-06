@@ -232,8 +232,98 @@ class DashboardPageTests(unittest.TestCase):
             ],
         )
 
-    def test_an_unfinished_server_check_is_listed(self):
-        [issues] = page(('collectIssues', status(acceptance={'status': 'pending'})))
+    def test_only_backups_in_use_say_whether_your_copies_are_fine(self):
+        """Seen on the rig (0.47.6): Home said "Backups: Not all checked yet" and listed
+        "Weekly app updates has not succeeded yet" on a server whose backups had all
+        passed, because the update night had not run yet. With the music backup switched
+        off, Home could never say all was fine. Neither copies anything."""
+        on = {'installed': True, 'active': True}
+        good = {'id': 'applications', 'name': 'Apps', 'status': 'pass', 'last_success': 1000.0, 'timer': on}
+        rows = [
+            good,
+            {'id': 'music', 'name': 'Music', 'status': 'disabled', 'timer': {'installed': False}},
+            {'id': 'updates', 'name': 'Weekly app updates', 'status': 'unknown', 'timer': on},
+            {'id': 'update_check', 'name': 'Daily update check', 'status': 'pass', 'last_success': 1.0, 'timer': on},
+        ]
+        summary, copies, issues = page(
+            ('backupSummary', status(backups=rows)),
+            ('recentCopies', rows),
+            ('collectIssues', status(backups=rows)),
+        )
+        self.assertEqual((summary, copies[1]), ('All recent copies OK', 'All OK'))
+        self.assertEqual(issues, [])
+        # A failed update night is listed; a backup that has not run yet is not a problem.
+        first = {**good, 'status': 'unknown', 'last_success': None}
+        failed = {'id': 'updates', 'name': 'Weekly app updates', 'status': 'fail', 'timer': on}
+        summary, issues = page(
+            ('backupSummary', status(backups=[first, failed])),
+            ('collectIssues', status(backups=[first, failed])),
+        )
+        self.assertEqual(summary, 'First runs to come')
+        self.assertEqual(sorted(i['id'] for i in issues), ['job:updates'])
+
+    def test_a_new_server_is_getting_started_not_in_need_of_a_look(self):
+        """The user's choice after the VM installs: a new server said "2 things need a
+        look" (its backups had not run yet, the server check was not done), though nothing
+        was wrong. They are a "Getting started" note now: no item to review, Home stays
+        green, the Backups tile says when the first run is due."""
+        on = {'installed': True, 'active': True}
+        new = [
+            {'id': job, 'name': name, 'status': 'unknown', 'timer': {**on, 'next_run_at': at}}
+            for job, name, at in (
+                ('applications', 'Apps', 1_800_003_600.0),
+                ('host', 'Host', 1_800_000_000.0),
+                ('maintenance', 'Monthly check', 1_802_500_000.0),
+            )
+        ]
+        fresh = status(backups=new, acceptance={'status': 'unknown'})
+        issues, start, tile, copies, words = page(
+            ('collectIssues', fresh),
+            ('gettingStarted', fresh),
+            ('backupSummary', fresh),
+            ('recentCopies', new),
+            ('companionWords', ['resting', fresh, []]),
+        )
+        self.assertEqual(issues, [])
+        self.assertEqual(len(start), 2)
+        self.assertTrue(start[0].startswith('first backups due '), start)
+        self.assertEqual(start[1], 'finish checking your server')
+        self.assertTrue(tile.startswith('First run '), tile)
+        self.assertEqual(copies[1], 'First runs to come')
+        self.assertEqual(words[0], 'Getting started')
+        self.assertIn('Finish checking your server', words[2].replace('finish', 'Finish'))
+        # Once the backups have run and the check is done, the note goes away.
+        done = status(backups=[{**j, 'status': 'pass', 'last_success': 1.0} for j in new])
+        start, words = page(('gettingStarted', done), ('companionWords', ['resting', done, []]))
+        self.assertEqual((start, words[0]), ([], 'Normal operation'))
+
+    def test_once_backups_have_run_the_one_still_to_run_is_no_first_run(self):
+        """Seen on the phone after an upgrade: five backups had passed and only the monthly
+        check was still to come, yet the Backups tile said "First run Tue, Dec 1"."""
+        on = {'installed': True, 'active': True}
+        ran = [
+            {'id': job, 'name': job, 'status': 'pass', 'last_success': 1000.0, 'timer': on}
+            for job in ('archive', 'database', 'external', 'applications', 'host')
+        ]
+        monthly = {
+            'id': 'maintenance',
+            'name': 'Monthly',
+            'status': 'unknown',
+            'timer': {**on, 'next_run_at': 1_800_000_000.0},
+        }
+        s = status(backups=ran + [monthly], acceptance={'status': 'complete'})
+        tile, copies, start, issues = page(
+            ('backupSummary', s), ('recentCopies', ran + [monthly]), ('gettingStarted', s), ('collectIssues', s)
+        )
+        self.assertEqual(tile, 'Recent copies OK · 1 still to run')
+        self.assertEqual(copies, ['pass', 'All OK so far'])
+        self.assertEqual((start, issues), ([], []))
+
+    def test_a_server_check_still_to_do_is_no_problem_but_a_failed_one_is(self):
+        for still in ('pending', 'unknown', 'outdated'):
+            [issues] = page(('collectIssues', status(acceptance={'status': still})))
+            self.assertEqual(issues, [], still)
+        [issues] = page(('collectIssues', status(acceptance={'status': 'failed'})))
         self.assertEqual(issues, [{'id': 'acceptance', 'level': 'warning', 'title': 'Finish checking your server'}])
 
     def test_the_fixed_speed_slider_starts_at_the_never_slower_than_floor(self):

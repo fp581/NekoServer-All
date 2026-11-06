@@ -46,7 +46,7 @@ APPS = Kind(
     restore_format='neko-media-restore-v1',
     roots=('appdata', 'compose', 'installer'),
     report={'containers_started': False, 'application_startup_verified': False},
-    restored_message='Files restored into a new directory; live application startup remains untested.',
+    restored_message='Files restored into a new folder. Your apps were not changed or restarted.',
     failed_message='Snapshot verification or restoration failed. Live app data was not changed.',
 )
 
@@ -60,8 +60,8 @@ HOST = Kind(
         'links_are_inert_text': True,
         'live_paths_changed': False,
     },
-    restored_message='Files restored into a new private directory; symbolic links remain inert text. '
-    'Live service startup remains untested.',
+    restored_message='Files restored into a new private folder (shortcut links are saved as plain text there, so they '
+    'point nowhere until copied back). Nothing on the server was changed or restarted.',
     failed_message='Snapshot verification or restoration failed. Live OS/user/Samba data was not changed.',
 )
 

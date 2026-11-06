@@ -673,7 +673,7 @@ fn inspect(app: &str, data: &Path, media: &Path, music: &Path, checking: bool) -
         || mounts.iter().any(|m| {
             m["Source"]
                 == music
-                    .join("library/downloads/music")
+                    .join(common::shared_folder("music", 1))
                     .to_string_lossy()
                     .as_ref()
                 && m["Destination"] == "/data/downloads/music"

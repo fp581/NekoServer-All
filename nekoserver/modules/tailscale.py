@@ -105,6 +105,7 @@ def run(context):
         if not done:
             return {
                 'status': 'needs_setup',
-                'reason': 'Tailscale authorization pending; reapply interactively or run sudo tailscale up',
+                'reason': 'This server is not signed in to Tailscale yet. Run  sudo bash install.sh  again to sign it '
+                'in (or run  sudo tailscale up  and open the link it prints)',
             }
     context.log('Tailscale local backend connected; client access still needs a real phone test')

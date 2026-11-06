@@ -377,6 +377,44 @@ class PrivateEntryTests(unittest.TestCase):
         self.assertFalse(notifications.valid_token('a' * 513))
 
 
+class CheckpointKeysTests(unittest.TestCase):
+    """Seen on a VM: the phone step said "Ctrl+C leaves it pending", and Ctrl+C ended setup
+    with six steps still to run. The words say what each key does."""
+
+    def run_step(self, key):
+        shown = []
+
+        def press(_):
+            raise key
+
+        ctx = mock.Mock(apply=True, config={})
+        with mock.patch('sys.stdin', mock.Mock(isatty=lambda: True)):
+            try:
+                return guided_setup.checkpoint(ctx, 'Phone', ['Do it.'], prompt=press, output=shown.append), shown
+            except KeyboardInterrupt:
+                return 'stopped', shown
+
+    def test_ctrl_d_leaves_the_step_pending_and_ctrl_c_stops_setup(self):
+        done, shown = self.run_step(EOFError)
+        self.assertIs(done, False)  # pending; setup goes on
+        self.assertIn('Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup.', '\n'.join(shown))
+        self.assertEqual(self.run_step(KeyboardInterrupt)[0], 'stopped')
+
+    def test_the_playback_step_says_ctrl_c_skips_it_as_it_does(self):
+        from modules import onboarding
+
+        asked = {}
+
+        def step(*a, **k):
+            asked.update(k)
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as d:
+            ctx = mock.Mock(config={'data_mount': d, 'media': {'services': ['jellyfin']}})
+            onboarding.witness_playback(ctx, checkpoint=step)  # skipped, setup goes on
+        self.assertEqual(asked['keys'], 'Ctrl+C or Ctrl+D skips it and setup goes on.')
+
+
 class SettingsFollowTheAppsTests(unittest.TestCase):
     """An app added later (setup run again with  --module media ) reaches the backups
     that are already installed, not only the dashboard."""

@@ -3,6 +3,7 @@ tests you witnessed yourself (a test restore) for the same profile and settings;
 Nextcloud switched off is not something to accept."""
 
 import json
+import subprocess
 import sys
 import tempfile
 import time
@@ -13,7 +14,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import acceptance
+import acceptance  # noqa: E402
+import status_checks  # noqa: E402
 
 
 def config(root):
@@ -24,6 +26,23 @@ def config(root):
         'media_hdd': {'uuid': 'hdd-uuid', 'fstype': 'ext4'},
     }
     return cfg
+
+
+def setUpModule():
+    """Seen on the rig: a full inspection asked the real Docker, systemd and Tailscale
+    (some 70 calls per module). On a server whose Docker could not start each call waited
+    out its time limit and the suite took over half an hour; on a running server the
+    results read its live state, and the media check's own service was started on it.
+    Every command answers as on a PC without them; a test that needs an answer patches
+    it itself."""
+    absent = subprocess.CompletedProcess([], 1, '', 'not on this test machine')
+    for patcher in (
+        mock.patch.object(status_checks, 'run', return_value=(None, '')),
+        # The media check's own service (it would be started for real) and Tailscale.
+        mock.patch.object(subprocess, 'run', return_value=absent),
+    ):
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)
 
 
 class CarryTests(unittest.TestCase):

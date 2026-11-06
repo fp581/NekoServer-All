@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.47.6Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.47.8Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -74,7 +74,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.47.6Beta" or "0.47.6"; None for anything else."""
+    """(0, 44, 0) from "v0.47.8Beta" or "0.47.8"; None for anything else."""
     match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -552,12 +552,14 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
         problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:
         journal.unlink(missing_ok=True)
-        # The last line said is the report's reason, the one the dashboard shows: it says
-        # why as well (under "needs attention" it only said that the server was fine).
+        # The last line said is the report's reason, the one the dashboard shows until an
+        # upgrade succeeds: what to do and when it goes away come first (the report keeps
+        # 300 characters), then why the upgrade did not go in.
         to = saved.get('to') or 'the newer release'
         why = f'did not pass: {saved["problem"]}' if saved.get('problem') else 'was cut off before it was checked'
         out(
-            f'This server runs {previous.name.lstrip("v")} again, as before the upgrade, and passed its check. '
+            f'Nothing was lost: this server runs {previous.name.lstrip("v")} again and passed its check. '
+            "Try the upgrade again when you're ready; this note goes away once one succeeds. "
             f'The upgrade to {to} {why}'
         )
         return 1

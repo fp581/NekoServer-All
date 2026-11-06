@@ -120,7 +120,7 @@ Setup opens a **phone setup page** on the PC with a QR code for each app. Keep i
 3. **Signing in.** The terminal shows the app's username. To see its password, open a **second terminal** on the PC (Ctrl+Alt+T) and run the command the step shows, for example:
 
    ```bash
-   sudo python3 /srv/nekoserver/installer/releases/v0.47.6/account-setup.py show jellyfin
+   sudo python3 /srv/nekoserver/installer/releases/v0.47.8/account-setup.py show jellyfin
    ```
 
    It shows the username and password on the PC's screen, with a QR code you can scan with the phone to copy the password. Press Enter to hide it again. (Your server may keep its files somewhere other than `/srv/nekoserver`: copy the command exactly as the step shows it.)
@@ -130,15 +130,22 @@ Answer `yes` after each app works on the phone. Answer `no` to see that app's in
 
 ### 12. Your home network
 
-Setup asks which network connection links this PC to your router, for example:
+With one network connection, setup uses it and says which, for example:
+
+```text
+Home network: enp3s0 · 192.168.1.20 · 192.168.1.0/24
+```
+
+With more than one (a cable and Wi-Fi, say), it asks which links this PC to your router:
 
 ```text
 Which network connects this server to your home network (your router)?
 1. enp3s0 · 192.168.1.20 · 192.168.1.0/24
+2. wlan0 · 192.168.1.21 · 192.168.1.0/24
 Choose your home-network interface number:
 ```
 
-Type the number (usually `1`) and press Enter. Other devices at home can then open the apps without Tailscale too. Tip: in your router, reserve this address for the server (often called "DHCP reservation" or "static lease"), so it doesn't change after a restart.
+Type the number and press Enter. Other devices at home can then open the apps without Tailscale too. Tip: in your router, reserve this address for the server (often called "DHCP reservation" or "static lease"), so it doesn't change after a restart.
 
 Setup may then open each app in the browser and ask you to check that it asks for a login. Answer `yes` once you have checked.
 
@@ -168,7 +175,7 @@ If something still needs you, the finishing screen says what. Fix it, then run `
 Your app passwords are saved on the server, and only the administrator can read them. To see one app's login on the screen (with a QR code for your phone), run this in a terminal:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.47.6/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.47.8/account-setup.py show
 ```
 
 It lists the saved logins. Type a number to show one. Press Enter to hide it again (the screen is cleared), and press Enter on the list to stop. To go straight to one app, add its name: `show jellyfin`, `show immich`, `show seerr`, `show nextcloud`, or `show navidrome_listener` for music. Check that nobody else can see your screen first.
@@ -211,7 +218,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 4. On **no**, repeats the instructions and opens the step again. An interrupted Tailscale authorization obtains/reopens its current authorization flow.
 5. On **yes**, runs any available automatic verification. If it fails, the step repeats instead of reporting success.
 
-`y`/`n` also work, case-insensitively. Other input is rejected. Ctrl+C or an unavailable input stream leaves the step pending, preserves saved account choices and allows an interactive reapply later. No answer is inferred from elapsed time. No terminal polling loop or Python service remains running after installation.
+`y`/`n` also work, case-insensitively. Other input is rejected. Ctrl+D or an unavailable input stream leaves the step pending (Ctrl+C stops setup), preserves saved account choices and allows an interactive reapply later. No answer is inferred from elapsed time. No terminal polling loop or Python service remains running after installation.
 
 ### Which steps use it?
 

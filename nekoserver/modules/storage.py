@@ -365,18 +365,21 @@ def nothing_eligible(inventory, items, selected, label):
     """Why no drive can be picked for `label`, drive by drive, and what to do."""
     lines = []
 
+    def how(dev):
+        # A server often has no desktop, so the terminal's way is given too.
+        return f"with the Disks app (GNOME) or KDE Partition Manager, or in a terminal:  sudo mkfs.ext4 /dev/{dev.get('name')}"
+
     def walk(dev):
         if dev.get('type') in ('part', 'disk') and dev.get('fstype') in NOT_LINUX:
             fs = dev['fstype']
             lines.append(
                 f"/dev/{dev.get('name')} is formatted {NOT_LINUX[fs]}, which Linux apps can't keep their files "
-                'on. To use it, copy its files elsewhere first, then format it as ext4 (this erases it) with '
-                'the Disks app (GNOME) or KDE Partition Manager.'
+                f'on. To use it, copy its files elsewhere first, then format it as ext4 (this erases it) {how(dev)}'
             )
         elif empty_disk(dev):
             lines.append(
                 f"/dev/{dev.get('name')} ({dev['size']}) has no filesystem yet. To use it, format it as "
-                'ext4 (this erases it) with the Disks app (GNOME) or KDE Partition Manager.'
+                f'ext4 (this erases it) {how(dev)}'
             )
         for child in dev.get('children', []):
             walk(child)
@@ -579,7 +582,9 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
             )
         if not uuid and apply:
             if not interactive:
-                raise RuntimeError(f'{key} is unassigned; rerun interactively on the server to select it safely')
+                raise RuntimeError(
+                    f'No drive is chosen for {label} yet. Run  sudo bash install.sh  in a terminal on the server to choose it.'
+                )
             device = whole(unlocked(choose_new(config, inventory, items, selected, key, label, input_fn, out_fn)))
             local_ssd(key, device)
             new_drive(record, device)

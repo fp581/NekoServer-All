@@ -370,7 +370,7 @@ class OnboardingReasonTests(unittest.TestCase):
                 ],
             )
         self.assertEqual(result['status'], 'needs_setup')
-        self.assertIn('Prowlarr, the download client or the library folders', result['reason'])
+        self.assertIn('a quality profile that Enter skipped', result['reason'])
         self.assertIn('sudo bash install.sh', result['reason'])
 
     def test_a_step_still_to_set_up_names_its_reason(self):
@@ -444,6 +444,76 @@ class SourceWizardLevelTests(unittest.TestCase):
                 sources = wizard.collect({}, reader)['sources']
         self.assertEqual(sources, [])
         self.assertTrue(any('contains your shows' in p for p in asked))
+
+
+class MusicOnTheMediaDriveTests(unittest.TestCase):
+    """Seen on a fresh Debian VM (0.47.6): setup put the music on the media drive (its
+    recommended choice when that drive has more room), but the library check, Lidarr's
+    music folder and the source import still looked for it on the SSD. Connecting the apps
+    never finished ("Host library directory missing"), and imported music went where
+    neither Navidrome nor Lidarr look."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ssd, self.media = Path(tmp.name) / 'ssd', Path(tmp.name) / 'media'
+        for name in ('movies', 'tv', 'music', 'downloads'):
+            (self.media / 'library' / name).mkdir(parents=True)
+        self.ssd.mkdir()
+        self.music = self.media / 'library/music'
+
+    def test_the_library_check_looks_where_the_music_is(self):
+        import onboard
+
+        rows = {r['check']: r['status'] for r in onboard.report(self.ssd, self.media, False, (), self.music)}
+        self.assertEqual(rows['library:music'], 'pass')
+        # Without being told, it still expects the SSD (where music was before 0.46.0).
+        rows = {r['check']: r['status'] for r in onboard.report(self.ssd, self.media, False, ())}
+        self.assertEqual(rows['library:music'], 'needs_setup')
+
+    def test_lidarr_gets_its_music_folder_on_the_media_drive(self):
+        connect = load('media_connect_music', 'media-connect.py')
+        calls, folders = [], []
+
+        def request(app, key, endpoint, method='GET', payload=None):
+            # A stand-in Lidarr: it keeps the folder it is given, and has one of each profile.
+            calls.append((endpoint, method))
+            if endpoint != '/rootfolder':
+                return [{'id': 1, 'name': 'Any'}]
+            if method == 'POST':
+                folders.append({**payload, 'accessible': True})
+            return folders
+
+        with mock.patch.object(connect, 'app_key', return_value='k'), mock.patch.object(connect, 'request', request):
+            connect.configure_root_folders(self.ssd, self.media, True, ('lidarr',), music=self.music)
+        self.assertIn(('/rootfolder', 'POST'), calls)
+        folders.clear()
+        with mock.patch.object(connect, 'app_key', return_value='k'), mock.patch.object(connect, 'request', request):
+            with self.assertRaisesRegex(RuntimeError, 'lidarr'):
+                connect.configure_root_folders(self.ssd, self.media, True, ('lidarr',))
+
+    def test_imported_music_goes_to_the_drive_setup_chose(self):
+        import source_import
+
+        roots = []
+        config = {
+            'data_mount': str(self.ssd),
+            'media_mount': str(self.media),
+            'media': {},
+            'locations': {'music': 'media'},
+        }
+        source = {'type': 'local', 'path': '/srv/elsewhere', 'category': 'music'}
+
+        def imported(source, root, *rest, **kw):
+            roots.append(root)
+            return {'status': 'copied'}
+
+        with (
+            mock.patch.object(source_import.os.path, 'ismount', return_value=True),
+            mock.patch.object(source_import, 'import_one', imported),
+        ):
+            source_import.run(config, [source])
+        self.assertEqual(roots, [self.media])
 
 
 if __name__ == '__main__':

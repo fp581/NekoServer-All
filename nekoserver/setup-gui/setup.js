@@ -156,9 +156,7 @@
     context.textContent = q.context.join('\n');
     context.hidden = !q.context.length;
     context.scrollTop = context.scrollHeight; // the last lines matter most
-    $('ask-prompt').textContent = q.secret
-      ? 'Setup is asking for a hidden entry (a password or PIN). Type it here or in the terminal.'
-      : q.text;
+    $('ask-prompt').textContent = q.secret ? q.text + ' (a hidden entry: type it here or in the terminal)' : q.text;
     const yesno = q.kind === 'yesno';
     $('ask-answer').hidden = yesno;
     $('ask-yesno').hidden = !yesno;

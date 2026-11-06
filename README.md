@@ -59,7 +59,7 @@ cd NekoServer-All/nekoserver
 sudo bash install.sh
 ```
 
-`git: command not found`? Ubuntu Desktop and some other systems don't come with git: install it first with `sudo apt install git` (Fedora and RHEL: `sudo dnf install git`; openSUSE: `sudo zypper install git`; Arch: `sudo pacman -S git`), then run the three lines again.
+`git: command not found`? Ubuntu Desktop and some other systems don't come with git: install it first with `sudo apt update && sudo apt install git` (Fedora and RHEL: `sudo dnf install git`; openSUSE: `sudo zypper install git`; Arch: `sudo pacman -S git`), then run the three lines again.
 
 Then follow the step-by-step guide: **[nekoserver/README.md](nekoserver/README.md)**.
 

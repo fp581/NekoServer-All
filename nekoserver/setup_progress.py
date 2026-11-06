@@ -5,8 +5,9 @@ memory for the window's server; also appended to a file when enabled.
 A question setup asks in the terminal is asked in the window too, with the terminal's
 last lines as its context (the list of drives to choose from, say), and the answer can
 come from either: the first one wins and the other is told. Nothing secret is kept: an
-answer is never recorded, and a hidden entry (a password, a PIN) is reported only as
-"a hidden entry"; its answer from the window travels on this PC's loopback alone."""
+answer is never recorded: a hidden entry (a password, a PIN) is reported by its prompt
+alone ("Same PIN again:"), and its answer from the window travels on this PC's loopback
+alone."""
 
 import builtins
 import collections
@@ -37,6 +38,7 @@ def enable(path=None):
     with _lock:
         _events.clear()
         _recent.clear()
+        _asked.update(text=None, context=[])
         _path = str(path) if path else None
         if _path:
             with open(_path, 'w', encoding='utf-8') as handle:
@@ -48,6 +50,7 @@ def disable():
     with _lock:
         _events.clear()
         _recent.clear()
+        _asked.update(text=None, context=[])
         _path = None
         _step = None
         _pending = None
@@ -143,12 +146,33 @@ def question_context():
     return lines[-CONTEXT_LINES:]
 
 
+_asked = {'text': None, 'context': []}  # the question asked last, and what was shown with it
+RETRY_LINES = 2  # at most this much new text: the same question asked again after a wrong answer
+
+
+def context_for(shown, fresh):
+    """What to show with the question `shown`, given what the terminal said since the last
+    answer (`fresh`). Asked again after a wrong answer, only the error is new, and the
+    list to choose from was printed before the first ask: it is kept, with the error after
+    it (seen in the window on a VM: "Choose another one from the list" with no list). The
+    same words asking a new question come with a list of their own, and stand alone."""
+    if shown == _asked['text'] and len(fresh) <= RETRY_LINES:
+        fresh = (_asked['context'] + [line for line in fresh if line not in _asked['context']])[-CONTEXT_LINES:]
+    _asked.update(text=shown, context=fresh)
+    return fresh
+
+
 def question(text, secret=False):
     """A question setup is asking; the window may answer it (answer_from_window)."""
     global _pending
-    shown = 'a hidden entry' if secret else str(text).strip()[:300]
+    # A hidden entry's own words are shown too ("PIN:", "Same PIN again:"): only its answer is secret.
+    shown = str(text).strip()[:300]
     record = event(
-        'question', text=shown, secret=bool(secret), form=question_kind(shown, secret), context=question_context()
+        'question',
+        text=shown,
+        secret=bool(secret),
+        form=question_kind(shown, secret),
+        context=context_for(shown, question_context()),
     )
     with _lock:
         _pending = {'seq': record['seq'], 'event': threading.Event(), 'answer': None}

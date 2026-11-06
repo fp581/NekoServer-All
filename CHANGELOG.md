@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.47.8 — 2026-11-06
+
+Fixes from answering setup in the setup window and stopping it halfway, on a clean Debian 13 PC (a virtual machine). After a wrong answer the window lost the list to choose from; a password or PIN question did not say which one it was; and each step you confirm yourself said Ctrl+C leaves it pending, when Ctrl+C stops setup.
+
+### How it was tested
+- Python tests (1404) and Rust tests (469) pass; ruff, Prettier, shfmt, rustfmt and clippy are clean.
+- A fresh install from a clean Debian 13 snapshot, answered in the setup window over an SSH tunnel: Start setup from the window, closing and reopening it, wrong drive numbers and names, a mismatched PIN, Ctrl+C at the playback test and at the phone step, Ctrl+D at the phone step, then `sudo bash install.sh` again, which went on where it stopped and finished. Photos and Nextcloud's files on the SSD and music on the media drive ended up where chosen.
+- A final fresh install from the same snapshot with every fix in: setup finished every step but the phone test, an emulated Android phone opened the six app addresses and the dashboard over Tailscale, and the feature check passed (45 checks, plus the monthly check in its night window).
+- Covered by tests only: what the window shows for a question asked again, and the key words at the playback test.
+
+### Known limits
+- The setup window has only Yes and No at the steps you confirm yourself; leaving one for later needs Ctrl+D in the terminal.
+- Running setup again asks the optional playback test and the indexer question again.
+
+### Setup
+- **The steps you confirm yourself say what Ctrl+C does.** Each one ended with "Ctrl+C leaves it pending", but Ctrl+C stops setup (on purpose since 0.39, as at every question); Ctrl+D is what leaves a step pending while setup goes on. Seen on a VM: Ctrl+C at the phone step ended setup with six steps still to run. The words now say "Ctrl+D leaves it pending and setup goes on; Ctrl+C stops setup" (at the optional playback test, which Ctrl+C does skip: "Ctrl+C or Ctrl+D skips it and setup goes on"), and the same for `acceptance --manual` and in GUIDED-SETUP.md and ACCEPTANCE.md. Nothing else changed: the keys do what they did.
+
+### Setup window
+- **After a wrong answer, the list to choose from stays in the window.** The setup window showed what the terminal had said since the last answer, so after a wrong drive number it showed only "Choose another one from the list", without the list. A question asked again keeps its list, with the error under it.
+- **A password or PIN question in the window says which one it is.** The window showed every hidden entry as "a hidden entry", so "Same PIN again" looked like the first PIN question. It now shows the question's own words ("PIN:", "Same PIN again:"); the answer is still never shown or kept.
+
+## v0.47.7 — 2026-11-06
+
+Fixes from installing NekoServer from scratch on a clean Debian 13 PC (a virtual machine) with blank drives, as a new user would, and using it from an Android phone over Tailscale. The biggest one: with the music on the media drive, which setup recommends when that drive has more room, connecting the apps never finished. The rest makes setup and the dashboard say clearly what is happening, and stops warnings about things that are fine.
+
+### How it was tested
+- Python tests (1400, the dashboard page included) and Rust tests (469) pass; ruff, Prettier, shfmt, rustfmt and clippy are clean.
+- Four fresh installs from a clean Debian 13 snapshot with blank drives, following the README: setup's recommended choices with a USB drive (three times, the last one with every fix in), and photos, music and Nextcloud's files on the SSD without a USB drive. The last one finished every step but the phone test in one run, and its feature check passed (45 checks, plus the monthly check in its night window).
+- The server joined Tailscale through setup's own step, and an emulated Android phone opened all six app addresses and the dashboard (also from a link) over Tailscale.
+- Every backup was run, and app settings, host settings, photos from the USB drive, Nextcloud files and the password list were restored into new folders, with their checksums matching.
+- Covered by tests only: the messages for an ARM board or a Linux without systemd, and the one-network-connection case through a whole setup run (checked on the VM with setup's own chooser and one network card turned off).
+
+### Known limits
+- Not tried yet: signing in to the apps from the phone, the setup window on a real desktop, a monthly snapshot restored onto a fresh install, and an upgrade from 0.47.6 to this release.
+- A monthly check started by hand during the day is refused (it waits for its night), and then shows on the dashboard as needing attention.
+
+### Restore
+- **The app and host settings restores end in plain words.** They said "live application startup remains untested" and "symbolic links remain inert text". Now they say the files are in a new folder and nothing on the server was changed or restarted.
+
+### Setup
+- **Without a USB drive, setup says how to add one.** With the USB drive skipped, the weekly USB copy waited with the message "Connect the external photo disk and rerun photo_backup interactively to confirm its UUID". It now says no USB drive is chosen yet and to run setup again to choose it.
+- **One network connection is used without asking.** Setup asked which network links the PC to your router even when there was only one to choose, so you had to type 1. With one, it now uses it and says which; with several it asks as before. The same holds without a keyboard. (Your decision, after the VM installs.)
+- **A skipped quality profile is named as the reason connecting the apps is unfinished.** Pressing Enter at Lidarr's profile questions, or at the quality profile for requests, skips them, as offered. The end screen then blamed "Prowlarr, the download client or the library folders". It now names the skipped profile and says to run setup again and choose one.
+- **When setup stops at a question, its last screen says what to do.** It promises that each item "says how", yet said only "Drives: Drive confirmation failed" (the drive's name typed wrong three times), "Selection aborted", or, for Tailscale, "authorization pending; reapply interactively". Each now says what happened and to run `sudo bash install.sh` again.
+- **The guides say where your files are, wherever you chose.** STORAGE.md said Nextcloud's files always go on the media drive, though setup offers the SSD too. It and the table above it named the SSD as the place for photos and music "by default", though setup offers whichever drive suits the server. RECOVERY.md's "Rebuild Immich from the USB drive" copied the photos back to the SSD only. Each now says where the files go for either choice.
+- **Music on the media drive works.** Setup lets you keep the music on the media drive, and recommends it when that drive has more room. Three parts still looked for the music on the SSD: the library check, Lidarr's music folder, and the import of music you already have. So connecting the apps never finished ("Host library directory missing"), and imported music went where neither Navidrome nor Lidarr look. All three now use the drive you chose.
+- **The USB drive question reads like the other drive questions.** It listed each drive as `/dev/sdc 32G ext4 UUID=… mounted=-`. It now shows size, name and model, as the SSD and HDD questions do.
+
+### Installation
+- **Installing git on a fresh Debian or Ubuntu works as the README says.** `sudo apt install git` fails there with "Unable to locate package git" until the package lists have been fetched once. The README now says `sudo apt update && sudo apt install git`.
+- **Formatting a drive: the terminal command is given too.** When a drive has no filesystem yet (or one Linux apps can't use), setup suggested only the Disks app or KDE Partition Manager. A server often has no desktop, so it now also gives the command, for example `sudo mkfs.ext4 /dev/sdb`.
+- **Setup's last screen no longer points at things that aren't there yet.** When setup stopped early (at unformatted drives, say), it still gave the dashboard's address and the command that shows the app passwords, though neither existed yet. Each is shown once its step has run.
+- **`sudo bash install.sh --help` explains itself.** It began with "usage: installer.py", a file nobody runs, and called itself a "safe phase-one installer framework". It now names the command you typed, says that with no options it runs the guided setup, and explains every option.
+- **Clearer messages on a PC NekoServer can't run on.** A Raspberry Pi or another ARM board was told only "An x86_64 systemd host is required". It now hears that NekoServer needs a 64-bit Intel or AMD PC, and which kind of machine this is. A Linux without systemd (WSL with systemd off, say) is told how to turn it on.
+
+### Dashboard
+- **After an upgrade was put back, its note says what to do.** It said only that the server ran the earlier release again. It now starts with "Nothing was lost", says to try the upgrade again when you're ready, and that the note goes away once one succeeds. (It takes effect from the next upgrade on a server running 0.47.7.)
+- **The dashboard opens from a link on your phone.** Opened from the phone setup page's QR code, a link in a chat or a shortcut, it answered "E41: Open the dashboard from its own address", though it was its own address: the phone's browser marks such a visit as coming from another site. Opening the page itself is now allowed from a link, on the first visit and every later one; its readings and buttons still answer only to the page itself. Found on an emulated Android phone over Tailscale.
+- **A new server says "Getting started", not "needs a look".** Home said "2 things need a look" on a new server with nothing wrong: its backups had not run yet, and the server check was not done. Those are now a note (for example "First backups due Sat 7 Nov, 04:15 · finish checking your server"), Home stays green, and the Backups tile says when the first run is due instead of "Not all checked yet" (once some backups have run, it says their copies are fine and how many are still to run). A backup that ran and failed, or a server check that found a problem, is still listed. (Your decision, after the VM installs.)
+- **No more "This dashboard is not running" on the dashboard itself.** Since 0.46.3 the dashboard starts when someone opens it and rests in between. Its reading, taken while nobody had it open, called it stopped, so Home opened with an urgent warning about the very page showing it. A dashboard that will start when asked now counts as running.
+- **A server never signed in to Tailscale is told so plainly.** On a new server, Home said, as urgent, that its Tailscale sign-in "ran out" and to sign in again. Now it says phone access is not set up yet and how to do it, as something to review. A server whose sign-in did run out still gets the urgent warning.
+- **"All recent copies OK" when your backups are fine.** Home said "Backups: Not all checked yet", and listed "Weekly app updates has not succeeded yet", until the first weekly update night had run, which takes up to a week on a new server. With a backup switched off (the music backup, say), Home never said all was fine at all. Only the backups you use count now. A failed update night is still listed with the other things to look at.
+
+### Tests
+- **A test keeps paths to the photos, music and Nextcloud files from being written by hand.** Their folders are named once (shared.json) and every path is built from setup's choice of drive. The music-on-the-media-drive bug came from three places that built "SSD + library/music" themselves; the test fails if that happens again.
+- **The acceptance tests no longer touch the server they run on.** They asked the real Docker, systemd and Tailscale, and could start one of the server's own services. On a server where Docker could not start, the test run took over half an hour. They now run the same everywhere, in about a minute.
+
 ## v0.47.6 — 2026-11-06
 
 More fixes, found after 0.47.5.

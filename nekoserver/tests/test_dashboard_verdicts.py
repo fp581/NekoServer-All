@@ -95,7 +95,7 @@ class ChecksumVerdictTests(unittest.TestCase):
 @unittest.skipUnless(NODE, 'node is not installed')
 class ServerCheckIssueTests(unittest.TestCase):
     def issues(self, acceptance):
-        code = pieces(consts=('ACCEPTANCE_RECHECK',), functions=('acceptanceIssue',))
+        code = pieces(consts=('ACCEPTANCE_RECHECK', 'CHECK_TO_DO'), functions=('acceptanceIssue',))
         return run(
             code + f'\nconst rows = []; acceptanceIssue({json.dumps(acceptance)}, (id, title) => rows.push(title));'
             '\nconsole.log(JSON.stringify(rows));'
@@ -110,9 +110,12 @@ class ServerCheckIssueTests(unittest.TestCase):
             self.issues({'status': 'stale', 'generated_at': time.time() - 40 * 86400}), ['Time to recheck your server']
         )
 
-    def test_an_unfinished_check_still_asks_to_finish(self):
-        for status in ('pending', 'failed', 'unknown', 'outdated'):
-            self.assertEqual(self.issues({'status': status}), ['Finish checking your server'], status)
+    def test_a_failed_check_asks_to_finish_one_still_to_do_is_getting_started(self):
+        # The user's choice after the VM installs: a check not done yet is Home's "Getting
+        # started" note (gettingStarted), not an item to review.
+        self.assertEqual(self.issues({'status': 'failed'}), ['Finish checking your server'])
+        for status in ('pending', 'unknown', 'outdated'):
+            self.assertEqual(self.issues({'status': status}), [], status)
 
 
 @unittest.skipUnless(NODE, 'node is not installed')
