@@ -6,7 +6,7 @@ import os
 import re
 import time
 import shutil
-from stat import S_IMODE, S_ISDIR
+from stat import S_IMODE, S_IRWXG, S_ISDIR, S_ISGID
 import subprocess
 from pathlib import Path
 from neko_common import (
@@ -256,7 +256,8 @@ def library_folder(target, uid, gid, log=print, root=0):
         ensure_directory(target, 0o2775, uid, gid)
     elif not target.is_symlink() and docker_made(target, root):
         os.chown(target, uid, gid, follow_symlinks=False)
-        os.chmod(target, 0o2775)
+        # Group write and setgid added (as setup makes these folders); the rest kept as Docker made it.
+        os.chmod(target, S_IMODE(target.lstat().st_mode) | S_IRWXG | S_ISGID)
         log(f'{target} was made by Docker, closed to the apps: it is the apps\' now')
 
 
