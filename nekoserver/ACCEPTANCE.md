@@ -2,7 +2,7 @@
 
 ## Guided setup
 
-With guided_setup.enabled=true (default), --manual --save now uses guided yes/no handoffs instead of the legacy typed PASS/FAIL prompt. No repeats the instructions and opens the relevant pages/apps again. Ctrl+C leaves that check pending. Manual confirmation never overrides automatic failures. Disabling the guide retains the legacy explicit PASS/FAIL mode. See GUIDED-SETUP.md.
+With guided_setup.enabled=true (default), --manual --save now uses guided yes/no handoffs instead of the legacy typed PASS/FAIL prompt. No repeats the instructions and opens the relevant pages/apps again. Ctrl+D leaves that check pending (Ctrl+C stops the run, and nothing is saved). Manual confirmation never overrides automatic failures. Disabling the guide retains the legacy explicit PASS/FAIL mode. See GUIDED-SETUP.md.
 
 
 ## Prepare before installation
@@ -74,7 +74,7 @@ The runner prints the tests required by the chosen profile. Perform each applica
 sudo python3 /srv/nekoserver/installer/releases/v0.47.7/acceptance.py --profile full --save --manual
 ```
 
-The command reruns automatic checks and, by default, opens relevant pages/apps and asks yes/no for each witnessed test. Yes records that specific test as user-reported; no repeats its instructions and reopens its targets. Ctrl+C leaves that test pending. Confirmation timestamps and user_reported labels are retained. Do not confirm a planned/unperformed test. These answers never override an automatic failure. With guided_setup.enabled=false, the legacy explicit PASS exact_test_id / FAIL exact_test_id / Enter prompt remains available.
+The command reruns automatic checks and, by default, opens relevant pages/apps and asks yes/no for each witnessed test. Yes records that specific test as user-reported; no repeats its instructions and reopens its targets. Ctrl+D leaves that test pending. Confirmation timestamps and user_reported labels are retained. Do not confirm a planned/unperformed test. These answers never override an automatic failure. With guided_setup.enabled=false, the legacy explicit PASS exact_test_id / FAIL exact_test_id / Enter prompt remains available.
 
 | Witnessed test | Required exercise |
 | --- | --- |

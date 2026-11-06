@@ -203,7 +203,10 @@ def show_step(output, title, instructions):
     output('\n=== ' + title + ' ===')
     for number, instruction in enumerate(instructions, 1):
         output(str(number) + '. ' + instruction)
-    output('Return to the terminal afterward. No reopens this step; Ctrl+C leaves it pending.')
+    output(
+        'Return to the terminal afterward. No reopens this step; Ctrl+D leaves it pending and setup goes on; '
+        'Ctrl+C stops setup.'
+    )
 
 
 def prepared_targets(targets, prepare, output):
@@ -246,7 +249,7 @@ def check_passed(verify, output):
 def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, prompt=None, output=None):
     """No repeats instructions/opening; yes must also pass any supplied verifier.
 
-    EOF/Ctrl+C leaves this step pending. Background/read-only runs never launch or
+    EOF (Ctrl+D) leaves this step pending; Ctrl+C stops setup. Background/read-only runs never launch or
     prompt. Callers retain machine and witnessed evidence as separate concepts.
     """
     if not interactive(ctx):

@@ -218,7 +218,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 4. On **no**, repeats the instructions and opens the step again. An interrupted Tailscale authorization obtains/reopens its current authorization flow.
 5. On **yes**, runs any available automatic verification. If it fails, the step repeats instead of reporting success.
 
-`y`/`n` also work, case-insensitively. Other input is rejected. Ctrl+C or an unavailable input stream leaves the step pending, preserves saved account choices and allows an interactive reapply later. No answer is inferred from elapsed time. No terminal polling loop or Python service remains running after installation.
+`y`/`n` also work, case-insensitively. Other input is rejected. Ctrl+D or an unavailable input stream leaves the step pending (Ctrl+C stops setup), preserves saved account choices and allows an interactive reapply later. No answer is inferred from elapsed time. No terminal polling loop or Python service remains running after installation.
 
 ### Which steps use it?
 

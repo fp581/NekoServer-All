@@ -1240,7 +1240,7 @@ def guided_manual(config, report):
                 'Do not perform destructive storage/restore tests on your only live data. '
                 'Use the documented isolated recovery workflow and independent copies.',
                 'Answer yes only after witnessing this specific result. No repeats the instructions '
-                'and reopens any relevant local pages/apps; Ctrl+C leaves it pending.',
+                'and reopens any relevant local pages/apps; Ctrl+D leaves it pending.',
             ],
             targets,
         )
