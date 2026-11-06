@@ -473,15 +473,24 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
 
 def show_end(config, data, plan, states, page, output):
     """Where everything is: the apps' addresses, the passwords, the phone page, the dashboard."""
+
+    def waiting(step):
+        # A step this run set out to do that has not worked yet: what it makes isn't there
+        # (seen on a new PC whose drives were not formatted: the screen pointed at a
+        # dashboard and a passwords command that did not exist).
+        return step in plan and states.get(step, {}).get('status') != 'success'
+
     show_addresses(data, output)
-    output(
-        '\nPasswords:          '
-        + guided_setup.login_command({'data_mount': str(data)})
-        + '  (an app\'s login, with a QR code)'
-    )
+    if not waiting('account_credentials'):
+        output(
+            '\nPasswords:          '
+            + guided_setup.login_command({'data_mount': str(data)})
+            + '  (an app\'s login, with a QR code)'
+        )
     if page and Path(page).exists():
         output('Phone setup page:   ' + str(page) + '  (open it in a browser on this PC)')
-    show_dashboard(config, output)
+    if not waiting('dashboard'):
+        show_dashboard(config, output)
     if (
         'onboarding' in plan
         and states['onboarding'].get('status') == 'success'

@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Installation
+- **Installing git on a fresh Debian or Ubuntu works as the README says.** `sudo apt install git` fails there with "Unable to locate package git" until the package lists have been fetched once. The README now says `sudo apt update && sudo apt install git`.
+- **Formatting a drive: the terminal command is given too.** When a drive has no filesystem yet (or one Linux apps can't use), setup suggested only the Disks app or KDE Partition Manager. A server often has no desktop, so it now also gives the command, for example `sudo mkfs.ext4 /dev/sdb`.
+- **Setup's last screen no longer points at things that aren't there yet.** When setup stopped early (at unformatted drives, say), it still gave the dashboard's address and the command that shows the app passwords, though neither existed yet. Each is shown once its step has run.
 - **`sudo bash install.sh --help` explains itself.** It began with "usage: installer.py", a file nobody runs, and called itself a "safe phase-one installer framework". It now names the command you typed, says that with no options it runs the guided setup, and explains every option.
 - **Clearer messages on a PC NekoServer can't run on.** A Raspberry Pi or another ARM board was told only "An x86_64 systemd host is required". It now hears that NekoServer needs a 64-bit Intel or AMD PC, and which kind of machine this is. A Linux without systemd (WSL with systemd off, say) is told how to turn it on.
 

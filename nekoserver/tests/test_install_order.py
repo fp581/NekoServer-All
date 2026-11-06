@@ -235,6 +235,8 @@ class DrivePickingTests(unittest.TestCase):
             )
         message = str(caught.exception)
         self.assertIn('/dev/sdb (2T) has no filesystem yet. To use it, format it as ext4', message)
+        # A server often has no desktop: the terminal's command is given too (seen on a Debian VM).
+        self.assertIn('in a terminal:  sudo mkfs.ext4 /dev/sdb', message)
         self.assertNotIn('No other drive was found', message)
         for name in ('zram0', 'mmcblk0boot0', 'nbd0', 'sdc'):
             self.assertNotIn('/dev/' + name, message)

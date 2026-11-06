@@ -407,6 +407,22 @@ class FinishingScreenTests(unittest.TestCase):
         self.assertIn('Dashboard:          http://127.0.0.1:8899', text)
         self.assertNotIn('8787', text)
 
+    def test_nothing_is_pointed_at_that_setup_has_not_made_yet(self):
+        """Seen on a new PC (a Debian VM) whose drives were not formatted: setup stopped at
+        the drives, yet its last screen gave the dashboard's address and the command for the
+        passwords, neither of which existed."""
+        out = []
+        stopped = {'storage': {'status': 'failed'}, 'account_credentials': {}, 'dashboard': {}}
+        wizard.finishing_screen(self.config, stopped, None, out.append, ran=list(stopped))
+        text = '\n'.join(out)
+        self.assertNotIn('http://127.0.0.1:', text)
+        self.assertNotIn('account-setup.py show', text)
+        done = {name: {'status': 'success'} for name in stopped}
+        out = []
+        wizard.finishing_screen(self.config, done, None, out.append, ran=list(done))
+        self.assertIn('Dashboard:          http://127.0.0.1:', '\n'.join(out))
+        self.assertIn('account-setup.py show', '\n'.join(out))
+
     def test_the_finishing_screen_says_whether_a_pin_was_chosen(self):
         with tempfile.TemporaryDirectory() as folder:
             pin = Path(folder) / 'pin.json'
