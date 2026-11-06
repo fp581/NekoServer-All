@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+More fixes, found after 0.47.6.
+
+### Tests
+- **The acceptance tests no longer ask the real machine.** A full inspection in the tests asked the real Docker, systemd and Tailscale (some 70 calls per module), and started the media check's own service when it was there. On the rig, with Docker unable to start after a restart, each call waited out its time limit and the suite took over half an hour; on a running server the results depended on its live state. The commands answer as on a PC without them now, and the suite takes about a minute either way.
+
 ## v0.47.6 — 2026-11-06
 
 More fixes, found after 0.47.5.

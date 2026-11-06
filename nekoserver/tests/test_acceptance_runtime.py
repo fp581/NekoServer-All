@@ -3,6 +3,7 @@ check every job makes, and the backups', the outage monitor's and the phone aler
 states as the dashboard shows them. It kept copies of both, which already disagreed."""
 
 import json
+import subprocess
 import sys
 import tempfile
 import time
@@ -40,6 +41,23 @@ def inspect(states=None, problem=lambda keys: None):
         ):
             report = acceptance.inspect(config(Path(tmp)), 'full')
     return {c['id']: c for c in json.loads(json.dumps(report))['automatic']}
+
+
+def setUpModule():
+    """Seen on the rig: a full inspection asked the real Docker, systemd and Tailscale
+    (some 70 calls per module). On a server whose Docker could not start each call waited
+    out its time limit and the suite took over half an hour; on a running server the
+    results read its live state, and the media check's own service was started on it.
+    Every command answers as on a PC without them; a test that needs an answer patches
+    it itself."""
+    absent = subprocess.CompletedProcess([], 1, '', 'not on this test machine')
+    for patcher in (
+        mock.patch.object(status_checks, 'run', return_value=(None, '')),
+        # The media check's own service (it would be started for real) and Tailscale.
+        mock.patch.object(subprocess, 'run', return_value=absent),
+    ):
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)
 
 
 class JobStatesTests(unittest.TestCase):
