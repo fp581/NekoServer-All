@@ -390,6 +390,12 @@ NEXT_PENDING = [
     '  1. Fix the first item under "What needs you" (its line says how).',
     '  2. Then run  sudo bash install.sh  again: it continues where it stopped and keeps everything done.',
 ]
+# Every step done, but the first checkup and backup found something: there is no "What
+# needs you" list to point at (the 0.47.10 round: the screen said to fix its first item).
+NEXT_CHECKUP = [
+    '  1. Look at the items under "First checkup and backup" above; the checklist on the dashboard explains each one.',
+    '  2. Backups and monthly updates run on their own. Run  sudo bash install.sh  again any time to repeat the checkup.',
+]
 
 
 def finished(plan, by_status, checkup):
@@ -464,7 +470,8 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     show_checkup(checkup, output)
     show_end(config, data, plan, states, page, output)
     output('\nWhat next:')
-    for text in NEXT_DONE if complete else NEXT_PENDING:
+    steps_done = not (by_status['broken'] or by_status['waiting'] or blocked)
+    for text in NEXT_DONE if complete else (NEXT_CHECKUP if steps_done else NEXT_PENDING):
         output(text)
     output('  If something goes wrong later:  sudo bash install.sh --recover')
     output(line + '\n')
