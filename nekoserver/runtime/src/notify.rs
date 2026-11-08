@@ -935,8 +935,7 @@ mod tests {
             json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000}}});
         for responding in [Value::Null, json!("maybe")] {
             let mut s = snapshot(2000., json!([]));
-            s["applications"] =
-                json!([{"id":"sonarr","state":"running","health":"healthy","responding":responding}]);
+            s["applications"] = json!([{"id":"sonarr","state":"running","health":"healthy","responding":responding}]);
             let (_, e) = plan(&s, &previous, 2000., 0, 43200);
             assert!(e.is_empty(), "{e:?}");
         }

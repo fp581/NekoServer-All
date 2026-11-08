@@ -3057,7 +3057,10 @@ mod os_tests {
         let failed = "LoadState=loaded\nActiveState=failed\nResult=exit-code\nExecMainStatus=1\nExecMainExitTimestampMonotonic=1000000000\n";
         // The service ended 100 s ago (1000 s after boot, uptime 1100 s); the report is an hour old.
         let why = check_failed_since(failed, Some(3600.0), Some(1100.0)).unwrap();
-        assert!(why.contains("Its service could not run (exit-code, exit 1)"), "{why}");
+        assert!(
+            why.contains("Its service could not run (exit-code, exit 1)"),
+            "{why}"
+        );
         // No report at all: the failure still counts.
         assert!(check_failed_since(failed, None, Some(1100.0)).is_some());
         // A report written after the failure (50 s old): current.

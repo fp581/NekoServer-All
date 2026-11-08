@@ -3759,18 +3759,24 @@ fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
 /// (the review of 0.47.9): it waits instead, record kept, until drive-return runs this
 /// again with the drive back. Files on the SSD need nothing beyond the SSD check.
 fn live_files_drive_present(app: &Paused, cfg: &Value) -> Result<()> {
-    let what = if app.job == "immich" { "photos" } else { "cloud" };
+    let what = if app.job == "immich" {
+        "photos"
+    } else {
+        "cloud"
+    };
     let root = common::files_root(cfg, what)?;
     let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
     if root != media {
         return Ok(());
     }
-    checked_drive(cfg, "media_hdd", &media).map(drop).map_err(|e| {
-        Error::new(&format!(
-            "{} is not started again yet: its {what} live on the media drive, and {e}",
-            app.name
-        ))
-    })
+    checked_drive(cfg, "media_hdd", &media)
+        .map(drop)
+        .map_err(|e| {
+            Error::new(&format!(
+                "{} is not started again yet: its {what} live on the media drive, and {e}",
+                app.name
+            ))
+        })
 }
 /// The weekly database copy, made while Immich is paused: kept on the SSD and the HDD,
 /// the newest `keep` in each.
@@ -8002,14 +8008,24 @@ mod tests {
         };
         // Photos on the media drive, nothing mounted there: Immich waits, and the reason names it.
         let err = live_files_drive_present(&IMMICH, &settings("media")).unwrap_err();
-        assert!(err.to_string().contains("Immich is not started again yet"), "{err}");
-        assert!(err.to_string().contains("photos live on the media drive"), "{err}");
+        assert!(
+            err.to_string().contains("Immich is not started again yet"),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains("photos live on the media drive"),
+            "{err}"
+        );
         assert!(err.to_string().contains("Drive check failed"), "{err}");
         // Photos on the SSD: the media drive is not needed.
         live_files_drive_present(&IMMICH, &settings("ssd")).unwrap();
         // Nextcloud's files are on the media drive unless the settings say otherwise.
         let err = live_files_drive_present(&NEXTCLOUD, &settings("ssd")).unwrap_err();
-        assert!(err.to_string().contains("Nextcloud is not started again yet"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("Nextcloud is not started again yet"),
+            "{err}"
+        );
         let mut cloud_on_ssd = settings("ssd");
         cloud_on_ssd["locations"]["cloud"] = json!("ssd");
         live_files_drive_present(&NEXTCLOUD, &cloud_on_ssd).unwrap();
