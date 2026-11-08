@@ -96,6 +96,13 @@ class StageTests(unittest.TestCase):
         self.assertEqual((moved / 'media/photo.jpg').read_bytes(), b'media')
         self.assertFalse((moved / 'verified.json').exists())
 
+    def test_a_missing_folder_above_the_destination_is_said_in_plain_words(self):
+        # Seen on the test VM: --stage /mnt/.../restored/stage with no "restored" folder yet
+        # ended in a traceback from the room check.
+        with self.assertRaisesRegex(RuntimeError, 'folder above the recovery directory does not exist'):
+            monthly.stage(self.snapshot, self.dir / 'nowhere' / 'staged')
+        self.assertFalse((self.dir / 'nowhere').exists())
+
     def test_an_archive_changed_after_its_check_is_never_unpacked_or_marked(self):
         """The review of 0.47.2: unpacking and the comparison read the archive again by its
         name, so one changed after its checksum check was unpacked, compared with itself, and

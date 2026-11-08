@@ -89,6 +89,12 @@ def stage(snapshot, destination):
         or snapshot in destination.parents
     ):
         raise RuntimeError('Choose a new, separate absolute recovery directory')
+    if not destination.parent.is_dir():
+        # Said in plain words: the room check below would otherwise end in a traceback.
+        raise RuntimeError(
+            f'The folder above the recovery directory does not exist: {destination.parent}. '
+            'Create it first; the copy goes into a new folder inside it.'
+        )
     # The archives are uncompressed tar files: their size is what extraction writes, with
     # room for the private copy of the bigger one while it is unpacked.
     sizes = [(snapshot / (n + '.tar')).stat().st_size for n in ('data', 'media')]
