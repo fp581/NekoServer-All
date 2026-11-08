@@ -395,6 +395,132 @@ class OnboardingReasonTests(unittest.TestCase):
         self.assertIn('seerr:provider:sonarr: Profile selection skipped', result['reason'])
 
 
+class OptionalAnswersTests(unittest.TestCase):
+    """Setup run again used to ask the optional questions (download sources, indexers,
+    the playback test) every time. Now it shows the last answers and asks again only
+    when the person wants to change them."""
+
+    def test_the_answers_are_kept_without_secrets_and_read_back(self):
+        import neko_common
+
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(neko_common.optional_answers(d), {})  # the first run: nothing kept
+            neko_common.remember_answer(d, 'sources', 'none added')
+            neko_common.remember_answer(d, 'indexers', 'none chosen')
+            neko_common.remember_answer(d, 'playback', 'skipped')
+            kept = json.loads(neko_common.optional_answers_file(d).read_text())
+            self.assertEqual(kept, {'sources': 'none added', 'indexers': 'none chosen', 'playback': 'skipped'})
+            neko_common.optional_answers_file(d).write_text(
+                json.dumps({'sources': 7, 'odd': 'x', 'playback': 'skipped'})
+            )
+            self.assertEqual(neko_common.optional_answers(d), {'playback': 'skipped'})  # only what is known
+            neko_common.optional_answers_file(d).write_text('[broken')
+            self.assertEqual(neko_common.optional_answers(d), {})
+
+    def test_the_source_wizard_and_the_indexer_choice_keep_how_they_went(self):
+        wizard = load('source_wizard', 'source-wizard.py')
+        self.assertEqual(wizard.sources_answer(0, 0), 'none added')
+        self.assertEqual(wizard.sources_answer(1, 1), 'none added (1 in the list)')
+        self.assertEqual(wizard.sources_answer(1, 3), '2 added (3 in the list)')
+        connect = load('media_connect', 'media-connect.py')
+        with tempfile.TemporaryDirectory() as d:
+            schemas = [{'name': 'Alpha', 'implementation': 'A', 'fields': []}]
+            answers = iter(['alp'])
+            with (
+                mock.patch.object(connect, 'app_key', return_value='k'),
+                mock.patch.object(connect, 'request', side_effect=[schemas, [], []]),
+                mock.patch('builtins.input', lambda prompt='': next(answers)),
+                mock.patch.object(connect, 'choose', return_value=None),
+            ):
+                connect.configure_indexers(Path(d), False)
+            self.assertEqual(
+                json.loads((Path(d) / 'config/onboarding-answers.json').read_text()), {'indexers': 'none chosen'}
+            )
+
+    def gate(self, d, kept, typed, playback_done=False):
+        from modules import onboarding
+
+        release = Path(d) / 'installer/releases' / ('v' + onboarding.VERSION)
+        release.mkdir(parents=True, exist_ok=True)
+        (release / 'onboard.py').write_text('')
+        (Path(d) / 'reports').mkdir(exist_ok=True)
+        (Path(d) / 'reports/onboarding.json').write_text(
+            json.dumps({'checks': [{'check': 'http:sonarr', 'status': 'pass'}]})
+        )
+        if kept is not None:
+            (Path(d) / 'config').mkdir(exist_ok=True)
+            (Path(d) / 'config/onboarding-answers.json').write_text(json.dumps(kept))
+        if playback_done:
+            (Path(d) / 'reports/onboarding').mkdir(exist_ok=True)
+            (Path(d) / 'reports/onboarding/playback.json').write_text('{}')
+        logs, printed, asked = [], [], []
+        ctx = mock.Mock(
+            apply=True,
+            plan=(),
+            previous=None,
+            log=logs.append,
+            config={'data_mount': d, 'onboarding': {}, 'media': {'services': ['sonarr', 'prowlarr', 'jellyfin']}},
+        )
+        del ctx.optional_kept
+        answers = iter(typed)
+
+        def checkpoint(ctx, title, *a, **k):
+            asked.append(title)
+            return False
+
+        with (
+            mock.patch.object(onboarding.sys.stdin, 'isatty', return_value=True),
+            mock.patch.object(onboarding.account_store, 'enabled', return_value=False),
+            mock.patch.object(onboarding.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run,
+            mock.patch.object(onboarding.guided_setup, 'checkpoint', checkpoint),
+            mock.patch('recovery_tools.lock', lambda config: mock.MagicMock()),
+            mock.patch('builtins.input', lambda prompt='': (printed.append(prompt), next(answers))[1]),
+            mock.patch('builtins.print', lambda *a, **k: printed.append(' '.join(str(x) for x in a))),
+        ):
+            onboarding.run(ctx)
+        return run.call_args[0][0], printed, asked, logs
+
+    def test_a_rerun_shows_the_last_answers_and_asks_again_only_on_yes(self):
+        kept = {'sources': 'none added', 'indexers': 'none chosen', 'playback': 'skipped'}
+        with tempfile.TemporaryDirectory() as d:
+            # The first run: nothing kept, every question asked, nothing extra said.
+            cmd, printed, asked, logs = self.gate(d, None, [])
+            self.assertIn('--sources', cmd)
+            self.assertIn('--indexers', cmd)
+            self.assertEqual(asked, ['Test playback (optional)'])
+            self.assertFalse([line for line in printed if 'Last time' in line])
+            self.assertEqual(
+                json.loads((Path(d) / 'config/onboarding-answers.json').read_text()), {'playback': 'skipped'}
+            )
+        with tempfile.TemporaryDirectory() as d:
+            # Run again, answers kept, no: nothing is asked again.
+            cmd, printed, asked, logs = self.gate(d, kept, ['no'])
+            self.assertNotIn('--sources', cmd)
+            self.assertNotIn('--indexers', cmd)
+            self.assertIn('--libraries', cmd)  # not a question: still done
+            self.assertEqual(asked, [])
+            self.assertIn('Last time, the optional questions were answered this way:', printed)
+            self.assertIn('  Download sources: none added', printed)
+            self.assertIn('  Indexers (Prowlarr): none chosen', printed)
+            self.assertIn('  Playback test: skipped', printed)
+            self.assertIn('Ask these questions again? [yes/no]: ', printed)
+            self.assertIn('Optional questions: kept as answered last time', logs)
+            self.assertIn('Playback test: skipped last time and not asked again (optional)', logs)
+        with tempfile.TemporaryDirectory() as d:
+            # Yes: asked as on the first run.
+            cmd, printed, asked, logs = self.gate(d, kept, ['yes'])
+            self.assertIn('--sources', cmd)
+            self.assertIn('--indexers', cmd)
+            self.assertEqual(asked, ['Test playback (optional)'])
+            self.assertIn('Optional questions: asked again', logs)
+        with tempfile.TemporaryDirectory() as d:
+            # The playback test done already is not listed; a question with no kept answer is asked.
+            cmd, printed, asked, logs = self.gate(d, {'sources': '1 added (1 in the list)'}, ['no'], playback_done=True)
+            self.assertNotIn('--sources', cmd)
+            self.assertIn('--indexers', cmd)
+            self.assertFalse([line for line in printed if 'Playback test' in line])
+
+
 class NextcloudSettingsTests(unittest.TestCase):
     def test_a_missing_enabled_means_set_up_everywhere(self):
         import config_checks

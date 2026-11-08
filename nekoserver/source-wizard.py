@@ -10,7 +10,7 @@ import json
 import re
 import urllib.parse
 from pathlib import Path
-from neko_common import safe_path, atomic_json, checked_settings, default_settings
+from neko_common import safe_path, atomic_json, checked_settings, default_settings, remember_answer
 
 KINDS = ('movies', 'tv', 'music')
 # What the folder to give holds, per category: its folders are copied into the library as
@@ -164,6 +164,16 @@ def one_source(reader):
     return candidate
 
 
+def sources_answer(before, after):
+    """What the next setup run shows as the last answer: "none added", "2 added (3 in
+    the list)"."""
+    added = after - before
+    text = f'{added} added' if added > 0 else 'none added'
+    if after:
+        text += f' ({after} in the list)'
+    return text
+
+
 def main():
     parser = argparse.ArgumentParser(description='NekoServer media source wizard')
     parser.add_argument('--config', type=checked_settings, default=default_settings(Path(__file__).parent))
@@ -176,11 +186,13 @@ def main():
     if args.list:
         print(json.dumps(existing, indent=2))
         return
+    before = len(existing.get('sources', [])) if isinstance(existing, dict) else 0
     config = collect(existing)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_symlink():
         raise SystemExit('Refusing symlink configuration')
     atomic_json(target, config)
+    remember_answer(settings['data_mount'], 'sources', sources_answer(before, len(config['sources'])))
     print('Saved references to', target)
     print('Local folders remain untouched. Mount remote shares separately and add indexers through Prowlarr.')
 
