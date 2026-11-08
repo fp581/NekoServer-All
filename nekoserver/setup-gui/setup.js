@@ -114,12 +114,12 @@
     return $('ask-yesno').querySelectorAll('button');
   }
 
-  async function answer(seq, text) {
+  async function answer(seq, text, skip = false) {
     $('ask-send').disabled = true;
     for (const b of askButtons()) b.disabled = true;
-    $('ask-note').textContent = 'Sent. Setup goes on in a moment…';
+    $('ask-note').textContent = skip ? 'Left for now. Setup goes on in a moment…' : 'Sent. Setup goes on in a moment…';
     try {
-      const { ok } = await post('api/answer', { seq, text });
+      const { ok } = await post('api/answer', skip ? { seq, text: '', skip: true } : { seq, text });
       if (!ok) $('ask-note').textContent = 'That question was already answered in the terminal.';
     } catch {
       $('ask-note').textContent = 'Could not reach setup; answer in the terminal.';
@@ -132,8 +132,15 @@
   });
   for (const b of askButtons())
     b.addEventListener('click', () => {
-      if (askedSeq != null) void answer(askedSeq, b.dataset.answer);
+      if (askedSeq != null) void answer(askedSeq, b.dataset.answer, b.id === 'ask-skip');
     });
+
+  /* A step you confirm yourself (the phone, a TV test) can be left for later: the
+     window's "Skip for now" does what Ctrl+D in the terminal does. */
+  const CONFIRM_STEP = 'Have you completed this step successfully?';
+  function canSkip(q) {
+    return q.kind === 'yesno' && q.text.startsWith(CONFIRM_STEP);
+  }
 
   function askNote(q, yesno) {
     if (q.secret) return 'Not shown in the terminal either.';
@@ -160,6 +167,7 @@
     const yesno = q.kind === 'yesno';
     $('ask-answer').hidden = yesno;
     $('ask-yesno').hidden = !yesno;
+    $('ask-skip').hidden = !canSkip(q);
     const input = $('ask-input');
     input.type = q.secret ? 'password' : 'text';
     input.value = '';

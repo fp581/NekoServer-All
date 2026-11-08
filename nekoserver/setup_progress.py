@@ -198,13 +198,15 @@ def pending_question():
     return None
 
 
-def answer_from_window(seq, text):
+def answer_from_window(seq, text, skip=False):
     """The window's answer to the question with this sequence number. True when it was
-    the one waiting (and not answered already)."""
+    the one waiting (and not answered already). `skip` is the window's "Skip for now":
+    the question is left unanswered, as Ctrl+D in the terminal leaves it."""
     with _lock:
         if _pending is None or _pending['seq'] != seq or _pending['event'].is_set():
             return False
         _pending['answer'] = str(text)
+        _pending['skip'] = bool(skip)
         _pending['event'].set()
         return True
 
@@ -267,6 +269,10 @@ def _from_window(pending, secret):
     """The window's answer, once it has one (None until then)."""
     if pending is None or not pending['event'].is_set():
         return None
+    if pending.get('skip'):
+        sys.stdout.write('  (left for now, from the setup window)\n')
+        sys.stdout.flush()
+        raise EOFError  # what Ctrl+D in the terminal raises
     sys.stdout.write(('••••' if secret else pending['answer']) + '  (from the setup window)\n')
     sys.stdout.flush()
     return pending['answer']
