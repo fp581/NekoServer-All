@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## v0.47.9 — 2026-11-08
+
+Fixes from upgrading a clean Debian 13 PC (a virtual machine) from 0.47.6 to 0.47.8 from the dashboard and then using it, plus two things you asked for: a "Skip for now" button in the setup window, and a rerun of setup that does not ask the optional questions again unless you want it to.
+
+### How it was tested
+- Python tests (1411) and Rust tests (469) pass; ruff, Prettier, shfmt, rustfmt and clippy are clean.
+- A fresh install of the published 0.47.6 from a clean Debian 13 snapshot, sample photos, music, Nextcloud files and app settings added, then the upgrade to 0.47.8 from the dashboard: the data was there afterwards, and every restore (photos, Nextcloud files, the password list, app settings, host settings) came back into a new folder with matching checksums.
+- A final fresh install from the same snapshot with every change in: setup finished every step but the phone test in one run, the server joined Tailscale through setup's own step, the feature check passed (45 checks, plus the monthly check in its night window), an emulated Android phone opened the six app addresses and the dashboard over Tailscale, and `sudo bash install.sh` run again showed the kept optional answers, asked nothing again on `no`, and the window's "Skip for now" left the phone step pending.
+- The git-pull guard was tried on the upgraded VM: a 0.47.6 folder is stopped with the message, a 0.47.8 folder passes.
+- The Python suite also ran on the five test distros (Ubuntu 24.04, Arch, Fedora 44, AlmaLinux 10, openSUSE Tumbleweed).
+
+### Known limits
+- The guard against setting an old download up over an upgraded server is part of this release's `install.sh`: a folder still at 0.47.8 or older does not have it.
+- Running setup again with `no` at "Ask these questions again?" also skips the copy of sources you already added into the libraries (it only runs with the source questions); `yes` runs it as before.
 
 ### Improvements
 - **The setup window has "Skip for now" at the steps you confirm yourself.** At "Have you completed this step successfully?" (the phone, a TV test) the window had only Yes and No; leaving the step for later needed Ctrl+D in the terminal. The button leaves the step pending and setup goes on, exactly as Ctrl+D does; the terminal shows "(left for now, from the setup window)".
