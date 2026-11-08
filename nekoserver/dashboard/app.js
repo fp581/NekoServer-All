@@ -3998,6 +3998,16 @@ function nekoserverTab(s) {
       ])
     )
   ];
+  if (job?.status === 'pass') {
+    // Upgraded from here: the folder the person downloaded still has the old release.
+    nodes.push(
+      el(
+        'p',
+        'section-note',
+        'Upgraded from here. Before you run  sudo bash install.sh  in your NekoServer-All folder again, run  git pull  there, so the folder has this release too.'
+      )
+    );
+  }
   if (upgradeAtWork(r, s, state.upgradeAsked)) {
     nodes.push(
       el(

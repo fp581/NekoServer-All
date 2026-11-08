@@ -501,6 +501,10 @@ def upgrade_held(
     if problem is None:
         journal.unlink(missing_ok=True)
         out(f'NekoServer {tag} is installed and checked')
+        out(
+            'The NekoServer-All folder you downloaded still has the old release: run  git pull  there '
+            'before you run  sudo bash install.sh  from it again.'
+        )
         return 0
     record('failed', journal, problem=problem)
     out(f'The upgrade to {tag} did not pass: {problem}. Putting {VERSION} back...')
