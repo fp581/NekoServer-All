@@ -372,6 +372,23 @@ class FirstCheckupTests(unittest.TestCase):
         self.assertIn('First checkup and backup: something needs a look', text)
         self.assertTrue(wizard.finishing_screen(config, states, None, lambda s: None, checkup=True))
 
+    def test_with_every_step_done_the_checkups_findings_are_what_comes_next(self):
+        """0.47.10: with all 30 steps done and only the first checkup finding something,
+        the screen said 'Fix the first item under "What needs you"', a list it did not show."""
+        out = []
+        config = {'data_mount': self.tmp.name}
+        with mock.patch('config_checks.expected_steps', return_value=['storage', 'docker']):
+            states = {'storage': {'status': 'success'}, 'docker': {'status': 'success'}}
+            self.assertFalse(wizard.finishing_screen(config, states, None, out.append, checkup=False))
+            text = '\n'.join(out)
+            self.assertIn('Look at the items under "First checkup and backup"', text)
+            self.assertNotIn('Fix the first item', text)
+            # A step that still needs you keeps the old footer.
+            out.clear()
+            states['docker'] = {'status': 'failed', 'reason': 'Docker missing'}
+            wizard.finishing_screen(config, states, None, out.append, checkup=False)
+            self.assertIn('1. Fix the first item under "What needs you"', '\n'.join(out))
+
 
 class FinishingScreenTests(unittest.TestCase):
     def setUp(self):

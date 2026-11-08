@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.47.10 — 2026-11-08
+
+Fixes only, from two sources: a round of backup and installation drills on a clean Debian 13 PC (a virtual machine with small test data), and an outside review of 0.47.9 that found twelve things, each named below with "finding N". Nothing changes how NekoServer is used.
+
+### How it was tested
+- Python tests (1427) and Rust tests (473) pass; ruff, Prettier, shfmt, rustfmt and clippy are clean.
+- A fresh 0.47.9 install from the clean snapshot, then on it: all four backup jobs by hand and the monthly check in its night window; restores of photos, Nextcloud files and a monthly snapshot into new folders with matching checksums; two damage drills (a damaged copy healed by the monthly check, a copy and its original both damaged repaired from the USB drive by the recovery menu); every timer started by its own schedule with the clock set before it, and the kept counts (7 nightly, 7 host, 3 monthly, 4 database copies); a USB drive filled to the last byte; the USB drive swapped for an empty one and the documented route to the new drive; the media drive remounted read-only under the running apps.
+- Installs from the clean snapshot in less common shapes: without a USB drive (added on a later run), stopped with Ctrl+C at a prompt and run again (the saved drive answers kept), and the PC's power cut while the media apps were being deployed, then setup run again (it carried on at that step; the damaged Jellyfin image it left is the fix below).
+- Restores onto a second clean VM from the carried-over USB drive and a monthly snapshot: photos, Nextcloud files, the monthly snapshot with its app images, and `monthly-recovery.py --stage`, every checksum matching.
+- The twelve review findings each have a unit test that fails without the fix.
+
+### Known limits
+- The monthly check peaked at 4.7 to 5 GB of memory and took 14 to 21 minutes on the 6 GB VM (it was swapping; 2 minutes on a quiet run). A server with little memory will see the same.
+- A weekly USB copy whose Sunday 03:00 falls while the monthly run is still at work (a Sunday the 1st) refuses with "The monthly update is running, so this week's USB copy did not start" and shows as a failed run; the monthly run makes its own copy of the drive.
+- "SSD only" and "HDD only" setups were not tested: setup requires both drives.
+- The music library is not in the monthly snapshot (the weekly jobs cover it); the music restore tool is covered by its new unit tests.
+
+### Dashboard and alerts
+- **A drive kept busy by a backup is no longer shown as missing.** While the USB drive was being filled and an Immich database copy ran on a small VM (under a load partly made by the test rig itself), one dashboard reading took two minutes and its `findmnt` call for the media HDD was killed after 8 seconds (it reads the filesystem's label block, which the saturated drive held back). The page then said "Media HDD: Missing", every backup row "Can't run: drive missing", and the apps counted as held, until the next reading a minute later. When `findmnt` does not answer in time, the collector (and the drive check every backup job makes) now reads the kernel's own mount table and the drive links, which needs no access to the drive.
+- **An app check that could not run no longer leaves the last PASS as current** (finding 3). When the hourly check stopped early (a drive its guard refused, its lock, broken settings) it wrote no report and the dashboard showed the last PASS for up to two intervals; now the collector reads the check service's last failure and marks the report stale with the reason.
+- **An app counts as recovered only when its check got an answer** (finding 11). A RECOVERED phone alert went out while the app's answer was not known yet (right after a restart, or a check that did not reach it); now recovery waits for a check that reached the app.
+
+### Setup
+- **An app whose downloaded image was damaged by a power loss is noticed and downloaded again.** The PC lost power while setup was downloading Jellyfin's image; Docker listed the image as complete, but the files of its last layer were lost with the unwritten disk cache. Setup run again said "Deployed jellyfin" and went on, and the container restarted for ever with "exec /init: exec format error" (the accounts step then waited three minutes for an answer that never came). Now, after starting an app, setup looks at a container that is not running: when its output says its program cannot run, the image is removed and downloaded anew and the app started again; when that does not help, the step fails and says so instead of passing.
+
+- **The media apps step waits for Docker instead of failing after 20 seconds.** On a PC still busy right after building the runtime (a small VM, under a load partly made by the test rig itself), `docker info` took longer than the step's single 20-second try, the step failed with "docker info --format {{.ServerVersion}} did not finish within 20 seconds", and setup asked to be run again. Docker now gets up to two minutes to answer, as the photos step already gave it.
+
+- **The closing screen no longer points at a list it did not show.** With every step done and only the first checkup finding something ("Needs a look: …"), the screen said "1. Fix the first item under "What needs you" (its line says how)", though no "What needs you" list was printed. It now says to look at the items under "First checkup and backup" (the dashboard's checklist explains each one) and that backups and updates run on their own. A step that still needs you keeps the old wording.
+
+- **The Tailscale step keeps its sign-in link when Tailscale answers late.** The installer asked `tailscale up` for the link with a 15-second bound; when Tailscale's control server took longer (16 seconds on the test VM, when a stopped setup was run again) the step said "No authorization link available. Run sudo tailscale up in another terminal window" although the link arrived a second later. Now the bound is 45 seconds, and when the command still gives up first the link is read from `tailscale status`, which keeps it while the sign-in flow is open.
+
+- **The old-release guard lets the upgrade tool's own way back run** (review of 0.47.9, finding 1). An upgrade that wrote its unit files and then failed was put back by running the previous release's setup from its copy on the SSD; that setup's guard saw the services pointing at the newer runtime and stopped with "this server already runs ...", so the way back never ran and the record stayed open with app updates and the monthly check waiting. The guard now stands down only while the upgrade's own record names the folder being set up or put back; a person's setup from any other folder is still stopped.
+
+- **A narrower setup run keeps the profile the server was set up with** (review of 0.47.9, finding 6). A repair such as `sudo bash install.sh --profile foundation --apply` on a full installation recorded "foundation" as the server's profile, so the next upgrade from the dashboard set up the foundation alone and left the installed apps out. Now the profile is recorded only when the run covers every step already done; otherwise the log says the recorded profile was kept and which steps the run left out.
+
+### Backups
+- **A replaced USB drive inherits nothing from a report without a drive id** (finding 2). A previous integrity entry with no drive id (written before drive ids were recorded) carried its full-check date and findings over to a new USB drive; now a missing id counts as another drive.
+- **An app whose files live on the media drive is not started without it** (finding 7). After a weekly copy, Immich's or Nextcloud's resume checked the SSD alone; with the photos or Nextcloud's files on the media drive and that drive gone (or another one mounted there) while Docker still ran, the app was started against an empty folder on the system disk and the recovery record cleared. Now the resume also requires that drive and otherwise leaves the record for drive-return.
+- **The drive move refuses a copied NAS LUN and a timer that did not stop** (findings 5 and 8). `migrate.py` knew the old drive by UUID, filesystem and subvolume alone, so a restored or cloned LUN with the same filesystem UUID on another NAS disk was accepted as the source; now the disk's WWN is checked the way every backup checks it, at the start and before each step. A timer whose stop failed was passed over, so a backup could start during the quiet copy; now it ends the move with "These did not stop: ...".
+- **Two approvals at once both survive** (finding 12). "Install at the next update night" and the cleanup after an update rewrote approved.json and pending.json with no lock, so only one of two overlapping writes survived; now one lock in the updates folder covers each read-modify-write.
+
+### Recovery
+- **A copy that fails part-way is removed and the real error shown** (finding 4). When the private copy of a snapshot archive stopped part-way (a backup drive that failed to read, no room left), the partial file stayed in the hidden work folder, removing the folder failed with "Directory not empty", that error hid the real one and every retry left another `.neko-images-*` folder beside the snapshot. Now the copy is removed on any failure and the first error is the one reported.
+- **The music restore writes every file through the folder it made** (finding 9). `music-recovery.py` wrote each file by a fresh lookup of its path, so a folder swapped in mid-restore got the rest of the files while the count said all were restored; now everything goes through one descriptor, as the monthly staging does, and a swapped folder ends the restore with a clear message. The tool gained its first unit tests.
+- **`monthly-recovery.py --stage` says plainly when the folder above the destination is missing** instead of a traceback.
+
+### Uninstaller
+- **Nextcloud's files on the SSD and the USB password lists go with their group** (finding 10). Both were only listed as staying; the top-level folder of each place now comes from the shared locations table and is looked for on both drives, and `passwords/` is one of the USB copy's own folders.
+- **"Check a drive that turned read-only" in the recovery menu now runs.** It always answered "Setup (sudo bash install.sh) is running: check the drive once it has finished. Nothing was changed.", with no setup running: the menu is started by `install.sh`, which takes setup's lock first, so the menu counted itself as the running setup. The lock the menu holds itself is now left out of that check; a setup really running elsewhere is still waited for. Found on a VM with the media drive remounted read-only under the running apps: the check now stops the apps, runs `e2fsck`, mounts the drive again and starts the apps.
+
 ## v0.47.9 — 2026-11-08
 
 Fixes from upgrading a clean Debian 13 PC (a virtual machine) from 0.47.6 to 0.47.8 from the dashboard and then using it, plus two things you asked for: a "Skip for now" button in the setup window, and a rerun of setup that does not ask the optional questions again unless you want it to.

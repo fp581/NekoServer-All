@@ -639,6 +639,25 @@ class RemoveTests(unittest.TestCase):
         self.assertTrue(any('could not finish it (dpkg could not finish' in line for line in self.shown))
         self.assertFalse(self.exists('/var/lib/nekoserver-host'))
 
+    def test_nextclouds_files_on_the_ssd_and_the_usb_password_lists_go_with_their_group(self):
+        """The review of 0.47.9: two of NekoServer's own places were only listed as staying.
+        Nextcloud's files can live on the SSD since 0.46.0, and the weekly USB copy keeps
+        the encrypted app password lists in passwords/."""
+        self.system.write('/srv/nekoserver/cloud/files/neko/doc.txt')
+        self.system.write('/mnt/nekoserver-photos/passwords/app-passwords-20261108.age')
+        self.plan = self.system.plan()
+        rel = lambda key: sorted(str(p.relative_to(self.system.root)) for p in self.plan.groups[key]['paths'])  # noqa: E731
+        self.assertEqual(rel('cloud'), ['mnt/nekoserver-media/cloud', 'srv/nekoserver/cloud'])
+        self.assertIn('mnt/nekoserver-photos/passwords', rel('backups'))
+        preview = self.plan.describe({'cloud', 'backups'})
+        self.assertIn(str(self.system.root / 'srv/nekoserver/cloud'), preview)
+        self.assertIn(str(self.system.root / 'mnt/nekoserver-photos/passwords'), preview)
+        self.assertNotIn("Not NekoServer's, so these stay", preview)
+        self.remove({'cloud', 'backups'})
+        self.assertFalse(self.exists('/srv/nekoserver/cloud'))
+        self.assertFalse(self.exists('/mnt/nekoserver-photos/passwords'))
+        self.assertTrue(self.exists('/srv/nekoserver/appdata'))  # the server group was not chosen
+
     def test_someone_elses_policy_is_left_alone(self):
         policy = self.system.root / 'usr/sbin/policy-rc.d'
         policy.parent.mkdir(parents=True, exist_ok=True)

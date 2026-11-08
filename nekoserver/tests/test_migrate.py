@@ -139,6 +139,25 @@ class StopTests(unittest.TestCase):
         # The timers it stopped are noted, so they start again.
         self.assertEqual(migrate.read(self.journal)['stopped'], ['nekoserver-app-backup.timer'])
 
+    def test_a_timer_that_does_not_stop_stops_the_move(self):
+        """The review of 0.47.9: a timer whose stop failed was passed over (the final check
+        left timers out), so a backup could start during the quiet copy and the switch."""
+        self.units['active'].append('nekoserver-photo-backup.timer')
+        real = migrate.run
+
+        def run(argv, *args, **kwargs):
+            if argv[:3] == ['systemctl', 'stop', 'nekoserver-photo-backup.timer']:
+                return mock.Mock(returncode=1, stdout='')  # it stays active
+            return real(argv, *args, **kwargs)
+
+        with mock.patch.object(migrate, 'run', run):
+            with self.assertRaisesRegex(RuntimeError, 'These did not stop: nekoserver-photo-backup.timer'):
+                migrate.stop_writers(self.journal)
+        self.assertNotIn(['systemctl', 'stop', 'nekoserver-dashboard.service'], self.calls)
+        self.assertEqual(
+            migrate.read(self.journal)['stopped'], ['nekoserver-app-backup.timer', 'nekoserver-photo-backup.timer']
+        )
+
     def test_with_no_job_at_work_everything_stops_and_is_noted(self):
         self.assertEqual(
             migrate.stop_writers(self.journal), ['nekoserver-app-backup.timer', 'nekoserver-dashboard.service']
@@ -440,6 +459,60 @@ class MoveTests(unittest.TestCase):
         self.mounted['/mnt/nekoserver-media'] = ('other-0001', 'ext4', '')
         self.assertEqual(self.move(), 2)  # it is not the drive the settings name: refused before anything
         self.assertEqual(self.calls, [])
+
+    def test_a_drive_on_another_nas_disk_than_the_settings_name_is_refused(self):
+        """The review of 0.47.9: the source was known by its UUID, filesystem and subvolume
+        alone, so a copied LUN with the same UUID on another NAS disk (WWN) was accepted and
+        copied; the runtime refuses such a drive at every backup."""
+        settings = json.loads(self.settings.read_text())
+        settings['storage']['media_hdd']['network'] = {'transport': 'iscsi', 'wwn': '0x6001405aaaa'}
+        self.settings.write_text(json.dumps(settings))
+        disks = {'/mnt/nekoserver-media': '0x6001405bbbb'}
+        with mock.patch.object(migrate, 'nas_disk_of', lambda folder: disks.get(str(folder), '')):
+            self.assertEqual(self.move(), 2)  # refused before anything
+            self.assertEqual(self.calls, [])
+            self.assertIn('is on another NAS disk (0x6001405bbbb, not 0x6001405aaaa)', self.said[-1])
+            # The right disk at the start, swapped while the apps were being stopped: the
+            # move stops before the last copy, like a drive that dropped out.
+            disks['/mnt/nekoserver-media'] = '0x6001405aaaa'
+
+            def stop(journal):
+                migrate.record(journal, phase='stopped', stopped=['docker.service'])
+                disks['/mnt/nekoserver-media'] = '0x6001405bbbb'
+                return ['docker.service']
+
+            with (
+                mock.patch.object(migrate, 'stop_writers', stop),
+                mock.patch.object(migrate, 'differences', return_value=[]),
+            ):
+                self.assertEqual(self.move(), 1)
+            self.assertNotIn(('copy', True), self.calls)
+            self.assertIn('another NAS disk', self.said[-1])
+            self.assertIn(('start', ('docker.service',)), self.calls)
+            self.assertIn('UUID=hdd-0001', self.fstab.read_text())
+
+    def test_the_nas_disk_is_read_from_findmnt_and_lsblk_as_the_runtime_reads_it(self):
+        answers = {
+            ('findmnt', '-n', '-o', 'SOURCE', '--mountpoint', '/mnt/nekoserver-media'): '/dev/sdc1\n',
+            ('lsblk', '-n', '-s', '-o', 'TYPE,WWN', '/dev/sdc1'): 'part 0x6001405aaaa\ndisk 0x6001405aaaa\n',
+            ('findmnt', '-n', '-o', 'SOURCE', '--mountpoint', '/mnt/plain'): '/dev/sdb1[/@data]\n',
+            ('lsblk', '-n', '-s', '-o', 'TYPE,WWN', '/dev/sdb1'): 'part\ndisk\n',
+        }
+
+        def run(argv, *args, **kwargs):
+            if tuple(argv) in answers:
+                return mock.Mock(returncode=0, stdout=answers[tuple(argv)])
+            return mock.Mock(returncode=1, stdout='')
+
+        with mock.patch.object(migrate, 'run', run):
+            self.assertEqual(migrate.nas_disk_of('/mnt/nekoserver-media'), '0x6001405aaaa')
+            self.assertEqual(migrate.nas_disk_of('/mnt/plain'), '')  # a disk with no WWN
+            self.assertEqual(migrate.nas_disk_of('/mnt/nothing'), '')  # nothing mounted
+        old = {'uuid': 'hdd-0001', 'fstype': 'ext4', 'network': {'transport': 'iscsi', 'wwn': '0x6001405aaaa'}}
+        with mock.patch.object(migrate, 'run', run):
+            self.assertIsNone(migrate.other_nas_disk('/mnt/nekoserver-media', old))
+            self.assertIn("can't be told apart", migrate.other_nas_disk('/mnt/plain', old))
+            self.assertIsNone(migrate.other_nas_disk('/mnt/plain', {'uuid': 'x', 'fstype': 'ext4'}))  # not on a NAS
 
     def test_stopping_that_fails_part_way_starts_again_what_it_stopped(self):
         def stop(journal):

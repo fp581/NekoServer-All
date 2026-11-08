@@ -591,6 +591,32 @@ class TailscaleStartReasonTests(unittest.TestCase):
         ):
             tailscale.run_cmd(['systemctl', 'enable', '--now', 'tailscaled.service'])
 
+    def test_the_sign_in_link_is_taken_from_the_status_when_the_cli_gave_up_first(self):
+        # The control server answered after tailscale up's own timeout; the daemon
+        # keeps the flow and its status names the link, so the person still gets it.
+        from modules import tailscale
+
+        link = 'https://login.tailscale.com/a/g17550712efaf1e2a'
+        gave_up = mock.Mock(returncode=1, stdout='{"BackendState":"NoState"}\n', stderr='timeout waiting\n')
+        status = mock.Mock(returncode=0, stdout=json.dumps({'BackendState': 'NeedsLogin', 'AuthURL': link}))
+        with mock.patch.object(tailscale.subprocess, 'run', side_effect=[gave_up, status]) as run:
+            self.assertEqual(tailscale.login_targets(), [('url', link)])
+        self.assertEqual(run.call_args_list[0][0][0][:3], ['tailscale', 'up', '--json'])
+        self.assertEqual(run.call_args_list[1][0][0], ['tailscale', 'status', '--json'])
+
+    def test_a_link_from_tailscale_up_itself_is_used_at_once(self):
+        from modules import tailscale
+
+        link = 'https://login.tailscale.com/a/1d88c76401334e'
+        printed = '{"BackendState":"NoState"}\n{"BackendState":"NeedsLogin","AuthURL":"%s"}\n' % link
+        with mock.patch.object(
+            tailscale.subprocess, 'run', return_value=mock.Mock(returncode=1, stdout=printed)
+        ) as run:
+            self.assertEqual(tailscale.login_targets(), [('url', link)])
+        self.assertEqual(run.call_count, 1)
+        # Only Tailscale's own sign-in host is trusted as a link.
+        self.assertEqual(tailscale.login_url_in('{"AuthURL":"https://evil.example/a/1"}'), '')
+
 
 class OldReleaseCleanupTests(unittest.TestCase):
     """Each release deploys its own runtime copies; earlier ones are removed once no
@@ -879,6 +905,98 @@ class PortClashTests(unittest.TestCase):
         ):
             neko_common.compose_up(['docker', 'compose', '-p', 'neko-jellyfin', '-f', 'c.yaml'], 'jellyfin')
         self.assertEqual(calls, [['up', '-d']])
+
+
+class DamagedImageTests(unittest.TestCase):
+    """A power loss during setup's download left Jellyfin's image listed as complete while
+    the files of its last layer were lost; the rerun said "Deployed jellyfin" and the
+    container restarted for ever with "exec /init: exec format error" (the 0.47.10 round).
+    compose_up now notices, downloads the image anew and starts the app again."""
+
+    def compose(self, states, logs='exec /init: exec format error', fail_twice=False):
+        """compose_up against a fake docker whose `ps` answers `states` in turn (lists of
+        (service, state)); every other command is recorded. Returns the recorded calls."""
+        calls = []
+        shown = iter(states)
+
+        def run(argv, timeout, what):
+            if argv[-3:] == ['config', '--format', 'json']:
+                return mock.Mock(
+                    stdout=json.dumps({'services': {'jellyfin': {'image': 'lscr.io/linuxserver/jellyfin:latest'}}})
+                )
+            if argv[-3:] == ['ps', '--format', 'json']:
+                rows = next(shown)
+                return mock.Mock(
+                    stdout='\n'.join(json.dumps({'Service': s, 'State': st, 'ID': 'c1'}) for s, st in rows)
+                )
+            calls.append(argv[argv.index('compose') + 5 :] if 'compose' in argv else argv)
+            return mock.Mock(stdout='')
+
+        def docker(argv, **kwargs):
+            if argv[1] == 'logs':
+                return mock.Mock(returncode=0, stdout='', stderr=logs)
+            return mock.Mock(returncode=0, stdout='1')  # image present; network there
+
+        said = []
+        with (
+            mock.patch.object(neko_common, 'checked_run', side_effect=run),
+            mock.patch.object(neko_common.subprocess, 'run', side_effect=docker),
+            mock.patch.object(
+                neko_common, 'pull_images', side_effect=lambda argv, what, log=None: calls.append(argv[-3:])
+            ),
+            mock.patch.object(neko_common.time, 'sleep'),
+        ):
+            neko_common.compose_up(
+                ['docker', 'compose', '-p', 'neko-jellyfin', '-f', 'c.yaml'], 'jellyfin', said.append
+            )
+        return calls, said
+
+    def test_a_container_that_cannot_run_its_program_gets_its_image_downloaded_again(self):
+        running, broken = [('jellyfin', 'running')], [('jellyfin', 'restarting')]
+        # ps is asked after the start (the network check), then for the damaged look, and
+        # once more after the new start.
+        calls, said = self.compose([broken, broken, running])
+        self.assertEqual(
+            calls,
+            [
+                ['up', '-d'],
+                ['rm', '-sf', 'jellyfin'],
+                ['docker', 'image', 'rm', '-f', 'lscr.io/linuxserver/jellyfin:latest'],
+                ['pull', '--quiet', 'jellyfin'],
+                ['up', '-d', '--force-recreate', '--no-deps', 'jellyfin'],
+            ],
+        )
+        self.assertEqual(len(said), 1)
+        self.assertIn('jellyfin cannot start because its downloaded image is damaged', said[0])
+        self.assertIn('downloading it again', said[0])
+
+    def test_a_running_app_costs_no_extra_look(self):
+        calls, said = self.compose([[('jellyfin', 'running')]] * 3)
+        self.assertEqual(calls, [['up', '-d']])
+        self.assertEqual(said, [])
+
+    def test_a_container_still_starting_is_given_a_moment(self):
+        # Not running yet, nothing said in its log: looked at once more, then left alone.
+        created = [('jellyfin', 'created')]
+        calls, said = self.compose([created, created, created, [('jellyfin', 'running')]], logs='')
+        self.assertEqual(calls, [['up', '-d']])
+        self.assertEqual(said, [])
+
+    def test_an_image_still_broken_after_the_new_download_fails_the_step_in_plain_words(self):
+        broken = [('jellyfin', 'restarting')]
+        with self.assertRaises(RuntimeError) as caught:
+            self.compose([broken, broken, broken, broken])
+        self.assertIn(
+            'jellyfin (exec /init: exec format error) still cannot start after its image was downloaded again',
+            str(caught.exception),
+        )
+        self.assertIn('Check the drive the images are on', str(caught.exception))
+
+    def test_other_reasons_for_a_stopped_container_are_not_taken_for_a_damaged_image(self):
+        exited = [('jellyfin', 'exited')]
+        calls, said = self.compose([exited] * 4, logs='Fatal: config file not found')
+        self.assertEqual(calls, [['up', '-d']])
+        self.assertEqual(said, [])
 
 
 class ImageDownloadTests(unittest.TestCase):

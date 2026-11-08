@@ -270,18 +270,44 @@ def require(rows):
         raise RuntimeError('This computer cannot run NekoServer setup: ' + '; '.join(problems))
 
 
-def newer_installed(root=None, version=None, units=None):
+def upgrade_runs_setup_from(root, journal=None):
+    """The upgrade tool (upgrade.py) is setting up or putting back the release in `root`:
+    its open record names that folder as the release being installed or the one being put
+    back. The old-release guard must not stop that setup: an upgrade that wrote its unit
+    files and then failed leaves the services pointing at the newer runtime, so the
+    previous release's folder looks older than the server, and the way back would never
+    run (the review of 0.47.9). A person's own setup run from another folder is still
+    stopped."""
+    from neko_common import RECOVERY
+
+    journal = Path(journal or RECOVERY['upgrade'][0])
+    try:
+        saved = json.loads(journal.read_text())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(saved, dict) or saved.get('format') != 'neko-upgrade-v1':
+        return False
+    if saved.get('phase') not in ('installing', 'verifying', 'failed', 'going_back'):
+        return False
+    named = [saved.get(key) for key in ('project', 'previous')]
+    return any(isinstance(p, str) and p and Path(p).resolve() == Path(root).resolve() for p in named)
+
+
+def newer_installed(root=None, version=None, units=None, journal=None):
     """The NekoServer release this server already runs when it is newer than this folder's,
     else None. An upgrade from the dashboard puts the new release on the SSD and sets it up
     from there; the folder you downloaded still holds the old one, so running setup from it
     again would set the old release up over the new one (seen on a VM upgraded from 0.47.6
     to 0.47.8). The release running is the newest runtime copy on the SSD
-    (installer/runtime/v<release>) that an installed service still points at."""
+    (installer/runtime/v<release>) that an installed service still points at. Not while the
+    upgrade tool itself runs this folder's setup (upgrade_runs_setup_from)."""
     import native_runtime
     from neko_common import VERSION
 
     root = Path(root or Path(__file__).resolve().parent)
     units = units or native_runtime.SYSTEMD_UNITS
+    if upgrade_runs_setup_from(root, journal):
+        return None
     try:
         settings = next(p for p in (root / 'my-config.json', root / 'config.json') if p.is_file())
         data = Path(json.loads(settings.read_text())['data_mount'])
@@ -296,7 +322,7 @@ def newer_installed(root=None, version=None, units=None):
     return None
 
 
-def preflight(rows=None, out=sys.stderr, root=None, units=None):
+def preflight(rows=None, out=sys.stderr, root=None, units=None, journal=None):
     """install.sh's check before it installs or builds anything (and again just before
     setup starts): the things setup must stop without, said in plain sentences. 0 when
     there are none, 1 otherwise. The same check runs inside setup too."""
@@ -305,7 +331,7 @@ def preflight(rows=None, out=sys.stderr, root=None, units=None):
     problems = missing(detect() if rows is None else rows)
     for problem in problems:
         print('This computer cannot run NekoServer setup yet: ' + problem, file=out)
-    newer = newer_installed(root, units=units)
+    newer = newer_installed(root, units=units, journal=journal)
     if newer:
         print(
             f'This folder has NekoServer {VERSION}, and this server already runs {newer} (upgraded from the '

@@ -333,6 +333,61 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue(self.journal.exists())
         self.assertIn('sudo bash install.sh  in ' + str(self.previous), self.said[-1])
 
+    def test_the_old_release_guard_lets_the_way_back_run_its_setup(self):
+        """The review of 0.47.9: an upgrade that wrote its unit files and then failed left
+        the services pointing at the newer runtime, so the previous release's folder looked
+        older than the server and install.sh's guard stopped its setup; the way back never
+        ran and the record stayed open with everything waiting."""
+        import io
+
+        import capabilities
+
+        runtime = self.data / 'installer/runtime'
+        newer = NEWER.removesuffix('Beta')  # the runtime's copies are named by number alone
+        for name in ('v' + VERSION, newer):
+            (runtime / name).mkdir(parents=True)
+        (self.units / 'nekoserver-dashboard.service').write_text(
+            f'ExecStart={runtime}/{newer}/nekoserver-runtime serve\n'
+        )
+        (self.previous / 'my-config.json').write_text(json.dumps({'data_mount': str(self.data)}))
+        guard = []
+        answers = iter([2])  # the newer release's setup fails after it wrote its units
+
+        def setup(project, settings, account, log_file):
+            code = next(answers, None)
+            if code is None:  # the way back: install.sh's own guard, as it runs in that folder
+                out = io.StringIO()
+                code = capabilities.preflight([], out, root=project, units=self.units, journal=self.journal)
+                guard.append(out.getvalue())
+            self.ran.append((Path(project).name, account, self.journal_phase()))
+            return code
+
+        self.assertEqual(self.upgrade(setup), 1)
+        self.assertEqual([r[0] for r in self.ran], ['nekoserver', 'v' + VERSION])
+        self.assertEqual(guard, [''], 'the guard let the way back run')
+        self.assertFalse(self.journal.exists())
+        # A person's own setup from a downloaded folder is still stopped: with no record,
+        # and with a record that names the SSD copy being put back.
+        download = self.dir / 'download'
+        download.mkdir()
+        (download / 'my-config.json').write_text(json.dumps({'data_mount': str(self.data)}))
+        out = io.StringIO()
+        self.assertEqual(capabilities.preflight([], out, root=download, units=self.units, journal=self.journal), 1)
+        self.assertIn('this server already runs', out.getvalue())
+        record = {'format': 'neko-upgrade-v1', 'phase': 'going_back', 'previous': str(self.previous)}
+        self.journal.write_text(json.dumps(record))
+        self.assertEqual(
+            capabilities.preflight([], io.StringIO(), root=download, units=self.units, journal=self.journal), 1
+        )
+        self.assertEqual(
+            capabilities.preflight([], io.StringIO(), root=self.previous, units=self.units, journal=self.journal), 0
+        )
+        # A record from a download that was cut off never lifts the guard.
+        self.journal.write_text(json.dumps({**record, 'phase': 'downloading'}))
+        self.assertEqual(
+            capabilities.preflight([], io.StringIO(), root=self.previous, units=self.units, journal=self.journal), 1
+        )
+
     def test_a_setup_that_runs_out_of_time_is_put_back_at_once(self):
         def timed_out(project, settings, account, log_file):
             self.ran.append((Path(project).name, account, self.journal_phase()))

@@ -2199,6 +2199,27 @@ def drive_rows(config):
 AT_WORK = 'activating,deactivating,reloading'
 
 
+def setup_lock_is_ours(lock=None):
+    """True when this very process holds setup's lock. install.sh takes the lock before it
+    starts the recovery menu (installer.py --recover inherits the open file), so the menu
+    holds it for as long as it is open: a try of the lock from inside the menu fails, and
+    the read-only check reported "Setup is running" with no setup anywhere (0.47.10)."""
+    if lock is None:
+        lock = SHARED['setup_lock']
+    try:
+        wanted = os.stat(lock)
+    except OSError:
+        return False
+    for name in os.listdir('/proc/self/fd'):
+        try:
+            opened = os.fstat(int(name))
+        except (OSError, ValueError):
+            continue
+        if (opened.st_dev, opened.st_ino) == (wanted.st_dev, wanted.st_ino):
+            return True
+    return False
+
+
 def repair_blocked(config, run=subprocess.run):
     """Why a drive can't be checked now, or None: a drive move, an upgrade, an unfinished
     app update, setup, or a backup or job at work (the 0.46.0 review, H07: the repair
@@ -2207,7 +2228,10 @@ def repair_blocked(config, run=subprocess.run):
     import upgrade
 
     recovery = Path(config['data_mount']) / 'installer/recovery.lock'
-    busy = upgrade.nothing_at_work(recovery=recovery if recovery.parent.is_dir() else None)
+    # Setup's lock is left out when this menu holds it itself (see setup_lock_is_ours):
+    # tried here, the menu would count as the running setup and refuse every time.
+    setup_lock = None if setup_lock_is_ours() else upgrade.SETUP_LOCK
+    busy = upgrade.nothing_at_work(lock=setup_lock, recovery=recovery if recovery.parent.is_dir() else None)
     if busy:
         return busy
     listed = run(

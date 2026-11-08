@@ -57,12 +57,26 @@ def private_copy(source, folder, name, expected):
                 write.write(chunk)
             write.flush()
             os.fsync(out)
-    finally:
+        if digest.hexdigest() != expected:
+            raise RuntimeError(f'Snapshot checksum mismatch: {Path(source).name} changed after it was checked')
+    except BaseException:
+        # A copy that stopped part-way (the backup drive failed to read, no room left)
+        # or did not match goes too: left behind, it blocked the removal of its folder,
+        # and that error hid the real one (the review of 0.47.9).
         os.close(out)
-    if digest.hexdigest() != expected:
-        os.unlink(name, dir_fd=folder)
-        raise RuntimeError(f'Snapshot checksum mismatch: {Path(source).name} changed after it was checked')
+        remove_quietly(name, folder)
+        raise
+    os.close(out)
     return os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
+
+
+def remove_quietly(name, folder):
+    """Remove the file `name` in the open `folder` if it is there; nothing when it is not
+    (a copy that was never made), so the error that stopped the work stays the one shown."""
+    try:
+        os.unlink(name, dir_fd=folder)
+    except FileNotFoundError:
+        pass
 
 
 def stage(snapshot, destination):
@@ -75,6 +89,12 @@ def stage(snapshot, destination):
         or snapshot in destination.parents
     ):
         raise RuntimeError('Choose a new, separate absolute recovery directory')
+    if not destination.parent.is_dir():
+        # Said in plain words: the room check below would otherwise end in a traceback.
+        raise RuntimeError(
+            f'The folder above the recovery directory does not exist: {destination.parent}. '
+            'Create it first; the copy goes into a new folder inside it.'
+        )
     # The archives are uncompressed tar files: their size is what extraction writes, with
     # room for the private copy of the bigger one while it is unpacked.
     sizes = [(snapshot / (n + '.tar')).stat().st_size for n in ('data', 'media')]
@@ -89,8 +109,9 @@ def stage(snapshot, destination):
             os.mkdir(name, 0o700, dir_fd=root)
             target = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
             copy = '.' + name + '.tar.checked'
-            held = private_copy(snapshot / (name + '.tar'), root, copy, manifest['sha256'][name])
+            held = None
             try:
+                held = private_copy(snapshot / (name + '.tar'), root, copy, manifest['sha256'][name])
                 into = f'/proc/self/fd/{target}'
                 archive = f'/proc/self/fd/{held}'
 
@@ -112,8 +133,9 @@ def stage(snapshot, destination):
                 )
                 subprocess.run(['tar', '--compare', '--file', archive, '-C', into], check=True, pass_fds=(target, held))
             finally:
-                os.close(held)
-                os.unlink(copy, dir_fd=root)
+                if held is not None:
+                    os.close(held)
+                remove_quietly(copy, root)
                 os.close(target)
         here = os.stat(destination, follow_symlinks=False)
         made = os.fstat(root)
@@ -161,8 +183,11 @@ def load_images(snapshot, manifest):
     work = tempfile.mkdtemp(prefix='.neko-images-', dir=snapshot.parent)
     folder = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        held = private_copy(images, folder, IMAGES, manifest['sha256']['images'])
+        # One try/finally for the copy and the load: a copy that failed part-way is
+        # removed by private_copy itself, and the folder goes in any case.
+        held = None
         try:
+            held = private_copy(images, folder, IMAGES, manifest['sha256']['images'])
             subprocess.run(
                 [
                     'docker',
@@ -177,8 +202,9 @@ def load_images(snapshot, manifest):
                 pass_fds=(held,),
             )
         finally:
-            os.close(held)
-            os.unlink(IMAGES, dir_fd=folder)
+            if held is not None:
+                os.close(held)
+            remove_quietly(IMAGES, folder)
     finally:
         os.close(folder)
         os.rmdir(work)

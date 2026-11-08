@@ -96,6 +96,13 @@ class StageTests(unittest.TestCase):
         self.assertEqual((moved / 'media/photo.jpg').read_bytes(), b'media')
         self.assertFalse((moved / 'verified.json').exists())
 
+    def test_a_missing_folder_above_the_destination_is_said_in_plain_words(self):
+        # Seen on the test VM: --stage /mnt/.../restored/stage with no "restored" folder yet
+        # ended in a traceback from the room check.
+        with self.assertRaisesRegex(RuntimeError, 'folder above the recovery directory does not exist'):
+            monthly.stage(self.snapshot, self.dir / 'nowhere' / 'staged')
+        self.assertFalse((self.dir / 'nowhere').exists())
+
     def test_an_archive_changed_after_its_check_is_never_unpacked_or_marked(self):
         """The review of 0.47.2: unpacking and the comparison read the archive again by its
         name, so one changed after its checksum check was unpacked, compared with itself, and
@@ -144,6 +151,37 @@ class StageTests(unittest.TestCase):
                 monthly.load_images(self.snapshot, manifest)
         self.assertEqual(len(seen), 1)
         self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith('.neko-images-')], [])
+
+    def test_a_copy_that_fails_part_way_leaves_nothing_behind_and_keeps_its_own_error(self):
+        """The review of 0.47.9: a read error from the backup drive left the partial copy in
+        the hidden work folder, so removing the folder failed with "Directory not empty" and
+        that error replaced the real one; every retry left another folder."""
+        images = self.snapshot / 'images.tar'
+        images.write_bytes(b'images')
+        manifest = {'sha256': {'images': hashlib.sha256(b'images').hexdigest()}}
+
+        class Failing(io.BytesIO):
+            def read(self, size=-1):
+                raise OSError(5, 'Input/output error')
+
+        real_open = Path.open
+        failing = {'images.tar'}
+
+        def open_or_fail(path, *args, **kwargs):
+            return Failing() if path.name in failing else real_open(path, *args, **kwargs)
+
+        def docker(argv, **kwargs):
+            return mock.Mock(stdout=str(self.dir) + '\n', returncode=0)
+
+        with mock.patch.object(monthly.subprocess, 'run', docker), mock.patch.object(Path, 'open', open_or_fail):
+            with self.assertRaisesRegex(OSError, 'Input/output error'):
+                monthly.load_images(self.snapshot, manifest)
+            # The same for a part of a staged copy (data.tar, read by stage).
+            failing.add('data.tar')
+            with self.assertRaisesRegex(OSError, 'Input/output error'):
+                monthly.stage(self.snapshot, self.dir / 'staged')
+        self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith('.neko-images-')], [])
+        self.assertEqual([p.name for p in (self.dir / 'staged').iterdir() if p.name.startswith('.')], [])
 
 
 if __name__ == '__main__':

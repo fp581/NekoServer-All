@@ -31,15 +31,13 @@ def connected():
         return False
 
 
-def login_targets():
-    # tailscale up emits consecutive JSON objects, including AuthURL before login.
-    # The link comes from Tailscale's control server, which takes a few seconds on
-    # the first contact (3 s was too short: the CLI gave up before printing it).
-    # Bound its wait; the daemon retains the approval flow after this CLI exits.
-    result = subprocess.run(
-        ['tailscale', 'up', '--json', '--timeout=15s'], text=True, capture_output=True, timeout=30, check=False
-    )
-    remaining = result.stdout.strip()
+def login_url_in(output):
+    """The sign-in link in Tailscale's JSON output, or '' when there is none.
+
+    tailscale up --json prints consecutive JSON objects (AuthURL among them before
+    login); tailscale status --json prints one object with the same AuthURL field.
+    """
+    remaining = output.strip()
     decoder = json.JSONDecoder()
     while remaining:
         try:
@@ -58,7 +56,26 @@ def login_targets():
             and parsed.hostname == 'login.tailscale.com'
             and parsed.port in (None, 443)
         ):
-            return [('url', url)]
+            return url
+    return ''
+
+
+def login_targets():
+    # The link comes from Tailscale's control server, which can take a while on the
+    # first contact (3 s was too short, and 15 s was once a second too short on the
+    # test VM). Bound the wait; the daemon retains the approval flow after this CLI
+    # exits, so when the CLI gave up first, its status still carries the link.
+    result = subprocess.run(
+        ['tailscale', 'up', '--json', '--timeout=45s'], text=True, capture_output=True, timeout=60, check=False
+    )
+    url = login_url_in(result.stdout)
+    if not url:
+        status = subprocess.run(
+            ['tailscale', 'status', '--json'], text=True, capture_output=True, timeout=20, check=False
+        )
+        url = login_url_in(status.stdout)
+    if url:
+        return [('url', url)]
     if connected():
         return [('url', 'https://console.tailscale.com/admin/machines')]
     print(

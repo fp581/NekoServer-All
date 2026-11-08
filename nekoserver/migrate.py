@@ -390,6 +390,11 @@ def stop_writers(journal=JOURNAL):
     record(journal, phase='stopped', stopped=timers)
     for unit in timers:
         run(['systemctl', 'stop', unit], 600, check=False)
+    # A timer still active would start a backup during the quiet copy and the switch
+    # (the review of 0.47.9: a stop that failed was passed over).
+    ticking = [u for u in nekoserver_units('active,' + AT_WORK) if u.endswith(TIMER)]
+    if ticking:
+        raise RuntimeError('These did not stop: ' + ', '.join(ticking))
     busy = [u for u in nekoserver_units(AT_WORK) if not u.endswith(TIMER)]
     if busy:
         raise RuntimeError(', '.join(busy) + ' is at work (a backup or another job); try again once it has finished')
@@ -426,13 +431,48 @@ def mounted_identity(folder):
     return uuid, fstype, '' if subvolume == '/' else subvolume
 
 
+def nas_disk_of(folder):
+    """The WWN of the disk under what is mounted at `folder` ('' when Linux shows none), read
+    as the runtime reads it (backup.rs checked_drive): findmnt's source device, then lsblk
+    from it down to its disk."""
+    shown = run(['findmnt', '-n', '-o', 'SOURCE', '--mountpoint', str(folder)], 30, check=False)
+    sources = shown.stdout.split() if shown.returncode == 0 else []
+    if not sources:
+        return ''
+    device = sources[-1].split('[', 1)[0]
+    disks = run(['lsblk', '-n', '-s', '-o', 'TYPE,WWN', device], 30, check=False)
+    for line in disks.stdout.splitlines() if disks.returncode == 0 else []:
+        fields = line.split()
+        if fields[:1] == ['disk']:
+            return fields[1] if len(fields) > 1 else ''
+    return ''
+
+
+def other_nas_disk(folder, old):
+    """Why the drive mounted at `folder` is not the NAS disk the settings keep for the old
+    drive (its WWN), or None: a restored or copied LUN carries the same filesystem UUID
+    (the runtime refuses it the same way). Nothing to check for a drive not on a NAS."""
+    wwn = (old.get('network') or {}).get('wwn') or ''
+    if not wwn:
+        return None
+    seen = nas_disk_of(folder)
+    if seen == wwn:
+        return None
+    if seen:
+        return f'has its UUID but is on another NAS disk ({seen}, not {wwn}): a restored or copied LUN, most likely'
+    return "is on a NAS disk that can't be told apart (Linux shows no WWN for it)"
+
+
 def same_drives(mountpoint, old, staging, new):
     """Both drives are still the ones the move began with, before each step: a drive that
     dropped out would leave its folder an empty one on the system disk, and the last copy
     (which deletes what is not on the old drive) and an empty-to-empty comparison would
-    then pass over nothing."""
+    then pass over nothing. The old drive is also still the NAS disk setup chose."""
     if mounted_identity(mountpoint) != (old['uuid'], old['fstype'], old.get('subvolume') or ''):
         raise RuntimeError(f'the old drive is no longer the one mounted at {mountpoint} (unplugged, or it failed)')
+    problem = other_nas_disk(mountpoint, old)
+    if problem:
+        raise RuntimeError(f'the old drive mounted at {mountpoint} {problem}')
     if (mounted_identity(staging) or ('',))[0] != new['uuid']:
         raise RuntimeError(f'the new drive is no longer the one mounted at {staging}')
 
@@ -567,6 +607,10 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
     other = other_subvolume(old, mounted[2], label)
     if other:
         out(other)
+        return 2
+    problem = other_nas_disk(mountpoint, old)
+    if problem:
+        out(f'The {label} mounted at {mountpoint} {problem}. Nothing was changed')
         return 2
     if mounted[2]:
         old['subvolume'] = mounted[2]

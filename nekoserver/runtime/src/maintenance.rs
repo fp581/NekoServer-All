@@ -4751,6 +4751,7 @@ fn install_due(
             },
             Ok(None) => {
                 println!("{app}: setup changed it since the new version was found; the next check looks again");
+                let _held = crate::updates::hold(data)?;
                 let mut left = crate::updates::pending(data);
                 crate::updates::forget(data, &mut left, &app)?;
                 crate::updates::save_pending(data, &left)?;

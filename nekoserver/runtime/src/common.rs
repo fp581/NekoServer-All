@@ -1076,6 +1076,73 @@ pub fn mounted(path: &Path) -> bool {
     )
     .0 == 0
 }
+/// "UUID FSTYPE SOURCE" for the mount in effect at `path`, as findmnt prints them, read
+/// from the kernel's mount table and the /dev/disk/by-uuid links. Nothing on the drive is
+/// read, so it answers at once while findmnt (which reads the filesystem's label block)
+/// can wait on a drive a backup saturates (the 0.47.10 round: killed after its 8 s, the
+/// dashboard then called the HDD missing and every backup blocked). None when nothing is
+/// mounted at `path`; the UUID is empty when no link names the device (a network share).
+pub fn mount_table_entry(path: &Path) -> Option<String> {
+    let table = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    mount_table_entry_in(&table, path, Path::new("/dev/disk/by-uuid"))
+}
+fn mount_table_entry_in(table: &str, path: &Path, by_uuid: &Path) -> Option<String> {
+    let wanted = path.to_string_lossy();
+    // mountinfo: "id parent major:minor root MOUNTPOINT options [tags...] - FSTYPE SOURCE
+    // superoptions"; spaces in names are written as \040. The last line for a folder is
+    // the mount in effect (several can be stacked on one folder).
+    let mut found = None;
+    for line in table.lines() {
+        let Some((left, right)) = line.split_once(" - ") else {
+            continue;
+        };
+        let fields: Vec<&str> = left.split(' ').collect();
+        if fields.len() < 5 || mount_table_name(fields[4]) != wanted {
+            continue;
+        }
+        let mut rest = right.split(' ');
+        let fstype = rest.next().unwrap_or("").to_string();
+        let source = mount_table_name(rest.next().unwrap_or(""));
+        found = Some((fstype, source));
+    }
+    let (fstype, source) = found?;
+    let uuid = uuid_link_of(&source, by_uuid).unwrap_or_default();
+    Some(format!("{uuid} {fstype} {source}"))
+}
+/// A mountinfo field with its octal escapes (\040 for a space) turned back into text.
+fn mount_table_name(field: &str) -> String {
+    let mut out = String::with_capacity(field.len());
+    let mut rest = field;
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        let code = rest
+            .get(at + 1..at + 4)
+            .and_then(|o| u8::from_str_radix(o, 8).ok());
+        match code {
+            Some(byte) => {
+                out.push(byte as char);
+                rest = &rest[at + 4..];
+            }
+            None => {
+                out.push('\\');
+                rest = &rest[at + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+/// The name of the link in `by_uuid` that points at the device `source`, if any.
+fn uuid_link_of(source: &str, by_uuid: &Path) -> Option<String> {
+    let device = std::fs::canonicalize(source).ok()?;
+    std::fs::read_dir(by_uuid)
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            (std::fs::canonicalize(entry.path()).ok()? == device)
+                .then(|| entry.file_name().to_string_lossy().into_owned())
+        })
+}
 pub fn num(v: &Value, lo: f64, hi: f64) -> Value {
     v.as_f64()
         .filter(|x| x.is_finite() && *x >= lo && *x <= hi)
@@ -1274,6 +1341,41 @@ mod lock_tests {
         let _ = fs::remove_dir_all(&root);
         private(&root);
         root
+    }
+    #[test]
+    fn the_mount_table_answers_like_findmnt_without_reading_the_drive() {
+        // 0.47.10: findmnt killed after its timeout on a saturated drive made the
+        // dashboard call the HDD missing; the kernel's table says what is mounted.
+        let root = scratch("mount-table");
+        let device = root.join("sdz1");
+        fs::write(&device, b"").unwrap();
+        let by_uuid = root.join("by-uuid");
+        fs::create_dir_all(&by_uuid).unwrap();
+        std::os::unix::fs::symlink(&device, by_uuid.join("1111-2222")).unwrap();
+        let dev = device.display();
+        let table = format!(
+            "30 1 0:5 / / rw - ext4 /dev/sda1 rw\n\
+             36 30 8:1 / /mnt/media\\040drive rw shared:1 - ext4 {dev} rw\n\
+             40 30 8:2 / /mnt/media\\040drive rw - xfs {dev} rw,noatime\n\
+             41 30 0:9 / /srv/share rw - cifs //nas/share rw\n\
+             broken line without the separator\n"
+        );
+        // The mount in effect is the last one stacked on the folder; the space is unescaped.
+        assert_eq!(
+            mount_table_entry_in(&table, Path::new("/mnt/media drive"), &by_uuid),
+            Some(format!("1111-2222 xfs {dev}"))
+        );
+        // A source no UUID link names (a network share): empty UUID, as findmnt prints it.
+        assert_eq!(
+            mount_table_entry_in(&table, Path::new("/srv/share"), &by_uuid),
+            Some(" cifs //nas/share".to_string())
+        );
+        assert_eq!(
+            mount_table_entry_in(&table, Path::new("/nowhere"), &by_uuid),
+            None
+        );
+        assert_eq!(mount_table_name("a\\040b\\011c\\x"), "a b\tc\\x");
+        let _ = fs::remove_dir_all(root);
     }
     #[test]
     fn a_drive_that_drops_out_is_never_written_through() {

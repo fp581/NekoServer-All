@@ -68,6 +68,34 @@ class InstallerFlowTests(unittest.TestCase):
                     json.loads(record.read_text()), {'format': installer.PROFILE_FORMAT, 'profile': 'tiny'}
                 )
 
+    def test_a_narrower_run_keeps_the_profile_the_server_was_set_up_with(self):
+        """The review of 0.47.9: a repair with --profile foundation on a full installation
+        recorded "foundation", so the next upgrade set up the foundation alone and left the
+        installed apps out."""
+        settings = json.loads(self.config.read_text())
+        settings['profiles'] = {**settings['profiles'], 'tiny': ['stopper'], 'wide': ['stopper', 'storage']}
+        self.config.write_text(json.dumps(settings))
+        self.state.mkdir(parents=True, exist_ok=True)
+        record = self.state / installer.PROFILE_FILE
+        record.write_text(json.dumps({'format': installer.PROFILE_FORMAT, 'profile': 'wide'}))
+        (self.state / 'state.json').write_text(json.dumps({'storage': {'status': 'success'}}))
+        printed = []
+        args = self.args(profile='tiny', module=None)
+        with mock.patch('config_checks.validate'), mock.patch('builtins.print', printed.append):
+            with self.assertRaises(KeyboardInterrupt):
+                installer._execute(args, self.root)
+        self.assertEqual(json.loads(record.read_text())['profile'], 'wide')
+        self.assertTrue(
+            any('recorded setup profile is kept' in line and 'storage' in line for line in printed), printed
+        )
+        # A run that covers every step done is recorded (a server set up by hand, then "full").
+        (self.state / 'state.json').write_text(json.dumps({'stopper': {'status': 'failed'}}))
+        args = self.args(profile='tiny', module=None)
+        with mock.patch('config_checks.validate'), mock.patch('builtins.print'):
+            with self.assertRaises(KeyboardInterrupt):
+                installer._execute(args, self.root)
+        self.assertEqual(json.loads(record.read_text())['profile'], 'tiny')
+
     def test_ctrl_c_records_the_step_and_ends_without_a_traceback(self):
         args = self.args()
         with mock.patch('config_checks.validate'), mock.patch('builtins.print'), self.assertRaises(KeyboardInterrupt):

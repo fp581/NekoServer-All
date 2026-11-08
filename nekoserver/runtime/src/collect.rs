@@ -266,10 +266,14 @@ fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
     if expected == Some("") {
         return json!({"status":"not_configured"});
     }
-    let s = common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 8)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let s = match common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 8) {
+        Ok(found) => found.unwrap_or_default(),
+        // findmnt killed after its 8 s: it reads the filesystem's label block, which a
+        // drive saturated by a backup can hold back. The kernel's mount table says the
+        // same without touching the drive (the 0.47.10 round: the page called the HDD
+        // missing, and every backup blocked, each time a copy kept the drive busy).
+        Err(_) => common::mount_table_entry(path).unwrap_or_default(),
+    };
     let v = s.split_whitespace().collect::<Vec<_>>();
     if v.len() < 3 {
         return json!({"status":"missing"});
@@ -1656,6 +1660,8 @@ struct MediaReport {
     saved: Value,
     age: Option<f64>,
     status: &'static str,
+    /// Why the report is stale when its check could not run since it was written.
+    reason: Option<String>,
 }
 fn media_report(cfg: &Value, now: f64, ok: bool) -> Option<MediaReport> {
     if cfg["monitoring"]["enabled"] == false {
@@ -1681,12 +1687,58 @@ fn media_report(cfg: &Value, now: f64, ok: bool) -> Option<MediaReport> {
             .unwrap_or(60.0)
             * 120.0,
     );
-    let status = match age {
+    let mut status = match age {
         Some(age) if age > limit => "stale",
         Some(_) => "current",
         None => "unknown",
     };
-    Some(MediaReport { saved, age, status })
+    // A check that could not run (a drive refused, its lock, broken settings) writes no
+    // report, so the last PASS stayed "current" for up to two intervals while the check
+    // failed every hour (the review of 0.47.9): a failed run since the report makes it
+    // stale, and says why.
+    let (_, show) = probe(
+        &[
+            "systemctl",
+            "show",
+            "nekoserver-media-health.service",
+            "--property=LoadState,ActiveState,Result,ExecMainStatus,ExecMainExitTimestampMonotonic",
+        ],
+        8,
+    );
+    let reason = check_failed_since(&show, age, uptime());
+    if reason.is_some() {
+        status = "stale";
+    }
+    Some(MediaReport {
+        saved,
+        age,
+        status,
+        reason,
+    })
+}
+/// The app check's failure to run, when its service's last run ended after the report
+/// (`report_age`: seconds since the report; None: no report) and wrote none. Exit codes 2
+/// and 3 are the check's own findings after a written report, not a failure to run.
+/// `uptime`: seconds since boot, to read the exit time systemd gives in those.
+fn check_failed_since(show: &str, report_age: Option<f64>, uptime: Option<f64>) -> Option<String> {
+    let fields = show
+        .lines()
+        .filter_map(|s| s.split_once('='))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if ["2", "3"].contains(fields.get("ExecMainStatus").unwrap_or(&"")) {
+        return None;
+    }
+    let why = service_failure("nekoserver-media-health", show)?;
+    let ended = fields
+        .get("ExecMainExitTimestampMonotonic")?
+        .parse::<f64>()
+        .ok()?
+        / 1_000_000.0;
+    let since_end = uptime? - ended;
+    if since_end < 0.0 || report_age.is_some_and(|age| age < since_end) {
+        return None; // the report is newer than the failure
+    }
+    Some(why)
 }
 /// Whether an app answered its last check over HTTP (true/false), or null when that
 /// isn't known: no current check, or the app wasn't running. Processor use never
@@ -1723,10 +1775,16 @@ fn started_at(out: &str) -> Vec<(String, f64)> {
         .collect()
 }
 fn media(report: Option<&MediaReport>) -> Value {
-    let Some(MediaReport { saved, age, status }) = report else {
+    let Some(MediaReport {
+        saved,
+        age,
+        status,
+        reason,
+    }) = report
+    else {
         return json!({"status":"disabled","counts":{},"checks":[],"age_seconds":null});
     };
-    let mut r = json!({"status":status,"age_seconds":age,"counts":{},"checks":[]});
+    let mut r = json!({"status":status,"age_seconds":age,"counts":{},"checks":[],"reason":reason});
     let re = Regex::new(r"^[a-z0-9_:]+$").unwrap();
     for group in ["services", "integrations", "readiness"] {
         if let Some(rows) = saved[group].as_object() {
@@ -2993,11 +3051,49 @@ mod os_tests {
         assert!(first_overdue(Some(now - 2.0 * day), None, now, day));
     }
     #[test]
+    fn a_check_that_could_not_run_since_the_last_report_makes_it_stale() {
+        // The review of 0.47.9: the hourly check's early errors (a drive refused, its
+        // lock, broken settings) wrote no report, so the last PASS stayed "current".
+        let failed = "LoadState=loaded\nActiveState=failed\nResult=exit-code\nExecMainStatus=1\nExecMainExitTimestampMonotonic=1000000000\n";
+        // The service ended 100 s ago (1000 s after boot, uptime 1100 s); the report is an hour old.
+        let why = check_failed_since(failed, Some(3600.0), Some(1100.0)).unwrap();
+        assert!(
+            why.contains("Its service could not run (exit-code, exit 1)"),
+            "{why}"
+        );
+        // No report at all: the failure still counts.
+        assert!(check_failed_since(failed, None, Some(1100.0)).is_some());
+        // A report written after the failure (50 s old): current.
+        assert!(check_failed_since(failed, Some(50.0), Some(1100.0)).is_none());
+        // Exit 2 and 3 come after a written report (fail / needs_setup): not a failure to run.
+        let found = failed.replace("ExecMainStatus=1", "ExecMainStatus=2");
+        assert!(check_failed_since(&found, Some(3600.0), Some(1100.0)).is_none());
+        let found = failed.replace("ExecMainStatus=1", "ExecMainStatus=3");
+        assert!(check_failed_since(&found, Some(3600.0), Some(1100.0)).is_none());
+        // A run that worked, or one still at work: nothing.
+        let fine = "LoadState=loaded\nActiveState=inactive\nResult=success\nExecMainStatus=0\nExecMainExitTimestampMonotonic=1000000000\n";
+        assert!(check_failed_since(fine, Some(3600.0), Some(1100.0)).is_none());
+        let busy = failed.replace("ActiveState=failed", "ActiveState=activating");
+        assert!(check_failed_since(&busy, Some(3600.0), Some(1100.0)).is_none());
+        // Without the uptime the exit time can't be placed: nothing is claimed.
+        assert!(check_failed_since(failed, Some(3600.0), None).is_none());
+        // The dashboard's media block carries the reason.
+        let shown = media(Some(&MediaReport {
+            saved: json!({}),
+            age: Some(3600.0),
+            status: "stale",
+            reason: Some(why.clone()),
+        }));
+        assert_eq!(shown["status"], "stale");
+        assert_eq!(shown["reason"], why);
+    }
+    #[test]
     fn an_app_check_older_than_the_apps_last_start_says_nothing() {
         let report = |age: f64, http: Value| MediaReport {
             saved: json!({"services": {"jellyfin": {"container": "running", "http_status": http}}}),
             age: Some(age),
             status: "current",
+            reason: None,
         };
         // Checked 30 minutes ago and failed; the app has been up for 2 hours: that's it.
         assert_eq!(
@@ -3569,6 +3665,21 @@ mod user_panel_tests {
         let row = shown("new-uuid")[0].clone();
         assert_eq!(row["check"], "quick");
         assert!(row["full_at"].is_null(), "{row}");
+        // A report from before drive ids were recorded (no "drive" at all) may be any
+        // drive's: a new drive's quick copy carries nothing over from it either.
+        let path = data.join("reports/integrity.json");
+        let mut all = common::json(&path, 1 << 20);
+        let mut legacy = all["sections"]["usb_photos"].clone();
+        legacy.as_object_mut().unwrap().remove("drive");
+        legacy["full_at"] = json!(1_700_000_000.0);
+        legacy["damaged"] = json!(["old/photo.jpg"]);
+        legacy["counts"]["damaged"] = json!(1);
+        all["sections"]["usb_photos"] = legacy;
+        common::atomic_json(&path, &all).unwrap();
+        save_integrity_on(&data, "usb_photos", &clean, Check::Quick, "third-uuid").unwrap();
+        let row = shown("third-uuid")[0].clone();
+        assert!(row["full_at"].is_null(), "{row}");
+        assert_eq!(row["damaged"], 0, "{row}");
         let _ = fs::remove_dir_all(&data);
     }
     #[test]
