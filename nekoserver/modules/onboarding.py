@@ -63,7 +63,7 @@ def run(ctx):
             optional.append('indexers')
         if not playback_record(ctx.config).exists():
             optional.append('playback')
-        ctx.optional_kept = optional_kept(ctx, optional)
+        ctx.optional_kept = guided_setup.optional_kept(ctx, optional)
         cmd += ['--' + question for question in optional if question not in ctx.optional_kept + ['playback']]
         # With the lock backups and monthly updates take: a nightly backup stopping the apps
         # while they are being connected would fail them half-way.
@@ -118,27 +118,6 @@ def run(ctx):
         }
     ctx.log('Onboarding configuration checks complete')
     witness_playback(ctx)
-
-
-def optional_kept(ctx, asked):
-    """Setup run again: shows the last answer to each optional question it would ask now
-    (the download sources, the indexers, the playback test) and asks whether to ask them
-    again. The questions not to ask: none when no answer was kept yet (the first run, or
-    0.47.8 and before) or on yes; the ones shown on no (Ctrl+D counts as no). A question
-    with no kept answer is asked either way."""
-    kept = optional_answers(ctx.config['data_mount'])
-    shown = [question for question in asked if question in kept]
-    if not shown:
-        return []
-    print()
-    print('Last time, the optional questions were answered this way:')
-    for question in shown:
-        print(f'  {OPTIONAL_QUESTIONS[question]}: {kept[question]}')
-    print('Answer no to keep these answers; yes asks the questions again.')
-    again = guided_setup.yes_no('Ask these questions again?')
-    print()
-    ctx.log('Optional questions: ' + ('asked again' if again else 'kept as answered last time'))
-    return [] if again else shown
 
 
 def connected_before(ctx):

@@ -5,8 +5,8 @@ Since 0.42.0 app updates no longer wait for the monthly run. Three jobs share th
 | Job | When | What it does | What it stops |
 |---|---|---|---|
 | **Daily update check** (`nekoserver-update-check.timer`) | Every day at 13:41 (caught up after the PC was off) | Looks for a new version of each app and downloads it. Notes the day it first saw each version. | Nothing |
-| **Weekly app updates** (`nekoserver-updates.timer`) | Wednesday nights at `maintenance.time` (02:30), never on the 1st | Installs each version that has settled, one app at a time (see below). | Only the app being updated, for a few minutes |
-| **Monthly check** (`nekoserver-maintenance.timer`) | The 1st of each month at `maintenance.time` | Compares every backup copy with its checksum, takes a snapshot of every app and tests that it restores. It updates nothing. | Every app, while the snapshot is written |
+| **Weekly app updates** (`nekoserver-updates.timer`) | Wednesday nights at the monthly time setup asked for (`backup_times.monthly`, 02:30 unless you said otherwise), never on the 1st | Installs each version that has settled, one app at a time (see below). | Only the app being updated, for a few minutes |
+| **Monthly check** (`nekoserver-maintenance.timer`) | The 1st of each month at the monthly time (`backup_times.monthly`) | Compares every backup copy with its checksum, takes a snapshot of every app and tests that it restores. It updates nothing. | Every app, while the snapshot is written |
 
 All three use your configured `timezone` (default Asia/Jerusalem), daylight saving included. The update nights and the monthly check never catch up a missed night in the daytime. They check the night window (`maintenance.night_end_hour`) before stopping anything and again before installing. They share one lock with the backups and setup, so no two of them ever run at once. A run that is cut off (a power cut) is finished or undone by `nekoserver-maintenance-resume.service`, from the same journal.
 

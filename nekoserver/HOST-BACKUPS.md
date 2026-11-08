@@ -11,7 +11,7 @@ systemctl status nekoserver-host-backup.timer
 
 ## Scope and setup
 
-Default schedule: 05:15, with missed runs caught up after boot. `host_backup.user` identifies an existing non-root desktop account (`auto` uses the sudo/TV account, then the configured media UID, the first time; after that the same account stays chosen, even when another administrator runs setup. Name the account in `host_backup.user` to change it). Paths/identity are resolved during setup and retained in the private guard. Reapply after moving Steam or adding an external Steam library. **Steam left open** (for Remote Play, say): Steam's files are only copied while Steam is closed, including running games, Wine and Proton, because they change while it runs. On a night Steam is open, everything else (system settings, Samba and the rest) is still backed up, and Steam's files are left out: the run shows as *partial* on the dashboard with "Steam was open", and the snapshot's manifest lists them under `left_out`. They are backed up on the next night Steam is closed. Until then, the newest snapshot that does have them is never deleted by `keep_snapshots` (it is kept on top of that number), so a run of nights with Steam open can't remove the last copy of your saves. The worker never closes Steam, a game or a session, and never logs into Steam. If Steam is started in the middle of a run that is copying its files, that run fails and the next one tries again. A failed process check also fails the run.
+Schedule: an hour after the daily backup time setup asked for (05:15 unless you said otherwise: `"daily"` under `"backup_times"`), with missed runs caught up after boot. `host_backup.user` identifies an existing non-root desktop account (`auto` uses the sudo/TV account, then the configured media UID, the first time; after that the same account stays chosen, even when another administrator runs setup. Name the account in `host_backup.user` to change it). Paths/identity are resolved during setup and retained in the private guard. Reapply after moving Steam or adding an external Steam library. **Steam left open** (for Remote Play, say): Steam's files are only copied while Steam is closed, including running games, Wine and Proton, because they change while it runs. On a night Steam is open, everything else (system settings, Samba and the rest) is still backed up, and Steam's files are left out: the run shows as *partial* on the dashboard with "Steam was open", and the snapshot's manifest lists them under `left_out`. They are backed up on the next night Steam is closed. Until then, the newest snapshot that does have them is never deleted by `keep_snapshots` (it is kept on top of that number), so a run of nights with Steam open can't remove the last copy of your saves. The worker never closes Steam, a game or a session, and never logs into Steam. If Steam is started in the middle of a run that is copying its files, that run fails and the next one tries again. A failed process check also fails the run.
 
 Included, when present:
 
@@ -28,7 +28,6 @@ Set `host_backup.extra_paths` to explicit absolute save/share directories inside
 
 ```json
 "host_backup": {
-  "time": "05:15",
   "user": "lidor",
   "steam": true,
   "samba": true,

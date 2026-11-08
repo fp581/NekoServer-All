@@ -2,20 +2,17 @@
 
 import os
 from pathlib import Path
-import re
 import subprocess
 
 import native_runtime
-from neko_common import VERSION, verify_storage, host_timezone, check_units, write_units, SYSTEMD_UNITS
+from neko_common import VERSION, verify_storage, host_timezone, check_units, job_times, write_units, SYSTEMD_UNITS
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Nightly immutable music backup with checksum verification on the HDD'
 
 
 def definitions(config, binary, guard):
-    time = config.get('music', {}).get('backup_time', '03:45')
-    if not isinstance(time, str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', time):
-        raise RuntimeError('music.backup_time must be HH:MM')
+    time = job_times(config)['music']  # half an hour before the daily time setup asked for (backup_times)
     return {
         'nekoserver-music-backup.service': (
             '[Unit]\nDescription=NekoServer versioned music backup\n'

@@ -17,6 +17,7 @@ from neko_common import (
     host_timezone,
     check_units,
     write_units,
+    job_times,
 )
 from neko_common import MAINTENANCE_JOURNAL, RECOVERY, maintenance_running
 
@@ -42,9 +43,10 @@ def options(config):
     opts = config.get('maintenance', {})
     if not isinstance(opts, dict):
         raise RuntimeError('maintenance must be an object')
-    time = opts.get('time', '02:30')
-    if not isinstance(time, str) or not re.fullmatch(r'0[0-5]:[0-5][0-9]', time):
-        raise RuntimeError('Maintenance must start at night, HH:MM between 00:00 and 05:59')
+    # The monthly time setup asked for (backup_times), carried in "time" for the runtime,
+    # which reads it from this step's settings file (maintenance.rs again_next_night).
+    opts = {**opts, 'time': job_times(config)['monthly']}
+    time = opts['time']
     zone = host_timezone(config)
     if not (Path('/usr/share/zoneinfo') / zone).is_file():
         raise RuntimeError('Use an installed IANA maintenance timezone')
@@ -71,8 +73,18 @@ def options(config):
     if opts.get('update_day', 'Wed') not in DAYS:
         raise RuntimeError('Invalid maintenance.update_day: use Mon, Tue, Wed, Thu, Fri, Sat or Sun')
     if int(time[:2]) >= opts.get('night_end_hour', 6):
-        raise RuntimeError('Maintenance starts after its allowed night window')
+        raise RuntimeError(
+            f'The monthly check must start at night, before {opts.get("night_end_hour", 6):02d}:00 '
+            f'(maintenance.night_end_hour), not at {time}: choose an earlier monthly backup time'
+        )
     return opts
+
+
+def guard_settings(config):
+    """What the monthly update's own settings file holds: the settings with the monthly
+    time resolved (options) and the folders setup decided (`paths`): the update reads them
+    and never works them out again (the review of 0.47.0: this file had none)."""
+    return {**config, 'maintenance': options(config), 'paths': native_runtime.saved_paths(config)}
 
 
 # A one-off job that may take as long as it needs (finishing or undoing a run).
@@ -193,7 +205,7 @@ def refresh(config, log, target=None):
     except RuntimeError as exc:
         log(f'Monthly update: settings not refreshed ({exc})')
         return False
-    return refresh_settings(target or GUARD, config, log, 'Monthly update')
+    return refresh_settings(target or GUARD, guard_settings(config), log, 'Monthly update')
 
 
 def run(ctx):
@@ -234,9 +246,7 @@ def run(ctx):
                 'Backup key not set up: until you run  sudo python3 backup_secrets.py --setup  in a terminal, monthly snapshots keep the app password files '
                 'UNENCRYPTED inside data.tar on the HDD (readable by root only), so a restore still has them'
             )
-    # With the folders setup decided (`paths`): the update reads them (common::saved_path)
-    # and never works them out again (the review of 0.47.0: this file had none).
-    atomic_json(guard, {**config, 'paths': native_runtime.saved_paths(config)})
+    atomic_json(guard, guard_settings(config))
     write_units(units)
     for args in (
         ['systemctl', 'daemon-reload'],

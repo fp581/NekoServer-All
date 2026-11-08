@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-import re
 import subprocess
 
 import native_runtime
@@ -16,6 +15,7 @@ from neko_common import (
     verify_storage,
     check_units,
     write_units,
+    job_times,
 )
 
 DEPENDENCIES = ['media', 'recovery']
@@ -62,9 +62,7 @@ def refresh(config, log, target=None):
 
 def definitions(config, binary, guard):
     data, media = config['data_mount'], config['media_mount']
-    time = config.get('app_backup', {}).get('time', '04:15')
-    if not isinstance(time, str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', time):
-        raise RuntimeError('app_backup.time must be HH:MM')
+    time = job_times(config)['app']  # the daily time setup asked for (backup_times)
     keep_snapshots(config)
     resume = f'{binary} app-resume --config {guard}'
     # A night missed while the PC was off is caught up at boot, when the resume service

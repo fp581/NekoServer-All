@@ -25,6 +25,7 @@ from neko_common import (
     pick_drive,
     relative_path,
     safe_path,
+    job_times,
 )
 
 # The drives and their space check only: a server with Nextcloud and no Immich gets its
@@ -276,21 +277,10 @@ def destination(config):
     return dest
 
 
-def schedule(opts):
-    """(weekday, HH:MM) of the weekly copy."""
-    when = opts.get('backup_time', '03:00')
-    day = opts.get('backup_weekday', 'Sun')
-    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', when) or day not in (
-        'Mon',
-        'Tue',
-        'Wed',
-        'Thu',
-        'Fri',
-        'Sat',
-        'Sun',
-    ):
-        raise RuntimeError('Invalid schedule')
-    return day, when
+def schedule(config):
+    """(weekday, HH:MM) of the weekly copy: the weekly time setup asked for (backup_times)."""
+    times = job_times(config)
+    return times['usb_day'], times['usb']
 
 
 # The weekly copy pauses Nextcloud for its last files and its database copy (backup.rs
@@ -404,7 +394,7 @@ def run(ctx):
             'reason': f'Waiting for the photos (Immich) step, which makes the photo archive {source}: finish that step, then run setup again',
         }
     dest = destination(ctx.config)
-    day, when = schedule(opts)
+    day, when = schedule(ctx.config)
     binary = native_runtime.deploy(
         Path(__file__).resolve().parents[1],
         ctx.config,
@@ -497,7 +487,7 @@ def refresh(config, log, unit=None, timer=None):
         )
         # After every setup run, which is where passwords are made and changed.
         seal_passwords(found.group(1), native_runtime.backup_guard(config), log)
-        day, when = schedule(opts)
+        day, when = schedule(config)
         # Current only when both files are as setup would write them now (the copy, and the
         # day and time) and the timer is on: a copy switched off while no app was set up,
         # or a new schedule, stayed as it was (the 0.46.0 review).

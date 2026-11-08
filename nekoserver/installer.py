@@ -427,6 +427,7 @@ def _execute(args, root=ROOT):
     if args.apply and not (args.module or args.retry_failed):
         record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
+    ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
     ctx.plan = plan
     ctx.previous = dict(previous)  # each step as the last run left it
     save_profiles(ctx, added, profiles_changed, args.apply)

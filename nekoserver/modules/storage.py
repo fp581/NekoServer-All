@@ -1109,6 +1109,7 @@ def run(context):
     mount_all(context, specs)
     choose_locations(context)
     choose_usb(context)
+    choose_backup_times(context)
 
 
 def save_storage(context):
@@ -1413,6 +1414,24 @@ def choose_usb(context):
         return
     if hasattr(context, 'persist_config'):
         context.persist_config()
+
+
+# The steps that write a backup or update timer: the backup times are asked only when
+# the run has one of them (a profile with no backups never asks).
+JOB_STEPS = frozenset(
+    ('photo_preservation', 'photo_backup', 'music_backup', 'app_backup', 'host_backup', 'maintenance')
+)
+
+
+def choose_backup_times(context):
+    """When the backups run (daily, weekly, monthly), asked here with the drives so the
+    person answers every question at the start (guided_setup.choose_backup_times)."""
+    plan = getattr(context, 'plan', None)
+    if plan is not None and not JOB_STEPS & set(plan):
+        return
+    from guided_setup import choose_backup_times as ask
+
+    ask(context)
 
 
 def mounted_filesystem(target):

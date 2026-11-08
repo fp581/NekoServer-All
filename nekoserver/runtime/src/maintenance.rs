@@ -3296,7 +3296,7 @@ fn usb_damage(e: &Error) -> bool {
 }
 /// Said when the night ended before the apps were stopped even with the checksum check
 /// postponed: no monthly snapshot can be taken until the night is longer.
-const NIGHT_TOO_SHORT: &str = "The monthly run cannot fit into the night: it ended before the apps could be stopped, even with the checksum check left for another month, so no monthly snapshot was taken. Start it earlier (maintenance.time) or let it run longer (maintenance.night_end_hour, up to 7)";
+const NIGHT_TOO_SHORT: &str = "The monthly run cannot fit into the night: it ended before the apps could be stopped, even with the checksum check left for another month, so no monthly snapshot was taken. Start it earlier (the monthly backup time setup asks for: backup_times.monthly) or let it run longer (maintenance.night_end_hour, up to 7)";
 /// Kept on the SSD when a month's night ran out before the apps were stopped.
 const NIGHT_MARKER: &str = "reports/jobs/maintenance-night-ran-out.json";
 fn night_ran_out(data: &Path) -> bool {

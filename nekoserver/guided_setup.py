@@ -332,6 +332,140 @@ def wanted(ctx, section, question, explain=(), prompt=None, output=None):
     return options['wanted']
 
 
+def optional_kept(ctx, asked, prompt=None, output=None):
+    """Setup run again: shows the last answer to every optional question (the backup
+    times, the download sources, the indexers, the playback test) and asks once in the
+    run whether to ask them again. Returns the questions in `asked` not to ask: none
+    when no answer was kept yet (the first run, or 0.47.8 and before) or on yes; the
+    ones with a kept answer on no (Ctrl+D counts as no). A question with no kept answer
+    is asked either way. The decision is kept on `ctx` for the later steps of the run."""
+    from neko_common import OPTIONAL_QUESTIONS, optional_answers
+
+    kept = optional_answers(ctx.config['data_mount'])
+    shown = [question for question in asked if question in kept]
+    if not shown:
+        return []
+    again = getattr(ctx, 'ask_optional_again', None)
+    if again is None:
+        prompt = prompt or input
+        output = output or print
+        output('')
+        output('Last time, the optional questions were answered this way:')
+        for question in OPTIONAL_QUESTIONS:
+            if question in kept:
+                output(f'  {OPTIONAL_QUESTIONS[question]}: {kept[question]}')
+        output('Answer no to keep these answers; yes asks the questions again.')
+        again = bool(yes_no('Ask these questions again?', prompt, output))
+        output('')
+        ctx.log('Optional questions: ' + ('asked again' if again else 'kept as answered last time'))
+        ctx.ask_optional_again = again
+    return [] if again else shown
+
+
+def ask_choice(question, default, valid, hint, prompt=input, output=print, attempts=3):
+    """One short answer typed at `question` (which says the default): Enter, or Ctrl+D,
+    keeps `default`; an answer `valid` refuses is explained with `hint` and asked again,
+    up to `attempts` times, after which the default stands and the output says so."""
+    for _ in range(attempts):
+        try:
+            answer = prompt(question).strip()
+        except EOFError:
+            output('')
+            return default
+        if not answer:
+            return default
+        if valid(answer):
+            return answer
+        output(hint)
+    output(f'Kept as {default}.')
+    return default
+
+
+def choose_backup_times(ctx, prompt=None, output=None):
+    """Ask when the backups run (the daily jobs, the weekly USB copy, the monthly check)
+    and save the answers as "backup_times" in the settings file; every timer is written
+    from them (neko_common.job_times). Enter keeps the time shown: the server's current
+    times, so a server set up before 0.48.0 keeps its schedule. Asked once; a run after
+    that shows the answer and asks again only on request (optional_kept). Setup without
+    a person at the terminal (an upgrade) changes nothing."""
+    from neko_common import (
+        BACKUP_TIMES,
+        WEEKDAYS,
+        backup_times,
+        backup_times_said,
+        host_timezone,
+        job_times,
+        remember_answer,
+        valid_time,
+    )
+
+    if not interactive(ctx):
+        return
+    prompt = prompt or input
+    output = output or print
+    if backup_times(ctx.config) is not None and BACKUP_TIMES in optional_kept(ctx, [BACKUP_TIMES], prompt, output):
+        ctx.log('Backup times kept: ' + backup_times_said(ctx.config))
+        return
+    now = job_times(ctx.config)
+    night_end = ctx.config.get('maintenance', {}).get('night_end_hour', 6)
+    days = ', '.join(WEEKDAYS)
+    output('\n=== When the backups run ===')
+    output(
+        f'Times are on this PC\'s clock ({host_timezone(ctx.config)}). Press Enter to keep the time shown. '
+        'Choose hours when nobody uses the server: the apps pause for a moment while they are copied.'
+    )
+    output(
+        'Every night: the media apps\' snapshot at the time you choose, the music copy 30 minutes '
+        'before it and the copy of this PC\'s own settings an hour after it.'
+    )
+    daily = ask_choice(
+        f'When should the daily backups run? (HH:MM, Enter for {now["app"]}): ',
+        now['app'],
+        valid_time,
+        'Type a time of day as HH:MM, for example 04:15.',
+        prompt,
+        output,
+    )
+    output(
+        'Every week: the USB copy of your photos and Nextcloud files, with Immich\'s database copy '
+        '45 minutes before it.'
+    )
+    weekday = ask_choice(
+        f'On which day should the weekly USB copy run? ({days}; Enter for {now["usb_day"]}): ',
+        now['usb_day'],
+        lambda answer: answer.capitalize() in WEEKDAYS,
+        'Type the day as one of ' + days + '.',
+        prompt,
+        output,
+    ).capitalize()
+    weekly = ask_choice(
+        f'At what time on that day? (HH:MM, Enter for {now["usb"]}): ',
+        now['usb'],
+        valid_time,
+        'Type a time of day as HH:MM, for example 03:00.',
+        prompt,
+        output,
+    )
+    output(
+        'Every month, on the 1st: the check of every backup copy, a snapshot of every app and a restore '
+        f'test; the weekly app updates start at this time too. It must start at night, before {night_end:02d}:00.'
+    )
+    monthly = ask_choice(
+        f'At what time should the monthly check start? (HH:MM before {night_end:02d}:00, Enter for {now["monthly"]}): ',
+        now['monthly'],
+        lambda answer: valid_time(answer) and int(answer[:2]) < night_end,
+        f'Type a time of day as HH:MM before {night_end:02d}:00, for example 02:30.',
+        prompt,
+        output,
+    )
+    ctx.config[BACKUP_TIMES] = {'daily': daily, 'weekly_day': weekday, 'weekly': weekly, 'monthly': monthly}
+    save_settings(ctx)
+    said = backup_times_said(ctx.config)
+    remember_answer(ctx.config['data_mount'], BACKUP_TIMES, said)
+    output(f'Backups run {said}. To change this later, run  sudo bash install.sh  again and say yes to asking again.')
+    ctx.log('Backup times chosen: ' + said)
+
+
 def app_security(ctx, apps, ports):
     def verify_accounts():
         import account_setup
