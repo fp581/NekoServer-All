@@ -213,9 +213,12 @@ fn observations(s: &Value, now: f64) -> (BTreeMap<String, String>, BTreeSet<Stri
     }
     for row in s["applications"].as_array().unwrap() {
         // Running, healthy and answering (as the dashboard shows it): only then recovered.
+        // "responding" is true only when the hourly check reached the app and it answered;
+        // null (no current check yet, or the app restarted since the last one) is not
+        // evidence, so the alert waits for the next check (the review of 0.47.9).
         if row["state"] == "running"
             && !["unhealthy", "starting"].contains(&row["health"].as_str().unwrap_or(""))
-            && row["responding"] != false
+            && row["responding"] == true
         {
             unknown.remove(&format!("app:{}", row["id"].as_str().unwrap_or("")));
         }
@@ -700,7 +703,7 @@ mod tests {
     }
     use super::*;
     fn snapshot(now: f64, alerts: Value) -> Value {
-        json!({"format":"neko-dashboard-v1","generated_at":now,"alerts":alerts,"applications":[{"id":"sonarr","state":"running","health":"healthy"}],"storage":[],"backups":[],"media":{"status":"current"},"metrics":{"temperature":40}})
+        json!({"format":"neko-dashboard-v1","generated_at":now,"alerts":alerts,"applications":[{"id":"sonarr","state":"running","health":"healthy","responding":true}],"storage":[],"backups":[],"media":{"status":"current"},"metrics":{"temperature":40}})
     }
     /// 0.45.8: a Tailscale or outside-monitor state that could not be read cleared their
     /// alerts, and "RECOVERED" was sent for a problem nobody had looked at.
@@ -924,6 +927,29 @@ mod tests {
             .any(|a| a["id"] == "app:sonarr" && a["level"] == "critical"));
     }
     #[test]
+    fn an_app_whose_answer_is_not_known_yet_has_not_recovered() {
+        // The review of 0.47.9: a missing or null "responding" (no current check, or the
+        // app restarted since the last one) counted as recovered; only a check that
+        // reached the app and got an answer does.
+        let previous =
+            json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000}}});
+        for responding in [Value::Null, json!("maybe")] {
+            let mut s = snapshot(2000., json!([]));
+            s["applications"] =
+                json!([{"id":"sonarr","state":"running","health":"healthy","responding":responding}]);
+            let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+            assert!(e.is_empty(), "{e:?}");
+        }
+        let mut s = snapshot(2000., json!([]));
+        s["applications"] = json!([{"id":"sonarr","state":"running","health":"healthy"}]);
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert!(e.is_empty(), "{e:?}");
+        s["applications"] =
+            json!([{"id":"sonarr","state":"running","health":"healthy","responding":true}]);
+        let (_, e) = plan(&s, &previous, 2000., 0, 43200);
+        assert_eq!(e, vec![("app:sonarr".into(), true, "recovered".into())]);
+    }
+    #[test]
     fn unknown_app_is_not_recovered() {
         let previous =
             json!({"format":"neko-notifications-v1","entries":{"app:sonarr":{"last_sent":1000}}});
@@ -947,7 +973,8 @@ mod tests {
         let (_, e) = plan(&s, &previous, 2000., 0, 43200);
         assert!(e.is_empty(), "{e:?}");
         // Real evidence: Nextcloud running and both jobs passed.
-        s["applications"] = json!([{"id":"nextcloud","state":"running","health":"healthy"}]);
+        s["applications"] =
+            json!([{"id":"nextcloud","state":"running","health":"healthy","responding":true}]);
         s["backups"] = json!([{"id":"maintenance","status":"pass"},{"id":"music","status":"pass"}]);
         let (_, e) = plan(&s, &previous, 2000., 0, 43200);
         assert_eq!(e.len(), 3, "{e:?}");
