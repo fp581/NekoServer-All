@@ -1086,7 +1086,7 @@ pub fn mount_table_entry(path: &Path) -> Option<String> {
     let table = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
     mount_table_entry_in(&table, path, Path::new("/dev/disk/by-uuid"))
 }
-fn mount_table_entry_in(table: &str, path: &Path, by_uuid: &Path) -> Option<String> {
+pub(crate) fn mount_table_entry_in(table: &str, path: &Path, by_uuid: &Path) -> Option<String> {
     let wanted = path.to_string_lossy();
     // mountinfo: "id parent major:minor root MOUNTPOINT options [tags...] - FSTYPE SOURCE
     // superoptions"; spaces in names are written as \040. The last line for a folder is
@@ -1103,11 +1103,18 @@ fn mount_table_entry_in(table: &str, path: &Path, by_uuid: &Path) -> Option<Stri
         let mut rest = right.split(' ');
         let fstype = rest.next().unwrap_or("").to_string();
         let source = mount_table_name(rest.next().unwrap_or(""));
-        found = Some((fstype, source));
+        found = Some((fstype, source, mount_table_name(fields[3])));
     }
-    let (fstype, source) = found?;
+    let (fstype, source, inside) = found?;
     let uuid = uuid_link_of(&source, by_uuid).unwrap_or_default();
-    Some(format!("{uuid} {fstype} {source}"))
+    // A mount of a folder within the filesystem (a Btrfs subvolume, a bind mount) is shown
+    // by findmnt as SOURCE[/that/folder]; the drive check reads the subvolume from there,
+    // so the answer without findmnt says it the same way (the review of 0.47.10).
+    if inside == "/" {
+        Some(format!("{uuid} {fstype} {source}"))
+    } else {
+        Some(format!("{uuid} {fstype} {source}[{inside}]"))
+    }
 }
 /// A mountinfo field with its octal escapes (\040 for a space) turned back into text.
 fn mount_table_name(field: &str) -> String {
@@ -1358,7 +1365,19 @@ mod lock_tests {
              36 30 8:1 / /mnt/media\\040drive rw shared:1 - ext4 {dev} rw\n\
              40 30 8:2 / /mnt/media\\040drive rw - xfs {dev} rw,noatime\n\
              41 30 0:9 / /srv/share rw - cifs //nas/share rw\n\
+             42 30 0:40 /@data /mnt/data rw,relatime - btrfs {dev} rw,subvol=/@data\n\
+             43 30 0:40 /@my\\040files /mnt/files rw - btrfs {dev} rw\n\
              broken line without the separator\n"
+        );
+        // A subvolume mount: its folder within the filesystem in brackets, as findmnt
+        // prints it ("/dev/sdb1[/@data]"); a mount of the whole filesystem has none.
+        assert_eq!(
+            mount_table_entry_in(&table, Path::new("/mnt/data"), &by_uuid),
+            Some(format!("1111-2222 btrfs {dev}[/@data]"))
+        );
+        assert_eq!(
+            mount_table_entry_in(&table, Path::new("/mnt/files"), &by_uuid),
+            Some(format!("1111-2222 btrfs {dev}[/@my files]"))
         );
         // The mount in effect is the last one stacked on the folder; the space is unescaped.
         assert_eq!(
