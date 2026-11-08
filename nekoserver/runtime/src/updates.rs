@@ -379,6 +379,13 @@ pub(crate) fn save_release(
 }
 /// What the NekoServer tab shows: names, dates and a link only.
 pub(crate) fn release_for_dashboard(data: &Path) -> Value {
+    release_shown(data, crate::VERSION)
+}
+/// The same, for a server running `current`: a release is offered only while it is newer.
+/// The daily check's note stays until its next run, so right after an upgrade it still
+/// named the release now running (seen on a VM upgraded from 0.47.6 to 0.47.8: "This
+/// server runs NekoServer 0.47.8", then "Available: v0.47.8-beta" and the Upgrade button).
+fn release_shown(data: &Path, current: &str) -> Value {
     let saved = common::json(&folder(data).join(RELEASE_FILE), 64_000);
     if saved["format"] != "neko-release-check-v1" {
         return json!({});
@@ -390,7 +397,7 @@ pub(crate) fn release_for_dashboard(data: &Path) -> Value {
         "installed": saved["installed"],
         "channel": saved["channel"],
         "checked_at": saved["checked_at"],
-        "available": saved["available"]["tag"].as_str().filter(|t| release_version(t).is_some()).map(|tag| json!({
+        "available": saved["available"]["tag"].as_str().filter(|t| newer(t, current)).map(|tag| json!({
             "tag": tag,
             "name": saved["available"]["name"],
             "published_at": saved["available"]["published_at"],
@@ -400,7 +407,17 @@ pub(crate) fn release_for_dashboard(data: &Path) -> Value {
 }
 /// The release the check offered, when `tag` is it: what the dashboard may start.
 pub(crate) fn offered(data: &Path, tag: &str) -> bool {
-    release_for_dashboard(data)["available"]["tag"] == tag
+    offered_to(data, tag, crate::VERSION)
+}
+fn offered_to(data: &Path, tag: &str, current: &str) -> bool {
+    release_shown(data, current)["available"]["tag"] == tag
+}
+/// Whether the release `tag` has higher numbers than the version `current`.
+fn newer(tag: &str, current: &str) -> bool {
+    match (release_version(tag), release_version(current)) {
+        (Some((release, _)), Some((running, _))) => release > running,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -625,14 +642,18 @@ mod tests {
             NOW,
         )
         .unwrap();
-        let shown = release_for_dashboard(&data);
+        let shown = release_shown(&data, "0.42.1");
         assert_eq!(shown["available"]["tag"], "v0.43.1Beta");
         assert!(shown["available"]["notes"]
             .as_str()
             .unwrap()
             .ends_with("/v0.43.1Beta"));
-        assert!(offered(&data, "v0.43.1Beta"));
-        assert!(!offered(&data, "v0.43.0"));
+        assert!(offered_to(&data, "v0.43.1Beta", "0.42.1"));
+        assert!(!offered_to(&data, "v0.43.0", "0.42.1"));
+        // Upgraded since the check: the release now running is not offered again.
+        assert!(release_shown(&data, "0.43.1")["available"].is_null());
+        assert!(!offered_to(&data, "v0.43.1Beta", "0.43.1"));
+        assert!(release_shown(&data, "0.44.0")["available"].is_null());
         let _ = fs::remove_dir_all(data);
     }
     #[test]

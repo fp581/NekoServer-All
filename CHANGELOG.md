@@ -7,6 +7,7 @@
 
 ### Dashboard
 - **After Upgrade, the NekoServer tab says an upgrade is at work right away.** For up to a minute after the click (until the next reading), the tab still offered "Upgrade NekoServer", as if nothing had started, and a second click was possible. It now shows "An upgrade is at work" from the click on. Seen upgrading a VM from 0.47.6 to 0.47.8 from the dashboard.
+- **After an upgrade, the release now running is not offered again.** The NekoServer tab said "This server runs NekoServer 0.47.8", then "Available: v0.47.8-beta" with the Upgrade button, until the next daily check. It now offers only a release newer than the one running.
 
 ## v0.47.8 — 2026-11-06
 
