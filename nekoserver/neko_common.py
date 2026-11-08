@@ -947,7 +947,78 @@ def compose_up(base, what, log=None, timeout=900):
         result = checked_run(
             [*base, 'up', '-d', '--force-recreate', '--no-deps', *lost], timeout, f'{what} (docker compose up)'
         )
+    broken = damaged_images(base, what)
+    if broken:
+        if log:
+            log(
+                f'{what}: {", ".join(name for name, _ in broken)} cannot start because its downloaded image is '
+                'damaged (a download cut off by a power loss, most likely): downloading it again'
+            )
+        names = [name for name, _ in broken]
+        download_again(base, what, services, names)
+        result = checked_run(
+            [*base, 'up', '-d', '--force-recreate', '--no-deps', *names], timeout, f'{what} (docker compose up)'
+        )
+        still = damaged_images(base, what)
+        if still:
+            raise RuntimeError(
+                f'{what}: {", ".join(f"{name} ({why})" for name, why in still)} still cannot start after its image '
+                'was downloaded again. Check the drive the images are on (sudo dmesg | tail), then run setup again'
+            )
     return result
+
+
+# What a container says when the program its image names cannot run: the image's files
+# are not what they should be. Seen after a power loss during setup's download: Docker
+# listed the image as complete, but the files of its last layer were lost with the
+# unwritten disk cache, and the container restarted for ever with this line.
+BROKEN_PROGRAM = re.compile(r'exec \S+: (?:exec format error|no such file or directory)', re.IGNORECASE)
+
+
+def damaged_images(base, what, sleep=time.sleep):
+    """(service, what its container said) for each container of the app that cannot start
+    because its image is damaged (BROKEN_PROGRAM in its output). A container whose program
+    cannot run exits at once and Docker restarts it: looked for right after the start, and
+    once more after a moment when a container is not running yet."""
+    docker = list(base[: base.index('compose')]) if 'compose' in base else ['docker']
+    for last in (False, True):
+        rows = compose_rows(base, what)
+        if all(row.get('State') == 'running' for row in rows):
+            return []
+        found = []
+        for row in rows:
+            name, container = row.get('Service'), row.get('ID') or row.get('Name')
+            if not name or not container or row.get('State') == 'running':
+                continue
+            try:
+                said = subprocess.run(
+                    [*docker, 'logs', '--tail', '20', container],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            match = BROKEN_PROGRAM.search((said.stdout or '') + (said.stderr or ''))
+            if match:
+                found.append((name, match.group(0)))
+        if found or last:
+            return sorted(found)
+        sleep(2)  # a container still being created: let Docker start it
+    return []
+
+
+def download_again(base, what, services, names):
+    """Remove the containers and the images of `names` (the app's services) and download
+    the images anew: Docker keeps a damaged image as complete, so a plain pull would
+    change nothing."""
+    docker = list(base[: base.index('compose')]) if 'compose' in base else ['docker']
+    checked_run([*base, 'rm', '-sf', *names], 300, f'{what} (docker compose rm)')
+    images = sorted({str(services.get(name, {}).get('image') or '') for name in names} - {''})
+    if images:
+        checked_run([*docker, 'image', 'rm', '-f', *images], 300, f'{what} (docker image rm)')
+    pull_images([*base, 'pull', '--quiet', *names], what)
 
 
 def compose_services(base, what):
