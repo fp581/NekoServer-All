@@ -1351,7 +1351,7 @@ mod lock_tests {
     }
     #[test]
     fn the_mount_table_answers_like_findmnt_without_reading_the_drive() {
-        // 0.47.10: findmnt killed after its timeout on a saturated drive made the
+        // 0.48.0: findmnt killed after its timeout on a saturated drive made the
         // dashboard call the HDD missing; the kernel's table says what is mounted.
         let root = scratch("mount-table");
         let device = root.join("sdz1");
