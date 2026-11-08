@@ -388,6 +388,64 @@ class UpgradeTests(unittest.TestCase):
             capabilities.preflight([], io.StringIO(), root=self.previous, units=self.units, journal=self.journal), 1
         )
 
+    def test_a_0479_folder_put_back_passes_its_own_old_guard(self):
+        """The review of 0.47.10: the way back runs the previous release's install.sh, so
+        the guard that runs is that release's. 0.47.9's (a verbatim copy here) knows nothing
+        of the upgrade's record: with a service pointing at the newer runtime it stopped
+        the way back. Now the newer runtime is hidden from it while the old setup runs, the
+        services keep finding their program, and the copy has its own name back after."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            'old_release_guard_0479', ROOT / 'tests/old_release_guard_0479.py'
+        )
+        old_release_guard_0479 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(old_release_guard_0479)
+        runtime = self.data / 'installer/runtime'
+        newer = NEWER.removesuffix('Beta')
+        for name in ('v' + VERSION, newer):
+            (runtime / name).mkdir(parents=True)
+        program = runtime / newer / 'nekoserver-runtime'
+        program.write_text('the newer runtime')
+        (self.units / 'nekoserver-dashboard.service').write_text(f'ExecStart={program} serve\n')
+        (self.previous / 'my-config.json').write_text(json.dumps({'data_mount': str(self.data)}))
+        before_fix = old_release_guard_0479.newer_installed(self.previous, VERSION, self.units)
+        self.assertEqual(before_fix, newer.lstrip('v'), 'the old guard stops the way back without the fix')
+        seen = []
+        answers = iter([2])  # the newer release's setup fails after it wrote its units
+
+        def setup(project, settings, account, log_file):
+            code = next(answers, None)
+            if code is None:  # the way back: the 0.47.9 guard, as its install.sh runs it
+                seen.append(old_release_guard_0479.newer_installed(project, VERSION, self.units))
+                seen.append(program.read_text())  # the service's program is still there
+                code = 1 if seen[0] else 0
+            self.ran.append((Path(project).name, account, self.journal_phase()))
+            return code
+
+        self.assertEqual(self.upgrade(setup), 1)
+        self.assertEqual([r[0] for r in self.ran], ['nekoserver', 'v' + VERSION])
+        self.assertEqual(seen, [None, 'the newer runtime'])
+        self.assertFalse(self.journal.exists())
+        # Afterwards: the newer copy has its own name back, no link and no hidden copy left.
+        self.assertTrue((runtime / newer).is_dir() and not (runtime / newer).is_symlink())
+        self.assertEqual(sorted(p.name for p in runtime.iterdir()), sorted(['v' + VERSION, newer]))
+
+    def test_a_copy_hidden_when_the_power_was_cut_is_put_back(self):
+        runtime = self.data / 'installer/runtime'
+        newer = NEWER.removesuffix('Beta')
+        aside = runtime / ('.' + newer + upgrade.HIDDEN)
+        aside.mkdir(parents=True)
+        (runtime / newer).symlink_to(aside.name)
+        (runtime / ('v' + VERSION)).mkdir()
+        with upgrade.newer_runtimes_hidden(runtime, 'v' + VERSION):
+            self.assertTrue((runtime / newer).is_symlink())
+        self.assertTrue((runtime / newer).is_dir() and not (runtime / newer).is_symlink())
+        self.assertFalse(aside.exists())
+        # An older release's copy, and the previous one itself, are never moved.
+        with upgrade.newer_runtimes_hidden(runtime, newer):
+            self.assertFalse(any(p.is_symlink() for p in runtime.iterdir()))
+
     def test_a_setup_that_runs_out_of_time_is_put_back_at_once(self):
         def timed_out(project, settings, account, log_file):
             self.ran.append((Path(project).name, account, self.journal_phase()))
