@@ -591,6 +591,30 @@ class TailscaleStartReasonTests(unittest.TestCase):
         ):
             tailscale.run_cmd(['systemctl', 'enable', '--now', 'tailscaled.service'])
 
+    def test_the_sign_in_link_is_taken_from_the_status_when_the_cli_gave_up_first(self):
+        # The control server answered after tailscale up's own timeout; the daemon
+        # keeps the flow and its status names the link, so the person still gets it.
+        from modules import tailscale
+
+        link = 'https://login.tailscale.com/a/g17550712efaf1e2a'
+        gave_up = mock.Mock(returncode=1, stdout='{"BackendState":"NoState"}\n', stderr='timeout waiting\n')
+        status = mock.Mock(returncode=0, stdout=json.dumps({'BackendState': 'NeedsLogin', 'AuthURL': link}))
+        with mock.patch.object(tailscale.subprocess, 'run', side_effect=[gave_up, status]) as run:
+            self.assertEqual(tailscale.login_targets(), [('url', link)])
+        self.assertEqual(run.call_args_list[0][0][0][:3], ['tailscale', 'up', '--json'])
+        self.assertEqual(run.call_args_list[1][0][0], ['tailscale', 'status', '--json'])
+
+    def test_a_link_from_tailscale_up_itself_is_used_at_once(self):
+        from modules import tailscale
+
+        link = 'https://login.tailscale.com/a/1d88c76401334e'
+        printed = '{"BackendState":"NoState"}\n{"BackendState":"NeedsLogin","AuthURL":"%s"}\n' % link
+        with mock.patch.object(tailscale.subprocess, 'run', return_value=mock.Mock(returncode=1, stdout=printed)) as run:
+            self.assertEqual(tailscale.login_targets(), [('url', link)])
+        self.assertEqual(run.call_count, 1)
+        # Only Tailscale's own sign-in host is trusted as a link.
+        self.assertEqual(tailscale.login_url_in('{"AuthURL":"https://evil.example/a/1"}'), '')
+
 
 class OldReleaseCleanupTests(unittest.TestCase):
     """Each release deploys its own runtime copies; earlier ones are removed once no
