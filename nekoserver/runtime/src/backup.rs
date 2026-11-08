@@ -852,7 +852,10 @@ pub fn save_integrity_on(
         all = json!({"format": "neko-integrity-v1", "sections": {}});
     }
     let mut previous = all["sections"][section].clone();
-    if previous["drive"].as_str().is_some_and(|was| was != drive) {
+    // A previous entry counts only when it is this drive's own: one from another drive, or
+    // one written before drive ids were recorded (so it may be any drive's), is left out,
+    // or a replaced USB drive would show a full check it never had.
+    if !drive.is_empty() && previous["drive"].as_str() != Some(drive) {
         previous = Value::Null;
     }
     let full = check == Check::Full;

@@ -3573,6 +3573,21 @@ mod user_panel_tests {
         let row = shown("new-uuid")[0].clone();
         assert_eq!(row["check"], "quick");
         assert!(row["full_at"].is_null(), "{row}");
+        // A report from before drive ids were recorded (no "drive" at all) may be any
+        // drive's: a new drive's quick copy carries nothing over from it either.
+        let path = data.join("reports/integrity.json");
+        let mut all = common::json(&path, 1 << 20);
+        let mut legacy = all["sections"]["usb_photos"].clone();
+        legacy.as_object_mut().unwrap().remove("drive");
+        legacy["full_at"] = json!(1_700_000_000.0);
+        legacy["damaged"] = json!(["old/photo.jpg"]);
+        legacy["counts"]["damaged"] = json!(1);
+        all["sections"]["usb_photos"] = legacy;
+        common::atomic_json(&path, &all).unwrap();
+        save_integrity_on(&data, "usb_photos", &clean, Check::Quick, "third-uuid").unwrap();
+        let row = shown("third-uuid")[0].clone();
+        assert!(row["full_at"].is_null(), "{row}");
+        assert_eq!(row["damaged"], 0, "{row}");
         let _ = fs::remove_dir_all(&data);
     }
     #[test]
