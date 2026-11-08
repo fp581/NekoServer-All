@@ -3750,7 +3750,27 @@ fn resume_paused(app: &'static Paused, a: &Args) -> Result<()> {
     let cfg = common::json(&cfgpath, 64000);
     let data = common::mount_path(cfg["data_mount"].as_str().unwrap_or(""))?;
     let _recovery = coordinate_data(&cfgpath, &data)?;
+    live_files_drive_present(app, &cfg)?;
     resume_in_docker(app)
+}
+/// Since 0.46.0 the app's live files (Immich's photos, Nextcloud's files) may be on the
+/// media drive. Started with that drive gone, or another one mounted there, the app
+/// would run against an empty folder on the system disk and its record would be cleared
+/// (the review of 0.47.9): it waits instead, record kept, until drive-return runs this
+/// again with the drive back. Files on the SSD need nothing beyond the SSD check.
+fn live_files_drive_present(app: &Paused, cfg: &Value) -> Result<()> {
+    let what = if app.job == "immich" { "photos" } else { "cloud" };
+    let root = common::files_root(cfg, what)?;
+    let media = common::mount_path(cfg["media_mount"].as_str().unwrap_or(""))?;
+    if root != media {
+        return Ok(());
+    }
+    checked_drive(cfg, "media_hdd", &media).map(drop).map_err(|e| {
+        Error::new(&format!(
+            "{} is not started again yet: its {what} live on the media drive, and {e}",
+            app.name
+        ))
+    })
 }
 /// The weekly database copy, made while Immich is paused: kept on the SSD and the HDD,
 /// the newest `keep` in each.
@@ -7967,6 +7987,41 @@ mod tests {
     /// ExecStopPost, the boot service, drive-return) checks only the SSD, so a HDD that
     /// dropped out mid-run no longer keeps Immich stopped for days. NP-1: that SSD check
     /// is as strict as the full one, Btrfs subvolume included.
+    #[test]
+    fn an_app_whose_files_live_on_the_media_drive_waits_for_that_drive() {
+        // The review of 0.47.9: the resume checked the SSD alone, so with the media drive
+        // gone (an empty folder left at its path) Immich or Nextcloud was started against
+        // the system disk and the record cleared.
+        let root = scratch("resume-media-drive");
+        let hdd = root.join("hdd");
+        fs::create_dir_all(&hdd).unwrap();
+        let settings = |photos: &str| {
+            json!({"data_mount": "/srv/nekoserver", "media_mount": hdd, "locations": {"photos": photos},
+                "storage": {"data_ssd": {"uuid": "1111-0000", "fstype": "ext4"},
+                            "media_hdd": {"uuid": "5fa5-0000", "fstype": "ext4"}}})
+        };
+        // Photos on the media drive, nothing mounted there: Immich waits, and the reason names it.
+        let err = live_files_drive_present(&IMMICH, &settings("media")).unwrap_err();
+        assert!(err.to_string().contains("Immich is not started again yet"), "{err}");
+        assert!(err.to_string().contains("photos live on the media drive"), "{err}");
+        assert!(err.to_string().contains("Drive check failed"), "{err}");
+        // Photos on the SSD: the media drive is not needed.
+        live_files_drive_present(&IMMICH, &settings("ssd")).unwrap();
+        // Nextcloud's files are on the media drive unless the settings say otherwise.
+        let err = live_files_drive_present(&NEXTCLOUD, &settings("ssd")).unwrap_err();
+        assert!(err.to_string().contains("Nextcloud is not started again yet"), "{err}");
+        let mut cloud_on_ssd = settings("ssd");
+        cloud_on_ssd["locations"]["cloud"] = json!("ssd");
+        live_files_drive_present(&NEXTCLOUD, &cloud_on_ssd).unwrap();
+        // The resume runs this check after the SSD's, before anything is started.
+        let source = include_str!("backup.rs");
+        let body = &source[source.find("fn resume_paused(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let check = body.find("live_files_drive_present(app, &cfg)?").unwrap();
+        assert!(body.find("coordinate_data(&cfgpath, &data)").unwrap() < check);
+        assert!(check < body.find("resume_in_docker(app)").unwrap());
+        let _ = fs::remove_dir_all(&root);
+    }
     #[test]
     fn immich_is_started_again_while_the_hdd_is_missing() {
         let source = include_str!("backup.rs");
