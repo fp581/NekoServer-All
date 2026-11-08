@@ -42,6 +42,19 @@ pub(crate) fn signature(model: &Value) -> String {
 fn folder(data: &Path) -> PathBuf {
     data.join(FOLDER)
 }
+/// One writer at a time for pending.json and approved.json: an approval from the
+/// dashboard and the check's cleanup after an update each read a file and write it back
+/// whole, so two at once kept only one's change while both said it was saved (the review
+/// of 0.47.9). The check's own read-modify-write of pending.json runs under the monthly
+/// lock, which the update night holds too, so it is not raced by those.
+const LOCK: &str = "updates.lock";
+pub(crate) fn hold(data: &Path) -> Result<fs::File> {
+    hold_for(data, std::time::Duration::from_secs(30))
+}
+fn hold_for(data: &Path, wait: std::time::Duration) -> Result<fs::File> {
+    common::directory(&folder(data), 0o700)?;
+    common::lock_wait(&folder(data).join(LOCK), wait)
+}
 /// Where a found version's settings are kept (its model, an Immich release's files).
 pub(crate) fn candidate_folder(data: &Path, app: &str, sig: &str) -> PathBuf {
     folder(data).join("candidates").join(format!("{app}-{sig}"))
@@ -69,6 +82,7 @@ pub(crate) fn approved(data: &Path) -> Value {
 /// "Install at the next update night" for the version `sig` of `app` (the dashboard).
 /// Only a version the check found can be chosen.
 pub(crate) fn approve(data: &Path, app: &str, sig: &str) -> Result<String> {
+    let _held = hold(data)?;
     let found = pending(data);
     let Some(version) = found["apps"][app]
         .as_array()
@@ -163,6 +177,7 @@ pub(crate) fn forget(data: &Path, pending: &mut Value, app: &str) -> Result<()> 
 }
 /// After `sig` was installed: it and every version found before it are done with.
 pub(crate) fn installed(data: &Path, app: &str, sig: &str) -> Result<()> {
+    let _held = hold(data)?;
     let mut found = pending(data);
     let list: Vec<Value> = found["apps"][app].as_array().cloned().unwrap_or_default();
     let at = list
@@ -497,6 +512,25 @@ mod tests {
         );
         // Only a version the check found can be chosen.
         assert!(approve(&data, "jellyfin", "cccc").is_err());
+        // Two approvals one after the other, each under the lock: both choices survive.
+        let mut found = pending(&data);
+        record(&data, &mut found, "sonarr", ("dddd", "4.0.1"), NOW, 7).unwrap();
+        save_pending(&data, &found).unwrap();
+        approve(&data, "sonarr", "dddd").unwrap();
+        assert_eq!(approved(&data)["apps"]["jellyfin"], "bbbb");
+        assert_eq!(approved(&data)["apps"]["sonarr"], "dddd");
+        // While another writer holds the lock, an approval waits instead of writing over it.
+        let held = hold(&data).unwrap();
+        assert!(hold_for(&data, std::time::Duration::from_millis(50)).is_err());
+        drop(held);
+        hold_for(&data, std::time::Duration::from_millis(50)).unwrap();
+        // Every writer of approved.json takes the lock (the review of 0.47.9).
+        let source = include_str!("updates.rs");
+        for name in ["pub(crate) fn approve(", "pub(crate) fn installed("] {
+            let body = &source[source.find(name).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            assert!(body.contains("hold(data)?"), "{name}");
+        }
         // Settings or images gone: passed over.
         assert!(due(&found, &none, "jellyfin", NOW, 7, &|s: &str| s != "aaaa").is_none());
         // Nothing waits for an app with nothing found.
