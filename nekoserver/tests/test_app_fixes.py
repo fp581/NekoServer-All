@@ -334,7 +334,7 @@ class QbitAutomaticModeTests(unittest.TestCase):
 
 
 class OnboardingReasonTests(unittest.TestCase):
-    def run_onboarding(self, d, code, checks):
+    def run_onboarding(self, d, code, checks, previous=None):
         from modules import onboarding
 
         release = Path(d) / 'installer/releases' / ('v' + onboarding.VERSION)
@@ -346,6 +346,7 @@ class OnboardingReasonTests(unittest.TestCase):
         ctx = mock.Mock(
             apply=True,
             plan=(),
+            previous=previous,
             log=logs.append,
             config={'data_mount': d, 'onboarding': {}, 'media': {'services': ['sonarr']}},
         )
@@ -372,6 +373,17 @@ class OnboardingReasonTests(unittest.TestCase):
         self.assertEqual(result['status'], 'needs_setup')
         self.assertIn('a quality profile that Enter skipped', result['reason'])
         self.assertIn('sudo bash install.sh', result['reason'])
+
+    def test_without_a_terminal_an_unfinished_step_is_not_passed(self):
+        """Seen on a VM upgraded from 0.47.6 (an upgrade runs setup without a terminal): the
+        step passed, with Lidarr's music folder still missing."""
+        checks = [{'check': 'http:sonarr', 'status': 'pass'}]
+        with tempfile.TemporaryDirectory() as d:
+            left = self.run_onboarding(d, 0, checks, {'onboarding': {'status': 'needs_setup'}})
+        self.assertEqual(left['status'], 'needs_setup')
+        self.assertIn('sudo bash install.sh  in a terminal', left['reason'])
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(self.run_onboarding(d, 0, checks, {'onboarding': {'status': 'success'}}))
 
     def test_a_step_still_to_set_up_names_its_reason(self):
         with tempfile.TemporaryDirectory() as d:

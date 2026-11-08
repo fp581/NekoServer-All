@@ -62,6 +62,17 @@ def run(ctx):
     else:
         cmd.append('--report-only')
         result = subprocess.run(cmd, check=False).returncode
+        if not result and not connected_before(ctx):
+            # The check without a terminal sees the apps answer, not the connections
+            # between them, and can't make them: an unfinished step stays unfinished
+            # (seen on a VM upgraded from 0.47.6: this step passed, with Lidarr's music
+            # folder still missing, and the monthly check failed on it every night).
+            remove_stale(ctx, release, config)
+            return {
+                'status': 'needs_setup',
+                'reason': 'Connecting the media apps is not finished, and it asks you questions: run  '
+                'sudo bash install.sh  in a terminal',
+            }
     remove_stale(ctx, release, config)
     if result:
         # Something to fix, said with its reason (on the finishing screen too), not a
@@ -92,6 +103,14 @@ def run(ctx):
         }
     ctx.log('Onboarding configuration checks complete')
     witness_playback(ctx)
+
+
+def connected_before(ctx):
+    """Whether an earlier run finished connecting the apps (True when that is not known)."""
+    previous = getattr(ctx, 'previous', None)
+    if not isinstance(previous, dict):
+        return True
+    return previous.get('onboarding', {}).get('status') == 'success'
 
 
 # The apps that other apps connect to. Taken out of media.services, their containers
