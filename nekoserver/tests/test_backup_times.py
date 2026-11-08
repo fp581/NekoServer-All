@@ -174,8 +174,9 @@ class TimersTests(unittest.TestCase):
         self.assertEqual(guard['maintenance']['time'], '01:45')
         self.assertEqual(guard['paths'], {'photos': '/p'})
         self.assertEqual(guard['backup_times'], config['backup_times'])
+        too_late = settings(monthly='06:30')
         with self.assertRaises(RuntimeError) as caught:
-            maintenance.options(settings(monthly='06:30'))
+            maintenance.options(too_late)
         self.assertIn('must start at night, before 06:00', str(caught.exception))
         self.assertIn('not at 06:30', str(caught.exception))
 

@@ -150,7 +150,7 @@
   /* ---- related questions on one page: when the backups run, three rows */
 
   function pageOf(q) {
-    return q.page && q.page.form === 'backup_times' ? q.page : null;
+    return q.page?.form === 'backup_times' ? q.page : null;
   }
 
   function nightEnd(page) {
