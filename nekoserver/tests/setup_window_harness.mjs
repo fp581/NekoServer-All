@@ -19,7 +19,7 @@ function element(id) {
     },
     append(...c) { this.children.push(...c); },
     replaceChildren(...c) { this.children = c; },
-    setAttribute(k, v) { this[k] = v; },
+    setAttribute(k, v) { this[k] = v; if (k === 'id') elements[v] = this; },
     querySelectorAll() { return []; },
     focus() { /* nothing to focus in the stand-in page */ },
     scrollIntoView() { /* nothing to scroll in the stand-in page */ },
@@ -61,6 +61,13 @@ async function step(i) {
   if (states[i].phase === 'choose' && states[i].press) {
     for (const card of elements.extras.children) if (card.children[0].textContent === states[i].press) card.children[1].children[1].children[0].fire('change');
   }
+  // A page of fields (the backup times): {"fill": {"ask-page-daily": "23:30"}} types into
+  // its rows and presses Save; {"skipPage": true} presses its Skip for now.
+  if (states[i].fill) {
+    for (const [id, value] of Object.entries(states[i].fill)) elements[id].value = value;
+    elements.ask.fire('submit');
+  }
+  if (states[i].skipPage) elements['ask-page-skip'].fire('click');
   await settle();
   const next = waits.shift();
   if (next && i < states.length - 1) next();
@@ -72,4 +79,7 @@ const marks = (list) => (list?.children ?? []).map((li) => [li.className, li.chi
 const cards = (elements.extras?.children ?? []).map((card) => [card.className, card.children[1].children[0].textContent]);
 console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent ?? '', shown,
   badge: elements['phase-badge']?.textContent ?? '', label: elements['finish-label']?.textContent ?? '', lines: elements['finish-lines']?.textContent ?? '',
-  marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards }));
+  marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards,
+  pageHidden: elements['ask-page']?.hidden ?? null, answerHidden: elements['ask-answer']?.hidden ?? null,
+  rows: (elements['ask-page']?.children ?? []).map((row) => [row.children[0].textContent, row.children[1].children.map((input) => input.value), row.children[2].textContent]),
+  prompt: elements['ask-prompt']?.textContent ?? '', note: elements['ask-note']?.textContent ?? '' }));

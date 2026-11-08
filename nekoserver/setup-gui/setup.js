@@ -28,6 +28,8 @@
   let misses = 0;
   let shownCurrent = null; // the running step the list was last scrolled to
   let askedSeq = null; // the question the form shows (rebuilt only when it changes)
+  let askedQuestion = null; // that question itself (its page, when it is on one)
+  let pageInputs = {}; // the fields of the page shown, by key
   let finishedShown = false; // the finishing screen is up: it stays, also once setup has closed
 
   function el(tag, attrs, ...children) {
@@ -114,12 +116,17 @@
     return $('ask-yesno').querySelectorAll('button');
   }
 
-  async function answer(seq, text, skip = false) {
-    $('ask-send').disabled = true;
+  /* `fields`: the other answers of a page (the backup times), sent with the one asked. */
+  async function answer(seq, text, skip = false, fields = null) {
+    for (const id of ['ask-send', 'ask-page-send', 'ask-page-skip']) $(id).disabled = true;
     for (const b of askButtons()) b.disabled = true;
+    for (const input of Object.values(pageInputs)) input.disabled = true;
     $('ask-note').textContent = skip ? 'Left for now. Setup goes on in a moment…' : 'Sent. Setup goes on in a moment…';
     try {
-      const { ok } = await post('api/answer', skip ? { seq, text: '', skip: true } : { seq, text });
+      let body = { seq, text };
+      if (skip) body = { seq, text: '', skip: true };
+      else if (fields) body = { seq, text, fields };
+      const { ok } = await post('api/answer', body);
       if (!ok) $('ask-note').textContent = 'That question was already answered in the terminal.';
     } catch {
       $('ask-note').textContent = 'Could not reach setup; answer in the terminal.';
@@ -128,12 +135,100 @@
 
   $('ask').addEventListener('submit', e => {
     e.preventDefault();
-    if (askedSeq != null) void answer(askedSeq, $('ask-input').value);
+    if (askedSeq == null) return;
+    if (askedQuestion && pageOf(askedQuestion)) void answerPage(askedQuestion);
+    else void answer(askedSeq, $('ask-input').value);
   });
   for (const b of askButtons())
     b.addEventListener('click', () => {
       if (askedSeq != null) void answer(askedSeq, b.dataset.answer, b.id === 'ask-skip');
     });
+  $('ask-page-skip').addEventListener('click', () => {
+    if (askedSeq != null) void answer(askedSeq, '', true);
+  });
+
+  /* ---- related questions on one page: when the backups run, three rows */
+
+  function pageOf(q) {
+    return q.page && q.page.form === 'backup_times' ? q.page : null;
+  }
+
+  function nightEnd(page) {
+    return String(page.night_end ?? 6).padStart(2, '0') + ':00';
+  }
+
+  function timeInput(key, value, label) {
+    const input = el('input', { type: 'time', id: 'ask-page-' + key, step: '60', required: '', 'aria-label': label });
+    input.value = value;
+    return input;
+  }
+
+  function row(title, inputs, note) {
+    return el(
+      'div',
+      { class: 'row' },
+      el('span', { class: 'row-title', text: title }),
+      el('span', { class: 'row-inputs' }, ...inputs),
+      el('small', { text: note })
+    );
+  }
+
+  /* Each row says what runs at its time (the same words setup says in the terminal). */
+  function buildBackupTimes(page) {
+    const f = page.fields;
+    const day = el('select', { id: 'ask-page-weekly_day', 'aria-label': 'Day of the weekly USB copy' });
+    for (const name of page.weekdays || []) day.append(el('option', { value: name, text: name }));
+    day.value = f.weekly_day;
+    pageInputs = {
+      daily: timeInput('daily', f.daily, 'Time of the daily backups'),
+      weekly_day: day,
+      weekly: timeInput('weekly', f.weekly, 'Time of the weekly USB copy'),
+      monthly: timeInput('monthly', f.monthly, 'Time of the monthly check')
+    };
+    $('ask-page').replaceChildren(
+      row(
+        'Daily backups',
+        [pageInputs.daily],
+        "The media apps' snapshot at this time, the music copy 30 minutes before it and the copy of this PC's own settings an hour after it."
+      ),
+      row(
+        'Weekly USB copy',
+        [day, pageInputs.weekly],
+        "Your photos and Nextcloud files onto the USB drive, with Immich's database copy 45 minutes before it."
+      ),
+      row(
+        'Monthly check and updates',
+        [pageInputs.monthly],
+        'On the 1st: every backup copy checked, a snapshot of every app and a restore test; the weekly app updates start at this time too. It must start at night, before ' +
+          nightEnd(page) +
+          '.'
+      )
+    );
+  }
+
+  function pageValues() {
+    return Object.fromEntries(Object.entries(pageInputs).map(([key, input]) => [key, input.value]));
+  }
+
+  function pageProblem(page, values) {
+    for (const key of ['daily', 'weekly', 'monthly'])
+      if (!/^\d\d:\d\d$/.test(values[key])) return 'Every time needs hours and minutes, as HH:MM.';
+    if (Number(values.monthly.slice(0, 2)) >= (page.night_end ?? 6))
+      return 'The monthly check must start at night, before ' + nightEnd(page) + '.';
+    return '';
+  }
+
+  async function answerPage(q) {
+    const page = pageOf(q);
+    const values = pageValues();
+    const problem = pageProblem(page, values);
+    if (problem) {
+      $('ask-note').textContent = problem;
+      return;
+    }
+    // The terminal's prompt stands for one field: its answer is that value, the rest ride along.
+    await answer(q.seq, values[page.asking] ?? '', false, values);
+  }
 
   /* A step you confirm yourself (the phone, a TV test) can be left for later: the
      window's "Skip for now" does what Ctrl+D in the terminal does. */
@@ -153,29 +248,44 @@
     if (!q) {
       form.hidden = true;
       askedSeq = null;
+      askedQuestion = null;
+      pageInputs = {};
       return;
     }
     form.hidden = false;
     if (q.seq === askedSeq) return; // already on screen; keep what is being typed
     askedSeq = q.seq;
+    askedQuestion = q;
     $('ask-label').textContent = current ? 'A QUESTION · ' + current.title : 'A QUESTION';
     const context = $('ask-context');
     context.textContent = q.context.join('\n');
     context.hidden = !q.context.length;
     context.scrollTop = context.scrollHeight; // the last lines matter most
-    $('ask-prompt').textContent = q.secret ? q.text + ' (a hidden entry: type it here or in the terminal)' : q.text;
+    const page = pageOf(q);
+    let prompt = q.text;
+    if (page) prompt = 'When should the backups run? Times are on this PC’s clock.';
+    else if (q.secret) prompt = q.text + ' (a hidden entry: type it here or in the terminal)';
+    $('ask-prompt').textContent = prompt;
     const yesno = q.kind === 'yesno';
-    $('ask-answer').hidden = yesno;
+    $('ask-answer').hidden = yesno || !!page;
     $('ask-yesno').hidden = !yesno;
     $('ask-skip').hidden = !canSkip(q);
+    $('ask-page').hidden = !page;
+    $('ask-page-actions').hidden = !page;
+    pageInputs = {};
+    if (page) buildBackupTimes(page);
     const input = $('ask-input');
     input.type = q.secret ? 'password' : 'text';
     input.value = '';
     input.disabled = false;
-    $('ask-send').disabled = false;
+    for (const id of ['ask-send', 'ask-page-send', 'ask-page-skip']) $(id).disabled = false;
     for (const b of askButtons()) b.disabled = false;
-    $('ask-note').textContent = askNote(q, yesno);
-    if (!yesno) input.focus();
+    let note = askNote(q, yesno);
+    if (page)
+      note =
+        'Save sends all three at once; in the terminal they are asked one at a time. Skip for now keeps the times shown.';
+    $('ask-note').textContent = note;
+    if (!yesno && !page) input.focus();
   }
 
   /* ---- while it runs */

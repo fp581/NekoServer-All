@@ -260,6 +260,72 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertEqual(printed.count('Type a time of day as HH:MM before 06:00, for example 02:30.'), 1)
         self.assertFalse(any('[yes/no]' in q for q in asked), 'text questions: the setup window shows a field for them')
 
+    def window_prompt(self, first, fields=None, skip=False):
+        """A terminal prompt whose first question the setup window answers, with the rest
+        of the page (`fields`) or with its "Skip for now"; any further prompt fails the test."""
+        import setup_progress
+
+        def prompt(question=''):
+            record = setup_progress.question(question)
+            self.assertTrue(setup_progress.answer_from_window(record['seq'], first, skip=skip, fields=fields))
+            setup_progress.answered()
+            if skip:
+                raise EOFError
+            return first
+
+        return prompt
+
+    def test_the_setup_window_answers_the_three_as_one_page(self):
+        import setup_progress
+
+        ctx = Ctx(self.config())
+        page = {'daily': '23:30', 'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '01:00'}
+        asked = []
+        printed = []
+
+        def prompt(question=''):
+            asked.append(question)
+            self.assertEqual(len(asked), 1, 'the window answered the whole page: nothing else is asked')
+            # What the window draws with the first question: the page, every field and its current value.
+            shown = setup_progress.page_shown()
+            self.assertEqual(shown['form'], 'backup_times')
+            self.assertEqual(
+                shown['fields'], {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30'}
+            )
+            self.assertEqual((shown['asking'], shown['weekdays'][-1], shown['night_end']), ('daily', 'Sun', 6))
+            return self.window_prompt('23:30', page)(question)
+
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
+        self.assertEqual(ctx.config['backup_times'], page)
+        self.assertEqual(sum('(from the setup window)' in line for line in printed), 3)
+        self.assertIsNone(setup_progress.page_shown(), 'the page is over once the answers are saved')
+
+    def test_the_windows_skip_for_now_keeps_the_times_shown(self):
+        ctx = Ctx(self.config())
+        printed = []
+        guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('', skip=True), output=printed.append)
+        self.assertEqual(
+            ctx.config['backup_times'], {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30'}
+        )
+        self.assertEqual(ctx.saved, 1)
+
+    def test_a_field_the_window_sent_wrong_is_asked_in_the_terminal(self):
+        # The window checks its fields itself; a value that still arrives wrong (another
+        # browser, say) is explained and asked the plain way, the others kept.
+        ctx = Ctx(self.config())
+        printed = []
+        first = self.window_prompt('23:30', {'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '07:00'})
+        prompts = iter([first, answers('01:15')])
+
+        def prompt(question=''):
+            return next(prompts)(question)
+
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
+        self.assertEqual(
+            ctx.config['backup_times'], {'daily': '23:30', 'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '01:15'}
+        )
+        self.assertIn('Type a time of day as HH:MM before 06:00, for example 02:30.', printed)
+
     def test_three_wrong_answers_keep_the_default_and_say_so(self):
         ctx = Ctx(self.config())
         printed = self.ask(ctx, 'x', 'y', 'z', '', '', '')

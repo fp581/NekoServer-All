@@ -381,23 +381,39 @@ def ask_choice(question, default, valid, hint, prompt=input, output=print, attem
     return default
 
 
+def ask_on_page(key, question, default, valid, hint, prompt=input, output=print):
+    """ask_choice for one field of a page the setup window shows whole (setup_progress.page):
+    when the window already sent this field, that answer is used (checked like a typed
+    one) and the terminal is not asked; the window's "Skip for now" keeps the default."""
+    import setup_progress
+
+    given = setup_progress.page_answer(key)
+    if given is not None:
+        kind, value = given
+        if kind == 'skip':
+            return default
+        value = value.strip()
+        if valid(value):
+            output(f'{question}{value}  (from the setup window)')
+            setup_progress.page_set(key, value)
+            return value
+        output(hint)
+    setup_progress.page_asks(key)
+    answer = ask_choice(question, default, valid, hint, prompt, output)
+    setup_progress.page_set(key, answer)
+    return answer
+
+
 def choose_backup_times(ctx, prompt=None, output=None):
     """Ask when the backups run (the daily jobs, the weekly USB copy, the monthly check)
     and save the answers as "backup_times" in the settings file; every timer is written
     from them (neko_common.job_times). Enter keeps the time shown: the server's current
     times, so a server set up before 0.48.0 keeps its schedule. Asked once; a run after
     that shows the answer and asks again only on request (optional_kept). Setup without
-    a person at the terminal (an upgrade) changes nothing."""
-    from neko_common import (
-        BACKUP_TIMES,
-        WEEKDAYS,
-        backup_times,
-        backup_times_said,
-        host_timezone,
-        job_times,
-        remember_answer,
-        valid_time,
-    )
+    a person at the terminal (an upgrade) changes nothing. The setup window shows the
+    three as one page (setup_progress.page) and may answer them together."""
+    import setup_progress
+    from neko_common import BACKUP_TIMES, WEEKDAYS, backup_times, backup_times_said, job_times, remember_answer
 
     if not interactive(ctx):
         return
@@ -408,6 +424,22 @@ def choose_backup_times(ctx, prompt=None, output=None):
         return
     now = job_times(ctx.config)
     night_end = ctx.config.get('maintenance', {}).get('night_end_hour', 6)
+    shown = {'daily': now['app'], 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
+    with setup_progress.page(BACKUP_TIMES, shown, weekdays=list(WEEKDAYS), night_end=night_end):
+        chosen = ask_backup_times(ctx, now, night_end, prompt, output)
+    ctx.config[BACKUP_TIMES] = chosen
+    save_settings(ctx)
+    said = backup_times_said(ctx.config)
+    remember_answer(ctx.config['data_mount'], BACKUP_TIMES, said)
+    output(f'Backups run {said}. To change this later, run  sudo bash install.sh  again and say yes to asking again.')
+    ctx.log('Backup times chosen: ' + said)
+
+
+def ask_backup_times(ctx, now, night_end, prompt, output):
+    """The three questions in the terminal (the window answers through ask_on_page);
+    the chosen "backup_times" settings."""
+    from neko_common import WEEKDAYS, host_timezone, valid_time
+
     days = ', '.join(WEEKDAYS)
     output('\n=== When the backups run ===')
     output(
@@ -418,7 +450,8 @@ def choose_backup_times(ctx, prompt=None, output=None):
         'Every night: the media apps\' snapshot at the time you choose, the music copy 30 minutes '
         'before it and the copy of this PC\'s own settings an hour after it.'
     )
-    daily = ask_choice(
+    daily = ask_on_page(
+        'daily',
         f'When should the daily backups run? (HH:MM, Enter for {now["app"]}): ',
         now['app'],
         valid_time,
@@ -430,7 +463,8 @@ def choose_backup_times(ctx, prompt=None, output=None):
         'Every week: the USB copy of your photos and Nextcloud files, with Immich\'s database copy '
         '45 minutes before it.'
     )
-    weekday = ask_choice(
+    weekday = ask_on_page(
+        'weekly_day',
         f'On which day should the weekly USB copy run? ({days}; Enter for {now["usb_day"]}): ',
         now['usb_day'],
         lambda answer: answer.capitalize() in WEEKDAYS,
@@ -438,7 +472,8 @@ def choose_backup_times(ctx, prompt=None, output=None):
         prompt,
         output,
     ).capitalize()
-    weekly = ask_choice(
+    weekly = ask_on_page(
+        'weekly',
         f'At what time on that day? (HH:MM, Enter for {now["usb"]}): ',
         now['usb'],
         valid_time,
@@ -450,7 +485,8 @@ def choose_backup_times(ctx, prompt=None, output=None):
         'Every month, on the 1st: the check of every backup copy, a snapshot of every app and a restore '
         f'test; the weekly app updates start at this time too. It must start at night, before {night_end:02d}:00.'
     )
-    monthly = ask_choice(
+    monthly = ask_on_page(
+        'monthly',
         f'At what time should the monthly check start? (HH:MM before {night_end:02d}:00, Enter for {now["monthly"]}): ',
         now['monthly'],
         lambda answer: valid_time(answer) and int(answer[:2]) < night_end,
@@ -458,12 +494,7 @@ def choose_backup_times(ctx, prompt=None, output=None):
         prompt,
         output,
     )
-    ctx.config[BACKUP_TIMES] = {'daily': daily, 'weekly_day': weekday, 'weekly': weekly, 'monthly': monthly}
-    save_settings(ctx)
-    said = backup_times_said(ctx.config)
-    remember_answer(ctx.config['data_mount'], BACKUP_TIMES, said)
-    output(f'Backups run {said}. To change this later, run  sudo bash install.sh  again and say yes to asking again.')
-    ctx.log('Backup times chosen: ' + said)
+    return {'daily': daily, 'weekly_day': weekday, 'weekly': weekly, 'monthly': monthly}
 
 
 def app_security(ctx, apps, ports):

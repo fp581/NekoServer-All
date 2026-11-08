@@ -28,6 +28,7 @@ _path = None
 _step = None  # the step running now
 _recent = collections.deque(maxlen=40)  # the terminal's last lines, for a question's context
 _pending = None  # {'seq', 'event', 'answer'} while a question waits
+_page = None  # a group of questions the window shows as one page (page()), while it is asked
 CONTEXT_LINES = 14
 POLL = 0.3  # seconds between looks at the terminal and the window while waiting
 
@@ -46,7 +47,7 @@ def enable(path=None):
 
 
 def disable():
-    global _path, _step, _pending
+    global _path, _step, _pending, _page
     with _lock:
         _events.clear()
         _recent.clear()
@@ -54,6 +55,7 @@ def disable():
         _path = None
         _step = None
         _pending = None
+        _page = None
 
 
 def event(kind, **fields):
@@ -173,6 +175,7 @@ def question(text, secret=False):
         secret=bool(secret),
         form=question_kind(shown, secret),
         context=context_for(shown, question_context()),
+        page=page_shown(),
     )
     with _lock:
         _pending = {'seq': record['seq'], 'event': threading.Event(), 'answer': None}
@@ -198,17 +201,89 @@ def pending_question():
     return None
 
 
-def answer_from_window(seq, text, skip=False):
+def answer_from_window(seq, text, skip=False, fields=None):
     """The window's answer to the question with this sequence number. True when it was
     the one waiting (and not answered already). `skip` is the window's "Skip for now":
-    the question is left unanswered, as Ctrl+D in the terminal leaves it."""
+    the question is left unanswered, as Ctrl+D in the terminal leaves it. `fields` are
+    the answers to the other questions of the page this one is on (page())."""
     with _lock:
         if _pending is None or _pending['seq'] != seq or _pending['event'].is_set():
             return False
         _pending['answer'] = str(text)
         _pending['skip'] = bool(skip)
         _pending['event'].set()
+        if _page is not None:
+            if skip:
+                _page['skipped'] = True
+            elif isinstance(fields, dict):
+                _page['answers'].update(
+                    {key: str(value)[:100] for key, value in fields.items() if key in _page['fields']}
+                )
         return True
+
+
+# ----- a page: related questions the window shows and answers together
+
+
+@contextlib.contextmanager
+def page(form, fields, **options):
+    """While this is active, the questions setup asks belong to one page (`form` says
+    which, "backup_times"): the window shows every field with its current value and
+    may answer all of them at once, while the terminal is still asked one at a time.
+    Before each prompt, page_asks names the field; page_answer gives what the window
+    sent for a field, so that prompt is not asked."""
+    global _page
+    with _lock:
+        _page = {
+            'form': form,
+            'fields': dict(fields),
+            'options': options,
+            'asking': None,
+            'answers': {},
+            'skipped': False,
+        }
+    try:
+        yield
+    finally:
+        with _lock:
+            _page = None
+
+
+def page_shown():
+    """What the window draws for the question being asked: the page's form, the fields
+    with their current values and which one this question stands for; None off a page."""
+    with _lock:
+        if _page is None:
+            return None
+        return {'form': _page['form'], 'fields': dict(_page['fields']), 'asking': _page['asking'], **_page['options']}
+
+
+def page_asks(key):
+    """The field the next question stands for."""
+    with _lock:
+        if _page is not None:
+            _page['asking'] = key
+
+
+def page_set(key, value):
+    """A field's value as answered (shown on the page with the next question)."""
+    with _lock:
+        if _page is not None:
+            _page['fields'][key] = value
+
+
+def page_answer(key):
+    """('answer', text) when the window sent this field with an earlier question of the
+    page, ('skip', None) when its "Skip for now" left the whole page, None when the
+    field is to be asked."""
+    with _lock:
+        if _page is None:
+            return None
+        if _page['skipped']:
+            return ('skip', None)
+        if key in _page['answers']:
+            return ('answer', _page['answers'].pop(key))
+        return None
 
 
 @contextlib.contextmanager

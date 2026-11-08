@@ -336,6 +336,7 @@ class Window:
                 'secret': question['secret'],
                 'kind': question.get('form', 'text'),
                 'context': question.get('context', []),
+                'page': question.get('page'),
             }
         if phase == 'finished':
             self.delivered.set()
@@ -436,7 +437,12 @@ class Window:
                 isinstance(body.get('seq'), int)
                 and isinstance(body.get('text'), str)
                 and len(body['text']) <= 1000
-                and setup_progress.answer_from_window(body['seq'], body['text'], skip=body.get('skip') is True)
+                and setup_progress.answer_from_window(
+                    body['seq'],
+                    body['text'],
+                    skip=body.get('skip') is True,
+                    fields=body.get('fields') if isinstance(body.get('fields'), dict) else None,
+                )
             )
             return 200, json.dumps({'ok': bool(taken)}).encode(), JSON
         return NOT_FOUND

@@ -482,6 +482,50 @@ main > section {
   font-size: 12.5px;
   margin: 0;
 }
+/* related questions on one page (the backup times): a row per time, its note under it */
+.rows {
+  display: grid;
+  gap: 10px;
+}
+.row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--raised);
+}
+.row-title {
+  font-weight: 620;
+  font-size: 15px;
+}
+.row-inputs {
+  display: flex;
+  gap: 8px;
+}
+.row input,
+.row select {
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+.row input:focus,
+.row select:focus {
+  border-color: var(--purple);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--purple-soft);
+}
+.row small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
 .finish {
   margin: 6px 0 10px;
   padding: 12px;
@@ -511,6 +555,7 @@ main > section {
 .ask[hidden],
 .progress[hidden],
 .answer[hidden],
+.rows[hidden],
 .context[hidden],
 .extras[hidden] {
   display: none;

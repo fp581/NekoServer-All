@@ -171,6 +171,79 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.choose()], 'start')
         self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
 
+    def backup_times_question(self, **changes):
+        step = {'id': 'storage', 'title': 'Drives', 'status': 'running', 'explanation': '', 'packages': [], 'notes': []}
+        page = {
+            'form': 'backup_times',
+            'fields': {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30'},
+            'asking': 'daily',
+            'weekdays': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+            'night_end': 6,
+        }
+        question = {
+            'seq': 7,
+            'text': 'When should the daily backups run? (HH:MM, Enter for 04:15): ',
+            'secret': False,
+            'kind': 'text',
+            'context': [],
+            'page': page,
+        }
+        return {
+            **self.choose(),
+            'phase': 'running',
+            'steps': [step],
+            'current': 'storage',
+            'total': 1,
+            'question': question,
+            **changes,
+        }
+
+    def test_the_backup_times_are_one_page_of_three_rows(self):
+        chosen = {
+            'ask-page-daily': '23:30',
+            'ask-page-weekly_day': 'Sat',
+            'ask-page-weekly': '21:00',
+            'ask-page-monthly': '01:00',
+        }
+        seen = self.page([self.backup_times_question(fill=chosen)])
+        # Three rows, each with the time shown and a line saying what runs then.
+        self.assertEqual(
+            [row[0] for row in seen['rows']], ['Daily backups', 'Weekly USB copy', 'Monthly check and updates']
+        )
+        self.assertEqual([row[1] for row in seen['rows']], [['23:30'], ['Sat', '21:00'], ['01:00']])
+        self.assertIn('music copy 30 minutes before', seen['rows'][0][2])
+        self.assertIn("Immich's database copy 45 minutes before", seen['rows'][1][2])
+        self.assertIn('before 06:00', seen['rows'][2][2])
+        self.assertEqual((seen['pageHidden'], seen['answerHidden']), (False, True))
+        self.assertEqual(seen['prompt'], 'When should the backups run? Times are on this PC’s clock.')
+        # Save sent the field the terminal is asking for as the answer, the rest with it.
+        self.assertEqual(
+            seen['posts'],
+            [
+                [
+                    'api/answer',
+                    {
+                        'seq': 7,
+                        'text': '23:30',
+                        'fields': {'daily': '23:30', 'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '01:00'},
+                    },
+                ]
+            ],
+        )
+
+    def test_a_monthly_time_after_the_night_is_refused_on_the_page(self):
+        seen = self.page([self.backup_times_question(fill={'ask-page-monthly': '06:00'})])
+        self.assertEqual(seen['posts'], [])
+        self.assertEqual(seen['note'], 'The monthly check must start at night, before 06:00.')
+        # Skip for now leaves the question as Ctrl+D does: setup keeps the times shown.
+        seen = self.page([self.backup_times_question(skipPage=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 7, 'text': '', 'skip': True}]])
+        # A plain question draws its field, not the page.
+        plain = self.backup_times_question()
+        plain['question'] = {**plain['question'], 'page': None}
+        seen = self.page([plain])
+        self.assertEqual((seen['pageHidden'], seen['answerHidden'], seen['rows']), (True, False, []))
+
     def test_the_finish_title_is_setups_own_verdict(self):
         done = {
             **self.choose(),
