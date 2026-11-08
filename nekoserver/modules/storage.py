@@ -1427,7 +1427,7 @@ def choose_backup_times(context):
     """When the backups run (daily, weekly, monthly), asked here with the drives so the
     person answers every question at the start (guided_setup.choose_backup_times)."""
     plan = getattr(context, 'plan', None)
-    if plan is not None and not JOB_STEPS & set(plan):
+    if isinstance(plan, (list, tuple)) and not JOB_STEPS & set(plan):
         return
     from guided_setup import choose_backup_times as ask
 

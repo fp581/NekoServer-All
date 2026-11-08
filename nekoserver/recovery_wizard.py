@@ -2203,7 +2203,7 @@ def setup_lock_is_ours(lock=None):
     """True when this very process holds setup's lock. install.sh takes the lock before it
     starts the recovery menu (installer.py --recover inherits the open file), so the menu
     holds it for as long as it is open: a try of the lock from inside the menu fails, and
-    the read-only check reported "Setup is running" with no setup anywhere (0.48.0)."""
+    the read-only check reported "Setup is running" with no setup anywhere (0.47.10)."""
     if lock is None:
         lock = SHARED['setup_lock']
     try:

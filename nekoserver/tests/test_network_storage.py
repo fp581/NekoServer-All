@@ -793,7 +793,7 @@ class ReadOnlyCheckTests(unittest.TestCase):
             self.assertEqual(self.wizard.repair_blocked(self.config, run), 'An app update is not finished yet')
 
     def test_the_menu_holding_setups_lock_itself_is_not_a_running_setup(self):
-        """0.48.0: install.sh takes setup's lock before it starts the menu, so the check
+        """0.47.10: install.sh takes setup's lock before it starts the menu, so the check
         of a read-only drive always answered "Setup is running" and did nothing. The lock
         this process holds itself is left out; one held by another process still counts."""
         import fcntl

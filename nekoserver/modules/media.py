@@ -281,7 +281,7 @@ def _run(context):
         raise RuntimeError('Docker missing')
     # Docker gets up to two minutes to answer, as the photos step gives it. One try of 20
     # seconds failed this whole step on a PC still busy right after building the runtime
-    # (a small VM, the 0.48.0 round), and setup told the user to run it again.
+    # (a small VM, the 0.47.10 round), and setup told the user to run it again.
     run_cmd(['docker', 'info', '--format', '{{.ServerVersion}}'], timeout=120)
     selected = settings.get('services', list(SERVICES))
     if not isinstance(selected, list) or not selected or any(x not in SERVICES for x in selected):
