@@ -324,6 +324,23 @@ def save_profiles(ctx, added, changed, apply):
         ctx.persist_config()
 
 
+def record_profile(path, profile, plan, previous, log):
+    """The steps this server is set up with, for the upgrade to run the same ones
+    (upgrade.py setup_profile): it ran "full" for everyone (the review of 0.47.2). A run
+    narrower than the server (a repair with --profile foundation on a full installation)
+    keeps the profile recorded before: recorded as the server's, the upgrade would set up
+    the foundation alone and leave the installed apps out (the review of 0.47.9)."""
+    done = {name for name, state in previous.items() if state.get('status') == 'success'}
+    left_out = sorted(done - set(plan))
+    if left_out:
+        log(
+            f'The recorded setup profile is kept: this run ({profile or "the steps switched on"}) leaves out '
+            'steps already set up: ' + ', '.join(left_out)
+        )
+        return
+    atomic_json(path, {'format': PROFILE_FORMAT, 'profile': profile})
+
+
 def _execute(args, root=ROOT):
     config = read_json(Path(args.config))
     validate_config(config)
@@ -389,10 +406,6 @@ def _execute(args, root=ROOT):
             print('Configuration and dependency graph valid.')
         return 0
     ensure_directory(state_dir, 0o700)
-    if args.apply and not (args.module or args.retry_failed):
-        # The steps this server is set up with, for the upgrade to run the same ones
-        # (upgrade.py setup_profile): it ran "full" for everyone (the review of 0.47.2).
-        atomic_json(safe_path(state_dir / PROFILE_FILE), {'format': PROFILE_FORMAT, 'profile': args.profile})
     if not args.apply:
         state_path = safe_path(state_dir / 'inspection-state.json')
     log_path = safe_path(state_dir / ('install.log' if args.apply else 'inspection.log'))
@@ -411,6 +424,8 @@ def _execute(args, root=ROOT):
         if not message.startswith(MARKERS):
             setup_progress.note(message)  # a step's own words, for the setup window
 
+    if args.apply and not (args.module or args.retry_failed):
+        record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan
     ctx.previous = dict(previous)  # each step as the last run left it
