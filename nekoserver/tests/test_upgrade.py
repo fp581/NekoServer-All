@@ -602,6 +602,25 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.services_behind('1.2.3', units), ['nekoserver-app-backup.service'])
         self.assertEqual(upgrade.services_behind('1.2.2', units), ['nekoserver-dashboard.service'])
 
+    def test_the_upgrade_folder_is_tidied_when_the_way_back_removed_the_settings(self):
+        """Seen on the VM: upgrade.py resume, run from the newer release's copy on the SSD,
+        put the previous release back, whose setup removed that copy and its settings file
+        with it; the tidy after it could no longer read the settings, and the download and
+        the build folder stayed in installer/upgrades."""
+        work = self.data / upgrade.UPGRADES
+        leftover = work / NEWER / 'NekoServer-All' / 'nekoserver'
+        leftover.mkdir(parents=True)
+        upgrade.record('installing', self.journal, to=NEWER, previous=str(self.previous), before=['storage'])
+
+        def setup(project, settings, account, log_file):
+            self.ran.append(Path(project).name)
+            Path(self.settings).unlink()  # the previous release's cleanup removed the newer copy
+            return 0
+
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, setup, self.journal), 1)
+        self.assertFalse(any('could not be tidied' in line for line in self.said), self.said)
+        self.assertFalse((work / NEWER).exists())
+
     def test_a_cut_off_upgrade_is_put_right_at_the_next_start(self):
         upgrade.record('downloading', self.journal, to=NEWER, previous=str(self.previous))
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)

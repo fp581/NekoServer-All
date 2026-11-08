@@ -440,17 +440,35 @@ def upgrade(tag, settings, out=print, **more):
         out(BUSY_MOVE + '; the upgrade did not start, nothing was changed. Try again later.')
         return 2
     with held:
+        work = upgrades_folder(settings)
         code = upgrade_held(tag, settings, out, **more)
-        tidy_after(settings, more.get('journal', JOURNAL), out)
+        tidy_after(work, more.get('journal', JOURNAL), out)
         return code
 
 
-def tidy_after(settings, journal, out=print):
-    """tidy for this server's upgrade folder; a folder that can't be tidied never fails
-    the upgrade."""
+def upgrades_folder(settings):
+    """This server's upgrade folder, read from the settings before the work starts (None
+    when they can't be read). Read again at the end, the settings may be gone: putting the
+    previous release back removes the copy of the newer one on the SSD, and the settings
+    file of `upgrade.py resume` run from that copy with it (seen on the VM: the download
+    and the build folder, gigabytes, then stayed in installer/upgrades)."""
     try:
-        config = json.loads(settings_path(settings).read_text())
-        tidy(ssd(config) / UPGRADES, journal)
+        return ssd(json.loads(settings_path(settings).read_text())) / UPGRADES
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+        return None
+
+
+def tidy_after(work, journal, out=print):
+    """tidy for this server's upgrade folder `work`; a folder that can't be tidied never
+    fails the upgrade."""
+    if work is None:
+        out(
+            'The finished upgrade\'s files could not be tidied (the settings could not be read); they stay in '
+            + UPGRADES
+        )
+        return
+    try:
+        tidy(work, journal)
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         out(f'The finished upgrade\'s files could not be tidied ({exc}); they stay in ' + UPGRADES)
 
@@ -626,8 +644,9 @@ def resume(settings, out=print, setup=run_setup, journal=JOURNAL):
     nothing; one cut off while it set up or checked the new release is put back on the
     release it had (the new one may be half set up). It waits for the operation lock."""
     with hold_operation(OPERATION_LOCK, wait=True):
+        work = upgrades_folder(settings)
         code = resume_held(settings, out, setup, journal)
-        tidy_after(settings, journal, out)
+        tidy_after(work, journal, out)
         return code
 
 
