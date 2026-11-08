@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 import host
-from neko_common import SETUP_LOCK
+from neko_common import SETUP_LOCK, SHARED
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
@@ -176,15 +176,26 @@ SSD_DATA = (
     'secrets',
     'vm',
 )
+
+
+def top_folder(what):
+    """The folder at the top of a drive that holds `what` ("photos", "music", "cloud"), from
+    the table setup and the runtime share (shared.json "locations"): photos/immich-library
+    is under "photos", say. Each can be on the SSD or the HDD since 0.46.0, so both drives
+    are looked at for it (the review of 0.47.9: Nextcloud's files on the SSD stayed)."""
+    return SHARED['locations'][what]['folders'][0].split('/')[0]
+
+
 DRIVE_PLACES = {
-    'photos': (('data', 'photos'), ('media', 'photos')),
-    'media': (('media', 'library'), ('data', 'library')),
-    'cloud': (('media', 'cloud'),),
+    'photos': (('data', top_folder('photos')), ('media', top_folder('photos'))),
+    'media': (('media', top_folder('music')), ('data', top_folder('music'))),
+    'cloud': (('media', top_folder('cloud')), ('data', top_folder('cloud'))),
     'backups': (('media', 'backups'), ('media', 'recovery-snapshots'), ('data', 'backups')),
 }
 # The weekly USB copy: the photo archive's two sections, Nextcloud's files, the Immich
-# database copies, copies set aside as damaged, and its ledger files (.neko-...).
-USB_OWN = ('upload', 'library', 'nextcloud', 'immich-database', 'neko-damaged')
+# database copies, copies set aside as damaged, the encrypted app password lists
+# (backup.rs USB_PASSWORDS), and its ledger files (.neko-...).
+USB_OWN = ('upload', 'library', 'nextcloud', 'immich-database', 'neko-damaged', 'passwords')
 FILESYSTEM_OWN = ('lost+found',)
 SIZE_UNKNOWN = 'size unknown without sudo'
 
