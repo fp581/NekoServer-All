@@ -917,7 +917,12 @@ function otherIssues(s, add) {
   }
   acceptanceIssue(s.acceptance, add);
   if (s.media?.status === 'stale') {
-    add('media-report', 'App checks are out of date', 'The last detailed app check is overdue.', 'apps');
+    add(
+      'media-report',
+      'App checks are out of date',
+      s.media.reason || 'The last detailed app check is overdue.',
+      'apps'
+    );
   }
 }
 /* The server check: "stale" is a complete check over a day old, which still holds. Only
