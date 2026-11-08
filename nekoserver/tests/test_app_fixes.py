@@ -480,7 +480,7 @@ class OptionalAnswersTests(unittest.TestCase):
             mock.patch.object(onboarding.account_store, 'enabled', return_value=False),
             mock.patch.object(onboarding.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run,
             mock.patch.object(onboarding.guided_setup, 'checkpoint', checkpoint),
-            mock.patch('recovery_tools.lock', lambda config: mock.MagicMock()),
+            mock.patch('recovery_tools.lock', return_value=mock.MagicMock()),
             mock.patch('builtins.input', typed_in),
             mock.patch('builtins.print', shown),
         ):
