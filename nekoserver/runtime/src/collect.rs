@@ -31,7 +31,7 @@ fn integrity(data: &Path, ok: bool, away: Option<&str>, usb: &str) -> Value {
     let mut rows = vec![];
     for (id, name) in CHECKS {
         let s = &all["sections"][id];
-        if !s.is_object() || s["drive"].as_str().is_some_and(|drive| drive != usb) {
+        if !s.is_object() || !made_on_this_drive(id, s, usb) {
             continue;
         }
         let count = |key: &str| s["counts"][key].as_u64().unwrap_or(0);
@@ -56,6 +56,18 @@ fn integrity(data: &Path, ok: bool, away: Option<&str>, usb: &str) -> Value {
         }
     }
     json!(rows)
+}
+/// A tree's check result belongs to the drive the settings name now. A USB copy's
+/// result counts only when it names that drive: one without a drive id was written
+/// before ids were kept and may be any drive's, the same rule save_integrity_on keeps
+/// (the review of 0.47.10: a replaced drive showed the old one's full check). With no
+/// USB drive set, and for the HDD archive, only a result that names another drive is left out.
+fn made_on_this_drive(id: &str, s: &Value, usb: &str) -> bool {
+    let drive = s["drive"].as_str();
+    if id.starts_with("usb_") && !usb.is_empty() {
+        return drive == Some(usb);
+    }
+    !drive.is_some_and(|drive| drive != usb)
 }
 /// Every monitored job; notify.rs names an alert for each (checked by a test).
 pub(crate) const JOBS: [(&str, &str, &str, f64); 10] = [
@@ -3676,6 +3688,11 @@ mod user_panel_tests {
         legacy["counts"]["damaged"] = json!(1);
         all["sections"]["usb_photos"] = legacy;
         common::atomic_json(&path, &all).unwrap();
+        // The read side: until the new drive's own copy rewrites the entry, the legacy one
+        // is not shown for it (the review of 0.47.10); with no USB drive set it still is.
+        common::atomic_json(&path, &all).unwrap();
+        assert_eq!(shown("third-uuid"), json!([]));
+        assert_eq!(shown("")[0]["full_at"], json!(1_700_000_000.0));
         save_integrity_on(&data, "usb_photos", &clean, Check::Quick, "third-uuid").unwrap();
         let row = shown("third-uuid")[0].clone();
         assert!(row["full_at"].is_null(), "{row}");
