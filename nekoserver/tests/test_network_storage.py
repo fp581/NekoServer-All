@@ -792,6 +792,46 @@ class ReadOnlyCheckTests(unittest.TestCase):
         with mock.patch('upgrade.nothing_at_work', return_value='An app update is not finished yet'):
             self.assertEqual(self.wizard.repair_blocked(self.config, run), 'An app update is not finished yet')
 
+    def test_the_menu_holding_setups_lock_itself_is_not_a_running_setup(self):
+        """0.47.10: install.sh takes setup's lock before it starts the menu, so the check
+        of a read-only drive always answered "Setup is running" and did nothing. The lock
+        this process holds itself is left out; one held by another process still counts."""
+        import fcntl
+        import subprocess
+
+        def quiet(argv, **kwargs):
+            return mock.Mock(returncode=0, stdout='')
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            lock = root / 'setup.lock'
+            config = {**self.config, 'data_mount': str(root)}
+            with (
+                mock.patch.dict(self.wizard.SHARED, {'setup_lock': str(lock)}),
+                mock.patch('upgrade.SETUP_LOCK', lock),
+                mock.patch('upgrade.JOURNAL', root / 'no-upgrade.json'),
+                mock.patch('upgrade.MAINTENANCE_JOURNAL', root / 'no-update.json'),
+                mock.patch('upgrade.MIGRATE_JOURNAL', root / 'no-move.json'),
+            ):
+                with open(lock, 'a') as ours:
+                    fcntl.flock(ours, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.assertTrue(self.wizard.setup_lock_is_ours())
+                    self.assertIsNone(self.wizard.repair_blocked(config, quiet))
+                self.assertFalse(self.wizard.setup_lock_is_ours())
+                code = (
+                    'import fcntl, sys, time; held = open(sys.argv[1], "a"); fcntl.flock(held, fcntl.LOCK_EX); '
+                    'print("held", flush=True); time.sleep(60)'
+                )
+                other = subprocess.Popen([sys.executable, '-c', code, str(lock)], stdout=subprocess.PIPE, text=True)
+                try:
+                    self.assertEqual(other.stdout.readline().strip(), 'held')
+                    self.assertEqual(
+                        self.wizard.repair_blocked(config, quiet), 'Setup (sudo bash install.sh) is running'
+                    )
+                finally:
+                    other.kill()
+                    other.wait()
+
     def test_with_only_the_backup_drive_on_the_nas_the_apps_are_started_here(self):
         """The audit of 0.46.2: the NAS check, with no drive of its own to look at, never
         lifted the hold the menu set, and the apps stayed stopped."""
