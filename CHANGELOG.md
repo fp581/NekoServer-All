@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Dashboard
+- **After Upgrade, the NekoServer tab says an upgrade is at work right away.** For up to a minute after the click (until the next reading), the tab still offered "Upgrade NekoServer", as if nothing had started, and a second click was possible. It now shows "An upgrade is at work" from the click on. Seen upgrading a VM from 0.47.6 to 0.47.8 from the dashboard.
+
 ## v0.47.8 — 2026-11-06
 
 Fixes from answering setup in the setup window and stopping it halfway, on a clean Debian 13 PC (a virtual machine). After a wrong answer the window lost the list to choose from; a password or PIN question did not say which one it was; and each step you confirm yourself said Ctrl+C leaves it pending, when Ctrl+C stops setup.

@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 const CALLS = new Set(['collectIssues', 'filesIntact', 'appState', 'validStatus', 'fixedFloor', 'raiseFixed',
   'backupSummary', 'recentCopies', 'integrityResult', 'nextRun', 'shortText', 'pinRefusal', 'guideFor', 'appsSummary',
   'shownApps', 'releaseNotes', 'arrayShown', 'words', 'waitingWhen', 'companionMood', 'panelMoods', 'newlyFinished',
-  'catFile', 'appSpec', 'panelAlerts', 'jobLine', 'gettingStarted', 'companionWords']);
+  'catFile', 'appSpec', 'panelAlerts', 'jobLine', 'gettingStarted', 'companionWords', 'upgradeAtWork']);
 /* Calls answered from another function's result, with more of it. */
 const DETAILED = new Set(['issueDetails']);
 const calls = JSON.parse(process.argv[2]);
@@ -64,6 +64,7 @@ const SPECIAL = {
     app.collectIssues(app.validStatus(argument)).map(i => ({ ...summary(i), detail: i.detail, guide: i.guide })),
   backupSummary: argument => app.backupSummary(app.validStatus(argument)),
   jobLine: ([label, job]) => app.jobLine(label, job),
+  upgradeAtWork: ([release, s, asked]) => app.upgradeAtWork(release, s, asked),
   gettingStarted: argument => app.gettingStarted(app.validStatus(argument)),
   companionWords: ([mood, s, issues]) => app.companionWords(mood, app.validStatus(s), issues),
   appsSummary: argument => app.appsSummary(app.validStatus(argument)),

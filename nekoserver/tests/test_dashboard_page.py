@@ -745,6 +745,19 @@ class CatCompanionTests(unittest.TestCase):
         held['alerts'] = []
         self.assertIn('app:jellyfin', [i['id'] for i in page(('collectIssues', held))[0]])
 
+    def test_an_upgrade_started_here_shows_at_once_until_the_next_reading(self):
+        """Seen on a VM: for a minute after Upgrade, the NekoServer tab offered the button
+        again, until the next reading said an upgrade was at work."""
+        before, started, newer, said = page(
+            ('upgradeAtWork', [{}, {'generated_at': 100}, None]),
+            ('upgradeAtWork', [{}, {'generated_at': 100}, 100]),
+            ('upgradeAtWork', [{}, {'generated_at': 160}, 100]),
+            ('upgradeAtWork', [{'upgrading': True}, {'generated_at': 160}, None]),
+        )
+        self.assertEqual([before, started, newer, said], [False, True, False, True])
+        source = (ROOT / 'dashboard/app.js').read_text()
+        self.assertIn('if (upgradeAtWork(r, s, state.upgradeAsked))', source)
+
     def test_each_cat_has_its_animation_and_the_page_serves_every_one(self):
         files = page(
             ('catFile', {'mood': 'afraid', 'small': False}),
