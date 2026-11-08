@@ -471,7 +471,13 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     show_end(config, data, plan, states, page, output)
     output('\nWhat next:')
     steps_done = not (by_status['broken'] or by_status['waiting'] or blocked)
-    for text in NEXT_DONE if complete else (NEXT_CHECKUP if steps_done else NEXT_PENDING):
+    if complete:
+        what_next = NEXT_DONE
+    elif steps_done:
+        what_next = NEXT_CHECKUP
+    else:
+        what_next = NEXT_PENDING
+    for text in what_next:
         output(text)
     output('  If something goes wrong later:  sudo bash install.sh --recover')
     output(line + '\n')

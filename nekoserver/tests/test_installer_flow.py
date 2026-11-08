@@ -80,18 +80,20 @@ class InstallerFlowTests(unittest.TestCase):
         record.write_text(json.dumps({'format': installer.PROFILE_FORMAT, 'profile': 'wide'}))
         (self.state / 'state.json').write_text(json.dumps({'storage': {'status': 'success'}}))
         printed = []
+        args = self.args(profile='tiny', module=None)
         with mock.patch('config_checks.validate'), mock.patch('builtins.print', printed.append):
             with self.assertRaises(KeyboardInterrupt):
-                installer._execute(self.args(profile='tiny', module=None), self.root)
+                installer._execute(args, self.root)
         self.assertEqual(json.loads(record.read_text())['profile'], 'wide')
         self.assertTrue(
             any('recorded setup profile is kept' in line and 'storage' in line for line in printed), printed
         )
         # A run that covers every step done is recorded (a server set up by hand, then "full").
         (self.state / 'state.json').write_text(json.dumps({'stopper': {'status': 'failed'}}))
+        args = self.args(profile='tiny', module=None)
         with mock.patch('config_checks.validate'), mock.patch('builtins.print'):
             with self.assertRaises(KeyboardInterrupt):
-                installer._execute(self.args(profile='tiny', module=None), self.root)
+                installer._execute(args, self.root)
         self.assertEqual(json.loads(record.read_text())['profile'], 'tiny')
 
     def test_ctrl_c_records_the_step_and_ends_without_a_traceback(self):

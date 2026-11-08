@@ -980,40 +980,57 @@ def damaged_images(base, what, sleep=time.sleep):
     because its image is damaged (BROKEN_PROGRAM in its output). A container whose program
     cannot run exits at once and Docker restarts it: looked for right after the start, and
     once more after a moment when a container is not running yet."""
-    docker = list(base[: base.index('compose')]) if 'compose' in base else ['docker']
+    docker = docker_command(base)
     for last in (False, True):
         rows = compose_rows(base, what)
         if all(row.get('State') == 'running' for row in rows):
             return []
-        found = []
-        for row in rows:
-            name, container = row.get('Service'), row.get('ID') or row.get('Name')
-            if not name or not container or row.get('State') == 'running':
-                continue
-            try:
-                said = subprocess.run(
-                    [*docker, 'logs', '--tail', '20', container],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                continue
-            match = BROKEN_PROGRAM.search((said.stdout or '') + (said.stderr or ''))
-            if match:
-                found.append((name, match.group(0)))
+        found = broken_containers(docker, rows)
         if found or last:
-            return sorted(found)
+            return found
         sleep(2)  # a container still being created: let Docker start it
     return []
+
+
+def docker_command(base):
+    """The docker command the compose command `base` is built on."""
+    return list(base[: base.index('compose')]) if 'compose' in base else ['docker']
+
+
+def broken_containers(docker, rows):
+    """(service, the line) for each container, among the compose rows, that is not running
+    and says its program cannot run."""
+    found = []
+    for row in rows:
+        name, container = row.get('Service'), row.get('ID') or row.get('Name')
+        if not name or not container or row.get('State') == 'running':
+            continue
+        match = BROKEN_PROGRAM.search(container_said(docker, container))
+        if match:
+            found.append((name, match.group(0)))
+    return sorted(found)
+
+
+def container_said(docker, container):
+    """The last lines of a container's output ("" when Docker cannot be asked)."""
+    try:
+        said = subprocess.run(
+            [*docker, 'logs', '--tail', '20', container],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    return (said.stdout or '') + (said.stderr or '')
 
 
 def download_again(base, what, services, names):
     """Remove the containers and the images of `names` (the app's services) and download
     the images anew: Docker keeps a damaged image as complete, so a plain pull would
     change nothing."""
-    docker = list(base[: base.index('compose')]) if 'compose' in base else ['docker']
+    docker = docker_command(base)
     checked_run([*base, 'rm', '-sf', *names], 300, f'{what} (docker compose rm)')
     images = sorted({str(services.get(name, {}).get('image') or '') for name in names} - {''})
     if images:
