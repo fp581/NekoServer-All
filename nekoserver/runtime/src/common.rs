@@ -1079,7 +1079,7 @@ pub fn mounted(path: &Path) -> bool {
 /// "UUID FSTYPE SOURCE" for the mount in effect at `path`, as findmnt prints them, read
 /// from the kernel's mount table and the /dev/disk/by-uuid links. Nothing on the drive is
 /// read, so it answers at once while findmnt (which reads the filesystem's label block)
-/// can wait on a drive a backup saturates (the 0.47.10 round: killed after its 8 s, the
+/// can wait on a drive a backup saturates (the 0.48.0 round: killed after its 8 s, the
 /// dashboard then called the HDD missing and every backup blocked). None when nothing is
 /// mounted at `path`; the UUID is empty when no link names the device (a network share).
 pub fn mount_table_entry(path: &Path) -> Option<String> {

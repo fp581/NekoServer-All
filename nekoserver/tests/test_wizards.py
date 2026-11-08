@@ -373,7 +373,7 @@ class FirstCheckupTests(unittest.TestCase):
         self.assertTrue(wizard.finishing_screen(config, states, None, lambda s: None, checkup=True))
 
     def test_with_every_step_done_the_checkups_findings_are_what_comes_next(self):
-        """0.47.10: with all 30 steps done and only the first checkup finding something,
+        """0.48.0: with all 30 steps done and only the first checkup finding something,
         the screen said 'Fix the first item under "What needs you"', a list it did not show."""
         out = []
         config = {'data_mount': self.tmp.name}
