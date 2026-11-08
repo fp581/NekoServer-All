@@ -180,9 +180,9 @@ SSD_DATA = (
 
 def top_folder(what):
     """The folder at the top of a drive that holds `what` ("photos", "music", "cloud"), from
-    the table setup and the runtime share (shared.json "locations"): photos/immich-library
-    is under "photos", say. Each can be on the SSD or the HDD since 0.46.0, so both drives
-    are looked at for it (the review of 0.47.9: Nextcloud's files on the SSD stayed)."""
+    the table setup and the runtime share (shared.json "locations"): the first part of
+    that group's first folder. Each can be on the SSD or the HDD since 0.46.0, so both
+    drives are looked at for it (the review of 0.47.9: Nextcloud's files on the SSD stayed)."""
     return SHARED['locations'][what]['folders'][0].split('/')[0]
 
 
