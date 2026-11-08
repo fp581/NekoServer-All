@@ -2645,6 +2645,8 @@ fn automated_media_ready(report: &Value) -> bool {
 }
 
 fn integrations(cfgpath: &Path, cfg: &Value, checking: bool) -> Result<()> {
+    // Its own stage: a failure here was said "while checking free space", the stage before.
+    common::stage("checking the connections between the media apps");
     if cfg["media"]["services"]
         .as_array()
         .is_none_or(|v| v.is_empty())
@@ -5740,6 +5742,11 @@ mod tests {
         let run = &source[source.find("fn transaction(").unwrap()..];
         let run = &run[..run.find("\n}\n").unwrap()];
         assert!(run.contains("if audit {\n        common::stage(\"waiting for a weekly USB copy"));
+        // Seen on a VM: "failed while checking free space: Live automated media connections
+        // are not ready". The connection check says its own stage.
+        let check = &source[source.find("fn integrations(").unwrap()..];
+        assert!(check[..check.find("if cfg[").unwrap()]
+            .contains("common::stage(\"checking the connections between the media apps\")"));
         // The weekly copy takes the USB lock first, and the backups' one only later.
         let backup = include_str!("backup.rs");
         let copy = &backup[backup.find("fn usb_copy(").unwrap()..];

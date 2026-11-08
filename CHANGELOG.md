@@ -4,6 +4,8 @@
 
 ### Setup
 - **Skipping outage alerts is not later reported as switching off a monitor.** With outage alerts skipped at setup, every later run (an upgrade included) said "This server no longer checks in, so pause (or delete) the check at your outside monitor", for a monitor that was never made. That note now comes only when an outage monitor was set up; otherwise it says "Outage monitor: skipped by choice", as setup did. Seen upgrading a VM from 0.47.6 to 0.47.8.
+- **An upgrade no longer marks unfinished app connections as done.** An upgrade runs setup without a terminal, and there the step that connects the media apps only checks that the apps answer. On a server where connecting them was not finished (0.47.6 with the music on the media drive), the step passed, Lidarr still had no music folder, and the monthly check then failed on it every night ("Live automated media connections are not ready"). Without a terminal, an unfinished step now stays unfinished and says to run `sudo bash install.sh` in a terminal.
+- **The monthly check says which part failed.** A failure of its app-connection check was reported "while checking free space", the part before it. It now says "while checking the connections between the media apps".
 
 ### Dashboard
 - **After Upgrade, the NekoServer tab says an upgrade is at work right away.** For up to a minute after the click (until the next reading), the tab still offered "Upgrade NekoServer", as if nothing had started, and a second click was possible. It now shows "An upgrade is at work" from the click on. Seen upgrading a VM from 0.47.6 to 0.47.8 from the dashboard.
