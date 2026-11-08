@@ -70,7 +70,9 @@ def login_targets():
     )
     url = login_url_in(result.stdout)
     if not url:
-        status = subprocess.run(['tailscale', 'status', '--json'], text=True, capture_output=True, timeout=20, check=False)
+        status = subprocess.run(
+            ['tailscale', 'status', '--json'], text=True, capture_output=True, timeout=20, check=False
+        )
         url = login_url_in(status.stdout)
     if url:
         return [('url', url)]

@@ -609,7 +609,9 @@ class TailscaleStartReasonTests(unittest.TestCase):
 
         link = 'https://login.tailscale.com/a/1d88c76401334e'
         printed = '{"BackendState":"NoState"}\n{"BackendState":"NeedsLogin","AuthURL":"%s"}\n' % link
-        with mock.patch.object(tailscale.subprocess, 'run', return_value=mock.Mock(returncode=1, stdout=printed)) as run:
+        with mock.patch.object(
+            tailscale.subprocess, 'run', return_value=mock.Mock(returncode=1, stdout=printed)
+        ) as run:
             self.assertEqual(tailscale.login_targets(), [('url', link)])
         self.assertEqual(run.call_count, 1)
         # Only Tailscale's own sign-in host is trusted as a link.
