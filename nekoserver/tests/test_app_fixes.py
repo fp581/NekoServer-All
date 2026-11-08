@@ -472,6 +472,9 @@ class OptionalAnswersTests(unittest.TestCase):
             printed.append(prompt)
             return next(answers)
 
+        def shown(*words, **_):
+            printed.append(' '.join(str(word) for word in words))
+
         with (
             mock.patch.object(onboarding.sys.stdin, 'isatty', return_value=True),
             mock.patch.object(onboarding.account_store, 'enabled', return_value=False),
@@ -479,7 +482,7 @@ class OptionalAnswersTests(unittest.TestCase):
             mock.patch.object(onboarding.guided_setup, 'checkpoint', checkpoint),
             mock.patch('recovery_tools.lock', lambda config: mock.MagicMock()),
             mock.patch('builtins.input', typed_in),
-            mock.patch('builtins.print', lambda *a, **k: printed.append(' '.join(str(x) for x in a))),
+            mock.patch('builtins.print', shown),
         ):
             onboarding.run(ctx)
         return run.call_args[0][0], printed, asked, logs
