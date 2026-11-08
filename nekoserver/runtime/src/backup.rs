@@ -3044,8 +3044,12 @@ fn usb_spec(cfg: &Value) -> Value {
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
 pub(crate) fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
-    let found =
-        common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10)?.unwrap_or_default();
+    let found = match common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10) {
+        Ok(found) => found.unwrap_or_default(),
+        // findmnt killed after its 10 s on a drive a copy keeps busy (it reads the
+        // filesystem's label block): the kernel's mount table knows without the read.
+        Err(_) => common::mount_table_entry(path).unwrap_or_default(),
+    };
     let uuid = drive_check(c, key, path, &found)?;
     // A drive on a NAS is also the same NAS disk (its WWN) setup chose: a restored or
     // cloned LUN carries the same filesystem UUID (the 0.46.0 review).

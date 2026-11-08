@@ -266,10 +266,14 @@ fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
     if expected == Some("") {
         return json!({"status":"not_configured"});
     }
-    let s = common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 8)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let s = match common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 8) {
+        Ok(found) => found.unwrap_or_default(),
+        // findmnt killed after its 8 s: it reads the filesystem's label block, which a
+        // drive saturated by a backup can hold back. The kernel's mount table says the
+        // same without touching the drive (the 0.47.10 round: the page called the HDD
+        // missing, and every backup blocked, each time a copy kept the drive busy).
+        Err(_) => common::mount_table_entry(path).unwrap_or_default(),
+    };
     let v = s.split_whitespace().collect::<Vec<_>>();
     if v.len() < 3 {
         return json!({"status":"missing"});
