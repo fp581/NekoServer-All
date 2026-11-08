@@ -22,6 +22,7 @@ it got, so a power cut at any point is put right at the next start):
    (kept on the SSD), so the server is back on the release it had."""
 
 import argparse
+import contextlib
 import fcntl
 import http.client
 import json
@@ -551,7 +552,8 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
             'sudo python3 upgrade.py resume  to put the release back. App updates and the monthly check wait until then.'
         )
         return 2
-    problem = setup_problem(setup, previous, settings, account, log_file)
+    with newer_runtimes_hidden(ssd(config) / 'installer/runtime', previous.name):
+        problem = setup_problem(setup, previous, settings, account, log_file)
     if problem is None:
         problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:
@@ -572,6 +574,51 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
         f'(it carries on where it stopped); the log: {log_file}. App updates and the monthly check wait until then.'
     )
     return 2
+
+
+HIDDEN = '.going-back'  # the end of a runtime copy's name while the way back hides it
+
+
+@contextlib.contextmanager
+def newer_runtimes_hidden(home, previous):
+    """While the previous release's setup runs: the runtime copies of newer releases in
+    `home` (installer/runtime) are moved to a hidden name, with a link left at their own
+    name. The guard of a release before 0.47.10 (capabilities.newer_installed) knows
+    nothing of the upgrade's record: it saw the services still pointing at the newer
+    runtime and stopped the way back with "this server already runs ..." (the review of
+    0.47.10). The guard and the cleanup after setup count only real folders, never links,
+    while every service the newer setup wrote still finds its program through the link.
+    Afterwards each copy gets its own name back, as before; one hidden when the power was
+    cut is put back first."""
+    import native_runtime
+
+    show_hidden(home)
+    floor = native_runtime.release_number(previous)
+    hidden = []
+    try:
+        for folder in native_runtime.release_folders(home) if floor else []:
+            if native_runtime.release_number(folder.name) > floor:
+                aside = folder.with_name('.' + folder.name + HIDDEN)
+                folder.rename(aside)
+                hidden.append(folder)
+                folder.symlink_to(aside.name)
+        yield
+    finally:
+        show_hidden(home, hidden)
+
+
+def show_hidden(home, folders=None):
+    """Give each hidden runtime copy in `home` its own name back (all of them, or those of
+    `folders`): the link at that name goes, the folder moves back."""
+    found = [p for p in home.glob('.v*' + HIDDEN) if p.is_dir() and not p.is_symlink()] if home.is_dir() else []
+    for aside in found:
+        folder = aside.with_name(aside.name[1 : -len(HIDDEN)])
+        if folders is not None and folder not in folders:
+            continue
+        if folder.is_symlink():
+            folder.unlink()
+        if not folder.exists():
+            aside.rename(folder)
 
 
 def resume(settings, out=print, setup=run_setup, journal=JOURNAL):
