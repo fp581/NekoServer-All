@@ -327,6 +327,28 @@ class SetupQuestionTests(unittest.TestCase):
         )
         self.assertIn('Type a time of day as HH:MM before 06:00, for example 02:30.', printed)
 
+    def test_a_time_in_other_digits_is_refused(self):
+        """Python's \\d is any Unicode digit: "1٠:3٠" (Arabic-Indic zeros) passed the check and
+        would have been written into the timers' OnCalendar, which systemd cannot read."""
+        for written in ('1٠:3٠', '1٠:0٥', '0１:3０', '٢٣:٣٠'):
+            self.assertFalse(neko_common.valid_time(written), written)
+        self.assertTrue(neko_common.valid_time('23:30'))
+        # Typed in the terminal: explained and asked again, the time shown kept.
+        ctx = Ctx(self.config())
+        printed = self.ask(ctx, '1٠:3٠', '', '', '', '')
+        self.assertEqual(ctx.config['backup_times']['daily'], '04:15')
+        self.assertIn('Type a time of day as HH:MM, for example 04:15.', printed)
+        # Sent by the setup window: refused there too, and asked in the terminal.
+        ctx = Ctx(self.config())
+        printed = []
+        first = self.window_prompt('23:30', {'weekly_day': 'Sat', 'weekly': '1٩:0٠', 'monthly': '01:00'})
+        prompts = iter([first, answers('21:15')])
+        guided_setup.choose_backup_times(ctx, prompt=lambda question='': next(prompts)(question), output=printed.append)
+        self.assertEqual(
+            ctx.config['backup_times'], {'daily': '23:30', 'weekly_day': 'Sat', 'weekly': '21:15', 'monthly': '01:00'}
+        )
+        self.assertIn('Type a time of day as HH:MM, for example 03:00.', printed)
+
     def test_three_wrong_answers_keep_the_default_and_say_so(self):
         ctx = Ctx(self.config())
         printed = self.ask(ctx, 'x', 'y', 'z', '', '', '')

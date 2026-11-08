@@ -401,7 +401,7 @@ def written_since(report, started):
     import datetime
 
     # The runtime writes nanoseconds ("...:00.123456789+00:00"); Python reads six digits.
-    stamp = re.sub(r'(\.\d{6})\d+', r'\1', str(report.get('generated_at')))
+    stamp = re.sub(r'(\.\d{6})\d+', r'\1', str(report.get('generated_at')), flags=re.ASCII)
     try:
         written = datetime.datetime.fromisoformat(stamp).timestamp()
     except (TypeError, ValueError):

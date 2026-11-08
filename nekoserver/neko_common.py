@@ -1336,7 +1336,9 @@ NIGHTLY_OFFSETS = {'music': -30, 'app': 0, 'host': 60, 'photo_database': -120}
 # In the weekly photo schedule the Immich database copy goes just before the USB copy,
 # which takes it along (Sunday 02:15 before 03:00, as it always was).
 DATABASE_BEFORE_USB = 45
-TIME_OF_DAY = re.compile(r'(?:[01]\d|2[0-3]):[0-5]\d')
+# ASCII: in Python \d is any Unicode digit, and a time written in other digits
+# (Arabic-Indic, say) would reach the timers' OnCalendar, which systemd cannot read.
+TIME_OF_DAY = re.compile(r'(?:[01]\d|2[0-3]):[0-5]\d', re.ASCII)
 
 
 def valid_time(text):
