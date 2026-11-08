@@ -429,7 +429,7 @@ class OptionalAnswersTests(unittest.TestCase):
             with (
                 mock.patch.object(connect, 'app_key', return_value='k'),
                 mock.patch.object(connect, 'request', side_effect=[schemas, [], []]),
-                mock.patch('builtins.input', lambda prompt='': next(answers)),
+                mock.patch('builtins.input', side_effect=answers),
                 mock.patch.object(connect, 'choose', return_value=None),
             ):
                 connect.configure_indexers(Path(d), False)
@@ -468,13 +468,17 @@ class OptionalAnswersTests(unittest.TestCase):
             asked.append(title)
             return False
 
+        def typed_in(prompt=''):
+            printed.append(prompt)
+            return next(answers)
+
         with (
             mock.patch.object(onboarding.sys.stdin, 'isatty', return_value=True),
             mock.patch.object(onboarding.account_store, 'enabled', return_value=False),
             mock.patch.object(onboarding.subprocess, 'run', return_value=mock.Mock(returncode=0)) as run,
             mock.patch.object(onboarding.guided_setup, 'checkpoint', checkpoint),
             mock.patch('recovery_tools.lock', lambda config: mock.MagicMock()),
-            mock.patch('builtins.input', lambda prompt='': (printed.append(prompt), next(answers))[1]),
+            mock.patch('builtins.input', typed_in),
             mock.patch('builtins.print', lambda *a, **k: printed.append(' '.join(str(x) for x in a))),
         ):
             onboarding.run(ctx)
