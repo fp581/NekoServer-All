@@ -52,6 +52,16 @@ class SwitchedOffTests(unittest.TestCase):
         self.assertIn(['systemctl', 'disable', '--now', 'nekoserver-heartbeat.timer'], self.calls)
         self.assertIn('pause (or delete) the check at your outside monitor', said)
 
+    def test_an_outage_monitor_never_set_up_is_not_said_to_need_pausing(self):
+        """Seen on a VM upgraded from 0.47.6: outage alerts were skipped at setup, and the
+        upgrade said "pause (or delete) the check at your outside monitor" for a monitor
+        that was never made."""
+        for path in self.units.iterdir():
+            path.unlink()
+        said = self.ran(heartbeat, 'heartbeat')
+        self.assertEqual(said, 'Outage monitor: skipped by choice')
+        self.assertEqual(self.calls, [])
+
     def test_never_set_up_and_off_does_nothing(self):
         for path in self.units.iterdir():
             path.unlink()

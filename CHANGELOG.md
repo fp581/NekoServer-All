@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Setup
+- **Skipping outage alerts is not later reported as switching off a monitor.** With outage alerts skipped at setup, every later run (an upgrade included) said "This server no longer checks in, so pause (or delete) the check at your outside monitor", for a monitor that was never made. That note now comes only when an outage monitor was set up; otherwise it says "Outage monitor: skipped by choice", as setup did. Seen upgrading a VM from 0.47.6 to 0.47.8.
+
 ### Dashboard
 - **After Upgrade, the NekoServer tab says an upgrade is at work right away.** For up to a minute after the click (until the next reading), the tab still offered "Upgrade NekoServer", as if nothing had started, and a second click was possible. It now shows "An upgrade is at work" from the click on. Seen upgrading a VM from 0.47.6 to 0.47.8 from the dashboard.
 

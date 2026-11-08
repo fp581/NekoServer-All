@@ -75,12 +75,17 @@ def run(context):
         return
     if os.geteuid() != 0:
         raise RuntimeError('Heartbeat requires root')
-    from modules._schedules import switched_off
+    from modules._schedules import installed, switched_off
 
+    # Skipped at the question saves "wanted": false too: only a monitor that was set up has
+    # an outside check to pause (seen after an upgrade of a server that never had one).
+    was_set_up = installed('nekoserver-heartbeat')
     if switched_off(context.config, 'heartbeat', 'nekoserver-heartbeat', context.log):
         context.log(
             'Outage monitor: off by choice. This server no longer checks in, so pause (or delete) the '
             'check at your outside monitor too, or it will report an outage it is expecting.'
+            if was_set_up
+            else 'Outage monitor: skipped by choice'
         )
         return
     private = safe_path(PRIVATE)
