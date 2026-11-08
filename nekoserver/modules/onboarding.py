@@ -8,7 +8,17 @@ import setup_progress
 import subprocess
 import sys
 from pathlib import Path
-from neko_common import MEDIA_APPS, VERSION, app_port, app_ports, atomic_json, safe_path
+from neko_common import (
+    MEDIA_APPS,
+    OPTIONAL_QUESTIONS,
+    VERSION,
+    app_port,
+    app_ports,
+    atomic_json,
+    optional_answers,
+    remember_answer,
+    safe_path,
+)
 
 DEPENDENCIES = ['media', 'recovery']
 DESCRIPTION = 'Wait for media startup, collect sources and run guided configuration/readiness reporting'
@@ -46,10 +56,15 @@ def run(ctx):
             and set(services) & {'sonarr', 'radarr'}
         ):
             cmd.append('--request-providers')
+        optional = []
         if settings.get('collect_sources', True):
-            cmd.append('--sources')
-        if settings.get('configure_indexers', True) and 'prowlarr' in ctx.config.get('media', {}).get('services', []):
-            cmd.append('--indexers')
+            optional.append('sources')
+        if settings.get('configure_indexers', True) and 'prowlarr' in services:
+            optional.append('indexers')
+        if not playback_record(ctx.config).exists():
+            optional.append('playback')
+        ctx.optional_kept = optional_kept(ctx, optional)
+        cmd += ['--' + question for question in optional if question not in ctx.optional_kept + ['playback']]
         # With the lock backups and monthly updates take: a nightly backup stopping the apps
         # while they are being connected would fail them half-way.
         from recovery_tools import lock
@@ -62,6 +77,17 @@ def run(ctx):
     else:
         cmd.append('--report-only')
         result = subprocess.run(cmd, check=False).returncode
+        if not result and not connected_before(ctx):
+            # The check without a terminal sees the apps answer, not the connections
+            # between them, and can't make them: an unfinished step stays unfinished
+            # (seen on a VM upgraded from 0.47.6: this step passed, with Lidarr's music
+            # folder still missing, and the monthly check failed on it every night).
+            remove_stale(ctx, release, config)
+            return {
+                'status': 'needs_setup',
+                'reason': 'Connecting the media apps is not finished, and it asks you questions: run  '
+                'sudo bash install.sh  in a terminal',
+            }
     remove_stale(ctx, release, config)
     if result:
         # Something to fix, said with its reason (on the finishing screen too), not a
@@ -92,6 +118,35 @@ def run(ctx):
         }
     ctx.log('Onboarding configuration checks complete')
     witness_playback(ctx)
+
+
+def optional_kept(ctx, asked):
+    """Setup run again: shows the last answer to each optional question it would ask now
+    (the download sources, the indexers, the playback test) and asks whether to ask them
+    again. The questions not to ask: none when no answer was kept yet (the first run, or
+    0.47.8 and before) or on yes; the ones shown on no (Ctrl+D counts as no). A question
+    with no kept answer is asked either way."""
+    kept = optional_answers(ctx.config['data_mount'])
+    shown = [question for question in asked if question in kept]
+    if not shown:
+        return []
+    print()
+    print('Last time, the optional questions were answered this way:')
+    for question in shown:
+        print(f'  {OPTIONAL_QUESTIONS[question]}: {kept[question]}')
+    print('Answer no to keep these answers; yes asks the questions again.')
+    again = guided_setup.yes_no('Ask these questions again?')
+    print()
+    ctx.log('Optional questions: ' + ('asked again' if again else 'kept as answered last time'))
+    return [] if again else shown
+
+
+def connected_before(ctx):
+    """Whether an earlier run finished connecting the apps (True when that is not known)."""
+    previous = getattr(ctx, 'previous', None)
+    if not isinstance(previous, dict):
+        return True
+    return previous.get('onboarding', {}).get('status') == 'success'
 
 
 # The apps that other apps connect to. Taken out of media.services, their containers
@@ -184,6 +239,10 @@ def witness_playback(ctx, checkpoint=None):
     record = playback_record(ctx.config)
     if record.exists():
         return
+    kept = getattr(ctx, 'optional_kept', None)
+    if isinstance(kept, list) and 'playback' in kept:  # a rerun that said no to asking again
+        ctx.log('Playback test: skipped last time and not asked again (optional)')
+        return
     services = ctx.config.get('media', {}).get('services', [])
     try:
         done = (checkpoint or guided_setup.checkpoint)(
@@ -204,4 +263,5 @@ def witness_playback(ctx, checkpoint=None):
         atomic_json(record, {'confirmed_at': time.time(), 'evidence': 'user_reported'})
         ctx.log('Playback test confirmed')
     else:
+        remember_answer(ctx.config['data_mount'], 'playback', 'skipped')
         ctx.log('Playback verification pending (optional): test a real playback when convenient')

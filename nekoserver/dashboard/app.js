@@ -309,6 +309,7 @@ const state = {
   installPrompt: null,
   mine: new Set(),
   shown: new Set(), // app actions started here, and those already announced
+  upgradeAsked: null, // the reading shown when an upgrade was started here
   routed: false // a page has been shown (its sections, and only they, visible)
 };
 const savedFavorites = readStore('favorites', []);
@@ -3483,16 +3484,17 @@ function withPin(then) {
     'Changes to your apps and to NekoServer (a restart, an update, an upgrade) need your PIN on every device, the server too.'
   );
 }
-async function appAction(op, body, starting) {
+async function appAction(op, body, starting, started = null) {
   const answer = await postControl(op, body);
   if (answer.ok) {
     state.mine.add(text(answer.key));
+    started?.();
     toast(starting);
     void load('control');
     return;
   }
   if (answer.error === 'E43' && state.control?.access?.pin_set) {
-    unlockDialog(() => appAction(op, body, starting));
+    unlockDialog(() => appAction(op, body, starting, started));
     return;
   }
   toast(controlMessage(answer));
@@ -3967,9 +3969,18 @@ function confirmUpgrade(tag) {
         tag +
         ' and runs its setup with your saved settings (it builds the background program, so it takes a while). Your apps may restart. The system packages are not updated. If the new release does not pass its checks, the release you have now is put back. It goes on if you close this page.',
       'Upgrade',
-      () => appAction('upgrade-nekoserver', { tag }, 'Upgrading NekoServer to ' + tag + '…')
+      () =>
+        appAction('upgrade-nekoserver', { tag }, 'Upgrading NekoServer to ' + tag + '…', () => {
+          state.upgradeAsked = state.status?.generated_at ?? null;
+        })
     )
   );
+}
+/* An upgrade is at work: the reading says so, or one was started here and no reading
+ * since has come (seen on a VM: for a minute after Upgrade, the tab offered the button
+ * again). Reading times are the server's, so a phone's clock doesn't matter. */
+function upgradeAtWork(release, s, asked) {
+  return !!release.upgrading || (asked !== null && asked !== undefined && s.generated_at === asked);
 }
 function nekoserverTab(s) {
   const r = s.nekoserver_release,
@@ -3987,7 +3998,17 @@ function nekoserverTab(s) {
       ])
     )
   ];
-  if (r.upgrading) {
+  if (job?.status === 'pass') {
+    // Upgraded from here: the folder the person downloaded still has the old release.
+    nodes.push(
+      el(
+        'p',
+        'section-note',
+        'Upgraded from here. Before you run  sudo bash install.sh  in your NekoServer-All folder again, run  git pull  there, so the folder has this release too.'
+      )
+    );
+  }
+  if (upgradeAtWork(r, s, state.upgradeAsked)) {
     nodes.push(
       el(
         'p',

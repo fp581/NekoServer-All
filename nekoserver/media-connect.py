@@ -14,7 +14,16 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from neko_common import LOCATIONS, app_ports, safe_path, local_opener, checked_settings, default_settings, music_library
+from neko_common import (
+    LOCATIONS,
+    app_ports,
+    safe_path,
+    local_opener,
+    checked_settings,
+    default_settings,
+    music_library,
+    remember_answer,
+)
 import qbit_setup
 import account_store
 
@@ -139,11 +148,14 @@ def configure_indexers(root, apply, config=None):
     matches = [s for s in schemas if query in str(s.get('name', '')).casefold()]
     if not matches:
         print('No matching definitions')
+        remember_answer(root, 'indexers', 'none chosen')
         return
     # No builtin hard-coded indexer catalog; everything comes from Prowlarr.
+    chosen = []
     while True:
         selected = choose(matches, 'Select an indexer')
         if selected is None:
+            remember_answer(root, 'indexers', ', '.join(chosen) if chosen else 'none chosen')
             if failures:
                 raise RuntimeError('One or more indexers were rejected; setup incomplete')
             return
@@ -195,6 +207,7 @@ def configure_indexers(root, apply, config=None):
             try:
                 result = request('prowlarr', key, '/indexer', 'POST', entry)
                 existing.append(result)
+                chosen.append(str(result.get('name') or entry.get('name') or 'indexer'))
                 print('Created indexer:', result.get('name', '(unnamed)'))
             except RuntimeError as exc:
                 failures.append('indexer')

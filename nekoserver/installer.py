@@ -413,6 +413,7 @@ def _execute(args, root=ROOT):
 
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan
+    ctx.previous = dict(previous)  # each step as the last run left it
     save_profiles(ctx, added, profiles_changed, args.apply)
     review_retention(ctx, args.apply)
     # The steps this run goes through (with the ones they need), for the setup window and

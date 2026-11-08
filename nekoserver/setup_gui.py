@@ -436,7 +436,7 @@ class Window:
                 isinstance(body.get('seq'), int)
                 and isinstance(body.get('text'), str)
                 and len(body['text']) <= 1000
-                and setup_progress.answer_from_window(body['seq'], body['text'])
+                and setup_progress.answer_from_window(body['seq'], body['text'], skip=body.get('skip') is True)
             )
             return 200, json.dumps({'ok': bool(taken)}).encode(), JSON
         return NOT_FOUND

@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.47.8'
+VERSION = '0.47.9'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -1194,6 +1194,38 @@ def atomic_write(path, payload, mode=0o600):
 
 def atomic_json(path, payload):
     atomic_write(path, json.dumps(payload, indent=2) + '\n')
+
+
+# The optional questions setup asks when connecting the media apps, by the key their
+# last answer is kept under, and the words the next run shows them with.
+OPTIONAL_QUESTIONS = {'sources': 'Download sources', 'indexers': 'Indexers (Prowlarr)', 'playback': 'Playback test'}
+
+
+def optional_answers_file(data_mount):
+    """Where setup keeps the last answer to each optional question. No secrets: how many
+    sources were added, which indexers were chosen, whether the playback test was done."""
+    return Path(data_mount) / 'config' / 'onboarding-answers.json'
+
+
+def optional_answers(data_mount):
+    """The last answers by question, or {} when none were kept yet (or the file can't be read)."""
+    try:
+        kept = json.loads(optional_answers_file(data_mount).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(kept, dict):
+        return {}
+    return {key: value for key, value in kept.items() if key in OPTIONAL_QUESTIONS and isinstance(value, str)}
+
+
+def remember_answer(data_mount, question, text):
+    """Keep the answer just given to an optional question, so that the next setup run
+    shows it and asks again only when the person wants to change it."""
+    kept = optional_answers(data_mount)
+    kept[question] = str(text)[:200]
+    path = optional_answers_file(data_mount)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(path, kept)
 
 
 def refresh_settings(target, wanted, log, label):

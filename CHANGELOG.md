@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.47.9 — 2026-11-08
+
+Fixes from upgrading a clean Debian 13 PC (a virtual machine) from 0.47.6 to 0.47.8 from the dashboard and then using it, plus two things you asked for: a "Skip for now" button in the setup window, and a rerun of setup that does not ask the optional questions again unless you want it to.
+
+### How it was tested
+- Python tests (1411) and Rust tests (469) pass; ruff, Prettier, shfmt, rustfmt and clippy are clean.
+- A fresh install of the published 0.47.6 from a clean Debian 13 snapshot, sample photos, music, Nextcloud files and app settings added, then the upgrade to 0.47.8 from the dashboard: the data was there afterwards, and every restore (photos, Nextcloud files, the password list, app settings, host settings) came back into a new folder with matching checksums.
+- A final fresh install from the same snapshot with every change in: setup finished every step but the phone test in one run, the server joined Tailscale through setup's own step, the feature check passed (45 checks, plus the monthly check in its night window), an emulated Android phone opened the six app addresses and the dashboard over Tailscale, and `sudo bash install.sh` run again showed the kept optional answers, asked nothing again on `no`, and the window's "Skip for now" left the phone step pending.
+- The git-pull guard was tried on the upgraded VM: a 0.47.6 folder is stopped with the message, a 0.47.8 folder passes.
+- The Python suite also ran on the five test distros (Ubuntu 24.04, Arch, Fedora 44, AlmaLinux 10, openSUSE Tumbleweed).
+
+### Known limits
+- The guard against setting an old download up over an upgraded server is part of this release's `install.sh`: a folder still at 0.47.8 or older does not have it.
+- Running setup again with `no` at "Ask these questions again?" also skips the copy of sources you already added into the libraries (it only runs with the source questions); `yes` runs it as before.
+
+### Improvements
+- **The setup window has "Skip for now" at the steps you confirm yourself.** At "Have you completed this step successfully?" (the phone, a TV test) the window had only Yes and No; leaving the step for later needed Ctrl+D in the terminal. The button leaves the step pending and setup goes on, exactly as Ctrl+D does; the terminal shows "(left for now, from the setup window)".
+- **Running setup again does not ask the optional questions again unless you want to.** Every `sudo bash install.sh` asked about download sources, the indexer choice and the playback test anew. Setup now keeps the last answer to each (how many sources were added, which indexers were chosen, whether the playback test was done or skipped; no secrets) in `config/onboarding-answers.json` on the SSD, shows them, and asks "Ask these questions again? [yes/no]". `no` keeps them; `yes` asks them as before. The first run after this release still asks them once, since nothing was kept before. A question with no kept answer is asked either way.
+
+### Setup
+- **Setup from an old download no longer sets the old release up over an upgraded server.** After an upgrade from the dashboard (0.47.6 to 0.47.8 on a VM), `sudo bash install.sh` in the `NekoServer-All` folder downloaded for 0.47.6 ran the 0.47.6 setup again over the 0.47.8 server. `install.sh` now stops first: "This folder has NekoServer 0.47.6, and this server already runs 0.47.8 (upgraded from the dashboard). Run  git pull  here first, then  sudo bash install.sh  again." The dashboard's NekoServer tab and the upgrade's finishing note say the same after an upgrade. The guard is part of this release's `install.sh`, so it protects from 0.47.9 onward: a folder still at 0.47.8 or older does not have it.
+- **Skipping outage alerts is not later reported as switching off a monitor.** With outage alerts skipped at setup, every later run (an upgrade included) said "This server no longer checks in, so pause (or delete) the check at your outside monitor", for a monitor that was never made. That note now comes only when an outage monitor was set up; otherwise it says "Outage monitor: skipped by choice", as setup did. Seen upgrading a VM from 0.47.6 to 0.47.8.
+- **An upgrade no longer marks unfinished app connections as done.** An upgrade runs setup without a terminal, and there the step that connects the media apps only checks that the apps answer. On a server where connecting them was not finished (0.47.6 with the music on the media drive), the step passed, Lidarr still had no music folder, and the monthly check then failed on it every night ("Live automated media connections are not ready"). Without a terminal, an unfinished step now stays unfinished and says to run `sudo bash install.sh` in a terminal.
+- **The monthly check says which part failed.** A failure of its app-connection check was reported "while checking free space", the part before it. It now says "while checking the connections between the media apps".
+
+### Dashboard
+- **After Upgrade, the NekoServer tab says an upgrade is at work right away.** For up to a minute after the click (until the next reading), the tab still offered "Upgrade NekoServer", as if nothing had started, and a second click was possible. It now shows "An upgrade is at work" from the click on. Seen upgrading a VM from 0.47.6 to 0.47.8 from the dashboard.
+- **After an upgrade, the release now running is not offered again.** The NekoServer tab said "This server runs NekoServer 0.47.8", then "Available: v0.47.8-beta" with the Upgrade button, until the next daily check. It now offers only a release newer than the one running.
+
 ## v0.47.8 — 2026-11-06
 
 Fixes from answering setup in the setup window and stopping it halfway, on a clean Debian 13 PC (a virtual machine). After a wrong answer the window lost the list to choose from; a password or PIN question did not say which one it was; and each step you confirm yourself said Ctrl+C leaves it pending, when Ctrl+C stops setup.

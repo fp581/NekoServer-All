@@ -552,6 +552,19 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.post('api/answer', {'seq': record['seq'], 'text': '3'}), {'ok': False})  # taken already
         self.assertEqual(setup_progress._pending['answer'], '2')
         setup_progress.answered()
+        # "Skip for now" in the window: the step is left pending, as Ctrl+D leaves it.
+        record = setup_progress.question('Have you completed this step successfully? [yes/no]: ')
+        self.assertEqual(self.post('api/answer', {'seq': record['seq'], 'text': '', 'skip': True}), {'ok': True})
+        self.assertTrue(setup_progress._pending['skip'])
+        with mock.patch('sys.stdout') as stdout:
+            with self.assertRaises(EOFError):
+                setup_progress._from_window(setup_progress._pending, False)
+        self.assertIn('left for now, from the setup window', stdout.write.call_args[0][0])
+        setup_progress.answered()
+        # The page offers the button for that question alone.
+        page = (ROOT / 'setup-gui/setup.js').read_text()
+        self.assertIn("'Have you completed this step successfully?'", page)
+        self.assertIn('Skip for now', (ROOT / 'setup-gui/index.html').read_text())
         setup_progress.step('docker', 'needs_setup', 'Docker is installed as a snap')
         setup_progress.step('tv', 'unavailable', 'no Steam package')
         setup_progress.event('finished', lines=['  NekoServer is almost ready', 'Done: 1 of 3 steps.'], complete=False)

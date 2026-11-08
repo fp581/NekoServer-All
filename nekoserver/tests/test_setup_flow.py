@@ -81,6 +81,40 @@ class PreflightTests(unittest.TestCase):
         self.assertNotIn('Memory', out.getvalue())  # a note, not a reason to stop
         self.assertEqual(capabilities.preflight(rows[1:], io.StringIO()), 0)
 
+    def test_a_folder_older_than_the_server_is_stopped_before_it_sets_the_old_release_up(self):
+        """A VM upgraded from the dashboard (0.47.6 -> 0.47.8) and then "sudo bash
+        install.sh" in the folder downloaded for 0.47.6: setup ran the old release over the
+        new one. Now install.sh's preflight sees the newer release's runtime copy on the
+        SSD, which the installed services point at, and says to run git pull first."""
+        import io
+
+        import capabilities
+
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        data, units = root / 'ssd', root / 'units'
+        units.mkdir()
+        (root / 'my-config.json').write_text(json.dumps({'data_mount': str(data)}))
+        for name in ('v0.47.6', 'v0.47.8', 'v0.47.9', 'v0.47.9.replaced-20261108'):
+            (data / 'installer/runtime' / name).mkdir(parents=True)
+        for name in ('v0.47.6', 'v0.47.8'):  # v0.47.9: left by an upgrade put back, nothing runs it
+            unit = units / f'nekoserver-{name}.service'
+            unit.write_text(f'ExecStart={data}/installer/runtime/{name}/nekoserver-runtime\n')
+        self.assertEqual(capabilities.newer_installed(root, '0.47.6', units), '0.47.8')
+        self.assertIsNone(capabilities.newer_installed(root, '0.47.8', units))  # the same release: fine
+        self.assertIsNone(capabilities.newer_installed(root, '0.47.10', units))  # a newer folder: an upgrade
+        self.assertIsNone(capabilities.newer_installed(root / 'nowhere', '0.47.6', units))  # a first install
+        (root / 'my-config.json').write_text('{broken')
+        self.assertIsNone(capabilities.newer_installed(root, '0.47.6', units))
+        (root / 'my-config.json').write_text(json.dumps({'data_mount': str(data)}))
+        out = io.StringIO()
+        with mock.patch('neko_common.VERSION', '0.47.6'):
+            self.assertEqual(capabilities.preflight([], out, root=root, units=units), 1)
+        self.assertIn('This folder has NekoServer 0.47.6, and this server already runs 0.47.8', out.getvalue())
+        self.assertIn('git pull', out.getvalue())
+        with mock.patch('neko_common.VERSION', '0.47.8'):
+            self.assertEqual(capabilities.preflight([], io.StringIO(), root=root, units=units), 0)
+
     def test_install_sh_checks_before_the_packages_and_again_before_setup(self):
         script = (Path(installer.ROOT) / 'install.sh').read_text()
         first = script.index('capabilities.py" preflight')

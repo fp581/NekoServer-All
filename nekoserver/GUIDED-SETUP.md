@@ -98,6 +98,8 @@ Setup now downloads and starts the apps: Jellyfin, Immich, Nextcloud, Navidrome 
 A few steps ask their questions in the terminal only. The setup window says **Answer this step in the terminal** while they run.
 
 - **Connecting the media apps.** Setup may ask which download sources to add. If you don't know what to choose, just press Enter: that skips it. You can add sources later in Prowlarr.
+
+When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the download sources, the indexers, the playback test) and asks `Ask these questions again? [yes/no]`. Answer `no` to keep those answers and move on; `yes` asks them again.
 - **Music** (only if the automatic check did not pass). If setup asks for `Listener username:` and a password, type the login of your music account. To see it, open a second terminal (Ctrl+Alt+T) and run the command in [Seeing an app's password](#seeing-an-apps-password) with `show navidrome_listener`.
 - **The shared-folder password.** This is the password other computers at home use to open the shared folders. Type it, press Enter, then type it again. Nothing appears while you type.
 
@@ -120,7 +122,7 @@ Setup opens a **phone setup page** on the PC with a QR code for each app. Keep i
 3. **Signing in.** The terminal shows the app's username. To see its password, open a **second terminal** on the PC (Ctrl+Alt+T) and run the command the step shows, for example:
 
    ```bash
-   sudo python3 /srv/nekoserver/installer/releases/v0.47.8/account-setup.py show jellyfin
+   sudo python3 /srv/nekoserver/installer/releases/v0.47.9/account-setup.py show jellyfin
    ```
 
    It shows the username and password on the PC's screen, with a QR code you can scan with the phone to copy the password. Press Enter to hide it again. (Your server may keep its files somewhere other than `/srv/nekoserver`: copy the command exactly as the step shows it.)
@@ -165,7 +167,8 @@ If something still needs you, the finishing screen says what. Fix it, then run `
 
 ## If something goes wrong
 
-- **Setup stopped, or you closed the terminal?** Run `sudo bash install.sh` again in the same folder. It continues where it stopped. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again.
+- **Setup stopped, or you closed the terminal?** Run `sudo bash install.sh` again in the same folder. It continues where it stopped. Steps you already confirmed (Tailscale, the phone, the TV tests) are not asked again, and the optional questions (download sources, indexers, the playback test) are asked again only if you say so.
+- **Upgraded from the dashboard?** The server then runs a newer release than the folder you downloaded. `sudo bash install.sh` in that folder stops and says so: run `git pull` in `NekoServer-All` first, then `sudo bash install.sh` again.
 - **Answered `yes` too early?** If setup can check the result, it shows the step again. If not, the finishing screen lists what is still untested.
 - **Closed the setup window?** Reloading the page in the same browser brings it back. If the browser itself was closed, the address does not open again in a new browser (this keeps other programs out). Just go on in the terminal: every question is asked there too. The window comes back the next time you run `sudo bash install.sh`.
 - **No setup window at all?** On a PC without a desktop, or when no browser could be opened, the terminal shows everything. Nothing is missing.
@@ -175,7 +178,7 @@ If something still needs you, the finishing screen says what. Fix it, then run `
 Your app passwords are saved on the server, and only the administrator can read them. To see one app's login on the screen (with a QR code for your phone), run this in a terminal:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.47.8/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.47.9/account-setup.py show
 ```
 
 It lists the saved logins. Type a number to show one. Press Enter to hide it again (the screen is cleared), and press Enter on the list to stop. To go straight to one app, add its name: `show jellyfin`, `show immich`, `show seerr`, `show nextcloud`, or `show navidrome_listener` for music. Check that nobody else can see your screen first.
@@ -201,7 +204,7 @@ The rest of this page is the technical reference for the guided steps.
 Beside the terminal, `sudo bash install.sh` opens a **setup window** in the PC's own browser once the packages are installed and the runtime is built, at the `Ready to start?` question. It is served by setup itself, on this PC only (`127.0.0.1`, a port chosen at random, behind an address nobody can guess) and only while setup runs. Every question setup asks is asked in both places, and either can answer it. Only the account that runs setup (or root) can open it: another account on the PC that sees its address gets a page saying so.
 
 - **Before setup starts** it lists the optional parts (a TV, phone alerts, outage alerts, Nextcloud) with a plain explanation of each and what it installs, and switches to leave any of them out. A switch you press is saved to `my-config.json` at once (`"wanted"`, or Nextcloud's `"enabled"`): switched off, that step then counts as done without asking. A switch you leave alone decides nothing: setup asks about the TV, phone alerts and outage alerts when it gets to them, in the terminal and in the window. Nextcloud is on in the settings from the start, so it is installed unless you switch it off. **Start setup** in the window answers the terminal's "Ready to start?"; typing `yes` in the terminal works the same. Once setup has started (from either place) the choices are fixed: a switch pressed later, or a second **Start setup**, is refused (`409`) and the settings file is left as setup is writing it. A switch only ever changes its own setting, on the file as it is at that moment, so a value setup saved meanwhile (the drives it found) is never written back over.
-- **While it runs** it shows the step under way with a one-line explanation, the packages that step installs with what each one is for, the step's own messages, and the list of all steps with their state. **When setup asks something**, the window asks it too: the terminal's last lines (the numbered drives, the instructions for a phone step) as context, then the question with a text box, Yes/No buttons for a yes/no question, or a password box for a hidden entry (a password or PIN, which the window never shows and the terminal does not echo). The answer can be given in the window or typed in the terminal, whichever comes first; the other side is told. An answer from the window travels only over this PC's loopback, to setup's own process.
+- **While it runs** it shows the step under way with a one-line explanation, the packages that step installs with what each one is for, the step's own messages, and the list of all steps with their state. **When setup asks something**, the window asks it too: the terminal's last lines (the numbered drives, the instructions for a phone step) as context, then the question with a text box, Yes/No buttons for a yes/no question, or a password box for a hidden entry (a password or PIN, which the window never shows and the terminal does not echo). A step you confirm yourself ("Have you completed this step successfully?") also has **Skip for now**, which leaves the step pending and lets setup go on, as Ctrl+D in the terminal does. The answer can be given in the window or typed in the terminal, whichever comes first; the other side is told. An answer from the window travels only over this PC's loopback, to setup's own process.
 - **Answer this step in the terminal.** Three steps run a program of their own whose questions reach only the terminal: connecting the media apps (download sources and sign-ins), music listener setup, and the shared-folder password (`smbpasswd`, typed twice). While one runs, the window shows **Answer this step in the terminal** with the step's name, and goes back to normal when it ends.
 - **At the end** it shows the finishing screen (what is done, what still needs you, your app addresses).
 - **Opening it again.** The page's session lives in a cookie of the browser that opened it first, so a reload in that browser works. Another browser (or the same one after it was closed, which drops the session cookie) gets "This setup window was already opened": a second program that learns the address cannot take the session over. The terminal keeps asking every question meanwhile.
@@ -218,7 +221,7 @@ During interactive `--apply`, a step that needs a browser, desktop app or phone:
 4. On **no**, repeats the instructions and opens the step again. An interrupted Tailscale authorization obtains/reopens its current authorization flow.
 5. On **yes**, runs any available automatic verification. If it fails, the step repeats instead of reporting success.
 
-`y`/`n` also work, case-insensitively. Other input is rejected. Ctrl+D or an unavailable input stream leaves the step pending (Ctrl+C stops setup), preserves saved account choices and allows an interactive reapply later. No answer is inferred from elapsed time. No terminal polling loop or Python service remains running after installation.
+`y`/`n` also work, case-insensitively. Other input is rejected. Ctrl+D or an unavailable input stream (or **Skip for now** in the setup window) leaves the step pending (Ctrl+C stops setup), preserves saved account choices and allows an interactive reapply later. No answer is inferred from elapsed time. No terminal polling loop or Python service remains running after installation.
 
 ### Which steps use it?
 

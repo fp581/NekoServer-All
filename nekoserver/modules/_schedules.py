@@ -44,6 +44,12 @@ def remove(paths, run, log=print):
     return [p.name for p in removed]
 
 
+def installed(name):
+    """Whether the schedule `name` was ever installed (its .timer or .service is there;
+    switching it off leaves them)."""
+    return any(safe_path(SYSTEMD_UNITS / (name + suffix)).exists() for suffix in (TIMER, '.service'))
+
+
 def switched_off(config, section, name, log, run=None):
     """An optional extra switched off by choice ("wanted": false under `section`): its
     installed schedule `name` (.timer and .service) is stopped and switched off, before
