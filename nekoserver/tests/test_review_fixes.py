@@ -910,7 +910,7 @@ class PortClashTests(unittest.TestCase):
 class DamagedImageTests(unittest.TestCase):
     """A power loss during setup's download left Jellyfin's image listed as complete while
     the files of its last layer were lost; the rerun said "Deployed jellyfin" and the
-    container restarted for ever with "exec /init: exec format error" (the 0.48.0 round).
+    container restarted for ever with "exec /init: exec format error" (the 0.47.10 round).
     compose_up now notices, downloads the image anew and starts the app again."""
 
     def compose(self, states, logs='exec /init: exec format error', fail_twice=False):
