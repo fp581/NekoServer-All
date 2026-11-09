@@ -282,9 +282,9 @@ class ConnectionTests(unittest.TestCase):
         with (
             mock.patch.object(nas, 'wait_for_disks', return_value=disks),
             mock.patch.object(nas, 'lsblk_row', side_effect=failed),
-            self.assertRaises(RuntimeError) as caught,
         ):
-            nas.listed_disks(mock.Mock(log=logs.append), PORTAL, [IQN])
+            with self.assertRaises(RuntimeError) as caught:
+                nas.listed_disks(mock.Mock(log=logs.append), PORTAL, [IQN])
         self.assertEqual(
             str(caught.exception),
             'LUN 1 could not be inspected (lsblk failed on /dev/sdc: exit status 32); nothing was changed. '
