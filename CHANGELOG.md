@@ -9,6 +9,7 @@
 - **The weekly USB copy takes the newest database copy and password list that pass their checksum.** When the newest Immich (or Nextcloud) database copy on the HDD, or the newest sealed password list, failed its checksum, the week's copy reported the damage and copied nothing, leaving the USB drive without a fresh copy for as long as the damaged one stayed the newest. It now passes the damaged one over and copies the newest one that still matches, and the report names both: the copy that failed and was skipped, and the one copied instead. With no sound copy at all it behaves as before (nothing copied, the damage reported).
 
 ### Upgrade
+- Upgrading straight from 0.21.0 (2025) is no longer handled; upgrade to 0.41 or later first.
 - **Tidy: the release folders an upgrade protects.** `upgrade_needs` also protected the name of the folder the new release's setup runs from, which is always `nekoserver` and never a release folder, so the line did nothing; it is gone, with a comment saying why. Nothing changes in what is kept or removed.
 
 ## v0.48.1 — 2026-11-09

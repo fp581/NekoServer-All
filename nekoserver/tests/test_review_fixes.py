@@ -186,9 +186,7 @@ class MediaManifestRewriteTests(unittest.TestCase):
         self.dest.write_text(old)
         media.remember(self.dest, old)
         moved = ('/srv/neko-ssd', '/mnt/nekoserver-media', 1000, 1000, 'Asia/Jerusalem', '127.0.0.1')
-        backup, current = media.replacement(
-            'sonarr', self.dest, self.template, media.render(self.template, *moved), moved
-        )
+        backup, current = media.replacement(self.dest, media.render(self.template, *moved))
         self.assertEqual((backup.parent, current), (self.dest.parent, old))
         self.assertRegex(backup.name, r'^compose\.before-\d+\.yaml$')
 
@@ -202,13 +200,13 @@ class MediaManifestRewriteTests(unittest.TestCase):
                 values = self.values(uid=1500)
                 new = media.render(template, *values)
                 with self.assertRaisesRegex(RuntimeError, 'from 1000:1000 to 1500:1000.*Put media.uid'):
-                    media.replacement(name, self.dest, template, new, values)
+                    media.replacement(self.dest, new)
 
     def test_a_manifest_from_before_the_record_is_recognised_after_a_timezone_change(self):
         self.dest.write_text(media.render(self.template, *self.values()))
         new = media.render(self.template, *self.values(tz='Asia/Jerusalem'))
         self.assertIn('TZ: "Asia/Jerusalem"', new)
-        self.assertTrue(media.replacement('sonarr', self.dest, self.template, new, self.values(tz='Asia/Jerusalem')))
+        self.assertTrue(media.replacement(self.dest, new))
 
     def test_a_hand_edited_manifest_is_left_alone(self):
         old = media.render(self.template, *self.values())
@@ -217,7 +215,7 @@ class MediaManifestRewriteTests(unittest.TestCase):
         values = self.values(tz='Asia/Jerusalem')
         new = media.render(self.template, *values)
         with self.assertRaisesRegex(RuntimeError, 'changed by hand.*rename it'):
-            media.replacement('sonarr', self.dest, self.template, new, values)
+            media.replacement(self.dest, new)
 
 
 class NotificationTopicTests(unittest.TestCase):
@@ -1302,58 +1300,6 @@ class ModuleDependencyTests(unittest.TestCase):
         self.assertNotIn('photo_backup', maintenance.DEPENDENCIES)
         modules = installer.load_modules(ROOT / 'modules')
         self.assertNotIn('photo_backup', installer.ordered(modules, ['maintenance']))
-
-
-class UpgradeMigrationTests(unittest.TestCase):
-    """Servers installed with v0.21.0 must upgrade in place instead of refusing."""
-
-    FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'v0.21.0'
-
-    def previous(self, name):
-        template = (ROOT / 'compose' / f'{name}.yaml').read_text()
-        return media.previous_templates(name, template)
-
-    def test_v0210_lidarr_and_seerr_are_recognised_exactly(self):
-        for name in ('lidarr', 'seerr'):
-            with self.subTest(name=name):
-                shipped = (self.FIXTURES / f'{name}.yaml').read_text()
-                olds = [old for old, _ in self.previous(name)]
-                self.assertIn(shipped, olds)
-                self.assertEqual(self.previous(name)[0][1], 'compose.before-v0.21.1.yaml')
-
-    def test_v0210_seerr_with_non_default_uid_is_migrated(self):
-        shipped = (self.FIXTURES / 'seerr.yaml').read_text()
-        installed = media.render(shipped, '/srv/nekoserver', '/mnt/nekoserver-media', 1234, 2345, 'UTC', '127.0.0.1')
-        olds = [
-            media.render(old, '/srv/nekoserver', '/mnt/nekoserver-media', 1234, 2345, 'UTC', '127.0.0.1')
-            for old, _ in self.previous('seerr')
-        ]
-        self.assertIn(installed, olds)
-        self.assertIn('user: "1234:2345"', render('seerr.yaml', uid=1234, gid=2345))
-
-    def test_current_navidrome_template_has_no_pending_migration_from_itself(self):
-        current = (ROOT / 'compose' / 'navidrome.yaml').read_text()
-        # Since 0.46.0 the music's drive is a variable of its own: rendered for music on the
-        # SSD (every server before 0.46.0) it is the same text, so nothing is migrated.
-        values = ('/srv/nekoserver', '/mnt/nekoserver-media', 1000, 1000, 'UTC', '127.0.0.1')
-        self.assertEqual(
-            media.render(current, *values), media.render((self.FIXTURES / 'navidrome.yaml').read_text(), *values)
-        )
-        for name in ('lidarr', 'qbittorrent', 'navidrome'):
-            text = (ROOT / 'compose' / f'{name}.yaml').read_text()
-            self.assertIn('${NEKO_MUSIC}/library', text)
-            self.assertNotIn('${NEKO_DATA}/library', text)
-            self.assertIn('/mnt/nekoserver-media/library', media.render(text, *values, '/mnt/nekoserver-media'))
-        self.assertNotIn(current, [old for old, _ in self.previous('navidrome')])
-
-    def test_locally_edited_manifest_is_not_recognised(self):
-        edited = (self.FIXTURES / 'lidarr.yaml').read_text().replace('restart: unless-stopped', 'restart: always')
-        self.assertNotIn(edited, [old for old, _ in self.previous('lidarr')])
-
-    def test_unchanged_services_have_no_migrations(self):
-        for name in ('jellyfin', 'sonarr', 'radarr', 'prowlarr', 'qbittorrent'):
-            with self.subTest(name=name):
-                self.assertEqual(self.previous(name), [])
 
 
 class OnboardingCompletionTests(unittest.TestCase):

@@ -17,10 +17,6 @@ NAMES = re.compile(r"library/music|library/downloads/music|photos/immich-library
 
 # Places that may name them, and why. Each entry is (file, a piece of the line).
 ALLOWED = {
-    # The old Lidarr mounts, kept as text only to recognise and migrate an unedited file
-    # written before 0.21.1.
-    ('modules/media.py', '"${NEKO_DATA}/library/downloads/music:/data/downloads/music"'),
-    ('modules/media.py', '"${NEKO_DATA}/library/music:/data/music"'),
     # The media drive's photo folder is reserved, so the photo archive can never be put
     # inside or around it, wherever the photos are kept now.
     ('installer.py', "managed = media / 'photos' / 'immich-library'"),
