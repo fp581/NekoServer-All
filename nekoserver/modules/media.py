@@ -48,42 +48,6 @@ def run_cmd(cmd, timeout=120):
     return result.stdout.strip()
 
 
-# Lines changed in v0.21.1. Earlier unedited manifests are migrated in place.
-LIDARR_V0210_MOUNTS = (
-    '      - "${NEKO_MEDIA}/library:/data"\n'
-    '      - "${NEKO_DATA}/library/downloads/music:/data/downloads/music"\n'
-    '      - "${NEKO_DATA}/library/music:/data/music"\n'
-)
-# The current mounts (the music's drive is NEKO_MUSIC since 0.46.0: the same text as
-# before once rendered for music on the SSD, so installed definitions still match).
-LIDARR_V0211_MOUNTS = (
-    '      # Single SSD mount: /data/downloads/music and /data/music share one\n'
-    '      # filesystem mount, so imports hardlink or move instead of copying.\n'
-    '      - "${NEKO_MUSIC}/library:/data"\n'
-)
-NAVIDROME_V0170_SCANNER = (
-    'ND_MUSICFOLDER: "/music"\n      ND_DATAFOLDER: "/data"\n      ND_SCANNER_SCHEDULE: "0 * * * *"\n'
-    '      ND_SCANNER_WATCHERWAIT: "10s"\n      ND_ENABLESHARING: "false"'
-)
-
-
-def previous_templates(name, template):
-    """Earlier shipped templates for ``name`` and the backup file to keep for each."""
-    candidates = {
-        # v0.16.0 and earlier shipped this exact scanner setting.
-        'navidrome': [(NAVIDROME_V0170_SCANNER, 'ND_SCANSCHEDULE: "1h"', 'compose.before-music-setup.yaml')],
-        # v0.21.0 split Lidarr's music folders across separate bind mounts.
-        'lidarr': [(LIDARR_V0211_MOUNTS, LIDARR_V0210_MOUNTS, 'compose.before-v0.21.1.yaml')],
-        # v0.21.0 hardcoded Seerr's account IDs.
-        'seerr': [('user: "${NEKO_UID}:${NEKO_GID}"', 'user: "1000:1000"', 'compose.before-v0.21.1.yaml')],
-    }
-    out = []
-    for new, old, backup in candidates.get(name, []):
-        if new in template:
-            out.append((template.replace(new, old), backup))
-    return out
-
-
 GPU_DEVICE_BLOCK = '    devices:\n      - /dev/dri:/dev/dri\n'
 GPU_DEVICE = Path('/dev/dri')
 
@@ -183,24 +147,19 @@ def same_but_host(current, rendered):
     return plain(current) == plain(rendered)
 
 
-def replacement(name, dest, template, rendered, values):
+def replacement(dest, rendered):
     """(backup file, current text) when the manifest at ``dest`` is an unedited one of
     ours that may be replaced; raises when it was edited by someone."""
     current = dest.read_text(encoding='utf-8')
-    candidates = [(render(old, *values), backup) for old, backup in previous_templates(name, template)]
     if written_by_us(dest, current):
         same_user(current, rendered)
-        candidates.append((current, f'compose.before-{int(time.time())}.yaml'))
-    elif same_but_host(current, rendered):
-        candidates.append((current, f'compose.before-{int(time.time())}.yaml'))
-    previous = next((backup for text, backup in candidates if text == current), None)
-    if previous is None:
+    elif not same_but_host(current, rendered):
         raise RuntimeError(
             f'{dest} was changed by hand, so setup leaves it alone. To let setup write a fresh one '
             f'(with your current settings), rename it, for example to compose.mine.yaml, and run '
             f'setup again; your copy stays next to it'
         )
-    backup = safe_path(dest.parent / previous)
+    backup = safe_path(dest.parent / f'compose.before-{int(time.time())}.yaml')
     if backup.exists() and backup.read_text() != current:
         raise RuntimeError(f'Template backup {backup} differs; preserved for review')
     return backup, current
@@ -310,8 +269,8 @@ def _run(context):
         rendered = render(template, *values)
         desired = adapt_to_host(name, rendered, peer_port=torrent_port(settings))
         if dest.exists() and dest.read_text(encoding='utf-8') != desired:
-            # Replace only an unedited copy of ours (an earlier template included).
-            migrations[name] = replacement(name, dest, template, rendered, values)
+            # Replace only an unedited copy of ours.
+            migrations[name] = replacement(dest, rendered)
         manifests[name] = (dest, desired)
     for name in selected:
         for path in (configs / name, compose_dir / name):

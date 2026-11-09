@@ -3,7 +3,6 @@
 import datetime as dt
 import fcntl
 import glob
-import hashlib
 import os
 import re
 from pathlib import Path
@@ -13,7 +12,7 @@ import tempfile
 import time
 
 import guided_setup
-from neko_common import cloud_files, photo_library, regular_files, usb_mount_options, version_parts
+from neko_common import cloud_files, photo_library, regular_files, sha256_file, usb_mount_options, version_parts
 
 DEPENDENCIES = ['storage']
 DESCRIPTION = 'Check there is enough space on the SSD, HDD and USB drive before installing'
@@ -185,7 +184,7 @@ def mirrored(source, target, verify):
     if not verify and copy.st_mtime_ns >= info.st_ctime_ns:
         return True
     try:
-        return digest(source) == digest(target)
+        return sha256_file(source) == sha256_file(target)
     except OSError:
         return False
 
@@ -214,17 +213,12 @@ def copied(source, target):
         try:
             if saved.stat().st_size != info.st_size:
                 continue
-            wanted = wanted or digest(source)
-            if digest(saved) == wanted:
+            wanted = wanted or sha256_file(source)
+            if sha256_file(saved) == wanted:
                 return True
         except OSError:
             continue
     return False
-
-
-def digest(path):
-    with open(path, 'rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 # Held by the weekly USB copy (backup.rs) and the recovery menu while they use the drive.

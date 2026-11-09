@@ -271,7 +271,6 @@ Every release must show that it still reads its supported historical formats. Wh
 exists under `tests/` today:
 
 - `tests/fixtures/jellyfin_key_cases.json`: Jellyfin API key cases (used by `tests/test_review_fixes.py`).
-- `tests/fixtures/v0.21.0/lidarr.yaml`, `navidrome.yaml`, `seerr.yaml`: compose files as 0.21.0 wrote them.
 - `tests/old_release_guard_0479.py`: the old-release guard exactly as 0.47.9 shipped it, for the way-back test.
 - Older settings shapes are built inline in test code, not kept as files: settings from
   before 0.48.0 without `backup_times` (`tests/test_backup_times.py:95`, `:380`, `:458`),

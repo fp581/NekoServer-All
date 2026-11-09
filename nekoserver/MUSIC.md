@@ -13,7 +13,7 @@ Use Navidrome's browser player on the TV/Linux PC, **Amperfy on iPhone**, and op
 - Container UIs stay bound to loopback. Remote access uses the existing secured-account confirmation and HTTPS gateway; nothing opens public router ports.
 - Navidrome watches file changes with a short settling delay and performs an hourly fallback scan using its current Scanner settings. No artificial read loop is added to keep the HDD active. Embedded tags and cover art improve browsing; imported files need proper artist/album/title tags. An empty library is reported honestly.
 
-Fresh deployments use the current scanner keys and disable public share links by default. The installer recognizes only the exact pristine earlier Navidrome template, backs it up as compose.before-music-setup.yaml and upgrades it. Edited manifests/settings and differing existing backups are preserved for explicit review. Existing monthly immutable image pins continue to apply.
+Fresh deployments use the current scanner keys and disable public share links by default. Edited manifests/settings and differing existing backups are preserved for explicit review. Existing monthly immutable image pins continue to apply.
 
 ## Setup on the real server
 
