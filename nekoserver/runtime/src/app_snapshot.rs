@@ -361,7 +361,7 @@ pub fn run(a: &Args) -> Result<()> {
     let _lock = common::lock(Path::new(LOCK))?;
     let _recovery_lock = backup::coordinate(&job.cfgpath, &job.data, &job.media)?;
     resume()?;
-    let result = backup::execute(Some(&job.data), "applications", &job.cfgpath, || {
+    let result = backup::execute_with(Some(&job.data), "applications", &job.cfgpath, || {
         backup::no_unfinished_update()?;
         snapshot(&job.cfgpath, &job.data, &job.media, &names)
     });
@@ -436,7 +436,12 @@ fn covered(mount: &Value, own: &Path, data: &Path, media: &Path) -> bool {
             || source.starts_with(data.join("library"))
             || source.starts_with(media.join("library")))
 }
-fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Result<()> {
+fn snapshot(
+    cfgpath: &Path,
+    data: &Path,
+    media: &Path,
+    names: &[String],
+) -> Result<backup::Outcome> {
     let mut containers = vec![];
     let mut running = vec![];
     for name in names {
@@ -551,7 +556,8 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
             .map(|r| r["size"].as_u64().unwrap_or(0) as u128)
             .sum::<u128>()
             + RESERVE;
-        backup::make_room(&root, needed, &|have| short_of_space(media, have, needed))?;
+        let removed =
+            backup::make_room(&root, needed, &|have| short_of_space(media, have, needed))?;
         let stage = backup::stage_snapshot(&root)?;
         let payload = &stage.payload;
         for row in &mut files {
@@ -581,10 +587,14 @@ fn snapshot(cfgpath: &Path, data: &Path, media: &Path, names: &[String]) -> Resu
             &manifest,
             keep,
             None,
-        )
+        )?;
+        // Snapshots removed early for room, leaving fewer than the settings keep: the
+        // run is done in part, so the dashboard says the history is shorter.
+        backup::short_history(&root, &removed, keep)
     })();
     let restarted = resume();
-    result.and(restarted)
+    let partial = result.and_then(|partial| restarted.map(|()| partial))?;
+    Ok(backup::Outcome { partial })
 }
 #[cfg(test)]
 mod tests {

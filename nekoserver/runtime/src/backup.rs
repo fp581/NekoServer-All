@@ -2951,7 +2951,8 @@ pub fn publish_snapshot(
 /// While the drive is short, the oldest snapshots are removed first, but the newest
 /// complete one always stays, as the one good backup. Still short: the error `short`
 /// gives (told what is free). Without this a full drive failed every night for good.
-pub fn make_room(root: &Path, needed: u128, short: &dyn Fn(u128) -> String) -> Result<()> {
+/// Returns the names removed, for the report (`short_history`).
+pub fn make_room(root: &Path, needed: u128, short: &dyn Fn(u128) -> String) -> Result<Vec<String>> {
     make_room_with(root, needed, &|| common::free_bytes(root), short)
 }
 fn make_room_with(
@@ -2959,11 +2960,12 @@ fn make_room_with(
     needed: u128,
     free: &dyn Fn() -> Result<u128>,
     short: &dyn Fn(u128) -> String,
-) -> Result<()> {
+) -> Result<Vec<String>> {
+    let mut removed = vec![];
     loop {
         let have = free()?;
         if have >= needed {
-            return Ok(());
+            return Ok(removed);
         }
         let found = common::complete_snapshots(root)?;
         let [(_, oldest), _, ..] = found.as_slice() else {
@@ -2971,7 +2973,25 @@ fn make_room_with(
         };
         common::remove_snapshot(root, oldest)?;
         println!("Backup: the drive was short of space, so the oldest snapshot ({oldest}) was removed early; the newest ones are kept");
+        removed.push(oldest.clone());
     }
+}
+/// What the report says when `make_room` removed snapshots (`removed`) and, with the new
+/// one published, `root` holds fewer than the `keep` snapshots the settings ask for: the
+/// run is done in part, so the dashboard shows the history is shorter than believed.
+/// Nothing when the kept number is still there (the removed ones were beyond it).
+pub fn short_history(root: &Path, removed: &[String], keep: u64) -> Result<Option<Value>> {
+    let left = common::complete_snapshots(root)?.len();
+    if removed.is_empty() || left as u64 >= keep {
+        return Ok(None);
+    }
+    let count = match removed.len() {
+        1 => "1 older application snapshot was".to_string(),
+        n => format!("{n} older application snapshots were"),
+    };
+    Ok(Some(json!([format!(
+        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {left} of the {keep} snapshots the settings keep (app_backup.keep_snapshots) remain"
+    )])))
 }
 /// Check the drives, take the lock monthly maintenance and the other jobs hold, then
 /// check the drives again. Anything that starts or stops services (including resuming
@@ -7080,8 +7100,22 @@ mod tests {
         let count = || common::complete_snapshots(&root).unwrap().len() as u128;
         let free = || Ok(130 - 40 * count());
         let short = |have: u128| format!("short: {have} free");
-        make_room_with(&root, 50, &free, &short).unwrap();
+        assert!(make_room_with(&root, 10, &free, &short).unwrap().is_empty());
+        let removed = make_room_with(&root, 50, &free, &short).unwrap();
+        assert_eq!(removed, ["snapshot-100-1"]);
         assert_eq!(names(&root), ["snapshot-200-1", "snapshot-300-1"]);
+        // Two of the seven snapshots the settings keep are left: the run says so (the
+        // job used to end "pass" with a week of history believed to be there).
+        let said = short_history(&root, &removed, 7).unwrap().unwrap();
+        let said = said[0].as_str().unwrap();
+        assert!(
+            said.contains("1 older application snapshot was removed"),
+            "{said}"
+        );
+        assert!(said.contains("2 of the 7 snapshots"), "{said}");
+        // Nothing removed, or as many left as the settings keep: nothing to say.
+        assert_eq!(short_history(&root, &[], 7).unwrap(), None);
+        assert_eq!(short_history(&root, &removed, 2).unwrap(), None);
         let error = make_room_with(&root, 100, &free, &short).unwrap_err();
         assert_eq!(error.to_string(), "short: 90 free");
         assert_eq!(names(&root), ["snapshot-300-1"]);
