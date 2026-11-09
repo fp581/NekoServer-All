@@ -395,8 +395,10 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertIn('Enter for Fri', asked[1])
         self.assertIn('Enter for 22:00', asked[2])
         self.assertIn('Enter for 01:30', asked[3])
-        self.assertEqual(
-            ctx.config['backup_times'], {'daily': '23:00', 'weekly_day': 'Fri', 'weekly': '22:00', 'monthly': '01:30'}
+        # Enter everywhere: its own times stand, unsaved (saving them would move the other jobs).
+        self.assertNotIn('backup_times', ctx.config)
+        self.assertIn(
+            'Backup times kept as they were: daily 23:00, weekly Fri 22:00, monthly on the 1st at 01:30', ctx.logs
         )
 
     def test_a_rerun_keeps_the_answer_unless_asked_again(self):
@@ -436,6 +438,70 @@ class SetupQuestionTests(unittest.TestCase):
         ctx.ask_optional_again = False
         self.assertEqual(self.ask(ctx), [])
         self.assertEqual(ctx.saved, 0)
+
+    def before_0_48(self):
+        """Settings from before 0.48.0: every job with a time of its own."""
+        return self.config(
+            app_backup={'time': '23:00'},
+            host_backup={'time': '02:00'},
+            music={'backup_time': '03:45'},
+            photos={
+                'backup_weekday': 'Fri',
+                'backup_time': '22:00',
+                'database_backup_time': '21:00',
+                'backup_schedule': 'weekly',
+            },
+            maintenance={'time': '01:30'},
+        )
+
+    def test_enter_everywhere_on_a_server_set_up_before_keeps_its_own_times(self):
+        # Saved as backup_times, the times shown would still have moved the music copy to
+        # 22:30 and the copy of this PC's settings to 00:00, their fixed distances from
+        # the daily time, without a word.
+        ctx = Ctx(self.before_0_48())
+        printed = self.ask(ctx, '', '', '', '')
+        self.assertNotIn('backup_times', ctx.config)
+        self.assertEqual(ctx.saved, 0)
+        said = 'daily 23:00, weekly Fri 22:00, monthly on the 1st at 01:30'
+        self.assertIn('Backup times kept as they were: ' + said, ctx.logs)
+        self.assertEqual(neko_common.optional_answers(self.dir.name)['backup_times'], said)
+        self.assertTrue(any(line.startswith('Backups run ' + said) for line in printed))
+        self.assertFalse(any('moves from' in line for line in printed))
+        # The setup window's "Skip for now" is Enter everywhere.
+        ctx = Ctx(self.before_0_48())
+        guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('', skip=True), output=lambda *_: None)
+        self.assertNotIn('backup_times', ctx.config)
+        self.assertEqual(ctx.saved, 0)
+
+    def test_a_changed_time_on_a_server_set_up_before_says_which_jobs_move(self):
+        ctx = Ctx(self.before_0_48())
+        printed = self.ask(ctx, '22:30', '', '', '')
+        self.assertEqual(
+            ctx.config['backup_times'], {'daily': '22:30', 'weekly_day': 'Fri', 'weekly': '22:00', 'monthly': '01:30'}
+        )
+        self.assertEqual(ctx.saved, 1)
+        self.assertIn(
+            "With these times the music copy moves from 03:45 to 22:00, the copy of this PC's own settings moves "
+            "from 02:00 to 23:30, Immich's database copy moves from Fri 21:00 to Fri 21:15.",
+            printed,
+        )
+        # From the setup window the same: here only the weekly time changed, yet three jobs move.
+        ctx = Ctx(self.before_0_48())
+        printed = []
+        page = {'daily': '23:00', 'weekly_day': 'Fri', 'weekly': '20:00', 'monthly': '01:30'}
+        guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('23:00', page), output=printed.append)
+        self.assertEqual(ctx.config['backup_times'], page)
+        self.assertIn(
+            "With these times the music copy moves from 03:45 to 22:30, the copy of this PC's own settings moves "
+            "from 02:00 to 00:00, Immich's database copy moves from Fri 21:00 to Fri 19:15.",
+            printed,
+        )
+        # A server set up with 0.48.0 has no times of its own to lose: nothing to say
+        # (yes: ask again, after the answer the cases above left on the SSD).
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times'])))
+        printed = self.ask(ctx, 'yes', '22:30', '', '', '')
+        self.assertFalse(any('moves from' in line for line in printed))
+        self.assertEqual(ctx.saved, 1)
 
     def test_nobody_at_the_terminal_changes_nothing(self):
         self.interactive.stop()

@@ -408,12 +408,13 @@ def choose_backup_times(ctx, prompt=None, output=None):
     """Ask when the backups run (the daily jobs, the weekly USB copy, the monthly check)
     and save the answers as "backup_times" in the settings file; every timer is written
     from them (neko_common.job_times). Enter keeps the time shown: the server's current
-    times, so a server set up before 0.48.0 keeps its schedule. Asked once; a run after
+    times, so a server set up before 0.48.0 keeps its schedule (its settings untouched
+    when every answer is Enter and its other jobs had times of their own). Asked once; a run after
     that shows the answer and asks again only on request (optional_kept). Setup without
     a person at the terminal (an upgrade) changes nothing. The setup window shows the
     three as one page (setup_progress.page) and may answer them together."""
     import setup_progress
-    from neko_common import BACKUP_TIMES, WEEKDAYS, backup_times, backup_times_said, job_times, remember_answer
+    from neko_common import BACKUP_TIMES, WEEKDAYS, backup_times, backup_times_said, job_times
 
     if not interactive(ctx):
         return
@@ -427,12 +428,60 @@ def choose_backup_times(ctx, prompt=None, output=None):
     shown = {'daily': now['app'], 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
     with setup_progress.page(BACKUP_TIMES, shown, weekdays=list(WEEKDAYS), night_end=night_end):
         chosen = ask_backup_times(ctx, now, night_end, prompt, output)
+    # Settings from before 0.48.0 (no "backup_times" yet) gave each job a time of its own.
+    moved = jobs_moved(ctx.config, now, chosen) if backup_times(ctx.config) is None else []
+    if moved and chosen == shown:
+        # Every answer kept the time shown, yet saved as "backup_times" they would move
+        # the music, settings or database copy to its fixed distance from the daily and
+        # weekly times (job_times): the server keeps the times it has.
+        times_settled(ctx, output, 'kept as they were')
+        return
+    if moved:
+        output('With these times ' + ', '.join(moved) + '.')
     ctx.config[BACKUP_TIMES] = chosen
     save_settings(ctx)
+    times_settled(ctx, output, 'chosen')
+
+
+def times_settled(ctx, output, how):
+    """The backup times as they now stand: remembered as the answer to this optional
+    question, said, and logged (`how`: chosen, or kept as they were)."""
+    from neko_common import BACKUP_TIMES, backup_times_said, remember_answer
+
     said = backup_times_said(ctx.config)
     remember_answer(ctx.config['data_mount'], BACKUP_TIMES, said)
     output(f'Backups run {said}. To change this later, run  sudo bash install.sh  again and say yes to asking again.')
-    ctx.log('Backup times chosen: ' + said)
+    ctx.log(f'Backup times {how}: {said}')
+
+
+def jobs_moved(config, now, chosen):
+    """On a server set up before 0.48.0 the music copy, the copy of this PC's own settings
+    and Immich's database copy had times of their own; from "backup_times" they keep a
+    fixed distance from the daily and weekly times (job_times). Each one `chosen` moves,
+    in words ("the music copy moves from 03:45 to 22:30"), so nothing changes unsaid."""
+    from neko_common import BACKUP_TIMES, job_times
+
+    after = job_times({**config, BACKUP_TIMES: chosen})
+    photos = config.get('photos', {})
+    weekly = isinstance(photos, dict) and photos.get('backup_schedule', 'legacy') == 'weekly'
+    database = 'photo_database_weekly' if weekly else 'photo_database'
+    moved = []
+    for job, words in (
+        ('music', 'the music copy'),
+        ('host', "the copy of this PC's own settings"),
+        (database, "Immich's database copy"),
+    ):
+        before, later = job_said(now, job), job_said(after, job)
+        if before != later:
+            moved.append(f'{words} moves from {before} to {later}')
+    return moved
+
+
+def job_said(times, job):
+    """A job's time from job_times, with its day when it has one of its own."""
+    if job == 'photo_database_weekly':
+        return f"{times['photo_database_weekly_day']} {times[job]}"
+    return times[job]
 
 
 def ask_backup_times(ctx, now, night_end, prompt, output):
