@@ -1,0 +1,7 @@
+[Unit]
+Description=NekoServer daily check for app updates
+[Timer]
+OnCalendar=*-*-* 13:41:00 Asia/Jerusalem
+Persistent=true
+[Install]
+WantedBy=timers.target

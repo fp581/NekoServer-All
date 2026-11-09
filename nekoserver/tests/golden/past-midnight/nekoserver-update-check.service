@@ -1,0 +1,10 @@
+[Unit]
+Description=NekoServer daily check for app updates
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=4h
+ExecStart=/srv/nekoserver/installer/runtime/v0.48.1/nekoserver-runtime update-check --config /etc/nekoserver-backups/maintenance.json

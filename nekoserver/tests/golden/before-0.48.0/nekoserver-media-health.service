@@ -1,0 +1,9 @@
+[Unit]
+Description=NekoServer read-only media health audit
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+After=docker.service
+[Service]
+Type=oneshot
+SuccessExitStatus=3
+TimeoutStartSec=300
+ExecStart=/srv/nekoserver/installer/runtime/v0.48.1/nekoserver-runtime media-health --config /srv/nekoserver/scripts/config.json --output /srv/nekoserver/reports/media/latest.json

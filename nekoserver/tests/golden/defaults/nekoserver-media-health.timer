@@ -1,0 +1,9 @@
+[Unit]
+Description=NekoServer scheduled media audit
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=60min
+Persistent=true
+Unit=nekoserver-media-health.service
+[Install]
+WantedBy=timers.target

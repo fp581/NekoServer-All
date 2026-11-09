@@ -1,0 +1,12 @@
+[Unit]
+Description=nekoserver-immich-resume
+RequiresMountsFor=/srv/nekoserver
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=3h30min
+ExecStart=/srv/nekoserver/installer/runtime/v0.48.1/nekoserver-runtime immich-resume --config /etc/nekoserver-backups/storage.json
+[Install]
+WantedBy=multi-user.target

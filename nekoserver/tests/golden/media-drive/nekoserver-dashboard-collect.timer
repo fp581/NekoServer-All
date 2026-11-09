@@ -1,0 +1,8 @@
+[Unit]
+Description=NekoServer periodic dashboard collection
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=120s
+Unit=nekoserver-dashboard-collect.service
+[Install]
+WantedBy=timers.target

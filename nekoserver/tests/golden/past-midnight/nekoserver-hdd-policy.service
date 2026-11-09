@@ -1,0 +1,20 @@
+[Unit]
+Description=NekoServer verified media HDD standby policy
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/nekoserver-os/v0.48.1/nekoserver-runtime hdd-policy --config /etc/nekoserver-os/storage.json
+TimeoutStartSec=180
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0077
+PrivateTmp=yes
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+[Unit]
+Description=NekoServer fan, light and app control
+After=systemd-modules-load.service docker.service nekoserver-openrgb.service nekoserver-openrgb-proxy.socket
+Wants=nekoserver-openrgb.service nekoserver-openrgb-proxy.socket
+StartLimitIntervalSec=0
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/nekoserver-dashboard/v0.48.1/nekoserver-runtime control --config /etc/nekoserver-dashboard/config.json
+ExecStopPost=/usr/local/lib/nekoserver-dashboard/v0.48.1/nekoserver-runtime control --restore
+TimeoutStopSec=600
+Restart=always
+RestartSec=3
+Group=nekoserver-control
+UMask=0077
+RuntimeDirectory=nekoserver-control
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+Environment=DOCKER_CONFIG=/run/nekoserver-control/docker
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/nekoserver-control -/srv/nekoserver/installer -/srv/nekoserver/backups/updates
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_KILL
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+[Install]
+WantedBy=multi-user.target

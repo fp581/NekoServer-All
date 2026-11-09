@@ -1,0 +1,10 @@
+[Unit]
+Description=NekoServer daily look at the system updates waiting
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=30min
+ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v0.48.1/system_updates.py check --config /srv/nekoserver/installer/releases/v0.48.1/config.json

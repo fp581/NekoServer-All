@@ -1,0 +1,27 @@
+[Unit]
+Description=NekoServer LAN HTTPS gateway
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+[Service]
+User=caddy
+Group=caddy
+Environment=XDG_DATA_HOME=/srv/nekoserver/gateway/caddy-state
+Environment=XDG_CONFIG_HOME=/srv/nekoserver/gateway/caddy-state
+ExecStartPre=+/usr/local/lib/nekoserver-gateway/v0.48.1/nekoserver-runtime gateway-guard --config /etc/nekoserver-gateway/storage.json
+ExecStart=/usr/bin/caddy run --config /etc/nekoserver-gateway/lan.json
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ReadWritePaths=/srv/nekoserver/gateway/caddy-state
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock /srv/nekoserver/appdata /srv/nekoserver/docker-engine /mnt/nekoserver-media
+RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+[Install]
+WantedBy=multi-user.target

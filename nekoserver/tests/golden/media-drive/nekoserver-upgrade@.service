@@ -1,0 +1,10 @@
+[Unit]
+Description=NekoServer upgrade to %i
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=infinity
+ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v0.48.1/upgrade.py run --tag %i --config /srv/nekoserver/installer/releases/v0.48.1/config.json
