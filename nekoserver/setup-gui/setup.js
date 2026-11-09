@@ -281,7 +281,10 @@
     $('ask-page').hidden = !page;
     $('ask-page-actions').hidden = !page;
     pageInputs = {};
+    // The page's rows are required inputs of the same form: hidden, they would still
+    // stop every later Send, so off the page they go.
     if (page) buildBackupTimes(page);
+    else $('ask-page').replaceChildren();
     const input = $('ask-input');
     input.type = q.secret ? 'password' : 'text';
     input.value = '';

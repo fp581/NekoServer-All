@@ -254,6 +254,21 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([plain])
         self.assertEqual((seen['pageHidden'], seen['answerHidden'], seen['rows']), (True, False, []))
 
+    def test_the_pages_rows_go_when_a_plain_question_follows(self):
+        # The rows' inputs are `required` and sit in the same form as the plain answer:
+        # left behind hidden, they blocked every later Send.
+        plain = self.backup_times_question()
+        plain['question'] = {
+            'seq': 8,
+            'text': 'Select the SSD. Choose number: ',
+            'secret': False,
+            'kind': 'text',
+            'context': [],
+            'page': None,
+        }
+        seen = self.page([self.backup_times_question(), plain])
+        self.assertEqual((seen['pageHidden'], seen['answerHidden'], seen['rows']), (True, False, []))
+
     def test_the_finish_title_is_setups_own_verdict(self):
         done = {
             **self.choose(),
