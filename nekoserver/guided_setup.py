@@ -353,13 +353,21 @@ def optional_kept(ctx, asked, prompt=None, output=None):
         output('Last time, the optional questions were answered this way:')
         for question in OPTIONAL_QUESTIONS:
             if question in kept:
-                output(f'  {OPTIONAL_QUESTIONS[question]}: {kept[question]}')
+                output(f'  {OPTIONAL_QUESTIONS[question]}: {answer_shown(ctx, question, kept[question])}')
         output('Answer no to keep these answers; yes asks the questions again.')
         again = bool(yes_no('Ask these questions again?', prompt, output))
         output('')
         ctx.log('Optional questions: ' + ('asked again' if again else 'kept as answered last time'))
         ctx.ask_optional_again = again
     return [] if again else shown
+
+
+def answer_shown(ctx, question, kept):
+    """A kept answer as the rerun lists it: the backup times as the settings hold them now
+    (the file may have been made again since, with other times), any other as given."""
+    from neko_common import BACKUP_TIMES, backup_times_said
+
+    return backup_times_said(ctx.config) if question == BACKUP_TIMES else kept
 
 
 def ask_choice(question, default, valid, hint, prompt=input, output=print, attempts=3):
@@ -414,13 +422,21 @@ def choose_backup_times(ctx, prompt=None, output=None):
     a person at the terminal (an upgrade) changes nothing. The setup window shows the
     three as one page (setup_progress.page) and may answer them together."""
     import setup_progress
-    from neko_common import BACKUP_TIMES, WEEKDAYS, backup_times, backup_times_said, job_times
+    from neko_common import BACKUP_TIMES, WEEKDAYS, backup_times, backup_times_said, job_times, optional_answers
 
     if not interactive(ctx):
         return
     prompt = prompt or input
     output = output or print
-    if backup_times(ctx.config) is not None and BACKUP_TIMES in optional_kept(ctx, [BACKUP_TIMES], prompt, output):
+    remembered = optional_answers(ctx.config['data_mount']).get(BACKUP_TIMES)
+    if remembered is not None and remembered != backup_times_said(ctx.config):
+        # The settings file was made again since (from the template, say): the times in
+        # it are the ones the timers would get, so they are asked, not offered to keep.
+        output(
+            f'The backup times in the settings ({backup_times_said(ctx.config)}) are not the ones chosen last '
+            f'time ({remembered}), so they are asked again.'
+        )
+    elif remembered is not None and BACKUP_TIMES in optional_kept(ctx, [BACKUP_TIMES], prompt, output):
         ctx.log('Backup times kept: ' + backup_times_said(ctx.config))
         return
     now = job_times(ctx.config)

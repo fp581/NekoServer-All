@@ -350,6 +350,7 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertEqual(ctx.config['backup_times']['daily'], '04:15')
         self.assertIn('Type a time of day as HH:MM, for example 04:15.', printed)
         # Sent by the setup window: refused there too, and asked in the terminal.
+        neko_common.optional_answers_file(self.dir.name).unlink()  # the case above's answer, not this one's
         ctx = Ctx(self.config())
         printed = []
         first = self.window_prompt('23:30', {'weekly_day': 'Sat', 'weekly': '1٩:0٠', 'monthly': '01:00'})
@@ -502,6 +503,52 @@ class SetupQuestionTests(unittest.TestCase):
         printed = self.ask(ctx, 'yes', '22:30', '', '', '')
         self.assertFalse(any('moves from' in line for line in printed))
         self.assertEqual(ctx.saved, 1)
+
+    def test_a_remembered_answer_that_is_not_what_the_settings_hold_is_asked_again(self):
+        # The settings file was made again from the template (04:15, Sun 03:00, 02:30)
+        # while the SSD still remembered the old answer: the rerun showed the old times,
+        # "no" kept them in words only, and every timer was written at the template's.
+        old = 'daily 22:00, weekly Sat 21:00, monthly on the 1st at 01:00'
+        template = 'daily 04:15, weekly Sun 03:00, monthly on the 1st at 02:30'
+        neko_common.remember_answer(self.dir.name, 'backup_times', old)
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times'])))
+        asked = []
+
+        def prompt(question):
+            asked.append(question)
+            return '22:00' if question.startswith('When should the daily') else ''
+
+        printed = []
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
+        self.assertFalse(any('[yes/no]' in question for question in asked), 'not offered to keep')
+        self.assertEqual(len(asked), 4)
+        self.assertIn(
+            f'The backup times in the settings ({template}) are not the ones chosen last time ({old}), '
+            'so they are asked again.',
+            printed,
+        )
+        self.assertEqual(ctx.config['backup_times']['daily'], '22:00')
+        self.assertEqual(ctx.saved, 1)
+        # The same answer as the settings: offered to keep, as before.
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times'])))
+        neko_common.remember_answer(self.dir.name, 'backup_times', template)
+        printed = self.ask(ctx, 'no')
+        self.assertEqual(ctx.saved, 0)
+        self.assertIn('  Backup times: ' + template, printed)
+
+    def test_the_list_of_last_answers_shows_the_times_the_settings_hold(self):
+        # Another step's turn to offer the list, the drives step having kept quiet: the
+        # backup times shown are the settings' own, not the SSD's remembered words.
+        old = 'daily 22:00, weekly Sat 21:00, monthly on the 1st at 01:00'
+        neko_common.remember_answer(self.dir.name, 'backup_times', old)
+        neko_common.remember_answer(self.dir.name, 'playback', 'done')
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times'])))
+        printed = []
+        kept = guided_setup.optional_kept(ctx, ['playback'], prompt=answers('no'), output=printed.append)
+        self.assertEqual(kept, ['playback'])
+        self.assertIn('  Backup times: daily 04:15, weekly Sun 03:00, monthly on the 1st at 02:30', printed)
+        self.assertIn('  Playback test: done', printed)
+        self.assertFalse(any('22:00' in line for line in printed))
 
     def test_nobody_at_the_terminal_changes_nothing(self):
         self.interactive.stop()
