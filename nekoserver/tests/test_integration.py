@@ -888,6 +888,8 @@ class TailnetAcceptanceTests(unittest.TestCase):
             mock.patch.object(gateway_checks.g, 'tailnode', return_value=host),
             mock.patch.object(gateway_checks.g, 'serve_state', return_value=installed),
             mock.patch.object(gateway_checks.health, 'read_json', return_value=journal),
+            # The addresses answer (their certificate: tests/test_tailnet_certificate.py).
+            mock.patch.object(gateway_checks.g, 'https_problem', return_value=None),
         ):
             self.assertEqual(gateway_checks.check(cfg, 'tailnet')[0]['status'], 'pass')
             # A route set missing the dashboard (or anything else) is still a failure.
