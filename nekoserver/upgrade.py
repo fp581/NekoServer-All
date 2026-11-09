@@ -218,7 +218,8 @@ def setup_profile(config, modules=None):
 def run_setup(project, settings, account, log_file, run=subprocess.run):
     """That release's setup, with the saved settings, without questions and without
     updating the system, for the steps this server is set up with (setup_profile).
-    Returns its exit code (1 also when a step only waits for you)."""
+    Returns its exit code (installer.WAITING when a step only waits for you; what else
+    1 can mean, setup_problem reads from the log)."""
     profile = setup_profile(json.loads(settings_path(settings).read_text()))
     chosen = ['--profile', profile] if profile else []
     atomic_write(project / 'my-config.json', Path(settings).read_bytes(), 0o600)
@@ -241,14 +242,54 @@ def run_setup(project, settings, account, log_file, run=subprocess.run):
 def setup_problem(setup, project, settings, account, log_file):
     """Why a release's setup did not work, or None. Setup that could not be started or
     that ran past its time (six hours) is a failure like any other, never an exception
-    that would skip putting the previous release back."""
+    that would skip putting the previous release back. Exit code 1 alone says little:
+    the installer ends with it when a step only waits for you (so it did before the
+    upgrade too, which is not its doing), a release before 0.48.1 ended with it when a
+    step failed, and install.sh ends with it for its own refusals before the installer
+    starts (the setup lock held by another run, its preflight, a missing prerequisite).
+    So what the run wrote to the log decides: a FAILED line is a failed step, and
+    without the installer's Finished line the steps never ran (the review of 0.48.0: a
+    step new in the release that failed, which the check never looks at, passed for a
+    waiting one, and a refusal on the way back was blamed on the services)."""
+    import installer
+
+    log_file = Path(log_file)
+    written = log_file.stat().st_size if log_file.is_file() else 0
     try:
         code = setup(project, settings, account, log_file)
     except subprocess.TimeoutExpired:
         return f'its setup ran for more than six hours and was stopped (the log: {log_file})'
     except (OSError, subprocess.SubprocessError) as exc:
         return f'its setup could not run ({exc}; the log: {log_file})'
-    return f'its setup stopped (exit code {code}; the log says why: {log_file})' if code not in (0, 1) else None
+    if code == 0:
+        return None
+    said = log_since(log_file, written)
+    failed = FAILED_LINE.findall(said)
+    if code == installer.STEP_FAILED or failed:
+        return f'its setup ended with a failed step ({"; ".join(failed) or f"exit code {code}"}; the log: {log_file})'
+    if code != installer.WAITING:
+        return f'its setup stopped (exit code {code}; the log says why: {log_file})'
+    if FINISHED_LINE.search(said):
+        return None
+    last = next((line.strip() for line in reversed(said.splitlines()) if line.strip()), 'nothing was said')
+    return f'its setup stopped before any step ran ({last}; the log: {log_file})'
+
+
+# The installer's own lines in setup's log (installer.MARKERS), each after a time stamp:
+# a step that failed, and the end of a run, which install.sh's own refusals never reach.
+FAILED_LINE = re.compile(r'^\[[^\]\n]*\] (FAILED .*)$', re.MULTILINE)
+FINISHED_LINE = re.compile(r'^\[[^\]\n]*\] Finished: ', re.MULTILINE)
+
+
+def log_since(log_file, written):
+    """What a setup run wrote to its log: the part after the `written` bytes that were
+    there before it (the upgrade's log is appended to, run after run)."""
+    try:
+        with open(log_file, 'rb') as log:
+            log.seek(written)
+            return log.read().decode(errors='replace')
+    except OSError:
+        return ''
 
 
 def works_on(config, tag, before, version_now, running_now):
