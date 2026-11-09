@@ -606,6 +606,43 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertFalse(any(value in ('sat', 'SUN') for _, value in recorded))
         self.assertEqual(ctx.config['backup_times']['weekly_day'], 'Sun')
 
+    def test_a_run_that_does_not_write_every_timer_again_keeps_the_times_and_asks_nothing(self):
+        # sudo bash install.sh --module host_backup --apply reaches the drives step (nearly
+        # every step needs it): new times were saved, and only host_backup's timer was
+        # written at them, the other jobs left at the old ones.
+        installed = {step: {'status': 'success'} for step in ('storage', 'app_backup', 'host_backup', 'maintenance')}
+        chosen = {'daily': '22:00', 'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '01:00'}
+        config = self.config(backup_times=chosen)
+        ctx = Ctx(dict(config))
+        ctx.plan, ctx.previous = ['system', 'storage', 'recovery', 'host_backup'], installed
+        printed = self.ask(ctx)  # any question would fail the test
+        self.assertEqual(ctx.config, config)
+        self.assertEqual(ctx.saved, 0)
+        said = 'daily 22:00, weekly Sat 21:00, monthly on the 1st at 01:00'
+        self.assertIn(
+            f'Backup times are changed only by a full setup run (sudo bash install.sh); this run keeps {said}.', printed
+        )
+        self.assertIn('Backup times kept, not a full run: ' + said, ctx.logs)
+        self.assertFalse(guided_setup.revisits_every_job(ctx))
+        # The full run has every job step: asked. So is a first run, with nothing installed yet.
+        for plan, previous in (
+            (['system', 'storage', 'recovery', 'app_backup', 'host_backup', 'maintenance'], installed),
+            (['system', 'storage', 'recovery', 'app_backup'], {}),
+        ):
+            ctx = Ctx(dict(config))
+            ctx.plan, ctx.previous = plan, previous
+            asked = []
+
+            def prompt(question):
+                if '[yes/no]' in question:  # the first round's answer, offered on the second: ask again
+                    return 'yes'
+                asked.append(question)
+                return ''
+
+            guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
+            self.assertEqual(len(asked), 4, plan)
+        self.assertTrue(guided_setup.revisits_every_job(Ctx({})), 'no plan known: asked')
+
     def test_nobody_at_the_terminal_changes_nothing(self):
         self.interactive.stop()
         ctx = Ctx(self.config(), apply=True)

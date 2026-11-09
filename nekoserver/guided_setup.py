@@ -416,6 +416,21 @@ def ask_on_page(key, question, default, valid, hint, prompt=input, output=print,
     return answer
 
 
+def revisits_every_job(ctx):
+    """True when this run writes every scheduled job's timer again: a full setup run, or
+    one whose plan has every timer-writing step installed so far (ctx.previous: each step
+    as the last run left it). A run of one step (install.sh --module host_backup,
+    --profile, --retry-failed) reaches the drives step too, since nearly every step needs
+    it, but would rewrite only its own timer at new times and leave the rest at the old."""
+    plan, previous = getattr(ctx, 'plan', None), getattr(ctx, 'previous', None)
+    if not isinstance(plan, (list, tuple)) or not isinstance(previous, dict):
+        return True
+    from modules.storage import JOB_STEPS
+
+    installed = {step for step in JOB_STEPS if previous.get(step, {}).get('status') == 'success'}
+    return installed <= set(plan)
+
+
 def choose_backup_times(ctx, prompt=None, output=None):
     """Ask when the backups run (the daily jobs, the weekly USB copy, the monthly check)
     and save the answers as "backup_times" in the settings file; every timer is written
@@ -423,7 +438,8 @@ def choose_backup_times(ctx, prompt=None, output=None):
     times, so a server set up before 0.48.0 keeps its schedule (its settings untouched
     when every answer is Enter and its other jobs had times of their own). Asked once; a run after
     that shows the answer and asks again only on request (optional_kept). Setup without
-    a person at the terminal (an upgrade) changes nothing. The setup window shows the
+    a person at the terminal (an upgrade), or a run that would not write every timer
+    again (revisits_every_job), changes nothing. The setup window shows the
     three as one page (setup_progress.page) and may answer them together."""
     import setup_progress
     from neko_common import BACKUP_TIMES, WEEKDAYS, backup_times, backup_times_said, job_times, optional_answers
@@ -432,6 +448,11 @@ def choose_backup_times(ctx, prompt=None, output=None):
         return
     prompt = prompt or input
     output = output or print
+    if not revisits_every_job(ctx):
+        said = backup_times_said(ctx.config)
+        output(f'Backup times are changed only by a full setup run (sudo bash install.sh); this run keeps {said}.')
+        ctx.log('Backup times kept, not a full run: ' + said)
+        return
     remembered = optional_answers(ctx.config['data_mount']).get(BACKUP_TIMES)
     if remembered is not None and remembered != backup_times_said(ctx.config):
         # The settings file was made again since (from the template, say): the times in
