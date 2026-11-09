@@ -37,9 +37,12 @@ globalThis.document = {
   createElement: (tag) => element(tag),
 };
 let poll = 0;
+// {"refuseStart": "why"} in any state: Start setup is answered as the server's 409 is.
+const refusal = states.find((state) => state.refuseStart)?.refuseStart;
 globalThis.fetch = async (route, options) => {
   if (options?.method === 'POST') {
     posts.push([route, JSON.parse(options.body)]);
+    if (route === 'api/start' && refusal) return { json: async () => ({ ok: false, reason: refusal }) };
     return { json: async () => ({ ok: true }) };
   }
   const state = states[Math.min(poll, states.length - 1)];
@@ -82,4 +85,5 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards,
   pageHidden: elements['ask-page']?.hidden ?? null, answerHidden: elements['ask-answer']?.hidden ?? null,
   rows: (elements['ask-page']?.children ?? []).map((row) => [row.children[0].textContent, row.children[1].children.map((input) => input.value), row.children[2].textContent]),
-  prompt: elements['ask-prompt']?.textContent ?? '', note: elements['ask-note']?.textContent ?? '' }));
+  prompt: elements['ask-prompt']?.textContent ?? '', note: elements['ask-note']?.textContent ?? '',
+  start: [elements.start?.disabled ?? null, elements.start?.textContent ?? ''], chooseNote: elements['choose-note']?.textContent ?? '' }));

@@ -2719,6 +2719,17 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
     cfg: &Path,
     operation: F,
 ) -> Result<()> {
+    execute_keeping(data, name, cfg, &gave_way, operation)
+}
+/// `execute_with`, where an error `keeps` accepts leaves the report as it was before the
+/// run instead of recording a failure (every job keeps it for one that gave way).
+fn execute_keeping<F: FnOnce() -> Result<Outcome>>(
+    data: Option<&Path>,
+    name: &str,
+    cfg: &Path,
+    keeps: &dyn Fn(&Error) -> bool,
+    operation: F,
+) -> Result<()> {
     let Some(data) = data else {
         return operation().map(|_| ());
     };
@@ -2734,7 +2745,36 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
     common::atomic_json(&path, &row)?;
     let result = operation();
     row["finished_at"] = json!(common::now());
-    match &result {
+    let row = settled_report(row, &old, &result, keeps);
+    // The report lives on the SSD: with the SSD gone it cannot be written, and the job's
+    // own error still comes first.
+    let reported = (|| {
+        if !common::mounted(data) {
+            return Err(Error::new("Application SSD disappeared before report"));
+        }
+        guard_data(cfg, data)?;
+        if row.is_null() {
+            // The job gave way and had no report before: the "running" row goes again.
+            return match fs::remove_file(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other.map_err(Error::from),
+            };
+        }
+        common::atomic_json(&path, &row)
+    })();
+    common::first_error(result, reported).map(|_| ())
+}
+/// The report to save once the job ended: `row` (the running report) settled by how the
+/// job went. An error `keeps` accepts (a job that gave way did not run and did not
+/// fail) saves the report as it was before the run (`old`) again, so the last real
+/// result stays on the dashboard (Null when there was none).
+fn settled_report(
+    mut row: Value,
+    old: &Value,
+    result: &Result<Outcome>,
+    keeps: &dyn Fn(&Error) -> bool,
+) -> Value {
+    match result {
         Ok(Outcome {
             partial: Some(missing),
         }) => {
@@ -2746,6 +2786,7 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
             row["status"] = json!("pass");
             row["last_success"] = json!(common::now());
         }
+        Err(e) if keeps(e) => return old.clone(),
         Err(e) => {
             row["status"] = json!("fail");
             // Private report: why and at which step, so "inspect logs" is not the only clue.
@@ -2753,17 +2794,27 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
             row["stage"] = json!(common::current_stage());
         }
     }
-    // The report lives on the SSD: with the SSD gone it cannot be written, and the job's
-    // own error still comes first.
-    let reported = (|| {
-        if !common::mounted(data) {
-            return Err(Error::new("Application SSD disappeared before report"));
-        }
-        guard_data(cfg, data)?;
-        common::atomic_json(&path, &row)
-    })();
-    common::first_error(result, reported).map(|_| ())
+    row
 }
+/// A job that gave way did not fail: to setup (`common::postponed`), or the weekly USB
+/// copy to the monthly run (`yielded`). Nothing is recorded against it, and it runs
+/// again at its next time.
+fn gave_way(e: &Error) -> bool {
+    common::postponed(e) || yielded(e)
+}
+/// The monthly check of the USB drive records only a result of the copies themselves
+/// over the weekly job's report: damage (INTEGRITY) is one, a drive that could not be
+/// copied to this month is not.
+fn monthly_check_keeps(e: &Error) -> bool {
+    gave_way(e) || !e.to_string().starts_with(INTEGRITY)
+}
+/// The weekly USB copy gave way to the monthly run, which copies the drive itself.
+pub fn yielded(e: &Error) -> bool {
+    e.to_string().starts_with(MONTHLY_YIELD)
+}
+/// Said when the weekly USB copy finds the monthly run at work: no failure, the drive
+/// gets its copy from the monthly run and the weekly copy runs again next week.
+const MONTHLY_YIELD: &str = "The monthly update is running, so this week's USB copy did not start (the monthly run makes its own copy of the drive)";
 /// Add `key` to the report of job `name` after it failed (the monthly update says that
 /// it was undone). The next run starts a new report, without it.
 pub(crate) fn note_failed_report(
@@ -2900,7 +2951,8 @@ pub fn publish_snapshot(
 /// While the drive is short, the oldest snapshots are removed first, but the newest
 /// complete one always stays, as the one good backup. Still short: the error `short`
 /// gives (told what is free). Without this a full drive failed every night for good.
-pub fn make_room(root: &Path, needed: u128, short: &dyn Fn(u128) -> String) -> Result<()> {
+/// Returns the names removed, for the report (`short_history`).
+pub fn make_room(root: &Path, needed: u128, short: &dyn Fn(u128) -> String) -> Result<Vec<String>> {
     make_room_with(root, needed, &|| common::free_bytes(root), short)
 }
 fn make_room_with(
@@ -2908,11 +2960,12 @@ fn make_room_with(
     needed: u128,
     free: &dyn Fn() -> Result<u128>,
     short: &dyn Fn(u128) -> String,
-) -> Result<()> {
+) -> Result<Vec<String>> {
+    let mut removed = vec![];
     loop {
         let have = free()?;
         if have >= needed {
-            return Ok(());
+            return Ok(removed);
         }
         let found = common::complete_snapshots(root)?;
         let [(_, oldest), _, ..] = found.as_slice() else {
@@ -2920,7 +2973,25 @@ fn make_room_with(
         };
         common::remove_snapshot(root, oldest)?;
         println!("Backup: the drive was short of space, so the oldest snapshot ({oldest}) was removed early; the newest ones are kept");
+        removed.push(oldest.clone());
     }
+}
+/// What the report says when `make_room` removed snapshots (`removed`) and, with the new
+/// one published, `root` holds fewer than the `keep` snapshots the settings ask for: the
+/// run is done in part, so the dashboard shows the history is shorter than believed.
+/// Nothing when the kept number is still there (the removed ones were beyond it).
+pub fn short_history(root: &Path, removed: &[String], keep: u64) -> Result<Option<Value>> {
+    let left = common::complete_snapshots(root)?.len();
+    if removed.is_empty() || left as u64 >= keep {
+        return Ok(None);
+    }
+    let count = match removed.len() {
+        1 => "1 older application snapshot was".to_string(),
+        n => format!("{n} older application snapshots were"),
+    };
+    Ok(Some(json!([format!(
+        "the HDD was short of space, so {count} removed to make room for tonight's snapshot; {left} of the {keep} snapshots the settings keep (app_backup.keep_snapshots) remain"
+    )])))
 }
 /// Check the drives, take the lock monthly maintenance and the other jobs hold, then
 /// check the drives again. Anything that starts or stops services (including resuming
@@ -4011,7 +4082,9 @@ fn pause_lock(cfg: &Path, data: &Path, media: &Path) -> Result<fs::File> {
 /// Held for the whole copy (hours, for a first or big one), the lock made the nightly
 /// backups wait and fail, and setup report itself busy. A monthly run that starts
 /// during the copy waits for the USB drive's own lock before it copies to the drive.
-/// A failure here is recorded in the job's report like any other.
+/// A failure here is recorded in the job's report like any other; giving way to the
+/// monthly run is not one (the drive gets that night's copy from the monthly run), and
+/// leaves the report as it was.
 pub fn weekly(a: &Args) -> Result<()> {
     let cfg = a.path("config")?;
     let data = common::mount_path(a.get("data")?)?;
@@ -4021,8 +4094,9 @@ pub fn weekly(a: &Args) -> Result<()> {
     let resumed = no_monthly_run(&cfg, &data, &media, || resume_in_docker(&NEXTCLOUD));
     match resumed {
         Ok(()) => usb_copy(a, Check::Quick, true),
-        // Setup was working: no failure recorded, the copy runs next week.
-        Err(e) if common::postponed(&e) => Err(e),
+        // Setup or the monthly run was working: no failure recorded, the copy runs next
+        // week (the monthly run makes its own copy of the drive).
+        Err(e) if gave_way(&e) => Err(e),
         Err(e) => execute(Some(&data), "external", &cfg, move || Err(e)),
     }
 }
@@ -4066,9 +4140,7 @@ fn monthly_admission(state: &dyn Fn(&str) -> String, journal: &Path) -> Result<(
         "nekoserver-maintenance-resume.service",
     ] {
         if service_busy(&state(unit)) {
-            return Err(Error::new(
-                "The monthly update is running, so this week's USB copy did not start (the monthly run makes its own copy of the drive)",
-            ));
+            return Err(Error::new(MONTHLY_YIELD));
         }
     }
     Ok(())
@@ -4298,9 +4370,19 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
         Path::new(USB_LOCK),
         std::time::Duration::from_secs(8 * 3600),
     )?;
-    execute_with(Some(&run.data), "external", &run.cfg, || {
+    // The monthly check is a copy of the drive like the weekly one, so what it finds is
+    // the weekly job's result too: a pass, files left out, or damage. A problem the
+    // monthly run tolerates (a full drive, one that would not mount) is said in the
+    // monthly run's own report and leaves the weekly job's last result as it was.
+    let keeps: &dyn Fn(&Error) -> bool = if weekly {
+        &gave_way
+    } else {
+        &monthly_check_keeps
+    };
+    execute_keeping(Some(&run.data), "external", &run.cfg, keeps, || {
         // A monthly run may have started while this waited for the drive (the shared
         // lock was let go after the first check): checked again, now that it is held.
+        // Giving way here is no failure either: the report stays as it was.
         if check == Check::Quick {
             monthly_admission(&unit_state, Path::new(*crate::maintenance::JOURNAL))?;
         }
@@ -7018,8 +7100,22 @@ mod tests {
         let count = || common::complete_snapshots(&root).unwrap().len() as u128;
         let free = || Ok(130 - 40 * count());
         let short = |have: u128| format!("short: {have} free");
-        make_room_with(&root, 50, &free, &short).unwrap();
+        assert!(make_room_with(&root, 10, &free, &short).unwrap().is_empty());
+        let removed = make_room_with(&root, 50, &free, &short).unwrap();
+        assert_eq!(removed, ["snapshot-100-1"]);
         assert_eq!(names(&root), ["snapshot-200-1", "snapshot-300-1"]);
+        // Two of the seven snapshots the settings keep are left: the run says so (the
+        // job used to end "pass" with a week of history believed to be there).
+        let said = short_history(&root, &removed, 7).unwrap().unwrap();
+        let said = said[0].as_str().unwrap();
+        assert!(
+            said.contains("1 older application snapshot was removed"),
+            "{said}"
+        );
+        assert!(said.contains("2 of the 7 snapshots"), "{said}");
+        // Nothing removed, or as many left as the settings keep: nothing to say.
+        assert_eq!(short_history(&root, &[], 7).unwrap(), None);
+        assert_eq!(short_history(&root, &removed, 2).unwrap(), None);
         let error = make_room_with(&root, 100, &free, &short).unwrap_err();
         assert_eq!(error.to_string(), "short: 90 free");
         assert_eq!(names(&root), ["snapshot-300-1"]);
@@ -7927,7 +8023,7 @@ mod tests {
         let copy = &copy[..copy.find("\n}\n").unwrap()];
         let at = |s: &str| copy.find(s).unwrap_or_else(|| panic!("{s}"));
         assert!(at("Path::new(USB_LOCK)") < at("monthly_admission("));
-        assert!(at("execute_with(") < at("monthly_admission("));
+        assert!(at("execute_keeping(") < at("monthly_admission("));
         // The monthly run waits for a copy at work before it stops anything.
         let lock = root.join("usb.lock");
         let held = common::lock(&lock).unwrap();
@@ -8148,5 +8244,80 @@ mod tests {
         );
         let full = &source[source.find("pub fn guard(").unwrap()..];
         assert!(full[..full.find("\n}\n").unwrap()].contains("checked_drive(&c, key, path)"));
+    }
+    /// Seen as a week of "failed" on the dashboard: the 1st fell on the weekly day, the
+    /// monthly run had copied the drive, and the weekly copy's giving way to it was
+    /// recorded over that pass as a failure.
+    #[test]
+    fn a_weekly_copy_that_gives_way_to_the_monthly_run_keeps_the_last_report() {
+        let root = scratch("weekly-gives-way");
+        let journal = root.join("maintenance-resume.json");
+        let monthly = |unit: &str| {
+            if unit == "nekoserver-maintenance-resume.service" {
+                "active".to_string()
+            } else {
+                "inactive".to_string()
+            }
+        };
+        let yielded = || monthly_admission(&monthly, &journal).unwrap_err();
+        assert!(gave_way(&yielded()), "{}", yielded());
+        assert!(gave_way(&Error::new(common::POSTPONED)));
+        // A monthly update cut off half-way is a problem to act on, so it is recorded.
+        assert!(!gave_way(&Error::new(UNFINISHED)));
+        let old = json!({"job":"external","status":"pass","started_at":100.0,"finished_at":160.0,"last_success":160.0});
+        let row = running_row("external", 200.0, &old);
+        // Gave way: the report says what it said before the run, the pass included.
+        assert_eq!(
+            settled_report(row.clone(), &old, &Err(yielded()), &gave_way),
+            old
+        );
+        // Never ran before: nothing is kept, and no "running" row stays behind.
+        assert!(settled_report(row.clone(), &Value::Null, &Err(yielded()), &gave_way).is_null());
+        // Any other error is the failure it always was.
+        let failed = settled_report(row, &old, &Err(Error::new("Drive full")), &gave_way);
+        assert_eq!(failed["status"], "fail");
+        assert_eq!(failed["reason"], "Drive full");
+        assert_eq!(failed["last_success"], 160.0);
+        // weekly() does not even open the report for it, and its service ends well.
+        let source = include_str!("backup.rs");
+        let weekly = &source[source.find("pub fn weekly(").unwrap()..];
+        let weekly = &weekly[..weekly.find("\n}\n").unwrap()];
+        assert!(weekly.contains("Err(e) if gave_way(&e) => Err(e)"));
+        assert!(include_str!("main.rs").contains("if common::postponed(&e) || backup::yielded(&e)"));
+        let _ = fs::remove_dir_all(root);
+    }
+    /// The monthly run tolerates a USB drive it could not check (full, or not mounting),
+    /// but the check wrote that over the weekly job's report as "fail".
+    #[test]
+    fn the_monthly_usb_check_leaves_the_weekly_report_alone_unless_it_finds_damage() {
+        let old = json!({"job":"external","status":"pass","started_at":100.0,"finished_at":160.0,"last_success":160.0});
+        let row = running_row("external", 200.0, &old);
+        let full = || Error::new("Nonempty mount destination refused");
+        // Tolerated by the monthly run: the weekly pass stays.
+        assert_eq!(
+            settled_report(row.clone(), &old, &Err(full()), &monthly_check_keeps),
+            old
+        );
+        // The weekly copy itself still fails on it.
+        assert_eq!(
+            settled_report(row.clone(), &old, &Err(full()), &gave_way)["status"],
+            "fail"
+        );
+        // Damage is the copies' failure, found by either run.
+        let damage = || Error::new(&format!("{INTEGRITY}HDD archive: 2 files"));
+        let failed = settled_report(row.clone(), &old, &Err(damage()), &monthly_check_keeps);
+        assert_eq!(failed["status"], "fail");
+        assert!(failed["reason"].as_str().unwrap().starts_with(INTEGRITY));
+        // A copy that went through is the weekly job's result too.
+        let passed = settled_report(row, &old, &Ok(Outcome::default()), &monthly_check_keeps);
+        assert_eq!(passed["status"], "pass");
+        let source = include_str!("backup.rs");
+        let copy = &source[source.find("fn usb_copy(").unwrap()..];
+        let copy = &copy[..copy.find("\n}\n").unwrap()];
+        let at = |s: &str| copy.find(s).unwrap_or_else(|| panic!("{s}"));
+        assert!(
+            at("if weekly {") < at("&gave_way") && at("&gave_way") < at("&monthly_check_keeps")
+        );
+        assert!(at("&monthly_check_keeps") < at("execute_keeping("));
     }
 }

@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.48.0Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.48.1Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -75,7 +75,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.48.0Beta" or "0.48.0"; None for anything else."""
+    """(0, 44, 0) from "v0.48.1Beta" or "0.48.1"; None for anything else."""
     match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -218,7 +218,8 @@ def setup_profile(config, modules=None):
 def run_setup(project, settings, account, log_file, run=subprocess.run):
     """That release's setup, with the saved settings, without questions and without
     updating the system, for the steps this server is set up with (setup_profile).
-    Returns its exit code (1 also when a step only waits for you)."""
+    Returns its exit code (installer.WAITING when a step only waits for you; what else
+    1 can mean, setup_problem reads from the log)."""
     profile = setup_profile(json.loads(settings_path(settings).read_text()))
     chosen = ['--profile', profile] if profile else []
     atomic_write(project / 'my-config.json', Path(settings).read_bytes(), 0o600)
@@ -241,14 +242,74 @@ def run_setup(project, settings, account, log_file, run=subprocess.run):
 def setup_problem(setup, project, settings, account, log_file):
     """Why a release's setup did not work, or None. Setup that could not be started or
     that ran past its time (six hours) is a failure like any other, never an exception
-    that would skip putting the previous release back."""
+    that would skip putting the previous release back. Exit code 1 alone says little:
+    the installer ends with it when a step only waits for you (so it did before the
+    upgrade too, which is not its doing), a release before 0.48.1 ended with it when a
+    step failed, and install.sh ends with it for its own refusals before the installer
+    starts (the setup lock held by another run, its preflight, a missing prerequisite).
+    So what the run wrote to the log decides: a FAILED line is a failed step, and
+    without the installer's Finished line the steps never ran (the review of 0.48.0: a
+    step new in the release that failed, which the check never looks at, passed for a
+    waiting one, and a refusal on the way back was blamed on the services)."""
+    import installer
+
+    log_file = Path(log_file)
+    if not is_inside(log_file.parent, log_file):
+        return f'its setup did not run: the log {log_file} is a link to a file outside {log_file.parent}'
+    written = log_file.stat().st_size if log_file.is_file() else 0
     try:
         code = setup(project, settings, account, log_file)
     except subprocess.TimeoutExpired:
         return f'its setup ran for more than six hours and was stopped (the log: {log_file})'
     except (OSError, subprocess.SubprocessError) as exc:
         return f'its setup could not run ({exc}; the log: {log_file})'
-    return f'its setup stopped (exit code {code}; the log says why: {log_file})' if code not in (0, 1) else None
+    if code == 0:
+        return None
+    said = log_since(log_file, written)
+    failed = FAILED_LINE.findall(said)
+    if code == installer.STEP_FAILED or failed:
+        return f'its setup ended with a failed step ({"; ".join(failed) or f"exit code {code}"}; the log: {log_file})'
+    if code != installer.WAITING:
+        return f'its setup stopped (exit code {code}; the log says why: {log_file})'
+    if FINISHED_LINE.search(said):
+        return None
+    last = next((line.strip() for line in reversed(said.splitlines()) if line.strip()), 'nothing was said')
+    return f'its setup stopped before any step ran ({last}; the log: {log_file})'
+
+
+# The installer's own lines in setup's log (installer.MARKERS), each after a time stamp:
+# a step that failed, and the end of a run, which install.sh's own refusals never reach.
+FAILED_LINE = re.compile(r'^\[[^\]\n]*\] (FAILED .*)$', re.MULTILINE)
+FINISHED_LINE = re.compile(r'^\[[^\]\n]*\] Finished: ', re.MULTILINE)
+
+
+def log_since(log_file, written):
+    """What a setup run wrote to its log: the part after the `written` bytes that were
+    there before it (the upgrade's log is appended to, run after run)."""
+    try:
+        with open(log_file, 'rb') as log:
+            log.seek(written)
+            return log.read().decode(errors='replace')
+    except OSError:
+        return ''
+
+
+def upgrade_log(work, tag):
+    """The upgrade's log in `work` (installer/upgrades): <tag>.log for a release tag,
+    resume.log for anything else (at a start the tag is read back from the record, a
+    file, so it is checked as one), and never a file outside `work` (a link put there)."""
+    name = str(tag)
+    if not TAG.fullmatch(name):
+        name = 'resume'
+    log_file = Path(work) / (name + '.log')
+    if not is_inside(work, log_file):
+        raise RuntimeError(f'The upgrade log {log_file} is a link to a file outside {work}')
+    return log_file
+
+
+def is_inside(folder, path):
+    """Whether `path` lies inside `folder` once every link is followed."""
+    return os.path.realpath(path).startswith(os.path.realpath(folder) + os.sep)
 
 
 def works_on(config, tag, before, version_now, running_now):
@@ -493,7 +554,7 @@ def upgrade_held(
         return 2
     account = owner(config)
     before = steps_done(config)
-    log_file = work / (tag + '.log')
+    log_file = upgrade_log(work, tag)
     record(
         'downloading',
         journal,
@@ -666,7 +727,7 @@ def resume_held(settings, out, setup, journal):
         return 0
     previous = kept_release(config, saved.get('previous', ''))
     out('An upgrade was cut off before it was checked; putting ' + previous.name + ' back')
-    log_file = ssd(config) / UPGRADES / ((saved.get('to') or 'resume') + '.log')
+    log_file = upgrade_log(ssd(config) / UPGRADES, saved.get('to') or 'resume')
     before = [step for step in saved.get('before') or [] if isinstance(step, str)]
     return go_back(previous, settings, owner(config), log_file, out, setup, journal, before)
 
@@ -679,7 +740,12 @@ def settled(config, out=print, journal=JOURNAL, saved=None, check=None, by_hand=
     Seen on the rig: 0.46.3 installed by hand over a failed upgrade to it, and the next
     start put 0.46.2 back over it. `by_hand` (a person's setup run just ended): the
     release the server had before counts too, which is what a failed way back asks for.
-    Says so and returns True; otherwise changes nothing."""
+    Says so and returns True; otherwise changes nothing. A runtime copy the way back hid
+    (newer_runtimes_hidden) gets its own name back with the record: a way back cut off
+    before the older setup marked a step running (a power cut, `systemctl stop`) left the
+    copy hidden, and the next start closed the record here without giving it back, so the
+    link stayed at the copy's name for good and every later setup of that release refused
+    it ("Refusing symlink path")."""
     saved = saved or read(journal)
     if saved is None or saved.get('phase') == 'downloading':
         return False
@@ -690,6 +756,7 @@ def settled(config, out=print, journal=JOURNAL, saved=None, check=None, by_hand=
     before = [step for step in saved.get('before') or [] if isinstance(step, str)]
     if checked(check or (lambda: verify(config, 'v' + VERSION, before))) is not None:
         return False
+    show_hidden(ssd(config) / 'installer/runtime')
     journal.unlink(missing_ok=True)
     out(
         f'The upgrade to {saved["to"]} that did not finish is closed: this server runs {VERSION} and passed its '

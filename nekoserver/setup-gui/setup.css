@@ -544,6 +544,15 @@ main > section {
   .steps {
     max-height: 40%;
   }
+  /* The header's logo, name, progress bar and badge on one line overflowed a narrow
+     window (the bar had a minimum width): the bar takes a line of its own. */
+  .bar {
+    flex-wrap: wrap;
+  }
+  .progress {
+    min-width: 0;
+    flex-basis: 100%;
+  }
 }
 
 /* Hidden means hidden, whatever display a class gave the element: last, so it wins at

@@ -260,6 +260,42 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual(nas.described(disk, row), 'LUN 1: /dev/sdc, 1.8T, ext4 (UUID u-1); identity 0x6001405abc')
         self.assertIn('empty: no filesystem yet', nas.described(disk, {'name': 'sdc', 'size': '1.8T'}))
 
+    def test_a_lun_that_cannot_be_inspected_stops_setup_instead_of_passing_as_empty(self):
+        # lsblk's failure, an unreadable answer and no row each came back as {}: the LUN
+        # was listed as "empty: no filesystem yet" and given the command that formats it.
+        for shape, words in (
+            (done(32, '', 'lsblk: /dev/sdc: not a block device'), 'lsblk failed on /dev/sdc: lsblk: /dev/sdc: not a'),
+            (done(32, '', ''), 'lsblk failed on /dev/sdc: exit status 32'),
+            (done(0, 'not json'), 'lsblk gave no readable answer for /dev/sdc'),
+            (done(0, '[]'), 'lsblk gave no readable answer for /dev/sdc'),
+            (done(0, '{"blockdevices": []}'), 'lsblk listed no disk at /dev/sdc'),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                nas.lsblk_row('/dev/sdc', run=lambda *args, **kw: shape)
+            self.assertIn(words, str(caught.exception))
+        row = nas.lsblk_row('/dev/sdc', run=lambda *args, **kw: done(0, '{"blockdevices": [{"name": "sdc"}]}'))
+        self.assertEqual(row, {'name': 'sdc'})
+        # Through the step's listing: the LUN is neither described nor counted as empty.
+        logs = []
+        disks = [{'lun': 1, 'device': '/dev/sdc', 'path': 'p'}]
+        failed = RuntimeError('lsblk failed on /dev/sdc: exit status 32')
+        ctx = mock.Mock(log=logs.append)
+        with (
+            mock.patch.object(nas, 'wait_for_disks', return_value=disks),
+            mock.patch.object(nas, 'lsblk_row', side_effect=failed),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                nas.listed_disks(ctx, PORTAL, [IQN])
+        self.assertEqual(
+            str(caught.exception),
+            'LUN 1 could not be inspected (lsblk failed on /dev/sdc: exit status 32); nothing was changed. '
+            'Run setup again.',
+        )
+        self.assertFalse(any('empty' in line for line in logs))
+        # A row short of its name or size is still said without a "?" in it.
+        said = nas.described(disks[0], {'fstype': 'ext4', 'uuid': 'u-1'})
+        self.assertEqual(said, 'LUN 1: /dev/sdc, size unknown, ext4 (UUID u-1); identity no WWN reported')
+
     def test_the_initiator_name_is_read_or_made_once(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / 'initiatorname.iscsi'

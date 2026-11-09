@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.48.0'
+VERSION = '0.48.1'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -1353,6 +1353,15 @@ def minutes_later(time, minutes):
     return f'{total // 60:02d}:{total % 60:02d}'
 
 
+def day_before_if_wrapped(day, time, minutes):
+    """The weekday a job lands on when it runs `minutes` from `time` on `day`: the day
+    before when the shift goes back past midnight (Sun 00:20 less 45 minutes is Sat 23:35),
+    the day after when it goes forward past it."""
+    hours, mins = (int(part) for part in time.split(':'))
+    days = (hours * 60 + mins + minutes) // (24 * 60)
+    return WEEKDAYS[(WEEKDAYS.index(day) + days) % 7]
+
+
 def backup_times(config):
     """The times setup asked for: {'daily', 'weekly_day', 'weekly', 'monthly'}, checked, or
     None when the settings file has none yet (made before 0.48.0): each job then keeps
@@ -1389,10 +1398,12 @@ def _own_time(config, section, key, default):
 def job_times(config):
     """When each scheduled job runs, as its timer is written: app (the media apps'
     snapshot), music, host (this PC's own settings), photo_database (the daily Immich
-    database copy of the old photo schedule), photo_database_weekly (the same copy on the
-    weekly day), usb_day and usb (the USB copy), monthly (the monthly check and the weekly
-    app updates). From "backup_times" when setup asked for them, else from the settings
-    each job had before 0.48.0, so a server set up earlier keeps its times."""
+    database copy of the old photo schedule), photo_database_weekly and
+    photo_database_weekly_day (the same copy just before the USB copy: the day before it
+    when the 45 minutes cross midnight), usb_day and usb (the USB copy), monthly (the
+    monthly check and the weekly app updates). From "backup_times" when setup asked for
+    them, else from the settings each job had before 0.48.0, so a server set up earlier
+    keeps its times."""
     chosen = backup_times(config)
     if chosen is None:
         photos = config.get('photos', {})
@@ -1406,6 +1417,7 @@ def job_times(config):
             'host': _own_time(config, 'host_backup', 'time', '05:15'),
             'photo_database': database,
             'photo_database_weekly': database,
+            'photo_database_weekly_day': day,
             'usb_day': day,
             'usb': _own_time(config, 'photos', 'backup_time', WEEKLY_DEFAULT),
             'monthly': _own_time(config, 'maintenance', 'time', MONTHLY_DEFAULT),
@@ -1416,6 +1428,9 @@ def job_times(config):
         'host': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['host']),
         'photo_database': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['photo_database']),
         'photo_database_weekly': minutes_later(chosen['weekly'], -DATABASE_BEFORE_USB),
+        'photo_database_weekly_day': day_before_if_wrapped(
+            chosen['weekly_day'], chosen['weekly'], -DATABASE_BEFORE_USB
+        ),
         'usb_day': chosen['weekly_day'],
         'usb': chosen['weekly'],
         'monthly': chosen['monthly'],

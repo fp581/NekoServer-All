@@ -31,6 +31,13 @@ from neko_common import (
 
 # The installer's own log lines (a step's status), as against a step's own words.
 MARKERS = ('START ', 'PASS ', 'FAILED ', 'NEEDS SETUP ', 'UNAVAILABLE ', 'BLOCKED ', 'Finished:')
+# What a setup run ends with (install.sh hands it on): 0 when every step is done, WAITING
+# when a step only waits for you (Tailscale's sign-in, say) or for such a step, STEP_FAILED
+# when a step failed. Until 0.48.1 a failed step ended with 1 as well, and the upgrade
+# took it for a step that waits (upgrade.setup_problem). 2 is an error before any step
+# ran and 130 Ctrl+C; install.sh's own refusals end with 1, 3 or 4 before this program
+# starts, so STEP_FAILED is none of those.
+WAITING, STEP_FAILED = 1, 5
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS_FILE = 'config.json'  # the example settings that come with NekoServer
@@ -411,7 +418,8 @@ def _execute(args, root=ROOT):
     log_path = safe_path(state_dir / ('install.log' if args.apply else 'inspection.log'))
     states = dict(previous) if args.apply else {}
     complete_status = 'success' if args.apply else 'inspected'
-    failures = []
+    failures = []  # the steps not done: failed, waiting for you, or held up by one of those
+    failed = []  # those among them that failed
     unavailable = []
 
     def log(message):
@@ -463,6 +471,7 @@ def _execute(args, root=ROOT):
             log(f'FAILED {name}: {reason}')
             # Avoid tracebacks from providers that may contain sensitive arguments.
             failures.append(name)
+            failed.append(name)
         else:
             states[name] = outcome(result, complete_status)
             if states[name]['status'] == 'needs_setup':
@@ -514,7 +523,9 @@ def _execute(args, root=ROOT):
         + (f'{len(unavailable)} not available on this system; ' if unavailable else '')
         + f'{len(failures)} failed, waiting or unfinished; log={log_path}'
     )
-    return 1 if failures else 0
+    if failed:
+        return STEP_FAILED
+    return WAITING if failures else 0
 
 
 def waiting_for(name, modules, states, complete_status):

@@ -96,14 +96,22 @@
     built = true;
   }
 
+  /* Setup did not start (the settings file cannot be read right now, or setup has
+     started already, said in `reason`): the button is itself again, to press once more. */
+  function startAgain(reason) {
+    if (reason) $('choose-note').textContent = reason;
+    $('start').disabled = false;
+    $('start').textContent = 'Start setup';
+  }
+
   async function start() {
     $('start').disabled = true;
     $('start').textContent = 'Starting…';
     try {
-      await post('api/start', { choices: chosen });
+      const answer = await post('api/start', { choices: chosen });
+      if (answer.ok === false) startAgain(answer.reason);
     } catch {
-      $('start').disabled = false;
-      $('start').textContent = 'Start setup';
+      startAgain('');
     }
   }
   $('start').addEventListener('click', () => {
@@ -273,7 +281,10 @@
     $('ask-page').hidden = !page;
     $('ask-page-actions').hidden = !page;
     pageInputs = {};
+    // The page's rows are required inputs of the same form: hidden, they would still
+    // stop every later Send, so off the page they go.
     if (page) buildBackupTimes(page);
+    else $('ask-page').replaceChildren();
     const input = $('ask-input');
     input.type = q.secret ? 'password' : 'text';
     input.value = '';
