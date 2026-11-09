@@ -394,13 +394,20 @@ def wait_for_disks(iqn, by_path=BY_PATH, wait=APPEAR_WAIT, sleep=time.sleep):
 
 
 def lsblk_row(device, run=subprocess.run):
-    """What lsblk says of one disk and what it holds (size, filesystem, UUID, WWN)."""
+    """What lsblk says of one disk and what it holds (size, filesystem, UUID, WWN).
+    RuntimeError, with the reason, when it could not say: a disk setup could not look
+    at must never pass for an empty one (and get the command that formats it)."""
     shown = run_tool(['lsblk', '-J', '-o', 'NAME,SIZE,TYPE,FSTYPE,UUID,WWN,SERIAL,MOUNTPOINT', device], 30, run)
+    if shown.returncode:
+        reason = (shown.stderr or '').strip()[:200] or f'exit status {shown.returncode}'
+        raise RuntimeError(f'lsblk failed on {device}: {reason}')
     try:
         rows = json.loads(shown.stdout).get('blockdevices', [])
-    except ValueError:
-        rows = []
-    return rows[0] if rows else {}
+    except (ValueError, AttributeError):
+        raise RuntimeError(f'lsblk gave no readable answer for {device}') from None
+    if not rows or not isinstance(rows[0], dict):
+        raise RuntimeError(f'lsblk listed no disk at {device}')
+    return rows[0]
 
 
 def described(disk, row):
@@ -412,7 +419,9 @@ def described(disk, row):
         else 'empty: no filesystem yet'
     )
     identity = row.get('wwn') or row.get('serial') or 'no WWN reported'
-    return f"LUN {disk['lun']}: /dev/{row.get('name', '?')}, {row.get('size', '?')}, {held}; identity {identity}"
+    name = row.get('name') or Path(disk['device']).name
+    size = row.get('size') or 'size unknown'
+    return f"LUN {disk['lun']}: /dev/{name}, {size}, {held}; identity {identity}"
 
 
 def format_command(disk, iqn=''):
@@ -652,7 +661,12 @@ def listed_disks(context, portal, targets):
             )
         context.log(f'{iqn} at {portal}:')
         for disk in disks:
-            row = lsblk_row(disk['device'])
+            try:
+                row = lsblk_row(disk['device'])
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f'LUN {disk["lun"]} could not be inspected ({exc}); nothing was changed. Run setup again.'
+                ) from None
             context.log('  ' + described(disk, row))
             if not row.get('fstype') and not row.get('children'):
                 empty.append((disk, iqn))
