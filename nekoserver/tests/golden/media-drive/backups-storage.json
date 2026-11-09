@@ -1,0 +1,32 @@
+{
+  "data_mount": "/srv/nekoserver",
+  "media_mount": "/mnt/nekoserver-media",
+  "storage": {
+    "data_ssd": {
+      "uuid": "1a2b3c4d-0001-4000-8000-00000000aaaa",
+      "fstype": "ext4"
+    },
+    "media_hdd": {
+      "uuid": "1a2b3c4d-0002-4000-8000-00000000bbbb",
+      "fstype": "ext4"
+    }
+  },
+  "locations": {
+    "photos": "media",
+    "music": "media",
+    "cloud": "media"
+  },
+  "paths": {
+    "photos": "/mnt/nekoserver-media/photos/immich-library",
+    "music": "/mnt/nekoserver-media/library/music",
+    "downloads": "/mnt/nekoserver-media/library/downloads/music",
+    "cloud": "/mnt/nekoserver-media/cloud/files"
+  },
+  "network_storage": {
+    "wanted": true,
+    "portal": "192.168.1.50:3260",
+    "targets": [
+      "iqn.2000-01.com.synology:nas.Target-1.4a6f9c"
+    ]
+  }
+}

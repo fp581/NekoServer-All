@@ -3,7 +3,7 @@
 import guided_setup
 import native_runtime
 import permission_checks
-import hashlib, html, ipaddress, json, os, pwd, re, shutil, socket, subprocess, sys, tempfile, time
+import datetime as dt, hashlib, html, ipaddress, json, os, pwd, re, shutil, socket, ssl, subprocess, sys, tempfile, time
 from pathlib import Path
 from urllib.parse import urlsplit
 import status_checks as health
@@ -748,6 +748,124 @@ def https_ready():
         )
     except (RuntimeError, ValueError, AttributeError, TypeError):
         return False
+
+
+# Tailscale fetches an address's HTTPS certificate (from Let's Encrypt) on the first
+# connection to it, which can take a minute: setup tries for up to CERT_WAIT seconds, each
+# connection for up to CERT_TRY, CERT_PAUSE apart. Routes in place and HTTPS switched on
+# for the tailnet are not enough: without the certificate every address hangs at the TLS
+# handshake and the phone shows a blank page (0.48.2 release gate, Let's Encrypt's limit).
+CERT_WAIT = 90
+CERT_TRY = 15
+CERT_PAUSE = 5
+# tailscaled's log line when Let's Encrypt refuses another certificate for the same name.
+RATE_LIMITED = re.compile(
+    r'rateLimited: too many certificates \((\d+)\).*?retry after (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) UTC'
+)
+
+
+def https_answers(name, port, address=None, timeout=CERT_TRY):
+    """True when https://name:port/ answers HTTP over TLS with a certificate this PC trusts
+    (the system's trust store, the name checked), whatever the HTTP status. It connects to
+    this PC's Tailscale address when one is given, so its own DNS settings do not matter."""
+    request = 'HEAD / HTTP/1.1\r\nHost: ' + name + ':' + str(port) + '\r\nConnection: close\r\n\r\n'
+    try:
+        context = ssl.create_default_context()
+        with (
+            socket.create_connection((address or name, int(port)), timeout=timeout) as raw,
+            context.wrap_socket(raw, server_hostname=name) as tls,
+        ):
+            tls.sendall(request.encode())
+            return tls.recv(64).startswith(b'HTTP/')
+    except (OSError, ValueError):
+        return False
+
+
+def tailscale_status():
+    """tailscale status --json as it is now, or {} when it cannot be read."""
+    try:
+        value = json.loads(command(['tailscale', 'status', '--json']))
+    except (RuntimeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def tailscale_address(status):
+    """This PC's Tailscale address (IPv4 first), or None."""
+    found = [ip for ip in (status.get('Self') or {}).get('TailscaleIPs') or [] if isinstance(ip, str)]
+    return next((ip for ip in found if '.' in ip), found[0] if found else None)
+
+
+def tailscale_log():
+    """tailscaled's recent log lines (journalctl only reads), or '' when they cannot be read."""
+    try:
+        return command(['journalctl', '-u', host.service('tailscale'), '-n', '500', '--no-pager', '-o', 'cat'], 15)
+    except RuntimeError:
+        return ''
+
+
+def rate_limit_why(name, log, now):
+    """Let's Encrypt's weekly limit for this name with the time it ends, as tailscaled's
+    log last gave it, while that time is still to come; '' otherwise."""
+    retry = None
+    for line in log.splitlines():
+        if 'cert("' + name + '")' in line:
+            found = RATE_LIMITED.search(line)
+            retry = found.groups() if found else retry
+    if not retry:
+        return ''
+    try:
+        when = dt.datetime.strptime(retry[1], '%Y-%m-%d %H:%M:%S').replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return ''
+    if when <= now:
+        return ''
+    return (
+        f"Let's Encrypt gives a machine name at most {retry[0]} certificates a week; "
+        f'it allows the next one after {retry[1]} UTC.'
+    )
+
+
+def certificate_why(name, status, log, now):
+    """Why Tailscale has no certificate for this name, as far as it says so itself: Let's
+    Encrypt's weekly limit with the time it ends, else Tailscale's own health message
+    about it; '' when nothing says."""
+    why = rate_limit_why(name, log, now)
+    if why:
+        return why
+    for note in status.get('Health') or []:
+        if isinstance(note, str) and re.search(r'certificate|\bTLS\b|\bACME\b', note, re.I):
+            return 'Tailscale says: ' + ' '.join(note.split()).rstrip('.') + '.'
+    return ''
+
+
+def https_problem(links, wait=CERT_WAIT, sleep=time.sleep, clock=time.monotonic, probe=https_answers, now=None):
+    """None when the private HTTPS addresses really answer, with a trusted certificate (one
+    is tried: the dashboard's, else the first app's; again for up to `wait` seconds), else
+    a reason a person can act on. Setup and the acceptance check both use this one."""
+    parts = [urlsplit(url) for url in links.values()]
+    if not parts:
+        return None
+    name = parts[0].hostname
+    ports = sorted({p.port for p in parts}, key=lambda p: (p != DASHBOARD_PORT, p))
+    address = tailscale_address(tailscale_status())
+    deadline = clock() + wait
+    while not probe(name, ports[0], address):
+        if clock() >= deadline:
+            why = certificate_why(name, tailscale_status(), tailscale_log(), now or dt.datetime.now(dt.timezone.utc))
+            return (
+                f'Tailscale has not got the HTTPS certificate for {name} yet, so the app addresses on the phone '
+                'do not open. '
+                + (why + ' ' if why else '')
+                + 'Run  sudo bash install.sh  again later; it checks again.'
+            )
+        sleep(CERT_PAUSE)
+    return None
+
+
+def tailnet_links(host, routes):
+    """The addresses of these Tailscale routes, as the report lists them."""
+    return {port: HTTPS + host + ':' + port + '/' for port in routes['TCP']}
 
 
 def tailnet_routes(config, host):

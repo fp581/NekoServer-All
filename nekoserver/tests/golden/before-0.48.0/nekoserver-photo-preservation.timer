@@ -1,0 +1,8 @@
+[Unit]
+Description=nekoserver-photo-preservation timer
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=360min
+
+[Install]
+WantedBy=timers.target

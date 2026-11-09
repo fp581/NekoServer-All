@@ -16,6 +16,7 @@ from neko_common import (
     atomic_json,
     check_units,
     host_timezone,
+    nightly_timer,
     refresh_settings,
     safe_path,
     verify_storage,
@@ -246,8 +247,9 @@ def definitions(config, binary, private):
         + '[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec=6h\n'
         + f'ExecStart={binary} host-snapshot --config {private}\nExecStopPost={resume}\nTimeoutStopSec={RESUME_TIMEOUT}\n'
         + SANDBOX,
-        BACKUP_TIMER: '[Unit]\nDescription=NekoServer nightly host and user snapshot\n'
-        + f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n[Install]\nWantedBy=timers.target\n',
+        BACKUP_TIMER: nightly_timer(
+            'NekoServer nightly host and user snapshot', time, host_timezone(config), persistent=True
+        ),
         RESUME_UNIT: '[Unit]\nDescription=NekoServer recover Samba after interrupted snapshot\n'
         + mounts
         + f'[Service]\nType=oneshot\nUMask=0077\nTimeoutStartSec={RESUME_TIMEOUT}\n'

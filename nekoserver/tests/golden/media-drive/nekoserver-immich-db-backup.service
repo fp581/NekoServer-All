@@ -1,0 +1,8 @@
+[Unit]
+Description=nekoserver-immich-db-backup
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+[Service]
+Type=oneshot
+ExecStart=/srv/nekoserver/installer/runtime/v0.48.2/nekoserver-runtime preservation --config /etc/nekoserver-backups/storage.json --data /srv/nekoserver --media /mnt/nekoserver-media --min-age 600 --archive-dir photos/archive --db-keep 8 --db-backup
+ExecStopPost=/srv/nekoserver/installer/runtime/v0.48.2/nekoserver-runtime immich-resume --config /etc/nekoserver-backups/storage.json
+TimeoutStopSec=3h30min

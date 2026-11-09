@@ -13,7 +13,7 @@ Use Navidrome's browser player on the TV/Linux PC, **Amperfy on iPhone**, and op
 - Container UIs stay bound to loopback. Remote access uses the existing secured-account confirmation and HTTPS gateway; nothing opens public router ports.
 - Navidrome watches file changes with a short settling delay and performs an hourly fallback scan using its current Scanner settings. No artificial read loop is added to keep the HDD active. Embedded tags and cover art improve browsing; imported files need proper artist/album/title tags. An empty library is reported honestly.
 
-Fresh deployments use the current scanner keys and disable public share links by default. The installer recognizes only the exact pristine earlier Navidrome template, backs it up as compose.before-music-setup.yaml and upgrades it. Edited manifests/settings and differing existing backups are preserved for explicit review. Existing monthly immutable image pins continue to apply.
+Fresh deployments use the current scanner keys and disable public share links by default. Edited manifests/settings and differing existing backups are preserved for explicit review. Existing monthly immutable image pins continue to apply.
 
 ## Setup on the real server
 
@@ -23,7 +23,7 @@ The full profile includes music setup. A music profile is also provided; it resp
 sudo bash install.sh --profile music --apply --config /absolute/path/to/confirmed-config.json
 ```
 
-**Your logins.** Setup creates two Navidrome accounts for you: an **administrator** (for managing Navidrome) and a separate **listener** that is not an administrator. Use the listener on your phone and desktop. To see the listener's login on the screen (with a QR code for your phone): `sudo python3 /srv/nekoserver/installer/releases/v0.48.1/account-setup.py show navidrome_listener` (`show navidrome` for the administrator; see ACCOUNT-SETUP.md). If you change one of these passwords in Navidrome, tell setup: in the NekoServer folder (where `install.sh` is) run `sudo python3 account-setup.py --apply --config my-config.json`; it finds that the saved login no longer works. Run it once more: it asks about that account; press **c** and type the new password.
+**Your logins.** Setup creates two Navidrome accounts for you: an **administrator** (for managing Navidrome) and a separate **listener** that is not an administrator. Use the listener on your phone and desktop. To see the listener's login on the screen (with a QR code for your phone): `sudo python3 /srv/nekoserver/installer/releases/v0.48.2/account-setup.py show navidrome_listener` (`show navidrome` for the administrator; see ACCOUNT-SETUP.md). If you change one of these passwords in Navidrome, tell setup: in the NekoServer folder (where `install.sh` is) run `sudo python3 account-setup.py --apply --config my-config.json`; it finds that the saved login no longer works. Run it once more: it asks about that account; press **c** and type the new password.
 
 Only with account setup switched off (`accounts.enabled: false`) do you make them yourself: in Navidrome's first web page create the administrator, then in its Users settings create a separate non-administrator listener.
 

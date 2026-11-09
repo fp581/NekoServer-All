@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.48.1Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.48.2Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -23,7 +23,6 @@ it got, so a power cut at any point is put right at the next start):
 
 import argparse
 import contextlib
-import fcntl
 import http.client
 import json
 import os
@@ -49,8 +48,10 @@ from neko_common import (
     default_settings,
     ensure_directory,
     fetch,
+    held_lock_reason,
     hold_operation,
     mount_path,
+    read_journal,
     safe_path,
     settings_path,
 )
@@ -75,7 +76,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.48.1Beta" or "0.48.1"; None for anything else."""
+    """(0, 44, 0) from "v0.48.2Beta" or "0.48.2"; None for anything else."""
     match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -89,11 +90,7 @@ def record(phase, journal=JOURNAL, **more):
 
 
 def read(journal=JOURNAL):
-    try:
-        saved = json.loads(Path(journal).read_text())
-    except (OSError, ValueError):
-        return None
-    return saved if isinstance(saved, dict) and saved.get('format') == FORMAT else None
+    return read_journal(journal, FORMAT)
 
 
 def nothing_at_work(lock=SETUP_LOCK, journal=JOURNAL, maintenance=None, recovery=None):
@@ -107,20 +104,12 @@ def nothing_at_work(lock=SETUP_LOCK, journal=JOURNAL, maintenance=None, recovery
         return 'An app update or the monthly check is not finished yet; it is finished by itself first'
     if Path(MIGRATE_JOURNAL).exists():
         return 'A move to another drive is not finished yet (sudo python3 migrate.py resume)'
-    for path, what in (
-        (lock, 'Setup (sudo bash install.sh) is running'),
-        (recovery, 'A backup or an app update is running'),
-    ):
-        if path is None:
-            continue
-        try:
-            with open(path, 'a') as held:
-                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return what
-        except OSError:
-            continue
-    return None
+    return held_lock_reason(
+        [
+            (lock, 'Setup (sudo bash install.sh) is running'),
+            (recovery, 'A backup or an app update is running'),
+        ]
+    )
 
 
 def owner(config):

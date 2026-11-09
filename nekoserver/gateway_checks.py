@@ -28,11 +28,18 @@ def check(config, kind):
                 and saved.get('owned') == expected
                 and g.only(g.serve_state(), set(expected['TCP'])) == expected
             )
+            # Matching routes are not enough: without Tailscale's certificate every
+            # address hangs at the TLS handshake (one try here, no wait).
+            problem = g.https_problem(g.tailnet_links(node, expected), wait=0) if valid else None
+            if problem:
+                state = 'needs_setup'
+            else:
+                state = 'pass' if valid else 'fail'
             return [
                 row(
                     'routes',
-                    'pass' if valid else 'fail',
-                    'Private owned HTTPS routes must match selected apps; Funnel is forbidden.',
+                    state,
+                    problem or 'Private owned HTTPS routes must match selected apps; Funnel is forbidden.',
                 )
             ]
         except (OSError, RuntimeError, ValueError, KeyError, TypeError):

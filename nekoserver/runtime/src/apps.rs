@@ -153,9 +153,6 @@ pub fn installed(cfg: &Value) -> Vec<&'static str> {
 fn app_name(app: &str) -> &'static str {
     APPS.iter().find(|a| a.0 == app).map_or("The app", |a| a.1)
 }
-fn app_port(app: &str) -> Option<u16> {
-    APPS.iter().find(|a| a.0 == app).map(|a| a.3)
-}
 
 /// An interrupted backup, snapshot or update that still has to be finished: until it
 /// is, it may start or stop these same apps.
@@ -427,7 +424,7 @@ fn restart_app(app: &str, record: &Path, progress: impl Fn(&str)) -> Result<&'st
     };
     progress("checking");
     let deadline = Instant::now() + START_LIMIT;
-    let port = app_port(app);
+    let port = common::app_port(app);
     loop {
         let states = ids
             .iter()

@@ -1,0 +1,473 @@
+{
+  "project_name": "NekoServer v0.48.2",
+  "timezone": "UTC",
+  "data_mount": "/srv/nekoserver",
+  "media_mount": "/mnt/nekoserver-media",
+  "external_backup_mount": "/mnt/nekoserver-photos",
+  "required_commands": [
+    "python3",
+    "lsblk"
+  ],
+  "modules": {
+    "system": {
+      "enabled": true
+    },
+    "storage": {
+      "enabled": true
+    },
+    "docker": {
+      "enabled": true
+    },
+    "media": {
+      "enabled": false
+    },
+    "photos": {
+      "enabled": false
+    },
+    "photo_backup": {
+      "enabled": false
+    },
+    "photo_preservation": {
+      "enabled": false
+    },
+    "tailscale": {
+      "enabled": false
+    },
+    "samba": {
+      "enabled": false
+    },
+    "media_monitor": {
+      "enabled": false
+    },
+    "recovery": {
+      "enabled": true
+    },
+    "onboarding": {
+      "enabled": false
+    },
+    "tv": {
+      "enabled": false
+    },
+    "recovery_checkpoint": {
+      "enabled": false
+    },
+    "dashboard": {
+      "enabled": false
+    },
+    "gateway_lan": {
+      "enabled": false
+    },
+    "gateway_tailnet": {
+      "enabled": false
+    },
+    "app_backup": {
+      "enabled": false
+    },
+    "notifications": {
+      "enabled": false
+    },
+    "server_os": {
+      "enabled": false
+    },
+    "host_backup": {
+      "enabled": false
+    },
+    "heartbeat": {
+      "enabled": false
+    },
+    "nextcloud": {
+      "enabled": false
+    },
+    "maintenance": {
+      "enabled": false
+    },
+    "music": {
+      "enabled": false
+    },
+    "music_backup": {
+      "enabled": false
+    },
+    "account_credentials": {
+      "enabled": false
+    },
+    "accounts": {
+      "enabled": false
+    },
+    "hardware_video": {
+      "enabled": false
+    }
+  },
+  "docker": {
+    "install_engine": true,
+    "enable_service": true,
+    "data_root": "docker-engine"
+  },
+  "media": {
+    "services": [
+      "jellyfin",
+      "navidrome",
+      "sonarr",
+      "radarr",
+      "lidarr",
+      "prowlarr",
+      "seerr",
+      "qbittorrent"
+    ],
+    "uid": 1000,
+    "gid": 1000,
+    "bind_ip": "127.0.0.1",
+    "torrent_port": null
+  },
+  "storage": {
+    "data_ssd": {
+      "uuid": "1a2b3c4d-0001-4000-8000-00000000aaaa",
+      "fstype": "ext4"
+    },
+    "media_hdd": {
+      "uuid": "1a2b3c4d-0002-4000-8000-00000000bbbb",
+      "fstype": "ext4"
+    }
+  },
+  "network_storage": {
+    "wanted": true,
+    "portal": "192.168.1.50:3260",
+    "targets": [
+      "iqn.2000-01.com.synology:nas.Target-1.4a6f9c"
+    ]
+  },
+  "photos": {
+    "immich_version": "auto",
+    "bind_ip": "127.0.0.1",
+    "deploy_immich": true,
+    "external_backup_uuid": "",
+    "archive_dir": "photos/archive",
+    "inbox_dir": "photos/inbox",
+    "external_backup_fstype": "ext4",
+    "archive_interval_minutes": 10080,
+    "archive_min_age_seconds": 600,
+    "backup_schedule": "weekly",
+    "database_keep": 8
+  },
+  "profiles": {
+    "foundation": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "docker",
+      "recovery_checkpoint"
+    ],
+    "media": [
+      "system",
+      "storage",
+      "recovery",
+      "account_credentials",
+      "server_os",
+      "docker",
+      "recovery_checkpoint",
+      "media",
+      "accounts",
+      "onboarding",
+      "app_backup",
+      "music_backup"
+    ],
+    "photos": [
+      "system",
+      "storage",
+      "recovery",
+      "account_credentials",
+      "server_os",
+      "docker",
+      "recovery_checkpoint",
+      "photos",
+      "photo_preservation",
+      "photo_backup",
+      "accounts"
+    ],
+    "full": [
+      "system",
+      "tailscale",
+      "storage",
+      "capacity",
+      "recovery",
+      "account_credentials",
+      "server_os",
+      "docker",
+      "recovery_checkpoint",
+      "media",
+      "photos",
+      "photo_preservation",
+      "photo_backup",
+      "nextcloud",
+      "accounts",
+      "hardware_video",
+      "onboarding",
+      "music",
+      "samba",
+      "media_monitor",
+      "dashboard",
+      "tv",
+      "desktop",
+      "gateway_tailnet",
+      "gateway_lan",
+      "app_backup",
+      "notifications",
+      "heartbeat",
+      "host_backup",
+      "maintenance"
+    ],
+    "network": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "gateway_lan",
+      "samba"
+    ],
+    "media_monitor": [
+      "system",
+      "storage",
+      "server_os",
+      "docker",
+      "recovery_checkpoint",
+      "media",
+      "media_monitor"
+    ],
+    "tv": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "tv"
+    ],
+    "dashboard": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "dashboard"
+    ],
+    "lan_access": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "gateway_lan"
+    ],
+    "remote_access": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "tailscale",
+      "gateway_tailnet"
+    ],
+    "networking": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "gateway_lan",
+      "samba"
+    ],
+    "app_backup": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "docker",
+      "recovery_checkpoint",
+      "media",
+      "app_backup"
+    ],
+    "notifications": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "dashboard",
+      "notifications"
+    ],
+    "server_os": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os"
+    ],
+    "host_backup": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "host_backup"
+    ],
+    "heartbeat": [
+      "system",
+      "storage",
+      "recovery",
+      "heartbeat"
+    ],
+    "cloud": [
+      "system",
+      "storage",
+      "recovery",
+      "account_credentials",
+      "server_os",
+      "docker",
+      "recovery_checkpoint",
+      "nextcloud",
+      "accounts"
+    ],
+    "music": [
+      "system",
+      "storage",
+      "recovery",
+      "account_credentials",
+      "server_os",
+      "docker",
+      "recovery_checkpoint",
+      "media",
+      "accounts",
+      "music",
+      "app_backup",
+      "media_monitor"
+    ],
+    "accounts": [
+      "storage",
+      "recovery",
+      "account_credentials",
+      "accounts"
+    ]
+  },
+  "networking": {
+    "tailnet_only": true,
+    "samba_user": "auto",
+    "samba_media_write": false,
+    "shares": {
+      "Media": "library",
+      "Photos": "photos/archive"
+    },
+    "share_mode": "lan"
+  },
+  "monitoring": {
+    "interval_minutes": 60,
+    "report_dir": "/srv/nekoserver/reports/media",
+    "enabled": true
+  },
+  "onboarding": {
+    "enabled": true,
+    "wait_seconds": 180,
+    "collect_sources": true,
+    "configure_indexers": true,
+    "configure_libraries": true,
+    "configure_request_providers": true
+  },
+  "tv": {
+    "user": "auto",
+    "desktop_shortcuts": true,
+    "bluetooth": true,
+    "keep_awake": true
+  },
+  "dashboard": {
+    "port": 8790,
+    "interval_seconds": 120,
+    "smart_interval_seconds": 3600,
+    "install_smartmontools": true,
+    "fan_control": false,
+    "rgb": false
+  },
+  "gateway": {
+    "services": [
+      "jellyfin",
+      "seerr",
+      "immich",
+      "navidrome",
+      "nextcloud"
+    ],
+    "lan_ip": "192.168.1.20",
+    "lan_cidr": "192.168.1.0/24",
+    "confirmed_services": []
+  },
+  "runtime": {
+    "backend": "rust"
+  },
+  "backup_times": {
+    "daily": "04:15",
+    "weekly_day": "Sun",
+    "weekly": "03:00",
+    "monthly": "02:30"
+  },
+  "app_backup": {
+    "keep_snapshots": 0
+  },
+  "notifications": {
+    "endpoint": "",
+    "debounce_seconds": 180,
+    "repeat_seconds": 43200,
+    "minimum_interval_seconds": 300
+  },
+  "server_os": {
+    "hdd_policy": "keep_spinning",
+    "journal_disk_mb": 1024,
+    "journal_ram_mb": 64,
+    "journal_retention_days": 14,
+    "hdd_idle_minutes": 120
+  },
+  "host_backup": {
+    "user": "auto",
+    "steam": false,
+    "samba": true,
+    "extra_paths": [
+      "/srv/nekoserver/notes"
+    ],
+    "minimum_free_gb": 4,
+    "keep_snapshots": 14
+  },
+  "heartbeat": {
+    "interval_seconds": 600
+  },
+  "nextcloud": {
+    "enabled": true,
+    "image": "auto",
+    "trusted_hosts": [
+      "localhost",
+      "127.0.0.1"
+    ],
+    "public_url": "",
+    "admin_user": "admin"
+  },
+  "maintenance": {
+    "minimum_free_gb": 20,
+    "keep_snapshots": 0,
+    "night_end_hour": 6,
+    "health_wait_seconds": 300,
+    "settle_days": 3,
+    "update_day": "Sat",
+    "nekoserver_channel": "stable",
+    "immich_major_update": "",
+    "nextcloud_major_update": "",
+    "time": "02:30"
+  },
+  "music": {
+    "create_desktop_shortcut": true,
+    "backup_enabled": true
+  },
+  "accounts": {
+    "enabled": true,
+    "wait_seconds": 180
+  },
+  "guided_setup": {
+    "enabled": true
+  },
+  "locations": {
+    "photos": "media",
+    "music": "media",
+    "cloud": "media"
+  },
+  "paths": {
+    "photos": "/mnt/nekoserver-media/photos/immich-library",
+    "music": "/mnt/nekoserver-media/library/music",
+    "downloads": "/mnt/nekoserver-media/library/downloads/music",
+    "cloud": "/mnt/nekoserver-media/cloud/files"
+  }
+}

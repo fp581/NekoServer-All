@@ -1,0 +1,20 @@
+{
+  "data_mount": "/srv/nekoserver",
+  "media_mount": "/mnt/nekoserver-media",
+  "storage": {
+    "data_ssd": {
+      "uuid": "1a2b3c4d-0001-4000-8000-00000000aaaa",
+      "fstype": "ext4"
+    },
+    "media_hdd": {
+      "uuid": "1a2b3c4d-0002-4000-8000-00000000bbbb",
+      "fstype": "ext4"
+    }
+  },
+  "paths": {
+    "photos": "/srv/nekoserver/photos/immich-library",
+    "music": "/srv/nekoserver/library/music",
+    "downloads": "/srv/nekoserver/library/downloads/music",
+    "cloud": "/mnt/nekoserver-media/cloud/files"
+  }
+}

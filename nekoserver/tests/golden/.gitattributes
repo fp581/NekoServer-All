@@ -1,0 +1,2 @@
+# tests/golden: always LF, so the byte-for-byte comparison holds on every checkout
+* text eol=lf

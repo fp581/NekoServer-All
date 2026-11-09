@@ -591,22 +591,7 @@ def open_window(config, url):
         argv = [find_program('xdg-open'), url]
     else:
         return False
-    try:
-        command = guided_setup.desktop_command(config, argv)
-        child = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            cwd='/',
-        )
-        try:
-            return child.wait(timeout=2) == 0
-        except subprocess.TimeoutExpired:
-            return True
-    except (OSError, RuntimeError, KeyError, ValueError):
-        return False
+    return guided_setup.launch_quietly(config, argv)
 
 
 # ----- setup stopped before the wizard

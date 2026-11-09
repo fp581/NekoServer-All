@@ -1,0 +1,20 @@
+[Unit]
+Description=NekoServer lighting link (passes the control service's requests to OpenRGB)
+BindsTo=nekoserver-openrgb.service
+Requires=nekoserver-openrgb-proxy.socket
+After=nekoserver-openrgb.service nekoserver-openrgb-proxy.socket
+JoinsNamespaceOf=nekoserver-openrgb.service
+[Service]
+Type=notify
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:6742
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET
+PrivateNetwork=yes
+PrivateTmp=yes
+IPAddressDeny=any
+IPAddressAllow=localhost

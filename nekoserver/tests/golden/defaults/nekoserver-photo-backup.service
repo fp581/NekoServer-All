@@ -1,0 +1,9 @@
+[Unit]
+Description=NekoServer add-only USB backup of photos and Nextcloud files
+RequiresMountsFor=/mnt/nekoserver-media
+After=nekoserver-immich-db-backup.service
+[Service]
+Type=oneshot
+ExecStart=/srv/nekoserver/installer/runtime/v0.48.2/nekoserver-runtime weekly --config /etc/nekoserver-backups/storage.json --uuid 1a2b3c4d-0003-4000-8000-00000000cccc --fstype ext4 --source /mnt/nekoserver-media/photos/archive --dest /mnt/nekoserver-photos --media-root /mnt/nekoserver-media --data /srv/nekoserver --cloud /mnt/nekoserver-media/cloud/files
+ExecStopPost=/srv/nekoserver/installer/runtime/v0.48.2/nekoserver-runtime cloud-resume --config /etc/nekoserver-backups/storage.json
+TimeoutStopSec=3h30min

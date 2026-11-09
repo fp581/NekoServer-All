@@ -1,0 +1,8 @@
+[Unit]
+Description=NekoServer local dashboard port
+[Socket]
+ListenStream=127.0.0.1:8787
+Accept=no
+NoDelay=yes
+[Install]
+WantedBy=sockets.target

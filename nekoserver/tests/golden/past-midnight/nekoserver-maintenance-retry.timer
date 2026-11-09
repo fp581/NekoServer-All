@@ -1,0 +1,7 @@
+[Unit]
+Description=NekoServer hourly retry of an unfinished monthly update
+[Timer]
+OnCalendar=*-*-* *:17:00 Asia/Jerusalem
+Persistent=false
+[Install]
+WantedBy=timers.target
