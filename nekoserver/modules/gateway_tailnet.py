@@ -84,6 +84,24 @@ def confirmed_links(config):
     return None
 
 
+def keep_confirmed(config, earlier):
+    """The routes were set up again for the addresses the phone was confirmed for, and the
+    step now waits for something else (Tailscale's certificate): the phone stays confirmed,
+    so the next run does not ask for the phone steps again."""
+    try:
+        report = json.loads(report_path(config).read_text())
+    except (OSError, ValueError):
+        return
+    if (
+        isinstance(report, dict)
+        and report.get('client_acceptance') != 'user_confirmed'
+        and phone_done(earlier, report.get('links') or {})
+    ):
+        report['client_acceptance'] = 'user_confirmed'
+        report['client_acceptance_evidence'] = 'Confirmed by you in the terminal; no independent phone probe'
+        atomic_json(report_path(config), report)
+
+
 def secure_addresses(ctx):
     """Turn on Tailscale HTTPS addresses for the apps; asks only if HTTPS is not on yet."""
     result = {}
@@ -93,6 +111,15 @@ def secure_addresses(ctx):
         result = gateway_tools.apply_tailnet(ctx.config)
         return result.get('status') == 'configured'
 
+    def answering():
+        """Routes in place are not enough (S03): without Tailscale's certificate every
+        address hangs at the TLS handshake, so the step waits for setup instead."""
+        if result.get('status') == 'configured':
+            problem = gateway_tools.https_problem(result.get('links') or {})
+            if problem:
+                return {'status': 'needs_setup', 'reason': problem}
+        return result
+
     interactive = guided_setup.interactive(ctx)
     if interactive and gateway_tools.https_ready():
         # MagicDNS and HTTPS are on: a failure here is something else (an app not
@@ -100,14 +127,16 @@ def secure_addresses(ctx):
         # sending you to the DNS settings page again.
         try:
             if configure_routes():
-                ctx.log('Tailscale: MagicDNS and HTTPS already on; secure addresses updated')
-                return result
+                checked = answering()
+                if checked is result:
+                    ctx.log('Tailscale: MagicDNS and HTTPS already on; secure addresses updated')
+                return checked
         except RuntimeError as exc:
             ctx.log('Tailscale addresses: ' + str(exc))
             return {'status': 'needs_setup', 'reason': 'Secure addresses not set up: ' + str(exc)}
     if not interactive:
         configure_routes()
-        return result
+        return answering()
     if guided_setup.checkpoint(
         ctx,
         'Tailscale: turn on secure addresses',
@@ -125,7 +154,7 @@ def secure_addresses(ctx):
         [('url', 'https://console.tailscale.com/admin/dns')],
         verify=configure_routes,
     ):
-        return result
+        return answering()
     return {'status': 'needs_setup', 'reason': 'Private HTTPS configuration pending; reapply to resume'}
 
 
@@ -149,6 +178,7 @@ def run(ctx):
     earlier = confirmed_links(ctx.config)
     result = secure_addresses(ctx)
     if result.get('status') == 'needs_setup':
+        keep_confirmed(ctx.config, earlier)
         return result
     ctx.log('Private application links saved in reports/gateway-tailnet.json')
     if phone_done(earlier, result.get('links') or {}):
