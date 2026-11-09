@@ -537,7 +537,14 @@ def after_setup(code, path, default_state, output, window):
         # Every step finished: back up and check now rather than waiting for the night.
         import first_checkup
 
-        checkup = first_checkup.run(config, output)
+        try:
+            checkup = first_checkup.run(config, output)
+        except KeyboardInterrupt:
+            # Ctrl+C, as the checkup says it may be stopped: the finishing screen still comes.
+            output(
+                '\nFirst checkup stopped. The backups run at their usual times; to run the checkup now, '
+                'run  sudo bash install.sh  again.'
+            )
     try:
         import phone_guide
 

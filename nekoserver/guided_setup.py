@@ -353,13 +353,21 @@ def optional_kept(ctx, asked, prompt=None, output=None):
         output('Last time, the optional questions were answered this way:')
         for question in OPTIONAL_QUESTIONS:
             if question in kept:
-                output(f'  {OPTIONAL_QUESTIONS[question]}: {kept[question]}')
+                output(f'  {OPTIONAL_QUESTIONS[question]}: {answer_shown(ctx, question, kept[question])}')
         output('Answer no to keep these answers; yes asks the questions again.')
         again = bool(yes_no('Ask these questions again?', prompt, output))
         output('')
         ctx.log('Optional questions: ' + ('asked again' if again else 'kept as answered last time'))
         ctx.ask_optional_again = again
     return [] if again else shown
+
+
+def answer_shown(ctx, question, kept):
+    """A kept answer as the rerun lists it: the backup times as the settings hold them now
+    (the file may have been made again since, with other times), any other as given."""
+    from neko_common import BACKUP_TIMES, backup_times_said
+
+    return backup_times_said(ctx.config) if question == BACKUP_TIMES else kept
 
 
 def ask_choice(question, default, valid, hint, prompt=input, output=print, attempts=3):
@@ -381,12 +389,15 @@ def ask_choice(question, default, valid, hint, prompt=input, output=print, attem
     return default
 
 
-def ask_on_page(key, question, default, valid, hint, prompt=input, output=print):
+def ask_on_page(key, question, default, valid, hint, prompt=input, output=print, normalise=None):
     """ask_choice for one field of a page the setup window shows whole (setup_progress.page):
     when the window already sent this field, that answer is used (checked like a typed
-    one) and the terminal is not asked; the window's "Skip for now" keeps the default."""
+    one) and the terminal is not asked; the window's "Skip for now" keeps the default.
+    `normalise` puts an accepted answer in the form the page knows ("sat" as "Sat") before
+    it is recorded for the page and returned."""
     import setup_progress
 
+    normalise = normalise or (lambda answer: answer)
     given = setup_progress.page_answer(key)
     if given is not None:
         kind, value = given
@@ -395,44 +406,134 @@ def ask_on_page(key, question, default, valid, hint, prompt=input, output=print)
         value = value.strip()
         if valid(value):
             output(f'{question}{value}  (from the setup window)')
+            value = normalise(value)
             setup_progress.page_set(key, value)
             return value
         output(hint)
     setup_progress.page_asks(key)
-    answer = ask_choice(question, default, valid, hint, prompt, output)
+    answer = normalise(ask_choice(question, default, valid, hint, prompt, output))
     setup_progress.page_set(key, answer)
     return answer
+
+
+def revisits_every_job(ctx):
+    """True when this run writes every scheduled job's timer again: a full setup run, or
+    one whose plan has every timer-writing step installed so far (ctx.previous: each step
+    as the last run left it). A run of one step (install.sh --module host_backup,
+    --profile, --retry-failed) reaches the drives step too, since nearly every step needs
+    it, but would rewrite only its own timer at new times and leave the rest at the old."""
+    plan, previous = getattr(ctx, 'plan', None), getattr(ctx, 'previous', None)
+    if not isinstance(plan, (list, tuple)) or not isinstance(previous, dict):
+        return True
+    from modules.storage import JOB_STEPS
+
+    installed = {step for step in JOB_STEPS if previous.get(step, {}).get('status') == 'success'}
+    return installed <= set(plan)
 
 
 def choose_backup_times(ctx, prompt=None, output=None):
     """Ask when the backups run (the daily jobs, the weekly USB copy, the monthly check)
     and save the answers as "backup_times" in the settings file; every timer is written
     from them (neko_common.job_times). Enter keeps the time shown: the server's current
-    times, so a server set up before 0.48.0 keeps its schedule. Asked once; a run after
+    times, so a server set up before 0.48.0 keeps its schedule (its settings untouched
+    when every answer is Enter and its other jobs had times of their own). Asked once; a run after
     that shows the answer and asks again only on request (optional_kept). Setup without
-    a person at the terminal (an upgrade) changes nothing. The setup window shows the
+    a person at the terminal (an upgrade), or a run that would not write every timer
+    again (revisits_every_job), changes nothing. The setup window shows the
     three as one page (setup_progress.page) and may answer them together."""
     import setup_progress
-    from neko_common import BACKUP_TIMES, WEEKDAYS, backup_times, backup_times_said, job_times, remember_answer
+    from neko_common import BACKUP_TIMES, WEEKDAYS, backup_times, backup_times_said, job_times, optional_answers
 
     if not interactive(ctx):
         return
     prompt = prompt or input
     output = output or print
-    if backup_times(ctx.config) is not None and BACKUP_TIMES in optional_kept(ctx, [BACKUP_TIMES], prompt, output):
+    if not revisits_every_job(ctx):
+        said = backup_times_said(ctx.config)
+        output(f'Backup times are changed only by a full setup run (sudo bash install.sh); this run keeps {said}.')
+        ctx.log('Backup times kept, not a full run: ' + said)
+        return
+    remembered = optional_answers(ctx.config['data_mount']).get(BACKUP_TIMES)
+    if remembered is not None and remembered != backup_times_said(ctx.config):
+        # The settings file was made again since (from the template, say): the times in
+        # it are the ones the timers would get, so they are asked, not offered to keep.
+        output(
+            f'The backup times in the settings ({backup_times_said(ctx.config)}) are not the ones chosen last '
+            f'time ({remembered}), so they are asked again.'
+        )
+    elif remembered is not None and BACKUP_TIMES in optional_kept(ctx, [BACKUP_TIMES], prompt, output):
         ctx.log('Backup times kept: ' + backup_times_said(ctx.config))
         return
     now = job_times(ctx.config)
     night_end = ctx.config.get('maintenance', {}).get('night_end_hour', 6)
-    shown = {'daily': now['app'], 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
+    own = {'daily': now['app'], 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
+    shown = {**own, 'monthly': monthly_offered(now['monthly'], night_end)}
     with setup_progress.page(BACKUP_TIMES, shown, weekdays=list(WEEKDAYS), night_end=night_end):
         chosen = ask_backup_times(ctx, now, night_end, prompt, output)
+    # Settings from before 0.48.0 (no "backup_times" yet) gave each job a time of its own.
+    moved = jobs_moved(ctx.config, now, chosen) if backup_times(ctx.config) is None else []
+    if moved and chosen == own:
+        # Every answer kept the time shown, yet saved as "backup_times" they would move
+        # the music, settings or database copy to its fixed distance from the daily and
+        # weekly times (job_times): the server keeps the times it has.
+        times_settled(ctx, output, 'kept as they were')
+        return
+    if moved:
+        output('With these times ' + ', '.join(moved) + '.')
     ctx.config[BACKUP_TIMES] = chosen
     save_settings(ctx)
+    times_settled(ctx, output, 'chosen')
+
+
+def times_settled(ctx, output, how):
+    """The backup times as they now stand: remembered as the answer to this optional
+    question, said, and logged (`how`: chosen, or kept as they were)."""
+    from neko_common import BACKUP_TIMES, backup_times_said, remember_answer
+
     said = backup_times_said(ctx.config)
     remember_answer(ctx.config['data_mount'], BACKUP_TIMES, said)
     output(f'Backups run {said}. To change this later, run  sudo bash install.sh  again and say yes to asking again.')
-    ctx.log('Backup times chosen: ' + said)
+    ctx.log(f'Backup times {how}: {said}')
+
+
+def jobs_moved(config, now, chosen):
+    """On a server set up before 0.48.0 the music copy, the copy of this PC's own settings
+    and Immich's database copy had times of their own; from "backup_times" they keep a
+    fixed distance from the daily and weekly times (job_times). Each one `chosen` moves,
+    in words ("the music copy moves from 03:45 to 22:30"), so nothing changes unsaid."""
+    from neko_common import BACKUP_TIMES, job_times
+
+    after = job_times({**config, BACKUP_TIMES: chosen})
+    photos = config.get('photos', {})
+    weekly = isinstance(photos, dict) and photos.get('backup_schedule', 'legacy') == 'weekly'
+    database = 'photo_database_weekly' if weekly else 'photo_database'
+    moved = []
+    for job, words in (
+        ('music', 'the music copy'),
+        ('host', "the copy of this PC's own settings"),
+        (database, "Immich's database copy"),
+    ):
+        before, later = job_said(now, job), job_said(after, job)
+        if before != later:
+            moved.append(f'{words} moves from {before} to {later}')
+    return moved
+
+
+def job_said(times, job):
+    """A job's time from job_times, with its day when it has one of its own."""
+    if job == 'photo_database_weekly':
+        return f"{times['photo_database_weekly_day']} {times[job]}"
+    return times[job]
+
+
+def monthly_offered(current, night_end):
+    """The monthly time to offer as the default: the one the server has, unless it is no
+    longer before `night_end` (maintenance.night_end_hour lowered since), then the latest
+    time with the same minutes that is, since Enter must never keep a time the maintenance
+    step refuses (modules/maintenance.py options)."""
+    if int(current[:2]) < night_end:
+        return current
+    return f'{max(night_end - 1, 0):02d}:{current[3:]}'
 
 
 def ask_backup_times(ctx, now, night_end, prompt, output):
@@ -471,7 +572,8 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         'Type the day as one of ' + days + '.',
         prompt,
         output,
-    ).capitalize()
+        str.capitalize,
+    )
     weekly = ask_on_page(
         'weekly',
         f'At what time on that day? (HH:MM, Enter for {now["usb"]}): ',
@@ -485,10 +587,12 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         'Every month, on the 1st: the check of every backup copy, a snapshot of every app and a restore '
         f'test; the weekly app updates start at this time too. It must start at night, before {night_end:02d}:00.'
     )
+    offered = monthly_offered(now['monthly'], night_end)
+    why = '' if offered == now['monthly'] else f'; {now["monthly"]} is not before {night_end:02d}:00'
     monthly = ask_on_page(
         'monthly',
-        f'At what time should the monthly check start? (HH:MM before {night_end:02d}:00, Enter for {now["monthly"]}): ',
-        now['monthly'],
+        f'At what time should the monthly check start? (HH:MM before {night_end:02d}:00, Enter for {offered}{why}): ',
+        offered,
         lambda answer: valid_time(answer) and int(answer[:2]) < night_end,
         f'Type a time of day as HH:MM before {night_end:02d}:00, for example 02:30.',
         prompt,

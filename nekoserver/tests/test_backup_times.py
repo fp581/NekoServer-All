@@ -79,7 +79,15 @@ class JobTimesTests(unittest.TestCase):
         times = job_times(settings(daily='00:10', weekly_day='Wed', weekly='00:20', monthly='01:00'))
         self.assertEqual((times['music'], times['app'], times['host']), ('23:40', '00:10', '01:10'))
         self.assertEqual(times['photo_database'], '22:10')
-        self.assertEqual((times['usb_day'], times['usb'], times['photo_database_weekly']), ('Wed', '00:20', '23:35'))
+        self.assertEqual((times['usb_day'], times['usb']), ('Wed', '00:20'))
+        # 45 minutes before Wed 00:20 is Tue 23:35, not Wed 23:35 (23 hours after the USB copy).
+        self.assertEqual((times['photo_database_weekly_day'], times['photo_database_weekly']), ('Tue', '23:35'))
+        self.assertEqual(neko_common.day_before_if_wrapped('Mon', '00:30', -45), 'Sun')
+        self.assertEqual(neko_common.day_before_if_wrapped('Mon', '00:45', -45), 'Mon')
+        self.assertEqual(neko_common.day_before_if_wrapped('Sun', '23:30', 45), 'Mon')
+        # Settings from before 0.48.0 name the database copy's own time: its day is the USB copy's.
+        before = {'photos': {'backup_weekday': 'Mon', 'backup_time': '00:20', 'database_backup_time': '23:35'}}
+        self.assertEqual(job_times(before)['photo_database_weekly_day'], 'Mon')
         self.assertEqual(times['monthly'], '01:00')
         self.assertEqual(minutes_later('00:00', -1), '23:59')
         self.assertEqual(minutes_later('23:59', 1), '00:00')
@@ -157,6 +165,9 @@ class TimersTests(unittest.TestCase):
         weekly = photo_preservation.calendars(config, 'weekly', 10080)
         self.assertEqual(list(weekly), ['nekoserver-immich-db-backup'])
         self.assertIn('OnCalendar=Thu *-*-* 19:15:00 UTC\n', weekly['nekoserver-immich-db-backup'])
+        # A USB copy just after midnight: the database copy the evening before, on the day before.
+        early = photo_preservation.calendars(settings(weekly_day='Sun', weekly='00:20'), 'weekly', 10080)
+        self.assertIn('OnCalendar=Sat *-*-* 23:35:00 UTC\n', early['nekoserver-immich-db-backup'])
         daily = photo_preservation.calendars(settings(daily='06:00'), 'legacy', 360)
         self.assertIn('OnCalendar=*-*-* 04:00:00 UTC\n', daily['nekoserver-immich-db-backup'])
         self.assertIn('OnUnitInactiveSec=360min\n', daily['nekoserver-photo-preservation'])
@@ -339,6 +350,7 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertEqual(ctx.config['backup_times']['daily'], '04:15')
         self.assertIn('Type a time of day as HH:MM, for example 04:15.', printed)
         # Sent by the setup window: refused there too, and asked in the terminal.
+        neko_common.optional_answers_file(self.dir.name).unlink()  # the case above's answer, not this one's
         ctx = Ctx(self.config())
         printed = []
         first = self.window_prompt('23:30', {'weekly_day': 'Sat', 'weekly': '1٩:0٠', 'monthly': '01:00'})
@@ -384,8 +396,10 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertIn('Enter for Fri', asked[1])
         self.assertIn('Enter for 22:00', asked[2])
         self.assertIn('Enter for 01:30', asked[3])
-        self.assertEqual(
-            ctx.config['backup_times'], {'daily': '23:00', 'weekly_day': 'Fri', 'weekly': '22:00', 'monthly': '01:30'}
+        # Enter everywhere: its own times stand, unsaved (saving them would move the other jobs).
+        self.assertNotIn('backup_times', ctx.config)
+        self.assertIn(
+            'Backup times kept as they were: daily 23:00, weekly Fri 22:00, monthly on the 1st at 01:30', ctx.logs
         )
 
     def test_a_rerun_keeps_the_answer_unless_asked_again(self):
@@ -425,6 +439,209 @@ class SetupQuestionTests(unittest.TestCase):
         ctx.ask_optional_again = False
         self.assertEqual(self.ask(ctx), [])
         self.assertEqual(ctx.saved, 0)
+
+    def before_0_48(self):
+        """Settings from before 0.48.0: every job with a time of its own."""
+        return self.config(
+            app_backup={'time': '23:00'},
+            host_backup={'time': '02:00'},
+            music={'backup_time': '03:45'},
+            photos={
+                'backup_weekday': 'Fri',
+                'backup_time': '22:00',
+                'database_backup_time': '21:00',
+                'backup_schedule': 'weekly',
+            },
+            maintenance={'time': '01:30'},
+        )
+
+    def test_enter_everywhere_on_a_server_set_up_before_keeps_its_own_times(self):
+        # Saved as backup_times, the times shown would still have moved the music copy to
+        # 22:30 and the copy of this PC's settings to 00:00, their fixed distances from
+        # the daily time, without a word.
+        ctx = Ctx(self.before_0_48())
+        printed = self.ask(ctx, '', '', '', '')
+        self.assertNotIn('backup_times', ctx.config)
+        self.assertEqual(ctx.saved, 0)
+        said = 'daily 23:00, weekly Fri 22:00, monthly on the 1st at 01:30'
+        self.assertIn('Backup times kept as they were: ' + said, ctx.logs)
+        self.assertEqual(neko_common.optional_answers(self.dir.name)['backup_times'], said)
+        self.assertTrue(any(line.startswith('Backups run ' + said) for line in printed))
+        self.assertFalse(any('moves from' in line for line in printed))
+        # The setup window's "Skip for now" is Enter everywhere.
+        ctx = Ctx(self.before_0_48())
+        guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('', skip=True), output=lambda *_: None)
+        self.assertNotIn('backup_times', ctx.config)
+        self.assertEqual(ctx.saved, 0)
+
+    def test_a_changed_time_on_a_server_set_up_before_says_which_jobs_move(self):
+        ctx = Ctx(self.before_0_48())
+        printed = self.ask(ctx, '22:30', '', '', '')
+        self.assertEqual(
+            ctx.config['backup_times'], {'daily': '22:30', 'weekly_day': 'Fri', 'weekly': '22:00', 'monthly': '01:30'}
+        )
+        self.assertEqual(ctx.saved, 1)
+        self.assertIn(
+            "With these times the music copy moves from 03:45 to 22:00, the copy of this PC's own settings moves "
+            "from 02:00 to 23:30, Immich's database copy moves from Fri 21:00 to Fri 21:15.",
+            printed,
+        )
+        # From the setup window the same: here only the weekly time changed, yet three jobs move.
+        ctx = Ctx(self.before_0_48())
+        printed = []
+        page = {'daily': '23:00', 'weekly_day': 'Fri', 'weekly': '20:00', 'monthly': '01:30'}
+        guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('23:00', page), output=printed.append)
+        self.assertEqual(ctx.config['backup_times'], page)
+        self.assertIn(
+            "With these times the music copy moves from 03:45 to 22:30, the copy of this PC's own settings moves "
+            "from 02:00 to 00:00, Immich's database copy moves from Fri 21:00 to Fri 19:15.",
+            printed,
+        )
+        # A server set up with 0.48.0 has no times of its own to lose: nothing to say
+        # (yes: ask again, after the answer the cases above left on the SSD).
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times'])))
+        printed = self.ask(ctx, 'yes', '22:30', '', '', '')
+        self.assertFalse(any('moves from' in line for line in printed))
+        self.assertEqual(ctx.saved, 1)
+
+    def test_a_remembered_answer_that_is_not_what_the_settings_hold_is_asked_again(self):
+        # The settings file was made again from the template (04:15, Sun 03:00, 02:30)
+        # while the SSD still remembered the old answer: the rerun showed the old times,
+        # "no" kept them in words only, and every timer was written at the template's.
+        old = 'daily 22:00, weekly Sat 21:00, monthly on the 1st at 01:00'
+        template = 'daily 04:15, weekly Sun 03:00, monthly on the 1st at 02:30'
+        neko_common.remember_answer(self.dir.name, 'backup_times', old)
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times'])))
+        asked = []
+
+        def prompt(question):
+            asked.append(question)
+            return '22:00' if question.startswith('When should the daily') else ''
+
+        printed = []
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=printed.append)
+        self.assertFalse(any('[yes/no]' in question for question in asked), 'not offered to keep')
+        self.assertEqual(len(asked), 4)
+        self.assertIn(
+            f'The backup times in the settings ({template}) are not the ones chosen last time ({old}), '
+            'so they are asked again.',
+            printed,
+        )
+        self.assertEqual(ctx.config['backup_times']['daily'], '22:00')
+        self.assertEqual(ctx.saved, 1)
+        # The same answer as the settings: offered to keep, as before.
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times'])))
+        neko_common.remember_answer(self.dir.name, 'backup_times', template)
+        printed = self.ask(ctx, 'no')
+        self.assertEqual(ctx.saved, 0)
+        self.assertIn('  Backup times: ' + template, printed)
+
+    def test_the_list_of_last_answers_shows_the_times_the_settings_hold(self):
+        # Another step's turn to offer the list, the drives step having kept quiet: the
+        # backup times shown are the settings' own, not the SSD's remembered words.
+        old = 'daily 22:00, weekly Sat 21:00, monthly on the 1st at 01:00'
+        neko_common.remember_answer(self.dir.name, 'backup_times', old)
+        neko_common.remember_answer(self.dir.name, 'playback', 'done')
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times'])))
+        printed = []
+        kept = guided_setup.optional_kept(ctx, ['playback'], prompt=answers('no'), output=printed.append)
+        self.assertEqual(kept, ['playback'])
+        self.assertIn('  Backup times: daily 04:15, weekly Sun 03:00, monthly on the 1st at 02:30', printed)
+        self.assertIn('  Playback test: done', printed)
+        self.assertFalse(any('22:00' in line for line in printed))
+
+    def test_a_monthly_time_no_longer_at_night_is_offered_the_latest_time_that_is(self):
+        # maintenance.night_end_hour lowered to 2 since the times were chosen: Enter, Ctrl+D
+        # or the window's Skip kept 02:30 unchecked, and the maintenance step refused it.
+        import setup_progress
+
+        self.assertEqual(guided_setup.monthly_offered('02:30', 2), '01:30')
+        self.assertEqual(guided_setup.monthly_offered('02:30', 6), '02:30')
+        self.assertEqual(guided_setup.monthly_offered('05:45', 1), '00:45')
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times']), maintenance={'night_end_hour': 2}))
+        asked = []
+
+        def prompt(question):
+            asked.append(question)
+            if question.startswith('At what time should the monthly'):
+                self.assertEqual(setup_progress.page_shown()['fields']['monthly'], '01:30', 'the page shows it too')
+            return ''
+
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
+        self.assertEqual(
+            asked[3],
+            'At what time should the monthly check start? (HH:MM before 02:00, Enter for 01:30; '
+            '02:30 is not before 02:00): ',
+        )
+        self.assertEqual(ctx.config['backup_times']['monthly'], '01:30')
+        self.assertEqual(maintenance.options(ctx.config)['time'], '01:30')
+        # The window's Skip for now keeps the time offered, not the refused one.
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times']), maintenance={'night_end_hour': 2}))
+        guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('', skip=True), output=lambda *_: None)
+        self.assertEqual(ctx.config['backup_times']['monthly'], '01:30')
+
+    def test_a_weekday_typed_in_lowercase_reaches_the_page_as_the_day_itself(self):
+        # The page recorded "sat" as typed; the window's day selector knows only Sat and
+        # went blank.
+        import setup_progress
+
+        typed = guided_setup.ask_on_page(
+            'd', 'Day: ', 'Mon', lambda a: True, 'no', answers('tue'), lambda *_: None, str.capitalize
+        )
+        self.assertEqual(typed, 'Tue')
+        recorded = []
+
+        def record(key, value):
+            recorded.append((key, value))
+
+        with mock.patch.object(setup_progress, 'page_set', side_effect=record):
+            ctx = Ctx(self.config())
+            self.ask(ctx, '', 'sat', '', '')
+            self.assertIn(('weekly_day', 'Sat'), recorded)
+            # Sent by the window (another browser's page, say): the same.
+            ctx = Ctx(self.config())
+            fields = {'weekly_day': 'SUN', 'weekly': '21:00', 'monthly': '01:00'}
+            guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('23:30', fields), output=lambda *_: None)
+            self.assertIn(('weekly_day', 'Sun'), recorded)
+        self.assertFalse(any(value in ('sat', 'SUN') for _, value in recorded))
+        self.assertEqual(ctx.config['backup_times']['weekly_day'], 'Sun')
+
+    def test_a_run_that_does_not_write_every_timer_again_keeps_the_times_and_asks_nothing(self):
+        # sudo bash install.sh --module host_backup --apply reaches the drives step (nearly
+        # every step needs it): new times were saved, and only host_backup's timer was
+        # written at them, the other jobs left at the old ones.
+        installed = {step: {'status': 'success'} for step in ('storage', 'app_backup', 'host_backup', 'maintenance')}
+        chosen = {'daily': '22:00', 'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '01:00'}
+        config = self.config(backup_times=chosen)
+        ctx = Ctx(dict(config))
+        ctx.plan, ctx.previous = ['system', 'storage', 'recovery', 'host_backup'], installed
+        printed = self.ask(ctx)  # any question would fail the test
+        self.assertEqual(ctx.config, config)
+        self.assertEqual(ctx.saved, 0)
+        said = 'daily 22:00, weekly Sat 21:00, monthly on the 1st at 01:00'
+        self.assertIn(
+            f'Backup times are changed only by a full setup run (sudo bash install.sh); this run keeps {said}.', printed
+        )
+        self.assertIn('Backup times kept, not a full run: ' + said, ctx.logs)
+        self.assertFalse(guided_setup.revisits_every_job(ctx))
+        # The full run has every job step: asked. So is a first run, with nothing installed yet.
+        for plan, previous in (
+            (['system', 'storage', 'recovery', 'app_backup', 'host_backup', 'maintenance'], installed),
+            (['system', 'storage', 'recovery', 'app_backup'], {}),
+        ):
+            ctx = Ctx(dict(config))
+            ctx.plan, ctx.previous = plan, previous
+            asked = []
+
+            def prompt(question):
+                if '[yes/no]' in question:  # the first round's answer, offered on the second: ask again
+                    return 'yes'
+                asked.append(question)
+                return ''
+
+            guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
+            self.assertEqual(len(asked), 4, plan)
+        self.assertTrue(guided_setup.revisits_every_job(Ctx({})), 'no plan known: asked')
 
     def test_nobody_at_the_terminal_changes_nothing(self):
         self.interactive.stop()

@@ -100,7 +100,7 @@ A few steps ask their questions in the terminal only. The setup window says **An
 
 - **Connecting the media apps.** Setup may ask which download sources to add. If you don't know what to choose, just press Enter: that skips it. You can add sources later in Prowlarr.
 
-When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the download sources, the indexers, the playback test) and asks `Ask these questions again? [yes/no]`. Answer `no` to keep those answers and move on; `yes` asks them again.
+When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the backup times, the download sources, the indexers, the playback test) and asks `Ask these questions again? [yes/no]`. Answer `no` to keep those answers and move on; `yes` asks them again.
 - **Music** (only if the automatic check did not pass). If setup asks for `Listener username:` and a password, type the login of your music account. To see it, open a second terminal (Ctrl+Alt+T) and run the command in [Seeing an app's password](#seeing-an-apps-password) with `show navidrome_listener`.
 - **The shared-folder password.** This is the password other computers at home use to open the shared folders. Type it, press Enter, then type it again. Nothing appears while you type.
 

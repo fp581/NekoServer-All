@@ -171,6 +171,16 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.choose()], 'start')
         self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
 
+    def test_a_refused_start_gives_the_button_back_with_the_reason(self):
+        # post() took any status for a success: after the server's 409 (the settings
+        # file cannot be read right now, or setup has started) the button stayed
+        # disabled at "Starting…" and nothing said why.
+        reason = "my-config.json can't be read right now: check it for a typo."
+        seen = self.page([{**self.choose(), 'refuseStart': reason}], 'start')
+        self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
+        self.assertEqual(seen['start'], [False, 'Start setup'])
+        self.assertEqual(seen['chooseNote'], reason)
+
     def backup_times_question(self, **changes):
         step = {'id': 'storage', 'title': 'Drives', 'status': 'running', 'explanation': '', 'packages': [], 'notes': []}
         page = {
@@ -242,6 +252,21 @@ class SetupWindowTests(unittest.TestCase):
         plain = self.backup_times_question()
         plain['question'] = {**plain['question'], 'page': None}
         seen = self.page([plain])
+        self.assertEqual((seen['pageHidden'], seen['answerHidden'], seen['rows']), (True, False, []))
+
+    def test_the_pages_rows_go_when_a_plain_question_follows(self):
+        # The rows' inputs are `required` and sit in the same form as the plain answer:
+        # left behind hidden, they blocked every later Send.
+        plain = self.backup_times_question()
+        plain['question'] = {
+            'seq': 8,
+            'text': 'Select the SSD. Choose number: ',
+            'secret': False,
+            'kind': 'text',
+            'context': [],
+            'page': None,
+        }
+        seen = self.page([self.backup_times_question(), plain])
         self.assertEqual((seen['pageHidden'], seen['answerHidden'], seen['rows']), (True, False, []))
 
     def test_the_finish_title_is_setups_own_verdict(self):

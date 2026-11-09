@@ -147,6 +147,18 @@ class WizardFlowTests(unittest.TestCase):
             )
         self.assertEqual(code, 1)
 
+    def test_ctrl_c_during_the_first_checkup_still_shows_the_finishing_screen(self):
+        # The checkup ran outside any try: Ctrl+C left setup before the finishing screen
+        # and the window's 'finished' event.
+        out = []
+        with mock.patch('first_checkup.run', side_effect=KeyboardInterrupt):
+            code = wizard.run(
+                mock.Mock(return_value=0), self.root / 'state', prompt=answers('yes'), output=out.append, root=self.root
+            )
+        self.assertIn(code, (0, 1))
+        self.assertTrue(any('First checkup stopped.' in line and 'sudo bash install.sh' in line for line in out))
+        self.assertTrue(any(line.strip().startswith(('NekoServer is', 'Setup stopped:')) for line in out))
+
     def test_no_first_backup_while_steps_are_unfinished(self):
         with mock.patch('first_checkup.run') as checkup:
             wizard.run(
