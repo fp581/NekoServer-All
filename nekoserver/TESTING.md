@@ -167,7 +167,11 @@ disk, and `listed_disks` (`modules/network_storage.py:652`) then stops setup wit
 could not be inspected`. The finishing screen counts a step with no record as `missing`,
 never as done (`wizard.py:430`); a backup that left no report is `fail` (`first_checkup.py:39`);
 a dashboard check that could not run turns `stale`, never stays green
-(`runtime/src/collect.rs:1348`). Tests:
+(`runtime/src/collect.rs:1348`); the Tailscale step and its acceptance row are never a pass
+while the HTTPS addresses do not answer with a trusted certificate (`gateway_tools.https_problem`,
+B-0482-01). Tests:
+`test_a_missing_certificate_ends_the_step_as_needs_setup_with_the_reason` and
+`test_matching_routes_whose_addresses_do_not_answer_are_not_a_pass` (tests/test_tailnet_certificate.py),
 `test_a_lun_that_cannot_be_inspected_stops_setup_instead_of_passing_as_empty` (tests/test_network_storage.py:263),
 `test_a_failed_checkup_is_never_ready` (tests/test_wizards.py:376),
 `test_the_finishing_screen_judges_against_the_templates_steps` (tests/test_setup_flow.py:1080),
