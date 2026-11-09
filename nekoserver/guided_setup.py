@@ -389,12 +389,15 @@ def ask_choice(question, default, valid, hint, prompt=input, output=print, attem
     return default
 
 
-def ask_on_page(key, question, default, valid, hint, prompt=input, output=print):
+def ask_on_page(key, question, default, valid, hint, prompt=input, output=print, normalise=None):
     """ask_choice for one field of a page the setup window shows whole (setup_progress.page):
     when the window already sent this field, that answer is used (checked like a typed
-    one) and the terminal is not asked; the window's "Skip for now" keeps the default."""
+    one) and the terminal is not asked; the window's "Skip for now" keeps the default.
+    `normalise` puts an accepted answer in the form the page knows ("sat" as "Sat") before
+    it is recorded for the page and returned."""
     import setup_progress
 
+    normalise = normalise or (lambda answer: answer)
     given = setup_progress.page_answer(key)
     if given is not None:
         kind, value = given
@@ -403,11 +406,12 @@ def ask_on_page(key, question, default, valid, hint, prompt=input, output=print)
         value = value.strip()
         if valid(value):
             output(f'{question}{value}  (from the setup window)')
+            value = normalise(value)
             setup_progress.page_set(key, value)
             return value
         output(hint)
     setup_progress.page_asks(key)
-    answer = ask_choice(question, default, valid, hint, prompt, output)
+    answer = normalise(ask_choice(question, default, valid, hint, prompt, output))
     setup_progress.page_set(key, answer)
     return answer
 
@@ -547,7 +551,8 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         'Type the day as one of ' + days + '.',
         prompt,
         output,
-    ).capitalize()
+        str.capitalize,
+    )
     weekly = ask_on_page(
         'weekly',
         f'At what time on that day? (HH:MM, Enter for {now["usb"]}): ',

@@ -580,6 +580,32 @@ class SetupQuestionTests(unittest.TestCase):
         guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('', skip=True), output=lambda *_: None)
         self.assertEqual(ctx.config['backup_times']['monthly'], '01:30')
 
+    def test_a_weekday_typed_in_lowercase_reaches_the_page_as_the_day_itself(self):
+        # The page recorded "sat" as typed; the window's day selector knows only Sat and
+        # went blank.
+        import setup_progress
+
+        typed = guided_setup.ask_on_page(
+            'd', 'Day: ', 'Mon', lambda a: True, 'no', answers('tue'), lambda *_: None, str.capitalize
+        )
+        self.assertEqual(typed, 'Tue')
+        recorded = []
+
+        def record(key, value):
+            recorded.append((key, value))
+
+        with mock.patch.object(setup_progress, 'page_set', side_effect=record):
+            ctx = Ctx(self.config())
+            self.ask(ctx, '', 'sat', '', '')
+            self.assertIn(('weekly_day', 'Sat'), recorded)
+            # Sent by the window (another browser's page, say): the same.
+            ctx = Ctx(self.config())
+            fields = {'weekly_day': 'SUN', 'weekly': '21:00', 'monthly': '01:00'}
+            guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('23:30', fields), output=lambda *_: None)
+            self.assertIn(('weekly_day', 'Sun'), recorded)
+        self.assertFalse(any(value in ('sat', 'SUN') for _, value in recorded))
+        self.assertEqual(ctx.config['backup_times']['weekly_day'], 'Sun')
+
     def test_nobody_at_the_terminal_changes_nothing(self):
         self.interactive.stop()
         ctx = Ctx(self.config(), apply=True)
