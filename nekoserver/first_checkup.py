@@ -9,6 +9,7 @@ inspection checks the apps, backups and drives, and saves its report for the das
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 # (service, what it is, its job report in reports/jobs/), in the order they run. The
@@ -54,13 +55,27 @@ def outcome(config, report):
     return 'fail', str(row.get('reason', '')) if isinstance(row, dict) else ''
 
 
-def inspect(config):
-    """The acceptance checks that run by themselves: (passed, the names of the others)."""
+# How long the checkup waits for a container whose health check is still running (a
+# backup it just ran paused and restarted the app; the gateway step waits the same way).
+STARTING_WAIT = 120
+
+
+def inspect(config, sleep=time.sleep, clock=time.monotonic):
+    """The acceptance checks that run by themselves: (passed, the names of the others).
+    A container the checkup's own backups restarted a moment ago is waited for while its
+    health check runs, so it is not reported as a problem. (Checks still to set up fail
+    with another detail and never hold the wait up; they are reported as before.)"""
     import acceptance
 
-    report = acceptance.inspect(config, 'full')
+    deadline = clock() + STARTING_WAIT
+    while True:
+        report = acceptance.inspect(config, 'full')
+        checks = report.get('automatic', [])
+        starting = [c for c in checks if c.get('status') != 'pass' and c.get('detail') == acceptance.STARTING]
+        if not starting or clock() >= deadline:
+            break
+        sleep(10)
     acceptance.save(config, report)
-    checks = report.get('automatic', [])
     # Anything not passed needs a look, a check still waiting for setup included.
     problems = [
         c.get('name', c.get('id', '?')) + (' (still to set up)' if c.get('status') == 'needs_setup' else '')
