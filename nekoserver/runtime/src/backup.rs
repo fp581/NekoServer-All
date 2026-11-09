@@ -2719,6 +2719,17 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
     cfg: &Path,
     operation: F,
 ) -> Result<()> {
+    execute_keeping(data, name, cfg, &gave_way, operation)
+}
+/// `execute_with`, where an error `keeps` accepts leaves the report as it was before the
+/// run instead of recording a failure (every job keeps it for one that gave way).
+fn execute_keeping<F: FnOnce() -> Result<Outcome>>(
+    data: Option<&Path>,
+    name: &str,
+    cfg: &Path,
+    keeps: &dyn Fn(&Error) -> bool,
+    operation: F,
+) -> Result<()> {
     let Some(data) = data else {
         return operation().map(|_| ());
     };
@@ -2734,7 +2745,7 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
     common::atomic_json(&path, &row)?;
     let result = operation();
     row["finished_at"] = json!(common::now());
-    let row = settled_report(row, &old, &result);
+    let row = settled_report(row, &old, &result, keeps);
     // The report lives on the SSD: with the SSD gone it cannot be written, and the job's
     // own error still comes first.
     let reported = (|| {
@@ -2754,10 +2765,15 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
     common::first_error(result, reported).map(|_| ())
 }
 /// The report to save once the job ended: `row` (the running report) settled by how the
-/// job went. A job that gave way (`gave_way`) did not run and did not fail: the report
-/// as it was before the run (`old`) is saved again, so the last real result stays on the
-/// dashboard (Null when there was none).
-fn settled_report(mut row: Value, old: &Value, result: &Result<Outcome>) -> Value {
+/// job went. An error `keeps` accepts (a job that gave way did not run and did not
+/// fail) saves the report as it was before the run (`old`) again, so the last real
+/// result stays on the dashboard (Null when there was none).
+fn settled_report(
+    mut row: Value,
+    old: &Value,
+    result: &Result<Outcome>,
+    keeps: &dyn Fn(&Error) -> bool,
+) -> Value {
     match result {
         Ok(Outcome {
             partial: Some(missing),
@@ -2770,7 +2786,7 @@ fn settled_report(mut row: Value, old: &Value, result: &Result<Outcome>) -> Valu
             row["status"] = json!("pass");
             row["last_success"] = json!(common::now());
         }
-        Err(e) if gave_way(e) => return old.clone(),
+        Err(e) if keeps(e) => return old.clone(),
         Err(e) => {
             row["status"] = json!("fail");
             // Private report: why and at which step, so "inspect logs" is not the only clue.
@@ -2785,6 +2801,12 @@ fn settled_report(mut row: Value, old: &Value, result: &Result<Outcome>) -> Valu
 /// again at its next time.
 fn gave_way(e: &Error) -> bool {
     common::postponed(e) || yielded(e)
+}
+/// The monthly check of the USB drive records only a result of the copies themselves
+/// over the weekly job's report: damage (INTEGRITY) is one, a drive that could not be
+/// copied to this month is not.
+fn monthly_check_keeps(e: &Error) -> bool {
+    gave_way(e) || !e.to_string().starts_with(INTEGRITY)
 }
 /// The weekly USB copy gave way to the monthly run, which copies the drive itself.
 pub fn yielded(e: &Error) -> bool {
@@ -4328,7 +4350,16 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
         Path::new(USB_LOCK),
         std::time::Duration::from_secs(8 * 3600),
     )?;
-    execute_with(Some(&run.data), "external", &run.cfg, || {
+    // The monthly check is a copy of the drive like the weekly one, so what it finds is
+    // the weekly job's result too: a pass, files left out, or damage. A problem the
+    // monthly run tolerates (a full drive, one that would not mount) is said in the
+    // monthly run's own report and leaves the weekly job's last result as it was.
+    let keeps: &dyn Fn(&Error) -> bool = if weekly {
+        &gave_way
+    } else {
+        &monthly_check_keeps
+    };
+    execute_keeping(Some(&run.data), "external", &run.cfg, keeps, || {
         // A monthly run may have started while this waited for the drive (the shared
         // lock was let go after the first check): checked again, now that it is held.
         // Giving way here is no failure either: the report stays as it was.
@@ -7958,7 +7989,7 @@ mod tests {
         let copy = &copy[..copy.find("\n}\n").unwrap()];
         let at = |s: &str| copy.find(s).unwrap_or_else(|| panic!("{s}"));
         assert!(at("Path::new(USB_LOCK)") < at("monthly_admission("));
-        assert!(at("execute_with(") < at("monthly_admission("));
+        assert!(at("execute_keeping(") < at("monthly_admission("));
         // The monthly run waits for a copy at work before it stops anything.
         let lock = root.join("usb.lock");
         let held = common::lock(&lock).unwrap();
@@ -8202,11 +8233,14 @@ mod tests {
         let old = json!({"job":"external","status":"pass","started_at":100.0,"finished_at":160.0,"last_success":160.0});
         let row = running_row("external", 200.0, &old);
         // Gave way: the report says what it said before the run, the pass included.
-        assert_eq!(settled_report(row.clone(), &old, &Err(yielded())), old);
+        assert_eq!(
+            settled_report(row.clone(), &old, &Err(yielded()), &gave_way),
+            old
+        );
         // Never ran before: nothing is kept, and no "running" row stays behind.
-        assert!(settled_report(row.clone(), &Value::Null, &Err(yielded())).is_null());
+        assert!(settled_report(row.clone(), &Value::Null, &Err(yielded()), &gave_way).is_null());
         // Any other error is the failure it always was.
-        let failed = settled_report(row, &old, &Err(Error::new("Drive full")));
+        let failed = settled_report(row, &old, &Err(Error::new("Drive full")), &gave_way);
         assert_eq!(failed["status"], "fail");
         assert_eq!(failed["reason"], "Drive full");
         assert_eq!(failed["last_success"], 160.0);
@@ -8217,5 +8251,39 @@ mod tests {
         assert!(weekly.contains("Err(e) if gave_way(&e) => Err(e)"));
         assert!(include_str!("main.rs").contains("if common::postponed(&e) || backup::yielded(&e)"));
         let _ = fs::remove_dir_all(root);
+    }
+    /// The monthly run tolerates a USB drive it could not check (full, or not mounting),
+    /// but the check wrote that over the weekly job's report as "fail".
+    #[test]
+    fn the_monthly_usb_check_leaves_the_weekly_report_alone_unless_it_finds_damage() {
+        let old = json!({"job":"external","status":"pass","started_at":100.0,"finished_at":160.0,"last_success":160.0});
+        let row = running_row("external", 200.0, &old);
+        let full = || Error::new("Nonempty mount destination refused");
+        // Tolerated by the monthly run: the weekly pass stays.
+        assert_eq!(
+            settled_report(row.clone(), &old, &Err(full()), &monthly_check_keeps),
+            old
+        );
+        // The weekly copy itself still fails on it.
+        assert_eq!(
+            settled_report(row.clone(), &old, &Err(full()), &gave_way)["status"],
+            "fail"
+        );
+        // Damage is the copies' failure, found by either run.
+        let damage = || Error::new(&format!("{INTEGRITY}HDD archive: 2 files"));
+        let failed = settled_report(row.clone(), &old, &Err(damage()), &monthly_check_keeps);
+        assert_eq!(failed["status"], "fail");
+        assert!(failed["reason"].as_str().unwrap().starts_with(INTEGRITY));
+        // A copy that went through is the weekly job's result too.
+        let passed = settled_report(row, &old, &Ok(Outcome::default()), &monthly_check_keeps);
+        assert_eq!(passed["status"], "pass");
+        let source = include_str!("backup.rs");
+        let copy = &source[source.find("fn usb_copy(").unwrap()..];
+        let copy = &copy[..copy.find("\n}\n").unwrap()];
+        let at = |s: &str| copy.find(s).unwrap_or_else(|| panic!("{s}"));
+        assert!(
+            at("if weekly {") < at("&gave_way") && at("&gave_way") < at("&monthly_check_keeps")
+        );
+        assert!(at("&monthly_check_keeps") < at("execute_keeping("));
     }
 }
