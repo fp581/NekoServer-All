@@ -179,6 +179,35 @@ def hold_operation(lock=None, wait=False):
     return held
 
 
+def read_journal(journal, expected_format):
+    """A job's record (journal) as a dict, or None when it is missing, unreadable, not a
+    JSON object or not of `expected_format` (an upgrade's and a drive move's differ)."""
+    try:
+        saved = json.loads(Path(journal).read_text())
+    except (OSError, ValueError):
+        return None
+    return saved if isinstance(saved, dict) and saved.get('format') == expected_format else None
+
+
+def held_lock_reason(locks):
+    """The reason paired with the first of these (lock file, reason) that another program
+    holds right now, or None. A None lock is skipped, and so is a lock file that cannot
+    be opened (its folder is missing, say)."""
+    import fcntl
+
+    for path, reason in locks:
+        if path is None:
+            continue
+        try:
+            with open(path, 'a') as held:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return reason
+        except OSError:
+            continue
+    return None
+
+
 # Every job that changes the apps' versions with the update journal (MAINTENANCE_JOURNAL):
 # the monthly check, its retry and the service that finishes a cut-off one, the weekly
 # app updates and "Update now" on the dashboard (one instance per app; systemctl matches

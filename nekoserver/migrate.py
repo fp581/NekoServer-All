@@ -27,7 +27,6 @@ The old drive is left exactly as it was. A move holds the same lock as a NekoSer
 upgrade from start to end, so the two never overlap."""
 
 import argparse
-import fcntl
 import json
 import os
 import re
@@ -49,8 +48,10 @@ from neko_common import (
     checked_settings,
     default_settings,
     ensure_directory,
+    held_lock_reason,
     hold_operation,
     mount_path,
+    read_journal,
     settings_path,
 )
 
@@ -86,11 +87,7 @@ def run(argv, timeout=None, check=True, capture=True):
 
 
 def read(journal=JOURNAL):
-    try:
-        saved = json.loads(Path(journal).read_text())
-    except (OSError, ValueError):
-        return None
-    return saved if isinstance(saved, dict) and saved.get('format') == FORMAT else None
+    return read_journal(journal, FORMAT)
 
 
 def record(journal=JOURNAL, **fields):
@@ -248,20 +245,12 @@ def nothing_at_work(lock=SETUP_LOCK, recovery=None):
     ):
         if Path(path).exists():
             return what
-    for path, what in (
-        (lock, 'Setup (sudo bash install.sh) is running'),
-        (recovery, 'A backup or an app update is running'),
-    ):
-        if path is None:
-            continue
-        try:
-            with open(path, 'a') as held:
-                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return what
-        except OSError:
-            continue
-    return None
+    return held_lock_reason(
+        [
+            (lock, 'Setup (sudo bash install.sh) is running'),
+            (recovery, 'A backup or an app update is running'),
+        ]
+    )
 
 
 def recovery_lock(config):
