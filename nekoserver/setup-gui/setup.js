@@ -124,11 +124,16 @@
     return $('ask-yesno').querySelectorAll('button');
   }
 
+  /* The ways to answer: off while an answer is on its way, on again for the next question. */
+  function askControls(enabled) {
+    for (const id of ['ask-send', 'ask-page-send', 'ask-page-skip']) $(id).disabled = !enabled;
+    for (const b of askButtons()) b.disabled = !enabled;
+    for (const input of Object.values(pageInputs)) input.disabled = !enabled;
+  }
+
   /* `fields`: the other answers of a page (the backup times), sent with the one asked. */
   async function answer(seq, text, skip = false, fields = null) {
-    for (const id of ['ask-send', 'ask-page-send', 'ask-page-skip']) $(id).disabled = true;
-    for (const b of askButtons()) b.disabled = true;
-    for (const input of Object.values(pageInputs)) input.disabled = true;
+    askControls(false);
     $('ask-note').textContent = skip ? 'Left for now. Setup goes on in a moment…' : 'Sent. Setup goes on in a moment…';
     try {
       let body = { seq, text };
@@ -289,8 +294,7 @@
     input.type = q.secret ? 'password' : 'text';
     input.value = '';
     input.disabled = false;
-    for (const id of ['ask-send', 'ask-page-send', 'ask-page-skip']) $(id).disabled = false;
-    for (const b of askButtons()) b.disabled = false;
+    askControls(true);
     let note = askNote(q, yesno);
     if (page)
       note =
