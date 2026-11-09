@@ -10,6 +10,7 @@ from neko_common import (
     VERSION,
     atomic_json,
     host_timezone,
+    nightly_timer,
     refresh_settings,
     safe_path,
     verify_storage,
@@ -75,10 +76,8 @@ def definitions(config, binary, guard):
             f'ExecStart={binary} app-snapshot --config {guard}\n'
             f'ExecStopPost={resume}\nTimeoutStopSec={RESUME_TIMEOUT}\n'
         ),
-        'nekoserver-app-backup.timer': (
-            '[Unit]\nDescription=NekoServer nightly media application snapshot\n'
-            f'[Timer]\nOnCalendar=*-*-* {time}:00 {host_timezone(config)}\nPersistent=true\n'
-            '[Install]\nWantedBy=timers.target\n'
+        'nekoserver-app-backup.timer': nightly_timer(
+            'NekoServer nightly media application snapshot', time, host_timezone(config), persistent=True
         ),
         'nekoserver-app-resume.service': (
             '[Unit]\nDescription=NekoServer restart applications after interrupted snapshot\n'

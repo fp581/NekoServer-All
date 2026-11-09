@@ -153,6 +153,16 @@ def write_units(units):
         atomic_write(SYSTEMD_UNITS / name, text, 0o644)
 
 
+def nightly_timer(description, time, zone, persistent):
+    """The text of a systemd timer that starts its service every night at `time` (HH:MM)
+    in `zone`. `persistent`: a night missed while the PC was off is caught up at boot."""
+    return (
+        f'[Unit]\nDescription={description}\n'
+        f'[Timer]\nOnCalendar=*-*-* {time}:00 {zone}\nPersistent={"true" if persistent else "false"}\n'
+        '[Install]\nWantedBy=timers.target\n'
+    )
+
+
 # Each job's recovery record (journal) and the service that finishes it, shared with the
 # runtime, which writes them.
 RECOVERY = {job: (Path(r['journal']), r['service']) for job, r in SHARED['recovery'].items()}
