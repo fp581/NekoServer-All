@@ -5240,6 +5240,32 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
     #[test]
+    fn a_damaged_copy_already_on_the_usb_drive_is_copied_over() {
+        // The 0.48.2 mutation pass: every other test starts from a USB drive with no copy
+        // of the run yet, so a copy that went bad on the drive was never checked.
+        let root = scratch("usb-passwords-damaged-copy");
+        let (monthly, usb) = (root.join("backups/monthly"), root.join("usb"));
+        sealed_list(&monthly, "300-1", b"newest archive", None);
+        assert!(copy_newest_secrets(std::slice::from_ref(&monthly), &usb)
+            .unwrap()
+            .is_none());
+        let copied = usb.join(USB_PASSWORDS).join("300-1");
+        let manifest = common::json(&copied.join("manifest.json"), 2_000_000);
+        let (key, file) = SECRETS_FILES[0];
+        // The copy on the USB drive goes bad (the HDD's list is still sound).
+        write(&copied.join(file), b"damaged on the drive");
+        assert!(copy_newest_secrets(std::slice::from_ref(&monthly), &usb)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            common::digest(&copied.join(file)).unwrap(),
+            manifest["sha256"][key].as_str().unwrap(),
+            "the damaged copy on the USB drive is copied over"
+        );
+        assert_eq!(fs::read(copied.join(file)).unwrap(), b"newest archive");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
     fn a_list_named_in_seconds_and_one_in_microseconds_are_compared_as_times() {
         // The 0.46.0 review: setup's lists were named in seconds, the monthly snapshots in
         // microseconds, so an old monthly list outranked setup's newer one (and the USB
