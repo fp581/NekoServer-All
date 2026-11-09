@@ -254,6 +254,8 @@ def setup_problem(setup, project, settings, account, log_file):
     import installer
 
     log_file = Path(log_file)
+    if not is_inside(log_file.parent, log_file):
+        return f'its setup did not run: the log {log_file} is a link to a file outside {log_file.parent}'
     written = log_file.stat().st_size if log_file.is_file() else 0
     try:
         code = setup(project, settings, account, log_file)
@@ -290,6 +292,24 @@ def log_since(log_file, written):
             return log.read().decode(errors='replace')
     except OSError:
         return ''
+
+
+def upgrade_log(work, tag):
+    """The upgrade's log in `work` (installer/upgrades): <tag>.log for a release tag,
+    resume.log for anything else (at a start the tag is read back from the record, a
+    file, so it is checked as one), and never a file outside `work` (a link put there)."""
+    name = str(tag)
+    if not TAG.fullmatch(name):
+        name = 'resume'
+    log_file = Path(work) / (name + '.log')
+    if not is_inside(work, log_file):
+        raise RuntimeError(f'The upgrade log {log_file} is a link to a file outside {work}')
+    return log_file
+
+
+def is_inside(folder, path):
+    """Whether `path` lies inside `folder` once every link is followed."""
+    return os.path.realpath(path).startswith(os.path.realpath(folder) + os.sep)
 
 
 def works_on(config, tag, before, version_now, running_now):
@@ -534,7 +554,7 @@ def upgrade_held(
         return 2
     account = owner(config)
     before = steps_done(config)
-    log_file = work / (tag + '.log')
+    log_file = upgrade_log(work, tag)
     record(
         'downloading',
         journal,
@@ -707,7 +727,7 @@ def resume_held(settings, out, setup, journal):
         return 0
     previous = kept_release(config, saved.get('previous', ''))
     out('An upgrade was cut off before it was checked; putting ' + previous.name + ' back')
-    log_file = ssd(config) / UPGRADES / ((saved.get('to') or 'resume') + '.log')
+    log_file = upgrade_log(ssd(config) / UPGRADES, saved.get('to') or 'resume')
     before = [step for step in saved.get('before') or [] if isinstance(step, str)]
     return go_back(previous, settings, owner(config), log_file, out, setup, journal, before)
 

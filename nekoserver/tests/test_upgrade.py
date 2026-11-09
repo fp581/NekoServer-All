@@ -705,6 +705,31 @@ class UpgradeTests(unittest.TestCase):
         )
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
 
+    def test_the_log_is_named_by_a_release_tag_only_and_stays_in_the_upgrades_folder(self):
+        """The record's `to` is read back from a file at a start: only a release tag names
+        the log, anything else gets resume.log, and a link at the log's name to a file
+        outside the folder is refused (never written to or read through)."""
+        work = self.data / upgrade.UPGRADES
+        work.mkdir()
+        self.assertEqual(upgrade.upgrade_log(work, NEWER), work / (NEWER + '.log'))
+        for odd in ('../../etc/passwd', 'resume', '', None, 'v1.2', 'v1.2.3.log'):
+            self.assertEqual(upgrade.upgrade_log(work, odd), work / 'resume.log')
+        upgrade.record('installing', self.journal, to='../../etc/passwd', previous=str(self.previous), before=[])
+        logs = []
+
+        def setup(project, settings, account, log_file):
+            logs.append(Path(log_file))
+            return 0
+
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, setup, self.journal), 1)
+        self.assertEqual(logs, [work / 'resume.log'])
+        (work / 'resume.log').symlink_to(self.dir / 'elsewhere.log')
+        with self.assertRaises(RuntimeError):
+            upgrade.upgrade_log(work, 'resume')
+        found = upgrade.setup_problem(setup, self.previous, self.settings, 'neko', work / 'resume.log')
+        self.assertIn('a link to a file outside', found)
+        self.assertEqual(len(logs), 1)  # setup was not run
+
     def test_a_release_installed_by_hand_over_a_failed_upgrade_is_not_put_back(self):
         """Seen on the rig: an upgrade from 0.46.2 failed and could not go back, 0.46.3 was
         then set up by hand, and at the next start its own resume service put 0.46.2 back
