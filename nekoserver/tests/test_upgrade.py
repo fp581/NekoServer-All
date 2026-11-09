@@ -19,6 +19,7 @@ import upgrade  # noqa: E402
 from neko_common import VERSION  # noqa: E402
 
 NEWER = 'v{}.{}.{}Beta'.format(*[int(n) + (1 if i == 1 else 0) for i, n in enumerate(VERSION.split('.'))])
+FINISHED = 'Finished: 2 of 3 steps done; 1 failed, waiting or unfinished'  # the installer's last line
 
 
 def release(tag, version=None, extra=None):
@@ -84,14 +85,23 @@ class UpgradeTests(unittest.TestCase):
         )
 
     def setup(self, *codes):
-        """Stand-in setup runs, answering with `codes` in turn (the new release, then the old)."""
+        """Stand-in setup runs, answering with `codes` in turn (the new release, then the
+        old), each ending its log as the installer does (upgrade.setup_problem reads it)."""
         answers = iter(codes)
 
         def run(project, settings, account, log_file):
             self.ran.append((Path(project).name, account, self.journal_phase()))
+            self.installer_wrote(log_file, FINISHED)
             return next(answers)
 
         return run
+
+    @staticmethod
+    def installer_wrote(log_file, *lines):
+        """Lines in setup's log as the installer writes them (a time stamp first)."""
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, 'a') as log:
+            log.writelines(f'[2026-01-01T00:00:00+00:00] {line}\n' for line in lines)
 
     def journal_phase(self):
         return json.loads(self.journal.read_text())['phase'] if self.journal.exists() else None
@@ -333,6 +343,63 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue(self.journal.exists())
         self.assertIn('sudo bash install.sh  in ' + str(self.previous), self.said[-1])
 
+    def test_a_failed_step_and_a_refusal_by_install_sh_are_failed_setups(self):
+        """The review of 0.48.0: exit code 1 meant a step that only waits for you, a step
+        that failed (releases before 0.48.1) and install.sh's own refusal before the
+        installer ran (the setup lock, its preflight), and the upgrade took all three for
+        the first. The log says which: the installer's FAILED lines, and its Finished
+        line, which a refusal never reaches."""
+        import installer
+
+        log_file = self.data / 'installer/upgrades/test.log'
+        log_file.parent.mkdir()
+
+        def problem(code, *lines):
+            def run(project, settings, account, log):
+                with open(log, 'a') as written:
+                    written.write('\n'.join(lines) + '\n')
+                return code
+
+            return upgrade.setup_problem(run, self.previous, self.settings, 'neko', log_file)
+
+        stamped = '[2026-01-01T00:00:00+00:00] '
+        failed_photos = stamped + 'FAILED photos: the compose file is wrong'
+        self.assertIsNone(problem(0, stamped + FINISHED))
+        self.assertIsNone(problem(installer.WAITING, stamped + 'NEEDS SETUP tailscale: Sign in', stamped + FINISHED))
+        found = problem(installer.STEP_FAILED, failed_photos, stamped + FINISHED)
+        self.assertIn('FAILED photos: the compose file is wrong', found)
+        self.assertTrue(found.startswith('its setup ended with a failed step'), found)
+        # A release before 0.48.1 ended with 1 for a failed step as well: its log says so.
+        self.assertIn('FAILED photos', problem(1, failed_photos, stamped + FINISHED))
+        # install.sh's own refusal: no installer line at all; its last words are the reason.
+        refused = 'Another NekoServer setup is running. Let it finish, then run  sudo bash install.sh  again.'
+        found = problem(1, refused)
+        self.assertIn(refused, found)
+        self.assertTrue(found.startswith('its setup stopped before any step ran'), found)
+        restart = 'Restart the PC now (sudo reboot), then run  sudo bash install.sh  again.'
+        self.assertIn('exit code 3', problem(3, restart))
+        # Only what this run wrote counts: the failed step above belongs to an earlier run.
+        self.assertIsNone(problem(installer.WAITING, stamped + FINISHED))
+
+    def test_a_new_step_that_failed_puts_the_release_you_had_back(self):
+        """The check looks only at the steps done before the upgrade, so a step new in the
+        release that failed was never seen: the upgrade was called installed and checked."""
+        import installer
+
+        answers = iter([(installer.STEP_FAILED, 'FAILED shows: the image could not be pulled'), (0,)])
+
+        def run(project, settings, account, log_file):
+            code, *lines = next(answers)
+            self.installer_wrote(log_file, *lines, FINISHED)
+            self.ran.append(Path(project).name)
+            return code
+
+        self.assertEqual(self.upgrade(run), 1)
+        self.assertEqual(self.ran, ['nekoserver', 'v' + VERSION])
+        self.assertIn('FAILED shows: the image could not be pulled', ' '.join(self.said))
+        self.assertEqual(self.verified, [('v' + VERSION, ['photos', 'storage'])])  # only the way back was checked
+        self.assertFalse(self.journal.exists())
+
     def test_the_old_release_guard_lets_the_way_back_run_its_setup(self):
         """The review of 0.47.9: an upgrade that wrote its unit files and then failed left
         the services pointing at the newer runtime, so the previous release's folder looked
@@ -563,7 +630,7 @@ class UpgradeTests(unittest.TestCase):
         self.assertIn('nekoserver-app-backup.service', behind)
 
     def test_putting_the_release_back_is_checked_before_it_is_called_done(self):
-        # Its setup ends with 1 (a step failed, or one only waits for you): the check decides.
+        # Its setup ends with 1 and its log says a step only waits for you: the check decides.
         self.back_problem = 'these steps worked before and do not now: photos'
         self.assertEqual(self.upgrade(self.setup(2, 1)), 2)
         self.assertTrue(self.journal.exists())  # app updates and the monthly check keep waiting
@@ -654,6 +721,48 @@ class UpgradeTests(unittest.TestCase):
         self.back_problem = 'the dashboard does not answer'
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 2)
         self.assertEqual(self.ran[-1][0], 'v0.1.0')
+
+    def hidden_by_a_cut_off_way_back(self, linked):
+        """What a way back to an older release leaves when it is cut off while the older
+        setup is still in its preamble: this release's runtime copy under its hidden name,
+        the link at its own name (or nothing there: cut between the rename and the link),
+        and the record in phase going_back. Returns the copy's own path."""
+        older = self.data / 'installer/releases/v0.1.0'
+        older.mkdir()
+        runtime = self.data / 'installer/runtime'
+        copy, aside = runtime / ('v' + VERSION), runtime / ('.v' + VERSION + upgrade.HIDDEN)
+        aside.mkdir(parents=True)
+        (aside / 'nekoserver-runtime').write_text('the runtime')
+        if linked:
+            copy.symlink_to(aside.name)
+        upgrade.record('going_back', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        return copy
+
+    def assert_own_name_back(self, copy):
+        self.assertFalse(self.journal.exists())
+        self.assertTrue(copy.is_dir() and not copy.is_symlink())
+        self.assertEqual((copy / 'nekoserver-runtime').read_text(), 'the runtime')
+        self.assertEqual([p.name for p in copy.parent.iterdir()], [copy.name])  # no link, no hidden copy left
+
+    def test_a_copy_hidden_by_a_cut_off_way_back_gets_its_name_back_when_the_record_is_closed(self):
+        """The review of 0.48.0: the way back hides this release's runtime copy while the
+        older setup runs (newer_runtimes_hidden), and only its own end gave the name back.
+        Cut off before the older setup marked a step running (a power cut, systemctl stop),
+        the next start found the server whole and closed the record (settled), so the link
+        stayed at the copy's name for good: the guard could not see this release, and every
+        later setup of it refused the link ("Refusing symlink path")."""
+        copy = self.hidden_by_a_cut_off_way_back(linked=True)
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
+        self.assertEqual(self.ran, [])
+        self.assert_own_name_back(copy)
+
+    def test_a_copy_left_with_nothing_at_its_name_gets_it_back_after_setup_by_hand(self):
+        """Cut between the rename and the link: nothing is at the copy's name. A setup run
+        by hand that closes the record (settle_after_setup) gives it back too."""
+        copy = self.hidden_by_a_cut_off_way_back(linked=False)
+        config = json.loads(self.settings.read_text())
+        self.assertTrue(upgrade.settle_after_setup(config, self.said.append, self.journal))
+        self.assert_own_name_back(copy)
 
     def test_setup_run_by_hand_closes_the_record_of_an_upgrade_that_did_not_finish(self):
         """Seen on the rig: the record stayed after the setup the upgrade itself asked for,

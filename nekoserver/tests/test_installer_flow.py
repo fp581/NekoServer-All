@@ -121,6 +121,21 @@ class InstallerFlowTests(unittest.TestCase):
             self.assertEqual(installer.main(['--recover', '--config', str(self.config)]), 130)
         self.assertIn('sudo bash install.sh --recover', printed[-1])
 
+    def test_the_exit_code_tells_a_failed_step_from_one_that_waits_for_you(self):
+        """The upgrade reads it (upgrade.setup_problem): until 0.48.1 both ended with 1, so
+        a step that failed passed for one that only waits for you."""
+        (self.root / 'modules' / 'breaker.py').write_text(
+            'DEPENDENCIES = []\ndef run(ctx):\n    raise RuntimeError("the image could not be pulled")\n'
+        )
+        (self.root / 'modules' / 'waiter.py').write_text(
+            "DEPENDENCIES = []\ndef run(ctx):\n    return {'status': 'needs_setup', 'reason': 'Sign in first'}\n"
+        )
+        with mock.patch('config_checks.validate'), mock.patch('builtins.print'):
+            self.assertEqual(installer._execute(self.args(module='waiter'), self.root), installer.WAITING)
+            self.assertEqual(installer._execute(self.args(module='breaker'), self.root), installer.STEP_FAILED)
+        self.assertEqual(installer.WAITING, 1)  # as before, so nothing that reads a waiting run changes
+        self.assertNotIn(installer.STEP_FAILED, (0, 1, 2, 3, 4, 130))  # install.sh's own codes, and Ctrl+C
+
     def test_a_drive_under_home_is_refused_before_anything_is_installed(self):
         import neko_common
 
