@@ -550,6 +550,36 @@ class SetupQuestionTests(unittest.TestCase):
         self.assertIn('  Playback test: done', printed)
         self.assertFalse(any('22:00' in line for line in printed))
 
+    def test_a_monthly_time_no_longer_at_night_is_offered_the_latest_time_that_is(self):
+        # maintenance.night_end_hour lowered to 2 since the times were chosen: Enter, Ctrl+D
+        # or the window's Skip kept 02:30 unchecked, and the maintenance step refused it.
+        import setup_progress
+
+        self.assertEqual(guided_setup.monthly_offered('02:30', 2), '01:30')
+        self.assertEqual(guided_setup.monthly_offered('02:30', 6), '02:30')
+        self.assertEqual(guided_setup.monthly_offered('05:45', 1), '00:45')
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times']), maintenance={'night_end_hour': 2}))
+        asked = []
+
+        def prompt(question):
+            asked.append(question)
+            if question.startswith('At what time should the monthly'):
+                self.assertEqual(setup_progress.page_shown()['fields']['monthly'], '01:30', 'the page shows it too')
+            return ''
+
+        guided_setup.choose_backup_times(ctx, prompt=prompt, output=lambda *_: None)
+        self.assertEqual(
+            asked[3],
+            'At what time should the monthly check start? (HH:MM before 02:00, Enter for 01:30; '
+            '02:30 is not before 02:00): ',
+        )
+        self.assertEqual(ctx.config['backup_times']['monthly'], '01:30')
+        self.assertEqual(maintenance.options(ctx.config)['time'], '01:30')
+        # The window's Skip for now keeps the time offered, not the refused one.
+        ctx = Ctx(self.config(backup_times=dict(settings()['backup_times']), maintenance={'night_end_hour': 2}))
+        guided_setup.choose_backup_times(ctx, prompt=self.window_prompt('', skip=True), output=lambda *_: None)
+        self.assertEqual(ctx.config['backup_times']['monthly'], '01:30')
+
     def test_nobody_at_the_terminal_changes_nothing(self):
         self.interactive.stop()
         ctx = Ctx(self.config(), apply=True)

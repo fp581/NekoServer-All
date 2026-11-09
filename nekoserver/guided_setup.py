@@ -441,12 +441,13 @@ def choose_backup_times(ctx, prompt=None, output=None):
         return
     now = job_times(ctx.config)
     night_end = ctx.config.get('maintenance', {}).get('night_end_hour', 6)
-    shown = {'daily': now['app'], 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
+    own = {'daily': now['app'], 'weekly_day': now['usb_day'], 'weekly': now['usb'], 'monthly': now['monthly']}
+    shown = {**own, 'monthly': monthly_offered(now['monthly'], night_end)}
     with setup_progress.page(BACKUP_TIMES, shown, weekdays=list(WEEKDAYS), night_end=night_end):
         chosen = ask_backup_times(ctx, now, night_end, prompt, output)
     # Settings from before 0.48.0 (no "backup_times" yet) gave each job a time of its own.
     moved = jobs_moved(ctx.config, now, chosen) if backup_times(ctx.config) is None else []
-    if moved and chosen == shown:
+    if moved and chosen == own:
         # Every answer kept the time shown, yet saved as "backup_times" they would move
         # the music, settings or database copy to its fixed distance from the daily and
         # weekly times (job_times): the server keeps the times it has.
@@ -500,6 +501,16 @@ def job_said(times, job):
     return times[job]
 
 
+def monthly_offered(current, night_end):
+    """The monthly time to offer as the default: the one the server has, unless it is no
+    longer before `night_end` (maintenance.night_end_hour lowered since), then the latest
+    time with the same minutes that is, since Enter must never keep a time the maintenance
+    step refuses (modules/maintenance.py options)."""
+    if int(current[:2]) < night_end:
+        return current
+    return f'{max(night_end - 1, 0):02d}:{current[3:]}'
+
+
 def ask_backup_times(ctx, now, night_end, prompt, output):
     """The three questions in the terminal (the window answers through ask_on_page);
     the chosen "backup_times" settings."""
@@ -550,10 +561,12 @@ def ask_backup_times(ctx, now, night_end, prompt, output):
         'Every month, on the 1st: the check of every backup copy, a snapshot of every app and a restore '
         f'test; the weekly app updates start at this time too. It must start at night, before {night_end:02d}:00.'
     )
+    offered = monthly_offered(now['monthly'], night_end)
+    why = '' if offered == now['monthly'] else f'; {now["monthly"]} is not before {night_end:02d}:00'
     monthly = ask_on_page(
         'monthly',
-        f'At what time should the monthly check start? (HH:MM before {night_end:02d}:00, Enter for {now["monthly"]}): ',
-        now['monthly'],
+        f'At what time should the monthly check start? (HH:MM before {night_end:02d}:00, Enter for {offered}{why}): ',
+        offered,
         lambda answer: valid_time(answer) and int(answer[:2]) < night_end,
         f'Type a time of day as HH:MM before {night_end:02d}:00, for example 02:30.',
         prompt,
