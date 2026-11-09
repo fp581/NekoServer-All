@@ -107,8 +107,8 @@ and finishes or rolls back; the journal is gone when it ends. Evidence: the repo
 journal before and after, `docker image ls`, the app's version page.
 
 **J08 Upgrade NekoServer from an older installation.** A fresh 0.47.9 install, then the
-dashboard's upgrade to the release under test. Expected: the older release's copy stays
-at `/srv/nekoserver/installer/releases/v0.47.9`; the upgrade runs the profile the server
+dashboard's upgrade to the release under test. Expected: the older release's kept copy stays
+in its own folder under `/srv/nekoserver/installer/releases/`; the upgrade runs the profile the server
 was set up with; every installed service runs the new release; the dashboard answers
 with the new version; the settings keep each job's own time (a server from before 0.48.0
 has no `backup_times`); `/etc/nekoserver-backups/upgrade.json` is removed at the end.
