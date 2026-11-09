@@ -2183,8 +2183,9 @@ fn nextcloud_dump(cfg: &Path, data: &Path, media: &Path) -> Result<String> {
 /// Put the newest Immich database copy on the USB drive with its note, so the USB alone
 /// can rebuild albums, faces and users as well as the photos. Returns what makes the
 /// USB copy incomplete (no copy, a stale one, one without a note), or None. A copy
-/// whose checksum does not match its note is never copied. Only the version is
-/// recorded, never the database password.
+/// whose checksum does not match its note is never copied: the newest one that still
+/// matches goes instead, and the damaged one is named. Only the version is recorded,
+/// never the database password.
 pub fn copy_newest_dump(hdd_dumps: &Path, usb: &Path) -> Result<Option<String>> {
     copy_newest_of(&IMMICH_DUMPS, hdd_dumps, usb)
 }
@@ -2198,16 +2199,13 @@ fn copy_newest_of(kind: &DumpKind, hdd_dumps: &Path, usb: &Path) -> Result<Optio
         .map(|e| e.file_name().to_string_lossy().to_string())
         .filter(|n| is_dump(kind.app, n))
         .collect();
-    let (newest, future) = newest_believable(dumps, now);
-    let Some(name) = newest else {
+    let (believable, future) = believable_dumps(dumps, now);
+    if believable.is_empty() {
         return Ok(Some(format!(
             "no {label} database copy was found, so the USB drive cannot rebuild {}",
             kind.holds
         )));
-    };
-    let source = hdd_dumps.join(&name);
-    let note = common::json(&dump_note(&source), 64000);
-    let expected = note["sha256"].as_str().map(str::to_string);
+    }
     let mut problems = vec![];
     if !future.is_empty() {
         // Kept on the HDD (and never pruned): made while the clock was wrong, so their
@@ -2218,17 +2216,50 @@ fn copy_newest_of(kind: &DumpKind, hdd_dumps: &Path, usb: &Path) -> Result<Optio
             future.join(", ")
         ));
     }
-    match &expected {
-        Some(sum) if common::digest(&source)? != *sum => {
-            return Ok(Some(format!(
-                "the newest {label} database copy ({name}) is damaged (checksum mismatch) and was not copied"
-            )));
+    // The newest copy that still matches the checksum in its note goes to the USB drive.
+    // A damaged newer one is passed over and named, so a person can look at it; with no
+    // sound copy left, nothing is copied and the damage is reported.
+    let mut damaged = vec![];
+    let mut sound = None;
+    for name in believable {
+        let source = hdd_dumps.join(&name);
+        let note = common::json(&dump_note(&source), 64000);
+        let expected = note["sha256"].as_str().map(str::to_string);
+        match &expected {
+            Some(sum) if common::digest(&source)? != *sum => damaged.push(name),
+            _ => {
+                sound = Some((name, source, note, expected));
+                break;
+            }
         }
-        Some(_) => {}
-        None => problems.push(format!(
+    }
+    let Some((name, source, note, expected)) = sound else {
+        let older = if damaged.len() == 1 {
+            String::new()
+        } else {
+            format!(
+                "; the older copies are damaged too ({})",
+                damaged[1..].join(", ")
+            )
+        };
+        return Ok(Some(format!(
+            "the newest {label} database copy ({}) is damaged (checksum mismatch) and was not copied{older}",
+            damaged[0]
+        )));
+    };
+    if !damaged.is_empty() {
+        problems.push(format!(
+            "the newest {label} database {} ({}) failed the checksum check and {} skipped; the older copy {name} was copied instead",
+            if damaged.len() == 1 { "copy" } else { "copies" },
+            damaged.join(", "),
+            if damaged.len() == 1 { "was" } else { "were" }
+        ));
+    }
+    if expected.is_none() {
+        problems.push(format!(
             "the newest {label} database copy ({name}) {}",
             kind.no_note
-        )),
+        ));
     }
     let age_days = (now - dump_time(&name)) / 86400.0;
     if age_days < -1.0 {
@@ -2284,16 +2315,17 @@ fn dump_time(name: &str) -> f64 {
 fn dated_in_future(name: &str, now: f64) -> bool {
     dump_time(name) > now + 86400.0
 }
-/// (the newest copy with a believable date, the ones dated in the future). With only
-/// future-dated copies, the newest of them, flagged by its date.
-fn newest_believable(mut dumps: Vec<String>, now: f64) -> (Option<String>, Vec<String>) {
+/// (the copies with a believable date, newest first; the ones dated in the future). With
+/// only future-dated copies, the newest of them alone, flagged by its date.
+fn believable_dumps(mut dumps: Vec<String>, now: f64) -> (Vec<String>, Vec<String>) {
     dumps.sort();
-    let (future, fine): (Vec<String>, Vec<String>) =
+    let (future, mut fine): (Vec<String>, Vec<String>) =
         dumps.into_iter().partition(|n| dated_in_future(n, now));
-    match fine.last() {
-        Some(newest) => (Some(newest.clone()), future),
-        None => (future.last().cloned(), vec![]),
+    if fine.is_empty() {
+        return (future.last().cloned().into_iter().collect(), vec![]);
     }
+    fine.reverse();
+    (fine, future)
 }
 /// `<app>-<UTC stamp>.sql`: a weekly database copy of that app (Immich, Nextcloud; the
 /// stamp sorts by time).
@@ -2372,20 +2404,26 @@ fn keep_newest_lists(folder: &Path, keep: usize) -> Result<()> {
     }
     Ok(())
 }
-/// The newest monthly snapshot on the HDD with an encrypted password list (the three
-/// files there, their checksums in its manifest), with that manifest.
-fn newest_sealed_snapshot(monthly: &Path) -> Option<(PathBuf, Value)> {
+/// The monthly snapshots on the HDD with an encrypted password list (the three files
+/// there, their checksums in its manifest), each with its age and manifest, oldest first.
+fn sealed_snapshots(monthly: &Path) -> Vec<(common::AgeKey, PathBuf, Value)> {
     snapshot_folders(monthly)
         .into_iter()
-        .rev()
-        .find_map(|(_, path)| {
+        .filter_map(|(age, path)| {
             let manifest = common::json(&path.join("manifest.json"), 2_000_000);
             let sealed = manifest["format"] == "neko-maintenance-v1"
                 && SECRETS_FILES.iter().all(|(key, file)| {
                     manifest["sha256"][key].is_string() && path.join(file).is_file()
                 });
-            sealed.then_some((path, manifest))
+            sealed.then_some((age, path, manifest))
         })
+        .collect()
+}
+/// The newest snapshot in `monthly` with an encrypted password list, with its manifest.
+fn newest_sealed_snapshot(monthly: &Path) -> Option<(PathBuf, Value)> {
+    sealed_snapshots(monthly)
+        .pop()
+        .map(|(_, path, manifest)| (path, manifest))
 }
 /// Each file of the password list in `folder` matches its checksum in `manifest`.
 fn intact(folder: &Path, manifest: &Value) -> bool {
@@ -2401,30 +2439,63 @@ const PASSWORD_LISTS: &str = "backups/password-lists";
 /// Said when the HDD has no password list yet: the week's USB copy is then incomplete.
 const NO_PASSWORD_LIST: &str = "the HDD holds no password list yet, so the USB drive has no copy of the app passwords: setup makes one once the backup password is set (run  sudo bash install.sh  again)";
 /// The password list to the USB drive: the newest list in `sources` (the monthly
-/// snapshots, the lists setup made), its files each checked against the manifest's
-/// checksum on the HDD and again once copied, into `passwords/<run>/` with the manifest;
-/// the newest USB_PASSWORD_LISTS runs are kept there. No list yet, or a damaged one on
-/// the HDD, is said, in words, for the report (the copy is incomplete).
+/// snapshots, the lists setup made) whose files each match the manifest's checksum on the
+/// HDD, checked again once copied, into `passwords/<run>/` with the manifest; the newest
+/// USB_PASSWORD_LISTS runs are kept there. No list yet, or a damaged one on the HDD (a
+/// newer one passed over, or none sound), is said, in words, for the report (the copy is
+/// incomplete).
 fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>> {
-    let newest = sources
+    let mut lists: Vec<(common::AgeKey, PathBuf, Value)> = sources
         .iter()
-        .filter_map(|folder| newest_sealed_snapshot(folder))
-        .max_by_key(|(path, _)| list_age(&path.file_name().unwrap_or_default().to_string_lossy()));
-    let Some((source, manifest)) = newest else {
+        .flat_map(|folder| sealed_snapshots(folder))
+        .collect();
+    lists.sort_by_key(|list| std::cmp::Reverse(list.0)); // newest first
+    if lists.is_empty() {
         println!("USB: {NO_PASSWORD_LIST}");
         return Ok(Some(NO_PASSWORD_LIST.to_string()));
-    };
-    let run = source
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let expected = |key: &str| manifest["sha256"][key].as_str().unwrap_or("").to_string();
-    if !intact(&source, &manifest) {
-        return Ok(Some(format!(
-            "the newest password list on the HDD ({run}) is damaged (a file does not match its checksum) and was not copied to the USB drive; run  sudo bash install.sh  to make a new one"
-        )));
     }
+    let run_of = |path: &Path| {
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    };
+    // The newest list whose files still match their checksums is copied. A damaged newer
+    // one is passed over and named, so a person can look at it; with no sound list left,
+    // nothing is copied and the damage is reported.
+    let mut damaged = vec![];
+    let mut sound = None;
+    for (_, path, manifest) in lists {
+        if intact(&path, &manifest) {
+            sound = Some((path, manifest));
+            break;
+        }
+        damaged.push(run_of(&path));
+    }
+    let Some((source, manifest)) = sound else {
+        let older = if damaged.len() == 1 {
+            String::new()
+        } else {
+            format!(
+                "; the older lists are damaged too ({})",
+                damaged[1..].join(", ")
+            )
+        };
+        return Ok(Some(format!(
+            "the newest password list on the HDD ({}) is damaged (a file does not match its checksum) and was not copied to the USB drive{older}; run  sudo bash install.sh  to make a new one",
+            damaged[0]
+        )));
+    };
+    let run = run_of(&source);
+    let expected = |key: &str| manifest["sha256"][key].as_str().unwrap_or("").to_string();
+    let skipped = (!damaged.is_empty()).then(|| {
+        format!(
+            "the newest password {} on the HDD ({}) failed the checksum check and {} skipped; the older list {run} was copied to the USB drive instead; run  sudo bash install.sh  to make a new one",
+            if damaged.len() == 1 { "list" } else { "lists" },
+            damaged.join(", "),
+            if damaged.len() == 1 { "was" } else { "were" }
+        )
+    });
     let folder = usb.join(USB_PASSWORDS);
     common::directory(&folder, 0o700)?;
     let target = folder.join(&run);
@@ -2449,7 +2520,7 @@ fn copy_newest_secrets(sources: &[PathBuf], usb: &Path) -> Result<Option<String>
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| run.clone());
     println!("USB: password list of {date} (encrypted; the recovery menu's \"App password list\" opens it with the backup password)");
-    Ok(None)
+    Ok(skipped)
 }
 /// Setup's own password list on the HDD, sealed for the backup key like the monthly
 /// snapshot's: made after each setup run (where passwords are made and changed), so the
@@ -4794,7 +4865,7 @@ mod tests {
     fn a_dump_dated_in_the_future_never_hides_the_fresh_one() {
         let now = 1_792_900_000.0; // 2026-10-25
         let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let (newest, future) = newest_believable(
+        let (believable, future) = believable_dumps(
             names(&[
                 "immich-20261018T021500Z.sql",
                 "immich-20300101T021500Z.sql",
@@ -4802,11 +4873,14 @@ mod tests {
             ]),
             now,
         );
-        assert_eq!(newest.as_deref(), Some("immich-20261025T021500Z.sql"));
+        assert_eq!(
+            believable,
+            ["immich-20261025T021500Z.sql", "immich-20261018T021500Z.sql"]
+        );
         assert_eq!(future, ["immich-20300101T021500Z.sql"]);
         // Only a future-dated one: it is used, and flagged by its date.
-        let (newest, future) = newest_believable(names(&["immich-20300101T021500Z.sql"]), now);
-        assert_eq!(newest.as_deref(), Some("immich-20300101T021500Z.sql"));
+        let (believable, future) = believable_dumps(names(&["immich-20300101T021500Z.sql"]), now);
+        assert_eq!(believable, ["immich-20300101T021500Z.sql"]);
         assert!(future.is_empty());
         // Copied end to end: the fresh dump reaches the USB drive, the 2030 one is named.
         let root = scratch("future-dump");
@@ -5042,24 +5116,30 @@ mod tests {
         );
         let _ = fs::remove_dir_all(root);
     }
+    /// A monthly snapshot `run` on the HDD with a sealed password list whose archive
+    /// holds `archive`; `recorded` stands in for the archive's checksum in the manifest
+    /// (a damaged list).
+    fn sealed_list(monthly: &Path, run: &str, archive: &[u8], recorded: Option<&str>) {
+        let folder = monthly.join(run);
+        write(&folder.join(SECRETS_FILES[0].1), archive);
+        write(&folder.join(SECRETS_FILES[1].1), b"key");
+        write(&folder.join(SECRETS_FILES[2].1), b"cert");
+        let sum = |file: &str| common::digest(&folder.join(file)).unwrap();
+        let manifest = json!({"format":"neko-maintenance-v1","sha256":{
+            "secrets": recorded.map(str::to_string).unwrap_or_else(|| sum(SECRETS_FILES[0].1)),
+            "secrets_key": sum(SECRETS_FILES[1].1), "secrets_cert": sum(SECRETS_FILES[2].1)}});
+        write(
+            &folder.join("manifest.json"),
+            manifest.to_string().as_bytes(),
+        );
+    }
     #[test]
     fn the_password_list_goes_to_the_usb_drive_from_the_newest_sealed_snapshot() {
         let root = scratch("usb-passwords");
         let (monthly, usb) = (root.join("backups/monthly"), root.join("usb"));
         // A snapshot made without a backup key (no list), one damaged, and the newest.
-        let sealed = |run: &str, archive: &[u8], key: &[u8], recorded: Option<&str>| {
-            let folder = monthly.join(run);
-            write(&folder.join(SECRETS_FILES[0].1), archive);
-            write(&folder.join(SECRETS_FILES[1].1), key);
-            write(&folder.join(SECRETS_FILES[2].1), b"cert");
-            let sum = |file: &str| common::digest(&folder.join(file)).unwrap();
-            let manifest = json!({"format":"neko-maintenance-v1","sha256":{
-                "secrets": recorded.map(str::to_string).unwrap_or_else(|| sum(SECRETS_FILES[0].1)),
-                "secrets_key": sum(SECRETS_FILES[1].1), "secrets_cert": sum(SECRETS_FILES[2].1)}});
-            write(
-                &folder.join("manifest.json"),
-                manifest.to_string().as_bytes(),
-            );
+        let sealed = |run: &str, archive: &[u8], recorded: Option<&str>| {
+            sealed_list(&monthly, run, archive, recorded)
         };
         write(
             &monthly.join("100-1/manifest.json"),
@@ -5068,8 +5148,8 @@ mod tests {
         // Before any list (the first weeks): said, so the copy is incomplete.
         let none = copy_newest_secrets(std::slice::from_ref(&monthly), &usb).unwrap();
         assert_eq!(none.as_deref(), Some(NO_PASSWORD_LIST));
-        sealed("200-1", b"older archive", b"key", None);
-        sealed("300-1", b"newest archive", b"key", None);
+        sealed("200-1", b"older archive", None);
+        sealed("300-1", b"newest archive", None);
         assert!(copy_newest_secrets(std::slice::from_ref(&monthly), &usb)
             .unwrap()
             .is_none());
@@ -5083,16 +5163,19 @@ mod tests {
             !usb.join(USB_PASSWORDS).join("200-1").exists(),
             "only the newest list is copied"
         );
-        // A damaged newest list is said and not copied; the one already there stays.
-        sealed("400-1", b"changed", b"key", Some("0".repeat(64).as_str()));
+        // A damaged newest list is passed over and named; the newest sound one (300-1,
+        // already there) is the USB drive's copy.
+        sealed("400-1", b"changed", Some("0".repeat(64).as_str()));
         let said = copy_newest_secrets(std::slice::from_ref(&monthly), &usb)
             .unwrap()
             .unwrap();
-        assert!(said.contains("400-1") && said.contains("damaged"), "{said}");
+        assert!(said.contains("(400-1) failed the checksum check"), "{said}");
+        assert!(said.contains("the older list 300-1 was copied"), "{said}");
         assert!(copied.join(SECRETS_FILES[0].1).is_file());
+        assert!(!usb.join(USB_PASSWORDS).join("400-1").exists());
         // Only the newest USB_PASSWORD_LISTS lists are kept on the drive.
         for run in ["500-1", "600-1", "700-1"] {
-            sealed(run, run.as_bytes(), b"key", None);
+            sealed(run, run.as_bytes(), None);
             copy_newest_secrets(std::slice::from_ref(&monthly), &usb).unwrap();
         }
         let kept: Vec<String> = snapshot_folders(&usb.join(USB_PASSWORDS))
@@ -5100,6 +5183,60 @@ mod tests {
             .map(|(_, p)| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
         assert_eq!(kept, ["500-1", "600-1", "700-1"]);
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_damaged_newest_password_list_is_passed_over_for_the_newest_sound_one() {
+        let root = scratch("usb-passwords-fallback");
+        let (monthly, usb) = (root.join("backups/monthly"), root.join("usb"));
+        let copied = usb.join(USB_PASSWORDS);
+        sealed_list(&monthly, "200-1", b"older list", None);
+        sealed_list(
+            &monthly,
+            "300-1",
+            b"newest list",
+            Some("0".repeat(64).as_str()),
+        );
+        // The newest list is damaged: the older sound one goes to the USB drive, and the
+        // report names the damaged one and the one that went in its place.
+        let said = copy_newest_secrets(std::slice::from_ref(&monthly), &usb)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read(copied.join("200-1").join(SECRETS_FILES[0].1)).unwrap(),
+            b"older list"
+        );
+        assert!(!copied.join("300-1").exists());
+        assert!(
+            said.starts_with(
+                "the newest password list on the HDD (300-1) failed the checksum check and was skipped"
+            ),
+            "{said}"
+        );
+        assert!(
+            said.contains("the older list 200-1 was copied to the USB drive instead"),
+            "{said}"
+        );
+        // Every list damaged: nothing is copied, as before, and each one is named.
+        fs::remove_dir_all(&usb).unwrap();
+        sealed_list(
+            &monthly,
+            "200-1",
+            b"older list",
+            Some("1".repeat(64).as_str()),
+        );
+        let said = copy_newest_secrets(std::slice::from_ref(&monthly), &usb)
+            .unwrap()
+            .unwrap();
+        assert!(
+            said.starts_with("the newest password list on the HDD (300-1) is damaged"),
+            "{said}"
+        );
+        assert!(
+            said.contains("(200-1)") && said.contains("sudo bash install.sh"),
+            "{said}"
+        );
+        assert!(!usb.exists());
         let _ = fs::remove_dir_all(root);
     }
     #[test]
@@ -5199,10 +5336,63 @@ mod tests {
         fs::write(folder.join(newest), b"bit rot").unwrap();
         assert_eq!(copy_newest_dump(&hdd, &usb).unwrap(), None);
         assert_eq!(fs::read(folder.join(newest)).unwrap(), b"dump 0");
-        // A damaged HDD copy is never copied, and the run is incomplete.
+        // A damaged HDD copy is never copied: the newest sound one goes instead, the
+        // damaged one is named, and the run is incomplete.
         fs::write(hdd.join(newest), b"bit rot").unwrap();
         let problem = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
-        assert!(problem.contains("damaged"), "{problem}");
+        assert!(
+            problem.contains(&format!("({newest}) failed the checksum check")),
+            "{problem}"
+        );
+        assert!(problem.contains(&made[4]), "{problem}");
+        assert_eq!(fs::read(folder.join(newest)).unwrap(), b"dump 0");
+        let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_damaged_newest_database_copy_is_passed_over_for_the_newest_sound_one() {
+        let root = scratch("usb-db-fallback");
+        let (hdd, usb, env) = (root.join("hdd"), root.join("usb"), root.join(".env"));
+        write(&env, b"IMMICH_VERSION=v2.1.0\n");
+        let (older, newest) = (dump_name(1.5), dump_name(0.5));
+        for (name, body) in [(&older, "older dump"), (&newest, "newest dump")] {
+            write(&hdd.join(name), body.as_bytes());
+            describe_dump(&hdd.join(name), &env).unwrap();
+        }
+        let folder = usb.join("immich-database");
+        // The newest copy is sound: it goes to the USB drive, as before.
+        assert_eq!(copy_newest_dump(&hdd, &usb).unwrap(), None);
+        assert_eq!(fs::read(folder.join(&newest)).unwrap(), b"newest dump");
+        assert!(!folder.join(&older).exists());
+        // Bit rot on the HDD's newest copy: the older sound one is copied instead, and
+        // the report names the damaged one and the one that went in its place.
+        fs::write(hdd.join(&newest), b"bit rot").unwrap();
+        let said = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
+        assert_eq!(fs::read(folder.join(&older)).unwrap(), b"older dump");
+        assert!(
+            said.contains(&format!(
+                "the newest Immich database copy ({newest}) failed the checksum check and was skipped"
+            )),
+            "{said}"
+        );
+        assert!(
+            said.contains(&format!("the older copy {older} was copied instead")),
+            "{said}"
+        );
+        let version = fs::read_to_string(folder.join("IMMICH-VERSION.txt")).unwrap();
+        assert!(version.contains(&older), "{version}");
+        // Every copy damaged: nothing is copied, as before, and each one is named.
+        fs::write(hdd.join(&older), b"bit rot too").unwrap();
+        fs::remove_file(folder.join(&older)).unwrap();
+        let said = copy_newest_dump(&hdd, &usb).unwrap().unwrap();
+        assert!(
+            said.starts_with(&format!(
+                "the newest Immich database copy ({newest}) is damaged (checksum mismatch) and was not copied"
+            )),
+            "{said}"
+        );
+        assert!(said.contains(&older), "{said}");
+        assert!(!folder.join(&older).exists());
+        assert_eq!(fs::read(folder.join(&newest)).unwrap(), b"newest dump");
         let _ = fs::remove_dir_all(root);
     }
     #[test]
