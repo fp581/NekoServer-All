@@ -5087,22 +5087,34 @@ fn retry_timer(units: &Path, when: &str, systemctl: &dyn Fn(&[&str]) -> bool) ->
 }
 /// Tomorrow's date (local time, "YYYY-MM-DD") for a valid "HH:MM", else None.
 fn next_night(time: &str) -> Option<String> {
-    let valid = regex::Regex::new(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$").ok()?;
-    if !valid.is_match(time) {
-        return None;
-    }
-    let stamp = unsafe { libc::time(std::ptr::null_mut()) } + 86400;
+    let now = unsafe { libc::time(std::ptr::null_mut()) };
+    next_night_at(time, now, &local_date)
+}
+/// The calendar date `stamp` falls on in the server's time zone (TZ, which the service
+/// runs with, like the monthly timer).
+fn local_date(stamp: libc::time_t) -> Option<chrono::NaiveDate> {
     let mut value = std::mem::MaybeUninit::<libc::tm>::uninit();
     if unsafe { libc::localtime_r(&stamp, value.as_mut_ptr()) }.is_null() {
         return None;
     }
     let tm = unsafe { value.assume_init() };
-    Some(format!(
-        "{:04}-{:02}-{:02}",
-        tm.tm_year + 1900,
-        tm.tm_mon + 1,
-        tm.tm_mday
-    ))
+    chrono::NaiveDate::from_ymd_opt(tm.tm_year + 1900, (tm.tm_mon + 1) as u32, tm.tm_mday as u32)
+}
+/// Tomorrow: the calendar day after the one `now` falls on (`local` gives it), never now
+/// plus 24 hours. On the night the clocks go back the day has 25 hours, so from any
+/// moment before the repeated hour now plus 24 hours was still today: the retry timer
+/// was set for a time already passed (Persistent=false, so it never fired) while the
+/// report promised the update would try again.
+fn next_night_at(
+    time: &str,
+    now: libc::time_t,
+    local: &dyn Fn(libc::time_t) -> Option<chrono::NaiveDate>,
+) -> Option<String> {
+    let valid = regex::Regex::new(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$").ok()?;
+    if !valid.is_match(time) {
+        return None;
+    }
+    Some(local(now)?.succ_opt()?.format("%Y-%m-%d").to_string())
 }
 fn hourly_retry() -> bool {
     std::env::var_os(RETRY_ENV).is_some_and(|v| v == "1")
@@ -7994,5 +8006,55 @@ mod tests {
         assert!(run.contains("again_next_night(&cfg)"));
         let main = include_str!("main.rs");
         assert!(main.contains("if common::postponed(&e)"));
+    }
+    /// The retry after a run that gave way on the night the clocks go back was set for
+    /// a time already passed: now + 24 hours was still the same calendar date.
+    #[test]
+    fn the_retry_on_the_night_the_clocks_go_back_is_set_for_tomorrow_not_today() {
+        // America/New_York on 2026-11-01, when the clocks go back at 02:00 (06:00 UTC):
+        // UTC-4 before that moment, UTC-5 after it.
+        let change: libc::time_t = 1_793_512_800;
+        let new_york = |t: libc::time_t| {
+            let offset = if t < change { -4 * 3600 } else { -5 * 3600 };
+            chrono::DateTime::from_timestamp(t + offset, 0).map(|d| d.date_naive())
+        };
+        // 00:45 local on the change day: the day has 25 hours, so 24 hours later is
+        // still 2026-11-01 (23:45), the trap the retry fell into.
+        let early = change - 3600 - 15 * 60;
+        let date = |t| new_york(t).unwrap().to_string();
+        assert_eq!(date(early), "2026-11-01");
+        assert_eq!(date(early + 86400), "2026-11-01");
+        assert_eq!(
+            next_night_at("02:30", early, &new_york).as_deref(),
+            Some("2026-11-02")
+        );
+        // Later that day, and on an ordinary day, tomorrow is what it always was.
+        assert_eq!(
+            next_night_at("02:30", change + 17 * 3600, &new_york).as_deref(),
+            Some("2026-11-02")
+        );
+        assert_eq!(
+            next_night_at("02:30", change - 3 * 3600, &new_york).as_deref(),
+            Some("2026-11-01")
+        );
+        assert_eq!(
+            next_night_at("02:30", change + 3 * 86400, &new_york).as_deref(),
+            Some("2026-11-05")
+        );
+        assert!(next_night_at("2:30", early, &new_york).is_none());
+        assert!(next_night_at("02:30", early, &|_| None).is_none());
+        // The real clock: the day after today's local date, in the same form.
+        let today = local_date(unsafe { libc::time(std::ptr::null_mut()) }).unwrap();
+        assert_eq!(
+            next_night("02:30").as_deref(),
+            Some(
+                today
+                    .succ_opt()
+                    .unwrap()
+                    .format("%Y-%m-%d")
+                    .to_string()
+                    .as_str()
+            )
+        );
     }
 }
