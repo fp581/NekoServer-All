@@ -140,25 +140,21 @@ fn steam_still_closed(cfg: &Value, steam_included: bool) -> Result<()> {
     Ok(())
 }
 /// The newest snapshot that left nothing out (so it holds Steam's files): kept while
-/// later runs, made with Steam open, don't have them.
+/// later runs, made with Steam open, don't have them. The snapshots as the pruning sees
+/// them (common::complete_snapshots: this user's private ones, in age order), so one
+/// dated in the future, made while the clock was wrong, counts as the oldest and never
+/// takes the place of the real newest complete one.
 fn newest_complete(root: &Path) -> Option<String> {
-    let pattern = regex::Regex::new(r"^snapshot-([0-9]+)-([0-9]+)$").ok()?;
-    let mut found: Vec<((u128, u128), String)> = fs::read_dir(root)
+    common::complete_snapshots(root)
         .ok()?
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let parts = pattern.captures(&name)?;
-            let order: (u128, u128) =
-                (parts[1].parse().unwrap_or(0), parts[2].parse().unwrap_or(0));
-            let manifest = common::json(&entry.path().join("manifest.json"), 64_000_000);
-            let complete = manifest["format"] == "neko-host-snapshot-v1"
-                && manifest["left_out"].as_array().is_none_or(Vec::is_empty);
-            complete.then(|| (order, name.clone()))
+        .into_iter()
+        .rev()
+        .map(|(_, name)| name)
+        .find(|name| {
+            let manifest = common::json(&root.join(name).join("manifest.json"), 64_000_000);
+            manifest["format"] == "neko-host-snapshot-v1"
+                && manifest["left_out"].as_array().is_none_or(Vec::is_empty)
         })
-        .collect();
-    found.sort();
-    found.pop().map(|(_, name)| name)
 }
 /// What the dashboard and the job report say when Steam's files were left out.
 const STEAM_LEFT_OUT: &str = "Steam was open, so its settings and saves were not backed up this time; everything else was. They are backed up on a night Steam is closed (it is never closed for you)";
@@ -697,6 +693,11 @@ mod tests {
         snap("snapshot-100-1", &[]); // Steam closed: has the saves
         snap("snapshot-200-1", &["source1"]);
         assert_eq!(newest_complete(&root).as_deref(), Some("snapshot-100-1"));
+        // A complete snapshot dated years ahead (made while the clock was wrong) counts
+        // as the oldest, as everywhere else: the real newest complete one is protected.
+        snap("snapshot-4000000000000000-1", &[]);
+        assert_eq!(newest_complete(&root).as_deref(), Some("snapshot-100-1"));
+        fs::remove_dir_all(root.join("snapshot-4000000000000000-1")).unwrap();
         snap("snapshot-300-1", &["source1"]);
         // Keep 2: 300 (just made) and 200, plus 100 because it is the only one with Steam.
         let removed =
