@@ -374,15 +374,39 @@ def media_checks(config, run=None):
     quiet = {'capture_output': True, 'text': True, 'check': False}
     if run(['systemctl', 'cat', MEDIA_CHECK], timeout=30, **quiet).returncode != 0:
         return media_audit('needs_setup', 'The media check is not set up yet.')
-    run(['systemctl', 'start', MEDIA_CHECK], timeout=360, **quiet)
+    started = time.time()
+    ran = run(['systemctl', 'start', MEDIA_CHECK], timeout=360, **quiet)
     try:
         report = json.loads(safe_path(mount_path(config['data_mount']) / MEDIA_REPORT).read_text())
         if not isinstance(report, dict):
             raise ValueError('not a report')
     except (OSError, ValueError, RuntimeError):
         return media_audit('fail', 'Current read-only media checks could not complete.')
+    if not written_since(report, started):
+        # The check stopped before it wrote its report (a drive its guard refused, its
+        # lock, broken settings): the report there is an older run's, and its PASS rows
+        # are not this check's (the review of 0.47.10). A check that found failing rows
+        # also ends with an error, but after its report: that one is read.
+        why = (getattr(ran, 'stderr', '') or getattr(ran, 'stdout', '') or '').strip()[:300]
+        detail = 'The media check did not write a new report, so its last results are not shown as current'
+        if getattr(ran, 'returncode', 0) != 0 and why:
+            detail += ': ' + why
+        return media_audit('fail', detail + '. Look at  sudo journalctl -u ' + MEDIA_CHECK + '  for why.')
     out = [row for group in ('services', 'integrations', 'readiness') for row in media_rows(group, report.get(group))]
     return out or media_audit('needs_setup', 'No current media configuration checks are available.')
+
+
+def written_since(report, started):
+    """The report's own time (generated_at, written by the check) is not before `started`."""
+    import datetime
+
+    # The runtime writes nanoseconds ("...:00.123456789+00:00"); Python reads six digits.
+    stamp = re.sub(r'(\.\d{6})\d+', r'\1', str(report.get('generated_at')), flags=re.ASCII)
+    try:
+        written = datetime.datetime.fromisoformat(stamp).timestamp()
+    except (TypeError, ValueError):
+        return False
+    return written >= started - 1  # the check writes whole seconds on some systems
 
 
 def media_rows(group, values):

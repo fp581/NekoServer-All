@@ -1,5 +1,5 @@
 {
-  "project_name": "NekoServer v0.47.10",
+  "project_name": "NekoServer v0.48.0",
   "timezone": "auto",
   "data_mount": "/srv/nekoserver",
   "media_mount": "/mnt/nekoserver-media",
@@ -138,14 +138,11 @@
     "bind_ip": "127.0.0.1",
     "deploy_immich": true,
     "external_backup_uuid": "",
-    "backup_weekday": "Sun",
-    "backup_time": "03:00",
     "archive_dir": "photos/archive",
     "inbox_dir": "photos/inbox",
     "external_backup_fstype": "ext4",
     "archive_interval_minutes": 10080,
     "archive_min_age_seconds": 600,
-    "database_backup_time": "02:15",
     "backup_schedule": "weekly",
     "database_keep": 4
   },
@@ -392,8 +389,13 @@
   "runtime": {
     "backend": "rust"
   },
+  "backup_times": {
+    "daily": "04:15",
+    "weekly_day": "Sun",
+    "weekly": "03:00",
+    "monthly": "02:30"
+  },
   "app_backup": {
-    "time": "04:15",
     "keep_snapshots": 7
   },
   "notifications": {
@@ -410,7 +412,6 @@
     "hdd_idle_minutes": 60
   },
   "host_backup": {
-    "time": "05:15",
     "user": "auto",
     "steam": true,
     "samba": true,
@@ -432,7 +433,6 @@
     "admin_user": "admin"
   },
   "maintenance": {
-    "time": "02:30",
     "minimum_free_gb": 20,
     "keep_snapshots": 3,
     "night_end_hour": 6,
@@ -445,7 +445,6 @@
   },
   "music": {
     "create_desktop_shortcut": true,
-    "backup_time": "03:45",
     "backup_enabled": false
   },
   "accounts": {

@@ -3,7 +3,7 @@
 (the NekoServer tab, "Upgrade NekoServer"): a background service runs this, so closing
 the page stops nothing.
 
-  sudo python3 upgrade.py run --tag v0.47.10Beta    the upgrade (nekoserver-upgrade@<tag>)
+  sudo python3 upgrade.py run --tag v0.48.0Beta    the upgrade (nekoserver-upgrade@<tag>)
   sudo python3 upgrade.py resume                   after a restart: put a cut-off one right
 
 What it does, in order (a record in /etc/nekoserver-backups/upgrade.json says how far
@@ -22,6 +22,7 @@ it got, so a power cut at any point is put right at the next start):
    (kept on the SSD), so the server is back on the release it had."""
 
 import argparse
+import contextlib
 import fcntl
 import http.client
 import json
@@ -74,7 +75,7 @@ LIMIT = 200 * 1024 * 1024  # the release archive is a few MB
 
 
 def numbers(text):
-    """(0, 44, 0) from "v0.47.10Beta" or "0.47.10"; None for anything else."""
+    """(0, 44, 0) from "v0.48.0Beta" or "0.48.0"; None for anything else."""
     match = TAG.fullmatch(text)
     return tuple(int(n) for n in match.groups()[:3]) if match else None
 
@@ -439,17 +440,35 @@ def upgrade(tag, settings, out=print, **more):
         out(BUSY_MOVE + '; the upgrade did not start, nothing was changed. Try again later.')
         return 2
     with held:
+        work = upgrades_folder(settings)
         code = upgrade_held(tag, settings, out, **more)
-        tidy_after(settings, more.get('journal', JOURNAL), out)
+        tidy_after(work, more.get('journal', JOURNAL), out)
         return code
 
 
-def tidy_after(settings, journal, out=print):
-    """tidy for this server's upgrade folder; a folder that can't be tidied never fails
-    the upgrade."""
+def upgrades_folder(settings):
+    """This server's upgrade folder, read from the settings before the work starts (None
+    when they can't be read). Read again at the end, the settings may be gone: putting the
+    previous release back removes the copy of the newer one on the SSD, and the settings
+    file of `upgrade.py resume` run from that copy with it (seen on the VM: the download
+    and the build folder, gigabytes, then stayed in installer/upgrades)."""
     try:
-        config = json.loads(settings_path(settings).read_text())
-        tidy(ssd(config) / UPGRADES, journal)
+        return ssd(json.loads(settings_path(settings).read_text())) / UPGRADES
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+        return None
+
+
+def tidy_after(work, journal, out=print):
+    """tidy for this server's upgrade folder `work`; a folder that can't be tidied never
+    fails the upgrade."""
+    if work is None:
+        out(
+            'The finished upgrade\'s files could not be tidied (the settings could not be read); they stay in '
+            + UPGRADES
+        )
+        return
+    try:
+        tidy(work, journal)
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         out(f'The finished upgrade\'s files could not be tidied ({exc}); they stay in ' + UPGRADES)
 
@@ -551,7 +570,8 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
             'sudo python3 upgrade.py resume  to put the release back. App updates and the monthly check wait until then.'
         )
         return 2
-    problem = setup_problem(setup, previous, settings, account, log_file)
+    with newer_runtimes_hidden(ssd(config) / 'installer/runtime', previous.name):
+        problem = setup_problem(setup, previous, settings, account, log_file)
     if problem is None:
         problem = checked(check or (lambda: verify(config, previous.name, before)))
     if problem is None:
@@ -574,13 +594,59 @@ def go_back(previous, settings, account, log_file, out=print, setup=run_setup, j
     return 2
 
 
+HIDDEN = '.going-back'  # the end of a runtime copy's name while the way back hides it
+
+
+@contextlib.contextmanager
+def newer_runtimes_hidden(home, previous):
+    """While the previous release's setup runs: the runtime copies of newer releases in
+    `home` (installer/runtime) are moved to a hidden name, with a link left at their own
+    name. The guard of a release before 0.47.10 (capabilities.newer_installed) knows
+    nothing of the upgrade's record: it saw the services still pointing at the newer
+    runtime and stopped the way back with "this server already runs ..." (the review of
+    0.47.10). The guard and the cleanup after setup count only real folders, never links,
+    while every service the newer setup wrote still finds its program through the link.
+    Afterwards each copy gets its own name back, as before; one hidden when the power was
+    cut is put back first."""
+    import native_runtime
+
+    show_hidden(home)
+    floor = native_runtime.release_number(previous)
+    hidden = []
+    try:
+        for folder in native_runtime.release_folders(home) if floor else []:
+            if native_runtime.release_number(folder.name) > floor:
+                aside = folder.with_name('.' + folder.name + HIDDEN)
+                folder.rename(aside)
+                hidden.append(folder)
+                folder.symlink_to(aside.name)
+        yield
+    finally:
+        show_hidden(home, hidden)
+
+
+def show_hidden(home, folders=None):
+    """Give each hidden runtime copy in `home` its own name back (all of them, or those of
+    `folders`): the link at that name goes, the folder moves back."""
+    found = [p for p in home.glob('.v*' + HIDDEN) if p.is_dir() and not p.is_symlink()] if home.is_dir() else []
+    for aside in found:
+        folder = aside.with_name(aside.name[1 : -len(HIDDEN)])
+        if folders is not None and folder not in folders:
+            continue
+        if folder.is_symlink():
+            folder.unlink()
+        if not folder.exists():
+            aside.rename(folder)
+
+
 def resume(settings, out=print, setup=run_setup, journal=JOURNAL):
     """At boot: an upgrade that was cut off. One cut off while it downloaded changed
     nothing; one cut off while it set up or checked the new release is put back on the
     release it had (the new one may be half set up). It waits for the operation lock."""
     with hold_operation(OPERATION_LOCK, wait=True):
+        work = upgrades_folder(settings)
         code = resume_held(settings, out, setup, journal)
-        tidy_after(settings, journal, out)
+        tidy_after(work, journal, out)
         return code
 
 

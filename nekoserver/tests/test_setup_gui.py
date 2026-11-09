@@ -576,6 +576,47 @@ class WindowTests(unittest.TestCase):
         self.assertEqual((state['done'], state['total']), (1, 3))
         self.assertTrue(self.window.delivered.is_set())
 
+    def test_a_page_of_questions_is_answered_whole(self):
+        self.window.started.set()
+        setup_progress.step('storage', 'running')
+        shown = {'daily': '04:15', 'weekly_day': 'Sun', 'weekly': '03:00', 'monthly': '02:30'}
+        with setup_progress.page('backup_times', shown, weekdays=['Mon', 'Sun'], night_end=6):
+            setup_progress.page_asks('daily')
+            record = setup_progress.question('When should the daily backups run? (HH:MM, Enter for 04:15): ')
+            question = self.state()['question']
+            self.assertEqual(
+                question['page'],
+                {
+                    'form': 'backup_times',
+                    'fields': shown,
+                    'asking': 'daily',
+                    'weekdays': ['Mon', 'Sun'],
+                    'night_end': 6,
+                },
+            )
+            fields = {'daily': '23:30', 'weekly_day': 'Sat', 'weekly': '21:00', 'monthly': '01:00', 'other': 'x'}
+            self.assertEqual(
+                self.post('api/answer', {'seq': record['seq'], 'text': '23:30', 'fields': fields}), {'ok': True}
+            )
+            self.assertEqual(setup_progress._pending['answer'], '23:30')
+            setup_progress.answered()
+            # The other fields answer their questions before they are asked; unknown ones are dropped.
+            self.assertEqual(setup_progress.page_answer('weekly_day'), ('answer', 'Sat'))
+            self.assertEqual(setup_progress.page_answer('weekly'), ('answer', '21:00'))
+            self.assertEqual(setup_progress.page_answer('monthly'), ('answer', '01:00'))
+            self.assertIsNone(setup_progress.page_answer('other'))
+            self.assertIsNone(setup_progress.page_answer('monthly'), 'each answer is used once')
+        # Off the page a question carries none.
+        record = setup_progress.question('Select the SSD. Choose number: ')
+        self.assertIsNone(self.state()['question']['page'])
+        setup_progress.answered()
+        # "Skip for now" on the page leaves every field at the time shown.
+        with setup_progress.page('backup_times', shown):
+            record = setup_progress.question('When should the daily backups run? (HH:MM, Enter for 04:15): ')
+            self.assertEqual(self.post('api/answer', {'seq': record['seq'], 'text': '', 'skip': True}), {'ok': True})
+            self.assertEqual(setup_progress.page_answer('weekly'), ('skip', None))
+            setup_progress.answered()
+
     def test_a_body_too_large_or_broken_is_refused(self):
         for data, code in ((b'{' * 20, 400), (b'{"tv": false}' + b' ' * setup_gui.LARGEST_BODY, 413)):
             request = urllib.request.Request(

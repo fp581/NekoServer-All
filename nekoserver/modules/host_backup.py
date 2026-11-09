@@ -20,6 +20,7 @@ from neko_common import (
     safe_path,
     verify_storage,
     write_units,
+    job_times,
 )
 
 DEPENDENCIES = ['storage', 'recovery']
@@ -66,9 +67,6 @@ def settings(config):
     opts = config.get('host_backup', {})
     if not isinstance(opts, dict):
         raise RuntimeError('host_backup must be an object')
-    time = opts.get('time', '05:15')
-    if not isinstance(time, str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', time):
-        raise RuntimeError('host_backup.time must be HH:MM')
     for key in ('steam', 'samba'):
         if type(opts.get(key, True)) is not bool:
             raise RuntimeError('host_backup switches must be booleans')
@@ -235,7 +233,8 @@ SANDBOX = (
 
 
 def definitions(config, binary, private):
-    time = settings(config).get('time', '05:15')
+    settings(config)
+    time = job_times(config)['host']  # an hour after the daily time setup asked for (backup_times)
     resume = f'{binary} host-resume --config {private}'
     mounts = f'RequiresMountsFor={config["data_mount"]} {config["media_mount"]}\n'
     # A night missed while the PC was off is caught up at boot, when the resume service

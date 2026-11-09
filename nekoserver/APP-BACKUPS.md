@@ -1,6 +1,6 @@
 # Media application backups and restoration
 
-The `app_backup` module schedules a private nightly snapshot at **04:15**, configurable with `app_backup.time`. It briefly stops the selected media apps and resumes exactly the containers that were running. This includes qBittorrent; active transfers pause while the snapshot runs. Plan the schedule outside playback/download maintenance windows. Do not deploy, upgrade or change app settings concurrently.
+The `app_backup` module schedules a private nightly snapshot at the daily backup time setup asked for (**04:15** unless you said otherwise: `"daily"` under `"backup_times"` in your settings). It briefly stops the selected media apps and resumes exactly the containers that were running. This includes qBittorrent; active transfers pause while the snapshot runs. Plan the schedule outside playback/download maintenance windows. Do not deploy, upgrade or change app settings concurrently.
 
 ## Install or upgrade
 

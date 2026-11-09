@@ -462,6 +462,7 @@ class OptionalAnswersTests(unittest.TestCase):
             config={'data_mount': d, 'onboarding': {}, 'media': {'services': ['sonarr', 'prowlarr', 'jellyfin']}},
         )
         del ctx.optional_kept
+        del ctx.ask_optional_again  # the shared "ask again?" decision, not made yet in this run
         answers = iter(typed)
 
         def checkpoint(ctx, title, *a, **k):

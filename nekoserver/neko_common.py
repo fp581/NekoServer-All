@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.47.10'
+VERSION = '0.48.0'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -1286,7 +1286,12 @@ def atomic_json(path, payload):
 
 # The optional questions setup asks when connecting the media apps, by the key their
 # last answer is kept under, and the words the next run shows them with.
-OPTIONAL_QUESTIONS = {'sources': 'Download sources', 'indexers': 'Indexers (Prowlarr)', 'playback': 'Playback test'}
+OPTIONAL_QUESTIONS = {
+    'backup_times': 'Backup times',
+    'sources': 'Download sources',
+    'indexers': 'Indexers (Prowlarr)',
+    'playback': 'Playback test',
+}
 
 
 def optional_answers_file(data_mount):
@@ -1314,6 +1319,113 @@ def remember_answer(data_mount, question, text):
     path = optional_answers_file(data_mount)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(path, kept)
+
+
+# ---- When the backups run (since 0.48.0 one place, asked by setup) --------------------
+# The three times a person chooses: "backup_times" in the settings file, asked at the
+# drives step (guided_setup.choose_backup_times). Every timer is written from them (job_times).
+BACKUP_TIMES = 'backup_times'
+WEEKDAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+DAILY_DEFAULT = '04:15'  # the media apps' snapshot; the other nightly jobs keep their distance from it
+WEEKLY_DAY_DEFAULT, WEEKLY_DEFAULT = 'Sun', '03:00'  # the USB copy of the photos and Nextcloud files
+MONTHLY_DEFAULT = '02:30'  # the monthly check on the 1st, and the weekly app updates
+# How far from the daily time each nightly job starts (minutes), so they never start in
+# the same minute: the music copy first, then the app snapshot, then this PC's own
+# settings. The Immich database copy of the old daily photo schedule went two hours before.
+NIGHTLY_OFFSETS = {'music': -30, 'app': 0, 'host': 60, 'photo_database': -120}
+# In the weekly photo schedule the Immich database copy goes just before the USB copy,
+# which takes it along (Sunday 02:15 before 03:00, as it always was).
+DATABASE_BEFORE_USB = 45
+# ASCII: in Python \d is any Unicode digit, and a time written in other digits
+# (Arabic-Indic, say) would reach the timers' OnCalendar, which systemd cannot read.
+TIME_OF_DAY = re.compile(r'(?:[01]\d|2[0-3]):[0-5]\d', re.ASCII)
+
+
+def valid_time(text):
+    """True for "HH:MM" on a 24-hour clock."""
+    return isinstance(text, str) and TIME_OF_DAY.fullmatch(text) is not None
+
+
+def minutes_later(time, minutes):
+    """ "HH:MM" shifted by `minutes` (negative for earlier), going round midnight."""
+    hours, mins = (int(part) for part in time.split(':'))
+    total = (hours * 60 + mins + minutes) % (24 * 60)
+    return f'{total // 60:02d}:{total % 60:02d}'
+
+
+def backup_times(config):
+    """The times setup asked for: {'daily', 'weekly_day', 'weekly', 'monthly'}, checked, or
+    None when the settings file has none yet (made before 0.48.0): each job then keeps
+    the time its own setting named (job_times)."""
+    chosen = config.get(BACKUP_TIMES)
+    if chosen is None:
+        return None
+    if not isinstance(chosen, dict):
+        raise RuntimeError(
+            '"backup_times" in the settings must be an object with daily, weekly_day, weekly and monthly'
+        )
+    times = {
+        'daily': chosen.get('daily', DAILY_DEFAULT),
+        'weekly_day': chosen.get('weekly_day', WEEKLY_DAY_DEFAULT),
+        'weekly': chosen.get('weekly', WEEKLY_DEFAULT),
+        'monthly': chosen.get('monthly', MONTHLY_DEFAULT),
+    }
+    for key in ('daily', 'weekly', 'monthly'):
+        if not valid_time(times[key]):
+            raise RuntimeError(f'"{key}" under "backup_times" must be a time of day as HH:MM, not {times[key]!r}')
+    if times['weekly_day'] not in WEEKDAYS:
+        raise RuntimeError('"weekly_day" under "backup_times" must be one of ' + ', '.join(WEEKDAYS))
+    return times
+
+
+def _own_time(config, section, key, default):
+    """A job's time from its own setting (settings files from before 0.48.0)."""
+    value = config.get(section, {}).get(key, default) if isinstance(config.get(section, {}), dict) else default
+    if not valid_time(value):
+        raise RuntimeError(f'{section}.{key} must be HH:MM')
+    return value
+
+
+def job_times(config):
+    """When each scheduled job runs, as its timer is written: app (the media apps'
+    snapshot), music, host (this PC's own settings), photo_database (the daily Immich
+    database copy of the old photo schedule), photo_database_weekly (the same copy on the
+    weekly day), usb_day and usb (the USB copy), monthly (the monthly check and the weekly
+    app updates). From "backup_times" when setup asked for them, else from the settings
+    each job had before 0.48.0, so a server set up earlier keeps its times."""
+    chosen = backup_times(config)
+    if chosen is None:
+        photos = config.get('photos', {})
+        day = photos.get('backup_weekday', WEEKLY_DAY_DEFAULT) if isinstance(photos, dict) else WEEKLY_DAY_DEFAULT
+        if day not in WEEKDAYS:
+            raise RuntimeError('photos.backup_weekday must be one of ' + ', '.join(WEEKDAYS))
+        database = _own_time(config, 'photos', 'database_backup_time', '02:15')
+        return {
+            'app': _own_time(config, 'app_backup', 'time', DAILY_DEFAULT),
+            'music': _own_time(config, 'music', 'backup_time', '03:45'),
+            'host': _own_time(config, 'host_backup', 'time', '05:15'),
+            'photo_database': database,
+            'photo_database_weekly': database,
+            'usb_day': day,
+            'usb': _own_time(config, 'photos', 'backup_time', WEEKLY_DEFAULT),
+            'monthly': _own_time(config, 'maintenance', 'time', MONTHLY_DEFAULT),
+        }
+    return {
+        'app': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['app']),
+        'music': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['music']),
+        'host': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['host']),
+        'photo_database': minutes_later(chosen['daily'], NIGHTLY_OFFSETS['photo_database']),
+        'photo_database_weekly': minutes_later(chosen['weekly'], -DATABASE_BEFORE_USB),
+        'usb_day': chosen['weekly_day'],
+        'usb': chosen['weekly'],
+        'monthly': chosen['monthly'],
+    }
+
+
+def backup_times_said(config):
+    """The three times in a few words, as setup shows them and keeps them as its answer."""
+    times = job_times(config)
+    return f"daily {times['app']}, weekly {times['usb_day']} {times['usb']}, monthly on the 1st at {times['monthly']}"
 
 
 def refresh_settings(target, wanted, log, label):

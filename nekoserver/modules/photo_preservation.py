@@ -4,7 +4,7 @@ import native_runtime
 import os, subprocess
 from neko_common import RESUME_TIMEOUT, VERSION, SYSTEMD_UNITS
 from pathlib import Path
-from neko_common import safe_path, relative_path, atomic_write, host_timezone, forget_last_run
+from neko_common import safe_path, relative_path, atomic_write, host_timezone, forget_last_run, job_times
 
 DEPENDENCIES = ['photos']
 DESCRIPTION = 'Weekly additive archival of SSD Immich originals and database backup'
@@ -39,6 +39,26 @@ def resume_unit(binary, guard, data, name=RESUME, command='immich-resume'):
 
 # The job that makes the Immich database copy (and pauses Immich for it).
 DB_BACKUP = ' --db-backup'
+
+
+DB_JOB = 'nekoserver-immich-db-backup'
+
+
+def calendars(cfg, schedule, interval):
+    """The [Timer] lines of the photo jobs, from the times setup asked for (backup_times).
+    The weekly schedule has one job: the Immich database copy on the USB copy's day, just
+    before it, which takes the copy along. The old daily schedule has the archive pass
+    every `interval` minutes and the database copy every night."""
+    times = job_times(cfg)
+    zone = host_timezone(cfg)
+    if schedule == 'weekly':
+        return {
+            DB_JOB: f'OnCalendar={times["usb_day"]} *-*-* {times["photo_database_weekly"]}:00 {zone}\nPersistent=true\n'
+        }
+    return {
+        'nekoserver-photo-preservation': f'OnBootSec=10min\nOnUnitInactiveSec={interval}min\n',
+        DB_JOB: f'OnCalendar=*-*-* {times["photo_database"]}:00 {zone}\nPersistent=true\n',
+    }
 
 
 def service_text(name, cmd, data, media, binary, guard):
@@ -111,11 +131,6 @@ def run(ctx):
     age = opts.get('archive_min_age_seconds', 600)
     if not isinstance(interval, int) or interval < 15 or not isinstance(age, int) or age < 60:
         raise RuntimeError('Invalid archive interval/age')
-    tm = opts.get('database_backup_time', '02:15')
-    import re
-
-    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', tm):
-        raise RuntimeError('Invalid database backup time')
     archive = relative_path(opts.get('archive_dir', 'photos/archive'))
     binary = native_runtime.deploy(Path(__file__).resolve().parents[1], cfg, runtime)
     keep = opts.get('database_keep', 4)
@@ -126,9 +141,6 @@ def run(ctx):
     schedule = opts.get('backup_schedule', 'legacy')
     if schedule not in ('legacy', 'weekly'):
         raise RuntimeError('Invalid photo backup schedule')
-    day = opts.get('backup_weekday', 'Sun')
-    if day not in ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'):
-        raise RuntimeError('Invalid photo backup weekday')
     if schedule == 'weekly':
         from modules._schedules import retire
 
@@ -137,19 +149,9 @@ def run(ctx):
             subprocess.run,
         )
     services = {
-        'nekoserver-photo-preservation': (base, f'OnBootSec=10min\nOnUnitInactiveSec={interval}min\n'),
-        'nekoserver-immich-db-backup': (
-            base + DB_BACKUP,
-            f'OnCalendar=*-*-* {tm}:00 {host_timezone(cfg)}\nPersistent=true\n',
-        ),
+        name: (base + (DB_BACKUP if name == DB_JOB else ''), calendar)
+        for name, calendar in calendars(cfg, schedule, interval).items()
     }
-    if schedule == 'weekly':
-        services = {
-            'nekoserver-immich-db-backup': (
-                base + DB_BACKUP,
-                f'OnCalendar={day} *-*-* {tm}:00 {host_timezone(cfg)}\nPersistent=true\n',
-            )
-        }
     # The DB job also archives to keep an identical fail-closed precondition.
     for name, (cmd, calendar) in services.items():
         service = SYSTEMD_UNITS / (name + SERVICE)

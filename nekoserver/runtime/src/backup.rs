@@ -2979,7 +2979,7 @@ fn coordinate_data(cfgpath: &Path, data: &Path) -> Result<fs::File> {
 }
 /// The subvolume in findmnt's source ("/dev/sdb1[/@data]" -> "/@data"; "" for the
 /// filesystem's top level or another filesystem type).
-fn subvolume_of(source: &str) -> &str {
+pub(crate) fn subvolume_of(source: &str) -> &str {
     source
         .split_once('[')
         .map(|(_, rest)| rest.trim_end_matches(']').trim_end_matches('/'))
@@ -4488,6 +4488,39 @@ fn cloud_to_usb(run: &UsbRun, cloud: &Path) -> Result<CloudPart> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_subvolume_is_checked_the_same_with_or_without_findmnt() {
+        // The review of 0.47.10: when findmnt timed out, the kernel's table gave the source
+        // without its subvolume, so a drive on /@data was refused and one on another
+        // subvolume, where the settings name none, accepted.
+        let root = std::env::temp_dir().join(format!("neko-subvolume-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let device = root.join("sdb1");
+        let by_uuid = root.join("by-uuid");
+        fs::create_dir_all(&by_uuid).unwrap();
+        fs::write(&device, b"").unwrap();
+        std::os::unix::fs::symlink(&device, by_uuid.join("ab-cd")).unwrap();
+        let dev = device.display();
+        let table = format!(
+            "42 30 0:40 /@data /mnt/data rw - btrfs {dev} rw,subvol=/@data\n\
+             43 30 0:40 /@other /mnt/other rw - btrfs {dev} rw,subvol=/@other\n"
+        );
+        let entry = |at: &str| {
+            crate::common::mount_table_entry_in(&table, Path::new(at), &by_uuid).unwrap()
+        };
+        let settings = |subvolume: &str| json!({"storage": {"data_ssd": {"uuid": "ab-cd", "fstype": "btrfs", "subvolume": subvolume}}});
+        let at = Path::new("/mnt/data");
+        // The answer reads as findmnt's, and the check agrees with it.
+        assert_eq!(entry("/mnt/data"), format!("ab-cd btrfs {dev}[/@data]"));
+        assert_eq!(
+            subvolume_of(entry("/mnt/data").split_whitespace().nth(2).unwrap()),
+            "/@data"
+        );
+        drive_check(&settings("/@data"), "data_ssd", at, &entry("/mnt/data")).unwrap();
+        let err = drive_check(&settings(""), "data_ssd", at, &entry("/mnt/other")).unwrap_err();
+        assert!(err.to_string().contains("another Btrfs subvolume"), "{err}");
+        let _ = fs::remove_dir_all(root);
+    }
     /// The 0.46.0 review, H04: with Nextcloud's files on the SSD, the USB copy refused its
     /// own folder ("outside media mount") and copied nothing, photos included. The folder
     /// must be the one setup decided, on whichever drive.

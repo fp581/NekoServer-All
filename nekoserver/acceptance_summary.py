@@ -70,6 +70,8 @@ def scope_digest(config):
         )
     }
     values['runtime'] = {'backend': config.get('runtime', {}).get('backend')}
+    if config.get('backup_times') is not None:  # since 0.48.0; settings from before have none
+        values['backup_times'] = config['backup_times']
     values['gateway'] = {k: config.get('gateway', {}).get(k) for k in ('services', 'lan_ip', 'lan_cidr')}
     values['services'] = config.get('media', {}).get('services', [])
     values['photos'] = photo_scope(config)

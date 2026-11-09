@@ -128,8 +128,8 @@ class RefreshTests(unittest.TestCase):
         """The 0.46.0 review: a schedule changed in the settings left the old day and time."""
         self.install()
         self.assertIn('OnCalendar=Sun *-*-* 03:00:00', self.timer.read_text())
-        self.config['photos']['backup_weekday'] = 'Wed'
-        day, when = photo_backup.schedule(self.config['photos'])
+        self.config['backup_times']['weekly_day'] = 'Wed'  # the weekly day setup asked for (0.48.0)
+        day, when = photo_backup.schedule(self.config)
         self.assertTrue(self.refresh())
         self.assertIn(f'OnCalendar={day} *-*-* {when}:00', self.timer.read_text())
         self.assertFalse(self.refresh())

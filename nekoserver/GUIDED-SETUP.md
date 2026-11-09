@@ -70,6 +70,7 @@ Choose number (or ENTER to abort):
 1. Type the **number** of your SSD and press Enter. Use the size to tell the drives apart.
 2. Setup asks you to type the drive's name back, for example `Type sdb1 to confirm it is the SSD:`. Type it exactly (`sdb1`) and press Enter. This is a safety check, so the wrong drive is never used.
 3. The same follows for the HDD, and then for the USB drive. No USB drive yet? Press Enter to skip it; you will be asked again at the weekly backup step.
+4. Then setup asks **when the backups run**: the time of the daily backups (`When should the daily backups run? (HH:MM, Enter for 04:15)`), the day and time of the weekly USB copy (Sunday 03:00 unless you say otherwise) and the time of the monthly check on the 1st (at night, 02:30 unless you say otherwise). Press Enter to keep the time shown; choose hours when nobody uses the server, because the apps pause for a moment while they are copied. Setup run again keeps your answers and asks only if you say yes to asking the optional questions again. In the setup window the three come as one page: a row each for the daily backups, the weekly USB copy (day and time) and the monthly check, with a line under each saying what runs then; **Save these times** sends all three, **Skip for now** keeps the times shown.
 
 ### 5. Drive space
 
@@ -122,7 +123,7 @@ Setup opens a **phone setup page** on the PC with a QR code for each app. Keep i
 3. **Signing in.** The terminal shows the app's username. To see its password, open a **second terminal** on the PC (Ctrl+Alt+T) and run the command the step shows, for example:
 
    ```bash
-   sudo python3 /srv/nekoserver/installer/releases/v0.47.10/account-setup.py show jellyfin
+   sudo python3 /srv/nekoserver/installer/releases/v0.48.0/account-setup.py show jellyfin
    ```
 
    It shows the username and password on the PC's screen, with a QR code you can scan with the phone to copy the password. Press Enter to hide it again. (Your server may keep its files somewhere other than `/srv/nekoserver`: copy the command exactly as the step shows it.)
@@ -178,7 +179,7 @@ If something still needs you, the finishing screen says what. Fix it, then run `
 Your app passwords are saved on the server, and only the administrator can read them. To see one app's login on the screen (with a QR code for your phone), run this in a terminal:
 
 ```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.47.10/account-setup.py show
+sudo python3 /srv/nekoserver/installer/releases/v0.48.0/account-setup.py show
 ```
 
 It lists the saved logins. Type a number to show one. Press Enter to hide it again (the screen is cleared), and press Enter on the list to stop. To go straight to one app, add its name: `show jellyfin`, `show immich`, `show seerr`, `show nextcloud`, or `show navidrome_listener` for music. Check that nobody else can see your screen first.
