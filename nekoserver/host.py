@@ -433,6 +433,9 @@ class Family:
     like = ()  # os-release ID_LIKE words of derivatives
     packages = MappingProxyType({})  # NekoServer's name -> this family's package name(s)
     services = MappingProxyType({})  # NekoServer's name -> this family's systemd unit
+    # NekoServer's name -> the services its packages enable and start on their own, which
+    # settle() switches off again (NekoServer starts them itself)
+    autostarted = MappingProxyType({})
     settings = ()  # this family's own host settings, kept in host backups
     journal = None  # where an unfinished installation is recorded, for families
     # whose packages need tidying afterwards (settle)
@@ -585,7 +588,19 @@ class Family:
 
     def settle(self, packages, before):
         """After installing, also after a failed or interrupted one: undo anything the
-        packages did that NekoServer manages itself."""
+        packages did that NekoServer manages itself. The services they newly brought
+        are unmasked (when protect() masked them) and switched off; if that fails they
+        are masked again, so they stay protected until the next run."""
+        self.set_aside_samba_example(packages, before)
+        existing = before.get('units_before', [])
+        new = [unit for name in packages for unit in self.autostarted.get(name, ()) if unit not in existing]
+        self.unmask([unit for unit in new if unit in before.get('new_units', [])])
+        try:
+            self.switch_off(new)
+        except RuntimeError:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                self._call(['systemctl', 'mask', '--quiet', *new], 60)  # stay protected until next time
+            raise
 
     def packaged_example(self, absolute):
         """This settings file is known to be its package's untouched example (families
@@ -1495,17 +1510,10 @@ class Debian(PackageLock, Family):
             policy.unlink()
 
     def settle(self, packages, before):
+        """First what only dpkg needs: set up the packages an interrupted installation left
+        unpacked. Then what every family does."""
         self.finish_configuring([real for name in packages for real in self.names(name)])
-        self.set_aside_samba_example(packages, before)
-        existing = before.get('units_before', [])
-        new = [unit for name in packages for unit in self.autostarted.get(name, ()) if unit not in existing]
-        self.unmask([unit for unit in new if unit in before.get('new_units', [])])
-        try:
-            self.switch_off(new)
-        except RuntimeError:
-            with contextlib.suppress(OSError, subprocess.SubprocessError):
-                self._call(['systemctl', 'mask', '--quiet', *new], 60)  # stay protected until next time
-            raise
+        super().settle(packages, before)
 
     def unmask(self, units):
         """Lift NekoServer's own masks; one a package set itself stays."""
@@ -1710,18 +1718,6 @@ class Fedora(PackageLock, Family):
             result = self._call(['systemctl', 'mask', '--quiet', *new], 60)
             if result.returncode:
                 raise RuntimeError('Could not keep ' + ', '.join(new) + ' from starting: ' + _reason(result))
-
-    def settle(self, packages, before):
-        self.set_aside_samba_example(packages, before)
-        existing = before.get('units_before', [])
-        new = [unit for name in packages for unit in self.autostarted.get(name, ()) if unit not in existing]
-        self.unmask([unit for unit in new if unit in before.get('new_units', [])])
-        try:
-            self.switch_off(new)
-        except RuntimeError:
-            with contextlib.suppress(OSError, subprocess.SubprocessError):
-                self._call(['systemctl', 'mask', '--quiet', *new], 60)  # stay protected until next time
-            raise
 
     def packaged_example(self, absolute):
         """This settings file is still exactly what its package wrote: rpm's record of the
