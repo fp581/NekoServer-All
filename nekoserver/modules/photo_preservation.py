@@ -46,14 +46,18 @@ DB_JOB = 'nekoserver-immich-db-backup'
 
 def calendars(cfg, schedule, interval):
     """The [Timer] lines of the photo jobs, from the times setup asked for (backup_times).
-    The weekly schedule has one job: the Immich database copy on the USB copy's day, just
-    before it, which takes the copy along. The old daily schedule has the archive pass
-    every `interval` minutes and the database copy every night."""
+    The weekly schedule has one job: the Immich database copy just before the USB copy,
+    which takes the copy along (on the day before it when the 45 minutes cross midnight).
+    The old daily schedule has the archive pass every `interval` minutes and the database
+    copy every night."""
     times = job_times(cfg)
     zone = host_timezone(cfg)
     if schedule == 'weekly':
         return {
-            DB_JOB: f'OnCalendar={times["usb_day"]} *-*-* {times["photo_database_weekly"]}:00 {zone}\nPersistent=true\n'
+            DB_JOB: (
+                f'OnCalendar={times["photo_database_weekly_day"]} *-*-* {times["photo_database_weekly"]}:00 {zone}\n'
+                'Persistent=true\n'
+            )
         }
     return {
         'nekoserver-photo-preservation': f'OnBootSec=10min\nOnUnitInactiveSec={interval}min\n',

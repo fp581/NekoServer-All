@@ -79,7 +79,15 @@ class JobTimesTests(unittest.TestCase):
         times = job_times(settings(daily='00:10', weekly_day='Wed', weekly='00:20', monthly='01:00'))
         self.assertEqual((times['music'], times['app'], times['host']), ('23:40', '00:10', '01:10'))
         self.assertEqual(times['photo_database'], '22:10')
-        self.assertEqual((times['usb_day'], times['usb'], times['photo_database_weekly']), ('Wed', '00:20', '23:35'))
+        self.assertEqual((times['usb_day'], times['usb']), ('Wed', '00:20'))
+        # 45 minutes before Wed 00:20 is Tue 23:35, not Wed 23:35 (23 hours after the USB copy).
+        self.assertEqual((times['photo_database_weekly_day'], times['photo_database_weekly']), ('Tue', '23:35'))
+        self.assertEqual(neko_common.day_before_if_wrapped('Mon', '00:30', -45), 'Sun')
+        self.assertEqual(neko_common.day_before_if_wrapped('Mon', '00:45', -45), 'Mon')
+        self.assertEqual(neko_common.day_before_if_wrapped('Sun', '23:30', 45), 'Mon')
+        # Settings from before 0.48.0 name the database copy's own time: its day is the USB copy's.
+        before = {'photos': {'backup_weekday': 'Mon', 'backup_time': '00:20', 'database_backup_time': '23:35'}}
+        self.assertEqual(job_times(before)['photo_database_weekly_day'], 'Mon')
         self.assertEqual(times['monthly'], '01:00')
         self.assertEqual(minutes_later('00:00', -1), '23:59')
         self.assertEqual(minutes_later('23:59', 1), '00:00')
@@ -157,6 +165,9 @@ class TimersTests(unittest.TestCase):
         weekly = photo_preservation.calendars(config, 'weekly', 10080)
         self.assertEqual(list(weekly), ['nekoserver-immich-db-backup'])
         self.assertIn('OnCalendar=Thu *-*-* 19:15:00 UTC\n', weekly['nekoserver-immich-db-backup'])
+        # A USB copy just after midnight: the database copy the evening before, on the day before.
+        early = photo_preservation.calendars(settings(weekly_day='Sun', weekly='00:20'), 'weekly', 10080)
+        self.assertIn('OnCalendar=Sat *-*-* 23:35:00 UTC\n', early['nekoserver-immich-db-backup'])
         daily = photo_preservation.calendars(settings(daily='06:00'), 'legacy', 360)
         self.assertIn('OnCalendar=*-*-* 04:00:00 UTC\n', daily['nekoserver-immich-db-backup'])
         self.assertIn('OnUnitInactiveSec=360min\n', daily['nekoserver-photo-preservation'])
