@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Setup
+- **The first checkup waits for the containers its own backups restarted.** The checkup runs the Immich database backup, which pauses and restarts Immich's containers, and inspected the server two seconds later: their health checks were still running, so the finishing screen said "something needs a look" and the dashboard's checklist kept "Immich needs a look" until the next setup run (seen on the 0.48.1 gate; present since 0.41.1). The checkup now looks again every 10 seconds for up to two minutes while a failing check is only a container still starting, as the gateway step already did; anything else wrong is reported at once, and so is a container still not up after the wait.
+
+### Backups and updates
+- **The weekly USB copy takes the newest database copy and password list that pass their checksum.** When the newest Immich (or Nextcloud) database copy on the HDD, or the newest sealed password list, failed its checksum, the week's copy reported the damage and copied nothing, leaving the USB drive without a fresh copy for as long as the damaged one stayed the newest. It now passes the damaged one over and copies the newest one that still matches, and the report names both: the copy that failed and was skipped, and the one copied instead. With no sound copy at all it behaves as before (nothing copied, the damage reported).
+
+### Upgrade
+- **Tidy: the release folders an upgrade protects.** `upgrade_needs` also protected the name of the folder the new release's setup runs from, which is always `nekoserver` and never a release folder, so the line did nothing; it is gone, with a comment saying why. Nothing changes in what is kept or removed.
+
 ## v0.48.1 — 2026-11-09
 
 Fixes only, from an outside review of 0.48.0: nineteen things in setup, the upgrade tool and the backup jobs, most of them gaps the new backup-times question left. Nothing changes how NekoServer is used; a few lines setup says are new, each named below.
