@@ -181,8 +181,15 @@ def launch(ctx, target, kind='url'):
             argv = [SETTINGS_APP, 'bluetooth']
         if not Path(argv[0]).is_file():
             return False
+    return launch_quietly(ctx.config, argv)
+
+
+def launch_quietly(config, argv):
+    """Start a program on the desktop, detached and silent (argv, never shell text). True
+    when it succeeds within two seconds or is still running then (a long-lived app was
+    launched; any confirmation is still asked for); False when it failed or could not start."""
     try:
-        command = desktop_command(ctx.config, argv)
+        command = desktop_command(config, argv)
         child = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -194,7 +201,7 @@ def launch(ctx, target, kind='url'):
         try:
             return child.wait(timeout=2) == 0
         except subprocess.TimeoutExpired:
-            return True  # Long-lived app was launched; confirmation is still required.
+            return True
     except (OSError, RuntimeError, KeyError, ValueError):
         return False
 
