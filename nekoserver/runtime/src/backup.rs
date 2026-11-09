@@ -2734,7 +2734,31 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
     common::atomic_json(&path, &row)?;
     let result = operation();
     row["finished_at"] = json!(common::now());
-    match &result {
+    let row = settled_report(row, &old, &result);
+    // The report lives on the SSD: with the SSD gone it cannot be written, and the job's
+    // own error still comes first.
+    let reported = (|| {
+        if !common::mounted(data) {
+            return Err(Error::new("Application SSD disappeared before report"));
+        }
+        guard_data(cfg, data)?;
+        if row.is_null() {
+            // The job gave way and had no report before: the "running" row goes again.
+            return match fs::remove_file(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other.map_err(Error::from),
+            };
+        }
+        common::atomic_json(&path, &row)
+    })();
+    common::first_error(result, reported).map(|_| ())
+}
+/// The report to save once the job ended: `row` (the running report) settled by how the
+/// job went. A job that gave way (`gave_way`) did not run and did not fail: the report
+/// as it was before the run (`old`) is saved again, so the last real result stays on the
+/// dashboard (Null when there was none).
+fn settled_report(mut row: Value, old: &Value, result: &Result<Outcome>) -> Value {
+    match result {
         Ok(Outcome {
             partial: Some(missing),
         }) => {
@@ -2746,6 +2770,7 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
             row["status"] = json!("pass");
             row["last_success"] = json!(common::now());
         }
+        Err(e) if gave_way(e) => return old.clone(),
         Err(e) => {
             row["status"] = json!("fail");
             // Private report: why and at which step, so "inspect logs" is not the only clue.
@@ -2753,17 +2778,21 @@ pub fn execute_with<F: FnOnce() -> Result<Outcome>>(
             row["stage"] = json!(common::current_stage());
         }
     }
-    // The report lives on the SSD: with the SSD gone it cannot be written, and the job's
-    // own error still comes first.
-    let reported = (|| {
-        if !common::mounted(data) {
-            return Err(Error::new("Application SSD disappeared before report"));
-        }
-        guard_data(cfg, data)?;
-        common::atomic_json(&path, &row)
-    })();
-    common::first_error(result, reported).map(|_| ())
+    row
 }
+/// A job that gave way did not fail: to setup (`common::postponed`), or the weekly USB
+/// copy to the monthly run (`yielded`). Nothing is recorded against it, and it runs
+/// again at its next time.
+fn gave_way(e: &Error) -> bool {
+    common::postponed(e) || yielded(e)
+}
+/// The weekly USB copy gave way to the monthly run, which copies the drive itself.
+pub fn yielded(e: &Error) -> bool {
+    e.to_string().starts_with(MONTHLY_YIELD)
+}
+/// Said when the weekly USB copy finds the monthly run at work: no failure, the drive
+/// gets its copy from the monthly run and the weekly copy runs again next week.
+const MONTHLY_YIELD: &str = "The monthly update is running, so this week's USB copy did not start (the monthly run makes its own copy of the drive)";
 /// Add `key` to the report of job `name` after it failed (the monthly update says that
 /// it was undone). The next run starts a new report, without it.
 pub(crate) fn note_failed_report(
@@ -4011,7 +4040,9 @@ fn pause_lock(cfg: &Path, data: &Path, media: &Path) -> Result<fs::File> {
 /// Held for the whole copy (hours, for a first or big one), the lock made the nightly
 /// backups wait and fail, and setup report itself busy. A monthly run that starts
 /// during the copy waits for the USB drive's own lock before it copies to the drive.
-/// A failure here is recorded in the job's report like any other.
+/// A failure here is recorded in the job's report like any other; giving way to the
+/// monthly run is not one (the drive gets that night's copy from the monthly run), and
+/// leaves the report as it was.
 pub fn weekly(a: &Args) -> Result<()> {
     let cfg = a.path("config")?;
     let data = common::mount_path(a.get("data")?)?;
@@ -4021,8 +4052,9 @@ pub fn weekly(a: &Args) -> Result<()> {
     let resumed = no_monthly_run(&cfg, &data, &media, || resume_in_docker(&NEXTCLOUD));
     match resumed {
         Ok(()) => usb_copy(a, Check::Quick, true),
-        // Setup was working: no failure recorded, the copy runs next week.
-        Err(e) if common::postponed(&e) => Err(e),
+        // Setup or the monthly run was working: no failure recorded, the copy runs next
+        // week (the monthly run makes its own copy of the drive).
+        Err(e) if gave_way(&e) => Err(e),
         Err(e) => execute(Some(&data), "external", &cfg, move || Err(e)),
     }
 }
@@ -4066,9 +4098,7 @@ fn monthly_admission(state: &dyn Fn(&str) -> String, journal: &Path) -> Result<(
         "nekoserver-maintenance-resume.service",
     ] {
         if service_busy(&state(unit)) {
-            return Err(Error::new(
-                "The monthly update is running, so this week's USB copy did not start (the monthly run makes its own copy of the drive)",
-            ));
+            return Err(Error::new(MONTHLY_YIELD));
         }
     }
     Ok(())
@@ -4301,6 +4331,7 @@ fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
     execute_with(Some(&run.data), "external", &run.cfg, || {
         // A monthly run may have started while this waited for the drive (the shared
         // lock was let go after the first check): checked again, now that it is held.
+        // Giving way here is no failure either: the report stays as it was.
         if check == Check::Quick {
             monthly_admission(&unit_state, Path::new(*crate::maintenance::JOURNAL))?;
         }
@@ -8148,5 +8179,43 @@ mod tests {
         );
         let full = &source[source.find("pub fn guard(").unwrap()..];
         assert!(full[..full.find("\n}\n").unwrap()].contains("checked_drive(&c, key, path)"));
+    }
+    /// Seen as a week of "failed" on the dashboard: the 1st fell on the weekly day, the
+    /// monthly run had copied the drive, and the weekly copy's giving way to it was
+    /// recorded over that pass as a failure.
+    #[test]
+    fn a_weekly_copy_that_gives_way_to_the_monthly_run_keeps_the_last_report() {
+        let root = scratch("weekly-gives-way");
+        let journal = root.join("maintenance-resume.json");
+        let monthly = |unit: &str| {
+            if unit == "nekoserver-maintenance-resume.service" {
+                "active".to_string()
+            } else {
+                "inactive".to_string()
+            }
+        };
+        let yielded = || monthly_admission(&monthly, &journal).unwrap_err();
+        assert!(gave_way(&yielded()), "{}", yielded());
+        assert!(gave_way(&Error::new(common::POSTPONED)));
+        // A monthly update cut off half-way is a problem to act on, so it is recorded.
+        assert!(!gave_way(&Error::new(UNFINISHED)));
+        let old = json!({"job":"external","status":"pass","started_at":100.0,"finished_at":160.0,"last_success":160.0});
+        let row = running_row("external", 200.0, &old);
+        // Gave way: the report says what it said before the run, the pass included.
+        assert_eq!(settled_report(row.clone(), &old, &Err(yielded())), old);
+        // Never ran before: nothing is kept, and no "running" row stays behind.
+        assert!(settled_report(row.clone(), &Value::Null, &Err(yielded())).is_null());
+        // Any other error is the failure it always was.
+        let failed = settled_report(row, &old, &Err(Error::new("Drive full")));
+        assert_eq!(failed["status"], "fail");
+        assert_eq!(failed["reason"], "Drive full");
+        assert_eq!(failed["last_success"], 160.0);
+        // weekly() does not even open the report for it, and its service ends well.
+        let source = include_str!("backup.rs");
+        let weekly = &source[source.find("pub fn weekly(").unwrap()..];
+        let weekly = &weekly[..weekly.find("\n}\n").unwrap()];
+        assert!(weekly.contains("Err(e) if gave_way(&e) => Err(e)"));
+        assert!(include_str!("main.rs").contains("if common::postponed(&e) || backup::yielded(&e)"));
+        let _ = fs::remove_dir_all(root);
     }
 }

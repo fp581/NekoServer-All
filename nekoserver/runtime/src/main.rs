@@ -55,9 +55,10 @@ impl Args {
 }
 fn main() {
     if let Err(e) = entry() {
-        if common::postponed(&e) {
-            // Gave way to setup: said, but not a failure (systemd and the alerts see a
-            // job that ended well, and it runs again at its next time).
+        if common::postponed(&e) || backup::yielded(&e) {
+            // Gave way to setup, or the weekly USB copy to the monthly run: said, but not
+            // a failure (systemd and the alerts see a job that ended well, and it runs
+            // again at its next time).
             println!("{}", common::sanitize(&e.to_string()));
             return;
         }
