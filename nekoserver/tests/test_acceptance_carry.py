@@ -84,7 +84,22 @@ class CarryTests(unittest.TestCase):
                     if check['id'] == 'app_restore':
                         check.update(status='pass', evidence='user_reported', confirmed_at=time.time())
                 latest.write_text(json.dumps(first))
-                first_checkup.inspect(cfg)
+                # The real checks, but a wait that never ends (the 0.48.2 mutation pass
+                # turned inspect's `break` into `continue`) fails at once instead of
+                # hanging the suite; nothing here is starting, so nothing is waited for.
+                real_inspect, looks = acceptance.inspect, []
+
+                def look(config, mode):
+                    looks.append(mode)
+                    if len(looks) > 20:
+                        raise AssertionError('first_checkup.inspect kept waiting: more than 20 looks')
+                    return real_inspect(config, mode)
+
+                def sleep(seconds):
+                    raise AssertionError('first_checkup.inspect waited though nothing was starting')
+
+                with mock.patch.object(acceptance, 'inspect', side_effect=look):
+                    first_checkup.inspect(cfg, sleep=sleep)
             after = {c['id']: c['status'] for c in saved[-1]['manual']}
             self.assertEqual(after['app_restore'], 'pass')
 
