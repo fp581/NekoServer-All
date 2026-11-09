@@ -342,3 +342,5 @@ Good to know:
 ## Status
 
 Every change is tested automatically (Python and Rust tests, and checks of every app's configuration), but those tests simulate the hardware. Before trusting it with your only copy of anything, try a full round on your own PC: play a video, upload a photo from your phone, and restore a file from backup.
+
+How each release is tested (the fixed user journeys, the safety rules, the release gate report): [TESTING.md](TESTING.md); what the last gate proved: [tests/COVERAGE-MAP.md](tests/COVERAGE-MAP.md).
