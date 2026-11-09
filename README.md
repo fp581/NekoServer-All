@@ -83,6 +83,7 @@ A check on GitHub (the "Release channel" job) marks each new release as its tag 
 ## More
 
 - What changed in each version: [CHANGELOG.md](CHANGELOG.md)
+- Architecture: how the parts connect: [the wiki](https://github.com/fp581/NekoServer-All/wiki/Architecture)
 - What is tested, experimental or not supported: [SUPPORT.md](nekoserver/SUPPORT.md)
 - How support for another Linux family is added: [PORTING.md](nekoserver/PORTING.md)
 - Every change is tested automatically in GitHub Actions. The tests simulate the hardware, so try a full round on your own PC (play a video, upload a photo, restore a file) before trusting it with your only copy of anything.
