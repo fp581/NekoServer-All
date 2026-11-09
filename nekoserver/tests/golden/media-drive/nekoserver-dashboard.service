@@ -1,0 +1,25 @@
+[Unit]
+Description=NekoServer local dashboard
+Requires=nekoserver-dashboard.socket
+Wants=nekoserver-dashboard-collect.service
+After=network.target nekoserver-dashboard.socket nekoserver-dashboard-collect.service
+StartLimitIntervalSec=0
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/local/lib/nekoserver-dashboard/v0.48.1/nekoserver-runtime serve --assets /usr/local/lib/nekoserver-dashboard/v0.48.1/dashboard --status /run/nekoserver-dashboard/status.json --port 8790 --public-host neko.tail1234.ts.net
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock /srv/nekoserver /etc/nekoserver-dashboard -/etc/nekoserver-control
+SupplementaryGroups=nekoserver-control
+[Install]
+WantedBy=multi-user.target

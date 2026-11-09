@@ -1,0 +1,10 @@
+[Unit]
+Description=NekoServer lighting link (the socket only the control service may use)
+[Socket]
+ListenStream=/run/nekoserver-openrgb/openrgb.sock
+SocketUser=root
+SocketGroup=root
+SocketMode=0600
+DirectoryMode=0700
+[Install]
+WantedBy=sockets.target

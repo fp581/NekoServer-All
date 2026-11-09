@@ -1,0 +1,8 @@
+[Unit]
+Description=nekoserver-immich-db-backup timer
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=NekoServer lighting (OpenRGB server)
+After=systemd-modules-load.service
+JoinsNamespaceOf=nekoserver-openrgb-proxy.service
+StartLimitIntervalSec=0
+[Service]
+Type=simple
+ExecStart=/usr/bin/openrgb --server --server-port 6742
+Environment=QT_QPA_PLATFORM=offscreen HOME=/var/lib/nekoserver-openrgb XDG_CONFIG_HOME=/var/lib/nekoserver-openrgb
+StateDirectory=nekoserver-openrgb
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+IPAddressDeny=any
+IPAddressAllow=localhost
+[Install]
+WantedBy=multi-user.target

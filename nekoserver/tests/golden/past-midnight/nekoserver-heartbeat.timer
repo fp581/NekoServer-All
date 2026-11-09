@@ -1,0 +1,8 @@
+[Unit]
+Description=NekoServer availability heartbeat schedule
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=300s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

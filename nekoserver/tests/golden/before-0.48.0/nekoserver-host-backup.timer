@@ -1,0 +1,7 @@
+[Unit]
+Description=NekoServer nightly host and user snapshot
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target
