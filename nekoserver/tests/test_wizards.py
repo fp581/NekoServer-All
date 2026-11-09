@@ -326,6 +326,36 @@ class FirstCheckupTests(unittest.TestCase):
 
         return run, calls
 
+    # More looks or sleeps than this means first_checkup.inspect's wait never ends (the
+    # 0.48.2 mutation pass turned its `break` into `continue`): the test then fails at
+    # once with a clear message instead of hanging the suite.
+    MOST_LOOKS = 20
+
+    def looks(self, *reports):
+        """A stand-in for acceptance.inspect: `reports` in turn (the last one again after
+        that), failing past MOST_LOOKS looks."""
+        calls = []
+
+        def inspect(config, mode):
+            calls.append(mode)
+            if len(calls) > self.MOST_LOOKS:
+                raise AssertionError(f'first_checkup.inspect kept waiting: more than {self.MOST_LOOKS} looks')
+            return reports[min(len(calls), len(reports)) - 1]
+
+        return inspect
+
+    def sleeps(self):
+        """A stand-in for time.sleep: the seconds asked for, and a sleep that fails past
+        MOST_LOOKS sleeps."""
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) > self.MOST_LOOKS:
+                raise AssertionError(f'first_checkup.inspect kept waiting: more than {self.MOST_LOOKS} sleeps')
+
+        return slept, sleep
+
     def test_only_switched_on_backups_run_in_order_then_the_checkup(self):
         self.report('applications', 'pass')
         run, calls = self.systemctl({'nekoserver-app-backup', 'nekoserver-media-health'})
@@ -360,7 +390,7 @@ class FirstCheckupTests(unittest.TestCase):
                 {'id': 'b', 'name': 'Phone alerts', 'status': 'needs_setup'},
             ]
         }
-        with mock.patch('acceptance.inspect', return_value=report), mock.patch('acceptance.save'):
+        with mock.patch('acceptance.inspect', side_effect=self.looks(report)), mock.patch('acceptance.save'):
             self.assertEqual(first_checkup.inspect(self.config), (1, ['Phone alerts (still to set up)']))
 
     def starting_reports(self, *then):
@@ -390,12 +420,12 @@ class FirstCheckupTests(unittest.TestCase):
                 {'id': 'b', 'name': 'Phone alerts', 'status': 'needs_setup', 'detail': 'Not set up yet.'},
             ]
         }
-        slept = []
+        slept, sleep = self.sleeps()
         with (
-            mock.patch('acceptance.inspect', side_effect=self.starting_reports(passed)),
+            mock.patch('acceptance.inspect', side_effect=self.looks(*self.starting_reports(passed))),
             mock.patch('acceptance.save') as save,
         ):
-            result = first_checkup.inspect(self.config, sleep=slept.append, clock=lambda: 0.0)
+            result = first_checkup.inspect(self.config, sleep=sleep, clock=lambda: 0.0)
         self.assertEqual(result, (3, ['Phone alerts (still to set up)']))
         self.assertEqual(slept, [10, 10])
         save.assert_called_once_with(self.config, passed)
@@ -403,13 +433,15 @@ class FirstCheckupTests(unittest.TestCase):
     def test_the_wait_for_a_starting_container_gives_up_after_the_deadline(self):
         # The clock passes STARTING_WAIT on the third look: what is still starting is
         # reported, nothing is hidden.
-        clock = iter([0.0, 5.0, 15.0, first_checkup.STARTING_WAIT + 1.0])
-        slept = []
+        late = first_checkup.STARTING_WAIT + 1.0
+        clock = iter([0.0, 5.0, 15.0, late])
+        slept, sleep = self.sleeps()
+        still_starting = self.looks(*self.starting_reports(self.starting_reports()[0]))
         with (
-            mock.patch('acceptance.inspect', side_effect=self.starting_reports(self.starting_reports()[0])),
+            mock.patch('acceptance.inspect', side_effect=still_starting),
             mock.patch('acceptance.save') as save,
         ):
-            passed, problems = first_checkup.inspect(self.config, sleep=slept.append, clock=lambda: next(clock))
+            passed, problems = first_checkup.inspect(self.config, sleep=sleep, clock=lambda: next(clock, late))
         self.assertEqual(passed, 1)
         self.assertEqual(problems, ['Immich / immich-server', 'Immich / immich-ml', 'Phone alerts (still to set up)'])
         self.assertEqual(slept, [10, 10])
@@ -422,9 +454,9 @@ class FirstCheckupTests(unittest.TestCase):
                 {'id': 'c', 'name': 'Drive space', 'status': 'fail', 'detail': 'The HDD is 97% full.'},
             ]
         }
-        slept = []
-        with mock.patch('acceptance.inspect', return_value=report) as inspect, mock.patch('acceptance.save'):
-            result = first_checkup.inspect(self.config, sleep=slept.append, clock=lambda: 0.0)
+        slept, sleep = self.sleeps()
+        with mock.patch('acceptance.inspect', side_effect=self.looks(report)) as inspect, mock.patch('acceptance.save'):
+            result = first_checkup.inspect(self.config, sleep=sleep, clock=lambda: 0.0)
         self.assertEqual(result, (1, ['Drive space']))
         self.assertEqual(slept, [])
         inspect.assert_called_once()
