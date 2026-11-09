@@ -9,4 +9,4 @@ Type=oneshot
 UMask=0077
 Environment=NEKOSERVER_MAINTENANCE_RETRY=1
 TimeoutStartSec=infinity
-ExecStart=/srv/nekoserver/installer/runtime/v0.48.1/nekoserver-runtime maintenance-resume --config /etc/nekoserver-backups/maintenance.json
+ExecStart=/srv/nekoserver/installer/runtime/v0.48.2/nekoserver-runtime maintenance-resume --config /etc/nekoserver-backups/maintenance.json
