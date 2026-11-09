@@ -198,8 +198,8 @@ UPGRADE_JOURNAL = RECOVERY['upgrade'][0]
 
 def upgrade_needs(journal=UPGRADE_JOURNAL):
     """The release folder names an upgrade at work (or cut off) still needs: the release
-    it would put back (its way back) and the one it is installing. An unreadable record
-    keeps every release, as it can't say which one is needed."""
+    it would put back (its way back). An unreadable record keeps every release, as it
+    can't say which one is needed."""
     try:
         saved = json.loads(Path(journal).read_text())
     except FileNotFoundError:
@@ -208,8 +208,11 @@ def upgrade_needs(journal=UPGRADE_JOURNAL):
         return None
     if not isinstance(saved, dict):
         return None
-    names = {Path(str(saved.get(key) or '')).name for key in ('previous', 'project')}
-    names |= {'v' + str(saved[key]).lstrip('v') for key in ('from',) if saved.get(key)}
+    # The record's 'project' is the folder the new release's setup runs from (its
+    # download's nekoserver/ folder), never a release folder here: nothing to protect.
+    names = {Path(str(saved.get('previous') or '')).name}
+    if saved.get('from'):
+        names.add('v' + str(saved['from']).lstrip('v'))
     return {n for n in names if n}
 
 
