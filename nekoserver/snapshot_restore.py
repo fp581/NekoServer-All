@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import sys
 
-from neko_common import Destination, safe_path, ensure_room
+from neko_common import Destination, safe_path, ensure_room, sha256_file
 
 
 # What the restore did, written into the new folder next to the files.
@@ -64,11 +64,6 @@ HOST = Kind(
     'point nowhere until copied back). Nothing on the server was changed or restarted.',
     failed_message='Snapshot verification or restoration failed. Live OS/user/Samba data was not changed.',
 )
-
-
-def digest(path):
-    with path.open('rb') as source:
-        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
 def relative(kind, value):
@@ -126,7 +121,7 @@ def check_row(kind, snapshot, row, inventory):
         not path.is_file()
         or metadata.st_nlink != 1
         or metadata.st_size != row['size']
-        or digest(path) != row.get('sha256')
+        or sha256_file(path) != row.get('sha256')
     ):
         raise RuntimeError('Snapshot file checksum or size mismatch')
     if row['kind'] == 'symlink' and (
