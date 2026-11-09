@@ -102,6 +102,16 @@ def keep_confirmed(config, earlier):
         atomic_json(report_path(config), report)
 
 
+def answering(result):
+    """Routes in place are not enough (S03): without Tailscale's certificate every
+    address hangs at the TLS handshake, so the step waits for setup instead."""
+    if result.get('status') == 'configured':
+        problem = gateway_tools.https_problem(result.get('links') or {})
+        if problem:
+            return {'status': 'needs_setup', 'reason': problem}
+    return result
+
+
 def secure_addresses(ctx):
     """Turn on Tailscale HTTPS addresses for the apps; asks only if HTTPS is not on yet."""
     result = {}
@@ -111,15 +121,6 @@ def secure_addresses(ctx):
         result = gateway_tools.apply_tailnet(ctx.config)
         return result.get('status') == 'configured'
 
-    def answering():
-        """Routes in place are not enough (S03): without Tailscale's certificate every
-        address hangs at the TLS handshake, so the step waits for setup instead."""
-        if result.get('status') == 'configured':
-            problem = gateway_tools.https_problem(result.get('links') or {})
-            if problem:
-                return {'status': 'needs_setup', 'reason': problem}
-        return result
-
     interactive = guided_setup.interactive(ctx)
     if interactive and gateway_tools.https_ready():
         # MagicDNS and HTTPS are on: a failure here is something else (an app not
@@ -127,7 +128,7 @@ def secure_addresses(ctx):
         # sending you to the DNS settings page again.
         try:
             if configure_routes():
-                checked = answering()
+                checked = answering(result)
                 if checked is result:
                     ctx.log('Tailscale: MagicDNS and HTTPS already on; secure addresses updated')
                 return checked
@@ -136,7 +137,7 @@ def secure_addresses(ctx):
             return {'status': 'needs_setup', 'reason': 'Secure addresses not set up: ' + str(exc)}
     if not interactive:
         configure_routes()
-        return answering()
+        return answering(result)
     if guided_setup.checkpoint(
         ctx,
         'Tailscale: turn on secure addresses',
@@ -154,7 +155,7 @@ def secure_addresses(ctx):
         [('url', 'https://console.tailscale.com/admin/dns')],
         verify=configure_routes,
     ):
-        return answering()
+        return answering(result)
     return {'status': 'needs_setup', 'reason': 'Private HTTPS configuration pending; reapply to resume'}
 
 

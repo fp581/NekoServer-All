@@ -771,10 +771,12 @@ def https_answers(name, port, address=None, timeout=CERT_TRY):
     request = 'HEAD / HTTP/1.1\r\nHost: ' + name + ':' + str(port) + '\r\nConnection: close\r\n\r\n'
     try:
         context = ssl.create_default_context()
-        with socket.create_connection((address or name, int(port)), timeout=timeout) as raw:
-            with context.wrap_socket(raw, server_hostname=name) as tls:
-                tls.sendall(request.encode())
-                return tls.recv(64).startswith(b'HTTP/')
+        with (
+            socket.create_connection((address or name, int(port)), timeout=timeout) as raw,
+            context.wrap_socket(raw, server_hostname=name) as tls,
+        ):
+            tls.sendall(request.encode())
+            return tls.recv(64).startswith(b'HTTP/')
     except (OSError, ValueError):
         return False
 
@@ -802,25 +804,35 @@ def tailscale_log():
         return ''
 
 
-def certificate_why(name, status, log, now):
-    """Why Tailscale has no certificate for this name, as far as it says so itself: Let's
-    Encrypt's weekly limit with the time it ends (tailscaled's log, while that is still to
-    come), else Tailscale's own health message about it; '' when nothing says."""
+def rate_limit_why(name, log, now):
+    """Let's Encrypt's weekly limit for this name with the time it ends, as tailscaled's
+    log last gave it, while that time is still to come; '' otherwise."""
     retry = None
     for line in log.splitlines():
         if 'cert("' + name + '")' in line:
             found = RATE_LIMITED.search(line)
             retry = found.groups() if found else retry
-    if retry:
-        try:
-            when = dt.datetime.strptime(retry[1], '%Y-%m-%d %H:%M:%S').replace(tzinfo=dt.timezone.utc)
-        except ValueError:
-            when = None
-        if when and when > now:
-            return (
-                f"Let's Encrypt gives a machine name at most {retry[0]} certificates a week; "
-                f'it allows the next one after {retry[1]} UTC.'
-            )
+    if not retry:
+        return ''
+    try:
+        when = dt.datetime.strptime(retry[1], '%Y-%m-%d %H:%M:%S').replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return ''
+    if when <= now:
+        return ''
+    return (
+        f"Let's Encrypt gives a machine name at most {retry[0]} certificates a week; "
+        f'it allows the next one after {retry[1]} UTC.'
+    )
+
+
+def certificate_why(name, status, log, now):
+    """Why Tailscale has no certificate for this name, as far as it says so itself: Let's
+    Encrypt's weekly limit with the time it ends, else Tailscale's own health message
+    about it; '' when nothing says."""
+    why = rate_limit_why(name, log, now)
+    if why:
+        return why
     for note in status.get('Health') or []:
         if isinstance(note, str) and re.search(r'certificate|\bTLS\b|\bACME\b', note, re.I):
             return 'Tailscale says: ' + ' '.join(note.split()).rstrip('.') + '.'
