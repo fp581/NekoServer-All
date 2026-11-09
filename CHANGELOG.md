@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## v0.48.2 — 2026-11-09
+
+A cleanup release: less repeated code, the tests that freeze what setup writes, and the written standard every release is now tested by. Three fixes carried from the 0.48.1 review come with it. Nothing changes how NekoServer is used; the new report lines are named below.
+
+### Cleanup
+- **Seven places that did the same thing now share one.** The setup window and the terminal start a desktop app through one function; the upgrade and the drive move read their records and check each other's locks through two shared helpers; Debian and the Fedora family settle half-installed packages through one method; two of the four file-checksum functions became the shared one (the other two read in blocks and check the path first, so they stay); the runtime's app port lookup has one copy; the app, host and music backups write their nightly timer through one template; the setup window enables and disables its answer controls in one place. Every unit, timer and settings file setup writes is byte for byte the same as in 0.48.1 (the new golden-file tests compare them).
+- **The search found nothing else to remove.** Every file in the repository is used, no test duplicates another or tests code that is gone, and the dead-code tools report nothing.
+
+### Tests
+- **Golden-file tests of everything setup writes for systemd and the runtime.** For four fixed setups (the defaults, libraries on the media drive with no USB drive, a settings file from before 0.48.0, and backup times that cross midnight), every unit, timer, drop-in and job settings file (224 files) is rendered and compared byte for byte with a kept copy; a change shows as a diff. A release bump regenerates them with one command (tests/golden/README.md).
+- **The test standard.** TESTING.md is how every release is tested: nine fixed user journeys with concrete expected results, seven safety rules with the guard that enforces each and the tests that assert it, six controlled failures, compatibility fixtures, one record format for every case, and a gate report that says passed, failed, skipped or not tested. tests/COVERAGE-MAP.md says what the 0.48.1 gate proved and what it did not, and links each 0.48.1 fix to its regression test. tests/golden/BASELINE-0.48.1.md keeps the numbers this release is measured against.
+
+### How it was tested
+- Python tests (1481, on Ubuntu 24.04 with Python 3.12; five tests of the removed 0.21.0 path are gone) and Rust tests (479, on Arch Linux with Rust 1.99.1, the one CI uses) pass; ruff, rustfmt and clippy are clean, and Prettier and the setup window's page tests ran on Arch Linux with node 26. The golden-file tests passed unchanged across the cleanup; the version bump changed only the release number in their paths.
+- The release gate, a fresh install with a desktop on a clean Debian 13 PC (a virtual machine), the backup and restore drills and the phone checks, runs on this branch before the pull request is opened.
 
 ### Setup
 - **The first checkup waits for the containers its own backups restarted.** The checkup runs the Immich database backup, which pauses and restarts Immich's containers, and inspected the server two seconds later: their health checks were still running, so the finishing screen said "something needs a look" and the dashboard's checklist kept "Immich needs a look" until the next setup run (seen on the 0.48.1 gate; present since 0.41.1). The checkup now looks again every 10 seconds for up to two minutes while a failing check is only a container still starting, as the gateway step already did; anything else wrong is reported at once, and so is a container still not up after the wait.
@@ -9,7 +23,7 @@
 - **The weekly USB copy takes the newest database copy and password list that pass their checksum.** When the newest Immich (or Nextcloud) database copy on the HDD, or the newest sealed password list, failed its checksum, the week's copy reported the damage and copied nothing, leaving the USB drive without a fresh copy for as long as the damaged one stayed the newest. It now passes the damaged one over and copies the newest one that still matches, and the report names both: the copy that failed and was skipped, and the one copied instead. With no sound copy at all it behaves as before (nothing copied, the damage reported).
 
 ### Upgrade
-- Upgrading straight from 0.21.0 (2025) is no longer handled; upgrade to 0.41 or later first.
+- **Upgrading straight from 0.21.0 or 0.16.0 is no longer handled.** Setup recognised the exact Compose files those 2025 releases wrote and rewrote them; nobody runs them any more (0.41.2 already said so). Upgrade to 0.41 or later first.
 - **Tidy: the release folders an upgrade protects.** `upgrade_needs` also protected the name of the folder the new release's setup runs from, which is always `nekoserver` and never a release folder, so the line did nothing; it is gone, with a comment saying why. Nothing changes in what is kept or removed.
 
 ## v0.48.1 — 2026-11-09
