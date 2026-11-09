@@ -363,6 +363,72 @@ class FirstCheckupTests(unittest.TestCase):
         with mock.patch('acceptance.inspect', return_value=report), mock.patch('acceptance.save'):
             self.assertEqual(first_checkup.inspect(self.config), (1, ['Phone alerts (still to set up)']))
 
+    def starting_reports(self, *then):
+        """Reports in which Immich's two containers are still starting (the checkup's own
+        database backup restarted them a moment ago), followed by `then`."""
+        from acceptance import STARTING
+
+        starting = {
+            'automatic': [
+                {'id': 'a', 'name': 'Drives', 'status': 'pass'},
+                {'id': 'immich-server', 'name': 'Immich / immich-server', 'status': 'fail', 'detail': STARTING},
+                {'id': 'immich-ml', 'name': 'Immich / immich-ml', 'status': 'fail', 'detail': STARTING},
+                {'id': 'b', 'name': 'Phone alerts', 'status': 'needs_setup', 'detail': 'Not set up yet.'},
+            ]
+        }
+        return [starting, starting, *then]
+
+    def test_a_container_the_backups_restarted_is_waited_for(self):
+        """Seen on the 0.48.1 gate: the Immich database backup restarted Immich's containers
+        and the checkup two seconds later called them failed, so the finishing screen and
+        the dashboard said "Immich needs a look" for nothing."""
+        passed = {
+            'automatic': [
+                {'id': 'a', 'name': 'Drives', 'status': 'pass'},
+                {'id': 'immich-server', 'name': 'Immich / immich-server', 'status': 'pass'},
+                {'id': 'immich-ml', 'name': 'Immich / immich-ml', 'status': 'pass'},
+                {'id': 'b', 'name': 'Phone alerts', 'status': 'needs_setup', 'detail': 'Not set up yet.'},
+            ]
+        }
+        slept = []
+        with (
+            mock.patch('acceptance.inspect', side_effect=self.starting_reports(passed)),
+            mock.patch('acceptance.save') as save,
+        ):
+            result = first_checkup.inspect(self.config, sleep=slept.append, clock=lambda: 0.0)
+        self.assertEqual(result, (3, ['Phone alerts (still to set up)']))
+        self.assertEqual(slept, [10, 10])
+        save.assert_called_once_with(self.config, passed)
+
+    def test_the_wait_for_a_starting_container_gives_up_after_the_deadline(self):
+        # The clock passes STARTING_WAIT on the third look: what is still starting is
+        # reported, nothing is hidden.
+        clock = iter([0.0, 5.0, 15.0, first_checkup.STARTING_WAIT + 1.0])
+        slept = []
+        with (
+            mock.patch('acceptance.inspect', side_effect=self.starting_reports(self.starting_reports()[0])),
+            mock.patch('acceptance.save') as save,
+        ):
+            passed, problems = first_checkup.inspect(self.config, sleep=slept.append, clock=lambda: next(clock))
+        self.assertEqual(passed, 1)
+        self.assertEqual(problems, ['Immich / immich-server', 'Immich / immich-ml', 'Phone alerts (still to set up)'])
+        self.assertEqual(slept, [10, 10])
+        save.assert_called_once()
+
+    def test_a_check_failing_for_another_reason_is_reported_at_once(self):
+        report = {
+            'automatic': [
+                {'id': 'a', 'name': 'Drives', 'status': 'pass'},
+                {'id': 'c', 'name': 'Drive space', 'status': 'fail', 'detail': 'The HDD is 97% full.'},
+            ]
+        }
+        slept = []
+        with mock.patch('acceptance.inspect', return_value=report) as inspect, mock.patch('acceptance.save'):
+            result = first_checkup.inspect(self.config, sleep=slept.append, clock=lambda: 0.0)
+        self.assertEqual(result, (1, ['Drive space']))
+        self.assertEqual(slept, [])
+        inspect.assert_called_once()
+
     def test_a_checkup_that_cannot_run_says_how_to_run_it_later(self):
         run, _ = self.systemctl(set())
 
