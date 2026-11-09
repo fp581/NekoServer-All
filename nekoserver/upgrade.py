@@ -679,7 +679,12 @@ def settled(config, out=print, journal=JOURNAL, saved=None, check=None, by_hand=
     Seen on the rig: 0.46.3 installed by hand over a failed upgrade to it, and the next
     start put 0.46.2 back over it. `by_hand` (a person's setup run just ended): the
     release the server had before counts too, which is what a failed way back asks for.
-    Says so and returns True; otherwise changes nothing."""
+    Says so and returns True; otherwise changes nothing. A runtime copy the way back hid
+    (newer_runtimes_hidden) gets its own name back with the record: a way back cut off
+    before the older setup marked a step running (a power cut, `systemctl stop`) left the
+    copy hidden, and the next start closed the record here without giving it back, so the
+    link stayed at the copy's name for good and every later setup of that release refused
+    it ("Refusing symlink path")."""
     saved = saved or read(journal)
     if saved is None or saved.get('phase') == 'downloading':
         return False
@@ -690,6 +695,7 @@ def settled(config, out=print, journal=JOURNAL, saved=None, check=None, by_hand=
     before = [step for step in saved.get('before') or [] if isinstance(step, str)]
     if checked(check or (lambda: verify(config, 'v' + VERSION, before))) is not None:
         return False
+    show_hidden(ssd(config) / 'installer/runtime')
     journal.unlink(missing_ok=True)
     out(
         f'The upgrade to {saved["to"]} that did not finish is closed: this server runs {VERSION} and passed its '

@@ -655,6 +655,48 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(0), self.journal), 2)
         self.assertEqual(self.ran[-1][0], 'v0.1.0')
 
+    def hidden_by_a_cut_off_way_back(self, linked):
+        """What a way back to an older release leaves when it is cut off while the older
+        setup is still in its preamble: this release's runtime copy under its hidden name,
+        the link at its own name (or nothing there: cut between the rename and the link),
+        and the record in phase going_back. Returns the copy's own path."""
+        older = self.data / 'installer/releases/v0.1.0'
+        older.mkdir()
+        runtime = self.data / 'installer/runtime'
+        copy, aside = runtime / ('v' + VERSION), runtime / ('.v' + VERSION + upgrade.HIDDEN)
+        aside.mkdir(parents=True)
+        (aside / 'nekoserver-runtime').write_text('the runtime')
+        if linked:
+            copy.symlink_to(aside.name)
+        upgrade.record('going_back', self.journal, to='v' + VERSION, previous=str(older), before=['storage'])
+        return copy
+
+    def assert_own_name_back(self, copy):
+        self.assertFalse(self.journal.exists())
+        self.assertTrue(copy.is_dir() and not copy.is_symlink())
+        self.assertEqual((copy / 'nekoserver-runtime').read_text(), 'the runtime')
+        self.assertEqual([p.name for p in copy.parent.iterdir()], [copy.name])  # no link, no hidden copy left
+
+    def test_a_copy_hidden_by_a_cut_off_way_back_gets_its_name_back_when_the_record_is_closed(self):
+        """The review of 0.48.0: the way back hides this release's runtime copy while the
+        older setup runs (newer_runtimes_hidden), and only its own end gave the name back.
+        Cut off before the older setup marked a step running (a power cut, systemctl stop),
+        the next start found the server whole and closed the record (settled), so the link
+        stayed at the copy's name for good: the guard could not see this release, and every
+        later setup of it refused the link ("Refusing symlink path")."""
+        copy = self.hidden_by_a_cut_off_way_back(linked=True)
+        self.assertEqual(upgrade.resume(self.settings, self.said.append, self.setup(), self.journal), 0)
+        self.assertEqual(self.ran, [])
+        self.assert_own_name_back(copy)
+
+    def test_a_copy_left_with_nothing_at_its_name_gets_it_back_after_setup_by_hand(self):
+        """Cut between the rename and the link: nothing is at the copy's name. A setup run
+        by hand that closes the record (settle_after_setup) gives it back too."""
+        copy = self.hidden_by_a_cut_off_way_back(linked=False)
+        config = json.loads(self.settings.read_text())
+        self.assertTrue(upgrade.settle_after_setup(config, self.said.append, self.journal))
+        self.assert_own_name_back(copy)
+
     def test_setup_run_by_hand_closes_the_record_of_an_upgrade_that_did_not_finish(self):
         """Seen on the rig: the record stayed after the setup the upgrade itself asked for,
         so app updates and the monthly check waited until the next start, or for ever."""
