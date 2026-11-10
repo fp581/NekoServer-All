@@ -809,6 +809,23 @@ class AskNekoPageTests(unittest.TestCase):
         dressed = '**ACTION: restart_app:jellyfin:**  \nJellyfin stopped; restart it.'
         self.assertEqual(page(('shownAnswer', dressed))[0], 'Jellyfin stopped; restart it.')
 
+    def test_markdown_marks_are_not_shown(self):
+        """The page shows text as it is, and a small model writes Markdown (the 0.49.0 gate)."""
+        answer = (
+            'Jellyfin is **running too slow**.\n\n## What to do\n*   Restart it\n- Run `sudo bash install.sh`\n'
+            '2 * 3 is 6, and __pycache__ stays.\n\n**BUG REPORT:**\n*   **What failed:** the check'
+        )
+        self.assertEqual(
+            page(('shownAnswer', answer))[0],
+            'Jellyfin is running too slow.\n\nWhat to do\n• Restart it\n• Run sudo bash install.sh\n'
+            '2 * 3 is 6, and __pycache__ stays.',
+        )
+        report = page(('bugReport', {'question': 'q', 'answer': answer}))[0]
+        self.assertTrue(report.endswith('Neko’s report:\nWhat failed: the check'), report)
+        app = (ROOT / 'dashboard/app.js').read_text()
+        # Copying refused by the browser: the report is selected, and the page says so.
+        self.assertIn("toast('The report is selected: copy it from there.')", app)
+
     def test_a_bug_report_names_the_version_the_question_and_the_redacted_excerpt(self):
         entry = {
             'question': 'Why did it fail?',

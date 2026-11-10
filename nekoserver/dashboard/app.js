@@ -1774,15 +1774,28 @@ function renderAskLog() {
         ]
   );
 }
+/* Small models write Markdown, and the page shows text as it is: so the marks come out
+ * (bold stars, code ticks, the # of a heading, a line of stars alone) and a list item
+ * gets a dot (the 0.49.0 gate: "**running too slow**" on the page). */
+function plainWords(words) {
+  return words
+    .replace(/\*\*|`/g, '')
+    .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]*[*_]+[ \t]*$/gm, '')
+    .replace(/^([ \t]*)[*-][ \t]+/gm, '$1• ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 /* The answer as shown: without its ACTION line (a repair card shows it) and without its
  * bug report (shown in a box of its own). */
 function shownAnswer(answer) {
   const at = answer.indexOf('BUG REPORT:');
-  return (at < 0 ? answer : answer.slice(0, at))
-    .split('\n')
-    .filter(line => !line.replace(/^[\s*_`]+/, '').startsWith('ACTION:'))
-    .join('\n')
-    .trim();
+  return plainWords(
+    (at < 0 ? answer : answer.slice(0, at))
+      .split('\n')
+      .filter(line => !line.replace(/^[\s*_`]+/, '').startsWith('ACTION:'))
+      .join('\n')
+  );
 }
 function bugReport(entry) {
   const at = entry.answer.indexOf('BUG REPORT:');
@@ -1793,7 +1806,7 @@ function bugReport(entry) {
     'NekoServer ' + text(state.status?.version, '?'),
     'Question: ' + entry.question,
     entry.excerpt ? 'What the server showed (passwords and keys removed):\n' + entry.excerpt : '',
-    'Neko’s report:\n' + entry.answer.slice(at + 'BUG REPORT:'.length).trim()
+    'Neko’s report:\n' + plainWords(entry.answer.slice(at + 'BUG REPORT:'.length).replace(/^[\s*_:]+/, ''))
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -1858,7 +1871,11 @@ function bugBox(report) {
     button('Copy', () => {
       navigator.clipboard?.writeText(report).then(
         () => toast('Copied.'),
-        () => area.select()
+        () => {
+          // The browser did not allow copying (the 0.49.0 gate): the report is selected instead.
+          area.select();
+          toast('The report is selected: copy it from there.');
+        }
       );
     })
   );
