@@ -687,6 +687,3 @@ def run(ctx):
         ctx.log(
             'Nextcloud started at localhost:8088. Administrator credentials are in the private account inventory when account setup is enabled. Configure trusted hosts/public_url for the chosen gateway before remote access.'
         )
-
-
-# SonarCloud probe (temporary, taken out again in the next commit).

@@ -402,6 +402,3 @@ def run(context):
     from recovery_tools import guarded
 
     return guarded(context, _run)
-
-
-# SonarCloud probe (temporary, taken out again in the next commit).

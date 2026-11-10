@@ -1179,6 +1179,3 @@ def cloud_proxies(compose):
         raise RuntimeError('Nextcloud has no private Docker network gateway')
     docker = ipaddress.ip_network(DOCKER_RANGE)
     return [DOCKER_RANGE, *(g for g in out if ipaddress.ip_address(g) not in docker)]
-
-
-# SonarCloud probe (temporary, taken out again in the next commit).
