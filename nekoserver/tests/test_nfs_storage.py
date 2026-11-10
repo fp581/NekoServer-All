@@ -612,6 +612,21 @@ class DrivesStepTests(unittest.TestCase):
             self.assertEqual(neko_common.mounted_identity('/mnt/nekoserver-media'), (MEDIA_ID, 'nfs4', ''))
             self.assertTrue(neko_common.identity_matches('/mnt/nekoserver-media', media_record()))
 
+    def test_the_checkup_sees_a_mounted_shared_folder_as_the_drive_it_is(self):
+        import status_checks
+
+        with mock.patch.object(status_checks, 'findmnt', return_value=f'nfs4 {MEDIA}'):
+            self.assertEqual(
+                status_checks.mount_info('/mnt/nekoserver-media', MEDIA_ID, 'nfs4'),
+                {'status': 'mounted', 'source': MEDIA},
+            )
+            self.assertEqual(
+                status_checks.mount_info('/mnt/nekoserver-media', nfs.identity(BACKUP), 'nfs4'),
+                {'status': 'wrong_drive'},
+            )
+        with mock.patch.object(status_checks, 'findmnt', return_value='autofs systemd-1'):
+            self.assertEqual(status_checks.mount_info('/mnt/nekoserver-media', MEDIA_ID, 'nfs4'), {'status': 'missing'})
+
     def test_a_folder_not_opened_since_the_start_is_opened_then_checked(self):
         # After a restart only systemd's automount holds the folder until it is used.
         states = iter(['systemd-1', 'autofs'])

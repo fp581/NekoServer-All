@@ -10,6 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import nfs_exports
 from neko_common import APPS, findmnt, immich_wanted, media_services, safe_path
 
 # Only these programs are run, with plain arguments (no shell, no control characters).
@@ -64,7 +65,12 @@ def number(value, lo=0, hi=1e18):
 def mount_info(path, expected=None, fstype=None):
     if expected is not None and (not isinstance(expected, str) or not expected):
         return {'status': 'not_configured'}
-    fields = (findmnt('UUID,FSTYPE,SOURCE', path) or '').split()
+    found = findmnt('UUID,FSTYPE,SOURCE', path) or ''
+    fields = found.split()
+    shared = nfs_exports.mounted(found)
+    if shared:
+        # A folder a NAS shares over NFS has no UUID: its identity stands in for it.
+        fields = [shared[0], *fields]
     if len(fields) < 3:
         return {'status': 'missing'}
     if expected and (fields[0] != expected or fields[1] != fstype):
