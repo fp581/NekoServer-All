@@ -422,10 +422,13 @@ def _execute(args, root=ROOT):
             print('Configuration and dependency graph valid.')
         return 0
     if on_the_ssd:
-        # Proved again right where the folder is made (its path comes from the settings).
-        if not os.path.realpath(state_dir).startswith(os.path.realpath(config['data_mount']) + os.sep):
+        # Its path comes from the settings: it is made as the path with every link
+        # followed, once that is proved to lie on the SSD. safe_path refused links on the
+        # way above, so on a real server this is the same path as state_dir.
+        checked = os.path.realpath(state_dir)
+        if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
             raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
-        ensure_directory(state_dir, 0o700)
+        ensure_directory(Path(checked), 0o700)
     else:
         ensure_directory(given, 0o700)
     if not args.apply:
@@ -505,9 +508,12 @@ def _execute(args, root=ROOT):
             and Path(args.state_dir).expanduser() == DEFAULT_STATE
         ):
             persistent = Path(config['data_mount']) / 'installer' / 'state'
-            if not os.path.realpath(persistent).startswith(os.path.realpath(config['data_mount']) + os.sep):
+            # Made as the path with every link followed, once that is proved to lie on
+            # the SSD (ensure_directory refuses links on the way, so it is the same path).
+            checked = os.path.realpath(persistent)
+            if not checked.startswith(os.path.realpath(config['data_mount']) + os.sep):
                 raise InstallerError(f'The setup state folder must lie on the app SSD: {persistent}')
-            ensure_directory(persistent, 0o700)
+            ensure_directory(Path(checked), 0o700)
             next_state = persistent / 'state.json'
             previous_persistent = read_json(next_state) if next_state.exists() else {}
             states = moved_states(previous_persistent, states, plan[: plan.index(name) + 1])
