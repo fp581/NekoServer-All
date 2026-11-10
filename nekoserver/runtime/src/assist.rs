@@ -979,6 +979,10 @@ fn plain_error(said: &str) -> String {
             .into()
     } else if lower.contains("memory") || lower.contains("killed") {
         "the model needs more memory than it may have here, so it was stopped".into()
+    } else if lower.contains("while running the model") || lower.contains("unexpectedly stopped") {
+        // Its runner was ended under it: on the 0.49.0 gate the kernel took the memory
+        // back for the apps (the model goes first), and Ollama said only "unexpected".
+        "the model was stopped while it answered, most likely because your apps needed the memory; ask again in a while".into()
     } else {
         format!("it said \"{}\"", chars(&redact(said, &[])))
     }
@@ -1471,6 +1475,12 @@ mod tests {
             .0
             .unwrap_err()
             .contains("more memory"));
+        // Killed by the kernel for the apps' sake, as on the 0.49.0 gate.
+        let (address, _) = fake_ollama(Some(format!(
+            "HTTP/1.0 200 OK\r\n\r\n{body}\n{{\"error\":\"an error was encountered while running the model: unexpected EOF\"}}\n"
+        )));
+        let why = collect(&address, &LIMITS).0.unwrap_err();
+        assert!(why.contains("your apps needed the memory"), "{why}");
     }
 
     #[test]
