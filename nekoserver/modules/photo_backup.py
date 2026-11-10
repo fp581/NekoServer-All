@@ -21,6 +21,7 @@ from neko_common import (
     atomic_write,
     forget_last_run,
     host_timezone,
+    immich_wanted,
     mount_path,
     pick_drive,
     relative_path,
@@ -172,7 +173,7 @@ def select_external(config, inventory, input_fn=input, out_fn=print):
 def copies(config):
     """What the weekly USB copy takes: (Immich's photo archive, Nextcloud's files)."""
     return (
-        bool(config.get('photos', {}).get('deploy_immich', False)),
+        immich_wanted(config),
         bool(config.get('nextcloud', {}).get('enabled', False)),
     )
 

@@ -40,7 +40,7 @@ from modules import (  # noqa: E402
     photo_preservation,
     server_os,
 )
-from neko_common import VERSION, atomic_json  # noqa: E402
+from neko_common import VERSION, atomic_json, media_apps_wanted, media_services  # noqa: E402
 
 GOLDEN = ROOT / 'tests' / 'golden'
 UPDATE = os.environ.get('NEKO_UPDATE_GOLDEN') == '1'
@@ -131,6 +131,15 @@ def past_midnight():
     return cfg
 
 
+def no_media():
+    """(e) "Install the media apps too?" answered no (0.50.0): no Jellyfin, Seerr, the apps
+    that find and download, Immich, Navidrome, hardware video, media monitor or TV mode;
+    Nextcloud, the dashboard, the backups and the USB copy of Nextcloud's files stay."""
+    cfg = base()
+    cfg['media_apps'] = {'wanted': False}
+    return cfg
+
+
 # Each configuration, with the facts about the machine that are not settings (the
 # Tailscale name the dashboard answers, learned from the installed unit).
 CONFIGURATIONS = {
@@ -138,6 +147,7 @@ CONFIGURATIONS = {
     'media-drive': (media_drive, {'public_host': 'neko.tail1234.ts.net'}),
     'before-0.48.0': (before_0480, {}),
     'past-midnight': (past_midnight, {}),
+    'no-media': (no_media, {}),
 }
 
 
@@ -271,12 +281,15 @@ def rendered(cfg, facts, tmp):
     def lib(step):
         return Path('/usr/local/lib/nekoserver-' + step) / RELEASE / native_runtime.NAME
 
-    # The nightly snapshots and their settings files.
-    out.update(app_backup.definitions(cfg, runtime, app_backup.GUARD))
-    out['applications.json'] = as_json(tmp, app_backup.guard_config(cfg))
+    # The nightly snapshots and their settings files (the media apps' and the music's only
+    # with the media apps: left out, those steps retire their schedules).
+    if media_services(cfg):
+        out.update(app_backup.definitions(cfg, runtime, app_backup.GUARD))
+        out['applications.json'] = as_json(tmp, app_backup.guard_config(cfg))
     out.update(host_backup.definitions(cfg, runtime, host_backup.PRIVATE))
     out['host.json'] = as_json(tmp, host_guard(cfg))
-    out.update(music_backup.definitions(cfg, runtime, storage_guard))
+    if media_apps_wanted(cfg):
+        out.update(music_backup.definitions(cfg, runtime, storage_guard))
     out['backups-storage.json'] = as_json(tmp, native_runtime.storage_config(cfg))
     # The monthly check, the weekly updates, Update now, the upgrade and their recovery.
     out.update(maintenance.definitions(cfg, runtime, maintenance.GUARD))
@@ -284,8 +297,9 @@ def rendered(cfg, facts, tmp):
     # The photo jobs and the weekly USB copy.
     out.update(photo_jobs(cfg, runtime, tmp))
     out.update(usb_copy(cfg, runtime, storage_guard, tmp))
-    # The media audit.
-    out.update(media_audit(cfg, runtime, tmp))
+    # The media audit (retired with the media apps left out).
+    if media_apps_wanted(cfg):
+        out.update(media_audit(cfg, runtime, tmp))
     # The heartbeat and the phone alerts (their private files hold what you typed: not here).
     out.update(heartbeat.definitions(cfg, lib('heartbeat'), Path(heartbeat.PRIVATE)))
     out.update(notifications.definitions(lib('notifications'), Path(notifications.PRIVATE_CONFIG)))
@@ -392,6 +406,26 @@ class GoldenFileTests(unittest.TestCase):
         self.assertIn('nekoserver-photo-preservation.timer', produced)  # the old daily archive pass
         self.assertNotIn(server_os.HDD_UNIT, produced)  # hdd_policy unchanged
         self.assertIn('OnCalendar=*-*-* 01:00:00 UTC', produced['nekoserver-app-backup.timer'])
+
+    def test_no_media(self):
+        produced = self.check('no-media')
+        for left_out in (
+            'nekoserver-app-backup.timer',
+            'nekoserver-music-backup.timer',
+            'nekoserver-media-health.timer',
+            'nekoserver-photo-preservation.timer',
+            'nekoserver-immich-db-backup.timer',
+        ):
+            self.assertNotIn(left_out, produced)
+        # Nextcloud's files still get their weekly USB copy, without a photo source.
+        self.assertNotIn('--source', produced['nekoserver-photo-backup.service'])
+        self.assertIn('nekoserver-host-backup.timer', produced)
+        collector = json.loads(produced['dashboard-config.json'])
+        self.assertEqual(collector['media'], {'services': []})
+        self.assertEqual(collector['media_apps'], {'wanted': False})
+        self.assertIs(collector['photos']['deploy_immich'], False)
+        maintenance_settings = json.loads(produced['maintenance.json'])
+        self.assertEqual(maintenance_settings['media_apps'], {'wanted': False})
 
     def test_past_midnight(self):
         produced = self.check('past-midnight')

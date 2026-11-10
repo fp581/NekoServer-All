@@ -13,7 +13,7 @@ import account_store
 import account_setup
 from modules.accounts import finish_pending
 from types import SimpleNamespace
-from neko_common import safe_path, settings_path, verify_storage, checked_settings, default_settings
+from neko_common import safe_path, settings_path, verify_storage, checked_settings, default_settings, media_services
 from recovery_tools import lock
 
 
@@ -248,7 +248,7 @@ def pass_on_qbittorrent(settings, config, apps, before, run=subprocess.run):
         or (now['username'], now['password']) == (before['username'], before['password'])
     ):
         return True
-    managers = [app for app in ('sonarr', 'radarr', 'lidarr') if app in config.get('media', {}).get('services', [])]
+    managers = [app for app in ('sonarr', 'radarr', 'lidarr') if app in media_services(config)]
     if not managers:
         return True
     print('qBittorrent: its login changed; passing it on to the download client in ' + ', '.join(managers))

@@ -10,7 +10,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from neko_common import APPS, findmnt, safe_path
+from neko_common import APPS, findmnt, immich_wanted, media_services, safe_path
 
 # Only these programs are run, with plain arguments (no shell, no control characters).
 PROGRAMS = {'systemctl', 'docker', 'findmnt', 'tailscale'}
@@ -107,8 +107,8 @@ def app_state(app, code, records):
 
 def applications(config):
     code, records = container_records()
-    selected = set(config.get('media', {}).get('services', []))
-    if config.get('photos', {}).get('deploy_immich'):
+    selected = set(media_services(config))
+    if immich_wanted(config):
         selected.add('immich')
     if config.get('nextcloud', {}).get('enabled'):
         selected.add('nextcloud')

@@ -29,8 +29,9 @@ committing: that diff is the review of what the change does to the installed ser
 | `media-drive` | Photos, music and Nextcloud's files on the media drive (`locations`), no USB drive, the drives on a NAS (`network_storage.wanted`), HDD kept spinning, fan and lighting control off, a dashboard that also answers a Tailscale name, snapshots kept without limit. |
 | `before-0.48.0` | A settings file from before 0.48.0: no `backup_times`, each job's own time (`app_backup.time`, `host_backup.time`, `music.backup_time`, `photos.backup_time`/`backup_weekday`/`database_backup_time`, `maintenance.time`), the old daily photo schedule (`backup_schedule: legacy`), `hdd_policy: unchanged`. |
 | `past-midnight` | `backup_times` that cross midnight: weekly USB copy Sun 00:20 (so the Immich database copy lands on Sat 23:35), daily 23:30 (the host snapshot at 00:30), monthly 05:45 just before `night_end_hour` 6, Asia/Jerusalem, an exFAT USB drive. |
+| `no-media` | The shipped `config.json` with "Install the media apps too?" answered no (`media_apps.wanted: false`, 0.50.0): no app backup, music backup, media check or Immich copy units, no `applications.json`; the photo backup copies Nextcloud alone; the dashboard and the monthly maintenance are told of no media app. |
 
-In every configuration the optional jobs are switched on (`monitoring.enabled`,
+In every configuration but `no-media` the optional jobs are switched on (`monitoring.enabled`,
 `music.backup_enabled`, `photos.deploy_immich`, `nextcloud.enabled`) so that each producer
 renders; the shipped file leaves them off until setup asks.
 

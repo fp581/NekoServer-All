@@ -918,14 +918,11 @@ fn applications(
         }
     };
     let now = common::now();
-    let selected = cfg["media"]["services"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let selected = common::media_services(cfg);
     let mut out = vec![];
     for &(app, name, description, port) in APPS.iter() {
-        if !selected.iter().any(|v| v == app)
-            && !(app == "immich" && cfg["photos"]["deploy_immich"] == true)
+        if !selected.contains(&app)
+            && !(app == "immich" && common::immich_wanted(cfg))
             && !(app == "nextcloud" && cfg["nextcloud"]["enabled"] == true)
         {
             continue;
@@ -1178,10 +1175,13 @@ fn parse_startup(out: &str) -> Vec<Value> {
 /// Why a job is intentionally not part of this server now (its app or backup switched
 /// off), or None when its schedule is expected.
 fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
-    let immich = cfg["photos"]["deploy_immich"] == true;
+    let immich = common::immich_wanted(cfg);
     match key {
         "music" if cfg["music"]["backup_enabled"] == false => {
             Some("Switched off: the music backup is turned off in the settings")
+        }
+        "music" | "applications" if !common::media_wanted(cfg) => {
+            Some("Switched off: the media apps are left out")
         }
         "archive" | "database" if !immich => Some("Switched off: Immich is not set up"),
         "external" if !immich && cfg["nextcloud"]["enabled"] != true => {
@@ -1193,7 +1193,7 @@ fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
 /// The witnessed restore tests (acceptance.py manual tests) that show this backup can
 /// be restored: one per kind of data it holds.
 fn restore_tests(cfg: &Value, key: &str) -> Value {
-    let immich = cfg["photos"]["deploy_immich"] == true;
+    let immich = common::immich_wanted(cfg);
     let cloud = cfg["nextcloud"]["enabled"] == true;
     let tests: Vec<&str> = match key {
         "archive" | "database" => vec!["independent_restore"],
@@ -2993,6 +2993,15 @@ mod os_tests {
         assert!(retired(&neither, "external").is_some());
         assert!(retired(&neither, "music").is_some());
         assert_eq!(retired(&neither, "applications"), None);
+        // The media apps left out (0.50.0): their backups are off, the others expected.
+        let no_media = json!({"media_apps":{"wanted":false},"photos":{"deploy_immich":true},
+            "nextcloud":{"enabled":true}});
+        for key in ["music", "applications", "archive", "database"] {
+            assert!(retired(&no_media, key).is_some(), "{key}");
+        }
+        for key in ["external", "host"] {
+            assert_eq!(retired(&no_media, key), None, "{key}");
+        }
     }
     #[test]
     fn a_wanted_schedule_that_stopped_is_flagged() {

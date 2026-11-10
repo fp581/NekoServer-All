@@ -5,7 +5,7 @@ import network_access
 from pathlib import Path
 import host
 import setup_progress
-from neko_common import safe_path, atomic_write, findmnt, last_words, SYSTEMD_UNITS
+from neko_common import safe_path, atomic_write, findmnt, immich_wanted, last_words, media_apps_wanted, SYSTEMD_UNITS
 
 DEPENDENCIES = ['storage', 'system']
 DESCRIPTION = 'Set up explicit LAN or tailnet SMB shares with no guest access'
@@ -92,12 +92,20 @@ def storage_guard(media, unit, mode, tailscale):
 
 def wanted_shares(config):
     """The shares to set up: the settings' list, without the default Photos share when
-    Immich isn't set up (its photo archive only exists with Immich). A share you added
-    or changed yourself stays, and must exist."""
+    Immich isn't set up (its photo archive only exists with Immich), nor the default
+    Media share when the media apps are left out and its library folder was never made
+    (a server that had them keeps sharing its films). A share you added or changed
+    yourself stays, and must exist."""
     shares = dict(config.get('networking', {}).get('shares', {}))
     archive = config.get('photos', {}).get('archive_dir', 'photos/archive')
-    if not config.get('photos', {}).get('deploy_immich', False) and shares.get('Photos') == archive:
+    if not immich_wanted(config) and shares.get('Photos') == archive:
         del shares['Photos']
+    if (
+        not media_apps_wanted(config)
+        and shares.get('Media') == 'library'
+        and not (Path(config['media_mount']) / 'library').is_dir()
+    ):
+        del shares['Media']
     return shares
 
 
@@ -228,6 +236,12 @@ def run(context):
     service = family.service('samba')
     settings = context.config.get('networking', {})
     settings = dict(settings, shares=wanted_shares(context.config))
+    if not settings['shares']:
+        context.log(
+            'Shared folders: nothing to share (the Media and Photos folders come with the media apps, which are '
+            'left out); add a share of your own under "shares" in my-config.json to have one'
+        )
+        return None
     mode = settings.get('share_mode', 'tailnet')
     if mode not in ('lan', 'tailnet'):
         raise RuntimeError('Samba share_mode must be lan or tailnet')

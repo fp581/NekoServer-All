@@ -6,7 +6,16 @@ import shutil
 import subprocess
 
 import native_runtime
-from neko_common import VERSION, atomic_json, refresh_settings, safe_path, check_units, write_units, SYSTEMD_UNITS
+from neko_common import (
+    VERSION,
+    atomic_json,
+    media_apps_wanted,
+    refresh_settings,
+    safe_path,
+    check_units,
+    write_units,
+    SYSTEMD_UNITS,
+)
 
 DEPENDENCIES = ['storage', 'recovery']
 DESCRIPTION = 'Install scheduled media connection checks (Rust runtime)'
@@ -29,7 +38,7 @@ def run(context):
     enabled = context.config.get('monitoring', {}).get('enabled', True)
     if type(enabled) is not bool:
         raise RuntimeError('Schedule enable switch must be boolean')
-    if not enabled:
+    if not enabled or not media_apps_wanted(context.config):
         if context.apply:
             if os.geteuid() != 0:
                 raise RuntimeError('Root required')

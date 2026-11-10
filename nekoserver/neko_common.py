@@ -1339,9 +1339,56 @@ def atomic_json(path, payload):
     atomic_write(path, json.dumps(payload, indent=2) + '\n')
 
 
-# The optional questions setup asks when connecting the media apps, by the key their
-# last answer is kept under, and the words the next run shows them with.
+# ---- The media apps, a part of their own (since 0.50.0) ----------------------------------
+# "Install the media apps too?" (guided_setup.choose_media_apps): Jellyfin with Seerr, the
+# apps that find and download (Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent), Immich,
+# Navidrome, video on the graphics chip, the hourly app check and the TV mode. The answer
+# is "wanted" under "media_apps"; nothing there means yes, as every server set up before
+# 0.50.0 has them. Every step that looks after these apps asks the two functions below,
+# never media.services or photos.deploy_immich alone.
+MEDIA_SECTION = 'media_apps'
+
+
+def media_apps_wanted(config):
+    """The media apps are part of this server: yes unless "wanted" is false."""
+    section = config.get(MEDIA_SECTION)
+    return not (isinstance(section, dict) and section.get('wanted') is False)
+
+
+def media_services(config):
+    """The media apps set up (media.services), or none when the media apps are left out.
+    Taken out, the media step stops the ones installed and keeps their data."""
+    if not media_apps_wanted(config):
+        return []
+    return list(config.get('media', {}).get('services', []))
+
+
+# The steps that are only about the media apps: with them left out each one sets nothing
+# up (and stops or retires what it set up before), and nothing checks them afterwards.
+MEDIA_STEPS = (
+    'media',
+    'photos',
+    'photo_preservation',
+    'hardware_video',
+    'onboarding',
+    'music',
+    'music_backup',
+    'media_monitor',
+    'tv',
+    'app_backup',
+)
+
+
+def immich_wanted(config):
+    """Immich is set up: photos.deploy_immich, and the media apps not left out."""
+    return media_apps_wanted(config) and config.get('photos', {}).get('deploy_immich') is True
+
+
+# The optional questions setup asks (the media apps, the backup times, and when it
+# connects the media apps), by the key their last answer is kept under, and the words
+# the next run shows them with.
 OPTIONAL_QUESTIONS = {
+    MEDIA_SECTION: 'Media apps',
     'backup_times': 'Backup times',
     'sources': 'Download sources',
     'indexers': 'Indexers (Prowlarr)',

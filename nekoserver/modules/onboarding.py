@@ -15,6 +15,8 @@ from neko_common import (
     app_port,
     app_ports,
     atomic_json,
+    media_apps_wanted,
+    media_services,
     optional_answers,
     remember_answer,
     safe_path,
@@ -28,6 +30,9 @@ def run(ctx):
     settings = ctx.config.get('onboarding', {})
     if not ctx.apply or not settings.get('enabled', True):
         ctx.log('Guided media onboarding deferred')
+        return
+    if not media_apps_wanted(ctx.config):
+        ctx.log('Connecting the apps: the media apps are left out, so there is nothing to connect')
         return
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
         required = account_store.selected(ctx.config, ['media'])
@@ -47,9 +52,9 @@ def run(ctx):
     cmd = [sys.executable, str(script), '--config', str(config), '--wait', str(wait)]
     if sys.stdin.isatty():
         cmd += ['--configure', '--apply']
-        if settings.get('configure_libraries', True) and 'jellyfin' in ctx.config.get('media', {}).get('services', []):
+        services = media_services(ctx.config)
+        if settings.get('configure_libraries', True) and 'jellyfin' in services:
             cmd.append('--libraries')
-        services = ctx.config.get('media', {}).get('services', [])
         if (
             settings.get('configure_request_providers', True)
             and 'seerr' in services

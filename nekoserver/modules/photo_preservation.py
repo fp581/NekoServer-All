@@ -4,7 +4,7 @@ import native_runtime
 import os, subprocess
 from neko_common import RESUME_TIMEOUT, VERSION, SYSTEMD_UNITS
 from pathlib import Path
-from neko_common import safe_path, relative_path, atomic_write, host_timezone, forget_last_run, job_times
+from neko_common import safe_path, relative_path, atomic_write, host_timezone, forget_last_run, immich_wanted, job_times
 
 DEPENDENCIES = ['photos']
 DESCRIPTION = 'Weekly additive archival of SSD Immich originals and database backup'
@@ -127,7 +127,7 @@ def run(ctx):
     data = Path(cfg['data_mount'])
     media = Path(cfg['media_mount'])
     opts = cfg['photos']
-    if not opts.get('deploy_immich', False):
+    if not immich_wanted(cfg):
         return switch_off(ctx)
     require_mounts(data, media)
     runtime = data / 'installer' / 'runtime' / ('v' + VERSION)

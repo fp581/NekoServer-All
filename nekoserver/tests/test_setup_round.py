@@ -307,6 +307,7 @@ class WindowPackageTests(unittest.TestCase):
         self.assertEqual(
             asked,
             {
+                'media_apps': True,
                 'network_storage': False,
                 'tv': False,
                 'notifications': True,
@@ -413,9 +414,10 @@ class WindowPageTests(unittest.TestCase):
             for i in ('tv', 'nextcloud')
         ]
         seen = self.page([self.state('choose', extras=extras)])
-        self.assertEqual(seen['cards'], [['extra undecided', 'asked later'], ['extra', '']])
+        # (A card that is on shows it, since 0.50.0: a ring inside its border.)
+        self.assertEqual(seen['cards'], [['extra undecided', 'asked later'], ['extra on', '']])
         seen = self.page([self.state('choose', extras=extras, press='tv')])
-        self.assertEqual(seen['cards'][0], ['extra', 'yes'])  # (the stand-in switch keeps its state: on)
+        self.assertEqual(seen['cards'][0], ['extra on', 'yes'])  # (the stand-in switch keeps its state: on)
         self.assertEqual(seen['posts'], [['api/choose', {'tv': True}]])
 
 

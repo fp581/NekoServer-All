@@ -27,6 +27,10 @@ from neko_common import (
     dashboard_port,
     checked_settings,
     default_settings,
+    immich_wanted,
+    MEDIA_STEPS,
+    media_apps_wanted,
+    media_services,
     verify_storage,
 )
 from acceptance_summary import scope_digest, with_data_scope
@@ -246,7 +250,7 @@ def containers(config, photos=False):
     if photos:
         specs = [('immich', s) for s in ('immich-server', 'database', 'redis', 'immich-machine-learning')]
     else:
-        specs = [(a, a) for a in config.get('media', {}).get('services', []) if a in health.APPS and a != 'immich']
+        specs = [(a, a) for a in media_services(config) if a in health.APPS and a != 'immich']
     results = []
     for app, svc in specs:
         rc, out = health.run(
@@ -614,7 +618,7 @@ def manual_tests(modules, config):
                 'Use the phone/desktop client through the intended HTTPS gateway; upload/download a disposable file, verify checksum and intended sharing permissions.',
             )
         ]
-    if 'photos' in modules and config.get('photos', {}).get('deploy_immich'):
+    if 'photos' in modules and immich_wanted(config):
         out += [
             (
                 'photo_preservation',
@@ -767,6 +771,10 @@ def accepted_modules(config, modules):
     # and its client test would only ever fail or wait (the nextcloud step skips itself).
     if config.get('nextcloud', {}).get('enabled', True) is not True:
         skipped = skipped | {'nextcloud'}
+    # The media apps left out ("Install the media apps too?" answered no): their steps
+    # set nothing up, so there is nothing of theirs to accept.
+    if not media_apps_wanted(config):
+        skipped = skipped | set(MEDIA_STEPS)
     return [
         m
         for m in modules
@@ -950,7 +958,7 @@ def inspect(config, profile='full', now=None):
                 from cloud_checks import check
 
                 checks.extend(check(config))
-            if 'photos' in modules and config.get('photos', {}).get('deploy_immich'):
+            if 'photos' in modules and immich_wanted(config):
                 checks.extend(containers(config, photos=True))
         else:
             add(
@@ -974,7 +982,7 @@ def inspect(config, profile='full', now=None):
             add('backup:states', 'Backup states', 'blocked', 'The backups could not be judged: ' + why)
         # The photo archive and Immich's database copy only with Immich set up: with it
         # switched off those jobs are off too, and could never pass.
-        immich = config.get('photos', {}).get('deploy_immich', False)
+        immich = immich_wanted(config)
         selected = {'archive', 'database'} if 'photo_preservation' in modules and immich else set()
         if 'photo_backup' in modules:
             selected.add('external')

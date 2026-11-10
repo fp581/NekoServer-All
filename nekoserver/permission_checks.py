@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import pwd
 
-from neko_common import files_root, music_downloads, safe_path
+from neko_common import files_root, media_services, music_downloads, safe_path
 
 
 def access(path, uid, groups, mask, bind_root=False):
@@ -46,8 +46,8 @@ def check(config, modules):
             }
         )
 
-    if 'media' in modules:
-        for app in config['media']['services']:
+    if 'media' in modules and media_services(config):
+        for app in media_services(config):
             # Every app, Seerr included, runs as media.uid/gid (since v0.21.1).
             inspect(app + ':appdata', data / 'appdata' / app, uid, {gid}, True, bind_root=True)
         for category in ('movies', 'tv', 'music', 'downloads'):

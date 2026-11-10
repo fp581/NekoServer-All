@@ -65,20 +65,17 @@ fn private(path: &Path) -> Result<()> {
 }
 fn names(cfg: &Value) -> Result<Vec<String>> {
     let mut names = vec![];
-    for value in cfg["media"]["services"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-    {
-        let n = value
-            .as_str()
-            .ok_or_else(|| Error::new("Invalid media selection"))?;
+    let listed = cfg["media"]["services"].as_array();
+    if listed.is_some_and(|v| v.iter().any(|n| !n.is_string())) {
+        return Err(Error::new("Invalid media selection"));
+    }
+    for n in common::media_services(cfg) {
         if !MEDIA.contains(&n) || names.contains(&n.to_string()) {
             return Err(Error::new("Invalid media selection"));
         }
         names.push(n.to_string());
     }
-    if cfg["photos"]["deploy_immich"] == true {
+    if common::immich_wanted(cfg) {
         names.push("immich".into());
     }
     if cfg["nextcloud"]["enabled"] == true {
@@ -2667,10 +2664,7 @@ fn automated_media_ready(report: &Value) -> bool {
 fn integrations(cfgpath: &Path, cfg: &Value, checking: bool) -> Result<()> {
     // Its own stage: a failure here was said "while checking free space", the stage before.
     common::stage("checking the connections between the media apps");
-    if cfg["media"]["services"]
-        .as_array()
-        .is_none_or(|v| v.is_empty())
-    {
+    if common::media_services(cfg).is_empty() {
         return Ok(());
     }
     let exe = std::env::current_exe()?;
@@ -3219,7 +3213,7 @@ fn open_up(
 /// is set up; the USB copy's options, when its drive is named and something is copied).
 fn copies_to_check(cfg: &Value, cfgpath: &Path) -> (Option<String>, Option<Args>) {
     let photos = &cfg["photos"];
-    let immich = photos["deploy_immich"] == true;
+    let immich = common::immich_wanted(cfg);
     let media = Path::new(cfg["media_mount"].as_str().unwrap_or(""));
     let archive_dir = photos["archive_dir"]
         .as_str()

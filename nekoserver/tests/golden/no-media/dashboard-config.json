@@ -1,0 +1,87 @@
+{
+  "data_mount": "/srv/nekoserver",
+  "media_mount": "/mnt/nekoserver-media",
+  "external_backup_mount": "/mnt/nekoserver-photos",
+  "storage": {
+    "data_ssd": {
+      "uuid": "1a2b3c4d-0001-4000-8000-00000000aaaa",
+      "fstype": "ext4"
+    },
+    "media_hdd": {
+      "uuid": "1a2b3c4d-0002-4000-8000-00000000bbbb",
+      "fstype": "ext4"
+    }
+  },
+  "media": {
+    "services": []
+  },
+  "media_apps": {
+    "wanted": false
+  },
+  "photos": {
+    "deploy_immich": false,
+    "archive_interval_minutes": 10080,
+    "backup_schedule": "weekly",
+    "external_backup_uuid": "1a2b3c4d-0003-4000-8000-00000000cccc"
+  },
+  "music": {
+    "backup_enabled": true
+  },
+  "monitoring": {
+    "enabled": true,
+    "interval_minutes": 60
+  },
+  "dashboard": {
+    "smart_interval_seconds": 1800,
+    "interval_seconds": 60
+  },
+  "heartbeat": {
+    "interval_seconds": 300
+  },
+  "runtime": {
+    "backend": "rust"
+  },
+  "gateway": {
+    "services": [
+      "jellyfin",
+      "seerr",
+      "immich",
+      "navidrome",
+      "nextcloud"
+    ],
+    "lan_ip": "192.168.1.20",
+    "lan_cidr": "192.168.1.0/24"
+  },
+  "nextcloud": {
+    "enabled": true
+  },
+  "tv": {
+    "wanted": null
+  },
+  "assistant": {
+    "wanted": false
+  },
+  "acceptance_scope": "dfecb55a40f2b3ec3ae02bcfa1ffc1aeb2520fce8b1f548aeeb5cbf3bbd70f3f",
+  "acceptance_profiles": [
+    "accounts",
+    "app_backup",
+    "assistant",
+    "cloud",
+    "dashboard",
+    "foundation",
+    "full",
+    "heartbeat",
+    "host_backup",
+    "lan_access",
+    "media",
+    "media_monitor",
+    "music",
+    "network",
+    "networking",
+    "notifications",
+    "photos",
+    "remote_access",
+    "server_os",
+    "tv"
+  ]
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=NekoServer recover Samba after interrupted snapshot
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=3h30min
+ExecStart=/srv/nekoserver/installer/runtime/v0.49.0/nekoserver-runtime host-resume --config /etc/nekoserver-backups/host.json
+NoNewPrivileges=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+[Install]
+WantedBy=multi-user.target

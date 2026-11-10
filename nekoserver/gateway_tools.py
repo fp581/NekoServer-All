@@ -21,6 +21,8 @@ from neko_common import (
     app_port,
     SYSTEMD_UNITS,
     dashboard_port,
+    immich_wanted,
+    media_services,
 )
 
 LOOPBACK = 'http://127.0.0.1:'
@@ -175,8 +177,8 @@ def installed(config, app):
     if app == 'nextcloud':
         return bool(config.get('nextcloud', {}).get('enabled'))
     if app == 'immich':
-        return bool(config.get('photos', {}).get('deploy_immich'))
-    return app in config.get('media', {}).get('services', [])
+        return immich_wanted(config)
+    return app in media_services(config)
 
 
 def selected(config):

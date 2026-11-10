@@ -1,0 +1,7 @@
+[Unit]
+Description=NekoServer daily look at the system updates waiting
+[Timer]
+OnCalendar=*-*-* 13:51:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target

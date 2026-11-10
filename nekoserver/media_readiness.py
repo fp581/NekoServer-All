@@ -2,7 +2,7 @@
 
 import json
 from media_libraries import Client, SetupRequired, folders, matching, LIBRARIES, open_seerr, row, readiness_key_path
-from neko_common import safe_path
+from neko_common import media_services, safe_path
 import seerr_providers
 
 # Checks only a person can do (a real playback or transfer). They are listed so the
@@ -60,7 +60,7 @@ def refuse_prompt(_):
 
 def check(config, factory=ReadClient):
     root = safe_path(config['data_mount'])
-    apps = config.get('media', {}).get('services', [])
+    apps = media_services(config)
     results = []
     ids = []
     server_id = None

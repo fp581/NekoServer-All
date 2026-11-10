@@ -72,6 +72,20 @@ PACKAGES = {
 # my-config.json; `on_default` is what setup assumes when nothing was chosen.
 EXTRAS = (
     {
+        'id': 'media_apps',
+        'section': 'media_apps',
+        'key': 'wanted',
+        'on_default': True,
+        'step': 'media',
+        'title': 'The media apps: films, shows, music and photos',
+        'explanation': 'Jellyfin to watch your films and shows, with Seerr to ask for new ones; Sonarr, Radarr, Lidarr '
+        'and Prowlarr with qBittorrent, which find and download them; Immich for your photos; Navidrome for your music; '
+        'video on the graphics chip, the hourly app check and the TV mode. About 6 GB on the SSD, downloaded once, and '
+        'about 2 GB of memory when idle. Without them you still get Nextcloud, the dashboard, the backups and private '
+        'access; switching them off later stops them and keeps all their data.',
+        'installs': (),
+    },
+    {
         'id': 'network_storage',
         'section': 'network_storage',
         'key': 'wanted',

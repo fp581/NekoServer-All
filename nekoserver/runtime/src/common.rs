@@ -200,6 +200,28 @@ pub static MEDIA_APPS: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new
         .filter_map(|app| app["id"].as_str())
         .collect()
 });
+/// The media apps are part of this server (setup's "Install the media apps too?", since
+/// 0.50.0): yes unless "wanted" under "media_apps" is false, as every server set up
+/// before 0.50.0 has them. The same rule as neko_common.media_apps_wanted.
+pub fn media_wanted(cfg: &Value) -> bool {
+    cfg["media_apps"]["wanted"] != false
+}
+/// The media apps set up (media.services), or none when they are left out.
+pub fn media_services(cfg: &Value) -> Vec<&str> {
+    if !media_wanted(cfg) {
+        return vec![];
+    }
+    cfg["media"]["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
+}
+/// Immich is set up: photos.deploy_immich, and the media apps not left out.
+pub fn immich_wanted(cfg: &Value) -> bool {
+    media_wanted(cfg) && cfg["photos"]["deploy_immich"] == true
+}
 /// The private Tailscale port the gateway publishes `app` on (shared.json "tailnet"),
 /// for the apps it can publish.
 pub fn tailnet_port(app: &str) -> Option<u16> {
@@ -1186,6 +1208,32 @@ pub fn directory(path: &Path, mode: u32) -> Result<()> {
         Err(e) => return Err(e.into()),
     }
     Ok(())
+}
+#[cfg(test)]
+mod media_answer_tests {
+    use super::{immich_wanted, media_services, media_wanted};
+    use serde_json::json;
+    /// Setup's "Install the media apps too?" (neko_common.media_apps_wanted): yes unless
+    /// the answer is no, and no leaves the settings of the apps as they were.
+    #[test]
+    fn no_leaves_every_media_app_out_and_no_answer_keeps_them() {
+        let apps = json!({"services": ["jellyfin", "seerr"]});
+        let before = json!({"media": apps, "photos": {"deploy_immich": true}});
+        let yes = json!({"media_apps": {"wanted": true}, "media": apps, "photos": {"deploy_immich": true}});
+        for cfg in [&before, &yes] {
+            assert!(media_wanted(cfg));
+            assert_eq!(media_services(cfg), ["jellyfin", "seerr"]);
+            assert!(immich_wanted(cfg));
+        }
+        let no = json!({"media_apps": {"wanted": false}, "media": apps, "photos": {"deploy_immich": true}});
+        assert!(!media_wanted(&no));
+        assert!(media_services(&no).is_empty());
+        assert!(!immich_wanted(&no));
+        // Immich still follows its own switch.
+        let without = json!({"media_apps": {"wanted": true}, "photos": {"deploy_immich": false}});
+        assert!(!immich_wanted(&without));
+        assert!(media_services(&without).is_empty());
+    }
 }
 #[cfg(test)]
 mod catalogue_tests {

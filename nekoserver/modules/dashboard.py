@@ -7,6 +7,9 @@ from pathlib import Path
 import host
 from neko_common import (
     SHARED,
+    immich_wanted,
+    media_apps_wanted,
+    media_services,
     verify_storage,
     APP_PORTS,
     DASHBOARD_DEFAULT_PORT,
@@ -504,9 +507,10 @@ def collector_settings(cfg, smart, interval=60):
     """What the dashboard collector reads, including the fingerprint of the settings an
     acceptance report must match."""
     clean = {k: cfg[k] for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
-    clean['media'] = {'services': cfg['media']['services']}
+    clean['media'] = {'services': media_services(cfg)}
+    clean['media_apps'] = {'wanted': media_apps_wanted(cfg)}
     clean['photos'] = {
-        'deploy_immich': cfg.get('photos', {}).get('deploy_immich', False),
+        'deploy_immich': immich_wanted(cfg),
         'archive_interval_minutes': cfg.get('photos', {}).get('archive_interval_minutes', 60),
         'backup_schedule': cfg.get('photos', {}).get('backup_schedule', 'legacy'),
         # The USB drive now: checksum results made on another one are not shown as its own.

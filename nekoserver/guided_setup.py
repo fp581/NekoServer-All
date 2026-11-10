@@ -369,6 +369,70 @@ def optional_kept(ctx, asked, prompt=None, output=None):
     return [] if again else shown
 
 
+# "Install the media apps too?": what they add and what they cost, in plain words. The
+# sizes are measured on a fresh install (TESTING.md, the 0.50.0 gate).
+MEDIA_QUESTION = 'Install the media apps too?'
+MEDIA_EXPLAINED = (
+    'Yes adds the apps for your films, shows, music and photos:',
+    '  - Jellyfin, to watch your films and shows, with Seerr to ask for new ones',
+    '  - Sonarr, Radarr, Lidarr and Prowlarr with qBittorrent, which find and download them',
+    '  - Immich, your own photo backup and gallery, and Navidrome for your music',
+    '  - video on the graphics chip, the hourly check that the apps still work together, and the TV mode',
+    'They take about 6 GB on the SSD (downloaded once), about 2 GB of memory when idle and more while',
+    'Immich looks at new photos or Jellyfin converts a video; your media and photos go on the HDD.',
+    'No leaves them out: Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts',
+    'and the AI assistant are set up either way. Answering no later never deletes anything: the apps',
+    'are stopped and their settings, data and media kept, and yes brings them back.',
+)
+
+
+def choose_media_apps(ctx, prompt=None, output=None):
+    """Ask "Install the media apps too?" and save the answer as "wanted" under
+    "media_apps". Asked at the drives step, before the drives are chosen (the other
+    optional questions are asked there too): once, and on a later run only when the
+    person asks for the optional questions again (optional_kept). Left alone (Enter at
+    the window's switch, Ctrl+D here, or nobody at the terminal), the answer is yes and
+    nothing is saved, so the question comes again next time."""
+    from neko_common import MEDIA_SECTION, optional_answers
+
+    options = ctx.config.setdefault(MEDIA_SECTION, {})
+    if not isinstance(options, dict):
+        raise RuntimeError('"media_apps" in my-config.json must be an object, such as {"wanted": true}')
+    if 'wanted' in options and type(options['wanted']) is not bool:
+        raise RuntimeError('"wanted" under "media_apps" must be true or false')
+    if not interactive(ctx):
+        return
+    kept = MEDIA_SECTION in optional_answers(ctx.config['data_mount'])
+    if isinstance(options.get('wanted'), bool) and (
+        not kept or MEDIA_SECTION in optional_kept(ctx, [MEDIA_SECTION], prompt, output)
+    ):
+        # Chosen already: in the setup window, by hand in the settings, or answered before
+        # and kept now.
+        return
+    prompt = prompt or input
+    output = output or print
+    output('\n=== Optional: ' + MEDIA_QUESTION + ' ===')
+    for line in MEDIA_EXPLAINED:
+        output(line)
+    answer = yes_no(MEDIA_QUESTION, prompt, output)
+    if answer is None:
+        output('Left for now: the media apps are set up (yes), and this is asked again next time.')
+        return
+    options['wanted'] = answer
+    save_settings(ctx)
+    ctx.log('Media apps: ' + ('yes' if answer else 'no, left out'))
+
+
+def remember_media_apps(ctx):
+    """The media answer kept with the other optional answers, once the SSD that keeps
+    them is mounted (never before: a file written there first would sit on the system
+    disk under the SSD's folder)."""
+    from neko_common import MEDIA_SECTION, media_apps_wanted, remember_answer
+
+    if isinstance(ctx.config.get(MEDIA_SECTION, {}).get('wanted'), bool):
+        remember_answer(ctx.config['data_mount'], MEDIA_SECTION, 'yes' if media_apps_wanted(ctx.config) else 'no')
+
+
 def answer_shown(ctx, question, kept):
     """A kept answer as the rerun lists it: the backup times as the settings hold them now
     (the file may have been made again since, with other times), any other as given."""

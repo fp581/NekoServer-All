@@ -12,7 +12,16 @@ from pathlib import Path
 
 from modules import tv
 from modules.dashboard import LAUNCHER
-from neko_common import APPS, MEDIA_APPS, atomic_write, dashboard_port, find_program, safe_path
+from neko_common import (
+    APPS,
+    MEDIA_APPS,
+    atomic_write,
+    dashboard_port,
+    find_program,
+    media_apps_wanted,
+    media_services,
+    safe_path,
+)
 
 DEPENDENCIES = ['dashboard']
 DESCRIPTION = 'Desktop shortcuts for the dashboard, the web browser, Steam and your apps'
@@ -50,7 +59,7 @@ def entry(name, exec_line, icon, comment=''):
 def installed_apps(config):
     """The apps set up on this server, in the dashboard's order."""
     data = Path(config['data_mount'])
-    services = config.get('media', {}).get('services', [])
+    services = media_services(config)
     if not config.get('music', {}).get('create_desktop_shortcut', True):
         services = [s for s in services if s != 'navidrome']
     found = []
@@ -59,6 +68,7 @@ def installed_apps(config):
             present = app in services
         else:  # Immich and Nextcloud have their own folder once set up.
             present = (data / 'compose' / app / 'compose.yaml').is_file()
+            present = present and (app != 'immich' or media_apps_wanted(config))
         if present:
             found.append(app)
     return found

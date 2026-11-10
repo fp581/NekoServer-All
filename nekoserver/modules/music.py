@@ -7,7 +7,7 @@ import sys
 
 import music_client
 import setup_progress
-from neko_common import VERSION, atomic_json, music_library
+from neko_common import VERSION, atomic_json, media_apps_wanted, media_services, music_library
 
 DEPENDENCIES = ['media', 'recovery', 'music_backup']
 DESCRIPTION = 'Music library, private listener checks and browser/phone/desktop client handoff'
@@ -23,7 +23,10 @@ def options(config):
 
 def run(ctx):
     options(ctx.config)
-    if 'navidrome' not in ctx.config.get('media', {}).get('services', []):
+    if not media_apps_wanted(ctx.config):
+        ctx.log('Music: left out with the media apps; no music player to set up')
+        return
+    if 'navidrome' not in media_services(ctx.config):
         # A server without the music player (taken out of media.services): nothing to do
         # here, and the rest of setup goes ahead. The music backup still keeps Lidarr's music.
         ctx.log('Music: Navidrome is not among your apps ("services" under "media"); no music player to set up')

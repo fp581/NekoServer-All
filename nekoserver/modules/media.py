@@ -20,6 +20,7 @@ from neko_common import (
     verify_storage,
     atomic_write,
     host_timezone,
+    media_apps_wanted,
     music_downloads,
     music_library,
 )
@@ -227,6 +228,8 @@ def _run(context):
         return
     if os.geteuid() != 0:
         raise RuntimeError('Media deployment requires root (sudo)')
+    if not media_apps_wanted(context.config):
+        return left_out(context)
     data = Path(context.config['data_mount'])
     media = Path(context.config['media_mount'])
     if data == media or str(data) == '/' or str(media) == '/':
@@ -350,13 +353,33 @@ def _run(context):
     )
 
 
-def stop_unselected(compose_dir, selected, log, run=None):
+def left_out(context, run=None):
+    """The media apps left out ("Install the media apps too?" answered no): none is set
+    up, and any that were (a server answering no later) are stopped as an app taken out
+    of media.services is, with their settings, data and media kept."""
+    compose_dir = Path(context.config['data_mount']) / 'compose'
+    stopped = stop_unselected(compose_dir, [], context.log, run, LEFT_OUT)
+    if not stopped:
+        context.log('Media apps: left out (you answered no to installing them); nothing was set up')
+
+
+# What the log says of an app stopped because the media apps were left out.
+LEFT_OUT = (
+    '{name}: stopped, as the media apps are left out; its settings, data and media stay. To start it again, '
+    'run  sudo bash install.sh , answer yes to asking the questions again and yes to the media apps'
+)
+# ... and of one taken out of media.services.
+TAKEN_OUT = '{name}: not in media.services any more, so it is stopped; its settings and data stay (add it back to start it again)'
+
+
+def stop_unselected(compose_dir, selected, log, run=None, said=TAKEN_OUT):
     """A media app taken out of media.services is stopped: its containers are removed
     (`docker compose down`, never with its volumes), its settings, data and Compose file
     stay. Otherwise it would go on running, and changing files, without the dashboard,
     the nightly backup or the monthly update looking after it. Putting it back in the
-    list starts it again with everything as it was."""
+    list starts it again with everything as it was. Returns the apps stopped."""
     run = run or run_cmd
+    stopped = []
     for name in SERVICES:
         dest = compose_dir / name / 'compose.yaml'
         if name in selected or not dest.is_file() or dest.is_symlink():
@@ -365,10 +388,9 @@ def stop_unselected(compose_dir, selected, log, run=None):
             ['docker', 'compose', '-f', str(dest), '-p', f'neko-{name}', *compose_image_override(dest), 'down'],
             timeout=300,
         )
-        log(
-            f'{name}: not in media.services any more, so it is stopped; its settings and data stay '
-            f'(add it back to start it again)'
-        )
+        log(said.format(name=name))
+        stopped.append(name)
+    return stopped
 
 
 def adopt_seerr_folder(folder, uid, gid, log=print):

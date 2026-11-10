@@ -410,6 +410,20 @@ DRIVES = (
     ('data_ssd', 'the SSD (apps, photos and music)', 'the SSD'),
     ('media_hdd', 'the HDD (movies, shows, Nextcloud files and backups)', 'the HDD'),
 )
+# What the drives hold with the media apps left out: no films, shows, photos or music.
+WITHOUT_MEDIA = {
+    'data_ssd': 'the SSD (the apps and their settings)',
+    'media_hdd': 'the HDD (Nextcloud files and the backups)',
+}
+
+
+def drive_label(config, key, label):
+    """What setup calls a drive when it asks for it: what goes on it on this server."""
+    from neko_common import media_apps_wanted
+
+    return label if media_apps_wanted(config) else WITHOUT_MEDIA[key]
+
+
 GIB = 1024**3
 UNITS = {'B': 0, 'K': 1, 'M': 2, 'G': 3, 'T': 4, 'P': 5}
 
@@ -565,6 +579,7 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
     selected = set()
     selected_disks = set()
     for key, label, _ in DRIVES:
+        label = drive_label(config, key, label)
         record = configured.setdefault(key, {})
         uuid = record.get('uuid', '').strip()
         if uuid:
@@ -1087,6 +1102,8 @@ def run(context):
     for tool in ('findmnt', 'blkid', 'mount', 'systemctl'):
         if not shutil.which(tool):
             raise RuntimeError(f'Required tool missing: {tool}')
+    # Before the drives: what goes on them depends on it (guided_setup.choose_media_apps).
+    choose_media_apps(context)
     resolve_storage_identity(context.config, inventory, apply=True, interactive=sys.stdin.isatty(), out_fn=context.log)
     remember_subvolumes(context.config)
     specs = mount_specs(context.config)
@@ -1107,6 +1124,7 @@ def run(context):
     # is asked again on the next run instead of being kept.
     save_storage(context)
     mount_all(context, specs)
+    remember_media_apps(context)
     choose_locations(context)
     choose_usb(context)
     choose_backup_times(context)
@@ -1290,7 +1308,11 @@ def choose_locations(context, input_fn=None, interactive=None):
     room = {'ssd': free_gb(config['data_mount']), 'media': free_gb(config['media_mount'])}
     on_nas = bool(config.get('storage', {}).get('media_hdd', {}).get('network'))
     changed = False
+    from neko_common import media_apps_wanted
+
     for what, words, threshold in WHERE:
+        if what in ('photos', 'music') and not media_apps_wanted(config):
+            continue  # left out with the media apps: asked if they are added later
         kept = kept_location(config, what)
         if chosen.get(what) in DRIVE_WORDS:
             same_place(context, what, words, chosen[what], kept)
@@ -1303,7 +1325,7 @@ def choose_locations(context, input_fn=None, interactive=None):
             )
             context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
         changed = True
-    if chosen.get('photos') == 'media':
+    if chosen.get('photos') == 'media' and media_apps_wanted(config):
         context.log(PHOTOS_ON_MEDIA)
     if changed and hasattr(context, 'persist_config'):
         context.persist_config()
@@ -1421,6 +1443,19 @@ def choose_usb(context):
 JOB_STEPS = frozenset(
     ('photo_preservation', 'photo_backup', 'music_backup', 'app_backup', 'host_backup', 'maintenance')
 )
+
+
+def choose_media_apps(context):
+    """ "Install the media apps too?" (guided_setup.choose_media_apps)."""
+    from guided_setup import choose_media_apps as ask
+
+    ask(context)
+
+
+def remember_media_apps(context):
+    from guided_setup import remember_media_apps as keep
+
+    keep(context)
 
 
 def choose_backup_times(context):

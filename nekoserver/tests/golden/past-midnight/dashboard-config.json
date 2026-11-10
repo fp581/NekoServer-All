@@ -24,6 +24,9 @@
       "qbittorrent"
     ]
   },
+  "media_apps": {
+    "wanted": true
+  },
   "photos": {
     "deploy_immich": true,
     "archive_interval_minutes": 10080,

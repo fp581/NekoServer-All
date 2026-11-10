@@ -29,6 +29,7 @@ from neko_common import (
     SHARED,
     hold_operation,
     cloud_files,
+    media_apps_wanted,
     location,
     photo_library,
     FOLDER_FLAGS,
@@ -75,6 +76,28 @@ MENU = [
     ('read_only', 'Check a drive that turned read-only (after the NAS or a cable was away)'),
     ('repair', 'Repair damaged backup copies (found by the checksum checks)'),
 ]
+
+
+def menu(config):
+    """The menu as this server has it. With the media apps left out ("Install the media
+    apps too?" answered no), the two items that only hold their backups (Immich's photo
+    archive, the nightly app snapshots) are offered only while such a backup is there to
+    restore: a server that had the apps keeps everything it had, its backups too."""
+    if media_apps_wanted(config):
+        return MENU
+    media = Path(config['media_mount'])
+    held = {
+        'photos': media / config.get('photos', {}).get('archive_dir', ARCHIVE_DIR),
+        'apps': media / 'backups/media-applications',
+    }
+    return [(key, words) for key, words in MENU if key not in held or has_entries(held[key])]
+
+
+def has_entries(folder):
+    try:
+        return folder.is_dir() and any(folder.iterdir())
+    except OSError:
+        return False
 
 
 MONTHLY_DIR = 'backups/monthly'  # monthly snapshots, on the HDD
@@ -2516,7 +2539,7 @@ def run(prompt=input, output=print, config_path=None):
     started = False
     try:
         while True:
-            pick = choose('What do you want to get back?', MENU, prompt, output, leave='Quit')
+            pick = choose('What do you want to get back?', menu(config), prompt, output, leave='Quit')
             if pick is None:
                 output('Done.')
                 return 0

@@ -9,7 +9,15 @@ import secrets
 import stat
 import string
 
-from neko_common import APPS as CATALOG, atomic_json, atomic_write, ensure_directory, safe_path
+from neko_common import (
+    APPS as CATALOG,
+    atomic_json,
+    atomic_write,
+    ensure_directory,
+    immich_wanted,
+    media_services,
+    safe_path,
+)
 
 # Each account: (what it is, the app's local port).
 ADMIN = ' administrator'
@@ -238,10 +246,10 @@ def update(config, app, **changes):
 def selected(config, plan):
     result = []
     if 'media' in plan:
-        result.extend(config.get('media', {}).get('services', []))
+        result.extend(media_services(config))
         if 'navidrome' in result:
             result.insert(result.index('navidrome') + 1, 'navidrome_listener')
-    if 'photos' in plan and config.get('photos', {}).get('deploy_immich', False):
+    if 'photos' in plan and immich_wanted(config):
         result.append('immich')
     if 'nextcloud' in plan and config.get('nextcloud', {}).get('enabled', True):
         result.append('nextcloud')

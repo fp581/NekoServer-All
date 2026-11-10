@@ -83,9 +83,10 @@ APP_BROWSERS = (
 )
 WINDOW = ('1180', '480')  # the small window's size; it is placed low on the screen
 LARGEST_BODY = 10_000
-# The extras setup asks about when it gets to their step, as long as nothing was chosen
-# for them (Nextcloud is not asked: it is set up unless switched off).
-ASKED_LATER = ('tv', 'notifications', 'heartbeat', 'assistant')
+# The extras setup asks about when it gets to their step (the media apps at the drives
+# step), as long as nothing was chosen for them (Nextcloud is not asked: it is set up
+# unless switched off).
+ASKED_LATER = ('media_apps', 'tv', 'notifications', 'heartbeat', 'assistant')
 
 
 def step_title(name):

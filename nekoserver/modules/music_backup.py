@@ -7,6 +7,7 @@ import subprocess
 import native_runtime
 from neko_common import (
     VERSION,
+    media_apps_wanted,
     verify_storage,
     host_timezone,
     check_units,
@@ -39,7 +40,7 @@ def run(ctx):
     enabled = ctx.config.get('music', {}).get('backup_enabled', True)
     if type(enabled) is not bool:
         raise RuntimeError('Schedule enable switch must be boolean')
-    if not enabled:
+    if not enabled or not media_apps_wanted(ctx.config):
         if ctx.apply:
             if os.geteuid() != 0:
                 raise RuntimeError('Root required')
