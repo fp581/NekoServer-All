@@ -825,11 +825,13 @@ class AskNekoPageTests(unittest.TestCase):
 
     def test_asking_needs_the_pin_and_nothing_is_kept(self):
         app = (ROOT / 'dashboard/app.js').read_text()
-        ask = app[app.index('async function askNeko(') : app.index('/* The server\'s answer, one JSON object')]
+        ask = app[app.index('async function askNeko(') : app.index('function askProgress(')]
         self.assertIn('if (!canChange())', ask)
         self.assertIn('unlockDialog(', ask)
-        self.assertIn("fetch('/api/control/ask'", ask)
-        self.assertIn('...tokenHeader()', ask)
+        # Asked through the PIN-checked control path; the answer is polled with the same session.
+        self.assertIn("postControl('ask',", ask)
+        self.assertIn("getJson('/api/ask/' + encodeURIComponent(id), 8000, tokenHeader())", ask)
+        self.assertIn('ASK_POLL', ask)
         for kept in ('localStorage', 'sessionStorage.setItem', 'indexedDB'):
             self.assertNotIn(
                 kept,

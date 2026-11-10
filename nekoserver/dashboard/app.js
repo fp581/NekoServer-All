@@ -1710,7 +1710,8 @@ function renderAttention() {
  * reloading or closing it clears it. A repair Neko suggests is one from a short list,
  * checked by the server, and runs only when Approve is pressed. */
 const ASK = { log: [], busy: false, pending: null, item: null };
-const ASK_TIME = 330000; // longer than the server lets an answer take (assist.rs LIMITS)
+const ASK_TIME = 200000; // longer than the server lets an answer take (assist.rs LIMITS: 3 minutes)
+const ASK_POLL = 1000; // how often the page asks for the answer so far
 function assistantSetUp(s = state.status) {
   return object(s?.assistant).set_up === true;
 }
@@ -1868,67 +1869,47 @@ async function askNeko(question, item) {
   ASK.log.push(entry);
   ASK.busy = true;
   renderAsk();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ASK_TIME);
   try {
-    const response = await fetch('/api/control/ask', {
-      method: 'POST',
-      cache: 'no-store',
-      credentials: 'same-origin',
-      signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...tokenHeader() },
-      body: JSON.stringify(item ? { question, item } : { question })
-    });
-    if (!(response.headers.get('content-type') || '').startsWith('application/x-ndjson')) {
-      const answer = object(await response.json());
-      if (answer.error === 'E43') {
-        setControlToken('');
-      }
-      entry.error = controlMessage(answer);
+    const started = await postControl('ask', item ? { question, item } : { question });
+    if (!started.ok) {
+      entry.error = controlMessage(started);
       return;
     }
-    await eachLine(response.body, piece => askPiece(entry, piece));
-  } catch {
-    entry.error = controller.signal.aborted
-      ? 'Neko took too long to answer, so the question was stopped.'
-      : 'Neko is not available right now: the server could not be reached.';
+    entry.excerpt = text(started.excerpt);
+    await followAnswer(entry, text(started.id));
   } finally {
-    clearTimeout(timer);
     ASK.busy = false;
     renderAsk();
   }
 }
-/* The server's answer, one JSON object per line, as the lines come. */
-async function eachLine(body, each) {
-  const reader = body.getReader(),
-    decoder = new TextDecoder();
-  let rest = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
+/* The answer so far, asked for about once a second until it is done or has failed: the
+ * server writes it in the background and keeps no connection open for it. When this page
+ * stops asking (it was closed), the server gives the answer up and the model stops. */
+async function followAnswer(entry, id) {
+  const until = Date.now() + ASK_TIME;
+  while (Date.now() < until) {
+    await new Promise(resolve => setTimeout(resolve, ASK_POLL));
+    let now;
+    try {
+      now = object(await getJson('/api/ask/' + encodeURIComponent(id), 8000, tokenHeader()));
+    } catch {
+      entry.error = 'Neko is not available right now: the server could not be reached.';
+      return;
     }
-    rest += decoder.decode(value, { stream: true });
-    const lines = rest.split('\n');
-    rest = lines.pop();
-    for (const line of lines.filter(l => l.trim())) {
-      try {
-        each(object(JSON.parse(line)));
-      } catch {
-        /* a line that is not JSON is skipped */
-      }
+    askProgress(entry, now);
+    if (now.done === true || typeof now.failed === 'string') {
+      return;
     }
   }
+  entry.error = 'Neko took too long to answer, so the question was stopped.';
 }
-function askPiece(entry, piece) {
-  if (typeof piece.text === 'string') {
-    entry.answer += piece.text;
-  } else if (typeof piece.error === 'string') {
-    entry.error = piece.error;
-  } else if (typeof piece.model === 'string') {
-    entry.excerpt = text(piece.excerpt);
-  } else if (typeof piece.repair === 'string') {
-    void offerRepair(entry, piece.repair);
+function askProgress(entry, now) {
+  entry.answer = text(now.text);
+  if (typeof now.failed === 'string') {
+    entry.error = now.failed;
+  }
+  if (now.done === true && typeof now.repair === 'string') {
+    void offerRepair(entry, now.repair);
   }
   renderAskLog();
 }

@@ -36,16 +36,19 @@ const LOG_CHARS: usize = 6000;
 const SUMMARY_CHARS: usize = 3000;
 /// How long an answer may take: the first words may take a while (the model is loaded
 /// into memory first); after that a pause of `next`, or the whole answer taking longer
-/// than `total`, ends it.
+/// than `total`, ends it. When the page has not asked for it for `abandon` (it was
+/// closed), it is given up too, so the model stops working.
 pub struct Limits {
     pub first: Duration,
     pub next: Duration,
     pub total: Duration,
+    pub abandon: Duration,
 }
 pub const LIMITS: Limits = Limits {
     first: Duration::from_secs(150),
     next: Duration::from_secs(60),
-    total: Duration::from_secs(300),
+    total: Duration::from_secs(180),
+    abandon: Duration::from_secs(15),
 };
 /// Said when Ollama cannot answer, before the reason.
 pub const NOT_AVAILABLE: &str = "Neko is not available right now";
@@ -567,12 +570,16 @@ fn chars(text: &str) -> String {
     text.chars().take(60).collect()
 }
 
-/* ---------- the answer, streamed ---------- */
+/* ---------- the answer, asked for in the background ---------- */
+// The dashboard's web service has a few workers, each held for at most a few seconds
+// (the audit of 0.45.6). An answer takes minutes on a processor, so it is never waited
+// for on a connection: one thread outside the workers asks Ollama and keeps the answer
+// so far here, and the page asks for it about once a second (progress).
 
-/// One question at a time: a second one waits for the first (the page says so).
+/// One question at a time (Ollama answers one at a time too, OLLAMA_NUM_PARALLEL=1).
 static ASKING: AtomicBool = AtomicBool::new(false);
 
-/// Holds the "one question at a time" slot while an answer is streamed.
+/// Holds the "one question at a time" slot until its answer has ended.
 pub struct Turn;
 impl Turn {
     pub fn take() -> Option<Turn> {
@@ -588,58 +595,218 @@ impl Drop for Turn {
     }
 }
 
-/// Ask Ollama at `address` (always OLLAMA, a test's own) and pass the answer on to
-/// `out` as it comes, one JSON line per piece: {"text": ...}, then {"done": true}; or
-/// {"error": "Neko is not available right now: <why>"}. Returns the whole answer.
+/// Said when a second question comes while Neko answers one.
+pub const BUSY: &str = "Neko is busy with another question; ask again once it has answered";
+/// How long an answer is kept for the page after it has ended.
+const KEEP_AFTER: Duration = Duration::from_secs(300);
+
+/// An answer being written, or just written.
+struct Ask {
+    /// Who asked (their PIN session, or the server itself): only they may read it.
+    owner: String,
+    text: String,
+    failed: Option<String>,
+    done: bool,
+    /// The repair its last ACTION line names, when it is one from the list offered.
+    repair: Option<String>,
+    started: Instant,
+    ended: Option<Instant>,
+    total: Duration,
+    /// When the page last asked for it.
+    polled: Instant,
+}
+static ASKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Ask>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn asks() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, Ask>> {
+    ASKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A random id for an ask: 32 hex characters from the kernel's random numbers.
+fn new_id() -> std::result::Result<String, String> {
+    let mut bytes = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .map_err(|e| format!("no random numbers ({e})"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Start answering in the background (the turn is held until the answer has ended) and
+/// return the ask's id. `owner` is who may read it.
+pub fn begin(
+    turn: Turn,
+    owner: String,
+    address: String,
+    model: String,
+    messages: Value,
+    repairs: Vec<(String, String)>,
+    limits: Limits,
+) -> std::result::Result<String, String> {
+    let id = new_id()?;
+    {
+        let mut all = asks();
+        all.retain(|_, a| a.ended.is_none_or(|t| t.elapsed() < KEEP_AFTER));
+        all.insert(
+            id.clone(),
+            Ask {
+                owner,
+                text: String::new(),
+                failed: None,
+                done: false,
+                repair: None,
+                started: Instant::now(),
+                ended: None,
+                total: limits.total,
+                polled: Instant::now(),
+            },
+        );
+    }
+    let key = id.clone();
+    std::thread::Builder::new()
+        .name("ask-neko".into())
+        .spawn(move || {
+            let _turn = turn;
+            let keep = || wanted(&key, limits.abandon);
+            let result = stream(&address, &model, &messages, &limits, &keep, &mut |piece| {
+                if let Some(a) = asks().get_mut(&key) {
+                    a.text.push_str(piece);
+                }
+            });
+            let mut all = asks();
+            if let Some(a) = all.get_mut(&key) {
+                match result {
+                    Ok(answer) => {
+                        a.done = true;
+                        a.repair = suggested(&answer, &repairs);
+                    }
+                    Err(why) => a.failed = a.failed.take().or(Some(why)),
+                }
+                a.ended = a.ended.or(Some(Instant::now()));
+            }
+        })
+        .map_err(|e| format!("could not start ({e})"))?;
+    Ok(id)
+}
+
+/// The answer so far, for its owner only: {"text", "done", "failed", "repair"}. None for
+/// an unknown or expired id, or someone else's. An answer past its time limit is ended
+/// here even while Ollama is still silent.
+pub fn progress(id: &str, owner: &str) -> Option<Value> {
+    let mut all = asks();
+    let a = all.get_mut(id).filter(|a| a.owner == owner)?;
+    a.polled = Instant::now();
+    if a.ended.is_some_and(|t| t.elapsed() >= KEEP_AFTER) {
+        all.remove(id);
+        return None;
+    }
+    if a.ended.is_none() && a.started.elapsed() > a.total {
+        a.failed = Some("the answer took too long, so it was stopped".into());
+        a.ended = Some(Instant::now());
+    }
+    Some(json!({
+        "text": a.text,
+        "done": a.done,
+        "failed": a.failed.as_ref().map(|why| format!("{NOT_AVAILABLE}: {why}")),
+        "repair": a.repair,
+    }))
+}
+
+/// The answer is still wanted: not ended (its time limit ends it in progress), and its
+/// page asked for it within `abandon`.
+fn wanted(id: &str, abandon: Duration) -> bool {
+    asks()
+        .get(id)
+        .is_some_and(|a| a.ended.is_none() && a.polled.elapsed() < abandon)
+}
+
+/// Why a line from Ollama did not come.
+enum Waited {
+    TooLong,
+    NotWanted,
+    Broken,
+}
+
+/// One line from Ollama (as bytes: a line cut by a wake-up is kept whole), waiting at
+/// most `limit`, and giving up as soon as `keep` says the answer is not wanted any more.
+/// The connection's read time limit is short, so `keep` is asked about once a second.
+fn next_line(
+    reader: &mut BufReader<std::io::Take<TcpStream>>,
+    line: &mut Vec<u8>,
+    limit: Duration,
+    keep: &dyn Fn() -> bool,
+) -> std::result::Result<usize, Waited> {
+    let start = Instant::now();
+    loop {
+        match reader.read_until(b'\n', line) {
+            Ok(n) => return Ok(n),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if !keep() {
+                    return Err(Waited::NotWanted);
+                }
+                if start.elapsed() >= limit {
+                    return Err(Waited::TooLong);
+                }
+            }
+            Err(_) => return Err(Waited::Broken),
+        }
+    }
+}
+
+/// Ask Ollama at `address` (OLLAMA, or a test's own) and hand each piece of the answer
+/// to `piece` as it comes. Returns the whole answer, or why there is none. When `keep`
+/// says it is not wanted any more, the connection is closed, and Ollama stops.
 pub fn stream(
     address: &str,
     model: &str,
     messages: &Value,
-    out: &mut dyn Write,
     limits: &Limits,
+    keep: &dyn Fn() -> bool,
+    piece: &mut dyn FnMut(&str),
 ) -> std::result::Result<String, String> {
-    let fail = |out: &mut dyn Write, why: String| {
-        let _ = writeln!(
-            out,
-            "{}",
-            json!({"error": format!("{NOT_AVAILABLE}: {why}")})
-        );
-        Err(why)
-    };
     let body = json!({"model": model, "messages": messages, "stream": true,
         "options": {"num_predict": ANSWER_TOKENS}})
     .to_string();
-    let Ok(at) = address.parse::<SocketAddr>() else {
-        return fail(out, "its address is not one".into());
-    };
-    let Ok(mut ollama) = TcpStream::connect_timeout(&at, Duration::from_secs(3)) else {
-        return fail(
-            out,
-            "the AI assistant does not answer (it may be stopped, or still starting)".into(),
-        );
-    };
+    let at = address
+        .parse::<SocketAddr>()
+        .map_err(|_| "its address is not one".to_string())?;
+    let mut ollama = TcpStream::connect_timeout(&at, Duration::from_secs(3)).map_err(|_| {
+        "the AI assistant does not answer (it may be stopped, or still starting)".to_string()
+    })?;
     let _ = ollama.set_write_timeout(Some(Duration::from_secs(5)));
-    let _ = ollama.set_read_timeout(Some(limits.first));
+    let tick = Duration::from_secs(1).min(limits.next).min(limits.first);
+    let _ = ollama.set_read_timeout(Some(tick));
     // HTTP/1.0: Ollama then sends the answer as it comes and closes, without chunks.
     let request = format!("POST /api/chat HTTP/1.0\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
-    if ollama.write_all(request.as_bytes()).is_err() {
-        return fail(out, "the AI assistant did not take the question".into());
-    }
+    ollama
+        .write_all(request.as_bytes())
+        .map_err(|_| "the AI assistant did not take the question".to_string())?;
     let mut reader = BufReader::new(ollama.take(4_000_000));
-    let mut line = String::new();
-    if reader.read_line(&mut line).map_or(true, |n| n == 0) {
-        return fail(
-            out,
-            "the AI assistant took too long to start answering".into(),
-        );
+    let mut line = vec![];
+    let waited = |why: Waited, slow: &str| match why {
+        Waited::TooLong => slow.to_string(),
+        Waited::NotWanted => "the page stopped asking for the answer, so it was stopped".into(),
+        Waited::Broken => "the AI assistant stopped answering (out of memory, perhaps)".into(),
+    };
+    let slow_start = "the AI assistant took too long to start answering";
+    match next_line(&mut reader, &mut line, limits.first, keep) {
+        Ok(0) => return Err(slow_start.into()),
+        Ok(_) => {}
+        Err(why) => return Err(waited(why, slow_start)),
     }
-    let code = line.split_whitespace().nth(1).unwrap_or("").to_string();
+    let status = String::from_utf8_lossy(&line).to_string();
+    let code = status.split_whitespace().nth(1).unwrap_or("").to_string();
     loop {
         line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => return fail(out, "the AI assistant stopped answering".into()),
-            Ok(_) if line.trim().is_empty() => break,
+        match next_line(&mut reader, &mut line, limits.next, keep) {
+            Ok(0) => return Err("the AI assistant stopped answering".into()),
+            Ok(_) if line.iter().all(u8::is_ascii_whitespace) => break,
             Ok(_) => {}
+            Err(why) => return Err(waited(why, "the AI assistant stopped answering")),
         }
     }
     if code != "200" {
@@ -649,46 +816,41 @@ pub fn stream(
             .ok()
             .and_then(|v| v["error"].as_str().map(str::to_string))
             .unwrap_or_else(|| format!("it answered {code}"));
-        return fail(out, plain_error(&said));
+        return Err(plain_error(&said));
     }
     let started = Instant::now();
     let mut answer = String::new();
+    let too_long = "the answer took too long, so it was stopped";
     loop {
         if started.elapsed() > limits.total {
-            return fail(out, "the answer took too long, so it was stopped".into());
+            return Err(too_long.into());
         }
         line.clear();
-        match reader.read_line(&mut line) {
+        // The first words may take a while (the model is loaded first), the next ones less.
+        let limit = if answer.is_empty() {
+            limits.first
+        } else {
+            limits.next
+        };
+        match next_line(&mut reader, &mut line, limit, keep) {
             Ok(0) => break,
             Ok(_) => {}
-            Err(_) => {
-                return fail(
-                    out,
-                    "the AI assistant stopped answering (out of memory, perhaps)".into(),
-                )
-            }
+            Err(why) => return Err(waited(why, too_long)),
         }
-        let _ = reader
-            .get_ref()
-            .get_ref()
-            .set_read_timeout(Some(limits.next));
-        let Ok(piece) = serde_json::from_str::<Value>(line.trim()) else {
+        let Ok(part) = serde_json::from_slice::<Value>(line.trim_ascii()) else {
             continue;
         };
-        if let Some(why) = piece["error"].as_str() {
-            return fail(out, plain_error(why));
+        if let Some(why) = part["error"].as_str() {
+            return Err(plain_error(why));
         }
-        if let Some(text) = piece["message"]["content"].as_str() {
+        if let Some(text) = part["message"]["content"].as_str() {
             answer.push_str(text);
-            if writeln!(out, "{}", json!({"text": text})).is_err() {
-                return Err("the page went away".into());
-            }
+            piece(text);
         }
-        if piece["done"] == true {
+        if part["done"] == true {
             break;
         }
     }
-    let _ = writeln!(out, "{}", json!({"done": true}));
     Ok(answer)
 }
 
@@ -1012,6 +1174,22 @@ mod tests {
         (address, handle)
     }
 
+    fn collect(
+        address: &str,
+        limits: &Limits,
+    ) -> (std::result::Result<String, String>, Vec<String>) {
+        let mut pieces = vec![];
+        let result = stream(
+            address,
+            "qwen3.5:4b",
+            &json!([{"role": "user", "content": "why"}]),
+            limits,
+            &|| true,
+            &mut |p| pieces.push(p.to_string()),
+        );
+        (result, pieces)
+    }
+
     #[test]
     fn the_answer_is_passed_on_as_it_comes() {
         let body = [
@@ -1023,19 +1201,9 @@ mod tests {
         let (address, server) = fake_ollama(Some(format!(
             "HTTP/1.0 200 OK\r\nContent-Type: application/x-ndjson\r\n\r\n{body}\n"
         )));
-        let mut page = vec![];
-        let answer = stream(
-            &address,
-            "qwen3.5:4b",
-            &json!([{"role": "user", "content": "why"}]),
-            &mut page,
-            &LIMITS,
-        )
-        .unwrap();
-        assert_eq!(answer, "The disk is full.\nACTION: update_check");
-        let shown = String::from_utf8(page).unwrap();
-        assert!(shown.contains(r#"{"text":"The disk "}"#), "{shown}");
-        assert!(shown.trim_end().ends_with(r#"{"done":true}"#), "{shown}");
+        let (answer, pieces) = collect(&address, &LIMITS);
+        assert_eq!(answer.unwrap(), "The disk is full.\nACTION: update_check");
+        assert_eq!(pieces[0], "The disk ");
         let asked = server.join().unwrap();
         assert!(asked.starts_with("POST /api/chat HTTP/1.0"), "{asked}");
         assert!(asked.contains(r#""model":"qwen3.5:4b""#) && asked.contains(r#""stream":true"#));
@@ -1049,10 +1217,8 @@ mod tests {
             .local_addr()
             .unwrap()
             .to_string();
-        let mut page = vec![];
-        let why = stream(&free, "m", &json!([]), &mut page, &LIMITS).unwrap_err();
+        let why = collect(&free, &LIMITS).0.unwrap_err();
         assert!(why.contains("does not answer"), "{why}");
-        assert!(String::from_utf8(page).unwrap().contains(NOT_AVAILABLE));
     }
 
     #[test]
@@ -1060,25 +1226,26 @@ mod tests {
         let (address, _) = fake_ollama(Some(
             "HTTP/1.0 404 Not Found\r\n\r\n{\"error\":\"model 'qwen3.5:4b' not found\"}".into(),
         ));
-        let mut page = vec![];
-        let why = stream(&address, "qwen3.5:4b", &json!([]), &mut page, &LIMITS).unwrap_err();
-        assert!(why.contains("not there yet"), "{why}");
+        assert!(collect(&address, &LIMITS)
+            .0
+            .unwrap_err()
+            .contains("not there yet"));
     }
 
     #[test]
     fn an_out_of_memory_model_is_said_as_such() {
         // The model's container was killed for its memory: Ollama says so, or the answer stops.
         let (address, _) = fake_ollama(Some("HTTP/1.0 500 Internal Server Error\r\n\r\n{\"error\":\"model runner has unexpectedly stopped, this may be due to resource limitations (out of memory)\"}".into()));
-        let mut page = vec![];
-        assert!(stream(&address, "m", &json!([]), &mut page, &LIMITS)
+        assert!(collect(&address, &LIMITS)
+            .0
             .unwrap_err()
             .contains("more memory"));
         let body = r#"{"message":{"content":"The "},"done":false}"#;
         let (address, _) = fake_ollama(Some(format!(
             "HTTP/1.0 200 OK\r\n\r\n{body}\n{{\"error\":\"signal: killed\"}}\n"
         )));
-        let mut page = vec![];
-        assert!(stream(&address, "m", &json!([]), &mut page, &LIMITS)
+        assert!(collect(&address, &LIMITS)
+            .0
             .unwrap_err()
             .contains("more memory"));
     }
@@ -1088,48 +1255,143 @@ mod tests {
         let body =
             "not json at all\n{\"message\":{\"content\":\"ACTION: rm -rf /\"},\"done\":true}\n";
         let (address, _) = fake_ollama(Some(format!("HTTP/1.0 200 OK\r\n\r\n{body}")));
-        let mut page = vec![];
-        let answer = stream(&address, "m", &json!([]), &mut page, &LIMITS).unwrap();
+        let answer = collect(&address, &LIMITS).0.unwrap();
         assert_eq!(
             suggested(&answer, &[("update_check".into(), String::new())]),
             None
         );
     }
 
-    #[test]
-    fn a_model_too_slow_to_start_is_stopped() {
-        let (address, _) = fake_ollama(None);
-        let mut page = vec![];
-        let quick = Limits {
+    fn quick() -> Limits {
+        Limits {
             first: Duration::from_millis(300),
             next: Duration::from_millis(300),
             total: Duration::from_secs(1),
-        };
-        let why = stream(&address, "m", &json!([]), &mut page, &quick).unwrap_err();
-        assert!(why.contains("too long"), "{why}");
-        assert!(String::from_utf8(page).unwrap().contains(NOT_AVAILABLE));
+            abandon: Duration::from_secs(10),
+        }
     }
 
     #[test]
-    fn a_folder_path_and_a_service_name_are_kept() {
-        let said = redact(
-            "nekoserver-maintenance-resume.service could not write /mnt/nekoserver-media/library/movies/a-long-film-name",
-            &[],
+    fn a_model_too_slow_to_start_is_stopped() {
+        let (address, _) = fake_ollama(None);
+        let why = collect(&address, &quick()).0.unwrap_err();
+        assert!(why.contains("too long"), "{why}");
+    }
+
+    /// The asks share one slot: these tests take it in turn.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn wait_until(mut ended: impl FnMut() -> bool) {
+        let start = Instant::now();
+        while !ended() {
+            assert!(start.elapsed() < Duration::from_secs(10), "it never ended");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn an_answer_is_read_back_by_its_owner_while_it_is_written() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let body = "{\"message\":{\"content\":\"Free some space.\\nACTION: update_check\"},\"done\":true}\n";
+        let (address, _) = fake_ollama(Some(format!("HTTP/1.0 200 OK\r\n\r\n{body}")));
+        let repairs = vec![("update_check".to_string(), String::new())];
+        let id = begin(
+            Turn::take().unwrap(),
+            "token:abc".into(),
+            address,
+            "m".into(),
+            json!([]),
+            repairs,
+            LIMITS,
+        )
+        .unwrap();
+        assert_eq!(id.len(), 32);
+        wait_until(|| progress(&id, "token:abc").unwrap()["done"] == true);
+        let answer = progress(&id, "token:abc").unwrap();
+        assert_eq!(answer["text"], "Free some space.\nACTION: update_check");
+        assert_eq!(answer["repair"], "update_check");
+        assert_eq!(answer["failed"], Value::Null);
+        // Someone else's session, or an id never given, gets nothing.
+        assert!(progress(&id, "token:other").is_none());
+        assert!(progress(&id, "local").is_none());
+        assert!(progress("0123456789abcdef0123456789abcdef", "token:abc").is_none());
+        // The slot is free again once the answer has ended.
+        wait_until(|| Turn::take().is_some());
+    }
+
+    #[test]
+    fn a_poll_answers_at_once_while_the_model_is_slow() {
+        // The web service's workers are held for at most a few seconds: a poll must never
+        // wait for the model, even while it has not said a word.
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (address, _) = fake_ollama(None);
+        let id = begin(
+            Turn::take().unwrap(),
+            "local".into(),
+            address,
+            "m".into(),
+            json!([]),
+            vec![],
+            quick(),
+        )
+        .unwrap();
+        let asked = Instant::now();
+        let first = progress(&id, "local").unwrap();
+        assert!(asked.elapsed() < Duration::from_millis(200));
+        assert_eq!(
+            (first["done"].clone(), first["failed"].clone()),
+            (json!(false), Value::Null)
         );
+        // A second question while this one runs: refused.
+        assert!(Turn::take().is_none());
+        // The time limit ends it, said as "not available right now".
+        wait_until(|| progress(&id, "local").unwrap()["failed"].is_string());
+        let ended = progress(&id, "local").unwrap();
         assert!(
-            said.contains("/mnt/nekoserver-media/library/movies/a-long-film-name"),
-            "{said}"
+            ended["failed"].as_str().unwrap().starts_with(NOT_AVAILABLE),
+            "{ended}"
         );
+        wait_until(|| Turn::take().is_some());
+    }
+
+    #[test]
+    fn a_closed_page_ends_the_answer_and_lets_the_model_go() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let (address, server) = fake_ollama(None);
+        let limits = Limits {
+            first: Duration::from_secs(5),
+            next: Duration::from_secs(5),
+            total: Duration::from_secs(5),
+            abandon: Duration::from_millis(400),
+        };
+        let id = begin(
+            Turn::take().unwrap(),
+            "local".into(),
+            address,
+            "m".into(),
+            json!([]),
+            vec![],
+            limits,
+        )
+        .unwrap();
+        // Nobody polls: the ask ends long before its five seconds.
+        let asked = Instant::now();
+        wait_until(|| asks().get(&id).is_some_and(|a| a.ended.is_some()));
         assert!(
-            said.contains("nekoserver-maintenance-resume.service"),
-            "{said}"
+            asked.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            asked.elapsed()
         );
-        let key = redact("key 3f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a", &[]);
-        assert!(!key.contains("3f9a8b7c"), "{key}");
+        let why = asks().get(&id).and_then(|a| a.failed.clone()).unwrap();
+        assert!(why.contains("stopped asking"), "{why}");
+        // The connection to Ollama is closed: its stand-in reads the end at once.
+        let _ = server.join();
+        wait_until(|| Turn::take().is_some());
     }
 
     #[test]
     fn one_question_at_a_time() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let first = Turn::take().expect("free at first");
         assert!(Turn::take().is_none());
         drop(first);
