@@ -166,6 +166,14 @@
       "port": 8088,
       "media": false,
       "tailnet": 8447
+    },
+    {
+      "id": "assistant",
+      "name": "AI assistant",
+      "role": "Ask questions, get help",
+      "port": 8090,
+      "media": false,
+      "tailnet": 8449
     }
   ],
   "cats": {

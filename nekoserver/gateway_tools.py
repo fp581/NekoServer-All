@@ -11,8 +11,10 @@ import recovery_tools
 from network_access import lan, verify_lan, choose_lan, save_settings
 import host
 from neko_common import (
+    ASSISTANT,
     SHARED,
     VERSION,
+    assistant_installed,
     safe_path,
     atomic_write,
     atomic_json,
@@ -172,6 +174,8 @@ DEFAULT_SERVICES = ('jellyfin', 'seerr', 'immich', 'navidrome', 'nextcloud')
 
 
 def installed(config, app):
+    if app == ASSISTANT:
+        return assistant_installed(config)
     if app == 'nextcloud':
         return bool(config.get('nextcloud', {}).get('enabled'))
     if app == 'immich':
@@ -180,8 +184,28 @@ def installed(config, app):
 
 
 def selected(config):
-    apps = config.get('gateway', {}).get('services', list(APPS))
-    if not isinstance(apps, list) or not apps or len(apps) != len(set(apps)) or not set(apps) <= set(APPS):
+    """The apps the gateway publishes: the ones in the gateway list (as above), then the AI
+    assistant when it is ready. The assistant is never in the list itself: it is added
+    only once it is installed and its login checked, and left out otherwise, so it can
+    never stop the other apps' addresses from being set up."""
+    apps = gateway_list(config)
+    if assistant_ready(config):
+        apps.append(ASSISTANT)
+    return apps
+
+
+def assistant_ready(config):
+    """The AI assistant is installed and its setup step signed in with its saved login."""
+    return assistant_installed(config) and logins_verified(config, [ASSISTANT])
+
+
+def gateway_list(config):
+    """The apps in "services" under "gateway" (every everyday app when it is not there),
+    as set up on this server: the list as config.json ships it follows the apps set up,
+    a list of your own is taken as it is."""
+    everyday = [app for app in APPS if app != ASSISTANT]
+    apps = config.get('gateway', {}).get('services', everyday)
+    if not isinstance(apps, list) or not apps or len(apps) != len(set(apps)) or not set(apps) <= set(everyday):
         raise RuntimeError('Unknown gateway application')
     if list(apps) == list(DEFAULT_SERVICES):
         apps = [a for a in apps if installed(config, a)]
@@ -194,7 +218,7 @@ def selected(config):
                 f'"{app}" is in the gateway list ("services" under "gateway") but is not set up on this server; '
                 'take it out of the list or set the app up'
             )
-    return apps
+    return list(apps)
 
 
 def logins_verified(config, apps):
@@ -216,7 +240,8 @@ def configure(ctx, kind):
     opts = cfg.setdefault('gateway', {})
     changed = False
     if 'services' not in opts:
-        opts['services'] = list(apps)
+        # The AI assistant is added by itself when ready (selected), never saved in the list.
+        opts['services'] = [app for app in apps if app != ASSISTANT]
         changed = True
     # The same choice as LAN folder sharing (Samba), asked once by whichever runs first.
     if kind == 'lan' and not choose_lan(ctx):
@@ -302,7 +327,10 @@ def unverified_containers(config, apps):
     from acceptance import containers
 
     scoped = dict(config)
-    scoped['media'] = {**config.get('media', {}), 'services': [a for a in apps if a not in ('immich', 'nextcloud')]}
+    # The AI assistant's setup step checks its own containers; a problem there must not
+    # hold up the other apps' addresses.
+    others = ('immich', 'nextcloud', ASSISTANT)
+    scoped['media'] = {**config.get('media', {}), 'services': [a for a in apps if a not in others]}
     checked = containers(scoped) if scoped['media']['services'] else []
     if 'immich' in apps:
         checked += containers(config, photos=True)

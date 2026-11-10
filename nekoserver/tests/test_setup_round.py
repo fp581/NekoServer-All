@@ -305,7 +305,15 @@ class WindowPackageTests(unittest.TestCase):
             self.addCleanup(window.stop)
             asked = {e['id']: e['asked'] for e in window._extras()}
         self.assertEqual(
-            asked, {'network_storage': False, 'tv': False, 'notifications': True, 'heartbeat': True, 'nextcloud': False}
+            asked,
+            {
+                'network_storage': False,
+                'tv': False,
+                'notifications': True,
+                'heartbeat': True,
+                'nextcloud': False,
+                'assistant': True,
+            },
         )
 
 

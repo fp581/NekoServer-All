@@ -24,6 +24,7 @@ STEP_EXPLANATIONS = {
     'hardware_video': "Lets Jellyfin and Immich use the graphics chip, so video plays smoothly.",
     'onboarding': 'Connects the apps to each other: libraries, download paths, sources and requests.',
     'music': 'Checks music playback and puts Navidrome on the desktop.',
+    'assistant': 'Installs the AI assistant you asked for: a private chat page, with the model running on this PC.',
     'gateway_lan': 'Gives your apps one address at home, with HTTPS, through the Caddy gateway.',
     'tailscale': 'Installs Tailscale: a private network between your own devices, so the apps work from anywhere.',
     'gateway_tailnet': 'Gives each app a private Tailscale address and walks you through setting up your phone.',
@@ -124,6 +125,18 @@ EXTRAS = (
         'title': 'Nextcloud, your private cloud drive',
         'explanation': 'Your files on your own server, from the phone and the browser, with sharing. '
         'Photos go to Immich either way.',
+        'installs': (),
+    },
+    {
+        'id': 'assistant',
+        'section': 'assistant',
+        'key': 'wanted',
+        'on_default': False,
+        'step': 'assistant',
+        'title': 'An AI assistant you can ask anything',
+        'explanation': 'A private chat page like ChatGPT, in the browser and on your phone. The model runs on this '
+        'server, so nothing you ask leaves your home. It downloads about 10 GB and needs at least 12 GB of memory; '
+        'it never slows down your other apps (ASSISTANT.md).',
         'installs': (),
     },
 )

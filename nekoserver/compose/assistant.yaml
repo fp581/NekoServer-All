@@ -1,0 +1,59 @@
+# The AI assistant (modules/assistant.py, ASSISTANT.md): Ollama runs the model on this PC,
+# Open WebUI is the chat page. A project of its own on a network of its own: no other app
+# uses it or waits for it. Its limits keep it from slowing the other apps down: at most
+# the processor share and memory setup chose, the lowest priority, and the first to go
+# when memory runs out (oom_score_adj). Setup fills in the NEKO_ values; the
+# defaults after ":-" are only for `docker compose config` in CI. The secrets
+# (WEBUI_SECRET_KEY and the admin login) are in the private .env next to this file.
+services:
+  ollama:
+    image: ollama/ollama:0.40.16
+    environment:
+      # The model leaves memory five minutes after the last question.
+      OLLAMA_KEEP_ALIVE: "5m"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_CONTEXT_LENGTH: "8192"
+    volumes:
+      - "${NEKO_DATA:-/srv/nekoserver}/appdata/assistant/models:/root/.ollama"
+    cpus: "${NEKO_CPUS:-2}"
+    cpu_shares: 256
+    mem_limit: "${NEKO_MODEL_MEMORY:-6g}"
+    memswap_limit: "${NEKO_MODEL_MEMORY:-6g}"
+    oom_score_adj: 1000
+    pids_limit: 512
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+  assistant:
+    image: ghcr.io/open-webui/open-webui:v0.13.3
+    ports:
+      - "127.0.0.1:8090:8080"
+    environment:
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      DEFAULT_MODELS: "${NEKO_MODEL:-qwen3.5:4b}"
+      # The admin is made from the saved login at the first start; nobody else can sign
+      # up, so whoever opens the page first does not become its administrator.
+      WEBUI_ADMIN_NAME: "NekoServer"
+      WEBUI_ADMIN_EMAIL: "${WEBUI_ADMIN_EMAIL}"
+      WEBUI_ADMIN_PASSWORD: "${WEBUI_ADMIN_PASSWORD}"
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY}"
+      ENABLE_SIGNUP: "false"
+      ENABLE_OPENAI_API: "false"
+      ANONYMIZED_TELEMETRY: "false"
+      DO_NOT_TRACK: "true"
+      SCARF_NO_ANALYTICS: "true"
+      TZ: "${NEKO_TZ:-UTC}"
+    volumes:
+      - "${NEKO_DATA:-/srv/nekoserver}/appdata/assistant/chat:/app/backend/data"
+    depends_on:
+      - ollama
+    cpus: "1"
+    cpu_shares: 256
+    mem_limit: "2g"
+    memswap_limit: "2g"
+    oom_score_adj: 1000
+    pids_limit: 512
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true

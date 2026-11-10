@@ -1,5 +1,5 @@
 {
-  "project_name": "NekoServer v0.48.2",
+  "project_name": "NekoServer v0.49.0",
   "timezone": "UTC",
   "data_mount": "/srv/nekoserver",
   "media_mount": "/mnt/nekoserver-media",
@@ -94,6 +94,9 @@
       "enabled": false
     },
     "hardware_video": {
+      "enabled": false
+    },
+    "assistant": {
       "enabled": false
     }
   },
@@ -204,6 +207,7 @@
       "hardware_video",
       "onboarding",
       "music",
+      "assistant",
       "samba",
       "media_monitor",
       "dashboard",
@@ -338,6 +342,14 @@
       "recovery",
       "account_credentials",
       "accounts"
+    ],
+    "assistant": [
+      "system",
+      "storage",
+      "recovery",
+      "server_os",
+      "docker",
+      "assistant"
     ]
   },
   "networking": {
@@ -454,5 +466,8 @@
   },
   "guided_setup": {
     "enabled": true
+  },
+  "assistant": {
+    "model": "auto"
   }
 }

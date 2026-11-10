@@ -84,7 +84,7 @@ WINDOW = ('1180', '480')  # the small window's size; it is placed low on the scr
 LARGEST_BODY = 10_000
 # The extras setup asks about when it gets to their step, as long as nothing was chosen
 # for them (Nextcloud is not asked: it is set up unless switched off).
-ASKED_LATER = ('tv', 'notifications', 'heartbeat')
+ASKED_LATER = ('tv', 'notifications', 'heartbeat', 'assistant')
 
 
 def step_title(name):

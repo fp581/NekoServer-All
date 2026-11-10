@@ -918,16 +918,11 @@ fn applications(
         }
     };
     let now = common::now();
-    let selected = cfg["media"]["services"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    // The apps setup chose, by the same rule the dashboard's restart actions use.
+    let chosen = crate::apps::installed(cfg);
     let mut out = vec![];
     for &(app, name, description, port) in APPS.iter() {
-        if !selected.iter().any(|v| v == app)
-            && !(app == "immich" && cfg["photos"]["deploy_immich"] == true)
-            && !(app == "nextcloud" && cfg["nextcloud"]["enabled"] == true)
-        {
+        if !chosen.contains(&app) {
             continue;
         }
         let project = format!("neko-{app}");
@@ -2458,9 +2453,12 @@ pub(crate) fn alerts(s: &Value) -> Value {
                 // so): the dashboard shows it as not responding, the alert agrees.
                 || (a["state"] == "running" && a["responding"] == false)
             {
+                // The optional AI assistant is said, never as critical: everything else
+                // works without it.
+                let optional = a["id"] == "assistant";
                 add(
                     format!("app:{}", text(&a["id"])),
-                    if a["health"] == "unhealthy" || a["responding"] == false {
+                    if !optional && (a["health"] == "unhealthy" || a["responding"] == false) {
                         "critical"
                     } else {
                         "warning"
@@ -3613,6 +3611,35 @@ mod acceptance_tests {
 #[cfg(test)]
 mod user_panel_tests {
     use super::*;
+    /// The optional AI assistant not answering is said, but only as a warning: everything
+    /// else works without it. The same state of any other app stays critical.
+    #[test]
+    fn the_ai_assistant_is_never_a_critical_alert() {
+        let s = json!({"applications": [
+            {"id": "assistant", "name": "AI assistant", "state": "running", "health": "unhealthy"},
+            {"id": "seerr", "name": "Seerr", "state": "running", "health": "unhealthy"},
+            {"id": "jellyfin", "name": "Jellyfin", "state": "running", "health": "not_defined", "responding": false}]});
+        let shown = alerts(&s);
+        let level = |id: &str| {
+            shown
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == id)
+                .map(|a| text(&a["level"]).to_string())
+        };
+        assert_eq!(
+            level("app:assistant").as_deref(),
+            Some("warning"),
+            "{shown}"
+        );
+        assert_eq!(level("app:seerr").as_deref(), Some("critical"), "{shown}");
+        assert_eq!(
+            level("app:jellyfin").as_deref(),
+            Some("critical"),
+            "{shown}"
+        );
+    }
     /// The HDD missing (user panel UP-03/UP-04): one drive alert naming the apps it
     /// stopped, no "check its container logs" for each, and no backup alerts of their own.
     #[test]

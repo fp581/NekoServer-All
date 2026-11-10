@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.48.2'
+VERSION = '0.49.0'
 
 # "Europe/London", and the one-word zones zoneinfo also ships ("Japan", "CET", "UTC").
 TIMEZONE_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*')
@@ -87,10 +87,24 @@ def app_ports(apps):
     return {app: app_port(app) for app in apps}
 
 
+# The optional AI assistant (modules/assistant.py). Its ports are not in APP_PORTS: a
+# dashboard or torrent port already set to one of them must keep working, so the
+# assistant is the one that gives way (its start then says which port is busy).
+ASSISTANT = 'assistant'
 # Local ports already taken: every app, Immich's restore test (2284) and the private
 # Tailscale addresses (8442-8448). The dashboard (8787 by default) must avoid them all.
-APP_PORTS = frozenset({*(port for _, _, port in APPS.values()), 2284, *range(8442, 8449)})
+APP_PORTS = frozenset({*(port for app, (_, _, port) in APPS.items() if app != ASSISTANT), 2284, *range(8442, 8449)})
 DASHBOARD_DEFAULT_PORT = 8787
+
+
+def assistant_installed(config):
+    """The AI assistant is wanted and its Compose file is in place (setup writes it last,
+    once the rest of its files are there). False for any settings that say otherwise."""
+    options = config.get(ASSISTANT)
+    if not isinstance(options, dict) or options.get('wanted') is not True:
+        return False
+    data = config.get('data_mount')
+    return isinstance(data, str) and (Path(data) / 'compose' / ASSISTANT / 'compose.yaml').is_file()
 
 
 def dashboard_port(config):

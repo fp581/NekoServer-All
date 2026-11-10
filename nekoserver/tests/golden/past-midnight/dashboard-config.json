@@ -64,10 +64,14 @@
   "tv": {
     "wanted": null
   },
+  "assistant": {
+    "wanted": false
+  },
   "acceptance_scope": "b9e839b975276805cf5c8968e13fffc5756b5592f2e85085f6c38ad33433c50b",
   "acceptance_profiles": [
     "accounts",
     "app_backup",
+    "assistant",
     "cloud",
     "dashboard",
     "foundation",

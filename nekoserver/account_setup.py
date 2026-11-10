@@ -569,6 +569,31 @@ def verify_project(config, app, quarantined=False):
     return int(given[0]['HostPort'])
 
 
+def assistant_signs_in(entry, opener=urllib.request.urlopen):
+    """The AI assistant's chat page (Open WebUI) takes its saved admin login: True, or
+    RuntimeError with the reason (never the password). Its setup step uses this before it
+    marks the login verified, and `account-setup.py signin assistant` does too."""
+    body = json.dumps({'email': entry['username'], 'password': entry['password']}).encode()
+    request = urllib.request.Request(
+        f'http://127.0.0.1:{store.APPS["assistant"][1]}/api/v1/auths/signin',
+        data=body,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with opener(request, timeout=30) as answer:
+            if json.loads(answer.read(64000)).get('token'):
+                return True
+    except urllib.error.HTTPError:
+        pass
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f'its chat page did not answer the sign-in ({exc})') from None
+    raise RuntimeError(
+        'its saved login does not work on the chat page (it may have kept an admin account of its own from '
+        'an earlier install); see ASSISTANT.md, "Its login"'
+    )
+
+
 def signs_in(config, app, client_factory=Client):
     """Whether `app` takes its saved login now, for the weekly update (before and after it
     installs a new version). Read-only: with `allow_create` off the app checks below never
@@ -579,6 +604,8 @@ def signs_in(config, app, client_factory=Client):
     entry = store.get(config, app)
     if not entry:
         return None
+    if app == 'assistant':
+        return assistant_signs_in(entry)
     entry = {**entry, 'allow_create': False}
     # The port is the one proved to be the app's (the held-back one during an update).
     client = client_factory(app, verify_project(config, app, quarantined=True))

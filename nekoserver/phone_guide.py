@@ -35,6 +35,7 @@ LOGIN = {
     'immich': 'immich',
     'navidrome': 'navidrome_listener',
     'nextcloud': 'nextcloud',
+    'assistant': 'assistant',
 }
 
 OPEN_APP = 'Install the app and open it.'
@@ -98,6 +99,18 @@ APPS = {
             'Enter the server address below and continue.',
             'A login page opens: sign in with your Nextcloud username and password, then tap "Grant access".',
             'Optional: turn on "Auto upload" for your camera folder.',
+        ],
+    },
+    'assistant': {
+        'title': 'AI assistant: ask it anything',
+        'iphone': 'No app needed: use Safari',
+        'android': 'No app needed: use Chrome',
+        'steps': [
+            'Open the server address below in your phone\'s browser.',
+            'Sign in with the AI assistant\'s email login and password.',
+            'Add it to your home screen: in Safari tap Share > "Add to Home Screen"; '
+            'in Chrome tap the menu > "Add to Home screen".',
+            'Answers take a few seconds to start: the server thinks without the internet.',
         ],
     },
     'dashboard': {

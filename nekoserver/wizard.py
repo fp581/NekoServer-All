@@ -45,6 +45,7 @@ STEPS = {
     'hardware_video': 'Video using the graphics chip',
     'onboarding': 'Connecting the apps together',
     'music': 'Music',
+    'assistant': 'AI assistant',
     'gateway_lan': 'Access at home',
     'tailscale': 'Tailscale',
     'gateway_tailnet': 'Access from anywhere and phone setup',

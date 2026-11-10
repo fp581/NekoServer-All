@@ -106,6 +106,7 @@ fn label(id: &str) -> Option<String> {
             "qbittorrent" => "qBittorrent",
             "immich" => "Immich",
             "nextcloud" => "Nextcloud",
+            "assistant" => "AI assistant",
             _ => return None,
         },
         "integrity" => crate::collect::CHECKS

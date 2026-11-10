@@ -18,6 +18,7 @@ LINKS = {
     'immich': 'https://neko.tail1234.ts.net:8445/',
     'navidrome': 'https://neko.tail1234.ts.net:8446/',
     'nextcloud': 'https://neko.tail1234.ts.net:8447/',
+    'assistant': 'https://neko.tail1234.ts.net:8449/',
 }
 USERS = {
     'jellyfin': {'username': 'neko_ab12'},

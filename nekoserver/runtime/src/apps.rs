@@ -130,6 +130,8 @@ pub fn restart_plan(app: &str) -> Vec<&'static str> {
     match app {
         "immich" => vec!["immich-server", "immich-machine-learning"],
         "nextcloud" => vec!["nextcloud", "cron"],
+        // The AI assistant: its chat page, then the model it asks (compose/assistant.yaml).
+        "assistant" => vec!["assistant", "ollama"],
         _ => APPS
             .iter()
             .find(|a| a.0 == app)
@@ -144,6 +146,8 @@ pub fn installed(cfg: &Value) -> Vec<&'static str> {
         .filter(|app| match *app {
             "immich" => cfg["photos"]["deploy_immich"] == true,
             "nextcloud" => cfg["nextcloud"]["enabled"] == true,
+            // Asked once in setup; only shown once the person said yes (modules/assistant.py).
+            "assistant" => cfg["assistant"]["wanted"] == true,
             _ => cfg["media"]["services"]
                 .as_array()
                 .is_some_and(|s| s.iter().any(|v| v == app)),
@@ -722,7 +726,21 @@ mod tests {
             ["immich-server", "immich-machine-learning"]
         );
         assert_eq!(restart_plan("nextcloud"), ["nextcloud", "cron"]);
+        assert_eq!(restart_plan("assistant"), ["assistant", "ollama"]);
         assert!(restart_plan("postgres").is_empty());
+    }
+
+    /// The AI assistant is shown (and can be restarted) only once setup was told yes.
+    #[test]
+    fn the_ai_assistant_is_an_app_only_when_wanted() {
+        let base = json!({"media": {"services": ["jellyfin"]}});
+        assert_eq!(installed(&base), ["jellyfin"]);
+        let mut no = base.clone();
+        no["assistant"] = json!({"wanted": false});
+        assert_eq!(installed(&no), ["jellyfin"]);
+        let mut yes = base.clone();
+        yes["assistant"] = json!({"wanted": true});
+        assert_eq!(installed(&yes), ["jellyfin", "assistant"]);
     }
 
     #[test]
