@@ -135,22 +135,29 @@ class AskedOnceTests(unittest.TestCase):
 
 
 class ModelTests(unittest.TestCase):
-    def test_the_model_fits_the_memory(self):
-        self.assertEqual(assistant.chosen_model({}, 32), ('qwen3.5:9b', 6.6))
-        self.assertEqual(assistant.chosen_model({}, 24), ('qwen3.5:9b', 6.6))
-        self.assertEqual(assistant.chosen_model({}, 16), ('qwen3.5:4b', 3.3))
-        self.assertEqual(assistant.chosen_model({}, 12), ('qwen3.5:4b', 3.3))
+    """The model fits in the memory left for it, never in more."""
 
-    def test_too_little_memory_says_how_much_and_how_to_try_anyway(self):
+    def test_the_biggest_model_that_fits_the_room_left(self):
+        self.assertEqual(assistant.chosen_model({}, 12.7), ('qwen3.5:9b', 6.6, '12g'))
+        self.assertEqual(assistant.chosen_model({}, 9), ('qwen3.5:9b', 6.6, '9g'))
+        self.assertEqual(assistant.chosen_model({}, 8.9), ('qwen3.5:4b', 3.3, '8g'))
+        self.assertEqual(assistant.chosen_model({}, 5), ('qwen3.5:4b', 3.3, '5g'))
+
+    def test_too_little_room_says_how_much_and_how_to_try_a_smaller_one(self):
         with self.assertRaises(assistant.NotHere) as caught:
-            assistant.chosen_model({}, 6.2)
-        self.assertIn('at least 12 GB', str(caught.exception))
-        self.assertIn('this PC has 6 GB', str(caught.exception))
-        self.assertIn('"model" under "assistant"', str(caught.exception))
+            assistant.chosen_model({}, 3.2)
+        said = str(caught.exception)
+        self.assertIn('not enough free memory', said)
+        self.assertIn('the model needs 5 GB, and 3.2 GB are left', said)
+        self.assertIn('"model" under "assistant"', said)
 
-    def test_a_model_named_by_hand_is_used_as_named(self):
+    def test_a_model_named_by_hand_gets_the_room_left(self):
         config = {'assistant': {'model': 'qwen3.5:2b'}}
-        self.assertEqual(assistant.chosen_model(config, 6), ('qwen3.5:2b', assistant.UNKNOWN_MODEL_GB))
+        self.assertEqual(assistant.chosen_model(config, 2.4), ('qwen3.5:2b', assistant.UNKNOWN_MODEL_GB, '2g'))
+
+    def test_a_model_named_by_hand_still_needs_some_room(self):
+        with self.assertRaises(assistant.NotHere):
+            assistant.chosen_model({'assistant': {'model': 'qwen3.5:0.8b'}}, 0.5)
 
     def test_a_model_name_that_is_not_a_name_is_refused(self):
         for bad in ('qwen3.5:4b; rm -rf /', '../models', 'Qwen3.5', '', 42):
@@ -162,40 +169,130 @@ class ModelTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(RuntimeError):
                 assistant.options(bad)
 
-    def test_memory_is_read_from_meminfo(self):
+
+class MemoryTests(unittest.TestCase):
+    """What is free with every other app running, less a reserve for them to grow into."""
+
+    def test_total_and_free_memory_are_read_from_meminfo(self):
         with tempfile.NamedTemporaryFile('w', suffix='meminfo') as f:
-            f.write('MemTotal:       16303740 kB\nMemFree:  1 kB\n')
+            f.write('MemTotal:       16303740 kB\nMemFree:  1 kB\nMemAvailable:   10485760 kB\n')
             f.flush()
-            self.assertAlmostEqual(assistant.memory_gib(f.name), 15.55, places=1)
-        self.assertEqual(assistant.memory_gib('/nonexistent/meminfo'), 0)
+            total, available = assistant.memory_now(f.name)
+        self.assertAlmostEqual(total, 15.55, places=1)
+        self.assertEqual(available, 10)
+        self.assertEqual(assistant.memory_now('/nonexistent/meminfo'), (0, 0))
+
+    def test_the_trial_vm_has_no_room(self):
+        """The 0.49.0 trial: 6 GB with the other apps using 4.5 of it. The old limits (3 GB
+        for the model, 2 GB for the chat page) added up to more than was free, and the
+        server stalled while the model loaded. Now there is no room, so no assistant."""
+        room = assistant.memory_for_model(5.8, 1.5)
+        self.assertLess(room, assistant.NAMED_MODEL_GIB)
+        with self.assertRaises(assistant.NotHere):
+            assistant.chosen_model({'assistant': {'model': 'qwen3.5:0.8b'}}, room)
+
+    def test_a_typical_server(self):
+        # 16 GB, the apps using 5: 11 free, 3.2 kept for them (20 %), 1.5 for the chat page.
+        self.assertAlmostEqual(assistant.memory_for_model(16, 11), 6.3)
+        # 32 GB, the apps using 6: room for the bigger model.
+        self.assertAlmostEqual(assistant.memory_for_model(32, 26), 18.1)
+
+    def test_the_reserve_is_at_least_two_gb(self):
+        self.assertAlmostEqual(assistant.memory_for_model(8, 7), 7 - 2 - 1.5)
+
+    def test_setup_run_again_counts_the_assistants_own_use_as_free(self):
+        self.assertAlmostEqual(assistant.memory_for_model(16, 5, own=6), assistant.memory_for_model(16, 11))
+
+    def test_its_own_use_is_read_from_docker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {'data_mount': tmp}
+            self.assertEqual(assistant.own_use_gib(config, run=lambda *a: self.fail('not running')), 0)
+            (Path(tmp) / 'compose/assistant').mkdir(parents=True)
+            (Path(tmp) / 'compose/assistant/compose.yaml').write_text('services: {}\n')
+            answers = iter(['abc\ndef\n', '879.6MiB / 1.5GiB\n1.5GiB / 9GiB\n'])
+            used = assistant.own_use_gib(config, run=lambda *a: SimpleNamespace(stdout=next(answers)))
+        self.assertAlmostEqual(used, 879.6 / 1024 + 1.5)
+
+    def test_docker_failing_counts_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'compose/assistant').mkdir(parents=True)
+            (Path(tmp) / 'compose/assistant/compose.yaml').write_text('x')
+
+            def broken(*args):
+                raise RuntimeError('docker is not running')
+
+            self.assertEqual(assistant.own_use_gib({'data_mount': tmp}, run=broken), 0)
+
+    def test_docker_sizes(self):
+        self.assertAlmostEqual(assistant.size_gib('512MiB '), 0.5)
+        self.assertAlmostEqual(assistant.size_gib('2GiB'), 2)
+        self.assertAlmostEqual(assistant.size_gib(' 1024KiB'), 1 / 1024)
+        self.assertEqual(assistant.size_gib('--'), 0)
+
+    def test_no_room_any_more_stops_a_running_assistant(self):
+        """Other apps grew since: the assistant must not keep their memory."""
+        ctx = context({'data_mount': '/srv/nekoserver', 'assistant': {'wanted': True}})
+        with (
+            mock.patch.object(assistant.guided_setup, 'wanted', return_value=True),
+            mock.patch.object(assistant.os, 'geteuid', return_value=0),
+            mock.patch.object(assistant, 'verify_storage'),
+            mock.patch.object(assistant, 'memory_now', return_value=(16, 4)),
+            mock.patch.object(assistant, 'own_use_gib', return_value=0),
+            mock.patch.object(assistant, 'stop') as stop,
+            mock.patch.object(assistant, 'install') as install,
+        ):
+            result = assistant.run(ctx)
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIn('not enough free memory', result['reason'])
+        stop.assert_called_once()
+        install.assert_not_called()
+
+    def test_room_enough_installs_with_that_limit(self):
+        ctx = context({'data_mount': '/srv/nekoserver'})
+        with (
+            mock.patch.object(assistant.guided_setup, 'wanted', return_value=True),
+            mock.patch.object(assistant.os, 'geteuid', return_value=0),
+            mock.patch.object(assistant, 'verify_storage'),
+            mock.patch.object(assistant, 'memory_now', return_value=(16, 11)),
+            mock.patch.object(assistant, 'own_use_gib', return_value=0),
+            mock.patch.object(assistant, 'check_space'),
+            mock.patch.object(assistant, 'install') as install,
+        ):
+            self.assertIsNone(assistant.run(ctx))
+        install.assert_called_once_with(ctx, 'qwen3.5:4b', '6g')
 
 
 class RoomTests(unittest.TestCase):
     def test_too_little_ssd_space_is_not_available(self):
         usage = lambda path: SimpleNamespace(free=12 * 1000**3)  # noqa: E731
-        with self.assertRaises(assistant.NotHere) as caught:
-            assistant.check_space({'data_mount': '/srv/nekoserver'}, 3.3, usage)
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(assistant.NotHere) as caught:
+            assistant.check_space({'data_mount': tmp}, 3.3, usage)
         self.assertIn('needs 20 GB free', str(caught.exception))
 
     def test_enough_ssd_space_passes(self):
         usage = lambda path: SimpleNamespace(free=200 * 1000**3)  # noqa: E731
-        assistant.check_space({'data_mount': '/srv/nekoserver'}, 6.6, usage)
+        with tempfile.TemporaryDirectory() as tmp:
+            assistant.check_space({'data_mount': tmp}, 6.6, usage)
+
+    def test_setup_run_again_does_not_count_what_is_there_already(self):
+        """The images and the model are on the SSD by then: counting them again would
+        stop an assistant that works."""
+        usage = lambda path: SimpleNamespace(free=12 * 1000**3)  # noqa: E731
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'compose/assistant').mkdir(parents=True)
+            (Path(tmp) / 'compose/assistant/compose.yaml').write_text('x')
+            assistant.check_space({'data_mount': tmp}, 3.3, usage)
+            tight = lambda path: SimpleNamespace(free=8 * 1000**3)  # noqa: E731
+            with self.assertRaises(assistant.NotHere):
+                assistant.check_space({'data_mount': tmp}, 3.3, tight)
 
 
-class LimitTests(unittest.TestCase):
-    """It never takes what the other apps need: half the cores, a memory cap."""
-
-    def test_half_the_cores_and_a_memory_cap(self):
-        self.assertEqual(assistant.limits(16, 8, 3.3), ('4', '6g'))
-        self.assertEqual(assistant.limits(32, 16, 6.6), ('8', '12g'))
-
-    def test_the_model_gets_at_least_what_it_needs_within_sixty_percent(self):
-        self.assertEqual(assistant.limits(24, 4, 6.6), ('2', '10g'))
-        self.assertEqual(assistant.limits(12, 4, 3.3), ('2', '6g'))
-
-    def test_a_one_core_pc_still_gets_one(self):
-        self.assertEqual(assistant.limits(12, 1, 3.3)[0], '1')
-        self.assertEqual(assistant.limits(12, None, 3.3)[0], '1')
+class ShareTests(unittest.TestCase):
+    def test_half_the_cores_at_least_one(self):
+        self.assertEqual(assistant.cpus(8), '4')
+        self.assertEqual(assistant.cpus(4), '2')
+        self.assertEqual(assistant.cpus(1), '1')
+        self.assertEqual(assistant.cpus(None), '1')
 
 
 class TemplateTests(unittest.TestCase):
@@ -203,6 +300,7 @@ class TemplateTests(unittest.TestCase):
         'DATA': '/srv/nekoserver',
         'CPUS': '2',
         'MODEL_MEMORY': '6g',
+        'CHAT_MEMORY': '1536m',
         'MODEL': 'qwen3.5:4b',
         'TZ': 'Europe/London',
     }
@@ -378,7 +476,6 @@ class InstallTests(unittest.TestCase):
             with (
                 mock.patch.object(assistant, 'saved_login', return_value=login),
                 mock.patch.object(assistant, 'host_timezone', return_value='UTC'),
-                mock.patch.object(assistant, 'memory_gib', return_value=16),
                 mock.patch.object(assistant.os, 'cpu_count', return_value=8),
                 mock.patch.object(assistant, 'compose_up', side_effect=lambda base, what, log: started.append(base)),
                 mock.patch.object(assistant, 'wait_until_answering'),
@@ -387,13 +484,14 @@ class InstallTests(unittest.TestCase):
                 mock.patch.object(assistant, 'fetch_model', return_value='downloading'),
                 mock.patch.object(assistant.guided_setup, 'login_command', return_value='show assistant'),
             ):
-                assistant.install(ctx, 'qwen3.5:4b', 3.3)
+                assistant.install(ctx, 'qwen3.5:4b', '6g')
             project = Path(tmp) / 'compose/assistant'
             self.assertEqual(oct((project / '.env').stat().st_mode & 0o777), '0o600')
             self.assertEqual(oct((project / 'compose.yaml').stat().st_mode & 0o777), '0o600')
             manifest = (project / 'compose.yaml').read_text()
             self.assertIn('cpus: "4"', manifest)
             self.assertIn('mem_limit: "6g"', manifest)
+            self.assertIn('mem_limit: "1536m"', manifest)
             self.assertNotIn('Pw-123456789abc', manifest)
             self.assertEqual(started[0][-2:], ['-p', 'neko-assistant'])
             signed.assert_called_once_with(login)
@@ -417,7 +515,7 @@ class InstallTests(unittest.TestCase):
                 mock.patch.object(assistant.account_store, 'update') as update,
                 self.assertRaises(RuntimeError),
             ):
-                assistant.install(context({'data_mount': tmp}), 'qwen3.5:4b', 3.3)
+                assistant.install(context({'data_mount': tmp}), 'qwen3.5:4b', '6g')
             update.assert_not_called()
 
     def test_the_whole_step_turns_that_into_a_step_that_waits(self):
@@ -426,7 +524,8 @@ class InstallTests(unittest.TestCase):
                 mock.patch.object(assistant.guided_setup, 'wanted', return_value=True),
                 mock.patch.object(assistant.os, 'geteuid', return_value=0),
                 mock.patch.object(assistant, 'verify_storage'),
-                mock.patch.object(assistant, 'memory_gib', return_value=16),
+                mock.patch.object(assistant, 'memory_now', return_value=(16, 11)),
+                mock.patch.object(assistant, 'own_use_gib', return_value=0),
                 mock.patch.object(assistant, 'check_space'),
                 mock.patch.object(assistant, 'install', side_effect=RuntimeError('login refused')),
             ):
@@ -501,16 +600,47 @@ class GatewayTests(unittest.TestCase):
             with mock.patch.object(gateway_tools, 'logins_verified', return_value=True):
                 self.assertIn('assistant', gateway_tools.selected(config))
 
-    def test_its_containers_are_not_part_of_the_gateway_check(self):
+    def test_its_containers_never_hold_up_the_other_addresses(self):
+        """The 0.49.0 trial on the VM: with the assistant published, the gateway's check of
+        the running apps (status_checks.applications, which lists the media apps, Immich and
+        Nextcloud only) found no row for it and refused every address: "Selected
+        application containers must be running and healthy before exposure". Its own step
+        checks its containers; the gateway's two container checks leave it out."""
+        apps = ['jellyfin', 'assistant']
+        config = {'gateway': {'confirmed_services': apps}}
         seen = []
 
-        def containers(config, photos=False):
-            seen.append(list(config['media']['services']))
+        def unverified(config, checked):
+            seen.append(list(checked))
             return []
 
-        with mock.patch('acceptance.containers', side_effect=containers):
-            self.assertEqual(gateway_tools.unverified_containers({}, ['jellyfin', 'assistant']), [])
+        running = [{'id': 'jellyfin', 'state': 'running', 'health': 'not_defined'}]
+        with (
+            mock.patch.object(gateway_tools, 'selected', return_value=apps),
+            mock.patch.object(gateway_tools, 'local_opener'),
+            mock.patch.object(gateway_tools, 'onboarded'),
+            mock.patch.object(gateway_tools.host, 'snap_docker', return_value=False),
+            mock.patch.object(gateway_tools, 'unverified_containers', side_effect=unverified),
+            mock.patch.object(gateway_tools.health, 'applications', return_value=running),
+        ):
+            gateway_tools.readiness(config, sleep=lambda s: None, clock=lambda: 0)
         self.assertEqual(seen, [['jellyfin']])
+
+    def test_another_app_not_running_still_holds_its_address_back(self):
+        apps = ['jellyfin', 'assistant']
+        with (
+            mock.patch.object(gateway_tools, 'selected', return_value=apps),
+            mock.patch.object(gateway_tools, 'local_opener'),
+            mock.patch.object(gateway_tools, 'onboarded'),
+            mock.patch.object(gateway_tools.host, 'snap_docker', return_value=False),
+            mock.patch.object(gateway_tools, 'unverified_containers', return_value=[]),
+            mock.patch.object(
+                gateway_tools.health, 'applications', return_value=[{'id': 'jellyfin', 'state': 'exited', 'health': ''}]
+            ),
+            self.assertRaises(RuntimeError) as caught,
+        ):
+            gateway_tools.readiness({'gateway': {'confirmed_services': apps}}, sleep=lambda s: None, clock=lambda: 0)
+        self.assertIn('must be running and healthy', str(caught.exception))
 
     def test_it_has_a_tailscale_port_of_its_own(self):
         self.assertEqual(gateway_tools.APPS['assistant'][2], 8449)

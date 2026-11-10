@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import time
 import urllib.request
 from pathlib import Path
@@ -40,14 +41,24 @@ DESCRIPTION = 'Optional AI assistant (Ollama and Open WebUI) in its own project,
 TITLE = 'AI assistant'
 PORT = APPS[ASSISTANT][2]
 PROJECT = 'neko-' + ASSISTANT
-# The model setup picks by this PC's memory: (smallest memory in GiB, model, its
-# download in GB). The biggest that leaves room for every other app; below the last
-# row, there is no room for one that is worth having.
-MODELS = ((24, 'qwen3.5:9b', 6.6), (12, 'qwen3.5:4b', 3.3))
+# The models setup picks from: (model, its download in GB, the memory it needs to answer
+# in GiB). The biggest whose need fits in the memory left for it (memory_for_model).
+MODELS = (('qwen3.5:9b', 6.6, 9), ('qwen3.5:4b', 3.3, 5))
 # A model named by hand under "model" (as Ollama names it: "qwen3.5:4b", "gemma4:12b").
 MODEL_NAME = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}(?::[a-z0-9][a-z0-9._-]{0,63})?', re.ASCII)
-# A model named by hand has no known size: the download and memory are taken as this.
+# A model named by hand has no known size: its download is taken as this for the SSD
+# check, and it gets all the memory left for a model, which must be NAMED_MODEL_GIB at least.
 UNKNOWN_MODEL_GB = 7
+NAMED_MODEL_GIB = 1
+# Memory: the assistant gets only what is free with every other app running, less a
+# reserve for them to grow into (Immich's face recognition, a video being converted, a
+# backup): at least RESERVE_GIB, or RESERVE_SHARE of the memory when that is more. The
+# chat page gets CHAT_GIB of it, the model the rest. (The 0.49.0 trial: limits worked
+# out from the total memory alone added up to more than was free, and a 6 GB server
+# stalled under memory pressure while the model loaded, every app with it.)
+RESERVE_GIB = 2
+RESERVE_SHARE = 0.2
+CHAT_GIB = 1.5
 # Room the SSD must keep: the two images (about 6 GB), plus 10 GB for everything else.
 IMAGES_GB = 6
 SPARE_GB = 10
@@ -96,9 +107,16 @@ def _run(ctx):
     if os.geteuid() != 0:
         raise RuntimeError('setup must run as root (sudo)')
     verify_storage(ctx.config)
-    model, size = chosen_model(ctx.config, memory_gib())
-    check_space(ctx.config, size)
-    install(ctx, model, size)
+    try:
+        room = memory_for_model(*memory_now(), own_use_gib(ctx.config))
+        model, size, memory = chosen_model(ctx.config, room)
+        check_space(ctx.config, size)
+    except NotHere:
+        # Not enough room (any more): one that runs is stopped, so it can never squeeze
+        # the other apps out of memory.
+        stop(ctx.config, ctx.log)
+        raise
+    install(ctx, model, memory)
     return None
 
 
@@ -115,49 +133,87 @@ def options(config):
     return opts
 
 
-def memory_gib(meminfo='/proc/meminfo'):
-    """This PC's memory in GiB (0 when it cannot be read)."""
+def memory_now(meminfo='/proc/meminfo'):
+    """(total, available) memory in GiB, as Linux counts it (0, 0 when it cannot be read)."""
+    found = {}
     try:
         for line in Path(meminfo).read_text().splitlines():
-            if line.startswith('MemTotal:'):
-                return int(line.split()[1]) / 1024**2
+            key, _, rest = line.partition(':')
+            if key in ('MemTotal', 'MemAvailable'):
+                found[key] = int(rest.split()[0]) / 1024**2
     except (OSError, ValueError, IndexError):
-        pass
-    return 0
+        return 0, 0
+    return found.get('MemTotal', 0), found.get('MemAvailable', 0)
 
 
-def chosen_model(config, memory):
-    """(model, its size in GB): the one named under "model", else the biggest that fits
-    this PC's memory. NotHere when none fits."""
+def own_use_gib(config, run=checked_run):
+    """The memory the assistant's own containers use now (setup run again): it counts as
+    free for it, or each run would leave it less. 0 when it is not running."""
+    manifest = folders(config)[0] / 'compose.yaml'
+    if not manifest.is_file():
+        return 0
+    try:
+        ids = run([*compose(manifest), 'ps', '-q'], 60, f'{TITLE} (docker compose ps)').stdout.split()
+        if not ids:
+            return 0
+        shown = run(['docker', 'stats', '--no-stream', '--format', '{{.MemUsage}}', *ids], 60, TITLE).stdout
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return 0
+    return sum(size_gib(line.split('/')[0]) for line in shown.splitlines())
+
+
+def size_gib(text):
+    """Docker's "879.6MiB" or "1.2GiB" in GiB (0 for anything else)."""
+    found = re.fullmatch(r'\s*([\d.]+)\s*([KMG])i?B\s*', text)
+    if not found:
+        return 0
+    return float(found.group(1)) * {'K': 1024**-2, 'M': 1024**-1, 'G': 1}[found.group(2)]
+
+
+def memory_for_model(total, available, own=0):
+    """The memory left for the model, in GiB: what is free now (with the assistant's own
+    use counted as free) less the reserve the other apps keep and the chat page's share."""
+    reserve = max(RESERVE_GIB, total * RESERVE_SHARE)
+    return available + own - reserve - CHAT_GIB
+
+
+def chosen_model(config, room):
+    """(model, its download in GB, its memory limit like "5g"): the one named under "model",
+    else the biggest whose need fits in `room`. NotHere when there is no room for one."""
     named = options(config).get('model', 'auto')
     if named != 'auto':
-        return named, UNKNOWN_MODEL_GB
-    for smallest, model, size in MODELS:
-        if memory >= smallest:
-            return model, size
+        if room < NAMED_MODEL_GIB:
+            raise NotHere(not_enough(room, NAMED_MODEL_GIB))
+        return named, UNKNOWN_MODEL_GB, f'{math.floor(room)}g'
+    for model, size, need in MODELS:
+        if room >= need:
+            return model, size, f'{math.floor(room)}g'
     raise NotHere(
-        f'it needs at least {MODELS[-1][0]} GB of memory and this PC has {memory:.0f} GB '
-        '(to try a smaller model anyway, set "model" under "assistant" in my-config.json, for example qwen3.5:2b)'
+        not_enough(room, MODELS[-1][2])
+        + ' (a smaller model can be named: "model" under "assistant" in my-config.json, for example qwen3.5:2b)'
+    )
+
+
+def not_enough(room, need):
+    return (
+        f'there is not enough free memory: the model needs {need} GB, and {max(room, 0):.1f} GB are left '
+        'once the other apps have theirs, with room to spare for them'
     )
 
 
 def check_space(config, size, usage=shutil.disk_usage):
-    """The SSD has room for the images and the model, with room left for everything else."""
+    """The SSD has room for the images and the model, with room left for everything else.
+    Setup run again: they are on the SSD already, so only the room for everything else."""
     free = usage(config['data_mount']).free / 1000**3
-    needed = math.ceil(IMAGES_GB + size + SPARE_GB)
+    there = (folders(config)[0] / 'compose.yaml').is_file()
+    needed = SPARE_GB if there else math.ceil(IMAGES_GB + size + SPARE_GB)
     if free < needed:
         raise NotHere(f'it needs {needed} GB free on the app SSD and there are {free:.0f} GB')
 
 
-def limits(memory, cores, size):
-    """(processor share, memory limit) for the model's container: half the processor
-    cores (at least one), and the model's own need or 40 % of the memory, whichever is
-    more, never more than 60 %. The chat page has its own small limit in the template."""
-    cpus = max(1, (cores or 1) // 2)
-    cap = max(math.ceil(size * 1.3 + 1), math.floor(memory * 0.4))
-    if memory:
-        cap = min(cap, math.floor(memory * 0.6))
-    return str(cpus), f'{max(1, cap)}g'
+def cpus(cores):
+    """The model's processor share: half the cores, at least one."""
+    return str(max(1, (cores or 1) // 2))
 
 
 def render(template, values):
@@ -218,7 +274,7 @@ def folders(config):
     return data / 'compose' / ASSISTANT, home / 'models', home / 'chat'
 
 
-def install(ctx, model, size):
+def install(ctx, model, memory):
     config = ctx.config
     project, models, chat = folders(config)
     for folder in (project, models, chat):
@@ -228,12 +284,13 @@ def install(ctx, model, size):
         ensure_directory(folder, 0o700)
     login = saved_login(config)
     atomic_write(project / '.env', env_file(project / '.env', login), 0o600)
-    cpus, memory = limits(memory_gib(), os.cpu_count(), size)
+    share = cpus(os.cpu_count())
     template = (Path(__file__).resolve().parents[1] / 'compose' / 'assistant.yaml').read_text(encoding='utf-8')
     values = {
         'DATA': config['data_mount'],
-        'CPUS': cpus,
+        'CPUS': share,
         'MODEL_MEMORY': memory,
+        'CHAT_MEMORY': f'{int(CHAT_GIB * 1024)}m',
         'MODEL': model,
         'TZ': host_timezone(config),
     }
@@ -247,10 +304,16 @@ def install(ctx, model, size):
     note = fetch_model(base, model, ctx.log)
     atomic_json(
         Path(config['data_mount']) / 'reports' / 'assistant.json',
-        {'format': 'neko-assistant-v1', 'model': model, 'cpus': cpus, 'memory': memory, 'model_ready': note == 'ready'},
+        {
+            'format': 'neko-assistant-v1',
+            'model': model,
+            'cpus': share,
+            'memory': memory,
+            'model_ready': note == 'ready',
+        },
     )
     ctx.log(
-        f'{TITLE}: running at http://127.0.0.1:{PORT}/ with {model} (at most {cpus} processor cores and {memory} of '
+        f'{TITLE}: running at http://127.0.0.1:{PORT}/ with {model} (at most {share} processor cores and {memory} of '
         f'memory, below every other app). Sign in with its login:  {guided_setup.login_command(config, ASSISTANT)}'
     )
 

@@ -8,13 +8,15 @@ It is **optional**. Setup asks once (`=== Optional: AI assistant ===`), and the 
 
 - **Ollama** (`ollama/ollama`), which runs the language model.
 - **Open WebUI** (`ghcr.io/open-webui/open-webui`), the chat page.
-- **The model**, chosen by your server's memory:
+- **The model**, chosen by the memory that is **free** with every other app running. Setup first keeps a reserve for the other apps to grow into (at least 2 GB, or 20 % of the memory when that is more) and 1.5 GB for the chat page; the model gets what is left:
 
-| Memory | Model | Download |
-|---|---|---|
-| 24 GB or more | `qwen3.5:9b` | about 6.6 GB |
-| 12 to 24 GB | `qwen3.5:4b` | about 3.3 GB |
-| under 12 GB | none: setup says the assistant is not available on this PC | |
+| Left for the model | Model | Download | Roughly a server with |
+|---|---|---|---|
+| 9 GB or more | `qwen3.5:9b` | about 6.6 GB | 24 GB of memory or more |
+| 5 to 9 GB | `qwen3.5:4b` | about 3.3 GB | 16 GB |
+| less than 5 GB | none: setup says there is not enough free memory and installs nothing | | 12 GB or less |
+
+Setup works this out again every time it runs. If the other apps have grown and there is no room any more, the assistant is stopped (its chats and model stay), so it can never take memory the other apps need.
 
 The two programs are about 6 GB more. Everything goes on the app SSD, which needs room for it with 10 GB to spare; with less, setup says so and installs nothing.
 
@@ -23,7 +25,7 @@ Both programs are pinned to versions tested with this release (Ollama 0.40.16, O
 ## It never gets in the way
 
 - **On its own.** The assistant is a Docker project of its own (`neko-assistant`) on a network of its own. No other app uses it or waits for it.
-- **Within limits.** The model may use at most half the processor cores and a memory limit setup works out (the model's own need, or 40 % of the memory, never more than 60 %). The chat page may use one core and 2 GB. Both have the lowest processor priority, so the other apps come first whenever the server is busy.
+- **Within limits.** The model may use at most half the processor cores and the memory left for it (above); the chat page one core and 1.5 GB. Together they never ask for more than is free with the other apps running, with their reserve kept. Both have the lowest processor priority, so the other apps come first whenever the server is busy.
 - **First to go.** If the server ever runs out of memory, Linux stops the assistant first, never Jellyfin, Immich or a backup. Docker starts it again by itself.
 - **Memory back.** The model leaves memory five minutes after the last question.
 - **Never fails setup.** If its download is cut off, or it does not start, setup says "AI assistant needs a look", with the reason, and every other step runs as usual. Run `sudo bash install.sh` again once that is fixed.
@@ -59,7 +61,7 @@ If setup says the saved login does not work, the chat page has kept an administr
 
 - **Switch it off:** in `my-config.json` set `"wanted": false` under `"assistant"`, then run `sudo bash install.sh`. The assistant is stopped and its tile and addresses go; its chats and model stay on the SSD, so switching it on again starts it as it was.
 - **Switch it on later:** set `"wanted": true` there and run setup again.
-- **Another model:** set `"model"` under `"assistant"` to a model from <https://ollama.com/library>, for example `"qwen3.5:2b"` (smaller, for a server with less memory) or `"gemma4:12b"`, and run setup again. With `"auto"` setup chooses by memory as in the table above. A model you name is taken as named, without the memory check, so pick one that fits.
+- **Another model:** set `"model"` under `"assistant"` to a model from <https://ollama.com/library>, for example `"qwen3.5:2b"` (smaller, for a server with less memory) or `"gemma4:12b"`, and run setup again. With `"auto"` setup chooses by memory as in the table above. A model you name gets the memory left for a model (at least 1 GB must be left); pick one that fits in it, or it does not load.
 - **Remove it completely:** switch it off as above, then delete `/srv/nekoserver/appdata/assistant` and `/srv/nekoserver/compose/assistant`. `sudo bash uninstall.sh` removes it with the rest of NekoServer.
 
 Here `/srv/nekoserver` is the app SSD's folder (`data_mount` in the settings).

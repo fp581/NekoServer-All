@@ -50,8 +50,8 @@ services:
       - ollama
     cpus: "1"
     cpu_shares: 256
-    mem_limit: "2g"
-    memswap_limit: "2g"
+    mem_limit: "${NEKO_CHAT_MEMORY:-1536m}"
+    memswap_limit: "${NEKO_CHAT_MEMORY:-1536m}"
     oom_score_adj: 1000
     pids_limit: 512
     restart: unless-stopped

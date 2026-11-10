@@ -135,7 +135,7 @@ EXTRAS = (
         'step': 'assistant',
         'title': 'An AI assistant you can ask anything',
         'explanation': 'A private chat page like ChatGPT, in the browser and on your phone. The model runs on this '
-        'server, so nothing you ask leaves your home. It downloads about 10 GB and needs at least 12 GB of memory; '
+        'server, so nothing you ask leaves your home. It downloads about 10 GB and needs about 16 GB of memory (it takes only what the other apps leave free); '
         'it never slows down your other apps (ASSISTANT.md).',
         'installs': (),
     },
