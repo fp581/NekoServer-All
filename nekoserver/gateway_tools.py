@@ -327,10 +327,7 @@ def unverified_containers(config, apps):
     from acceptance import containers
 
     scoped = dict(config)
-    # The AI assistant's setup step checks its own containers; a problem there must not
-    # hold up the other apps' addresses.
-    others = ('immich', 'nextcloud', ASSISTANT)
-    scoped['media'] = {**config.get('media', {}), 'services': [a for a in apps if a not in others]}
+    scoped['media'] = {**config.get('media', {}), 'services': [a for a in apps if a not in ('immich', 'nextcloud')]}
     checked = containers(scoped) if scoped['media']['services'] else []
     if 'immich' in apps:
         checked += containers(config, photos=True)
@@ -360,12 +357,16 @@ def readiness(config, sleep=time.sleep, clock=time.monotonic):
     # A snap's Docker takes over Docker's socket: every container would look missing.
     if host.snap_docker():
         raise RuntimeError(host.SNAP_DOCKER)
+    # The AI assistant's containers are checked by its own step, which marks its login
+    # verified only once they answer; a problem there must never hold up the other
+    # apps' addresses, so these checks leave it out.
+    checked = [app for app in apps if app != ASSISTANT]
     # Docker started the apps a moment ago (a drive came back, a step before this one):
     # a container's health check says "starting" for a minute or two, and the step
     # failed on it at once. Such containers are waited for; anything else wrong is said.
     deadline = clock() + STARTING_WAIT
     while True:
-        failed = unverified_containers(config, apps)
+        failed = unverified_containers(config, checked)
         if not failed or clock() >= deadline or any(r.get('detail') != STARTING for r in failed):
             break
         sleep(10)
@@ -381,7 +382,7 @@ def readiness(config, sleep=time.sleep, clock=time.monotonic):
         not any(
             r['id'] == app and r['state'] == 'running' and r['health'] not in ('unhealthy', 'starting') for r in states
         )
-        for app in apps
+        for app in checked
     ):
         raise RuntimeError('Selected application containers must be running and healthy before exposure')
 
