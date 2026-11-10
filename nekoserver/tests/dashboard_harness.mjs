@@ -10,7 +10,8 @@ import { pathToFileURL } from 'node:url';
 const CALLS = new Set(['collectIssues', 'filesIntact', 'appState', 'validStatus', 'fixedFloor', 'raiseFixed',
   'backupSummary', 'recentCopies', 'integrityResult', 'nextRun', 'shortText', 'pinRefusal', 'guideFor', 'appsSummary',
   'shownApps', 'releaseNotes', 'arrayShown', 'words', 'waitingWhen', 'companionMood', 'panelMoods', 'newlyFinished',
-  'catFile', 'appSpec', 'panelAlerts', 'jobLine', 'gettingStarted', 'companionWords', 'upgradeAtWork']);
+  'catFile', 'appSpec', 'panelAlerts', 'jobLine', 'gettingStarted', 'companionWords', 'upgradeAtWork',
+  'assistantSetUp', 'askItem', 'shownAnswer', 'bugReport', 'askIntro']);
 /* Calls answered from another function's result, with more of it. */
 const DETAILED = new Set(['issueDetails']);
 const calls = JSON.parse(process.argv[2]);
@@ -68,6 +69,7 @@ const SPECIAL = {
   gettingStarted: argument => app.gettingStarted(app.validStatus(argument)),
   companionWords: ([mood, s, issues]) => app.companionWords(mood, app.validStatus(s), issues),
   appsSummary: argument => app.appsSummary(app.validStatus(argument)),
+  assistantSetUp: argument => app.assistantSetUp(app.validStatus(argument)),
   // The cat: a reading in, its moods out (with the issues the page would list for it).
   companionMood: argument => {
     const s = argument.status && app.validStatus(argument.status);

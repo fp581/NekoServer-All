@@ -2296,3 +2296,66 @@ body.tv {
     transition: none;
   }
 }
+
+/* ---------- Ask Neko ---------- */
+.ask-log {
+  display: grid;
+  gap: 14px;
+  margin: 12px 0;
+}
+.ask-entry {
+  display: grid;
+  gap: 8px;
+}
+.ask-question {
+  justify-self: end;
+  max-width: 85%;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--purple-soft);
+  white-space: pre-wrap;
+}
+.ask-answer {
+  max-width: 92%;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 14px 14px 14px 4px;
+  background: var(--raised);
+  white-space: pre-wrap;
+}
+.ask-error,
+.ask-warning {
+  margin: 0;
+  color: var(--amber);
+}
+.ask-repair,
+.ask-bug {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.ask-repair p,
+.ask-bug p {
+  margin: 0;
+}
+.ask-bug textarea,
+.ask-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  resize: vertical;
+}
+.ask-form {
+  display: grid;
+  gap: 8px;
+}
+.ask-form .button {
+  justify-self: start;
+}
+.ask-repair .button,
+.ask-bug .button {
+  justify-self: start;
+}
