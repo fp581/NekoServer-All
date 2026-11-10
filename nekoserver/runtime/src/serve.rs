@@ -860,6 +860,7 @@ fn ask(
         owner,
         assist::OLLAMA.into(),
         model.clone(),
+        ready["threads"].as_u64().unwrap_or(1),
         ready["messages"].clone(),
         repairs,
         assist::LIMITS,

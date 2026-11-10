@@ -198,6 +198,19 @@ pub fn model(cfg: &Value, data: &Path) -> Option<String> {
     report["model"].as_str().map(str::to_string)
 }
 
+/// How many threads the model may answer with: the processor share setup gave it ("cpus"
+/// in its report, half the cores). Ollama would otherwise start one per core, and with
+/// only half of them allowed its threads wait for each other at every step: on the 0.49.0
+/// gate the answers crawled at a fraction of their speed.
+pub fn threads(data: &Path) -> u64 {
+    let report = common::json(&data.join(REPORT), 64000);
+    let cpus = &report["cpus"];
+    cpus.as_u64()
+        .or_else(|| cpus.as_str().and_then(|c| c.trim().parse().ok()))
+        .unwrap_or(1)
+        .clamp(1, 256)
+}
+
 /// Ollama's own store on the app SSD: compose/assistant.yaml mounts
 /// appdata/assistant/models as /root/.ollama, and Ollama keeps its models in "models"
 /// there (found on the 0.49.0 gate).
@@ -723,11 +736,13 @@ fn new_id() -> std::result::Result<String, String> {
 
 /// Start answering in the background (the turn is held until the answer has ended) and
 /// return the ask's id. `owner` is who may read it.
+#[allow(clippy::too_many_arguments)]
 pub fn begin(
     turn: Turn,
     owner: String,
     address: String,
     model: String,
+    threads: u64,
     messages: Value,
     repairs: Vec<(String, String)>,
     limits: Limits,
@@ -757,11 +772,19 @@ pub fn begin(
         .spawn(move || {
             let _turn = turn;
             let keep = || wanted(&key, limits.abandon);
-            let result = stream(&address, &model, &messages, &limits, &keep, &mut |piece| {
-                if let Some(a) = asks().get_mut(&key) {
-                    a.text.push_str(piece);
-                }
-            });
+            let result = stream(
+                &address,
+                &model,
+                threads,
+                &messages,
+                &limits,
+                &keep,
+                &mut |piece| {
+                    if let Some(a) = asks().get_mut(&key) {
+                        a.text.push_str(piece);
+                    }
+                },
+            );
             let mut all = asks();
             if let Some(a) = all.get_mut(&key) {
                 match result {
@@ -853,6 +876,7 @@ fn next_line(
 pub fn stream(
     address: &str,
     model: &str,
+    threads: u64,
     messages: &Value,
     limits: &Limits,
     keep: &dyn Fn() -> bool,
@@ -862,7 +886,7 @@ pub fn stream(
     // on a small processor that took the whole time limit before the first word (the
     // 0.49.0 gate). Its thinking would not be shown either.
     let body = json!({"model": model, "messages": messages, "stream": true, "think": false,
-        "options": {"num_predict": ANSWER_TOKENS}})
+        "options": {"num_predict": ANSWER_TOKENS, "num_thread": threads}})
     .to_string();
     let at = address
         .parse::<SocketAddr>()
@@ -1338,6 +1362,7 @@ mod tests {
         let result = stream(
             address,
             "qwen3.5:4b",
+            2,
             &json!([{"role": "user", "content": "why"}]),
             limits,
             &|| true,
@@ -1365,6 +1390,31 @@ mod tests {
         assert!(asked.contains(r#""model":"qwen3.5:4b""#) && asked.contains(r#""stream":true"#));
         // Asked to answer at once, without thinking aloud first (the 0.49.0 gate).
         assert!(asked.contains(r#""think":false"#), "{asked}");
+        // With the threads of its processor share, never one per core (the 0.49.0 gate).
+        assert!(asked.contains(r#""num_thread":2"#), "{asked}");
+    }
+
+    #[test]
+    fn the_threads_are_its_processor_share() {
+        let data = std::env::temp_dir().join(format!("neko-assist-threads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(data.join("reports")).unwrap();
+        assert_eq!(threads(&data), 1); // no report: one, never all of them
+        for (cpus, want) in [
+            (r#""4""#, 4),
+            ("2", 2),
+            (r#""0""#, 1),
+            (r#""lots""#, 1),
+            ("99999", 256),
+        ] {
+            std::fs::write(
+                data.join(REPORT),
+                format!(r#"{{"model":"m","cpus":{cpus}}}"#),
+            )
+            .unwrap();
+            assert_eq!(threads(&data), want, "{cpus}");
+        }
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]
@@ -1458,6 +1508,7 @@ mod tests {
             "token:abc".into(),
             address,
             "m".into(),
+            2,
             json!([]),
             repairs,
             LIMITS,
@@ -1488,6 +1539,7 @@ mod tests {
             "local".into(),
             address,
             "m".into(),
+            2,
             json!([]),
             vec![],
             quick(),
@@ -1527,6 +1579,7 @@ mod tests {
             "local".into(),
             address,
             "m".into(),
+            2,
             json!([]),
             vec![],
             limits,

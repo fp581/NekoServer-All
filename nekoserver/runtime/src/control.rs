@@ -1003,7 +1003,7 @@ fn ask(cfg: &Value, data: &Path, status: &Value, model: &str, request: &Value) -
     let excerpt = about
         .map(|(words, log)| assist::redact(&format!("{words}\n{log}"), &known))
         .unwrap_or_default();
-    json!({"ok": true, "model": model, "messages": messages, "excerpt": excerpt,
+    json!({"ok": true, "model": model, "threads": assist::threads(data), "messages": messages, "excerpt": excerpt,
         "repairs": repairs.iter().map(|(id, _)| id).collect::<Vec<_>>()})
 }
 /// An approved repair (checked again just before): each one an operation the dashboard
