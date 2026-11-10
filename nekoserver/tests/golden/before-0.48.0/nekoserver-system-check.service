@@ -7,4 +7,4 @@ Requires=docker.service
 Type=oneshot
 UMask=0077
 TimeoutStartSec=30min
-ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v0.49.0/system_updates.py check --config /srv/nekoserver/installer/releases/v0.49.0/config.json
+ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v0.50.0/system_updates.py check --config /srv/nekoserver/installer/releases/v0.50.0/config.json

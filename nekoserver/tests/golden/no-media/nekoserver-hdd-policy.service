@@ -4,7 +4,7 @@ RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/lib/nekoserver-os/v0.49.0/nekoserver-runtime hdd-policy --config /etc/nekoserver-os/storage.json
+ExecStart=/usr/local/lib/nekoserver-os/v0.50.0/nekoserver-runtime hdd-policy --config /etc/nekoserver-os/storage.json
 TimeoutStartSec=180
 NoNewPrivileges=yes
 RestrictRealtime=yes

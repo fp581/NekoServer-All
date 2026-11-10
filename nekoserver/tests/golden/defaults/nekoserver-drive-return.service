@@ -3,7 +3,7 @@ Description=NekoServer bring the apps back when a drive returns
 After=local-fs.target
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/nekoserver-os/v0.49.0/nekoserver-runtime drive-return --config /etc/nekoserver-os/drives.json
+ExecStart=/usr/local/lib/nekoserver-os/v0.50.0/nekoserver-runtime drive-return --config /etc/nekoserver-os/drives.json
 TimeoutStartSec=infinity
 NoNewPrivileges=yes
 RestrictRealtime=yes
