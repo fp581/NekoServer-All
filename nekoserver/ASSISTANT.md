@@ -1,74 +1,94 @@
-# The AI assistant (optional)
+# The AI assistant: Ask Neko (optional)
 
-A private chat assistant, like ChatGPT, that runs on your own server. You ask it questions in your browser at home, or on your phone through Tailscale. The model runs on the server itself: nothing you ask is sent to an outside service.
+A private helper inside the dashboard. On its **Ask Neko** page you can ask what a reading means, why a backup failed or what to do about something under **Needs attention**. It explains in plain words, reads the logs of the problem (with passwords and keys taken out first), and can suggest a fix from a short list that runs only when you press **Approve**. The language model runs on the server itself (Ollama): nothing you ask leaves your home.
 
-It is **optional**. Setup asks once (`=== Optional: AI assistant ===`), and the setup window has a switch for it before setup starts. The answer is **no** unless you say yes, and everything else in NekoServer works the same without it.
+It is **optional and off unless you choose it**. Setup asks once, and the setup window has a switch for it before setup starts. Everything else in NekoServer works the same without it.
 
-## What it installs
+## Choosing it in setup
 
-- **Ollama** (`ollama/ollama`), which runs the language model.
-- **Open WebUI** (`ghcr.io/open-webui/open-webui`), the chat page.
-- **The model**, chosen by the memory that is **free** with every other app running. Setup first keeps a reserve for the other apps to grow into (at least 2 GB, or 20 % of the memory when that is more) and 1.5 GB for the chat page; the model gets what is left:
+Setup first checks whether this PC can have it, before anything is downloaded:
 
-| Left for the model | Model | Download | Roughly a server with |
+- **The processor:** 64-bit Intel or AMD with SSE4.2 (every one made since about 2010), or 64-bit ARM.
+- **The memory that is free with your apps running.** Setup keeps a reserve for your other apps to grow into (at least 2 GB, or 20 % of the memory when that is more); only the rest is offered to the assistant.
+- **The app SSD:** room for Ollama (about 5 GB) and the model, with 10 GB to spare.
+- **Port 11434:** if a program of your own already uses it (an Ollama you installed yourself), NekoServer installs nothing beside it and says so.
+
+These checks read the kernel's own files (`/proc/meminfo`, `/proc/cpuinfo`) and Python's own library, so no extra program is needed to make them.
+
+When the PC can have it, setup shows a choice:
+
+```
+=== Optional: AI assistant ("Ask Neko" in the dashboard) ===
+This PC has 16 GB of memory. With your apps running and room kept for them to grow, 6.3 GB are free for the assistant.
+  0) No assistant (press Enter)
+  1) qwen3.5:2b: short, simple answers, the quickest.
+     Downloads 2.7 GB. While it answers it uses about 3 GB of your 16 GB
+     (its limit), and up to 4 of your 8 processor cores, so a film Jellyfin converts or
+     new photos in Immich go slower meanwhile. 5 minutes after the last question its memory is free again.
+  2) qwen3.5:4b (recommended): good everyday answers.
+     ...
+  Not possible here: qwen3.5:9b needs about 9 GB free; this PC has 6.3 GB free with your apps running.
+Which one? (0-2, Enter for no assistant):
+```
+
+| Model | Download | Memory while it answers | Answers |
 |---|---|---|---|
-| 9 GB or more | `qwen3.5:9b` | about 6.6 GB | 24 GB of memory or more |
-| 5 to 9 GB | `qwen3.5:4b` | about 3.3 GB | 16 GB |
-| less than 5 GB | none: setup says there is not enough free memory and installs nothing | | 12 GB or less |
+| `qwen3.5:2b` | about 2.7 GB | about 3 GB | short, simple, the quickest |
+| `qwen3.5:4b` | about 3.3 GB | about 5 GB | good everyday answers |
+| `qwen3.5:9b` | about 6.6 GB | about 9 GB | the best answers here, the slowest |
 
-Setup works this out again every time it runs. If the other apps have grown and there is no room any more, the assistant is stopped (its chats and model stay), so it can never take memory the other apps need.
+The memory figures were measured on the 0.49.0 test machine with an 8192-token context, with 20 % to spare; each is also that model's hard memory limit. Answer speeds depend on the processor, so they are not promised here: on a typical home server the first words come after some seconds, then the answer at about reading speed.
 
-The two programs are about 6 GB more. Everything goes on the app SSD, which needs room for it with 10 GB to spare; with less, setup says so and installs nothing.
+The biggest model that fits is marked recommended. **Enter is "no assistant"**; with the setup window's switch turned on, Enter takes the recommended one. **Ctrl+D** leaves the question for the next setup run. Nobody at the terminal (an upgrade, say): nothing is asked and nothing is installed.
 
-Both programs are pinned to versions tested with this release (Ollama 0.40.16, Open WebUI v0.13.3). They are not part of the weekly app updates: a newer NekoServer release brings newer ones.
+Your choice is saved as `"wanted"` and `"model"` under `"assistant"` in `my-config.json`. Setup run again keeps it, and checks again that it still fits: if your other apps have grown and it does not fit any more, the assistant is stopped and setup says why (its model stays on the SSD).
+
+The graphics card is not used: the model runs on the processor only.
 
 ## It never gets in the way
 
-- **On its own.** The assistant is a Docker project of its own (`neko-assistant`) on a network of its own. No other app uses it or waits for it.
-- **Within limits.** The model may use at most half the processor cores and the memory left for it (above); the chat page one core and 1.5 GB. Together they never ask for more than is free with the other apps running, with their reserve kept. Both have the lowest processor priority, so the other apps come first whenever the server is busy.
-- **First to go.** If the server ever runs out of memory, Linux stops the assistant first, never Jellyfin, Immich or a backup. Docker starts it again by itself.
-- **Memory back.** The model leaves memory five minutes after the last question.
-- **Never fails setup.** If its download is cut off, or it does not start, setup says "AI assistant needs a look", with the reason, and every other step runs as usual. Run `sudo bash install.sh` again once that is fixed.
-- **Never undoes an upgrade.** An upgrade of NekoServer never goes back to the previous release because of the assistant.
-- **Not in the backups' way.** The nightly app snapshot, the monthly check and the weekly app updates leave it alone, so nothing it does can stop or slow a backup.
-- **A quiet alert.** If it stops answering, the dashboard (and your phone alerts, when set up) says so as a warning, never as a critical alert.
+- **Its own project, on this PC only.** Ollama runs as a Docker project of its own (`neko-assistant`), reachable on `127.0.0.1:11434` only: nothing on your home network or Tailscale can reach it. Only the dashboard's own server asks it.
+- **Hard limits.** The model's memory limit is the figure in the table, with no swap: a model that needs more is stopped instead of the server running short. It may use at most half the processor cores, at the lowest processor priority, and it is the first thing Linux stops if memory ever runs out. One question and one model at a time; the model leaves memory five minutes after the last question.
+- **Never fails setup.** If its download is cut off or it does not start, setup says "AI assistant needs a look", with the reason, and every other step runs as usual. A PC that cannot have it is listed under "Not available on this system".
+- **Never part of anything else.** No other setup step, service or timer needs it. The backups, the monthly check, the weekly app updates and the recovery menu never call it. An upgrade of NekoServer never goes back to the previous release because of it.
+- **When it is broken.** Stopped, its model missing, out of memory, too slow or answering nonsense: Ask Neko says "Neko is not available right now" with the reason, and the rest of the dashboard works as always.
 
-## Using it
+## Ask Neko
 
-- **On the server:** <http://127.0.0.1:8090/> (the **AI assistant** tile on the dashboard and its desktop shortcut open it).
-- **At home:** the home address setup printed for it (port 8449 on the app menu's address, unless another program had it).
-- **On the phone:** the private Tailscale address on port 8449. The phone setup page lists it with a QR code. No app is needed: open it in Safari or Chrome and add it to the home screen.
+The **Ask Neko** page is right under **Home** in the menu, and only on a server with the assistant. Each item under **Needs attention** has an **Ask Neko about this** button, which opens the page with the question filled in.
 
-The first answer after a pause takes a few seconds longer: the model is loaded into memory first. On a server without a graphics card the answers come at reading speed or a little slower.
+- **The PIN.** Asking uses the server's processor, so it needs the dashboard PIN on a phone or another computer, like every other change; on the server itself it does not.
+- **What Neko reads.** Your question, a short summary of the dashboard's readings (what needs attention, the backups, the drives, the apps), and for an attention item its own text and the last 40 lines of its service's log. Before the model sees any of it, the server takes out passwords, keys, tokens, cookies, Tailscale keys, e-mail addresses, and every app password and secret NekoServer keeps.
+- **Nothing is kept.** The chat lives in the open page only: reloading or closing it clears it. Nothing is stored on the server.
+- **On the phone** it works through the dashboard's own Tailscale address.
 
-Right after setup, the model may still be downloading in the background. The chat page works meanwhile and offers the model once the download is in. If the download was cut off, run setup again: it starts it again.
+### Fixes Neko may suggest
 
-## Its login
+Neko can name one fix from this list, and nothing else:
 
-Setup makes the assistant's administrator login and keeps it with the other app logins. To see it on the screen (with a QR code for your phone):
+| Fix | What it does |
+|---|---|
+| Restart an app | Its containers stop and start again, as **Restart app** on Your apps does |
+| Look for updates | The daily check for new app versions, now; it changes nothing |
+| Update an app now | A version that is waiting: a snapshot first, the update, a check, undone if it fails |
+| Run a backup now | The media apps' snapshot, this PC's settings, the Immich database copy or the USB copy, as its timer would |
 
-```bash
-sudo python3 /srv/nekoserver/installer/releases/v0.49.0/account-setup.py show assistant
-```
+The server checks every suggestion against this list and against what is installed here. The page then shows exactly what will happen, with a warning where there is one (the media apps' snapshot pauses the apps for a few minutes), and it runs only when you press **Approve**. A backup is refused while setup, an upgrade, another backup or an unfinished job is running. Anything outside the list is refused and noted in the control service's log (`journalctl -u nekoserver-control`). Neko never runs a command of its own.
 
-Nobody else can sign up on the chat page. To let someone in your home use it, sign in as the administrator, open **Admin Panel > Users** and add them there.
+### When it looks like a bug in NekoServer
 
-To check that the saved login still works: `sudo python3 /srv/nekoserver/installer/releases/v0.49.0/account-setup.py signin assistant`.
-
-If setup says the saved login does not work, the chat page has kept an administrator of its own from an earlier install (its data folder is kept when the assistant is switched off). Sign in with that account, or, to start the assistant afresh, move the folder `/srv/nekoserver/appdata/assistant/chat` away and run setup again.
+Neko then writes a **bug report** for you: the NekoServer version, your question, what the server showed (with the secrets taken out), and what it thinks went wrong, with a fix in words. Read it, then copy it to report the problem. Nothing is sent anywhere, and nothing on the server is changed.
 
 ## Changing your mind
 
-- **Switch it off:** in `my-config.json` set `"wanted": false` under `"assistant"`, then run `sudo bash install.sh`. The assistant is stopped and its tile and addresses go; its chats and model stay on the SSD, so switching it on again starts it as it was.
-- **Switch it on later:** set `"wanted": true` there and run setup again.
-- **Another model:** set `"model"` under `"assistant"` to a model from <https://ollama.com/library>, for example `"qwen3.5:2b"` (smaller, for a server with less memory) or `"gemma4:12b"`, and run setup again. With `"auto"` setup chooses by memory as in the table above. A model you name gets the memory left for a model (at least 1 GB must be left); pick one that fits in it, or it does not load.
+- **Switch it off:** set `"wanted": false` under `"assistant"` in `my-config.json` and run `sudo bash install.sh`. The assistant is stopped and Ask Neko leaves the menu; its model stays on the SSD.
+- **Another model:** set `"model"` under `"assistant"` to one from the table, or to another from <https://ollama.com/library> (for example `"gemma4:12b"`), and run setup again. A model from the table is checked against its memory need; another one gets all the memory left for a model (at least 1 GB), so pick one that fits.
 - **Remove it completely:** switch it off as above, then delete `/srv/nekoserver/appdata/assistant` and `/srv/nekoserver/compose/assistant`. `sudo bash uninstall.sh` removes it with the rest of NekoServer.
 
 Here `/srv/nekoserver` is the app SSD's folder (`data_mount` in the settings).
 
 ## Known limits
 
-- It runs on the processor only; a graphics card is not used yet.
-- Its chats are not in the backups. They stay on the SSD, but a lost SSD loses them.
-- It is updated by NekoServer releases, not by the weekly app updates.
-- On a busy server (a monthly check running, a film being converted) answers are slower: the other apps come first by design.
+- The model runs on the processor only; a graphics card is not used.
+- On a busy server (a monthly check, a film being converted) answers are slower: the other apps come first by design.
+- Ollama is updated by NekoServer releases, not by the weekly app updates.

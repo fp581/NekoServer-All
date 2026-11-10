@@ -44,7 +44,7 @@ The window first lists the **optional extras**, each with a switch:
 - **Phone alerts** when something fails.
 - **Outage alerts** from outside, when the whole server goes quiet.
 - **Nextcloud**, your own cloud drive (installed unless you switch it off).
-- **An AI assistant**, a private chat page whose model runs on this server (off unless you switch it on; see ASSISTANT.md).
+- **An AI assistant** for the dashboard ("Ask Neko"), whose model runs on this server (off unless you switch it on; setup then offers the models that fit; see ASSISTANT.md).
 
 Switch off what you don't want. Not sure? Leave the switches alone: setup asks about the TV, the alerts and the AI assistant later, when it gets to them. Then press **Start setup** in the window, or type `yes` in the terminal.
 
