@@ -96,6 +96,34 @@ class InstallerFlowTests(unittest.TestCase):
                 installer._execute(args, self.root)
         self.assertEqual(json.loads(record.read_text())['profile'], 'tiny')
 
+    def test_the_state_folder_on_the_ssd_must_lie_on_it(self):
+        """The SSD's path comes from the settings file: a state folder that leads out of
+        the SSD through a link is refused, and nothing is made or read where it leads."""
+        data = self.root / 'data_mount'
+        elsewhere = self.root / 'elsewhere'
+        data.mkdir()
+        elsewhere.mkdir()
+        (data / 'installer').symlink_to(elsewhere)
+        with (
+            mock.patch.object(installer, 'DEFAULT_STATE', self.state),
+            mock.patch.object(installer.os.path, 'ismount', return_value=True),
+            mock.patch('config_checks.validate'),
+            mock.patch('builtins.print'),
+        ):
+            args = self.args()
+            with self.assertRaisesRegex(installer.InstallerError, 'must lie on the app SSD'):
+                installer._execute(args, self.root)
+            self.assertEqual(list(elsewhere.iterdir()), [])
+            self.assertFalse(self.state.exists())
+            # Without the link the state is kept on the SSD, as before.
+            (data / 'installer').unlink()
+            args = self.args()
+            with self.assertRaises(KeyboardInterrupt):
+                installer._execute(args, self.root)
+        kept = json.loads((data / 'installer' / 'state' / 'state.json').read_text())
+        self.assertEqual(kept['stopper']['status'], 'failed')
+        self.assertFalse(self.state.exists())
+
     def test_ctrl_c_records_the_step_and_ends_without_a_traceback(self):
         args = self.args()
         with mock.patch('config_checks.validate'), mock.patch('builtins.print'), self.assertRaises(KeyboardInterrupt):
