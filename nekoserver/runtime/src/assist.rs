@@ -114,9 +114,12 @@ static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &'static str)>> = std::s
             (r"(?im)\b((?:set-)?cookie)\s*[:=][^\n]*", "$1: <removed>"),
             // Tailscale auth keys and API keys.
             (r"\btskey-[A-Za-z0-9-]+", "<removed>"),
-            // name=value, name: value and "name": "value" for names that say secret.
+            // name=value, name: value and "name": "value" for names that say secret. Not
+            // "Auth" or "Session" (log lines say "Auth: Auth-Success", "SessionManager:
+            // Sending..."): their secret values are caught by Bearer, cookies, the
+            // random-string rule and NekoServer's own saved secrets.
             (
-                r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd)?|secret|token|api[_-]?key|private[_-]?key|auth[a-z_]*|session|cookie)[a-z0-9_.-]*)("?\s*[=:]\s*"?)[^\s",;&]+"#,
+                r#"(?i)\b([a-z0-9_.-]*(?:pass(?:word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)[a-z0-9_.-]*)("?\s*[=:]\s*"?)[^\s",;&]+"#,
                 "$1$2<removed>",
             ),
             // E-mail addresses.
@@ -136,8 +139,13 @@ static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &'static str)>> = std::s
     },
 );
 
+/// A setting's name that says its value is a secret.
+static SECRET_NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)(pass|secret|key|token|salt|api)").unwrap()
+});
+
 /// NekoServer's own secrets, to take out of anything the model sees: every saved app
-/// password and login, every value in an app's private Compose .env, and the settings
+/// password and login, every secret value in an app's private Compose .env, and the settings
 /// that hold an address with a key in it (the phone alerts' topic, the outage monitor).
 pub fn known_secrets(cfg: &Value, data: &Path) -> Vec<String> {
     let mut found = vec![];
@@ -156,8 +164,13 @@ pub fn known_secrets(cfg: &Value, data: &Path) -> Vec<String> {
     {
         let text = std::fs::read_to_string(env.path().join(".env")).unwrap_or_default();
         for line in text.lines() {
-            if let Some((_, value)) = line.split_once('=') {
-                found.push(value.trim().trim_matches('"').to_string());
+            // Only the values whose name says secret: the rest (DB_USERNAME=postgres, the
+            // folders, the timezone, the image version) are what a log line names and a
+            // person needs to read.
+            if let Some((key, value)) = line.split_once('=') {
+                if SECRET_NAME.is_match(key) {
+                    found.push(value.trim().trim_matches('"').to_string());
+                }
             }
         }
     }
@@ -291,6 +304,10 @@ pub fn item(status: &Value, id: &str) -> Option<(String, Source)> {
     Some((words, source))
 }
 
+/// The terminal's colour codes ("\x1b[32m").
+static COLOURS: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap());
+
 /// Where an attention item's log lines come from.
 #[derive(Debug, PartialEq)]
 pub enum Source {
@@ -340,7 +357,13 @@ pub fn log_lines(source: &Source) -> String {
     if code != 0 {
         return String::new();
     }
-    let kept: String = text.chars().rev().take(LOG_CHARS).collect();
+    plain_log(&text)
+}
+
+/// A log's last LOG_CHARS characters, without the terminal's colour codes.
+fn plain_log(text: &str) -> String {
+    let plain = COLOURS.replace_all(text, "");
+    let kept: String = plain.chars().rev().take(LOG_CHARS).collect();
     kept.chars().rev().collect()
 }
 
@@ -935,6 +958,69 @@ mod tests {
         // What explains the problem is still there.
         assert!(sent.contains("No space left on device"), "{sent}");
         assert!(sent.contains("<removed>"));
+    }
+
+    /// The partner of the planted-secret test: real lines from the apps' logs on the test
+    /// machine keep the words a person needs to understand them.
+    #[test]
+    fn the_words_that_explain_a_problem_stay() {
+        let lines = [
+            "2026-11-09 17:17:17.202 UTC [55] LOG:  database system is ready to accept connections",
+            "[Info] Auth: Auth-Success ip 172.18.0.1 username 'neko_a0e91dadffeb'",
+            "[16:37:17.505] [INF] [19] Emby.Server.Implementations.Session.SessionManager: Sending shutdown notifications",
+            "Authentication: failed",
+            "session: started",
+            "[Fatal] ConsoleApp: EPIC FAIL!",
+            "2026-11-09T17:19:46.297Z [error][Auth]: Failed to delete Jellyfin device {\"error\":\"Request failed with status code 400\",\"userId\":1}",
+            "FATAL:  password authentication failed for user \"postgres\"",
+            "Installing with PostgreSQL database",
+            "No space left on device while writing /srv/nekoserver/photos/immich-library/upload",
+        ];
+        for line in lines {
+            assert_eq!(redact(line, &[]), line, "{line}");
+        }
+        // The secrets in such lines still go: an e-mail address and a long random id.
+        let seerr = "[warn][API]: Failed sign-in attempt using invalid Seerr password {\"ip\":\"::ffff:172.18.0.1\",\"email\":\"neko_1a3d5940d158@server.invalid\"} jellyfinUserId 59cb2ea705e94733ab0ee31809a1a24c";
+        let said = redact(seerr, &[]);
+        assert!(
+            !said.contains("neko_1a3d5940d158@server.invalid")
+                && !said.contains("59cb2ea705e94733ab0ee31809a1a24c"),
+            "{said}"
+        );
+        assert!(
+            said.contains("Failed sign-in attempt using invalid Seerr password"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn an_apps_env_gives_up_its_secrets_and_keeps_the_rest() {
+        let root = std::env::temp_dir().join(format!("neko-assist-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("compose/immich")).unwrap();
+        std::fs::write(
+            root.join("compose/immich/.env"),
+            "UPLOAD_LOCATION=/srv/nekoserver/photos/immich-library\nDB_DATA_LOCATION=/srv/nekoserver/appdata/immich/postgres\n\
+             TZ=Europe/London\nIMMICH_VERSION=v2.7.4\nDB_USERNAME=postgres\nDB_DATABASE_NAME=immich\nDB_PASSWORD=Pw-from-immich-env-77\n",
+        )
+        .unwrap();
+        let known = known_secrets(&json!({}), &root);
+        assert_eq!(known, ["Pw-from-immich-env-77"]);
+        let line = "connection to postgres at /srv/nekoserver/appdata/immich/postgres refused (password Pw-from-immich-env-77)";
+        let said = redact(line, &known);
+        assert!(!said.contains("Pw-from-immich-env-77"), "{said}");
+        assert!(
+            said.contains("postgres at /srv/nekoserver/appdata/immich/postgres refused"),
+            "{said}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn colour_codes_are_taken_out_of_a_log() {
+        let shown =
+            plain_log("\x1b[32m[Nest] 24  - \x1b[39m11/10/2026 \x1b[31mERROR\x1b[39m no space");
+        assert_eq!(shown, "[Nest] 24  - 11/10/2026 ERROR no space");
     }
 
     #[test]
