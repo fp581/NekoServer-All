@@ -38,15 +38,18 @@ When the PC is ready, the terminal shows a short welcome text and asks `Ready to
 
 ![The setup window](../docs/media/setup-window.webp)
 
+The window opens in the **Night** look, like the dashboard. The ☾ / ☀ button at its top right switches to **Lamplight** (light) and back; the browser remembers your choice.
+
 The window first lists the **optional extras**, each with a switch:
 
+- **The media apps**: films, shows, music and photos (installed unless you switch them off; see [the media question](#the-media-apps-yes-or-no) below).
 - **A TV** connected to this PC (Steam Big Picture).
 - **Phone alerts** when something fails.
 - **Outage alerts** from outside, when the whole server goes quiet.
 - **Nextcloud**, your own cloud drive (installed unless you switch it off).
 - **An AI assistant** for the dashboard ("Ask Neko"), whose model runs on this server (off unless you switch it on; setup then offers the models that fit; see ASSISTANT.md).
 
-Switch off what you don't want. Not sure? Leave the switches alone: setup asks about the TV, the alerts and the AI assistant later, when it gets to them. Then press **Start setup** in the window, or type `yes` in the terminal.
+Switch off what you don't want. Not sure? Leave the switches alone: setup asks about the media apps, the TV, the alerts and the AI assistant later, when it gets to them. Each card has a line **Installs N packages**: press it to see what that part adds to the PC. Choosing something never moves the rest of the page. Then press **Start setup** in the window, or type `yes` in the terminal.
 
 ### 3. Tailscale: reaching your server from anywhere
 
@@ -59,6 +62,21 @@ Tailscale is a free app that lets your own phone and laptop reach the server pri
 Answer `no` to see the step again and reopen the page.
 
 ### 4. Your drives
+
+#### The media apps: yes or no
+
+Before the drives, setup asks `Install the media apps too? [yes/no]` (unless you already chose in the window). It says what they are and what they cost:
+
+- **Jellyfin** to watch your films and shows, with **Seerr** to ask for new ones
+- **Sonarr, Radarr, Lidarr and Prowlarr** with **qBittorrent**, which find and download them
+- **Immich**, your own photo backup and gallery, and **Navidrome** for your music
+- video on the graphics chip, the hourly check that these apps still work together, and the TV mode
+
+They take about 6 GB on the SSD and about 2 GB of memory when idle. Answer `yes` when you want them (pressing Enter in the window keeps yes). Answer `no` for a smaller server: Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts and the AI assistant are set up either way, and nothing later asks about films, photos or music.
+
+You can change your mind. Run `sudo bash install.sh` again, answer `yes` to `Ask these questions again?`, and answer the media question the other way. **Yes later** installs the apps as on any server. **No later never deletes anything**: the apps are stopped, and their settings, your photos, music and films and every backup stay where they are, so yes brings them back as they were.
+
+#### Choosing the drives
 
 Setup lists the drives it found, numbered, for example:
 
@@ -101,7 +119,7 @@ A few steps ask their questions in the terminal only. The setup window says **An
 
 - **Connecting the media apps.** Setup may ask which download sources to add. If you don't know what to choose, just press Enter: that skips it. You can add sources later in Prowlarr.
 
-When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the backup times, the download sources, the indexers, the playback test) and asks `Ask these questions again? [yes/no]`. Answer `no` to keep those answers and move on; `yes` asks them again.
+When you run `sudo bash install.sh` again later, setup shows how you answered the optional questions last time (the media apps, the backup times, the download sources, the indexers, the playback test) and asks `Ask these questions again? [yes/no]`. Answer `no` to keep those answers and move on; `yes` asks them again.
 - **Music** (only if the automatic check did not pass). If setup asks for `Listener username:` and a password, type the login of your music account. To see it, open a second terminal (Ctrl+Alt+T) and run the command in [Seeing an app's password](#seeing-an-apps-password) with `show navidrome_listener`.
 - **The shared-folder password.** This is the password other computers at home use to open the shared folders. Type it, press Enter, then type it again. Nothing appears while you type.
 

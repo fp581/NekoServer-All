@@ -13,7 +13,7 @@
 | 🎵 **Music** | Navidrome (with Lidarr) |
 | ☁️ **Files** | Nextcloud: your own cloud drive, and Samba folders on the home network |
 | 🛡️ **Backups** | Nightly app backups, weekly photo and file copies to an HDD and a USB drive, monthly restore tests, rollback after a failed update |
-| 🗄️ **NAS** | The media and backup drives can be on a network storage box over iSCSI (experimental) |
+| 🗄️ **NAS** | The media and backup drives can be on a network storage box, over iSCSI or as folders it shares over NFS (experimental) |
 | 🏠 **Access** | Secure at home, and optionally from anywhere with Tailscale |
 | 🖥️ **Dashboard** | Apps, drives, temperatures, fan curves and RGB lighting, from any phone or browser at home |
 
@@ -49,7 +49,7 @@ You need a 64-bit PC with one of those installed, and **three drives besides the
 | **HDD** (the media drive) | movies, shows, Nextcloud files, backups; photos and music on a small SSD | at least 50 GB free, 500 GB or more recommended |
 | **USB drive** | a weekly copy of your photos and Nextcloud files | at least 16 GB, and room for those files |
 
-Setup asks where photos, music and Nextcloud's files go, and the backups follow your choice. **The HDD and the USB drive can be disks on a NAS** (a WD My Cloud EX, Synology, QNAP or any box that offers iSCSI); the SSD stays on the PC. Drives on a NAS are experimental: [SUPPORT.md](nekoserver/SUPPORT.md) says what is tested, what is experimental and what setup refuses, and [STORAGE.md](nekoserver/STORAGE.md#drives-on-a-network-storage-box-nas) shows how to set the NAS up.
+Setup asks where photos, music and Nextcloud's files go, and the backups follow your choice. **The HDD and the USB drive can be disks on a NAS** (a WD My Cloud EX, Synology, QNAP or any box that offers iSCSI), **or folders it shares over NFS** (slower; setup tries each folder out first); the SSD stays on the PC. Drives on a NAS are experimental: [SUPPORT.md](nekoserver/SUPPORT.md) says what is tested, what is experimental and what setup refuses, and [STORAGE.md](nekoserver/STORAGE.md#drives-on-a-network-storage-box-nas) shows how to set the NAS up.
 
 In a terminal (Ctrl+Alt+T on most desktops):
 

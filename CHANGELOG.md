@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.50.0 — 2026-11-10
+
+Four things you asked for: setup asks whether to install the media apps, the setup window no longer moves when you choose something and looks better, it has a Night and a Lamplight look, and a NAS can now give its drives as folders shared over NFS. A server that answers yes to the new question (or is never asked) is set up as on 0.49.0.
+
+### New: "Install the media apps too?"
+- **One question, yes unless you say no.** Setup asks it before the drives, and the setup window has it as its first switch. It says what the media apps are (Jellyfin with Seerr; Sonarr, Radarr, Lidarr and Prowlarr with qBittorrent; Immich; Navidrome; video on the graphics chip, the hourly app check and the TV mode) and what they cost (about 6 GB on the SSD, about 2 GB of memory when idle). The answer is kept with the other optional answers ("Last time, the optional questions were answered this way: Media apps: yes"). With nobody at the terminal, and on every server set up before, the answer is yes.
+- **No gives a smaller, complete server.** Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts and the AI assistant are set up the same. Everything that depended on the media apps handles their absence:
+  - the dashboard shows no tile for them, and the app and music backups read "Switched off: the media apps are left out" instead of overdue
+  - the nightly app backup, the music backup, the hourly media check and Immich's copies have no timer; the weekly copy takes Nextcloud's files alone
+  - the Tailscale and home addresses, the phone guide, the desktop shortcuts and the logins name only what is set up
+  - the drive questions say what goes on each drive ("the HDD (Nextcloud files and the backups)") and only Nextcloud's place is asked
+  - the first checkup and its acceptance checks leave the media steps out and still end with "NekoServer is ready!"
+  - the recovery menu offers the photo and app-settings restores only when a backup of theirs is there
+  - the monthly snapshot and the updates take the apps that are set up
+- **No on a server that already has them stops them and keeps everything.** The apps are stopped; their settings, your photos, music and films, and every backup stay where they are. Answering yes at a later run brings them back as they were. Nothing is ever deleted by this question.
+
+### The setup window
+- **Choosing no longer moves anything.** Measured in a browser on 0.49.0: a card's title shared its row with the switch's caption, which went from "asked later" to "yes" (or from nothing to "no"), so the title rewrapped and the cards below jumped; the badge at the top right changed width with its words and slid the bar beside it; and the "needs an answer" strip pushed the whole page down each time a question came or went. Now a card has its title across the top, its switch and a fixed-width caption at the bottom, and its package list folded behind **Installs N packages**; a card that is on gets a ring inside its border, not a wider border or bolder text; the badge and the step count keep their width; the three notices share one place of fixed height; scrolling areas keep room for their scrollbar.
+- **Nicer in the same Moonlit Neko look.** More even spacing, three cards to a row at the usual size, clearer focus rings, and a narrow window scrolls as one page with **Start setup** kept in view.
+- **Night and Lamplight.** The window followed the PC's own light or dark setting and had no switch. It now starts in Night, like the dashboard, with the ☾ / ☀ button to change it; the browser remembers the choice. Text keeps at least 5:1 contrast on every surface in both.
+
+### New: a NAS that shares folders over NFS (experimental)
+- **Found at the NAS's address.** With *My media and backup drives are in a network storage box (NAS)* switched on, setup looks at what answers at the address you give: iSCSI, NFS or both (then it asks which to use; a NAS chosen before stays on iSCSI and is asked nothing). For NFS it installs the NFS tools when they are missing (`nfs-common` on Debian and Ubuntu, `nfs-utils` on Arch and Fedora, `nfs-client` on openSUSE), lists the folders the NAS shares, and asks which one is the media drive and which the backup drive, by number or typed. A NAS that speaks only NFS version 4 gives no list, so the folder is typed.
+- **Only the media drive and the backup drive.** Never the SSD for the apps, which holds the databases and setup's own records.
+- **Every folder is tried out before it is used.** Mounted privately, then as root and as the apps' account: a file written and read back, a file given to the apps' account still theirs with its permissions, a lock one program holds refused to another, root still root, and a size and free space that make sense (and big enough for the media drive). A folder that fails one is refused with the reason and what to change on the NAS (allow this PC's address with read and write access; switch off "root squash" or "all squash", under the names a NAS gives them; share a Linux-style volume; switch on NFS 4 or the lock service). Nothing is mounted for good or saved then.
+- **A NAS that is off never keeps the PC from starting.** The media folder is mounted by its address (`192.168.1.20:/volume1/media`) with `_netdev`, `nofail` and a systemd automount; writes wait for a NAS that stops answering instead of leaving cut-off files. If the NAS was off at the start the apps stay stopped, and the check every minute mounts the folder and starts them once the NAS answers. The backup folder is mounted only while the weekly copy, the monthly check or a restore uses it.
+- **Setup says NFS is slower** than a drive on this PC or an iSCSI disk. SUPPORT.md lists it as experimental for the media and backup drives under those checks; SMB (Windows shares) stays not supported. STORAGE.md, "Folders a NAS shares over NFS", has the steps for the NAS and what NekoServer does not do for a shared folder (format, repair or move it).
+
+### How it was tested
+- Python tests (1657, on Fedora 44 with Python 3.14; 30 in tests/test_media_apps.py, 52 in tests/test_nfs_storage.py with showmount, mount and the NAS stood in for, 6 in tests/test_setup_window_look.py) and Rust tests (513, Rust 1.99) pass; ruff, rustfmt, clippy and Prettier are clean.
+- The setup window was measured in a headless browser before and after: the boxes of every part of a card while each switch is pressed, and of the page while a question comes and goes, at the usual size and narrow. The same measurements are what showed the three shifts on 0.49.0's page; a test now keeps them at zero. Before and after pictures were taken at both sizes and in both looks.
+- The golden-file tests gained two setups: `no-media` (the media apps left out) and `nfs-folders` (both NAS drives as shared folders). The four older setups changed only by the release number and by `"media_apps": {"wanted": true}` in the dashboard's settings.
+- TESTING.md has two new journeys (J10 without the media apps, J11 shared folders) and one new controlled failure (F12, the NAS off at the start).
+
+### Known limits
+- NFS was tried with stand-ins and unit tests so far, not yet on a real NAS box; the squash settings have other names on each one.
+- NekoServer cannot tell two folders apart that a NAS serves under the same address, and `migrate.py` does not move a shared folder.
+- A NAS used over iSCSI and NFS at once (one drive each way) is not offered: choose one for both drives.
+
 ## v0.49.0 — 2026-11-10
 
 One new, optional part, the one you asked for: an AI assistant inside the dashboard, "Ask Neko". Nothing else changes how NekoServer is used: without the assistant a server works as on 0.48.2, and the settings, timers and units setup writes are the same apart from the release number.

@@ -21,7 +21,9 @@ It does **not** install Linux and it **never formats a drive**. You prepare thos
 | **Dashboard** | One page for your apps, backups, drives and live hardware: processor, graphics, temperatures, fans, network. Fan curves and RGB lighting (OpenRGB) too. Works on phone and tablet, installable as an app | |
 | **Tailscale** | Use your apps from anywhere, privately, on your own devices | |
 
-Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are always set up, but you never have to use them: Jellyfin, Immich and Navidrome play and show your own files without them.
+Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are set up with the media apps, but you never have to use them: Jellyfin, Immich and Navidrome play and show your own files without them.
+
+**Only want the cloud drive and the backups?** Setup asks `Install the media apps too?`. Answer `no` and Jellyfin, Seerr, the apps that find and download, Immich and Navidrome are left out; Nextcloud, the dashboard, the backups, Tailscale and the shared folders are set up the same. You can answer yes at a later run, and no later never deletes anything ([GUIDED-SETUP.md](GUIDED-SETUP.md#the-media-apps-yes-or-no)).
 
 Also included: shared folders on your home network (Samba) and, if you want them, watching on a TV connected to the server (Steam Big Picture) and phone alerts when something fails (ntfy).
 
@@ -98,7 +100,7 @@ While it installs, a package source that does not answer is tried again a little
 Then the setup wizard explains what will happen and asks `Ready to start? [yes/no]`. Once you start, it first lists what it found on this computer (processor, systemd, Linux family, Docker, firewall and so on), then it:
 
 1. **Connects the server to Tailscale** so you can use your apps from anywhere. It pauses, explains what Tailscale is, and opens the sign-in page. You create a free account (with Google, Microsoft, Apple or GitHub) and approve the server.
-2. **Asks you to pick your SSD, HDD and USB drive** from a list (with each drive's size and the name you gave it), confirms each one by its name, and **checks they have enough space** before installing anything. The question says how big each must be (SSD at least 20 GB, HDD at least 50 GB); a drive that is too small is refused straight away, before anything is mounted or saved, and you pick another.
+2. **Asks whether to install the media apps too** (films, shows, music and photos; yes unless you say no), then **asks you to pick your SSD, HDD and USB drive** from a list (with each drive's size and the name you gave it), confirms each one by its name, and **checks they have enough space** before installing anything. The question says how big each must be (SSD at least 20 GB, HDD at least 50 GB); a drive that is too small is refused straight away, before anything is mounted or saved, and you pick another.
 3. **Asks how to make the apps' logins**: generated passwords for all of them (recommended) or your own, app by app.
 4. **Installs the apps, creates an account for each one**, connects them to each other, and **turns on the graphics chip for video** in Jellyfin and Immich when your PC has an Intel or AMD one ([HARDWARE-VIDEO.md](HARDWARE-VIDEO.md)). Connecting the media apps, the music setup and the shared-folder password ask their questions in the terminal only.
 5. **Asks you to choose a dashboard PIN** (6 to 8 digits, typed twice). It lets you change fans and lights from your phone, and restart or close apps from the dashboard. Press Enter to skip it.

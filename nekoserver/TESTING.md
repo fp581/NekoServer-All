@@ -30,9 +30,9 @@ their names are given here so the coverage map can point at them.
 **Lab (before a release, when the code it covers changed).** `lab/nas_lab.py`: the iSCSI
 interruption tests, which need a kernel with iSCSI and a VM; run by hand as root.
 
-## The nine user journeys
+## The eleven user journeys
 
-The same nine journeys are run for every release. Each has a record in
+The same eleven journeys are run for every release (J10 and J11 since 0.50.0). Each has a record in
 `tests/journeys/<ID>-<name>.md` in the standard format below. A journey passes only when
 every expected result below is seen, not when a command exits 0.
 
@@ -125,6 +125,27 @@ and is named; a replaced HDD is refused while the settings name the old UUID, an
 replacement drive keeps nothing of the old one. Evidence: the checksum comparison, the
 menu's output, the refusal line.
 
+**J10 Installation without the media apps, then with them.** "Install the media apps
+too?" answered no on a blank PC, then yes on a later run, then no again with test data in
+the apps. Expected: with no, `"media_apps": {"wanted": false}`, no container, timer,
+dashboard tile, address, shortcut, login, checkup check or recovery-menu entry of
+Jellyfin, Seerr, the apps that find and download, Immich or Navidrome, and
+`NekoServer is ready!` all the same; the app and music backups show as switched off,
+never overdue; yes later installs them as J01 does; no on a server that has them stops
+them and every file of theirs is byte for byte the same. Evidence: the settings file,
+`docker ps`, `systemctl list-timers`, the dashboard, checkdata.py. Cleanup: snapshot.
+
+**J11 The media drive and the backup drive as folders a NAS shares (NFS).** An NFS
+server on the test network with a good media export, a good backup export and one with
+root squash. Expected: setup says what the NAS offers and lists its exports; the
+squashed one is refused with the reason and what to change, with nothing mounted or
+saved; the good ones are tried out, the media folder gets its `/etc/fstab` line
+(`_netdev`, `nofail`, automount) and the apps run on it; the weekly copy mounts the
+backup folder, passes and unmounts it; with the server stopped the PC still starts, and
+once it answers again the folder is mounted and the apps start by themselves. Evidence:
+the setup log, `/etc/fstab`, `findmnt`, `external.json`, the journals of the NAS check
+and drive return. Cleanup: snapshot, the NFS server stopped.
+
 ## The eight safety rules
 
 Each rule holds across many tests. The invariant is stated for NekoServer, with the
@@ -150,7 +171,11 @@ stops with `Application SSD missing` when nothing is mounted there. Tests:
 UUID only (`modules/storage.py:35`), two devices with one UUID are clones and stop setup
 (`CLONED`, `modules/storage.py:77`; `pool_members`, `modules/storage.py:192`); the runtime
 checks UUID, filesystem type and Btrfs subvolume together (`guard_data`, above); a NAS
-disk is known by its WWN and refused without one (`modules/network_storage.py:652`).
+disk is known by its WWN and refused without one (`modules/network_storage.py:652`); a
+folder a NAS shares over NFS has no UUID and is known by its address, from which setup
+and the runtime make the same identity (`identity`, `nfs_exports.py`; `nfs_identity`,
+`runtime/src/common.rs`), so another folder mounted in its place is refused like another
+drive, and it is never the application SSD.
 Tests: `a_btrfs_subvolume_is_part_of_the_drive_identity` (runtime/src/backup.rs:4905),
 `the_subvolume_is_checked_the_same_with_or_without_findmnt` (runtime/src/backup.rs:4574),
 `test_a_cloned_btrfs_drive_is_not_taken_for_a_pool` (tests/test_setup_flow.py:547),
@@ -159,7 +184,11 @@ Tests: `a_btrfs_subvolume_is_part_of_the_drive_identity` (runtime/src/backup.rs:
 `test_a_nas_disk_that_shows_no_wwn_is_refused_as_the_runtime_refuses_it` (tests/test_network_storage.py:619),
 `test_a_drive_on_another_nas_disk_than_the_settings_name_is_refused` (tests/test_migrate.py:463),
 `test_a_subvolume_the_settings_name_is_never_swapped_for_the_mounted_one` (tests/test_migrate.py:362),
-`test_the_wwn_check_looks_at_the_mounted_device_not_the_uuids_link` (tests/test_wizards.py:1799).
+`test_the_wwn_check_looks_at_the_mounted_device_not_the_uuids_link` (tests/test_wizards.py:1799),
+`a_folder_the_nas_shares_is_checked_by_its_address` (runtime/src/backup.rs:4800),
+`test_its_identity_stands_in_for_a_uuid_and_is_the_runtimes` (tests/test_nfs_storage.py:53),
+`test_what_is_mounted_is_checked_by_its_address` (tests/test_nfs_storage.py:606),
+`test_the_apps_ssd_is_never_a_shared_folder` (tests/test_nfs_storage.py:533).
 
 **S03 Failed inspection never means "safe", "empty" or "healthy".** `lsblk_row`
 (`modules/network_storage.py:396`) raises when lsblk fails, answers unreadably or lists no
@@ -281,7 +310,7 @@ by the runtime and approved with the PIN. Tests:
 `only_an_exact_action_line_from_the_list_counts` (runtime/src/assist.rs:959),
 `ollama_is_asked_on_this_pc_only` (runtime/src/assist.rs:1140).
 
-## The eleven controlled failures
+## The twelve controlled failures
 
 Failures are introduced at named checkpoints, in a disposable VM or on test storage,
 never against anyone's only data.
@@ -299,6 +328,7 @@ never against anyone's only data.
 | F09 | The model is killed for its memory | Only the model's container is stopped; SSH and every app keep working | `an_out_of_memory_model_is_said_as_such` (runtime/src/assist.rs:1069), `test_a_hard_memory_limit_and_the_lowest_priority` (tests/test_assistant.py:379); VM gate: a model whose need is over its limit, asked once (the 0.49.0 trial froze the VM for 12 minutes before the limits came from free memory) |
 | F10 | The model is too slow | The answer is stopped with the reason; the page stays usable | `a_model_too_slow_to_start_is_stopped` (runtime/src/assist.rs:1100) |
 | F11 | The model answers garbage | It is only text: no repair runs from it | `a_garbage_answer_is_only_text` (runtime/src/assist.rs:1087), `only_an_exact_action_line_from_the_list_counts` (runtime/src/assist.rs:959) |
+| F12 | A NAS that shares the media folder (NFS) is off when the PC starts | The PC starts; the apps stay stopped, never writing to the empty folder; once the NAS answers, the folder is mounted and the apps start | `a_mounted_shared_folder_is_never_released_and_an_automount_is_no_mount` (runtime/src/drive_return.rs:547), `a_folder_the_nas_shares_is_checked_by_its_address` (runtime/src/backup.rs:4800: only the automount there is "not mounted"), `test_the_line_in_fstab_never_holds_up_the_start` (tests/test_nfs_storage.py:79), `test_a_nas_that_is_off_is_said_when_the_folder_is_opened` (tests/test_nfs_storage.py:634); on the gate machine, J11 (d) |
 
 ## Compatibility fixtures
 
@@ -339,7 +369,7 @@ Evidence: Browser result and received API request
 Cleanup: Close fixture and remove temporary state
 ```
 
-IDs: `J01`..`J09` for journeys, `S01`..`S08` for safety rules, `F01`..`F11` for
+IDs: `J01`..`J11` for journeys, `S01`..`S08` for safety rules, `F01`..`F12` for
 controlled failures, `UI-SETUP-nnn`, `UI-DASH-nnn`, `REC-nnn` for single cases, and
 `B-<release>-<nn>` for bugs (below). The record says what is manual.
 
