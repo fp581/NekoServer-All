@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -547,15 +548,14 @@ class ModelIsDownloadedTests(unittest.TestCase):
     """The user's rule: the model is downloaded during setup, never part of NekoServer."""
 
     def test_the_repository_holds_no_model(self):
-        try:
-            tracked = (
-                subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT.parent, capture_output=True, check=True, timeout=60)
-                .stdout.decode()
-                .split('\0')
-            )
-        except (OSError, subprocess.SubprocessError):
-            self.skipTest('git is not here')
-        for name in filter(None, tracked):
+        # Skipped only where git is not installed (a copy of the files without it); with git,
+        # a failure to list the files fails the test, so CI can never pass it unchecked.
+        if shutil.which('git') is None or not (ROOT.parent / '.git').exists():
+            self.skipTest('no git checkout here')
+        listed = subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT.parent, capture_output=True, check=True, timeout=60)
+        tracked = [name for name in listed.stdout.decode().split('\0') if name]
+        self.assertGreater(len(tracked), 100, 'git listed too few files to be this repository')
+        for name in tracked:
             path = ROOT.parent / name
             with self.subTest(name=name):
                 self.assertFalse(name.endswith(('.gguf', '.safetensors', '.bin', '.onnx')), name)
