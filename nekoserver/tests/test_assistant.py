@@ -139,10 +139,10 @@ class OffByDefaultTests(unittest.TestCase):
         ready.install.assert_called_once_with(ctx, 'qwen3.5:4b', '5g')
 
     def test_a_choice_made_before_is_kept_without_asking_even_unattended(self):
-        ctx = context({'assistant': {'wanted': True, 'model': 'qwen3.5:2b'}})
+        ctx = context({'assistant': {'wanted': True, 'model': 'qwen3.5:2b-q4_K_M'}})
         with Ready(self, interactive=False) as ready, mock.patch('builtins.input', side_effect=AssertionError):
             self.assertIsNone(assistant.run(ctx))
-        ready.install.assert_called_once_with(ctx, 'qwen3.5:2b', '3g')
+        ready.install.assert_called_once_with(ctx, 'qwen3.5:2b-q4_K_M', '3g')
 
     def test_a_read_only_plan_asks_nothing(self):
         with mock.patch('builtins.input', side_effect=AssertionError):
@@ -177,9 +177,9 @@ class ChoiceTests(unittest.TestCase):
     def test_only_the_models_that_fit_are_offered(self):
         lines, answers = assistant.choices(16, 6.3, 8)
         text = '\n'.join(lines)
-        self.assertEqual(answers, {'0': 'none', '': 'none', '1': 'qwen3.5:2b', '2': 'qwen3.5:4b'})
+        self.assertEqual(answers, {'0': 'none', '': 'none', '1': 'qwen3.5:2b-q4_K_M', '2': 'qwen3.5:4b'})
         self.assertIn('2) qwen3.5:4b (recommended)', text)
-        self.assertNotIn('1) qwen3.5:2b (recommended)', text)
+        self.assertNotIn('1) qwen3.5:2b-q4_K_M (recommended)', text)
         self.assertIn('Not possible here: qwen3.5:9b needs about 9 GB free; this PC has 6.3 GB free', text)
 
     def test_each_choice_says_what_it_costs_this_pc(self):
@@ -207,7 +207,7 @@ class ChoiceTests(unittest.TestCase):
         answers = iter(['7', 'two', '1'])
         said = []
         picked = assistant.ask_model(context({}), 16, 6.3, 8, prompt=lambda q: next(answers), output=said.append)
-        self.assertEqual(picked, 'qwen3.5:2b')
+        self.assertEqual(picked, 'qwen3.5:2b-q4_K_M')
         self.assertEqual(said.count('Type a number from 0 to 2, or press Enter.'), 2)
 
     def test_the_memory_limit_is_the_models_measured_need(self):
@@ -232,6 +232,7 @@ class ChoiceTests(unittest.TestCase):
         ready.install.assert_not_called()
 
     def test_a_model_name_that_is_not_a_name_is_refused(self):
+        self.assertEqual(assistant.options({'assistant': {'model': 'qwen3.5:2b-q4_K_M'}})['model'], 'qwen3.5:2b-q4_K_M')
         for bad in ('qwen3.5:4b; rm -rf /', '../models', 'Qwen3.5', '', 42):
             with self.subTest(bad=bad), self.assertRaises(RuntimeError):
                 assistant.options({'assistant': {'model': bad}})

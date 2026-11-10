@@ -46,17 +46,20 @@ DESCRIPTION = 'Optional AI assistant (Ollama) for the dashboard, in its own proj
 TITLE = 'AI assistant'
 PROJECT = 'neko-' + ASSISTANT
 # The models setup offers, smallest first: (model, its download in GB, the memory it needs
-# while it answers in GiB, what its answers are like). The memory is the container's peak
-# measured with an 8192-token context on the 0.49.0 test machine, rounded up with 20 %
-# to spare; it is also the model's hard memory limit, so a model that needs more than
-# that is stopped instead of the server running out of memory.
+# while it answers in GiB, what its answers are like). The memory is the model's own
+# memory (the container's anon memory, the weights and the 8192-token context, with the
+# model loaded) measured for 0.49.0, 2.2, 3.7 and 6.7 GiB, with 20 % to spare and rounded
+# up; it is also the model's hard memory limit, so a model that needs more than that is
+# stopped instead of the server running out. The small one is the 4-bit build of the 2b
+# (the plain 2b tag is an 8-bit build that needs 2.9 GiB).
 MODELS = (
-    ('qwen3.5:2b', 2.7, 3, 'short, simple answers, the quickest'),
+    ('qwen3.5:2b-q4_K_M', 1.9, 3, 'short, simple answers, the quickest, but the weakest'),
     ('qwen3.5:4b', 3.3, 5, 'good everyday answers'),
     ('qwen3.5:9b', 6.6, 9, 'the best answers it can give here, the slowest'),
 )
-# A model named by hand under "model" (as Ollama names it: "qwen3.5:4b", "gemma4:12b").
-MODEL_NAME = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}(?::[a-z0-9][a-z0-9._-]{0,63})?', re.ASCII)
+# A model named by hand under "model" (as Ollama names it: "qwen3.5:4b", "gemma4:12b",
+# "qwen3.5:2b-q4_K_M": a tag may have capitals, the name has none).
+MODEL_NAME = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,63})?', re.ASCII)
 # A model named by hand has no known size: its download is taken as this for the SSD
 # check, and it gets all the memory left for a model, which must be NAMED_MODEL_GIB at least.
 UNKNOWN_MODEL_GB = 7

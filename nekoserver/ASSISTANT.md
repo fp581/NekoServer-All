@@ -21,8 +21,8 @@ When the PC can have it, setup shows a choice:
 === Optional: AI assistant ("Ask Neko" in the dashboard) ===
 This PC has 16 GB of memory. With your apps running and room kept for them to grow, 6.3 GB are free for the assistant.
   0) No assistant (press Enter)
-  1) qwen3.5:2b: short, simple answers, the quickest.
-     Downloads 2.7 GB. While it answers it uses about 3 GB of your 16 GB
+  1) qwen3.5:2b-q4_K_M: short, simple answers, the quickest, but the weakest.
+     Downloads 1.9 GB. While it answers it uses about 3 GB of your 16 GB
      (its limit), and up to 4 of your 8 processor cores, so a film Jellyfin converts or
      new photos in Immich go slower meanwhile. 5 minutes after the last question its memory is free again.
   2) qwen3.5:4b (recommended): good everyday answers.
@@ -31,13 +31,15 @@ This PC has 16 GB of memory. With your apps running and room kept for them to gr
 Which one? (0-2, Enter for no assistant):
 ```
 
-| Model | Download | Memory while it answers | Answers |
+| Model | Download | Memory while it answers (its limit) | Answers |
 |---|---|---|---|
-| `qwen3.5:2b` | about 2.7 GB | about 3 GB | short, simple, the quickest |
-| `qwen3.5:4b` | about 3.3 GB | about 5 GB | good everyday answers |
-| `qwen3.5:9b` | about 6.6 GB | about 9 GB | the best answers here, the slowest |
+| `qwen3.5:2b-q4_K_M` | 1.9 GB | 3 GB | short and simple, the quickest, but the weakest |
+| `qwen3.5:4b` | 3.3 GB | 5 GB | good everyday answers |
+| `qwen3.5:9b` | 6.6 GB | 9 GB | the best answers here, the slowest |
 
-The memory figures were measured on the 0.49.0 test machine with an 8192-token context, with 20 % to spare; each is also that model's hard memory limit. Answer speeds depend on the processor, so they are not promised here: on a typical home server the first words come after some seconds, then the answer at about reading speed.
+The memory is what each model itself used while answering (2.2, 3.7 and 6.7 GB, measured for 0.49.0 with an 8192-token context), with 20 % to spare; it is also that model's hard memory limit. The small one is the 4-bit build of Qwen3.5 2B: the plain `qwen3.5:2b` is an 8-bit build that needs almost as much memory as the 4b.
+
+Answer speed depends on the processor, so these are rough: on the test machine's 4 cores the 4b wrote about 7 words a second; on a 16-core PC the 2b wrote about 30, the 4b 16 and the 9b 9. The first words of the first question take a few seconds more while the model is loaded.
 
 The biggest model that fits is marked recommended. **Enter is "no assistant"**; with the setup window's switch turned on, Enter takes the recommended one. **Ctrl+D** leaves the question for the next setup run. Nobody at the terminal (an upgrade, say): nothing is asked and nothing is installed.
 
