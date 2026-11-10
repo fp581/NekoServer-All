@@ -214,7 +214,9 @@ pub fn ollama_models(address: &str) -> Option<Vec<String>> {
     let mut ollama = TcpStream::connect_timeout(&at, Duration::from_secs(3)).ok()?;
     let _ = ollama.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = ollama.set_write_timeout(Some(Duration::from_secs(5)));
-    write!(ollama, "GET /api/tags HTTP/1.0\r\nHost: {address}\r\n\r\n").ok()?;
+    // The whole request at once: write! would send it in pieces.
+    let request = format!("GET /api/tags HTTP/1.0\r\nHost: {address}\r\n\r\n");
+    ollama.write_all(request.as_bytes()).ok()?;
     let mut answer = String::new();
     ollama.take(2_000_000).read_to_string(&mut answer).ok()?;
     let (head, body) = answer.split_once("\r\n\r\n")?;
@@ -856,7 +858,10 @@ pub fn stream(
     keep: &dyn Fn() -> bool,
     piece: &mut dyn FnMut(&str),
 ) -> std::result::Result<String, String> {
-    let body = json!({"model": model, "messages": messages, "stream": true,
+    // No thinking aloud first: Qwen3.5 thinks before it answers unless told not to, and
+    // on a small processor that took the whole time limit before the first word (the
+    // 0.49.0 gate). Its thinking would not be shown either.
+    let body = json!({"model": model, "messages": messages, "stream": true, "think": false,
         "options": {"num_predict": ANSWER_TOKENS}})
     .to_string();
     let at = address
@@ -1358,6 +1363,8 @@ mod tests {
         let asked = server.join().unwrap();
         assert!(asked.starts_with("POST /api/chat HTTP/1.0"), "{asked}");
         assert!(asked.contains(r#""model":"qwen3.5:4b""#) && asked.contains(r#""stream":true"#));
+        // Asked to answer at once, without thinking aloud first (the 0.49.0 gate).
+        assert!(asked.contains(r#""think":false"#), "{asked}");
     }
 
     #[test]
