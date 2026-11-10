@@ -362,6 +362,10 @@ def _execute(args, root=ROOT):
     state_dir = safe_path(state_dir)
     if state_dir == DEFAULT_STATE and os.path.ismount(config['data_mount']):
         state_dir = Path(config['data_mount']) / 'installer' / 'state'
+        # The SSD's path comes from the settings file: the folder is used only once it
+        # is proved to lie on the SSD with every link followed.
+        if not os.path.realpath(state_dir).startswith(os.path.realpath(config['data_mount']) + os.sep):
+            raise InstallerError(f'The setup state folder must lie on the app SSD: {state_dir}')
     state_path = safe_path(state_dir / 'state.json')
     safe_path(state_dir / 'install.log')
     previous = read_json(state_path) if state_path.exists() else {}
@@ -490,6 +494,8 @@ def _execute(args, root=ROOT):
             and Path(args.state_dir).expanduser() == DEFAULT_STATE
         ):
             persistent = Path(config['data_mount']) / 'installer' / 'state'
+            if not os.path.realpath(persistent).startswith(os.path.realpath(config['data_mount']) + os.sep):
+                raise InstallerError(f'The setup state folder must lie on the app SSD: {persistent}')
             ensure_directory(persistent, 0o700)
             next_state = persistent / 'state.json'
             previous_persistent = read_json(next_state) if next_state.exists() else {}

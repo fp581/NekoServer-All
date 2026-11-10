@@ -36,6 +36,7 @@ from neko_common import (
     atomic_write,
     checked_run,
     compose_up,
+    ensure_directory,
     mount_path,
     safe_path,
     verify_storage,
@@ -432,23 +433,6 @@ def cpus(cores):
     return str(max(1, (cores or 1) // 2))
 
 
-def make_private(folder):
-    """Make `folder` for root only (0700), with the parts of its path that are missing,
-    parents first. What is there already keeps its owner and mode."""
-    missing = []
-    part = folder
-    while not part.exists():
-        missing.append(part)
-        part = part.parent
-    if not part.is_dir():
-        raise RuntimeError(f'{part} is not a folder')
-    for part in reversed(missing):
-        part.mkdir(mode=0o700, exist_ok=True)
-        part.chmod(0o700)  # whatever the umask is
-    if not folder.is_dir():
-        raise RuntimeError(f'{folder} is not a folder')
-
-
 def install(ctx, model, memory):
     config = ctx.config
     project, models = folders(config)
@@ -463,7 +447,7 @@ def install(ctx, model, memory):
         safe_path(folder)
         if folder.is_symlink():
             raise RuntimeError(f'refusing a linked folder: {folder}')
-        make_private(Path(checked))
+        ensure_directory(checked, 0o700)
     share = cpus(os.cpu_count())
     template = (Path(__file__).resolve().parents[1] / 'compose' / 'assistant.yaml').read_text(encoding='utf-8')
     values = {'DATA': config['data_mount'], 'CPUS': share, 'MODEL_MEMORY': memory}
