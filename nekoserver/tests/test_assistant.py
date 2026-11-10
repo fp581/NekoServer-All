@@ -494,6 +494,21 @@ class InstallTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Parent traversal|Unsafe mount path'):
                 assistant.folders({'data_mount': '/srv/../etc'})
 
+    def test_its_folders_are_for_root_only_and_what_is_there_stays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            there = Path(tmp) / 'appdata'
+            there.mkdir(mode=0o755)
+            there.chmod(0o755)
+            models = there / 'assistant' / 'models'
+            assistant.make_private(models)
+            assistant.make_private(models)  # again: nothing to do
+            self.assertEqual(oct(models.stat().st_mode & 0o777), '0o700')
+            self.assertEqual(oct(models.parent.stat().st_mode & 0o777), '0o700')
+            self.assertEqual(oct(there.stat().st_mode & 0o777), '0o755')
+            (there / 'file').write_text('')
+            with self.assertRaisesRegex(RuntimeError, 'is not a folder'):
+                assistant.make_private(there / 'file' / 'below')
+
     def test_only_a_model_from_the_table_is_saved_as_the_choice(self):
         ctx = context({})
         assistant.save_choice(ctx, True, 'qwen3.5:4b')
