@@ -454,6 +454,11 @@ def choose_pin(binary, log, ask=getpass.getpass):
     return False
 
 
+def runtime_binary():
+    """The control program this release's dashboard step installs (it saves the PIN)."""
+    return Path('/usr/local/lib/nekoserver-dashboard') / ('v' + VERSION) / native_runtime.NAME
+
+
 def launcher(port):
     """A command that opens the dashboard in its own window, without browser tabs or
     bars: an installed Chromium-family browser in app mode, otherwise the default

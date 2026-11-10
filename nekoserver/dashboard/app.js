@@ -1728,10 +1728,18 @@ function askAbout(issue) {
 function gigabytes(limit) {
   return text(limit).replace(/^(\d+)g$/, '$1 GB');
 }
-function askIntro() {
-  const a = object(state.status?.assistant);
-  if (!assistantSetUp()) {
+const ASK_NO_PIN = 'Ask Neko needs a dashboard PIN (run setup to choose one).';
+/* No PIN on this server (removed after setup): asking can never be allowed. */
+function askNeedsPin(control = state.control) {
+  return control?.access?.pin_set === false;
+}
+function askIntro(s = state.status, control = state.control) {
+  const a = object(s?.assistant);
+  if (!assistantSetUp(s)) {
     return 'The AI assistant is not set up on this server. Setup offers it when the server has room for it.';
+  }
+  if (askNeedsPin(control)) {
+    return ASK_NO_PIN;
   }
   return (
     'Neko uses ' +
@@ -1752,7 +1760,7 @@ function renderAsk() {
   }
   watchJobs();
   renderAskLog();
-  $('ask-send').disabled = ASK.busy || !assistantSetUp();
+  $('ask-send').disabled = ASK.busy || !assistantSetUp() || askNeedsPin();
 }
 function renderAskLog() {
   put(
@@ -1862,8 +1870,8 @@ function askUnlock(
   then,
   why = 'Asking Neko uses the server’s processor, so it needs your PIN on every device, the server too.'
 ) {
-  if (state.control?.access?.pin_set === false) {
-    toast('Ask Neko needs a PIN. Run setup again in a terminal on the server to choose one.');
+  if (askNeedsPin()) {
+    toast(ASK_NO_PIN);
     return;
   }
   unlockDialog(then, 'ASK NEKO', why);

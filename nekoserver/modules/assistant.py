@@ -28,6 +28,7 @@ import urllib.request
 from pathlib import Path
 
 import guided_setup
+import importlib.util
 from neko_common import (
     ASSISTANT,
     OLLAMA_PORT,
@@ -44,6 +45,15 @@ DEPENDENCIES = ['docker']
 DESCRIPTION = 'Optional AI assistant (Ollama) for the dashboard, in its own project within set limits'
 
 TITLE = 'AI assistant'
+# The dashboard PIN (wizard.PIN_FILE): asking Neko is an app action, so it needs one.
+PIN_FILE = Path('/etc/nekoserver-control/pin.json')
+NO_PIN = (
+    'Ask Neko needs a dashboard PIN, and none was chosen; run  sudo bash install.sh  in a terminal '
+    'on the server to choose one'
+)
+# The dashboard collector's settings (dashboard.COLLECTOR_SETTINGS): the dashboard step
+# runs first, so the assistant tells it itself that Ask Neko is there.
+COLLECTOR_SETTINGS = Path('/etc/nekoserver-dashboard/config.json')
 PROJECT = 'neko-' + ASSISTANT
 # The models setup offers, smallest first: (model, its download in GB, the memory it needs
 # while it answers in GiB, what its answers are like). The memory is the model's own
@@ -140,6 +150,7 @@ def _run(ctx):
             save_choice(ctx, True, model)
         model, size, memory = fitting(ctx.config, room)
         check_space(ctx.config, size)
+        need_pin(ctx)
     except NotHere:
         # Not here (any more): one that runs is stopped, so it can never squeeze the
         # other apps out of memory or keep a port the person's own program needs.
@@ -147,6 +158,46 @@ def _run(ctx):
         raise
     install(ctx, model, memory)
     return None
+
+
+def need_pin(ctx, ask=None):
+    """Asking Neko is an app action, like restarting an app, so it needs the dashboard
+    PIN on every device, the server too. Without one the page could never answer, so no
+    model of several GB is downloaded for it: the PIN is asked here (the dashboard step
+    just before lets one skip it), or the assistant is left for later. NotHere while
+    there is still none."""
+    if PIN_FILE.exists():
+        return
+    dashboard = dashboard_step()
+    binary = dashboard.runtime_binary()
+    if not binary.exists():
+        raise NotHere('Ask Neko lives on the dashboard, which is not set up; set up the dashboard first')
+    if not guided_setup.interactive(ctx):
+        raise NotHere(NO_PIN)
+    print('\nAsk Neko needs a dashboard PIN; choose one now (the same PIN restarts apps from the dashboard).')
+    chosen = dashboard.choose_pin(binary, ctx.log, ask) if ask else dashboard.choose_pin(binary, ctx.log)
+    if not chosen:
+        raise NotHere(NO_PIN)
+
+
+def dashboard_step():
+    """modules/dashboard.py, which asks the PIN and knows where the control program is."""
+    spec = importlib.util.spec_from_file_location('nekoserver_dashboard_step', Path(__file__).with_name('dashboard.py'))
+    step = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(step)
+    return step
+
+
+def tell_dashboard(settings=COLLECTOR_SETTINGS):
+    """The dashboard shows Ask Neko once its collector knows the assistant is wanted (its
+    "assistant" setting, which the dashboard step writes from the choice). This step runs
+    after the dashboard's, so the choice is passed on here. Without a dashboard, nothing."""
+    if not settings.is_file() or settings.is_symlink():
+        return
+    cfg = json.loads(settings.read_text(encoding='utf-8'))
+    if cfg.get(ASSISTANT) != {'wanted': True}:
+        cfg[ASSISTANT] = {'wanted': True}
+        atomic_json(settings, cfg)
 
 
 def options(config):
@@ -400,6 +451,7 @@ def install(ctx, model, memory):
         config,
         {'model': model, 'model_id': model_id, 'cpus': share, 'memory': memory, 'model_ready': note == 'ready'},
     )
+    tell_dashboard()
     ctx.log(
         f'{TITLE}: running with {model} (at most {share} processor cores and {memory} of memory, below every '
         'other app). Ask it on the dashboard\'s Ask Neko page.'

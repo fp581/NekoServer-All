@@ -93,6 +93,7 @@ class Ready:
             mock.patch.object(assistant, 'memory_now', return_value=memory),
             mock.patch.object(assistant, 'own_use_gib', return_value=0),
             mock.patch.object(assistant, 'check_space'),
+            mock.patch.object(assistant, 'need_pin'),
             mock.patch.object(assistant, 'stop'),
             mock.patch.object(assistant, 'install'),
         ]
@@ -169,6 +170,75 @@ class OffByDefaultTests(unittest.TestCase):
     def test_the_template_settings_decide_nothing(self):
         settings = json.loads((ROOT / 'config.json').read_text())
         self.assertEqual(settings['assistant'], {'model': 'auto'})
+
+
+class PinTests(unittest.TestCase):
+    """Asking Neko needs the dashboard PIN; without one no model is downloaded."""
+
+    def step(self, tmp, pin=False, binary=True, interactive=True):
+        pin_file = Path(tmp) / 'pin.json'
+        if pin:
+            pin_file.write_text('{}')
+        program = Path(tmp) / 'nekoserver-runtime'
+        if binary:
+            program.write_text('')
+        dashboard = SimpleNamespace(runtime_binary=lambda: program, choose_pin=mock.Mock(return_value=False))
+        for p in (
+            mock.patch.object(assistant, 'PIN_FILE', pin_file),
+            mock.patch.object(assistant, 'dashboard_step', return_value=dashboard),
+            mock.patch.object(assistant.guided_setup, 'interactive', return_value=interactive),
+            mock.patch('builtins.print'),
+        ):
+            p.start()
+        self.addCleanup(mock.patch.stopall)
+        return dashboard
+
+    def test_a_pin_chosen_before_is_enough(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dashboard = self.step(tmp, pin=True)
+            assistant.need_pin(context({}))
+            dashboard.choose_pin.assert_not_called()
+
+    def test_without_a_pin_it_is_asked_and_skipping_it_installs_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dashboard = self.step(tmp)
+            with self.assertRaises(assistant.NotHere) as said:
+                assistant.need_pin(context({}))
+            dashboard.choose_pin.assert_called_once()
+            self.assertIn('needs a dashboard PIN', str(said.exception))
+            dashboard.choose_pin.return_value = True
+            assistant.need_pin(context({}))  # a PIN chosen there: on with the install
+
+    def test_unattended_or_without_the_dashboard_it_is_said(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dashboard = self.step(tmp, interactive=False)
+            with self.assertRaisesRegex(assistant.NotHere, 'needs a dashboard PIN'):
+                assistant.need_pin(context({}))
+            dashboard.choose_pin.assert_not_called()
+        mock.patch.stopall()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.step(tmp, binary=False)
+            with self.assertRaisesRegex(assistant.NotHere, 'set up the dashboard first'):
+                assistant.need_pin(context({}))
+
+    def test_no_pin_means_no_download_and_setup_goes_on(self):
+        ctx = context({'assistant': {'wanted': True, 'model': 'qwen3.5:4b'}})
+        with Ready(self, interactive=False) as ready:
+            assistant.need_pin.side_effect = assistant.NotHere(assistant.NO_PIN)
+            answer = assistant.run(ctx)
+        ready.install.assert_not_called()
+        ready.stop.assert_called_once()
+        self.assertEqual(answer['status'], 'unavailable')
+        self.assertIn('dashboard PIN', answer['reason'])
+
+    def test_the_dashboard_is_told_once_it_is_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = Path(tmp) / 'config.json'
+            assistant.tell_dashboard(settings)  # no dashboard: nothing written
+            self.assertFalse(settings.exists())
+            settings.write_text(json.dumps({'interval': 60, 'assistant': {'wanted': False}}))
+            assistant.tell_dashboard(settings)
+            self.assertEqual(json.loads(settings.read_text()), {'interval': 60, 'assistant': {'wanted': True}})
 
 
 class ChoiceTests(unittest.TestCase):
@@ -411,8 +481,10 @@ class InstallTests(unittest.TestCase):
                 mock.patch.object(assistant, 'compose_up', side_effect=lambda base, what, log: started.append(base)),
                 mock.patch.object(assistant, 'wait_until_answering'),
                 mock.patch.object(assistant, 'fetch_model', return_value=('downloading', None)),
+                mock.patch.object(assistant, 'tell_dashboard') as told,
             ):
                 assistant.install(ctx, 'qwen3.5:4b', '5g')
+            told.assert_called_once_with()
             manifest = Path(tmp) / 'compose/assistant/compose.yaml'
             self.assertEqual(oct(manifest.stat().st_mode & 0o777), '0o600')
             self.assertIn('cpus: "4"', manifest.read_text())
@@ -527,10 +599,11 @@ class OthersComeFirstTests(unittest.TestCase):
                 self.assertNotIn('neko-assistant', path.read_text())
                 self.assertNotIn('11434', path.read_text())
 
-    def test_it_comes_in_the_full_setup(self):
+    def test_it_comes_in_the_full_setup_after_the_dashboard_and_its_pin(self):
         full = json.loads((ROOT / 'config.json').read_text())['profiles']['full']
         self.assertIn('assistant', full)
-        self.assertLess(full.index('assistant'), full.index('dashboard'))
+        self.assertLess(full.index('dashboard'), full.index('assistant'))
+        self.assertTrue(callable(assistant.dashboard_step().runtime_binary))
 
 
 class InstalledTests(unittest.TestCase):

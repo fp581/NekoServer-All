@@ -67,7 +67,7 @@ If the download is cut off (no network, a restart), Ask Neko says the model is n
 
 The **Ask Neko** page is right under **Home** in the menu, and only on a server with the assistant. Each item under **Needs attention** has an **Ask Neko about this** button, which opens the page with the question filled in.
 
-- **The PIN.** Asking uses the server's processor, so it needs the dashboard PIN on every device, the server itself too, as restarting an app does.
+- **The PIN.** Asking uses the server's processor, so it needs the dashboard PIN on every device, the server itself too, as restarting an app does. So setup sets the assistant up only once a PIN is chosen: if none was chosen at the dashboard step, it asks for one before anything is downloaded, and without one it leaves the assistant for later. If the PIN is removed later, the page says "Ask Neko needs a dashboard PIN (run setup to choose one)."
 - **What Neko reads.** Your question, a short summary of the dashboard's readings (what needs attention, the backups, the drives, the apps), and for an attention item its own text and the last 40 lines of its service's log. Before the model sees any of it, the server takes out passwords, keys, tokens, cookies, Tailscale keys, e-mail addresses, and every app password and secret NekoServer keeps.
 - **Nothing is kept.** The chat lives in the open page only: reloading or closing it clears it. Nothing is stored on the server.
 - **On the phone** it works through the dashboard's own Tailscale address.

@@ -821,7 +821,24 @@ class AskNekoPageTests(unittest.TestCase):
         self.assertIsNone(page(('bugReport', {'question': 'q', 'answer': 'no report here'}))[0])
 
     def test_without_the_assistant_the_page_says_so(self):
-        self.assertIn('not set up on this server', page(('askIntro', None))[0])
+        self.assertIn('not set up on this server', page(('askIntro', {}))[0])
+
+    def test_without_a_pin_the_page_says_so_instead_of_asking_for_one(self):
+        ready = status(assistant={'set_up': True, 'model': 'qwen3.5:4b', 'memory': '5g', 'cpus': '2'})
+        said = page(
+            ('askIntro', {'status': ready, 'control': {'access': {'pin_set': False}}}),
+            ('askIntro', {'status': ready, 'control': {'access': {'pin_set': True}}}),
+            ('askIntro', {'status': ready}),
+        )
+        self.assertEqual(said[0], 'Ask Neko needs a dashboard PIN (run setup to choose one).')
+        self.assertTrue(said[1].startswith('Neko uses qwen3.5:4b'), said[1])
+        self.assertTrue(said[2].startswith('Neko uses qwen3.5:4b'), said[2])  # not known yet: no claim
+        app = (ROOT / 'dashboard/app.js').read_text()
+        # The send button stays off, and no PIN dialog opens that could never succeed.
+        self.assertIn('|| askNeedsPin();', app)
+        unlock = app[app.index('function askUnlock(') : app.index('async function askNeko(')]
+        self.assertLess(unlock.index('askNeedsPin()'), unlock.index('unlockDialog('))
+        self.assertIn('toast(ASK_NO_PIN)', unlock)
 
     def test_asking_needs_the_pin_and_nothing_is_kept(self):
         app = (ROOT / 'dashboard/app.js').read_text()

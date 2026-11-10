@@ -7,18 +7,51 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const CALLS = new Set(['collectIssues', 'filesIntact', 'appState', 'validStatus', 'fixedFloor', 'raiseFixed',
-  'backupSummary', 'recentCopies', 'integrityResult', 'nextRun', 'shortText', 'pinRefusal', 'guideFor', 'appsSummary',
-  'shownApps', 'releaseNotes', 'arrayShown', 'words', 'waitingWhen', 'companionMood', 'panelMoods', 'newlyFinished',
-  'catFile', 'appSpec', 'panelAlerts', 'jobLine', 'gettingStarted', 'companionWords', 'upgradeAtWork',
-  'assistantSetUp', 'askItem', 'shownAnswer', 'bugReport', 'askIntro']);
+const CALLS = new Set([
+  'collectIssues',
+  'filesIntact',
+  'appState',
+  'validStatus',
+  'fixedFloor',
+  'raiseFixed',
+  'backupSummary',
+  'recentCopies',
+  'integrityResult',
+  'nextRun',
+  'shortText',
+  'pinRefusal',
+  'guideFor',
+  'appsSummary',
+  'shownApps',
+  'releaseNotes',
+  'arrayShown',
+  'words',
+  'waitingWhen',
+  'companionMood',
+  'panelMoods',
+  'newlyFinished',
+  'catFile',
+  'appSpec',
+  'panelAlerts',
+  'jobLine',
+  'gettingStarted',
+  'companionWords',
+  'upgradeAtWork',
+  'assistantSetUp',
+  'askItem',
+  'shownAnswer',
+  'bugReport',
+  'askIntro'
+]);
 /* Calls answered from another function's result, with more of it. */
 const DETAILED = new Set(['issueDetails']);
 const calls = JSON.parse(process.argv[2]);
 
 /* Anything the page touches: every property is another stand-in, every call returns one. */
 function stub() {
-  const f = function () { return stub(); };
+  const f = function () {
+    return stub();
+  };
   return new Proxy(f, {
     get(_, key) {
       if (key === Symbol.toPrimitive) return () => '';
@@ -26,22 +59,54 @@ function stub() {
       if (['matches', 'hidden', 'open', 'isSecureContext'].includes(key)) return false;
       if (['hash', 'hostname', 'value', 'userAgent', 'textContent'].includes(key)) return '';
       if (key === 'length') return 0;
-      if (key === Symbol.iterator) return function* nothing() { /* no elements */ };
+      if (key === Symbol.iterator)
+        return function* nothing() {
+          /* no elements */
+        };
       return stub();
     },
-    set() { return true; },
-    apply() { return stub(); },
-    construct() { return stub(); },
+    set() {
+      return true;
+    },
+    apply() {
+      return stub();
+    },
+    construct() {
+      return stub();
+    }
   });
 }
-const storage = { getItem: () => null, setItem() { /* not kept */ }, removeItem() { /* not kept */ } };
+const storage = {
+  getItem: () => null,
+  setItem() {
+    /* not kept */
+  },
+  removeItem() {
+    /* not kept */
+  }
+};
 Object.assign(globalThis, {
-  document: stub(), window: stub(), localStorage: storage, sessionStorage: storage,
+  document: stub(),
+  window: stub(),
+  localStorage: storage,
+  sessionStorage: storage,
   location: { hostname: '127.0.0.1', hash: '' },
-  matchMedia: () => ({ matches: false, addEventListener() { /* no changes here */ } }),
-  setInterval: () => 0, clearInterval() { /* nothing runs */ },
-  requestAnimationFrame() { /* nothing is drawn */ },
-  fetch: async () => { throw new Error('offline'); },
+  matchMedia: () => ({
+    matches: false,
+    addEventListener() {
+      /* no changes here */
+    }
+  }),
+  setInterval: () => 0,
+  clearInterval() {
+    /* nothing runs */
+  },
+  requestAnimationFrame() {
+    /* nothing is drawn */
+  },
+  fetch: async () => {
+    throw new Error('offline');
+  }
 });
 Object.defineProperty(globalThis, 'navigator', { value: stub(), configurable: true });
 
@@ -70,6 +135,7 @@ const SPECIAL = {
   companionWords: ([mood, s, issues]) => app.companionWords(mood, app.validStatus(s), issues),
   appsSummary: argument => app.appsSummary(app.validStatus(argument)),
   assistantSetUp: argument => app.assistantSetUp(app.validStatus(argument)),
+  askIntro: argument => app.askIntro(argument.status && app.validStatus(argument.status), argument.control),
   // The cat: a reading in, its moods out (with the issues the page would list for it).
   companionMood: argument => {
     const s = argument.status && app.validStatus(argument.status);
@@ -93,11 +159,12 @@ const SPECIAL = {
   shownApps: argument => app.shownApps(app.validStatus(argument), true).map(a => a.id),
   raiseFixed: argument => {
     // A stand-in Speed slider: what raiseFixed leaves in it and in the draft.
-    const input = { min: 20, value: argument.fixed }, shown = { textContent: '' };
+    const input = { min: 20, value: argument.fixed },
+      shown = { textContent: '' };
     const field = { querySelector: which => (which === 'input' ? input : shown) };
     app.raiseFixed(field, argument);
     return { min: Number(input.min), value: Number(input.value), fixed: argument.fixed };
-  },
+  }
 };
 const answers = calls.map(([name, argument]) => {
   if (!CALLS.has(name) && !DETAILED.has(name)) throw new Error('Not a function the harness offers: ' + name);
