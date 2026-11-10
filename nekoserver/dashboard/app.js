@@ -1969,7 +1969,11 @@ async function approveRepair(entry) {
     askUnlock(() => approveRepair(entry), 'Approving a fix needs your PIN on every device, the server too.');
     return;
   }
-  r.state = answer.ok ? (answer.job ? 'watching' : 'done') : 'failed';
+  if (!answer.ok) {
+    r.state = 'failed';
+  } else {
+    r.state = answer.job ? 'watching' : 'done';
+  }
   r.message = answer.ok ? text(answer.message, 'Done.') : controlMessage(answer);
   if (answer.job) {
     r.job = text(answer.job);

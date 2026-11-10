@@ -37,6 +37,7 @@ from neko_common import (
     checked_run,
     compose_up,
     ensure_directory,
+    mount_path,
     safe_path,
     verify_storage,
 )
@@ -55,6 +56,8 @@ NO_PIN = (
 # runs first, so the assistant tells it itself that Ask Neko is there.
 COLLECTOR_SETTINGS = Path('/etc/nekoserver-dashboard/config.json')
 PROJECT = 'neko-' + ASSISTANT
+# Its Compose file in its project folder on the SSD.
+MANIFEST = 'compose.yaml'
 # The models setup offers, smallest first: (model, its download in GB, the memory it needs
 # while it answers in GiB, what its answers are like). The memory is the model's own
 # memory (the container's anon memory, the weights and the 8192-token context, with the
@@ -240,11 +243,10 @@ def cpu_flags(cpuinfo='/proc/cpuinfo'):
 def port_free_for_us(config, connect=socket.create_connection):
     """Port 11434 is free, or ours already (setup run again). A program of the person's own
     there (an Ollama they installed themselves) keeps it: nothing is installed beside it."""
-    if (folders(config)[0] / 'compose.yaml').is_file():
+    if (folders(config)[0] / MANIFEST).is_file():
         return
     try:
-        with connect(('127.0.0.1', OLLAMA_PORT), timeout=2):
-            pass
+        connect(('127.0.0.1', OLLAMA_PORT), timeout=2).close()
     except OSError:
         return
     raise NotHere(
@@ -269,7 +271,7 @@ def memory_now(meminfo='/proc/meminfo'):
 def own_use_gib(config, run=checked_run):
     """The memory the assistant's own container uses now (setup run again): it counts as
     free for it, or each run would leave it less. 0 when it is not running."""
-    manifest = folders(config)[0] / 'compose.yaml'
+    manifest = folders(config)[0] / MANIFEST
     if not manifest.is_file():
         return 0
     try:
@@ -300,7 +302,7 @@ def check_space(config, size, usage=shutil.disk_usage):
     """The SSD has room for the image and the model, with room left for everything else.
     Setup run again: they are on the SSD already, so only the room for everything else."""
     free = usage(config['data_mount']).free / 1000**3
-    there = (folders(config)[0] / 'compose.yaml').is_file()
+    there = (folders(config)[0] / MANIFEST).is_file()
     needed = SPARE_GB if there else math.ceil(IMAGES_GB + size + SPARE_GB)
     if free < needed:
         raise NotHere(f'it needs {needed} GB free on the app SSD and there are {free:.0f} GB')
@@ -373,8 +375,9 @@ def ask_model(ctx, total, room, cores, prompt=None, output=None):
 
 def save_choice(ctx, wanted, model):
     opts = ctx.config.setdefault(ASSISTANT, {})
-    opts['wanted'] = wanted
-    opts['model'] = model
+    opts['wanted'] = wanted is True
+    # Only a name from the table above is ever saved here (or "auto").
+    opts['model'] = next((name for name, *_ in MODELS if name == model), 'auto')
     guided_setup.save_settings(ctx)
     if not wanted:
         ctx.log(
@@ -421,8 +424,17 @@ def render(template, values):
 
 def folders(config):
     """(project folder, models folder) on the app SSD."""
-    data = Path(config['data_mount'])
+    data = mount_path(config['data_mount'])
     return data / 'compose' / ASSISTANT, data / 'appdata' / ASSISTANT / 'models'
+
+
+def on_the_ssd(config, folder):
+    """`folder` as given, once it is proved to lie on the app SSD with every link followed
+    (the SSD's path comes from the settings file)."""
+    data = os.path.realpath(mount_path(config['data_mount']))
+    if not os.path.realpath(folder).startswith(data + os.sep):
+        raise RuntimeError(f'refusing a folder outside the app SSD: {folder}')
+    return folder
 
 
 def cpus(cores):
@@ -437,11 +449,11 @@ def install(ctx, model, memory):
         safe_path(folder)
         if folder.is_symlink():
             raise RuntimeError(f'refusing a linked folder: {folder}')
-        ensure_directory(folder, 0o700)
+        ensure_directory(on_the_ssd(config, folder), 0o700)
     share = cpus(os.cpu_count())
     template = (Path(__file__).resolve().parents[1] / 'compose' / 'assistant.yaml').read_text(encoding='utf-8')
     values = {'DATA': config['data_mount'], 'CPUS': share, 'MODEL_MEMORY': memory}
-    manifest = project / 'compose.yaml'
+    manifest = project / MANIFEST
     atomic_write(manifest, render(template, values), 0o600)
     base = compose(manifest)
     compose_up(base, TITLE, ctx.log)
@@ -502,7 +514,7 @@ def fetch_model(base, model, log, run=checked_run):
 def stop(config, log, run=checked_run):
     """No assistant (chosen, or not possible here any more): it is stopped and its container
     removed; its model stays on the SSD, so choosing it again starts it as it was."""
-    manifest = folders(config)[0] / 'compose.yaml'
+    manifest = folders(config)[0] / MANIFEST
     if not manifest.is_file() or manifest.is_symlink():
         return
     run([*compose(manifest), 'down'], 300, f'{TITLE} (docker compose down)')

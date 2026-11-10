@@ -1357,8 +1357,13 @@ def optional_answers_file(data_mount):
 
 def optional_answers(data_mount):
     """The last answers by question, or {} when none were kept yet (or the file can't be read)."""
+    file = optional_answers_file(data_mount)
+    # The SSD's path comes from the settings file: the answers are read only from a file
+    # that lies inside it once every link is followed.
+    if not os.path.realpath(file).startswith(os.path.realpath(data_mount) + os.sep):
+        return {}
     try:
-        kept = json.loads(optional_answers_file(data_mount).read_text())
+        kept = json.loads(file.read_text())
     except (OSError, ValueError):
         return {}
     if not isinstance(kept, dict):

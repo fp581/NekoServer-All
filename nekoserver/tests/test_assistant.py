@@ -76,8 +76,9 @@ class NeverFailsSetupTests(unittest.TestCase):
         self.assertEqual(result, {'status': 'unavailable', 'reason': 'the processor is armv7l'})
 
     def test_ctrl_c_still_stops_setup(self):
+        ctx = context({})
         with mock.patch.object(assistant, '_run', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
-            assistant.run(context({}))
+            assistant.run(ctx)
 
 
 class Ready:
@@ -202,8 +203,9 @@ class PinTests(unittest.TestCase):
     def test_without_a_pin_it_is_asked_and_skipping_it_installs_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             dashboard = self.step(tmp)
+            ctx = context({})
             with self.assertRaises(assistant.NotHere) as said:
-                assistant.need_pin(context({}))
+                assistant.need_pin(ctx)
             dashboard.choose_pin.assert_called_once()
             self.assertIn('needs a dashboard PIN', str(said.exception))
             dashboard.choose_pin.return_value = True
@@ -212,14 +214,16 @@ class PinTests(unittest.TestCase):
     def test_unattended_or_without_the_dashboard_it_is_said(self):
         with tempfile.TemporaryDirectory() as tmp:
             dashboard = self.step(tmp, interactive=False)
+            ctx = context({})
             with self.assertRaisesRegex(assistant.NotHere, 'needs a dashboard PIN'):
-                assistant.need_pin(context({}))
+                assistant.need_pin(ctx)
             dashboard.choose_pin.assert_not_called()
         mock.patch.stopall()
         with tempfile.TemporaryDirectory() as tmp:
             self.step(tmp, binary=False)
+            ctx = context({})
             with self.assertRaisesRegex(assistant.NotHere, 'set up the dashboard first'):
-                assistant.need_pin(context({}))
+                assistant.need_pin(ctx)
 
     def test_no_pin_means_no_download_and_setup_goes_on(self):
         ctx = context({'assistant': {'wanted': True, 'model': 'qwen3.5:4b'}})
@@ -269,8 +273,9 @@ class ChoiceTests(unittest.TestCase):
         self.assertIn('3) qwen3.5:9b (recommended)', '\n'.join(assistant.choices(32, 18, 16)[0]))
 
     def test_no_room_for_any_is_not_available(self):
+        ctx, typed, quiet = context({}), (lambda q: '1'), (lambda s: None)
         with self.assertRaises(assistant.NotHere) as caught:
-            assistant.ask_model(context({}), 6, 1.2, 4, prompt=lambda q: '1', output=lambda s: None)
+            assistant.ask_model(ctx, 6, 1.2, 4, prompt=typed, output=quiet)
         self.assertIn('not enough free memory', str(caught.exception))
 
     def test_a_wrong_answer_is_asked_again(self):
@@ -327,8 +332,9 @@ class CapabilityTests(unittest.TestCase):
         with self.assertRaises(assistant.NotHere) as caught:
             assistant.processor_ok(lambda: 'armv7l')
         self.assertIn('this one is armv7l', str(caught.exception))
+        old = self.cpuinfo('fpu sse4_1')
         with self.assertRaises(assistant.NotHere) as caught:
-            assistant.processor_ok(lambda: 'x86_64', self.cpuinfo('fpu sse4_1'))
+            assistant.processor_ok(lambda: 'x86_64', old)
         self.assertIn('SSE4.2', str(caught.exception))
 
     def test_a_program_of_the_persons_own_on_the_port_keeps_it(self):
@@ -471,6 +477,27 @@ class TemplateTests(unittest.TestCase):
 
 
 class InstallTests(unittest.TestCase):
+    def test_its_folders_are_made_only_on_the_ssd(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as elsewhere:
+            config = {'data_mount': tmp}
+            inside = Path(tmp) / 'compose' / 'assistant'
+            self.assertEqual(assistant.on_the_ssd(config, inside), inside)
+            # A folder that leads out of the SSD through a link is refused.
+            (Path(tmp) / 'appdata').symlink_to(elsewhere)
+            led_out = Path(tmp) / 'appdata' / 'assistant' / 'models'
+            with self.assertRaisesRegex(RuntimeError, 'outside the app SSD'):
+                assistant.on_the_ssd(config, led_out)
+            # The SSD's own path is checked where it comes in.
+            with self.assertRaisesRegex(RuntimeError, 'Parent traversal|Unsafe mount path'):
+                assistant.folders({'data_mount': '/srv/../etc'})
+
+    def test_only_a_model_from_the_table_is_saved_as_the_choice(self):
+        ctx = context({})
+        assistant.save_choice(ctx, True, 'qwen3.5:4b')
+        self.assertEqual(ctx.config['assistant'], {'wanted': True, 'model': 'qwen3.5:4b'})
+        assistant.save_choice(ctx, True, 'something; else')
+        self.assertEqual(ctx.config['assistant'], {'wanted': True, 'model': 'auto'})
+
     def test_install_writes_a_private_file_starts_it_and_reports_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = {'data_mount': tmp}

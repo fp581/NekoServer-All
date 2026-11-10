@@ -656,38 +656,18 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
     ]
     .iter()
     .any(|h| !values(h).is_empty());
-    let local =
-        !forwarded && (hosts[0].starts_with(b"127.0.0.1:") || hosts[0].starts_with(b"localhost:"));
+    let local = is_local(forwarded, hosts[0]);
     let token = values("x-neko-token")
         .first()
         .and_then(|v| std::str::from_utf8(v).ok())
         .map(str::to_string);
     if let (Some(id), false) = (path.strip_prefix("/api/ask/"), post) {
-        // Ask Neko's answer so far: a short request, whatever the model is doing.
-        match assist::progress(id, &ask_owner(local, token.as_deref())) {
-            Some(v) => reply(
-                &mut stream,
-                200,
-                v.to_string().as_bytes(),
-                "application/json",
-                head,
-            ),
-            None => reply_error(&mut stream, "E40", head),
-        }
-        return;
+        let owner = ask_owner(local, token.as_deref());
+        return answer_so_far(&mut stream, id, &owner, head);
     }
     if path == "/api/control" || path.starts_with("/api/control/") {
-        let who = Who {
-            local,
-            source: if local {
-                // The account of the program on this computer that connected: each one's
-                // wrong PINs count on their own.
-                connection_owner(server, &stream).map(|uid| format!("account:{uid}"))
-            } else {
-                let named = source_of(&values("tailscale-user-login"), &values("x-forwarded-for"));
-                forwarded_source(server, &stream, named)
-            },
-        };
+        let named = source_of(&values("tailscale-user-login"), &values("x-forwarded-for"));
+        let who = caller(server, &stream, local, named);
         let body = read_body(&mut stream, buf[body_start..].to_vec(), length, start);
         if path == "/api/control/ask" && post {
             let body = &body[..body.len().min(length)];
@@ -703,11 +683,7 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
             token.as_deref(),
             length,
         );
-        match result {
-            Ok((status, b)) => reply(&mut stream, status, &b, "application/json", head),
-            Err(code) => reply_error(&mut stream, code, head),
-        }
-        return;
+        return answered(&mut stream, result, head);
     }
     if post {
         reply_error(&mut stream, "E42", false);
@@ -754,10 +730,7 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
             None => Err("E40"),
         },
     };
-    match result {
-        Ok(b) => reply(&mut stream, 200, &b, "application/json", head),
-        Err(code) => reply_error(&mut stream, code, head),
-    }
+    answered(&mut stream, result.map(|b| (200, b)), head)
 }
 
 /// `/api/control` (GET: what can be controlled) and `/api/control/<op>` (POST).
@@ -805,6 +778,50 @@ fn control(
     serde_json::to_vec(&answer)
         .map(|b| (status, b))
         .map_err(|_| "E21")
+}
+
+/// The server itself: a loopback address that Tailscale did not forward.
+fn is_local(forwarded: bool, host: &[u8]) -> bool {
+    !forwarded && (host.starts_with(b"127.0.0.1:") || host.starts_with(b"localhost:"))
+}
+
+/// Who sent a control request. On the server itself, the account of the program that
+/// connected: each one's wrong PINs count on their own. Otherwise the device Tailscale
+/// named (`named`), or the program on this computer that sent Tailscale's headers.
+fn caller(server: &Server, stream: &TcpStream, local: bool, named: Option<String>) -> Who {
+    let source = if local {
+        connection_owner(server, stream).map(|uid| format!("account:{uid}"))
+    } else {
+        forwarded_source(server, stream, named)
+    };
+    Who { local, source }
+}
+
+/// A JSON answer (its status and body), or an error by its code.
+fn answered(
+    stream: &mut TcpStream,
+    result: std::result::Result<(u16, Vec<u8>), &'static str>,
+    head: bool,
+) {
+    match result {
+        Ok((status, b)) => reply(stream, status, &b, "application/json", head),
+        Err(code) => reply_error(stream, code, head),
+    }
+}
+
+/// Ask Neko's answer so far (GET /api/ask/<id>), for the one who asked: a short request,
+/// whatever the model is doing.
+fn answer_so_far(stream: &mut TcpStream, id: &str, owner: &str, head: bool) {
+    match assist::progress(id, owner) {
+        Some(v) => reply(
+            stream,
+            200,
+            v.to_string().as_bytes(),
+            "application/json",
+            head,
+        ),
+        None => reply_error(stream, "E40", head),
+    }
 }
 
 /// Who may read an ask's answer: the PIN session that asked, or the server itself; ""

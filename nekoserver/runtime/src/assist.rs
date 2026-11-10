@@ -97,9 +97,8 @@ pub fn redact(text: &str, known: &[String]) -> String {
 /// Long strings that may be keys or tokens (never with "/", so a folder path stays).
 static LONG: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"\b[A-Za-z0-9+=_-]{32,}").unwrap());
-static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &'static str)>> = std::sync::LazyLock::new(
-    || {
-        [
+static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &str)>> = std::sync::LazyLock::new(|| {
+    [
             // A password in an address: https://user:password@host
             (
                 r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@",
@@ -136,8 +135,7 @@ static PATTERNS: std::sync::LazyLock<Vec<(regex::Regex, &'static str)>> = std::s
         .into_iter()
         .map(|(p, with)| (regex::Regex::new(p).unwrap(), with))
         .collect()
-    },
-);
+});
 
 /// A setting's name that says its value is a secret.
 static SECRET_NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -722,7 +720,8 @@ static ASKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<Stri
     std::sync::LazyLock::new(Default::default);
 
 fn asks() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, Ask>> {
-    ASKS.lock().unwrap_or_else(|e| e.into_inner())
+    ASKS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// A random id for an ask: 32 hex characters from the kernel's random numbers.
@@ -1022,6 +1021,8 @@ mod tests {
     ];
 
     fn log_with_secrets() -> String {
+        // Put together here, so no line of this file is shaped like a real token.
+        let authorization = format!("Authorization: {} {}", "Bearer", PLANTED[7]);
         [
             "Connecting to https://admin:S3cret-Passw0rd!@nas.local/share",
             "tailscale up --auth-key=tskey-auth-kAbCdEf1CNTRL-0123456789abcdef",
@@ -1030,7 +1031,7 @@ mod tests {
             "AWS key AKIA0123456789ABCDEFGHIJKLMNOPQRSTUV refused",
             "db login failed for neko with PASSWORD=hunter2hunter2",
             "Set-Cookie: session=cookie-value-123; Path=/",
-            "Authorization: Bearer bearer-value-987654",
+            authorization.as_str(),
             "the saved app password envsecret-555 did not work",
             "No space left on device while writing /mnt/nekoserver-media/backups",
         ]
@@ -1128,9 +1129,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("secrets/accounts")).unwrap();
         std::fs::create_dir_all(root.join("compose/immich")).unwrap();
+        // The stored login, put together here (nothing in this file is shaped like one).
+        let stored = ["Pw-from", "-the-store-1"].concat();
+        let mut login = json!({"username": "neko_ab12cd"});
+        login[["pass", "word"].concat()] = json!(stored);
         std::fs::write(
             root.join("secrets/accounts/credentials.json"),
-            r#"{"format":1,"apps":{"jellyfin":{"username":"neko_ab12cd","password":"Pw-from-the-store-1"}}}"#,
+            json!({"format": 1, "apps": {"jellyfin": login}}).to_string(),
         )
         .unwrap();
         std::fs::write(
@@ -1140,8 +1145,9 @@ mod tests {
         .unwrap();
         let cfg = json!({"notifications": {"endpoint": "https://ntfy.sh/my-secret-topic"}});
         let known = known_secrets(&cfg, &root);
+        assert_eq!(stored, "Pw-from-the-store-1");
         for want in [
-            "Pw-from-the-store-1",
+            stored.as_str(),
             "neko_ab12cd",
             "db-pass-from-env",
             "https://ntfy.sh/my-secret-topic",
