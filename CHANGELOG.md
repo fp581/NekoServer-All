@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.49.0 — 2026-11-10
+
+One new, optional part, the one you asked for: an AI assistant you can install with setup. Nothing else changes how NekoServer is used. Without the assistant, a server works as on 0.48.2; the settings, timers and units setup writes are the same apart from the release number.
+
+### New: an AI assistant (optional)
+- **What it is.** A private chat page like ChatGPT (Open WebUI), in the browser and on the phone, with its model running on the server itself (Ollama). Nothing you ask leaves your home. ASSISTANT.md says everything below in more detail.
+- **Asked once, never a must.** Setup asks `=== Optional: AI assistant ===` (yes/no) after the music step, and the setup window has a switch for it before setup starts. It is off unless you say yes. No, or Ctrl+D, installs nothing; nobody at the terminal (an upgrade) asks nothing and installs nothing. The answer is saved as `"wanted"` under `"assistant"` in `my-config.json`.
+- **A model that fits.** With 24 GB of memory or more it uses `qwen3.5:9b` (6.6 GB), with 12 to 24 GB `qwen3.5:4b` (3.3 GB). With less memory, or less than about 20 GB free on the app SSD, setup says the assistant is not available on this PC and installs nothing; `"model"` under `"assistant"` can name another model. The two programs are pinned (Ollama 0.40.16, Open WebUI v0.13.3).
+- **It never gets in the way of anything else.**
+  - A Docker project of its own (`neko-assistant`) on its own network; no other app or step needs it.
+  - At most half the processor cores and a memory limit of its own, the lowest processor priority, and the first thing Linux stops when memory runs out. The model leaves memory five minutes after the last question.
+  - Its setup step cannot fail setup: a problem (a download cut off, the page not starting, its login refused) is said as "AI assistant needs a look", with the reason, and every other step runs as usual.
+  - An upgrade never goes back to the previous release because of the assistant.
+  - The gateway publishes it only once it runs and its login works, and its containers are not part of the gateway's checks, so it can never hold up the other apps' addresses.
+  - Its ports are not reserved against the dashboard or the torrent port: if one of them already has 8090, the assistant is the one that gives way.
+  - The nightly app snapshot, the monthly check and the weekly app updates leave it alone.
+  - If it stops answering, the dashboard and phone alerts say so as a warning, never as critical.
+- **Where it shows up.** An **AI assistant** tile on the dashboard (with Restart app), a desktop shortcut on a PC with a desktop, a home address and a private Tailscale address (port 8449), and a step on the phone setup page.
+- **Its login.** Setup makes its administrator login and keeps it with the other app logins (`account-setup.py show assistant`); nobody else can sign up on the chat page.
+
+### How it was tested
+- Python tests (1550, on openSUSE Tumbleweed with Python 3.13; 55 new in tests/test_assistant.py) and Rust tests (482, Rust 1.99) pass; ruff, rustfmt and clippy are clean. The new tests cover: the step never failing setup (any error, too small a PC, Ctrl+C still stopping it), the question asked once and no or nobody installing nothing, the model by memory and a model name refused unless it is one, the SSD space check, the processor and memory limits, the Compose file it writes (limits, lowest priority, first to go without memory, its own network, the chat page on this PC only, sign-up off, secrets kept out of it, pinned images), the login checked before it is marked verified, the gateway publishing it only when ready and never saving it in the gateway list, the upgrade check leaving it out, no other step needing it, its dashboard tile only when wanted and its alert never critical.
+- The golden-file tests changed only by the release number and the new `"assistant"` settings in the settings copies.
+
+### Known limits
+- The assistant uses the processor only; a graphics card is not used yet.
+- Its chats are not in the backups (they stay on the SSD).
+- It is updated by NekoServer releases, not by the weekly app updates.
+
 ## v0.48.2 — 2026-11-09
 
 A cleanup release: less repeated code, the tests that freeze what setup writes, and the written standard every release is now tested by. Three fixes carried from the 0.48.1 review come with it. Nothing changes how NekoServer is used; the new report lines are named below.
