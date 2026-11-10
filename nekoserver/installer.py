@@ -362,9 +362,10 @@ def _execute(args, root=ROOT):
         raise InstallerError('--state-dir must be an absolute path without ".."')
     given = safe_path(given)
     # With the default folder and the SSD mounted, the state is kept on the SSD.
-    on_the_ssd = given == DEFAULT_STATE and os.path.ismount(config['data_mount'])
     state_dir = given
-    if on_the_ssd:
+    on_the_ssd = False
+    if state_dir == DEFAULT_STATE and os.path.ismount(config['data_mount']):
+        on_the_ssd = True
         state_dir = Path(config['data_mount']) / 'installer' / 'state'
         # The SSD's path comes from the settings file: the folder is used only once it
         # is proved to lie on the SSD with every link followed.
