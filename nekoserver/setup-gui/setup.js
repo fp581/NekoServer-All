@@ -59,38 +59,67 @@
     }
   }
 
+  /* A card's look: on or off, or undecided (a switch setup asks about later, as long as
+     it is left alone). The caption under the switch has a fixed width (setup.css), so
+     "asked later" turning into "yes" never moves the card's title. */
+  function cardClass(extra, on, undecided) {
+    if (undecided) return 'extra undecided';
+    return on ? 'extra on' : 'extra';
+  }
+
+  /* What an extra installs, folded so the cards stay short: a button at the bottom of the
+     card opens the list (each package with what it is for) under it, and the button
+     itself stays where it is. */
+  function installsOf(extra) {
+    const list = el('div', { class: 'installs', id: 'installs-' + extra.id });
+    list.hidden = true;
+    for (const p of extra.installs)
+      list.append(
+        el(
+          'span',
+          { class: 'chip', title: p.explanation },
+          el('b', { text: p.name }),
+          p.explanation ? ' · ' + p.explanation : ''
+        )
+      );
+    const count = extra.installs.length;
+    const words = 'Installs ' + count + (count === 1 ? ' package' : ' packages');
+    const toggle = el('button', {
+      type: 'button',
+      class: 'packages-toggle',
+      'aria-expanded': 'false',
+      'aria-controls': list.id,
+      text: '▸ ' + words
+    });
+    toggle.addEventListener('click', () => {
+      list.hidden = !list.hidden;
+      toggle.setAttribute('aria-expanded', String(!list.hidden));
+      toggle.textContent = (list.hidden ? '▸ ' : '▾ ') + words;
+    });
+    return [toggle, list];
+  }
+
   function buildChoices(extras) {
     const box = $('extras');
     box.replaceChildren();
     for (const extra of extras) {
       const input = el('input', { type: 'checkbox', 'aria-label': extra.title });
       input.checked = extra.on;
-      // A switch setup asks about later, as long as it is left alone: shown as undecided.
       const caption = el('span', { class: 'caption', text: extra.asked ? 'asked later' : '' });
       const card = el(
         'div',
-        { class: extra.asked ? 'extra undecided' : 'extra' },
+        { class: cardClass(extra, extra.on, extra.asked) },
         el('h3', { text: extra.title }),
         el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span'))),
         el('p', { text: extra.explanation })
       );
       input.addEventListener('change', () => {
         chosen[extra.id] = input.checked;
-        card.className = 'extra';
+        card.className = cardClass(extra, input.checked, false);
         caption.textContent = input.checked ? 'yes' : 'no';
         void save({ [extra.id]: input.checked });
       });
-      const installs = el('div', { class: 'installs' });
-      for (const p of extra.installs)
-        installs.append(
-          el(
-            'span',
-            { class: 'chip', title: p.explanation },
-            el('b', { text: p.name }),
-            p.explanation ? ' · ' + p.explanation : ''
-          )
-        );
-      if (extra.installs.length) card.append(installs);
+      if (extra.installs.length) card.append(...installsOf(extra));
       box.append(card);
     }
     built = true;
@@ -417,15 +446,20 @@
     if (phase === 'choose') renderChoose(state);
     if (phase === 'running') renderRunning(state);
     if (phase === 'finished') renderFinished(state);
+    // One notice at a time while setup runs, always in the same place (setup.css).
+    $('notices').hidden = phase !== 'running';
     $('question').hidden = !state.question || phase !== 'running';
     // A program of its own asks in the terminal only (its questions cannot come here).
     $('terminal').hidden = !state.terminal || !!state.question || phase !== 'running';
+    $('working').hidden = !$('question').hidden || !$('terminal').hidden;
     $('terminal-what').textContent = state.terminal ? state.terminal + ': its questions are asked there only.' : '';
+    $('terminal').title = state.terminal ? 'Answer this step in the terminal. ' + $('terminal-what').textContent : '';
     if (phase !== 'running') showQuestion(null);
   }
 
   function showGone(why) {
     // setup has ended and its server with it, or this window was opened again elsewhere
+    $('notices').hidden = true;
     $('question').hidden = true;
     $('terminal').hidden = true;
     if (finishedShown && why !== 'moved') {

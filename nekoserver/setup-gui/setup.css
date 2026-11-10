@@ -1,7 +1,10 @@
 /* NekoServer setup window, made for a short, wide window. */
-/* The colours are the dashboard's (theme.css); here they follow the device's light or dark. */
+/* The colours are the dashboard's (theme.css): Night by default, Lamplight with the switch
+   at the top right (theme.js). Nothing on the page may move when something is chosen or
+   a question comes and goes: every label that changes has a fixed width, a state shows
+   as a colour or a ring (never a new border or a bolder font), and every scrolling area
+   keeps room for its scrollbar. */
 :root {
-  color-scheme: light dark;
   --radius: 14px;
   font-family:
     Inter,
@@ -58,6 +61,10 @@ button {
   color: inherit;
   cursor: pointer;
 }
+button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 :focus-visible {
   outline: 3px solid var(--purple);
   outline-offset: 2px;
@@ -81,6 +88,7 @@ button {
   font-size: 18px;
   font-weight: 650;
   letter-spacing: -0.6px;
+  white-space: nowrap;
 }
 .brand strong {
   font-weight: 400;
@@ -93,7 +101,7 @@ button {
   align-items: center;
   gap: 10px;
   margin-left: auto;
-  min-width: 260px;
+  min-width: 360px;
 }
 .track {
   flex: 1;
@@ -109,11 +117,27 @@ button {
   border-radius: 999px;
   transition: width 0.6s ease;
 }
+/* "7 of 12 steps done" to "12 of 32 steps done": the same width, so the bar keeps its length */
 #count {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  min-width: 9.5em;
+  text-align: right;
 }
+.bar-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+.progress[hidden] + .bar-end {
+  margin-left: auto;
+}
+/* The badge's words change with the phase ("Working…", "Waiting for you"): it has the
+   width of the longest, so the progress bar beside it never slides. */
 .badge {
   font-size: 12px;
   font-weight: 600;
@@ -122,6 +146,8 @@ button {
   background: var(--purple-soft);
   color: var(--purple);
   white-space: nowrap;
+  min-width: 11.5em;
+  text-align: center;
 }
 .badge.waiting {
   background: color-mix(in srgb, var(--amber) 22%, transparent);
@@ -135,20 +161,78 @@ button {
   background: color-mix(in srgb, var(--red) 22%, transparent);
   color: var(--red);
 }
-.bar .badge:last-child {
-  margin-left: 12px;
+
+/* Night or Lamplight in one press (as on the dashboard): the moon shows at night, the
+   sun in Lamplight, and the other one turns in when they swap. */
+.icon-button {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  width: 34px;
+  height: 34px;
+  font-size: 17px;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  padding: 0;
 }
-.progress[hidden] + .badge {
-  margin-left: auto;
+.icon-button:hover {
+  border-color: var(--purple);
+  color: var(--purple);
+}
+.theme-toggle {
+  position: relative;
+  overflow: hidden;
+}
+.theme-toggle span {
+  grid-area: 1 / 1;
+  line-height: 1;
+}
+.theme-toggle .sun {
+  color: var(--peach);
+}
+:root[data-neko-theme='dark'] .theme-toggle .sun,
+:root[data-neko-theme='light'] .theme-toggle .moon {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.4);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .theme-toggle span {
+    transition:
+      opacity 0.35s ease,
+      transform 0.5s cubic-bezier(0.3, 1.4, 0.5, 1);
+  }
+  /* While the theme changes, every colour eases over instead of jumping (theme.js adds
+     this for a moment; browsers with view transitions crossfade the whole page instead). */
+  :root.theme-easing,
+  :root.theme-easing *,
+  :root.theme-easing *::before,
+  :root.theme-easing *::after {
+    transition:
+      background-color 0.45s ease,
+      border-color 0.45s ease,
+      color 0.45s ease;
+  }
 }
 
-/* "the terminal is asking" */
+/* "Setup is working", "Setup needs an answer" or "Answer in the terminal": all three in
+   one cell, the ones not shown kept invisible, so the strip is always as tall as the
+   tallest and the page under it never jumps. */
+.notices {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 10px 18px 0;
+  flex-shrink: 0;
+}
+.notices > .notice {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
 .notice {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 10px 18px 0;
-  padding: 10px 14px;
+  padding: 9px 14px;
   border-radius: 12px;
   background: color-mix(in srgb, var(--amber) 16%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
@@ -156,14 +240,36 @@ button {
 .notice strong {
   color: var(--amber);
 }
-.pulse {
+/* One line each, so the strip's height never depends on the words (a long program name
+   is cut short here; the notice's title has it whole). */
+.notice > span:last-child {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notice.calm {
+  background: var(--surface);
+  border-color: var(--line);
+}
+.notice.calm strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.pulse,
+.dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   background: var(--amber);
+  flex-shrink: 0;
+}
+.pulse {
   box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 60%, transparent);
   animation: pulse 1.4s infinite;
-  flex-shrink: 0;
+}
+.dot {
+  background: var(--purple);
 }
 @keyframes pulse {
   70% {
@@ -187,49 +293,81 @@ main > section {
 /* choose */
 #choose {
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  gap: 12px;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 10px;
 }
 .intro p {
-  max-width: 70ch;
+  max-width: 96ch;
+  margin: 0;
 }
 .extras {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
   overflow: auto;
+  scrollbar-gutter: stable;
   align-content: start;
+  padding: 2px 4px 2px 2px; /* room for a card's focus ring */
 }
-/* (align-content: a card stretched to its row's height keeps its text under the title,
-   with the room left over at the bottom, not in a gap above the text.) */
+/* A card: its title across the top, what it is under it, and at the bottom what it
+   installs beside its switch. A card stretched to its row's height keeps its text under
+   the title and its switch at the bottom, level with the others in the row. */
 .extra {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    'title title'
+    'text text'
+    'packages choice';
   gap: 6px 12px;
   padding: 12px 14px;
   border-radius: var(--radius);
   background: var(--surface);
   border: 1px solid var(--line);
-  align-content: start;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    background-color 0.2s;
+}
+.extra:hover {
+  border-color: color-mix(in srgb, var(--purple) 45%, var(--line));
+}
+/* Switched on: a purple ring inside the same 1px border (no wider border, nothing moves). */
+.extra.on {
+  border-color: var(--purple);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--purple) 35%, transparent);
+  background: color-mix(in srgb, var(--purple-soft) 45%, var(--surface));
 }
 .extra h3 {
+  grid-area: title;
   margin: 0;
   font-size: 15px;
   font-weight: 620;
+  line-height: 1.35;
 }
 .extra p {
+  grid-area: text;
   font-size: 13px;
   margin: 0;
-  grid-column: 1 / -1;
 }
 .choice {
+  grid-area: choice;
   display: flex;
   align-items: center;
   gap: 8px;
+  align-self: end;
 }
+/* Wide enough for "asked later", so it turning into "yes" or "no" never moves the title. */
 .caption {
+  display: inline-block;
   font-size: 12px;
+  line-height: 18px;
+  height: 18px;
   color: var(--muted);
+  width: 6.5em;
+  text-align: right;
+  white-space: nowrap;
 }
 /* Left alone, a switch setup asks about later sits in the middle: neither yes nor no. */
 .extra.undecided .switch input + span {
@@ -240,8 +378,26 @@ main > section {
   transform: translateX(9px);
   background: var(--muted);
 }
+.packages-toggle {
+  grid-area: packages;
+  justify-self: start;
+  align-self: center;
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.packages-toggle:hover {
+  color: var(--purple);
+}
+/* Opened, the list takes a row of its own under the switch, the card's whole width. */
 .extra .installs {
   grid-column: 1 / -1;
+  grid-row: 4;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -261,6 +417,7 @@ main > section {
   position: relative;
   width: 44px;
   height: 26px;
+  flex-shrink: 0;
 }
 .switch input {
   position: absolute;
@@ -304,6 +461,12 @@ main > section {
   outline: 3px solid var(--purple);
   outline-offset: 2px;
 }
+/* A reason Start was refused shows here: the line is kept, so the button never jumps. */
+.note {
+  min-height: 1.5em;
+  margin: 0;
+  font-size: 13px;
+}
 .actions {
   display: flex;
   align-items: center;
@@ -317,9 +480,10 @@ main > section {
   padding: 10px 22px;
   font-weight: 650;
   font-size: 15px;
+  white-space: nowrap;
 }
-.primary:hover {
-  filter: brightness(1.06);
+.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
 /* running / finished */
@@ -334,6 +498,7 @@ main > section {
   background: var(--surface);
   border: 1px solid var(--line);
   overflow: auto;
+  scrollbar-gutter: stable;
 }
 .now p {
   color: var(--text);
@@ -377,6 +542,7 @@ main > section {
   padding: 0;
   list-style: none;
   overflow: auto;
+  scrollbar-gutter: stable;
   border-radius: var(--radius);
   background: var(--surface);
   border: 1px solid var(--line);
@@ -393,8 +559,10 @@ main > section {
 .steps li:first-child {
   border-top: 0;
 }
+/* The step under way: a soft row with a bar at its edge, drawn inside the row. */
 .steps li.running {
   background: var(--purple-soft);
+  box-shadow: inset 3px 0 0 var(--purple);
 }
 .steps .mark {
   font-weight: 700;
@@ -444,6 +612,8 @@ main > section {
   overflow-wrap: anywhere;
   max-height: 46%;
   overflow: auto;
+  scrollbar-gutter: stable;
+  flex-shrink: 0;
 }
 .prompt {
   font-weight: 620;
@@ -477,10 +647,17 @@ main > section {
   padding: 10px 22px;
   font-weight: 650;
   font-size: 15px;
+  white-space: nowrap;
 }
+.secondary:hover:not(:disabled) {
+  border-color: var(--purple);
+  color: var(--purple);
+}
+/* "Sent. Setup goes on in a moment…" comes and goes under the buttons: its line is kept. */
 .small {
   font-size: 12.5px;
   margin: 0;
+  min-height: 1.4em;
 }
 /* related questions on one page (the backup times): a row per time, its note under it */
 .rows {
@@ -538,20 +715,43 @@ main > section {
   overflow: auto;
 }
 @media (max-width: 820px) {
+  /* A narrow window scrolls as one page: the step list gets the room it needs instead
+     of a sliver under the question. */
+  main {
+    overflow: auto;
+    scrollbar-gutter: stable;
+  }
+  main > section {
+    height: auto;
+  }
   .running {
     grid-template-columns: 1fr;
   }
-  .steps {
-    max-height: 40%;
+  .extras {
+    overflow: visible;
+  }
+  /* Start setup stays in view at the bottom while the cards scroll under it. */
+  .actions {
+    position: sticky;
+    bottom: -16px;
+    padding: 10px 0 16px;
+    background: var(--bg);
   }
   /* The header's logo, name, progress bar and badge on one line overflowed a narrow
-     window (the bar had a minimum width): the bar takes a line of its own. */
+     window: the progress bar takes the second line, the badge and the switch stay at
+     the end of the first. */
   .bar {
     flex-wrap: wrap;
+  }
+  .bar-end {
+    margin-left: auto;
+    order: 2;
   }
   .progress {
     min-width: 0;
     flex-basis: 100%;
+    order: 3;
+    margin-left: 0;
   }
 }
 
@@ -560,12 +760,20 @@ main > section {
 [hidden],
 #choose[hidden],
 .notice[hidden],
+.notices[hidden],
 .running[hidden],
 .ask[hidden],
 .progress[hidden],
 .answer[hidden],
 .rows[hidden],
 .context[hidden],
+.extra .installs[hidden],
 .extras[hidden] {
   display: none;
+}
+/* Except the notices not shown in the strip: they keep their place, unseen, so the strip
+   keeps its height (see .notices). */
+.notices > .notice[hidden] {
+  display: flex;
+  visibility: hidden;
 }

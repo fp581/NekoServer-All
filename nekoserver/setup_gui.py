@@ -36,6 +36,7 @@ STATIC = {
     'theme.css': ('../dashboard/theme.css', 'text/css; charset=utf-8'),
     'setup.css': ('setup.css', 'text/css; charset=utf-8'),
     'setup.js': ('setup.js', 'text/javascript; charset=utf-8'),
+    'theme.js': ('theme.js', 'text/javascript; charset=utf-8'),
     'logo.svg': ('../dashboard/logo.svg', 'image/svg+xml'),
 }
 NOT_FOUND = (404, b'Not found', PLAIN)

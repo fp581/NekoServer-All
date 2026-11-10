@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-neko-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -8,6 +8,8 @@
     <link rel="icon" href="static/logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="static/theme.css" />
     <link rel="stylesheet" href="static/setup.css" />
+    <!-- Not deferred: the theme is set before the page is drawn. -->
+    <script src="static/theme.js"></script>
     <script src="static/setup.js" defer></script>
   </head>
   <body>
@@ -18,20 +20,41 @@
         <div class="track"><div class="fill" id="fill"></div></div>
         <span id="count"></span>
       </div>
-      <span class="badge" id="phase-badge">Connecting…</span>
+      <div class="bar-end">
+        <span class="badge" id="phase-badge">Connecting…</span>
+        <button
+          class="icon-button theme-toggle"
+          id="theme-toggle"
+          type="button"
+          title="Switch to Lamplight"
+          aria-label="Switch to the light theme (Lamplight)"
+        >
+          <span class="moon" aria-hidden="true">☾</span><span class="sun" aria-hidden="true">☀</span>
+        </button>
+      </div>
     </header>
 
-    <output id="question" class="notice" hidden>
-      <span class="pulse" aria-hidden="true"></span>
-      <span
-        ><strong>Setup needs an answer.</strong>
-        <span class="muted">Answer here or in the terminal, whichever you like.</span></span
-      >
-    </output>
-    <output id="terminal" class="notice" hidden>
-      <span class="pulse" aria-hidden="true"></span>
-      <span><strong>Answer this step in the terminal.</strong> <span class="muted" id="terminal-what"></span></span>
-    </output>
+    <!-- While setup runs, one of these three shows, all in the same place and at the same
+         height, so the page below never moves when a question comes or goes. -->
+    <div class="notices" id="notices" hidden>
+      <output id="working" class="notice calm">
+        <span class="dot" aria-hidden="true"></span>
+        <span
+          ><strong>Setup is working.</strong> <span class="muted">It stops here and asks when it needs you.</span></span
+        >
+      </output>
+      <output id="question" class="notice" hidden>
+        <span class="pulse" aria-hidden="true"></span>
+        <span
+          ><strong>Setup needs an answer.</strong>
+          <span class="muted">Answer here or in the terminal, whichever you like.</span></span
+        >
+      </output>
+      <output id="terminal" class="notice" hidden>
+        <span class="pulse" aria-hidden="true"></span>
+        <span><strong>Answer this step in the terminal.</strong> <span class="muted" id="terminal-what"></span></span>
+      </output>
+    </div>
 
     <main id="main">
       <!-- Before setup starts -->
@@ -39,18 +62,13 @@
         <div class="intro">
           <h1>Choose what to set up</h1>
           <p>
-            Everything below is optional; the apps, backups, the dashboard and private access from anywhere are always
-            set up. A switch you leave alone that says <b>asked later</b> is asked about when setup gets there. You can
-            change your mind later in <code>my-config.json</code>.
-          </p>
-          <p>
-            The apps that find and download movies, shows and music (Seerr, Sonarr, Radarr, Lidarr, Prowlarr,
-            qBittorrent) are set up too. You never have to use them: Jellyfin, Immich and Navidrome play and show your
-            own files without them.
+            Backups, the dashboard and private access from anywhere are always set up; the rest is up to you. A switch
+            you leave alone that says <b>asked later</b> is asked about when setup gets there, and you can change your
+            mind later in <code>my-config.json</code>.
           </p>
         </div>
         <div class="extras" id="extras"></div>
-        <p class="muted"><output id="choose-note"></output></p>
+        <p class="muted note"><output id="choose-note"></output></p>
         <div class="actions">
           <button class="primary" id="start" type="button">Start setup</button>
           <span class="muted"
