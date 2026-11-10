@@ -479,14 +479,17 @@ class TemplateTests(unittest.TestCase):
 class InstallTests(unittest.TestCase):
     def test_its_folders_are_made_only_on_the_ssd(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as elsewhere:
-            config = {'data_mount': tmp}
-            inside = Path(tmp) / 'compose' / 'assistant'
-            self.assertEqual(assistant.on_the_ssd(config, inside), inside)
-            # A folder that leads out of the SSD through a link is refused.
+            ctx = context({'data_mount': tmp})
+            # A folder that leads out of the SSD through a link is refused, and nothing
+            # is made where the link leads.
             (Path(tmp) / 'appdata').symlink_to(elsewhere)
-            led_out = Path(tmp) / 'appdata' / 'assistant' / 'models'
-            with self.assertRaisesRegex(RuntimeError, 'outside the app SSD'):
-                assistant.on_the_ssd(config, led_out)
+            with (
+                mock.patch.object(assistant, 'compose_up') as started,
+                self.assertRaisesRegex(RuntimeError, 'outside the app SSD'),
+            ):
+                assistant.install(ctx, 'qwen3.5:4b', '5g')
+            started.assert_not_called()
+            self.assertEqual(list(Path(elsewhere).iterdir()), [])
             # The SSD's own path is checked where it comes in.
             with self.assertRaisesRegex(RuntimeError, 'Parent traversal|Unsafe mount path'):
                 assistant.folders({'data_mount': '/srv/../etc'})

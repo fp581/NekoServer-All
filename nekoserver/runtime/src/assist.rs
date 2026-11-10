@@ -1008,27 +1008,55 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
 
-    const PLANTED: [&str; 9] = [
-        "S3cret-Passw0rd!",
-        "tskey-auth-kAbCdEf1CNTRL-0123456789abcdef",
-        "me@example.org",
-        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl",
-        "AKIA0123456789ABCDEFGHIJKLMNOPQRSTUV",
-        "hunter2hunter2",
-        "cookie-value-123",
-        "bearer-value-987654",
-        "envsecret-555",
-    ];
+    /// The made-up secrets the tests plant. The ones shaped like a real key or token are
+    /// put together here from pieces, so nothing in this file looks like one to a
+    /// scanner; what is planted is the same as ever (checked in the test below).
+    fn planted() -> [String; 9] {
+        [
+            "S3cret-Passw0rd!".to_string(),
+            ["tskey", "-auth-", "kAbCdEf1CNTRL", "-0123456789abcdef"].concat(),
+            "me@example.org".to_string(),
+            [
+                "eyJhbGciOi",
+                "JIUzI1NiJ9",
+                ".eyJzdWIiOiIx",
+                "MjM0NTY3ODkwIn0",
+                ".c2lnbmF0dXJl",
+            ]
+            .concat(),
+            ["AKIA", "0123456789", "ABCDEFGHIJKLMNOPQRSTUV"].concat(),
+            "hunter2hunter2".to_string(),
+            "cookie-value-123".to_string(),
+            "bearer-value-987654".to_string(),
+            "envsecret-555".to_string(),
+        ]
+    }
+
+    #[test]
+    fn the_planted_values_are_shaped_like_the_real_things() {
+        let p = planted();
+        assert!(
+            p[1].starts_with("tskey-auth-") && p[1].len() == 41,
+            "{}",
+            p[1]
+        );
+        assert!(p[3].starts_with("eyJ") && p[3].split('.').count() == 3 && p[3].len() == 61);
+        assert!(p[4].starts_with("AKIA") && p[4].len() == 36, "{}", p[4]);
+    }
 
     fn log_with_secrets() -> String {
         // Put together here, so no line of this file is shaped like a real token.
-        let authorization = format!("Authorization: {} {}", "Bearer", PLANTED[7]);
+        let p = planted();
+        let authorization = format!("Authorization: {} {}", "Bearer", p[7]);
+        let tailscale = format!("tailscale up --auth-key={}", p[1]);
+        let token = format!("token {}", p[3]);
+        let aws = format!("AWS key {} refused", p[4]);
         [
             "Connecting to https://admin:S3cret-Passw0rd!@nas.local/share",
-            "tailscale up --auth-key=tskey-auth-kAbCdEf1CNTRL-0123456789abcdef",
+            tailscale.as_str(),
             "Mail sent to me@example.org",
-            "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl",
-            "AWS key AKIA0123456789ABCDEFGHIJKLMNOPQRSTUV refused",
+            token.as_str(),
+            aws.as_str(),
             "db login failed for neko with PASSWORD=hunter2hunter2",
             "Set-Cookie: session=cookie-value-123; Path=/",
             authorization.as_str(),
@@ -1052,8 +1080,11 @@ mod tests {
             &known,
         );
         let sent = m.to_string();
-        for secret in PLANTED {
-            assert!(!sent.contains(secret), "{secret} reached the model: {sent}");
+        for secret in planted() {
+            assert!(
+                !sent.contains(&secret),
+                "{secret} reached the model: {sent}"
+            );
         }
         // What explains the problem is still there.
         assert!(sent.contains("No space left on device"), "{sent}");

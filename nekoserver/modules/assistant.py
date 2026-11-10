@@ -428,15 +428,6 @@ def folders(config):
     return data / 'compose' / ASSISTANT, data / 'appdata' / ASSISTANT / 'models'
 
 
-def on_the_ssd(config, folder):
-    """`folder` as given, once it is proved to lie on the app SSD with every link followed
-    (the SSD's path comes from the settings file)."""
-    data = os.path.realpath(mount_path(config['data_mount']))
-    if not os.path.realpath(folder).startswith(data + os.sep):
-        raise RuntimeError(f'refusing a folder outside the app SSD: {folder}')
-    return folder
-
-
 def cpus(cores):
     """The model's processor share: half the cores, at least one."""
     return str(max(1, (cores or 1) // 2))
@@ -445,11 +436,18 @@ def cpus(cores):
 def install(ctx, model, memory):
     config = ctx.config
     project, models = folders(config)
+    # The SSD's path comes from the settings file: each folder is made only once it is
+    # proved to lie on the SSD with every link followed, and that checked path is the one
+    # passed on.
+    data = os.path.realpath(mount_path(config['data_mount']))
     for folder in (project, models):
+        checked = os.path.realpath(folder)
+        if not checked.startswith(data + os.sep):
+            raise RuntimeError(f'refusing a folder outside the app SSD: {folder}')
         safe_path(folder)
         if folder.is_symlink():
             raise RuntimeError(f'refusing a linked folder: {folder}')
-        ensure_directory(on_the_ssd(config, folder), 0o700)
+        ensure_directory(checked, 0o700)
     share = cpus(os.cpu_count())
     template = (Path(__file__).resolve().parents[1] / 'compose' / 'assistant.yaml').read_text(encoding='utf-8')
     values = {'DATA': config['data_mount'], 'CPUS': share, 'MODEL_MEMORY': memory}
