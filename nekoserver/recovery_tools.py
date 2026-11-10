@@ -1262,3 +1262,6 @@ def restore_test(config, snapshot_path, workspace, port=2284, apply=False, confi
                         'Isolated restore failed and its test services could not be stopped; inspect the workspace project'
                     ) from None
             raise
+
+
+# SonarCloud probe (temporary, taken out again in the next commit).

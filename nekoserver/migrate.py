@@ -1009,3 +1009,6 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
+
+# SonarCloud probe (temporary, taken out again in the next commit).

@@ -322,3 +322,6 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
         }
         save(config, value)
     output('Account choices saved privately; passwords are not printed or written to installer logs.')
+
+
+# SonarCloud probe (temporary, taken out again in the next commit).

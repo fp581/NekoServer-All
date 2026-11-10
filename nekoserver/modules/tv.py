@@ -532,3 +532,6 @@ def run(ctx):
     if any(row['status'] == 'needs_setup' for row in results):
         return {'status': 'needs_setup', 'reason': 'TV software installed; unfinished desktop/hardware handoffs remain'}
     return {'status': 'configured', 'reason': 'TV setup and user-witnessed tests completed; see tv-setup.json'}
+
+
+# SonarCloud probe (temporary, taken out again in the next commit).
