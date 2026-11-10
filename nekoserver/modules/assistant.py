@@ -1,49 +1,60 @@
-"""The optional AI assistant (ASSISTANT.md): Ollama runs a language model on this PC and
-Open WebUI is its chat page, at home and on the phone through Tailscale.
+"""The optional AI assistant (ASSISTANT.md): Ollama runs a language model on this PC, and the
+dashboard's "Ask Neko" page asks it to explain what the dashboard shows.
 
-Setup asks once whether it is wanted. No other step needs it, and nothing that goes wrong
-here fails setup: a problem is said ("the AI assistant needs a look", with the reason)
-and every other step runs as usual. It runs as a Compose project of its own, on its own
-network, with a processor share and a memory limit of its own, at the lowest priority,
+Setup asks once, with a choice of the models that fit this PC and what each one costs it;
+the answer is "no assistant" unless the person picks one, and a run with nobody at the
+terminal never installs it. Before anything is downloaded it checks the processor, the free
+memory, the SSD space and the port. No other step needs it, and nothing that goes wrong here
+fails setup: a problem is said ("the AI assistant needs a look", with the reason) or the PC
+is "not available" for it, and every other step runs as usual. It runs as a Compose project
+of its own with a hard memory limit, half the processor cores at most, the lowest priority,
 and Linux stops it first when memory runs out, so it never slows the other apps down.
+
+Every check reads kernel files and Python's own library only (/proc/meminfo, /proc/cpuinfo,
+platform.machine, a socket, the SSD's free space): no program of a package is run, so no
+checking tool can be missing. Docker comes from the docker step, which this one needs.
 """
 
 import json
 import math
 import os
+import platform
 import re
-import secrets
 import shutil
+import socket
 import subprocess
 import time
 import urllib.request
 from pathlib import Path
 
-import account_setup
-import account_store
 import guided_setup
 from neko_common import (
-    APPS,
     ASSISTANT,
+    OLLAMA_PORT,
     atomic_json,
     atomic_write,
     checked_run,
     compose_up,
     ensure_directory,
-    host_timezone,
     safe_path,
     verify_storage,
 )
 
 DEPENDENCIES = ['docker']
-DESCRIPTION = 'Optional AI assistant (Ollama and Open WebUI) in its own project, within set limits'
+DESCRIPTION = 'Optional AI assistant (Ollama) for the dashboard, in its own project within set limits'
 
 TITLE = 'AI assistant'
-PORT = APPS[ASSISTANT][2]
 PROJECT = 'neko-' + ASSISTANT
-# The models setup picks from: (model, its download in GB, the memory it needs to answer
-# in GiB). The biggest whose need fits in the memory left for it (memory_for_model).
-MODELS = (('qwen3.5:9b', 6.6, 9), ('qwen3.5:4b', 3.3, 5))
+# The models setup offers, smallest first: (model, its download in GB, the memory it needs
+# while it answers in GiB, what its answers are like). The memory is the container's peak
+# measured with an 8192-token context on the 0.49.0 test machine, rounded up with 20 %
+# to spare; it is also the model's hard memory limit, so a model that needs more than
+# that is stopped instead of the server running out of memory.
+MODELS = (
+    ('qwen3.5:2b', 2.7, 3, 'short, simple answers, the quickest'),
+    ('qwen3.5:4b', 3.3, 5, 'good everyday answers'),
+    ('qwen3.5:9b', 6.6, 9, 'the best answers it can give here, the slowest'),
+)
 # A model named by hand under "model" (as Ollama names it: "qwen3.5:4b", "gemma4:12b").
 MODEL_NAME = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}(?::[a-z0-9][a-z0-9._-]{0,63})?', re.ASCII)
 # A model named by hand has no known size: its download is taken as this for the SSD
@@ -52,30 +63,32 @@ UNKNOWN_MODEL_GB = 7
 NAMED_MODEL_GIB = 1
 # Memory: the assistant gets only what is free with every other app running, less a
 # reserve for them to grow into (Immich's face recognition, a video being converted, a
-# backup): at least RESERVE_GIB, or RESERVE_SHARE of the memory when that is more. The
-# chat page gets CHAT_GIB of it, the model the rest. (The 0.49.0 trial: limits worked
-# out from the total memory alone added up to more than was free, and a 6 GB server
-# stalled under memory pressure while the model loaded, every app with it.)
+# backup): at least RESERVE_GIB, or RESERVE_SHARE of the memory when that is more. (The
+# 0.49.0 trial: limits worked out from the total memory alone added up to more than was
+# free, and a 6 GB server stalled under memory pressure while the model loaded.)
 RESERVE_GIB = 2
 RESERVE_SHARE = 0.2
-CHAT_GIB = 1.5
-# Room the SSD must keep: the two images (about 6 GB), plus 10 GB for everything else.
-IMAGES_GB = 6
+# How long after the last question the model leaves memory (OLLAMA_KEEP_ALIVE in the template).
+IDLE_MINUTES = 5
+# Room the SSD must keep: Ollama's image (about 3.4 GB to download, more unpacked), plus
+# 10 GB for everything else.
+IMAGES_GB = 5
 SPARE_GB = 10
-# How long the chat page may take to answer after a start (its first start sets up its
-# database, which takes a minute or two on a small PC).
-START_WAIT = 300
+# The processors Ollama's image is built for.
+MACHINES = {'x86_64': 'x86_64', 'amd64': 'x86_64', 'aarch64': 'aarch64', 'arm64': 'aarch64'}
+# How long Ollama may take to answer after a start.
+START_WAIT = 120
 EXPLAIN = (
-    'A private AI assistant you can ask questions in your browser and on your phone, like ChatGPT.',
-    'It runs on this server only: nothing you ask leaves your home.',
-    'It downloads about 10 GB (the programs and the model) and uses part of the memory while it answers.',
-    'It never slows down or stops your other apps: they come first.',
-    'You can skip this; everything else works without it.',
+    'A private assistant inside the dashboard ("Ask Neko"): it explains what the dashboard shows,',
+    'reads the logs of a problem with passwords and keys taken out, and can suggest a fix from a short',
+    'list that runs only when you press Approve. It runs on this server only: nothing you ask leaves your home.',
+    'It never slows down or stops your other apps: they come first, and everything works without it.',
 )
 
 
 class NotHere(Exception):
-    """This PC cannot have the assistant (too little memory or space): not a problem to fix."""
+    """This PC cannot have the assistant (its processor, too little memory or space, the
+    port taken): not a problem to fix, and setup goes on."""
 
 
 def run(ctx):
@@ -93,27 +106,38 @@ def run(ctx):
 
 
 def _run(ctx):
-    options(ctx.config)
+    opts = options(ctx.config)
     if not ctx.apply:
         ctx.log(f'{TITLE}: optional; asked during apply')
         return None
-    answer = guided_setup.wanted(ctx, ASSISTANT, TITLE, EXPLAIN)
-    if answer is None:
-        ctx.log(f'{TITLE}: not asked (nobody at the terminal); run  sudo bash install.sh  to choose')
-        return None
-    if answer is False:
+    if opts.get('wanted') is False:
         stop(ctx.config, ctx.log)
+        return None
+    chosen = opts.get('wanted') is True and opts.get('model', 'auto') != 'auto'
+    if not chosen and not guided_setup.interactive(ctx):
+        ctx.log(f'{TITLE}: not asked (nobody at the terminal); run  sudo bash install.sh  to choose')
         return None
     if os.geteuid() != 0:
         raise RuntimeError('setup must run as root (sudo)')
     verify_storage(ctx.config)
     try:
-        room = memory_for_model(*memory_now(), own_use_gib(ctx.config))
-        model, size, memory = chosen_model(ctx.config, room)
+        processor_ok()
+        port_free_for_us(ctx.config)
+        total, available = memory_now()
+        room = memory_for_model(total, available, own_use_gib(ctx.config))
+        if not chosen:
+            model = ask_model(ctx, total, room, os.cpu_count())
+            if model is None:
+                return None
+            if model == 'none':
+                save_choice(ctx, False, 'auto')
+                return None
+            save_choice(ctx, True, model)
+        model, size, memory = fitting(ctx.config, room)
         check_space(ctx.config, size)
     except NotHere:
-        # Not enough room (any more): one that runs is stopped, so it can never squeeze
-        # the other apps out of memory.
+        # Not here (any more): one that runs is stopped, so it can never squeeze the
+        # other apps out of memory or keep a port the person's own program needs.
         stop(ctx.config, ctx.log)
         raise
     install(ctx, model, memory)
@@ -133,6 +157,46 @@ def options(config):
     return opts
 
 
+# ---- the checks before anything is downloaded ------------------------------------------
+
+
+def processor_ok(machine=platform.machine, cpuinfo='/proc/cpuinfo'):
+    """The processor is one Ollama's image is built for: 64-bit Intel or AMD with SSE4.2
+    (every one made since about 2010), or 64-bit ARM."""
+    kind = MACHINES.get(machine().lower())
+    if kind is None:
+        raise NotHere(f'Ollama runs on 64-bit Intel, AMD or ARM processors, and this one is {machine()}')
+    if kind == 'x86_64' and 'sse4_2' not in cpu_flags(cpuinfo):
+        raise NotHere('this processor lacks SSE4.2, which Ollama needs')
+    return kind
+
+
+def cpu_flags(cpuinfo='/proc/cpuinfo'):
+    try:
+        for line in Path(cpuinfo).read_text().splitlines():
+            if line.startswith('flags'):
+                return set(line.partition(':')[2].split())
+    except OSError:
+        pass
+    return set()
+
+
+def port_free_for_us(config, connect=socket.create_connection):
+    """Port 11434 is free, or ours already (setup run again). A program of the person's own
+    there (an Ollama they installed themselves) keeps it: nothing is installed beside it."""
+    if (folders(config)[0] / 'compose.yaml').is_file():
+        return
+    try:
+        with connect(('127.0.0.1', OLLAMA_PORT), timeout=2):
+            pass
+    except OSError:
+        return
+    raise NotHere(
+        f'port {OLLAMA_PORT} on this PC is used by another program (an Ollama of your own, perhaps), '
+        'so NekoServer installs no assistant beside it'
+    )
+
+
 def memory_now(meminfo='/proc/meminfo'):
     """(total, available) memory in GiB, as Linux counts it (0, 0 when it cannot be read)."""
     found = {}
@@ -147,7 +211,7 @@ def memory_now(meminfo='/proc/meminfo'):
 
 
 def own_use_gib(config, run=checked_run):
-    """The memory the assistant's own containers use now (setup run again): it counts as
+    """The memory the assistant's own container uses now (setup run again): it counts as
     free for it, or each run would leave it less. 0 when it is not running."""
     manifest = folders(config)[0] / 'compose.yaml'
     if not manifest.is_file():
@@ -171,38 +235,13 @@ def size_gib(text):
 
 
 def memory_for_model(total, available, own=0):
-    """The memory left for the model, in GiB: what is free now (with the assistant's own
-    use counted as free) less the reserve the other apps keep and the chat page's share."""
-    reserve = max(RESERVE_GIB, total * RESERVE_SHARE)
-    return available + own - reserve - CHAT_GIB
-
-
-def chosen_model(config, room):
-    """(model, its download in GB, its memory limit like "5g"): the one named under "model",
-    else the biggest whose need fits in `room`. NotHere when there is no room for one."""
-    named = options(config).get('model', 'auto')
-    if named != 'auto':
-        if room < NAMED_MODEL_GIB:
-            raise NotHere(not_enough(room, NAMED_MODEL_GIB))
-        return named, UNKNOWN_MODEL_GB, f'{math.floor(room)}g'
-    for model, size, need in MODELS:
-        if room >= need:
-            return model, size, f'{math.floor(room)}g'
-    raise NotHere(
-        not_enough(room, MODELS[-1][2])
-        + ' (a smaller model can be named: "model" under "assistant" in my-config.json, for example qwen3.5:2b)'
-    )
-
-
-def not_enough(room, need):
-    return (
-        f'there is not enough free memory: the model needs {need} GB, and {max(room, 0):.1f} GB are left '
-        'once the other apps have theirs, with room to spare for them'
-    )
+    """The memory left for a model, in GiB: what is free now (with the assistant's own use
+    counted as free) less the reserve the other apps keep."""
+    return available + own - max(RESERVE_GIB, total * RESERVE_SHARE)
 
 
 def check_space(config, size, usage=shutil.disk_usage):
-    """The SSD has room for the images and the model, with room left for everything else.
+    """The SSD has room for the image and the model, with room left for everything else.
     Setup run again: they are on the SSD already, so only the room for everything else."""
     free = usage(config['data_mount']).free / 1000**3
     there = (folders(config)[0] / 'compose.yaml').is_file()
@@ -211,9 +250,106 @@ def check_space(config, size, usage=shutil.disk_usage):
         raise NotHere(f'it needs {needed} GB free on the app SSD and there are {free:.0f} GB')
 
 
-def cpus(cores):
-    """The model's processor share: half the cores, at least one."""
-    return str(max(1, (cores or 1) // 2))
+# ---- the choice -------------------------------------------------------------------------
+
+
+def fits(room):
+    """The models that fit in `room`, smallest first."""
+    return [m for m in MODELS if m[2] <= room]
+
+
+def choices(total, room, cores):
+    """The lines setup shows: what this PC has, one numbered choice per model that fits
+    (the biggest marked as recommended) with what it costs this PC, and one line for each
+    one that does not. Returns (lines, {answer: model})."""
+    usable = fits(room)
+    cpus = max(1, (cores or 1) // 2)
+    lines = [
+        f'This PC has {total:.0f} GB of memory. With your apps running and room kept for them to grow, '
+        f'{max(room, 0):.1f} GB are free for the assistant.',
+        '  0) No assistant (press Enter)',
+    ]
+    answers = {'0': 'none', '': 'none'}
+    for number, (model, download, need, answers_like) in enumerate(usable, 1):
+        mark = ' (recommended)' if number == len(usable) else ''
+        lines += [
+            f'  {number}) {model}{mark}: {answers_like}.',
+            f'     Downloads {download} GB. While it answers it uses about {need} GB of your {total:.0f} GB',
+            f'     (its limit), and up to {cpus} of your {cores or 1} processor cores, so a film Jellyfin converts or',
+            f'     new photos in Immich go slower meanwhile. {IDLE_MINUTES} minutes after the last question its memory is free again.',
+        ]
+        answers[str(number)] = model
+    for model, _, need, _ in MODELS[len(usable) :]:
+        lines.append(
+            f'  Not possible here: {model} needs about {need} GB free; this PC has {max(room, 0):.1f} GB free '
+            'with your apps running.'
+        )
+    return lines, answers
+
+
+def ask_model(ctx, total, room, cores, prompt=None, output=None):
+    """The model the person picks, 'none', or None (Ctrl+D: asked again next time).
+    Enter is "no assistant", unless the setup window's switch for it was turned on: then
+    Enter takes the recommended model. NotHere when no model fits."""
+    if not fits(room):
+        raise NotHere(not_enough(room, MODELS[0][2]))
+    prompt, output = prompt or input, output or print
+    output(f'\n=== Optional: {TITLE} ("Ask Neko" in the dashboard) ===')
+    for line in EXPLAIN:
+        output(line)
+    lines, answers = choices(total, room, cores)
+    for line in lines:
+        output(line)
+    switched_on = options(ctx.config).get('wanted') is True
+    default = str(len(fits(room))) if switched_on else '0'
+    last = len(answers) - 2
+    while True:
+        try:
+            typed = prompt(f'Which one? (0-{last}, Enter for {answers[default] if switched_on else "no assistant"}): ')
+        except EOFError:
+            output('')
+            return None
+        typed = typed.strip() or default
+        if typed in answers:
+            return answers[typed]
+        output(f'Type a number from 0 to {last}, or press Enter.')
+
+
+def save_choice(ctx, wanted, model):
+    opts = ctx.config.setdefault(ASSISTANT, {})
+    opts['wanted'] = wanted
+    opts['model'] = model
+    guided_setup.save_settings(ctx)
+    if not wanted:
+        ctx.log(
+            f'{TITLE}: none chosen. To add one later, set "wanted" to true under "assistant" in my-config.json '
+            'and run  sudo bash install.sh  again.'
+        )
+
+
+def fitting(config, room):
+    """(model, its download in GB, its memory limit like "5g") for the chosen model, when it
+    fits in `room` now. NotHere when it does not (the other apps may have grown)."""
+    named = options(config).get('model', 'auto')
+    known = {m[0]: m for m in MODELS}
+    if named in known:
+        model, download, need, _ = known[named]
+        if need > room:
+            raise NotHere(not_enough(room, need, model))
+        return model, download, f'{need}g'
+    if room < NAMED_MODEL_GIB:
+        raise NotHere(not_enough(room, NAMED_MODEL_GIB, named))
+    return named, UNKNOWN_MODEL_GB, f'{math.floor(room)}g'
+
+
+def not_enough(room, need, model='a model'):
+    return (
+        f'there is not enough free memory: {model} needs about {need} GB free, and this PC has '
+        f'{max(room, 0):.1f} GB free with your apps running and room kept for them'
+    )
+
+
+# ---- installing it ----------------------------------------------------------------------
 
 
 def render(template, values):
@@ -227,95 +363,44 @@ def render(template, values):
     return re.sub(r'\$\{NEKO_([A-Z_]+)(?::-[^}]*)?\}', value, template)
 
 
-def saved_login(config):
-    """The assistant's admin login, from NekoServer's password list (made the first time,
-    so `account-setup.py show assistant` shows it like any other app's)."""
-    entry = account_store.get(config, ASSISTANT)
-    if entry:
-        return entry
-    username, password = account_store.generate(ASSISTANT)
-    store = account_store.load(config)
-    store['apps'][ASSISTANT] = {
-        'username': username,
-        'password': password,
-        'state': 'planned',
-        'allow_create': True,
-        'source': 'generate',
-    }
-    account_store.save(config, store)
-    return store['apps'][ASSISTANT]
-
-
-def env_file(path, login):
-    """The project's private .env: the page's own secret key (kept once made) and the admin
-    login, which Open WebUI makes at its first start."""
-    key = existing_value(path, 'WEBUI_SECRET_KEY') or secrets.token_urlsafe(32)
-    lines = [
-        f'WEBUI_SECRET_KEY={key}',
-        f'WEBUI_ADMIN_EMAIL={login["username"]}',
-        f'WEBUI_ADMIN_PASSWORD={login["password"]}',
-    ]
-    return '\n'.join(lines) + '\n'
-
-
-def existing_value(path, key):
-    try:
-        text = Path(path).read_text()
-    except OSError:
-        return ''
-    found = re.search(rf'^{key}=(.+)$', text, re.MULTILINE)
-    return found.group(1).strip() if found else ''
-
-
 def folders(config):
-    """(project folder, models folder, chat folder) on the app SSD."""
+    """(project folder, models folder) on the app SSD."""
     data = Path(config['data_mount'])
-    home = data / 'appdata' / ASSISTANT
-    return data / 'compose' / ASSISTANT, home / 'models', home / 'chat'
+    return data / 'compose' / ASSISTANT, data / 'appdata' / ASSISTANT / 'models'
+
+
+def cpus(cores):
+    """The model's processor share: half the cores, at least one."""
+    return str(max(1, (cores or 1) // 2))
 
 
 def install(ctx, model, memory):
     config = ctx.config
-    project, models, chat = folders(config)
-    for folder in (project, models, chat):
+    project, models = folders(config)
+    for folder in (project, models):
         safe_path(folder)
         if folder.is_symlink():
             raise RuntimeError(f'refusing a linked folder: {folder}')
         ensure_directory(folder, 0o700)
-    login = saved_login(config)
-    atomic_write(project / '.env', env_file(project / '.env', login), 0o600)
     share = cpus(os.cpu_count())
     template = (Path(__file__).resolve().parents[1] / 'compose' / 'assistant.yaml').read_text(encoding='utf-8')
-    values = {
-        'DATA': config['data_mount'],
-        'CPUS': share,
-        'MODEL_MEMORY': memory,
-        'CHAT_MEMORY': f'{int(CHAT_GIB * 1024)}m',
-        'MODEL': model,
-        'TZ': host_timezone(config),
-    }
+    values = {'DATA': config['data_mount'], 'CPUS': share, 'MODEL_MEMORY': memory}
     manifest = project / 'compose.yaml'
     atomic_write(manifest, render(template, values), 0o600)
     base = compose(manifest)
     compose_up(base, TITLE, ctx.log)
     wait_until_answering()
-    account_setup.assistant_signs_in(login)
-    account_store.update(config, ASSISTANT, state='verified', allow_create=False)
     note = fetch_model(base, model, ctx.log)
-    atomic_json(
-        Path(config['data_mount']) / 'reports' / 'assistant.json',
-        {
-            'format': 'neko-assistant-v1',
-            'model': model,
-            'cpus': share,
-            'memory': memory,
-            'model_ready': note == 'ready',
-        },
-    )
+    report(config, {'model': model, 'cpus': share, 'memory': memory, 'model_ready': note == 'ready'})
     ctx.log(
-        f'{TITLE}: running at http://127.0.0.1:{PORT}/ with {model} (at most {share} processor cores and {memory} of '
-        f'memory, below every other app). Sign in with its login:  {guided_setup.login_command(config, ASSISTANT)}'
+        f'{TITLE}: running with {model} (at most {share} processor cores and {memory} of memory, below every '
+        'other app). Ask it on the dashboard\'s Ask Neko page.'
     )
+
+
+def report(config, values):
+    """What the dashboard shows about the assistant (reports/assistant.json on the SSD)."""
+    atomic_json(Path(config['data_mount']) / 'reports' / 'assistant.json', {'format': 'neko-assistant-v1', **values})
 
 
 def compose(manifest):
@@ -323,38 +408,39 @@ def compose(manifest):
 
 
 def wait_until_answering(opener=urllib.request.urlopen, sleep=time.sleep, clock=time.monotonic, wait=START_WAIT):
-    """The chat page answers its health address (its first start takes a minute or two)."""
+    """Ollama answers on this PC (127.0.0.1) once it has started."""
     deadline = clock() + wait
     while True:
         try:
-            with opener(f'http://127.0.0.1:{PORT}/health', timeout=5) as answer:
-                if json.loads(answer.read(4000)).get('status') is True:
+            with opener(f'http://127.0.0.1:{OLLAMA_PORT}/api/version', timeout=5) as answer:
+                if json.loads(answer.read(4000)).get('version'):
                     return
         except (OSError, ValueError, AttributeError):
             pass
         if clock() >= deadline:
-            raise RuntimeError(f'its chat page did not answer within {wait // 60} minutes')
+            raise RuntimeError(f'Ollama did not answer within {wait // 60} minutes')
         sleep(5)
 
 
 def fetch_model(base, model, log, run=checked_run):
     """'ready' when the model is already there; else its download is started in the
-    background ('downloading'): the chat page works meanwhile and offers the model once
-    it is in. A download cut off is started again by the next setup run."""
+    background ('downloading'): Ask Neko says so until it is in. A download cut off is
+    started again by the next setup run."""
     listed = run([*base, 'exec', '-T', 'ollama', 'ollama', 'list'], 60, f'{TITLE} (ollama list)').stdout
     if any(line.split()[:1] == [model] for line in listed.splitlines()):
         return 'ready'
     run([*base, 'exec', '-d', '-T', 'ollama', 'ollama', 'pull', model], 60, f'{TITLE} (ollama pull)')
-    log(f'{TITLE}: downloading the model {model} in the background; it answers once the download is in')
+    log(f'{TITLE}: downloading the model {model} in the background; Ask Neko answers once it is in')
     return 'downloading'
 
 
 def stop(config, log, run=checked_run):
-    """Answered no (or changed to no): the assistant is stopped and its containers removed;
-    its chats, model and settings stay on the SSD, so yes later starts it as it was."""
+    """No assistant (chosen, or not possible here any more): it is stopped and its container
+    removed; its model stays on the SSD, so choosing it again starts it as it was."""
     manifest = folders(config)[0] / 'compose.yaml'
     if not manifest.is_file() or manifest.is_symlink():
         return
     run([*compose(manifest), 'down'], 300, f'{TITLE} (docker compose down)')
     manifest.rename(manifest.with_name('compose.yaml.stopped'))
-    log(f'{TITLE}: stopped; its chats and model stay on the SSD (answer yes in setup to start it again)')
+    report(config, {'model': None, 'stopped': True})
+    log(f'{TITLE}: stopped; its model stays on the SSD (choose it in setup again to start it)')

@@ -11,10 +11,8 @@ import recovery_tools
 from network_access import lan, verify_lan, choose_lan, save_settings
 import host
 from neko_common import (
-    ASSISTANT,
     SHARED,
     VERSION,
-    assistant_installed,
     safe_path,
     atomic_write,
     atomic_json,
@@ -174,8 +172,6 @@ DEFAULT_SERVICES = ('jellyfin', 'seerr', 'immich', 'navidrome', 'nextcloud')
 
 
 def installed(config, app):
-    if app == ASSISTANT:
-        return assistant_installed(config)
     if app == 'nextcloud':
         return bool(config.get('nextcloud', {}).get('enabled'))
     if app == 'immich':
@@ -184,28 +180,8 @@ def installed(config, app):
 
 
 def selected(config):
-    """The apps the gateway publishes: the ones in the gateway list (as above), then the AI
-    assistant when it is ready. The assistant is never in the list itself: it is added
-    only once it is installed and its login checked, and left out otherwise, so it can
-    never stop the other apps' addresses from being set up."""
-    apps = gateway_list(config)
-    if assistant_ready(config):
-        apps.append(ASSISTANT)
-    return apps
-
-
-def assistant_ready(config):
-    """The AI assistant is installed and its setup step signed in with its saved login."""
-    return assistant_installed(config) and logins_verified(config, [ASSISTANT])
-
-
-def gateway_list(config):
-    """The apps in "services" under "gateway" (every everyday app when it is not there),
-    as set up on this server: the list as config.json ships it follows the apps set up,
-    a list of your own is taken as it is."""
-    everyday = [app for app in APPS if app != ASSISTANT]
-    apps = config.get('gateway', {}).get('services', everyday)
-    if not isinstance(apps, list) or not apps or len(apps) != len(set(apps)) or not set(apps) <= set(everyday):
+    apps = config.get('gateway', {}).get('services', list(APPS))
+    if not isinstance(apps, list) or not apps or len(apps) != len(set(apps)) or not set(apps) <= set(APPS):
         raise RuntimeError('Unknown gateway application')
     if list(apps) == list(DEFAULT_SERVICES):
         apps = [a for a in apps if installed(config, a)]
@@ -218,7 +194,7 @@ def gateway_list(config):
                 f'"{app}" is in the gateway list ("services" under "gateway") but is not set up on this server; '
                 'take it out of the list or set the app up'
             )
-    return list(apps)
+    return apps
 
 
 def logins_verified(config, apps):
@@ -240,8 +216,7 @@ def configure(ctx, kind):
     opts = cfg.setdefault('gateway', {})
     changed = False
     if 'services' not in opts:
-        # The AI assistant is added by itself when ready (selected), never saved in the list.
-        opts['services'] = [app for app in apps if app != ASSISTANT]
+        opts['services'] = list(apps)
         changed = True
     # The same choice as LAN folder sharing (Samba), asked once by whichever runs first.
     if kind == 'lan' and not choose_lan(ctx):
@@ -357,16 +332,12 @@ def readiness(config, sleep=time.sleep, clock=time.monotonic):
     # A snap's Docker takes over Docker's socket: every container would look missing.
     if host.snap_docker():
         raise RuntimeError(host.SNAP_DOCKER)
-    # The AI assistant's containers are checked by its own step, which marks its login
-    # verified only once they answer; a problem there must never hold up the other
-    # apps' addresses, so these checks leave it out.
-    checked = [app for app in apps if app != ASSISTANT]
     # Docker started the apps a moment ago (a drive came back, a step before this one):
     # a container's health check says "starting" for a minute or two, and the step
     # failed on it at once. Such containers are waited for; anything else wrong is said.
     deadline = clock() + STARTING_WAIT
     while True:
-        failed = unverified_containers(config, checked)
+        failed = unverified_containers(config, apps)
         if not failed or clock() >= deadline or any(r.get('detail') != STARTING for r in failed):
             break
         sleep(10)
@@ -382,7 +353,7 @@ def readiness(config, sleep=time.sleep, clock=time.monotonic):
         not any(
             r['id'] == app and r['state'] == 'running' and r['health'] not in ('unhealthy', 'starting') for r in states
         )
-        for app in checked
+        for app in apps
     ):
         raise RuntimeError('Selected application containers must be running and healthy before exposure')
 

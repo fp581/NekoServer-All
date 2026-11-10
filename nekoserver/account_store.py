@@ -22,12 +22,9 @@ APPS = {
             (app, app, ADMIN)
             for app in ('sonarr', 'radarr', 'lidarr', 'prowlarr', 'qbittorrent', 'seerr', 'immich', 'nextcloud')
         ),
-        # The optional AI assistant: its setup step makes and checks this login itself
-        # (modules/assistant.py); the accounts step never picks it (selected() below).
-        ('assistant', 'assistant', ADMIN),
     )
 }
-EMAIL_LOGINS = {'immich', 'seerr', 'assistant'}
+EMAIL_LOGINS = {'immich', 'seerr'}
 STATES = {'planned', 'started', 'verified', 'needs_setup'}
 
 

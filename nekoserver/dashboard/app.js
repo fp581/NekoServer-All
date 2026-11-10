@@ -161,7 +161,6 @@ const CATALOG = {
   navidrome: { icon: '♫', category: 'everyday' },
   nextcloud: { icon: '☁', category: 'everyday' },
   seerr: { icon: '✦', category: 'everyday' },
-  assistant: { icon: '✧', category: 'everyday' },
   sonarr: { icon: '◎', category: 'manage' },
   radarr: { icon: '◉', category: 'manage' },
   lidarr: { icon: '≋', category: 'manage' },

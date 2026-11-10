@@ -4,10 +4,13 @@
 //! hardware readings (`/api/live`) and the process list (`/api/processes`). Fan and
 //! lighting changes and app controls (`/api/control`) are passed to the root control
 //! service over its private socket; this server never writes to hardware, stops a
-//! program or talks to Docker itself. Anything
+//! program or talks to Docker itself. Ask Neko's answers (`/api/control/ask`) come from
+//! the AI assistant on 127.0.0.1 (assist.rs), once the control service has checked the
+//! PIN and made the question ready. Anything
 //! that goes wrong is answered with a short code and a plain sentence (see ERRORS),
 //! which the page shows as is.
 use crate::{
+    assist,
     common::{self, Error, Result},
     live::Live,
     Args,
@@ -265,6 +268,9 @@ pub fn control_request(op: &str, body: &Value, who: &Who, token: Option<&str>) -
         "start",
         "sig",
         "tag",
+        "question",
+        "item",
+        "action",
     ] {
         if let Some(v) = body.get(key) {
             request[key] = v.clone();
@@ -669,6 +675,11 @@ fn handle(mut stream: TcpStream, server: &Server, accepted: Instant) {
             .and_then(|v| std::str::from_utf8(v).ok())
             .map(str::to_string);
         let body = read_body(&mut stream, buf[body_start..].to_vec(), length, start);
+        if path == "/api/control/ask" && post {
+            let body = &body[..body.len().min(length)];
+            ask(server, &mut stream, body, length, &who, token.as_deref());
+            return;
+        }
         let result = control(
             server,
             path,
@@ -757,6 +768,9 @@ fn control(
             "upgrade-nekoserver" => "app_upgrade_nekoserver",
             "desktop-close" => "desktop_close",
             "desktop-force" => "desktop_force",
+            "ask" => "app_ask",
+            "assist-check" => "app_assist_check",
+            "assist-run" => "app_assist_run",
             _ => return Err("E40"),
         },
         _ => return Err("E42"),
@@ -777,6 +791,57 @@ fn control(
     serde_json::to_vec(&answer)
         .map(|b| (status, b))
         .map_err(|_| "E21")
+}
+
+/// Ask Neko: the control service checks the PIN and makes the question ready (the
+/// readings and logs with their secrets taken out); then the answer comes from the AI
+/// assistant on 127.0.0.1, passed on to the page as it comes, one JSON line per piece.
+/// One question at a time; the last line names the repair it suggests, when it is one
+/// from the list (the page then asks the control service to check it).
+fn ask(
+    server: &Server,
+    stream: &mut TcpStream,
+    body: &[u8],
+    length: usize,
+    who: &Who,
+    token: Option<&str>,
+) {
+    let Some(_turn) = assist::Turn::take() else {
+        reply_error(stream, "E47", false);
+        return;
+    };
+    let ready = match control(server, "/api/control/ask", true, body, who, token, length) {
+        Ok((200, b)) => serde_json::from_slice::<Value>(&b).unwrap_or_default(),
+        Ok((status, b)) => return reply(stream, status, &b, "application/json", false),
+        Err(code) => return reply_error(stream, code, false),
+    };
+    let model = ready["model"].as_str().unwrap_or("");
+    let repairs: Vec<(String, String)> = ready["repairs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|id| id.as_str().map(|id| (id.to_string(), String::new())))
+        .collect();
+    let header = format!("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n");
+    if stream.write_all(header.as_bytes()).is_err() {
+        return;
+    }
+    let _ = writeln!(
+        stream,
+        "{}",
+        json!({"model": model, "excerpt": ready["excerpt"]})
+    );
+    if let Ok(answer) = assist::stream(
+        assist::OLLAMA,
+        model,
+        &ready["messages"],
+        stream,
+        &assist::LIMITS,
+    ) {
+        if let Some(id) = assist::suggested(&answer, &repairs) {
+            let _ = writeln!(stream, "{}", json!({"repair": id}));
+        }
+    }
 }
 
 /// The dashboard's socket: the one systemd opened for it at the start of the computer

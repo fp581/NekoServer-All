@@ -87,14 +87,16 @@ def app_ports(apps):
     return {app: app_port(app) for app in apps}
 
 
-# The optional AI assistant (modules/assistant.py). Its ports are not in APP_PORTS: a
-# dashboard or torrent port already set to one of them must keep working, so the
-# assistant is the one that gives way (its start then says which port is busy).
-ASSISTANT = 'assistant'
 # Local ports already taken: every app, Immich's restore test (2284) and the private
 # Tailscale addresses (8442-8448). The dashboard (8787 by default) must avoid them all.
-APP_PORTS = frozenset({*(port for app, (_, _, port) in APPS.items() if app != ASSISTANT), 2284, *range(8442, 8449)})
+APP_PORTS = frozenset({*(port for _, _, port in APPS.values()), 2284, *range(8442, 8449)})
 DASHBOARD_DEFAULT_PORT = 8787
+# The optional AI assistant (modules/assistant.py, ASSISTANT.md): Ollama, on this PC
+# only (127.0.0.1), asked by the dashboard's Ask Neko page. Its port is not in
+# APP_PORTS: something of the person's own on it (an Ollama they installed) keeps it,
+# and the assistant is not installed.
+ASSISTANT = 'assistant'
+OLLAMA_PORT = 11434
 
 
 def assistant_installed(config):
