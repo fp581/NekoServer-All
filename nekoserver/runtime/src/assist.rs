@@ -987,12 +987,13 @@ fn plain_error(said: &str) -> String {
 /// The repair the answer's last ACTION line names, or None: only an exact id from the
 /// list given (anything else in the answer is ignored).
 pub fn suggested(answer: &str, offered: &[(String, String)]) -> Option<String> {
+    // Small models dress the line up: "**ACTION: restart_app:jellyfin:**" (the 0.49.0 gate).
+    let dressing = |c: char| c.is_whitespace() || matches!(c, '*' | '_' | '`' | '"' | '.' | ':');
     let named = answer
         .lines()
         .rev()
-        .find_map(|l| l.trim().strip_prefix("ACTION:"))?
-        .trim()
-        .trim_matches(|c| c == '`' || c == '"' || c == '.');
+        .find_map(|l| l.trim_start_matches(dressing).strip_prefix("ACTION:"))?
+        .trim_matches(dressing);
     offered
         .iter()
         .find(|(id, _)| id == named)
@@ -1311,6 +1312,20 @@ mod tests {
             suggested("ACTION: `update_check`.", &offered).as_deref(),
             Some("update_check")
         );
+        // Dressed up in Markdown, as a small model wrote it on the 0.49.0 gate.
+        assert_eq!(
+            suggested(
+                "**ACTION: restart_app:jellyfin:**  \nJellyfin stopped.",
+                &offered
+            )
+            .as_deref(),
+            Some("restart_app:jellyfin")
+        );
+        assert_eq!(
+            suggested("_ACTION:_ `update_check`", &offered).as_deref(),
+            Some("update_check")
+        );
+        assert_eq!(suggested("**ACTION: restart_app:radarr**", &offered), None);
         assert_eq!(suggested("ACTION: restart_app:radarr", &offered), None);
         assert_eq!(suggested("ACTION: sudo rm -rf /", &offered), None);
         assert_eq!(suggested("restart_app:jellyfin would help", &offered), None);

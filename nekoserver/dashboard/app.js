@@ -1780,7 +1780,7 @@ function shownAnswer(answer) {
   const at = answer.indexOf('BUG REPORT:');
   return (at < 0 ? answer : answer.slice(0, at))
     .split('\n')
-    .filter(line => !line.trim().startsWith('ACTION:'))
+    .filter(line => !line.replace(/^[\s*_`]+/, '').startsWith('ACTION:'))
     .join('\n')
     .trim();
 }

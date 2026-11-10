@@ -805,6 +805,9 @@ class AskNekoPageTests(unittest.TestCase):
     def test_the_answer_is_shown_without_its_action_line_and_bug_report(self):
         answer = 'The disk is full.\nFree some space.\nACTION: run_job:host\nBUG REPORT: the cleanup never ran'
         self.assertEqual(page(('shownAnswer', answer))[0], 'The disk is full.\nFree some space.')
+        # Dressed up in Markdown, as a small model wrote it on the 0.49.0 gate.
+        dressed = '**ACTION: restart_app:jellyfin:**  \nJellyfin stopped; restart it.'
+        self.assertEqual(page(('shownAnswer', dressed))[0], 'Jellyfin stopped; restart it.')
 
     def test_a_bug_report_names_the_version_the_question_and_the_redacted_excerpt(self):
         entry = {
