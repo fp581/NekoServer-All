@@ -958,7 +958,8 @@ fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -
     if op == "app_ask" {
         // Downloaded during setup, never shipped with NekoServer: when it is not there
         // (yet), say so rather than ask Ollama for it.
-        if let Some(why) = assist::model_missing(&data, &model) {
+        let have = assist::ollama_models(assist::OLLAMA);
+        if let Some(why) = assist::model_missing(&data, &model, have.as_deref()) {
             return refuse("E21", &format!("{}: {why}", assist::NOT_AVAILABLE));
         }
         return ask(&cfg, &data, &status, &model, request);

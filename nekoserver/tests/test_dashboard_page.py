@@ -826,8 +826,11 @@ class AskNekoPageTests(unittest.TestCase):
     def test_asking_needs_the_pin_and_nothing_is_kept(self):
         app = (ROOT / 'dashboard/app.js').read_text()
         ask = app[app.index('async function askNeko(') : app.index('function askProgress(')]
-        self.assertIn('if (!canChange())', ask)
-        self.assertIn('unlockDialog(', ask)
+        # An app action: the PIN on every device, the server too (control.rs signed_in).
+        self.assertIn('if (!signedIn())', ask)
+        self.assertNotIn('canChange()', ask)
+        self.assertIn('askUnlock(', ask)
+        self.assertIn("started.error === 'E43'", ask)
         # Asked through the PIN-checked control path; the answer is polled with the same session.
         self.assertIn("postControl('ask',", ask)
         self.assertIn("getJson('/api/ask/' + encodeURIComponent(id), 8000, tokenHeader())", ask)

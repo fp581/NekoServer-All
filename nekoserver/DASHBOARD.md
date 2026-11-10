@@ -29,7 +29,7 @@ Installing needs the secure Tailscale address (https) or the server's own addres
 | Page | What you see |
 | --- | --- |
 | **Home** | Overall status (with the cat, below), the three most urgent things, apps, storage, uptime and live processor, memory, temperature and network. On a new server it says **Getting started** while the first backups are still to come and the server check isn't done: when the first backup is due, and to finish the check. That is information, not a problem, and it goes away once both are done. |
-| **Ask Neko** | Only with the AI assistant set up (ASSISTANT.md): ask what a reading means or what to do about a problem; each item under **Needs attention** has **Ask Neko about this**. A fix it suggests runs only when you press **Approve**; asking from another device needs the PIN. |
+| **Ask Neko** | Only with the AI assistant set up (ASSISTANT.md): ask what a reading means or what to do about a problem; each item under **Needs attention** has **Ask Neko about this**. A fix it suggests runs only when you press **Approve**; asking needs the PIN on every device, the server too. |
 | **Your apps** | Every installed app with its health, processor and memory use, and an Open link. Star favourites to keep them first. Right-click an app (on a phone, tap ⋯) to restart it. |
 | **Backups** | Each scheduled backup, whether its copies were checked and found intact, and whether a restore was tried. |
 | **Hardware** | Processor (total, each core, clock, waiting work), memory, every graphics card and AI chip, network traffic, drive activity, batteries and UPS. Updates every 4 seconds. |

@@ -67,7 +67,7 @@ If the download is cut off (no network, a restart), Ask Neko says the model is n
 
 The **Ask Neko** page is right under **Home** in the menu, and only on a server with the assistant. Each item under **Needs attention** has an **Ask Neko about this** button, which opens the page with the question filled in.
 
-- **The PIN.** Asking uses the server's processor, so it needs the dashboard PIN on a phone or another computer, like every other change; on the server itself it does not.
+- **The PIN.** Asking uses the server's processor, so it needs the dashboard PIN on every device, the server itself too, as restarting an app does.
 - **What Neko reads.** Your question, a short summary of the dashboard's readings (what needs attention, the backups, the drives, the apps), and for an attention item its own text and the last 40 lines of its service's log. Before the model sees any of it, the server takes out passwords, keys, tokens, cookies, Tailscale keys, e-mail addresses, and every app password and secret NekoServer keeps.
 - **Nothing is kept.** The chat lives in the open page only: reloading or closing it clears it. Nothing is stored on the server.
 - **On the phone** it works through the dashboard's own Tailscale address.
@@ -83,7 +83,7 @@ Neko can name one fix from this list, and nothing else:
 | Update an app now | A version that is waiting: a snapshot first, the update, a check, undone if it fails |
 | Run a backup now | The media apps' snapshot, this PC's settings, the Immich database copy or the USB copy, as its timer would |
 
-The server checks every suggestion against this list and against what is installed here. The page then shows exactly what will happen, with a warning where there is one (the media apps' snapshot pauses the apps for a few minutes), and it runs only when you press **Approve**. A backup is refused while setup, an upgrade, another backup or an unfinished job is running. Anything outside the list is refused and noted in the control service's log (`journalctl -u nekoserver-control`). Neko never runs a command of its own.
+The server checks every suggestion against this list and against what is installed here. The page then shows exactly what will happen, with a warning where there is one (the media apps' snapshot pauses the apps for a few minutes), and it runs only when you press **Approve** (with the PIN). A backup is refused while setup, an upgrade, another backup or an unfinished job is running. Anything outside the list is refused and noted in the control service's log (`journalctl -u nekoserver-control`). Neko never runs a command of its own.
 
 ### When it looks like a bug in NekoServer
 

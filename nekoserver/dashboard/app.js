@@ -1856,13 +1856,21 @@ function bugBox(report) {
   );
   return box;
 }
+/* Ask Neko's requests are app actions: like Restart app, they need the PIN on every
+ * device, the server too (the control service wants a PIN session for each). */
+function askUnlock(
+  then,
+  why = 'Asking Neko uses the server’s processor, so it needs your PIN on every device, the server too.'
+) {
+  if (state.control?.access?.pin_set === false) {
+    toast('Ask Neko needs a PIN. Run setup again in a terminal on the server to choose one.');
+    return;
+  }
+  unlockDialog(then, 'ASK NEKO', why);
+}
 async function askNeko(question, item) {
-  if (!canChange()) {
-    unlockDialog(
-      () => askNeko(question, item),
-      'ASK NEKO',
-      'Neko uses the server’s processor, so asking from this device needs the PIN chosen during setup.'
-    );
+  if (!signedIn()) {
+    askUnlock(() => askNeko(question, item));
     return;
   }
   const entry = { question, answer: '' };
@@ -1871,6 +1879,12 @@ async function askNeko(question, item) {
   renderAsk();
   try {
     const started = await postControl('ask', item ? { question, item } : { question });
+    if (started.error === 'E43') {
+      // The PIN session ran out meanwhile: ask for the PIN, then the same question again.
+      ASK.log.pop();
+      askUnlock(() => askNeko(question, item));
+      return;
+    }
     if (!started.ok) {
       entry.error = controlMessage(started);
       return;
@@ -1927,7 +1941,7 @@ async function approveRepair(entry) {
   const answer = await postControl('assist-run', { action: r.id });
   if (answer.error === 'E43') {
     r.state = 'offered';
-    unlockDialog(() => approveRepair(entry), 'ASK NEKO', 'Enter the PIN chosen during setup to approve the fix.');
+    askUnlock(() => approveRepair(entry), 'Approving a fix needs your PIN on every device, the server too.');
     return;
   }
   r.state = answer.ok ? (answer.job ? 'watching' : 'done') : 'failed';

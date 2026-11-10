@@ -198,39 +198,43 @@ pub fn model(cfg: &Value, data: &Path) -> Option<String> {
     report["model"].as_str().map(str::to_string)
 }
 
-/// Where Ollama keeps the models on the app SSD (compose/assistant.yaml mounts it).
-const MODELS: &str = "appdata/assistant/models";
+/// Ollama's own store on the app SSD: compose/assistant.yaml mounts
+/// appdata/assistant/models as /root/.ollama, and Ollama keeps its models in "models"
+/// there (found on the 0.49.0 gate).
+const STORE: &str = "appdata/assistant/models/models";
 /// A download that has written nothing for this long is not running any more (cut off:
 /// no network, a restart, the download stopped).
 const DOWNLOAD_QUIET: Duration = Duration::from_secs(120);
 
-/// The model's file is in Ollama's store: "qwen3.5:4b" is
-/// `manifests/registry.ollama.ai/library/qwen3.5/4b`, "me/model:tag" `.../me/model/tag`.
-pub fn model_downloaded(models: &Path, model: &str) -> bool {
-    let (name, tag) = model.split_once(':').unwrap_or((model, "latest"));
-    let path = if name.contains('/') {
-        name.to_string()
-    } else {
-        format!("library/{name}")
-    };
-    if path
-        .split('/')
-        .any(|p| p.is_empty() || p == ".." || p == ".")
-        || tag.contains('/')
-    {
-        return false;
+/// The models Ollama has, by name ("qwen3.5:4b"), from Ollama itself (its /api/tags on
+/// 127.0.0.1): its own files' layout changes between its versions. None when it does not
+/// answer.
+pub fn ollama_models(address: &str) -> Option<Vec<String>> {
+    let at = address.parse::<SocketAddr>().ok()?;
+    let mut ollama = TcpStream::connect_timeout(&at, Duration::from_secs(3)).ok()?;
+    let _ = ollama.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = ollama.set_write_timeout(Some(Duration::from_secs(5)));
+    write!(ollama, "GET /api/tags HTTP/1.0\r\nHost: {address}\r\n\r\n").ok()?;
+    let mut answer = String::new();
+    ollama.take(2_000_000).read_to_string(&mut answer).ok()?;
+    let (head, body) = answer.split_once("\r\n\r\n")?;
+    if head.split_whitespace().nth(1) != Some("200") {
+        return None;
     }
-    models
-        .join("manifests/registry.ollama.ai")
-        .join(path)
-        .join(tag)
-        .is_file()
+    let listed: Value = serde_json::from_str(body.trim()).ok()?;
+    Some(
+        listed["models"]
+            .as_array()?
+            .iter()
+            .filter_map(|m| m["name"].as_str().map(str::to_string))
+            .collect(),
+    )
 }
 
 /// A model download is running: one of Ollama's unfinished download files was written
 /// within DOWNLOAD_QUIET.
-pub fn downloading(models: &Path) -> bool {
-    std::fs::read_dir(models.join("blobs"))
+pub fn downloading(store: &Path) -> bool {
+    std::fs::read_dir(store.join("blobs"))
         .into_iter()
         .flatten()
         .flatten()
@@ -239,14 +243,20 @@ pub fn downloading(models: &Path) -> bool {
         .any(|at| at.elapsed().is_ok_and(|age| age < DOWNLOAD_QUIET))
 }
 
-/// Why the model cannot answer yet, or None: not downloaded yet (setup downloads it
-/// from the Ollama library, so it needs the internet), or still downloading.
-pub fn model_missing(data: &Path, model: &str) -> Option<String> {
-    let models = data.join(MODELS);
-    if model_downloaded(&models, model) {
+/// Why the model cannot answer yet, or None: not downloaded yet (setup downloads it from
+/// the Ollama library, so it needs the internet), or still downloading. `have` is what
+/// Ollama says it has; None (Ollama not answering) is left to the answer to say.
+pub fn model_missing(data: &Path, model: &str, have: Option<&[String]>) -> Option<String> {
+    let have = have?;
+    let full = if model.contains(':') {
+        model.to_string()
+    } else {
+        format!("{model}:latest")
+    };
+    if have.contains(&full) {
         return None;
     }
-    Some(if downloading(&models) {
+    Some(if downloading(&data.join(STORE)) {
         format!("its model {model} is still downloading; ask again once it is in")
     } else {
         format!("its model {model} is not downloaded yet; run  sudo bash install.sh  again (it needs the internet)")
@@ -1534,39 +1544,56 @@ mod tests {
     fn a_model_not_downloaded_says_so_and_never_downloading_for_ever() {
         let data = std::env::temp_dir().join(format!("neko-assist-models-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data);
-        let models = data.join(MODELS);
-        std::fs::create_dir_all(models.join("blobs")).unwrap();
-        // Nothing there, nothing being written: not downloaded (a download that was cut off).
-        let said = model_missing(&data, "qwen3.5:4b").unwrap();
+        let store = data.join(STORE);
+        std::fs::create_dir_all(store.join("blobs")).unwrap();
+        let none: Vec<String> = vec![];
+        // Ollama has nothing and nothing is being written: not downloaded (cut off).
+        let said = model_missing(&data, "qwen3.5:4b", Some(&none)).unwrap();
         assert!(
             said.contains("not downloaded yet") && said.contains("needs the internet"),
             "{said}"
         );
         // An unfinished download file written a moment ago: still downloading.
-        std::fs::write(models.join("blobs/sha256-0123-partial"), b"x").unwrap();
-        assert!(model_missing(&data, "qwen3.5:4b")
+        std::fs::write(store.join("blobs/sha256-0123-partial"), b"x").unwrap();
+        assert!(model_missing(&data, "qwen3.5:4b", Some(&none))
             .unwrap()
             .contains("still downloading"));
         // One left from a download that stopped long ago: not downloaded, never "downloading".
         let old = std::time::SystemTime::now() - Duration::from_secs(3600);
         std::fs::File::options()
             .write(true)
-            .open(models.join("blobs/sha256-0123-partial"))
+            .open(store.join("blobs/sha256-0123-partial"))
             .unwrap()
             .set_modified(old)
             .unwrap();
-        assert!(model_missing(&data, "qwen3.5:4b")
+        assert!(model_missing(&data, "qwen3.5:4b", Some(&none))
             .unwrap()
             .contains("not downloaded yet"));
-        // The model's file in place: nothing missing.
-        let manifest = models.join("manifests/registry.ollama.ai/library/qwen3.5/4b");
-        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
-        std::fs::write(&manifest, "{}").unwrap();
-        assert_eq!(model_missing(&data, "qwen3.5:4b"), None);
-        assert!(model_downloaded(&models, "qwen3.5:4b"));
-        assert!(!model_downloaded(&models, "qwen3.5:9b"));
-        assert!(!model_downloaded(&models, "../../etc:passwd"));
+        // Ollama has it: nothing missing; Ollama not answering: the answer will say so.
+        let have = vec!["qwen3.5:2b-q4_K_M".to_string(), "gemma4:latest".to_string()];
+        assert_eq!(model_missing(&data, "qwen3.5:2b-q4_K_M", Some(&have)), None);
+        assert_eq!(model_missing(&data, "gemma4", Some(&have)), None);
+        assert!(model_missing(&data, "qwen3.5:4b", Some(&have)).is_some());
+        assert_eq!(model_missing(&data, "qwen3.5:4b", None), None);
         let _ = std::fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn the_models_come_from_ollama_itself() {
+        let body = r#"{"models":[{"name":"qwen3.5:2b-q4_K_M","model":"qwen3.5:2b-q4_K_M","size":1900000000}]}"#;
+        let (address, _) = fake_ollama(Some(format!(
+            "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{body}"
+        )));
+        assert_eq!(
+            ollama_models(&address),
+            Some(vec!["qwen3.5:2b-q4_K_M".to_string()])
+        );
+        let free = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+        assert_eq!(ollama_models(&free), None);
     }
 
     #[test]
