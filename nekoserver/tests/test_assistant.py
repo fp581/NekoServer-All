@@ -7,6 +7,8 @@ only within hard limits."""
 import importlib.util
 import io
 import json
+import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -406,7 +408,7 @@ class InstallTests(unittest.TestCase):
                 mock.patch.object(assistant.os, 'cpu_count', return_value=8),
                 mock.patch.object(assistant, 'compose_up', side_effect=lambda base, what, log: started.append(base)),
                 mock.patch.object(assistant, 'wait_until_answering'),
-                mock.patch.object(assistant, 'fetch_model', return_value='downloading'),
+                mock.patch.object(assistant, 'fetch_model', return_value=('downloading', None)),
             ):
                 assistant.install(ctx, 'qwen3.5:4b', '5g')
             manifest = Path(tmp) / 'compose/assistant/compose.yaml'
@@ -420,6 +422,7 @@ class InstallTests(unittest.TestCase):
                 {
                     'format': 'neko-assistant-v1',
                     'model': 'qwen3.5:4b',
+                    'model_id': None,
                     'cpus': '4',
                     'memory': '5g',
                     'model_ready': False,
@@ -475,7 +478,8 @@ class InstallTests(unittest.TestCase):
             ran.append(argv)
             return SimpleNamespace(stdout='NAME           ID   SIZE\nqwen3.5:4b     abc  3.3 GB\n')
 
-        self.assertEqual(assistant.fetch_model(['docker'], 'qwen3.5:4b', print, run), 'ready')
+        # Its ID (the start of its digest) goes into the report: which build was downloaded.
+        self.assertEqual(assistant.fetch_model(['docker'], 'qwen3.5:4b', print, run), ('ready', 'abc'))
         self.assertEqual(len(ran), 1)
 
     def test_a_missing_model_downloads_in_the_background(self):
@@ -485,7 +489,8 @@ class InstallTests(unittest.TestCase):
             ran.append(argv)
             return SimpleNamespace(stdout='NAME   ID   SIZE\n')
 
-        self.assertEqual(assistant.fetch_model(['docker'], 'qwen3.5:4b', said.append, run), 'downloading')
+        self.assertEqual(assistant.fetch_model(['docker'], 'qwen3.5:4b', said.append, run), ('downloading', None))
+        self.assertTrue(any('from the Ollama library' in line for line in said))
         self.assertEqual(ran[1][1:], ['exec', '-d', '-T', 'ollama', 'ollama', 'pull', 'qwen3.5:4b'])
 
 
@@ -536,6 +541,42 @@ class InstalledTests(unittest.TestCase):
             for other in ({'wanted': False}, {}, [], None):
                 with self.subTest(other=other):
                     self.assertFalse(neko_common.assistant_installed({'data_mount': tmp, 'assistant': other}))
+
+
+class ModelIsDownloadedTests(unittest.TestCase):
+    """The user's rule: the model is downloaded during setup, never part of NekoServer."""
+
+    def test_the_repository_holds_no_model(self):
+        try:
+            tracked = (
+                subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT.parent, capture_output=True, check=True, timeout=60)
+                .stdout.decode()
+                .split('\0')
+            )
+        except (OSError, subprocess.SubprocessError):
+            self.skipTest('git is not here')
+        for name in filter(None, tracked):
+            path = ROOT.parent / name
+            with self.subTest(name=name):
+                self.assertFalse(name.endswith(('.gguf', '.safetensors', '.bin', '.onnx')), name)
+                self.assertNotIn('models/', name)
+                self.assertNotIn('manifests/registry.ollama.ai', name)
+                self.assertFalse(re.search(r'(^|/)sha256-[0-9a-f]{16,}', name), name)
+                if path.is_file():
+                    self.assertLess(path.stat().st_size, 5 * 1024 * 1024, name)
+
+    def test_the_kept_copy_of_nekoserver_never_takes_the_models(self):
+        recovery = load('nekoserver_recovery_for_assistant', 'modules/recovery.py')
+        for path in recovery.bundle_files(ROOT):
+            with self.subTest(path=str(path)):
+                relative = path.relative_to(ROOT).as_posix()
+                self.assertFalse(relative.startswith('appdata'), relative)
+                self.assertNotIn('models', relative.split('/')[:-1])
+
+    def test_the_setup_choice_says_it_is_downloaded(self):
+        text = ' '.join(assistant.EXPLAIN)
+        self.assertIn('downloaded from the Ollama library', text)
+        self.assertIn('needs the internet', text)
 
 
 if __name__ == '__main__':

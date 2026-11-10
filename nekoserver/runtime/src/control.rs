@@ -956,6 +956,11 @@ fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -
     };
     let status = common::json(Path::new(assist::STATUS), 2_000_000);
     if op == "app_ask" {
+        // Downloaded during setup, never shipped with NekoServer: when it is not there
+        // (yet), say so rather than ask Ollama for it.
+        if let Some(why) = assist::model_missing(&data, &model) {
+            return refuse("E21", &format!("{}: {why}", assist::NOT_AVAILABLE));
+        }
         return ask(&cfg, &data, &status, &model, request);
     }
     let id = request["action"].as_str().unwrap_or("");

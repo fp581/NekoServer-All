@@ -45,6 +45,14 @@ Your choice is saved as `"wanted"` and `"model"` under `"assistant"` in `my-conf
 
 The graphics card is not used: the model runs on the processor only.
 
+## The model is downloaded, never part of NekoServer
+
+The model is downloaded from the Ollama library (<https://ollama.com/library>) while setup runs, after you chose it, so setup needs the internet then. The download is the size in the table above. It is kept on the app SSD in `/srv/nekoserver/appdata/assistant/models`, and setup notes which build it downloaded (its ID) in `/srv/nekoserver/reports/assistant.json`.
+
+NekoServer itself never contains a model: its download from GitHub holds the source only, and the copy of NekoServer setup keeps on the SSD, the nightly app backup and the monthly snapshot never take the models folder. A test fails if a model file ever gets into NekoServer's repository.
+
+If the download is cut off (no network, a restart), Ask Neko says the model is not downloaded yet; run `sudo bash install.sh` again and it starts the download again. While a download runs, it says so instead.
+
 ## It never gets in the way
 
 - **Its own project, on this PC only.** Ollama runs as a Docker project of its own (`neko-assistant`), reachable on `127.0.0.1:11434` only: nothing on your home network or Tailscale can reach it. Only the dashboard's own server asks it.

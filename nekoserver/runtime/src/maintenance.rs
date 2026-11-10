@@ -101,6 +101,26 @@ fn roots(names: &[String]) -> (Vec<String>, Vec<String>) {
     // App password files are never archived in plain text: see encrypt_secrets.
     (data, media)
 }
+#[cfg(test)]
+mod assistant_tests {
+    use super::*;
+    /// The AI assistant's models (appdata/assistant/models) are downloaded during setup and
+    /// never kept in a monthly snapshot: no app name the snapshot takes can be it.
+    #[test]
+    fn the_monthly_snapshot_never_takes_the_assistants_models() {
+        let cfg = json!({"media": {"services": ["jellyfin", "seerr"]}, "photos": {"deploy_immich": true},
+            "nextcloud": {"enabled": true}, "assistant": {"wanted": true, "model": "qwen3.5:4b"}});
+        let taken = names(&cfg).unwrap();
+        assert!(!taken.iter().any(|n| n == "assistant"), "{taken:?}");
+        let (data, media) = roots(&taken);
+        assert!(
+            !data.iter().chain(&media).any(|p| p.contains("assistant")),
+            "{data:?}"
+        );
+        let sneaked = json!({"media": {"services": ["jellyfin", "assistant"]}});
+        assert!(names(&sneaked).is_err());
+    }
+}
 /// What a rollback puts back: the paths this run's snapshot holds (its manifest) for
 /// the apps this run changed (its journal), nothing else. An app update snapshots only
 /// its own app; asking for every app set up would find the others missing and stop the

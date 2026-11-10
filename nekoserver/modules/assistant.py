@@ -83,6 +83,8 @@ EXPLAIN = (
     'reads the logs of a problem with passwords and keys taken out, and can suggest a fix from a short',
     'list that runs only when you press Approve. It runs on this server only: nothing you ask leaves your home.',
     'It never slows down or stops your other apps: they come first, and everything works without it.',
+    'The model is downloaded from the Ollama library during setup (so it needs the internet) and kept on the',
+    'app SSD (appdata/assistant/models). NekoServer itself and its backups never contain it.',
 )
 
 
@@ -390,8 +392,11 @@ def install(ctx, model, memory):
     base = compose(manifest)
     compose_up(base, TITLE, ctx.log)
     wait_until_answering()
-    note = fetch_model(base, model, ctx.log)
-    report(config, {'model': model, 'cpus': share, 'memory': memory, 'model_ready': note == 'ready'})
+    note, model_id = fetch_model(base, model, ctx.log)
+    report(
+        config,
+        {'model': model, 'model_id': model_id, 'cpus': share, 'memory': memory, 'model_ready': note == 'ready'},
+    )
     ctx.log(
         f'{TITLE}: running with {model} (at most {share} processor cores and {memory} of memory, below every '
         'other app). Ask it on the dashboard\'s Ask Neko page.'
@@ -423,15 +428,20 @@ def wait_until_answering(opener=urllib.request.urlopen, sleep=time.sleep, clock=
 
 
 def fetch_model(base, model, log, run=checked_run):
-    """'ready' when the model is already there; else its download is started in the
-    background ('downloading'): Ask Neko says so until it is in. A download cut off is
-    started again by the next setup run."""
+    """('ready', its ID) when the model is already there; else its download from the
+    Ollama library is started in the background ('downloading', None): Ask Neko says so
+    until it is in, and says it is not downloaded when the download was cut off. The next
+    setup run starts it again. The model is never part of NekoServer itself."""
     listed = run([*base, 'exec', '-T', 'ollama', 'ollama', 'list'], 60, f'{TITLE} (ollama list)').stdout
-    if any(line.split()[:1] == [model] for line in listed.splitlines()):
-        return 'ready'
+    for line in listed.splitlines():
+        fields = line.split()
+        if fields[:1] == [model]:
+            return 'ready', fields[1] if len(fields) > 1 else None
     run([*base, 'exec', '-d', '-T', 'ollama', 'ollama', 'pull', model], 60, f'{TITLE} (ollama pull)')
-    log(f'{TITLE}: downloading the model {model} in the background; Ask Neko answers once it is in')
-    return 'downloading'
+    log(
+        f'{TITLE}: downloading the model {model} from the Ollama library in the background; Ask Neko answers once it is in'
+    )
+    return 'downloading', None
 
 
 def stop(config, log, run=checked_run):
