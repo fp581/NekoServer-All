@@ -1,0 +1,13 @@
+[Unit]
+Description=NekoServer weekly protected app updates
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+UMask=0077
+Environment=TZ=UTC
+TimeoutStartSec=18h
+TimeoutStopSec=infinity
+ExecStart=/srv/nekoserver/installer/runtime/v0.49.0/nekoserver-runtime update-apps --config /etc/nekoserver-backups/maintenance.json
+ExecStopPost=/srv/nekoserver/installer/runtime/v0.49.0/nekoserver-runtime maintenance-resume --config /etc/nekoserver-backups/maintenance.json

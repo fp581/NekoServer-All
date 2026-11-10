@@ -2756,8 +2756,10 @@ pub fn validate_external(dest: &Path, uuid: &str) -> Result<()> {
     if uuid.trim().is_empty() || !dest.is_dir() {
         return Err(Error::new("External drive identity required"));
     }
-    let s = common::findmnt("UUID", "--mountpoint", dest, 10)?.unwrap_or_default();
-    if !s.eq_ignore_ascii_case(uuid) {
+    // A backup drive that is a folder a NAS shares (NFS) has no UUID: its identity.
+    let found = common::drive_at(dest, 10)?.unwrap_or_default();
+    let fields = found.split_whitespace().collect::<Vec<_>>();
+    if fields.len() < 3 || !fields[0].eq_ignore_ascii_case(uuid) {
         return Err(Error::new("Wrong or unmounted external drive"));
     }
     Ok(())
@@ -3135,6 +3137,11 @@ fn identity_mismatch(key: &str, path: &Path, uuid: &str, fstype: &str, found: &s
     let drive = if key == "data_ssd" { "SSD" } else { "HDD" };
     let found = match found.trim() {
         "" => "nothing is mounted there".to_string(),
+        // A folder the NAS shares (NFS) that is not mounted: only systemd's automount
+        // holds its place, and mounts it at the next use once the NAS answers.
+        waiting if common::waits_for_first_use(waiting) => {
+            "the shared folder is not mounted: the NAS did not answer when it was last asked for. Check that the NAS is on; it is mounted again by itself once it answers".to_string()
+        }
         // Another drive there: replaced, and this service's record still names the old one.
         seen => format!("found {seen}. If the drive was replaced, run  sudo bash install.sh  so every service learns the new one"),
     };
@@ -3189,7 +3196,7 @@ fn usb_spec(cfg: &Value) -> Value {
 /// The drive the settings (`c`) name under `key` is the one mounted at `path`: its UUID,
 /// filesystem type and Btrfs subvolume. Returns its UUID.
 pub(crate) fn checked_drive(c: &Value, key: &str, path: &Path) -> Result<String> {
-    let found = match common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 10) {
+    let found = match common::drive_at(path, 10) {
         Ok(found) => found.unwrap_or_default(),
         // findmnt killed after its 10 s on a drive a copy keeps busy (it reads the
         // filesystem's label block): the kernel's mount table knows without the read.
@@ -4267,15 +4274,18 @@ struct UsbRun {
     /// The weekly copy, which makes Nextcloud's database copy with Nextcloud paused (the
     /// monthly run's check of the drive does not: its snapshot has its own).
     weekly: bool,
+    /// The backup drive is a folder a NAS shares over NFS: its address, from the
+    /// settings setup wrote ("backup_drive": {"export": ...}). None for a drive.
+    export: Option<String>,
 }
 impl UsbRun {
     fn from_args(a: &Args, check: Check, weekly: bool) -> Result<UsbRun> {
         let uuid = a.get("uuid")?.to_string();
         let fstype = a.get("fstype")?.to_string();
-        if !(8..=80).contains(&uuid.len())
-            || !uuid.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-            || !["ext4", "xfs", "btrfs", "exfat"].contains(&fstype.as_str())
-        {
+        let export = common::json(&a.path("config")?, 64000)["backup_drive"]["export"]
+            .as_str()
+            .map(str::to_string);
+        if !external_identity_ok(&uuid, &fstype, export.as_deref()) {
             return Err(Error::new("Invalid external identity"));
         }
         let media = common::mount_path(a.get("media-root")?)?;
@@ -4320,6 +4330,7 @@ impl UsbRun {
             source,
             cloud,
             weekly,
+            export,
         })
     }
     /// The SSD and HDD are still the right drives.
@@ -4356,24 +4367,10 @@ impl UsbRun {
     fn usb_ready(&self) -> Result<bool> {
         common::stage("checking the USB drive");
         self.drives()?;
-        let device = Path::new("/dev/disk/by-uuid").join(&self.uuid);
-        if !device.exists() {
-            return Err(Error::new("External drive missing"));
-        }
-        own_disk(&device, &self.data, &self.media)?;
-        let (code, s) = common::command(
-            &[
-                "blkid",
-                "-s",
-                "TYPE",
-                "-o",
-                "value",
-                &device.to_string_lossy(),
-            ],
-            10,
-        )?;
-        if code != 0 || s.trim() != self.fstype {
-            return Err(Error::new("External filesystem mismatch"));
+        // A folder the NAS shares has no disk of its own to look at: mounting it, and
+        // the identity check after, say whether it is there and the one setup chose.
+        if self.export.is_none() {
+            self.own_disk_of_the_saved_type()?;
         }
         let dest = &self.dest;
         fs::create_dir_all(dest)?;
@@ -4396,6 +4393,43 @@ impl UsbRun {
         }
         Ok(already)
     }
+    /// The backup folder the NAS shares, mounted by its address with the options setup
+    /// tried it out with (nfs_exports.py): the NFS version saved, and writes that wait
+    /// for a NAS that stops answering instead of leaving a cut-off file.
+    fn mount_shared_folder(&self, export: &str) -> Result<()> {
+        let version = if self.fstype == "nfs" { "3" } else { "4" };
+        let options = format!("nfsvers={version},hard,nodev,nosuid");
+        let dest = self.dest.to_string_lossy();
+        success(&["mount", "-t", "nfs", "-o", &options, export, &dest], 120).map_err(|_| {
+            Error::new(&format!(
+                "The backup folder on the NAS ({export}) could not be mounted: check that the NAS is on and still shares it with this PC"
+            ))
+        })
+    }
+    /// The drive is plugged in, on a disk of its own (never the SSD's, the HDD's or the
+    /// system's) and of the filesystem saved.
+    fn own_disk_of_the_saved_type(&self) -> Result<()> {
+        let device = Path::new("/dev/disk/by-uuid").join(&self.uuid);
+        if !device.exists() {
+            return Err(Error::new("External drive missing"));
+        }
+        own_disk(&device, &self.data, &self.media)?;
+        let (code, s) = common::command(
+            &[
+                "blkid",
+                "-s",
+                "TYPE",
+                "-o",
+                "value",
+                &device.to_string_lossy(),
+            ],
+            10,
+        )?;
+        if code != 0 || s.trim() != self.fstype {
+            return Err(Error::new("External filesystem mismatch"));
+        }
+        Ok(())
+    }
     /// On a NAS: `device` is on the NAS disk setup chose, as for the SSD and the HDD (the
     /// 0.46.1 audit). Not on a NAS (no WWN saved): nothing to check.
     fn same_nas_disk(&self, device: &str) -> Result<()> {
@@ -4415,6 +4449,9 @@ impl UsbRun {
     /// Mounts the very device it checked (the UUID's link, followed once), never "UUID=",
     /// which may pick another LUN of the same UUID.
     fn mount(&self) -> Result<()> {
+        if let Some(export) = &self.export {
+            return self.mount_shared_folder(export);
+        }
         let device = fs::canonicalize(Path::new("/dev/disk/by-uuid").join(&self.uuid))
             .map_err(|_| Error::new("External drive missing"))?;
         let device = device.to_string_lossy().to_string();
@@ -4429,6 +4466,20 @@ impl UsbRun {
             ],
             30,
         )
+    }
+}
+/// The backup drive named on the job's command line can be one: a filesystem UUID with
+/// one of the types a backup drive may have, or, for a folder a NAS shares over NFS, the
+/// identity made from the address in the settings (`export`) with the type NFS mounts as.
+fn external_identity_ok(uuid: &str, fstype: &str, export: Option<&str>) -> bool {
+    if !(8..=80).contains(&uuid.len())
+        || !uuid.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    {
+        return false;
+    }
+    match export {
+        Some(export) => common::is_nfs(fstype) && uuid == common::nfs_identity(export),
+        None => ["ext4", "xfs", "btrfs", "exfat"].contains(&fstype),
     }
 }
 fn usb_copy(a: &Args, check: Check, weekly: bool) -> Result<()> {
@@ -4744,6 +4795,41 @@ mod tests {
         // Without a filesystem named, the weekly copy's default (ext4).
         let plain = usb_spec(&json!({"photos": {"external_backup_uuid": "u1"}}));
         assert_eq!(plain["storage"]["usb"]["fstype"], "ext4");
+    }
+    #[test]
+    fn a_folder_the_nas_shares_is_checked_by_its_address() {
+        // 0.50.0: a drive that is a folder shared over NFS has no UUID; the identity made
+        // from its address stands in for it, in the settings and in what is mounted.
+        let export = "192.168.1.20:/volume1/media";
+        let id = common::nfs_identity(export);
+        let c = json!({"storage": {"media_hdd": {"uuid": id, "fstype": "nfs4",
+            "network": {"transport": "nfs", "export": export}}}});
+        let at = Path::new("/mnt/media");
+        let mounted = common::with_nfs_identity(&format!("nfs4 {export}"));
+        assert_eq!(drive_check(&c, "media_hdd", at, &mounted).unwrap(), id);
+        // Another folder of the same NAS, or the other NFS version, is another drive.
+        let other = common::with_nfs_identity("nfs4 192.168.1.20:/volume1/films");
+        assert!(drive_check(&c, "media_hdd", at, &other).is_err());
+        let v3 = common::with_nfs_identity(&format!("nfs {export}"));
+        assert!(drive_check(&c, "media_hdd", at, &v3).is_err());
+        // Not mounted since the start (only systemd's automount there): said as it is.
+        let said = drive_check(&c, "media_hdd", at, "autofs systemd-1")
+            .unwrap_err()
+            .to_string();
+        assert!(said.contains("the shared folder is not mounted"), "{said}");
+        assert!(said.contains("Check that the NAS is on"), "{said}");
+        // The weekly copy's own drive: the identity must be the one of the address in the
+        // settings, with a type NFS mounts as; a disk keeps its own types.
+        let backup = "192.168.1.20:/volume1/backup";
+        let backup_id = common::nfs_identity(backup);
+        assert!(external_identity_ok(&backup_id, "nfs4", Some(backup)));
+        assert!(external_identity_ok(&backup_id, "nfs", Some(backup)));
+        assert!(!external_identity_ok(&backup_id, "nfs4", Some(export)));
+        assert!(!external_identity_ok(&backup_id, "ext4", Some(backup)));
+        assert!(!external_identity_ok(&backup_id, "nfs4", None));
+        assert!(external_identity_ok("usb-00000001", "exfat", None));
+        assert!(!external_identity_ok("short", "ext4", None));
+        assert!(!external_identity_ok("usb-0000 0001", "ext4", None));
     }
     #[test]
     fn a_nas_drive_is_the_nas_disk_setup_chose() {

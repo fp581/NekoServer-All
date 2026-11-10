@@ -389,6 +389,7 @@ class StepTests(unittest.TestCase):
             mock.patch.object(nas, 'install_tools'),
             mock.patch.object(nas, 'initiator_name', return_value='iqn.2004-10.com.ubuntu:01:laptop'),
             mock.patch.object(nas, 'answers', return_value=True),
+            mock.patch.object(nas, 'nfs_answers', return_value=False),
             mock.patch.object(nas, 'discovered', return_value=[(IQN, PORTAL), (BACKUP, PORTAL)]),
             mock.patch.object(nas, 'log_in', side_effect=log_in or (lambda iqn, portal: logged_in.append(iqn))),
             mock.patch.object(nas, 'known_at'),
@@ -504,6 +505,7 @@ class StepTests(unittest.TestCase):
             config['network_storage'],
             {
                 'wanted': True,
+                'kind': 'iscsi',  # what the NAS offers at its address (0.50.0)
                 'portal': PORTAL,
                 'targets': [IQN, BACKUP],
                 'chap': [IQN],

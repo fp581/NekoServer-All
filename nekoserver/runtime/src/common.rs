@@ -1091,6 +1091,67 @@ pub fn mount_in_effect(code: i32, out: &str) -> Option<String> {
         .rfind(|l| !l.is_empty())
         .map(str::to_string)
 }
+/// A folder a NAS shares over NFS, mounted: Linux names its type nfs4, or nfs for
+/// version 3 (nfs_exports.py).
+pub fn is_nfs(fstype: &str) -> bool {
+    matches!(fstype, "nfs" | "nfs4")
+}
+/// What stands in for a drive's UUID when the drive is a folder a NAS shares over NFS,
+/// which has none: "nfs-" and the first 32 hex digits of the SHA-256 of its address
+/// ("192.168.1.20:/volume1/media"). Setup saves the same one as the drive's "uuid"
+/// (nfs_exports.py identity), so every check that compares UUIDs works for it too.
+pub fn nfs_identity(export: &str) -> String {
+    format!("nfs-{}", &sha(export.as_bytes())[..32])
+}
+/// The "uuid" of a drive's record is the identity of a shared folder (no filesystem
+/// UUID starts this way): there is no disk to look for under /dev.
+pub fn is_nfs_identity(uuid: &str) -> bool {
+    uuid.starts_with("nfs-")
+}
+/// The NAS that shares `export` ("192.168.1.20:/volume1/media") answers on NFS's port
+/// within 3 s.
+pub fn nfs_answers(export: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let host = export.split(':').next().unwrap_or("");
+    let Ok(addresses) = (host, 2049).to_socket_addrs() else {
+        return false;
+    };
+    addresses
+        .take(4)
+        .any(|a| TcpStream::connect_timeout(&a, std::time::Duration::from_secs(3)).is_ok())
+}
+/// The address of the shared folder (NFS) a drive's saved record names, if it is one:
+/// {"network": {"transport": "nfs", "export": "192.168.1.20:/volume1/media"}}.
+pub fn nfs_export(record: &Value) -> Option<&str> {
+    let network = &record["network"];
+    (network["transport"] == "nfs")
+        .then(|| network["export"].as_str())
+        .flatten()
+}
+/// findmnt's "UUID FSTYPE SOURCE" with the identity of a shared folder put where its
+/// UUID would be: findmnt prints none for one ("nfs4 192.168.1.20:/volume1/media").
+pub fn with_nfs_identity(found: &str) -> String {
+    match found.split_whitespace().collect::<Vec<_>>()[..] {
+        [fstype, source] if is_nfs(fstype) => {
+            format!("{} {fstype} {source}", nfs_identity(source))
+        }
+        _ => found.to_string(),
+    }
+}
+/// "UUID FSTYPE SOURCE" of the mount in effect at `path`, as findmnt says it; for a
+/// shared folder (NFS) the UUID is its identity (nfs_identity). None when nothing is
+/// mounted there.
+pub fn drive_at(path: &Path, timeout: u64) -> Result<Option<String>> {
+    Ok(
+        findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, timeout)?
+            .map(|found| with_nfs_identity(&found)),
+    )
+}
+/// Only systemd's automount holds the folder (findmnt's "FSTYPE SOURCE" reads "autofs
+/// systemd-1"): the shared folder behind it is mounted at its first use, and is not now.
+pub fn waits_for_first_use(found: &str) -> bool {
+    found.split_whitespace().next() == Some("autofs")
+}
 pub fn mounted(path: &Path) -> bool {
     probe(
         &["findmnt", "-n", "--mountpoint", &path.to_string_lossy()],
@@ -1128,7 +1189,11 @@ pub(crate) fn mount_table_entry_in(table: &str, path: &Path, by_uuid: &Path) -> 
         found = Some((fstype, source, mount_table_name(fields[3])));
     }
     let (fstype, source, inside) = found?;
-    let uuid = uuid_link_of(&source, by_uuid).unwrap_or_default();
+    let uuid = if is_nfs(&fstype) {
+        nfs_identity(&source)
+    } else {
+        uuid_link_of(&source, by_uuid).unwrap_or_default()
+    };
     // A mount of a folder within the filesystem (a Btrfs subvolume, a bind mount) is shown
     // by findmnt as SOURCE[/that/folder]; the drive check reads the subvolume from there,
     // so the answer without findmnt says it the same way (the review of 0.47.10).
@@ -1441,6 +1506,35 @@ mod lock_tests {
             mount_table_entry_in(&table, Path::new("/nowhere"), &by_uuid),
             None
         );
+        // A folder a NAS shares over NFS has no UUID: the identity made from its address
+        // stands in for it, the one setup saved (nfs_exports.py). Before it is first used
+        // only systemd's automount is there, which is no drive.
+        let nfs = "44 30 0:50 / /mnt/nas rw - autofs systemd-1 rw\n\
+                   45 44 0:51 / /mnt/nas rw - nfs4 192.168.1.20:/volume1/media rw,hard\n";
+        let id = nfs_identity("192.168.1.20:/volume1/media");
+        assert_eq!(id, "nfs-445c95883321d23be4c45e535d45cc97");
+        assert_eq!(
+            mount_table_entry_in(nfs, Path::new("/mnt/nas"), &by_uuid),
+            Some(format!("{id} nfs4 192.168.1.20:/volume1/media"))
+        );
+        assert_eq!(
+            with_nfs_identity("nfs4 192.168.1.20:/volume1/media"),
+            format!("{id} nfs4 192.168.1.20:/volume1/media")
+        );
+        assert_eq!(
+            with_nfs_identity("1111-2222 ext4 /dev/sdb1"),
+            "1111-2222 ext4 /dev/sdb1"
+        );
+        assert_eq!(with_nfs_identity("cifs //nas/share"), "cifs //nas/share");
+        assert!(waits_for_first_use("autofs systemd-1"));
+        assert!(!waits_for_first_use(&format!(
+            "{id} nfs4 192.168.1.20:/volume1/media"
+        )));
+        let record = serde_json::json!({"uuid": id, "fstype": "nfs4",
+            "network": {"transport": "nfs", "export": "192.168.1.20:/volume1/media"}});
+        assert_eq!(nfs_export(&record), Some("192.168.1.20:/volume1/media"));
+        let lun = serde_json::json!({"uuid": "u", "network": {"transport": "iscsi", "wwn": "0x1"}});
+        assert_eq!(nfs_export(&lun), None);
         assert_eq!(mount_table_name("a\\040b\\011c\\x"), "a b\tc\\x");
         let _ = fs::remove_dir_all(root);
     }

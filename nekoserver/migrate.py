@@ -587,6 +587,14 @@ def move_held(settings, drive, new_uuid, out, journal, staging, fstab):
         out(FROM_THE_DOWNLOAD.format(label=label))
         return 2
     old = {k: v for k, v in config['storage'][drive].items() if k != 'previous_drive'}
+    if (old.get('network') or {}).get('transport') == 'nfs':
+        # A folder the NAS shares is no drive this can unmount, copy as a whole and swap.
+        out(
+            f"The {label} is a folder the NAS shares over NFS ({old['network'].get('export')}), which this move "
+            'cannot handle: it moves a drive to another drive. STORAGE.md, "Folders a NAS shares over NFS", says '
+            'how to go back to a drive. Nothing was changed.'
+        )
+        return 2
     # The drive as it is mounted now, its Btrfs subvolume included (the settings may not
     # name it): the move checks it is still that one before each step, and `back` needs it.
     mounted = mounted_identity(mountpoint)

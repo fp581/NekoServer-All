@@ -1,0 +1,13 @@
+[Unit]
+Description=NekoServer finish an interrupted upgrade
+RequiresMountsFor=/srv/nekoserver /mnt/nekoserver-media
+After=docker.service
+Requires=docker.service
+ConditionPathExists=/etc/nekoserver-backups/upgrade.json
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=infinity
+ExecStart=/usr/bin/python3 -Es /srv/nekoserver/installer/releases/v0.49.0/upgrade.py resume --config /srv/nekoserver/installer/releases/v0.49.0/config.json
+[Install]
+WantedBy=multi-user.target

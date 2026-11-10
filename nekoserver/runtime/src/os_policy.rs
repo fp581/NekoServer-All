@@ -134,6 +134,13 @@ pub fn run(a: &Args) -> Result<()> {
         media,
     } = backup::open_job(a, 64000)?;
     standby(&cfg)?;
+    if common::nfs_export(&cfg["storage"]["media_hdd"]).is_some() {
+        println!(
+            "{}",
+            left_to_drive("the media drive is a folder the network storage box shares (the NAS looks after its own disks)")
+        );
+        return Ok(());
+    }
     let source = common::findmnt("SOURCE", "--mountpoint", &media, 20)?
         .ok_or_else(|| Error::new("Media HDD is not mounted"))?;
     if !source.starts_with("/dev/") {

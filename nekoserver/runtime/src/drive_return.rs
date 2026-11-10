@@ -121,10 +121,26 @@ fn mounted(path: &Path) -> Result<Option<(String, String)>> {
 fn alive(device: &str, source: &str, exists: impl Fn(&Path) -> bool) -> bool {
     if device.starts_with("0:") {
         let drive = source.split('[').next().unwrap_or("");
+        // A folder a NAS shares (NFS, "192.168.1.20:/volume1/media") has no device that
+        // could go away: while it is mounted its writes wait for the NAS, and the NAS
+        // check watches it. Never released from here.
+        if shared_folder_source(drive) {
+            return true;
+        }
         drive.starts_with("/dev/") && exists(Path::new(drive))
     } else {
         exists(&Path::new("/sys/dev/block").join(device))
     }
+}
+
+/// A mount's source is a shared folder's address (host:/folder), not a device.
+fn shared_folder_source(source: &str) -> bool {
+    !source.starts_with('/') && source.contains(":/")
+}
+/// The mount in effect is only systemd's automount (findmnt shows the source
+/// "systemd-1"): the shared folder behind it is not mounted.
+fn only_automount(found: Option<(String, String)>) -> Option<(String, String)> {
+    found.filter(|(_, source)| source != "systemd-1")
 }
 
 fn run_ok(args: &[&str], timeout: u64) -> Result<String> {
@@ -193,6 +209,8 @@ pub fn run(a: &Args) -> Result<()> {
     let cfgpath = a.path("config")?;
     let cfg = common::json(&cfgpath, 64000);
     let mut drives: Vec<(PathBuf, String, String)> = vec![];
+    // The media drive when it is a folder the NAS shares (NFS): its address.
+    let export = common::nfs_export(&cfg["storage"]["media_hdd"]);
     for (key, drive) in [("data_mount", "data_ssd"), ("media_mount", "media_hdd")] {
         let path = common::mount_path(cfg[key].as_str().unwrap_or(""))?;
         let uuid = cfg["storage"][drive]["uuid"].as_str().unwrap_or("");
@@ -212,8 +230,12 @@ pub fn run(a: &Args) -> Result<()> {
     loop {
         let mut waiting = false;
         for (path, uuid, fstype) in &drives {
-            let present = Path::new("/dev/disk/by-uuid").join(uuid).exists();
-            let found = mounted(path)?;
+            // A shared folder is "connected" when its NAS answers.
+            let present = match export.filter(|_| common::is_nfs_identity(uuid)) {
+                Some(export) => common::nfs_answers(export),
+                None => Path::new("/dev/disk/by-uuid").join(uuid).exists(),
+            };
+            let found = only_automount(mounted(path)?);
             let alive = found
                 .as_ref()
                 .is_some_and(|(device, source)| alive(device, source, Path::exists));
@@ -520,6 +542,27 @@ mod tests {
         // ext4 and XFS: the drive's own device number, as before.
         assert!(alive("8:17", "/dev/sdb1", here));
         assert!(!alive("8:33", "/dev/sdb1", here));
+    }
+    #[test]
+    fn a_mounted_shared_folder_is_never_released_and_an_automount_is_no_mount() {
+        // 0.50.0: a folder the NAS shares over NFS has no device that could go away.
+        let nothing = |_: &Path| false;
+        assert!(alive("0:51", "192.168.1.20:/volume1/media", nothing));
+        assert!(alive("0:51", "nas.home:/export/media", nothing));
+        assert!(!alive("0:51", "//nas/share", nothing)); // SMB: never a NekoServer drive
+        assert!(!alive("0:51", "systemd-1", nothing));
+        // Before its first use only systemd's automount holds the folder: nothing is
+        // mounted yet, so it is mounted once the NAS answers (Remount, nothing released).
+        let waiting = Some(("0:50".to_string(), "systemd-1".to_string()));
+        assert_eq!(only_automount(waiting), None);
+        let there = Some((
+            "0:51".to_string(),
+            "192.168.1.20:/volume1/media".to_string(),
+        ));
+        assert_eq!(only_automount(there.clone()), there);
+        assert_eq!(decide(None, false, true), Step::Remount { release: false });
+        assert_eq!(decide(None, false, false), Step::Wait);
+        assert_eq!(decide(Some("0:51"), true, false), Step::Nothing);
     }
     #[test]
     fn a_btrfs_pool_missing_a_drive_is_told_apart_from_a_whole_one() {

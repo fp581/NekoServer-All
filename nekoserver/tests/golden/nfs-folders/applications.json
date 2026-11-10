@@ -1,0 +1,45 @@
+{
+  "data_mount": "/srv/nekoserver",
+  "media_mount": "/mnt/nekoserver-media",
+  "storage": {
+    "data_ssd": {
+      "uuid": "1a2b3c4d-0001-4000-8000-00000000aaaa",
+      "fstype": "ext4"
+    },
+    "media_hdd": {
+      "uuid": "nfs-d7281cdfb4f7e9efe3f0cdfdc34adbd8",
+      "fstype": "nfs4",
+      "network": {
+        "transport": "nfs",
+        "export": "192.168.1.50:/volume1/media"
+      }
+    }
+  },
+  "paths": {
+    "photos": "/srv/nekoserver/photos/immich-library",
+    "music": "/srv/nekoserver/library/music",
+    "downloads": "/srv/nekoserver/library/downloads/music",
+    "cloud": "/mnt/nekoserver-media/cloud/files"
+  },
+  "backup_drive": {
+    "export": "192.168.1.50:/volume1/backup"
+  },
+  "network_storage": {
+    "wanted": true
+  },
+  "media": {
+    "services": [
+      "jellyfin",
+      "navidrome",
+      "sonarr",
+      "radarr",
+      "lidarr",
+      "prowlarr",
+      "seerr",
+      "qbittorrent"
+    ]
+  },
+  "app_backup": {
+    "keep_snapshots": 7
+  }
+}

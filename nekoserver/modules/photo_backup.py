@@ -197,6 +197,8 @@ def check_drive(config, uuid, fstype):
     a disk on a NAS, the same NAS disk as before (its WWN)."""
     from modules.storage import inventory_now
 
+    if shared_backup_folder(config):
+        return  # tried out by the network storage step; the weekly copy mounts it by its address
     inventory = inventory_now()
     problem = shared_disk(config, inventory, uuid)
     if problem:
@@ -206,6 +208,29 @@ def check_drive(config, uuid, fstype):
         raise RuntimeError('Unexpected backup filesystem')
     if uuid in {config.get('storage', {}).get(key, {}).get('uuid') for key in ('data_ssd', 'media_hdd')}:
         raise RuntimeError('USB UUID must differ from SSD/HDD')
+
+
+def shared_backup_folder(config):
+    """The address of the folder a NAS shares over NFS that is the backup drive (the
+    network storage step chose it and tried it out, nfs_exports.py), or None for a drive.
+    It is never the media drive's own folder: a copy kept with what it protects is lost
+    with it."""
+    import nfs_exports
+
+    photos = config.get('photos', {})
+    record = {
+        'uuid': photos.get('external_backup_uuid'),
+        'fstype': photos.get('external_backup_fstype'),
+        'network': photos.get('external_backup_network'),
+    }
+    export = nfs_exports.checked_record(record, '"external_backup_uuid" (and "external_backup_network") under "photos"')
+    if export and record['uuid'] == config.get('storage', {}).get('media_hdd', {}).get('uuid'):
+        raise RuntimeError(
+            f'The backup drive and the media drive are the same shared folder ({export}): a backup kept with '
+            'what it protects is lost with it. Share a second folder on the NAS for the backup, take "backup" '
+            'out of "nfs" under "network_storage" in my-config.json, and run setup again.'
+        )
+    return export
 
 
 def nas_identity(inventory, uuid):

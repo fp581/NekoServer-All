@@ -582,6 +582,11 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
         label = drive_label(config, key, label)
         record = configured.setdefault(key, {})
         uuid = record.get('uuid', '').strip()
+        if shared_folder(record, key):
+            # A folder the NAS shares (NFS): no disk to look for here; network_storage
+            # tried it out, and mounting it below shows whether it is still there.
+            selected.add(uuid)
+            continue
         if uuid:
             uuid = saved_choice(
                 record,
@@ -612,6 +617,32 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
         selected_disks |= own_disks(uuid, items, selected_disks, apply)
         selected.add(uuid)
     return configured
+
+
+def shared_folder(record, key):
+    """The address of the folder a NAS shares over NFS that this drive's saved record names
+    (nfs_exports.py), or None for a drive that is a disk. Only the media drive may be one:
+    the SSD holds the databases and setup's own records."""
+    import nfs_exports
+
+    export = nfs_exports.checked_record(record, f'"{key}" under "storage"')
+    if export and key == 'data_ssd':
+        raise RuntimeError(
+            f'The SSD for the apps cannot be a folder shared over NFS ({export}): it holds the databases and '
+            "setup's own records, and must be connected to this PC (by USB 3, or inside it). Take \"data_ssd\" out "
+            'of "storage" in my-config.json and run  sudo bash install.sh  again. Nothing was changed.'
+        )
+    return export
+
+
+def shared_folders(config):
+    """{identity: address} of the drives in the settings that are folders shared over NFS."""
+    found = {}
+    for key, record in config.get('storage', {}).items():
+        export = shared_folder(record, key) if isinstance(record, dict) else None
+        if export:
+            found[record['uuid']] = export
+    return found
 
 
 def choose_new(config, inventory, items, selected, key, label, input_fn, out_fn):
@@ -787,7 +818,7 @@ def mount_specs(config):
         target = str(mount_path(config[mount_key]))
         if not uuid or not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid):
             raise RuntimeError(f'storage.{key}.uuid must be explicitly configured from lsblk -f')
-        if fstype not in ('ext4', 'xfs', 'btrfs'):
+        if not shared_folder(record, key) and fstype not in ('ext4', 'xfs', 'btrfs'):
             raise RuntimeError(f'storage.{key}.fstype must be ext4, xfs or btrfs')
         if not Path(target).is_absolute() or str(Path(target)) in ('/', '/mnt', '/srv', '/home', '/var'):
             raise RuntimeError(f'Unsafe mount location: {target}')
@@ -1041,18 +1072,79 @@ def keep_first(path, backup):
         os.close(directory)
 
 
-def install_fstab(specs, path=Path('/etc/fstab'), log=None, network=frozenset()):
+def waits_for_first_use(target):
+    """Only systemd's automount holds this folder: the shared folder behind it (NFS) is
+    mounted the first time something uses it, and is not mounted now."""
+    return findmnt('FSTYPE', target) == 'autofs'
+
+
+def open_shared_folder(target):
+    """The first use of a shared folder since the start: systemd mounts it now (with its
+    line in /etc/fstab), or says within half a minute that the NAS does not answer."""
+    try:
+        os.listdir(target)
+    except OSError as exc:
+        raise RuntimeError(
+            f'The shared folder for {target} could not be mounted ({exc.strerror}): check that the NAS is on '
+            'and still shares it with this PC, then run setup again'
+        ) from None
+
+
+def shared_folder_line(lines, mountpoint, entry, connected=drive_connected, notes=None):
+    """The index of the fstab line to replace with `entry`, the line of a shared folder
+    (NFS) for `mountpoint`; None when the folder has no line yet. A line NekoServer wrote
+    there is brought up to date: its own for a shared folder (another address, other
+    options), or its own for a drive that is not connected any more (the HDD given up
+    for the NAS). Any other line for the folder stops setup, as for a drive."""
+    import nfs_exports
+
+    folder = fstab_folder(mountpoint)
+    matches = [
+        (i, s.split())
+        for i, s in enumerate(lines)
+        if s.strip() and not s.lstrip().startswith('#') and len(s.split()) >= 2 and fstab_folder(s.split()[1]) == folder
+    ]
+    if not matches:
+        return None
+    index, found = matches[0]
+    if len(matches) == 1 and nfs_exports.own_line(found):
+        return index
+    if len(matches) == 1 and own_line(found) and not connected(found[0][len('UUID=') :]):
+        if notes is not None:
+            notes.append(
+                f'{mountpoint}: the earlier drive ({found[0]}) is not connected; its line in /etc/fstab '
+                f'is replaced by one for the shared folder {entry.split()[0]}'
+            )
+        return index
+    theirs = '\n'.join('    ' + lines[i].strip() for i, _ in matches)
+    raise RuntimeError(
+        f'/etc/fstab already has a line for {mountpoint}, which NekoServer did not write for the shared folder '
+        f'{entry.split()[0]}:\n{theirs}\nNekoServer mounts the shared folder itself at {mountpoint} (with options '
+        'that let the PC start even when the NAS is off). Take that line out of /etc/fstab, unmount what is '
+        'mounted there (sudo umount <folder>), and run  sudo bash install.sh  again.'
+    )
+
+
+def install_fstab(specs, path=Path('/etc/fstab'), log=None, network=frozenset(), exports=None):
     """Add (or bring up to date) the lines that mount the SSD and HDD at boot: NekoServer's
     own line with older options, or for a drive that is gone (replaced), is rewritten. A
     line for the same drive or folder that NekoServer didn't write stops setup instead.
-    `network`: the UUIDs of the drives on a NAS, mounted once it can be reached."""
+    `network`: the UUIDs of the drives on a NAS, mounted once it can be reached;
+    `exports`: {identity: address} of the drives that are folders a NAS shares (NFS)."""
+    import nfs_exports
+
+    exports = exports or {}
     path = safe_path(path)
     existing = path.read_text() if path.exists() else ''
     lines = existing.splitlines()
     additions, upgraded, notes = [], False, []
     for _, uuid, fstype, mountpoint, subvolume in specs:
-        entry = fstab_line(uuid, fstype, mountpoint, subvolume, network=uuid in network)
-        index = existing_line(lines, uuid, mountpoint, entry, notes=notes)
+        if uuid in exports:
+            entry = nfs_exports.fstab_line(exports[uuid], mountpoint, fstype)
+            index = shared_folder_line(lines, mountpoint, entry, notes=notes)
+        else:
+            entry = fstab_line(uuid, fstype, mountpoint, subvolume, network=uuid in network)
+            index = existing_line(lines, uuid, mountpoint, entry, notes=notes)
         if index is None:
             additions.append(entry)
         elif lines[index].split() != entry.split():
@@ -1107,8 +1199,12 @@ def run(context):
     resolve_storage_identity(context.config, inventory, apply=True, interactive=sys.stdin.isatty(), out_fn=context.log)
     remember_subvolumes(context.config)
     specs = mount_specs(context.config)
+    exports = shared_folders(context.config)
     for _, uuid, fstype, target, _ in specs:
-        validate_device(uuid, fstype)  # raises if the drive identity is wrong
+        if uuid not in exports:
+            validate_device(uuid, fstype)  # raises if the drive identity is wrong
+        if waits_for_first_use(target):
+            continue  # a shared folder not opened since the start: mount_all opens and checks it
         current = findmnt('SOURCE', target)
         if current is not None:
             mounted = current.split('[')[0]
@@ -1148,7 +1244,8 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
     subvolume (`btrfs subvolume set-default`, `/@data` say): that tree is saved as the
     drive's subvolume and its fstab line pinned to it, so a restart (or a later change of
     the default) mounts the same files, and the next run finds the line its own."""
-    install_fstab(specs, fstab, context.log, network_uuids(context.config))
+    exports = shared_folders(context.config)
+    install_fstab(specs, fstab, context.log, network_uuids(context.config), exports)
     call(['systemctl', 'daemon-reload'])
     pinned = []
     for key, uuid, fstype, target, subvolume in specs:
@@ -1160,10 +1257,11 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
             context.config['storage'][key]['subvolume'] = found
             pinned.append((key, uuid, fstype, target, found))
             context.log(f'{target}: the drive\'s default Btrfs subvolume is {found}; saved, so it is always mounted')
-        context.log(f'Mounted UUID={uuid} on {target}; fstab configured for reboot')
+        named = exports.get(uuid) or f'UUID={uuid}'
+        context.log(f'Mounted {named} on {target}; fstab configured for reboot')
     if pinned:
         save_storage(context)
-        install_fstab(mount_specs(context.config), fstab, context.log, network_uuids(context.config))
+        install_fstab(mount_specs(context.config), fstab, context.log, network_uuids(context.config), exports)
         call(['systemctl', 'daemon-reload'])
 
 
@@ -1241,6 +1339,8 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None):
                     f'Mounting {target} took longer than {MOUNT_WAIT // 60} minutes; check the drive '
                     '(sudo dmesg shows what it is doing) and run setup again'
                 ) from None
+    elif waits_for_first_use(target):
+        open_shared_folder(target)
     if mounted_filesystem(target) != (uuid, fstype):
         raise RuntimeError(f'Post-mount validation failed for {target}')
     found = mounted_subvolume(target)
@@ -1475,9 +1575,15 @@ def mounted_filesystem(target):
     mounted device when that column is empty. Never by comparing device paths: every
     device of a Btrfs pool carries the pool's UUID, findmnt names one of them (the lowest
     device ID) as the source, and /dev/disk/by-uuid may point at another."""
-    fields = (findmnt('UUID,FSTYPE,SOURCE', target) or '').split()
+    import nfs_exports
+
+    found = findmnt('UUID,FSTYPE,SOURCE', target) or ''
+    fields = found.split()
     if len(fields) == 3:
         return fields[0], fields[1]
+    shared = nfs_exports.mounted(found)
+    if shared:
+        return shared
     if len(fields) == 2 and fields[1].startswith(DEV):
         return uuid_of(fields[1].split('[')[0]), fields[0]
     return None

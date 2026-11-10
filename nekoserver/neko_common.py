@@ -1635,7 +1635,14 @@ def mounted_identity(path):
     the Btrfs subvolume ("/@data"), or the folder of a drive mounted from a folder, as
     findmnt shows it in brackets (/dev/sdb1[/@data]); '' for the whole filesystem. The
     same reading as the runtime's drive check (backup.rs guard)."""
-    fields = (findmnt('UUID,FSTYPE,SOURCE', path) or '').split()
+    import nfs_exports
+
+    found = findmnt('UUID,FSTYPE,SOURCE', path) or ''
+    shared = nfs_exports.mounted(found)
+    if shared:
+        # A folder a NAS shares over NFS has no UUID: the identity made from its address.
+        return (*shared, '')
+    fields = found.split()
     if len(fields) < 3:
         return None
     tree = fields[2].split('[', 1)[1].rstrip(']').rstrip('/') if '[' in fields[2] else ''

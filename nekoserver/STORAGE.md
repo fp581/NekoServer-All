@@ -63,6 +63,35 @@ It logs in, again at every start, and lists each LUN with its size, its filesyst
 
 **One box, one risk.** With the media drive and the backup drive in the same NAS, a fault of the NAS (its power supply, a setting) can take both. The weekly backup copies your photos, Nextcloud files and database copies, not films and TV. When you can, keep a second copy of what matters somewhere else.
 
+## Folders a NAS shares over NFS
+
+Since 0.50.0 the **media drive** and the **backup drive** can also be folders the NAS shares over **NFS**, for a NAS that has no iSCSI or when you want the files to stay visible on the NAS itself. It is **experimental** (SUPPORT.md). The SSD for the apps is never one: it holds the databases and setup's own records. SMB (Windows shares) is not supported.
+
+**NFS is slower** than a drive connected to this PC, and than an iSCSI disk on the same NAS. It is fine for films, music and backups.
+
+**On the NAS first:**
+1. Switch NFS on (version 4 where it is offered; version 3 works too).
+2. Share one folder for the media and, if you want, a second one for the backup, on other disks of the NAS when it has them. Neither may be inside the other.
+3. In each folder's NFS permissions, allow this PC's address, with **read and write** access and **without squashing**: the NAS must not turn this PC's administrator into a guest ("root squash") nor store every file as one account ("all squash", "map all users"). The setting is called `no_root_squash`, *Squash: no mapping* or *Maproot user: root*, depending on the NAS.
+4. Give the NAS a fixed address on your router, and this PC too.
+
+**Then in setup:** switch on *My media and backup drives are in a network storage box (NAS)* and give the NAS's address. Setup looks at what answers there: iSCSI, NFS or both (then it asks which to use). For NFS it installs the NFS tools when they are missing (`nfs-common` on Debian and Ubuntu, `nfs-utils` on Arch and Fedora, `nfs-client` on openSUSE), lists the folders the NAS shares (`showmount -e`), and asks which one is the media drive and which the backup drive, each by its number or typed as the NAS names it (`/volume1/media`). A NAS that speaks only NFS version 4 gives no list: type the folder. Enter alone leaves that drive to one connected to this PC.
+
+**Each folder is tried out before it is used.** Setup mounts it privately and, as root and as the apps' account, checks that:
+- files can be written and read back
+- a file given to the apps' account stays theirs, with its permissions
+- a file lock one program holds is refused to another
+- root stays root (the backups record who owns each file)
+- the size and the free space the NAS reports make sense, and the media folder is big enough
+
+If one of them fails, setup stops there and says which, with what to change on the NAS. Nothing is mounted for good and nothing is saved. The folders are tried again at every setup run.
+
+**How it is mounted.** The media folder gets a line in `/etc/fstab` by its address (`192.168.1.20:/volume1/media`), with `_netdev`, `nofail` and a systemd automount: a NAS that is off never keeps this PC from starting, and the folder is mounted the first time it is used once the NAS answers. Writes wait for a NAS that stopped answering (`hard`) instead of leaving cut-off files. The backup folder is mounted only while the weekly copy, the monthly check or a restore uses it, like a USB drive.
+
+**When the NAS is away.** Reads and writes wait for it and go on when it is back. If it was off when this PC started, the apps stay stopped; the check every minute sees when the NAS answers again, mounts the folder and starts them. The dashboard shows the drive as on the network storage box, whether it takes writes, and its free space. The disks' health is inside the NAS: keep its own alerts on.
+
+**What NekoServer does not do for a shared folder.** It never formats or repairs anything on it (the filesystem is the NAS's), `migrate.py` does not move it, and it cannot tell two folders apart that the NAS serves under the same address: when you change which folder that address names, run setup again. To go back to a drive on this PC: stop the apps, copy the folder's contents to the new drive (`rsync -aHAX`), take `"media_hdd"` out of `"storage"` and `"media"` out of `"nfs"` under `"network_storage"` in `my-config.json`, take the folder's line out of `/etc/fstab`, and run setup again to choose the drive.
+
 ## How backups are verified
 
 Every backup tree (the photo archive on the HDD, its copy on the USB drive, and the Nextcloud copy on the USB drive) has a **checksum ledger**, `.neko-ledger.json`, at its root.

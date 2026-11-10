@@ -3287,7 +3287,9 @@ fn check_copies(cfgpath: &Path, cfg: &Value) -> Result<Vec<String>> {
     }
     if let Some(options) = usb {
         let uuid = options.get("uuid")?;
-        if Path::new("/dev/disk/by-uuid").join(uuid).exists() {
+        // A backup folder on the NAS (NFS) has no disk to see plugged in: it is tried,
+        // and a NAS that is off is said like a drive that would not mount.
+        if common::is_nfs_identity(uuid) || Path::new("/dev/disk/by-uuid").join(uuid).exists() {
             common::stage("checking every copy on the USB drive by checksum");
             if let Err(e) = backup::monthly_usb_check(&options) {
                 if usb_damage(&e) {

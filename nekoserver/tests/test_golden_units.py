@@ -140,6 +140,27 @@ def no_media():
     return cfg
 
 
+def nfs_folders():
+    """(f) The media drive and the backup drive are folders a NAS shares over NFS
+    (0.50.0, nfs_exports.py): no device to wait for behind either, the NAS check on, the
+    weekly copy told the backup folder's address."""
+    import nfs_exports
+
+    cfg = base()
+    media, backup = '192.168.1.50:/volume1/media', '192.168.1.50:/volume1/backup'
+    cfg['network_storage'] = {
+        'wanted': True,
+        'kind': 'nfs',
+        'nfs': {'server': '192.168.1.50', 'media': '/volume1/media', 'backup': '/volume1/backup'},
+    }
+    cfg['storage']['media_hdd'] = nfs_exports.record_for(media, 'nfs4')
+    kept = nfs_exports.record_for(backup, 'nfs4')
+    cfg['photos'].update(
+        external_backup_uuid=kept['uuid'], external_backup_fstype='nfs4', external_backup_network=kept['network']
+    )
+    return cfg
+
+
 # Each configuration, with the facts about the machine that are not settings (the
 # Tailscale name the dashboard answers, learned from the installed unit).
 CONFIGURATIONS = {
@@ -148,6 +169,7 @@ CONFIGURATIONS = {
     'before-0.48.0': (before_0480, {}),
     'past-midnight': (past_midnight, {}),
     'no-media': (no_media, {}),
+    'nfs-folders': (nfs_folders, {}),
 }
 
 
@@ -426,6 +448,22 @@ class GoldenFileTests(unittest.TestCase):
         self.assertIs(collector['photos']['deploy_immich'], False)
         maintenance_settings = json.loads(produced['maintenance.json'])
         self.assertEqual(maintenance_settings['media_apps'], {'wanted': False})
+
+    def test_nfs_folders(self):
+        produced = self.check('nfs-folders')
+        # Drive return waits for the SSD's device only: a shared folder has none, and the
+        # NAS check (every minute) starts it once the NAS answers again.
+        wanted_by = [line for line in produced[server_os.DRIVE_UNIT].splitlines() if line.startswith('WantedBy=')]
+        self.assertEqual(len(wanted_by[0].split()), 1)
+        self.assertIn(server_os.NAS_WATCH_TIMER, produced)
+        drives = json.loads(produced['os-drives.json'])
+        self.assertEqual(drives['backup_drive'], {'export': '192.168.1.50:/volume1/backup'})
+        self.assertEqual(
+            drives['storage']['media_hdd']['network'], {'transport': 'nfs', 'export': '192.168.1.50:/volume1/media'}
+        )
+        self.assertIn('--fstype nfs4 ', produced['nekoserver-photo-backup.service'])
+        # Docker still starts only once the media folder is mounted.
+        self.assertIn('/mnt/nekoserver-media', produced['docker.service.d-10-nekoserver-storage.conf'])
 
     def test_past_midnight(self):
         produced = self.check('past-midnight')

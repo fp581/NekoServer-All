@@ -300,10 +300,14 @@ def storage_config(config):
     if config.get('locations'):
         found['locations'] = config['locations']
     found['paths'] = saved_paths(config)
-    backup = (config.get('photos', {}).get('external_backup_network') or {}).get('wwn')
-    if backup:
+    backup = config.get('photos', {}).get('external_backup_network') or {}
+    if backup.get('wwn'):
         # The backup drive's NAS disk: the weekly copy checks it is that one (backup.rs).
-        found['backup_drive'] = {'wwn': backup}
+        found['backup_drive'] = {'wwn': backup['wwn']}
+    elif backup.get('transport') == 'nfs':
+        # The backup drive is a folder the NAS shares: the weekly copy mounts it by this
+        # address (backup.rs UsbRun).
+        found['backup_drive'] = {'export': backup.get('export')}
     nas = config.get('network_storage') or {}
     if nas.get('wanted') is True:
         # The NAS check logs in again once the NAS answers (runtime nas_watch.rs).

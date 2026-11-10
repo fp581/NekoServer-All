@@ -24,6 +24,7 @@ import sys
 import zlib
 
 import guided_setup
+import nfs_exports
 from neko_common import (
     OPERATION_LOCK,
     SHARED,
@@ -1098,6 +1099,8 @@ class Usb:
         self.fstype = photos.get('external_backup_fstype', 'ext4')
         # On a NAS: the NAS disk setup chose (photo_backup.same_nas_disk), as the weekly copy checks.
         self.wwn = (photos.get('external_backup_network') or {}).get('wwn')
+        # A folder the NAS shares over NFS (nfs_exports.py): its address, else None.
+        self.export = nfs_exports.export_of({'network': photos.get('external_backup_network')})
         self.mounted_here = False
         self.lock = None
 
@@ -1133,7 +1136,27 @@ class Usb:
                 'copied LUN, most likely); run  sudo bash install.sh  to choose which one to use'
             )
 
+    def open_shared_folder(self):
+        """The backup drive is a folder the NAS shares: mounted by its address when it is
+        not (read-only unless `writable`), and used only when what is mounted there is
+        that folder. None when the NAS does not answer."""
+        if findmnt('TARGET', self.mount) is None:
+            self.mount.mkdir(parents=True, exist_ok=True)
+            options = nfs_exports.options(self.fstype) + (',rw' if self.writable else ',ro')
+            mounted = subprocess.run(
+                ['mount', '-t', 'nfs', '-o', options, self.export, str(self.mount)],
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            if mounted.returncode != 0:
+                return None
+            self.mounted_here = True
+        return self.mount if mounted_identity(self.mount) == (self.uuid, self.fstype, '') else None
+
     def open(self):
+        if self.export:
+            return self.open_shared_folder()
         if (
             subprocess.run(
                 ['findmnt', '-n', '--mountpoint', str(self.mount)], capture_output=True, check=False
@@ -2290,6 +2313,17 @@ def checked_drive(config, prompt, output, run, writes, errors):
         output('Both drives take writes and Linux counted no errors on them: nothing to check.')
         return
     name, folder, record = failing[0]
+    export = nfs_exports.export_of(record)
+    if export:
+        say(
+            output,
+            f'\n{name.capitalize()} ({folder}) is a folder the NAS shares ({export}), and it does not take writes.',
+            'Its filesystem is the NAS\'s own: there is nothing to check or repair from this PC.',
+            'On the NAS, check that its disks are healthy, that the volume is not full or read-only,',
+            'and that this PC still has read and write access to the shared folder.',
+            'The apps start again by themselves once it takes writes.',
+        )
+        return
     uuid, fstype = record.get('uuid', ''), record.get('fstype', '')
     if not re.fullmatch(r'[A-Za-z0-9-]{8,80}', uuid or ''):
         raise RuntimeError(f'{name} has no drive identity in the settings')

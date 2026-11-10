@@ -288,8 +288,14 @@ def log_journal_limits(config, log, journald=JOURNALD):
 
 def drive_devices(config, run=subprocess.run):
     """systemd's names for the SSD's and HDD's devices, by their IDs."""
+    import nfs_exports
+
     names = []
     for key in ('data_ssd', 'media_hdd'):
+        if nfs_exports.export_of(config['storage'][key]):
+            # A folder the NAS shares has no device systemd could see return: the NAS
+            # check starts drive-return once the NAS answers again (nas_watch.rs).
+            continue
         uuid = config['storage'][key]['uuid']
         shown = run(
             ['systemd-escape', '--path', '--suffix=device', '/dev/disk/by-uuid/' + uuid],

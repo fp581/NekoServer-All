@@ -278,7 +278,7 @@ fn mount_info(path: &Path, expected: Option<&str>, fstype: &str) -> Value {
     if expected == Some("") {
         return json!({"status":"not_configured"});
     }
-    let s = match common::findmnt("UUID,FSTYPE,SOURCE", "--mountpoint", path, 8) {
+    let s = match common::drive_at(path, 8) {
         Ok(found) => found.unwrap_or_default(),
         // findmnt killed after its 8 s: it reads the filesystem's label block, which a
         // drive saturated by a backup can hold back. The kernel's mount table says the
