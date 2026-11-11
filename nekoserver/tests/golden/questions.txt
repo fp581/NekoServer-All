@@ -50,7 +50,8 @@ music-setup.py
     Listener password (never saved as plaintext):
 recovery_wizard.py
     Choose a number:
-    Type a full path for a NEW folder (or press Enter to go back):
+    Type the full name of a NEW folder, for example /home/you/restored-photos (Enter alone goes back, with nothing restored):
+    repair_drive
 seerr_providers.py
     Choose a number (Enter alone skips):
 source-wizard.py

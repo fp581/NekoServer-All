@@ -742,8 +742,8 @@ class WeeklyCopyTests(unittest.TestCase):
                 lambda f: 0,
             )
         text = '\n'.join(said)
-        self.assertIn(f'is a folder the NAS shares ({MEDIA}), and it does not take writes', text)
-        self.assertIn('nothing to check or repair from this PC', text)
+        self.assertIn(f'is a folder the NAS shares ({MEDIA}), and it does not take new files', text)
+        self.assertIn('NekoServer never checks or repairs a shared folder from this PC', text)
 
 
 if __name__ == '__main__':
