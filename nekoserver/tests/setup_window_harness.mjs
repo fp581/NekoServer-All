@@ -43,6 +43,8 @@ globalThis.fetch = async (route, options) => {
   if (options?.method === 'POST') {
     posts.push([route, JSON.parse(options.body)]);
     if (route === 'api/start' && refusal) return { json: async () => ({ ok: false, reason: refusal }) };
+    // {"login": {...}} in any state: what Show login is answered with.
+    if (route === 'api/login') return { json: async () => states.find((state) => state.login)?.login ?? { ok: false } };
     return { json: async () => ({ ok: true }) };
   }
   const state = states[Math.min(poll, states.length - 1)];
@@ -82,6 +84,12 @@ async function step(i) {
     elements['ask-pick'].fire('change');
     elements.ask.fire('submit');
   }
+  // A sign-in step: {"showLogin": 1} presses the first card's Show login (twice: {"showLogin": [1, 1]}).
+  for (const n of [states[i].showLogin ?? []].flat()) {
+    elements['ask-page'].children[n - 1].children[3].fire('click');
+    await settle();
+    await settle();
+  }
   // Steps that did not finish: {"retry": 1} presses the first card's Retry this step;
   // {"leave": true} the button under the cards.
   if (states[i].retry) {
@@ -117,6 +125,9 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   placeholder: elements['ask-input']?.placeholder ?? '', yesnoHidden: elements['ask-yesno']?.hidden ?? null,
   retry: (elements['ask-page']?.children ?? []).filter((card) => card.className === 'retry').map((card) => card.children.map((part) => part.children.length ? [part.children[0].textContent, part.children[1].children.map((li) => li.textContent)] : part.textContent)),
   contextHidden: elements['ask-context']?.hidden ?? null,
+  logins: (elements['ask-page']?.children ?? []).filter((card) => card.className === 'retry login').map((card) => ({ title: card.children[0].textContent, user: card.children[1].textContent,
+    hidden: card.children[2].hidden, password: card.children[2].children[0]?.children[0]?.value ?? null, qr: card.children[2].children[1]?.src ?? null,
+    button: card.children[3].textContent, note: card.children[4].textContent })),
   now: [elements['now-label']?.textContent ?? '', elements['now-title']?.textContent ?? '', elements['now-text']?.textContent ?? '', elements['now-text']?.className ?? ''],
   stepsHidden: elements.steps?.hidden ?? null, askLabel: elements['ask-label']?.textContent ?? '', running: elements.running?.className ?? '',
   prompt: elements['ask-prompt']?.textContent ?? '', note: elements['ask-note']?.textContent ?? '',

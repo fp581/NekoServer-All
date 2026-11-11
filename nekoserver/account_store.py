@@ -337,6 +337,10 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
                 output('Choose 1 or 2.')
         if mode == 'generate':
             username, password = generate(app)
+            output(
+                f'  Made and saved: username {username}, with a strong password. Wherever setup asks you to sign in, '
+                '"Show login" shows it (in the setup window, or as a question in the terminal).'
+            )
         else:
             username, password = ask_login(app, not fresh, value, prompt, password_prompt, output)
         value['apps'][app] = {

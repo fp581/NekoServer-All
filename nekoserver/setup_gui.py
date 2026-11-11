@@ -442,6 +442,8 @@ class Window:
         if route == 'api/start':
             choices = body.get('choices') if isinstance(body, dict) else None
             return self._fixed_or_ok(self.choose(choices if isinstance(choices, dict) else {}, start=True))
+        if route == 'api/login' and isinstance(body, dict):
+            return self.login(body.get('app'))
         if route == 'api/answer' and isinstance(body, dict):
             # The window's answer to the question setup is waiting on; the terminal may
             # have answered first, in which case this says so.
@@ -458,6 +460,33 @@ class Window:
             )
             return 200, json.dumps({'ok': bool(taken)}).encode(), JSON
         return NOT_FOUND
+
+    def login(self, app):
+        """A saved login for the window's "Show login" button. Only for an app the question
+        waiting offers (its "logins" page, guided_setup.show_logins), read from the private
+        store when asked for and sent to the window's own page alone: the request needs
+        this window's cookie, on this PC's loopback. It is never recorded: no event, no
+        log, no report."""
+        asked = setup_progress.pending_question() or {}
+        page = asked.get('page') or {}
+        offered = [row.get('id') for row in page.get('apps', [])] if page.get('form') == 'logins' else []
+        if not isinstance(app, str) or app not in offered:
+            return 403, b'{"ok": false, "reason": "No sign-in step is asking for that login now."}', JSON
+        try:
+            import account_store
+
+            entry = account_store.get(self._saved() or self.config, app)
+        except (OSError, RuntimeError, ValueError, KeyError):
+            entry = None
+        if not entry:
+            return 404, b'{"ok": false, "reason": "That login is not saved on this server."}', JSON
+        shown = {
+            'ok': True,
+            'username': entry['username'],
+            'password': entry['password'],
+            'qr': guided_setup.qr_image(entry['password']),
+        }
+        return 200, json.dumps(shown).encode(), JSON
 
     @staticmethod
     def _fixed_or_ok(taken):

@@ -297,6 +297,21 @@ def page_answer(key):
         return None
 
 
+def screen_only(text):
+    """Words for the person at the terminal alone (a saved login shown on request): written
+    straight to the terminal, never kept among the last lines a question shows in the
+    window, so they are in no event."""
+    stream = sys.stdout._inner if isinstance(sys.stdout, _Tee) else sys.stdout
+    stream.write(text)
+    stream.flush()
+
+
+def ask_terminal(prompt):
+    """A question for the terminal alone ("Press Enter to hide it"): the window is not asked."""
+    screen_only(prompt)
+    return (_plain['input'] if _watching else _real_input)('')
+
+
 def page_field(key, ask, prompt):
     """One field of the page being asked: what the window sent for it with an earlier
     field's question, else the question itself (asked in both places). EOFError when the

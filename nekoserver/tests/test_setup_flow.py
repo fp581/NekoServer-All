@@ -445,6 +445,49 @@ class SetupWindowTests(unittest.TestCase):
         seen = self.page([self.asked(question, page, leave=True)])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'fields': {'answer': ''}}]])
 
+    def test_a_sign_in_step_has_show_login_for_each_saved_login(self):
+        """0.50.0, item 9: setup made the password, then asked the person to sign in with it."""
+        apps = [
+            {'id': 'jellyfin', 'title': 'Jellyfin administrator', 'username': 'neko_ab12'},
+            {'id': 'immich', 'title': 'Immich administrator', 'username': 'me@example.org'},
+        ]
+        page = {'form': 'logins', 'fields': {'answer': ''}, 'asking': 'answer', 'apps': apps}
+        question = 'Show a login now? Type its number (Enter alone: go on): '
+        fetched = 'fetched-' + 'x' * 12
+        login = {'ok': True, 'username': 'neko_ab12', 'password': fetched, 'qr': 'data:image/svg+xml;base64,QR'}
+        # Until the button is pressed nothing of the password is on the page.
+        seen = self.page([self.asked(question, page, login=login)])
+        self.assertEqual(seen['prompt'], 'Your login for this step is saved on this server.')
+        self.assertEqual([card['title'] for card in seen['logins']], ['Jellyfin administrator', 'Immich administrator'])
+        self.assertEqual(seen['logins'][0]['user'], 'Username: neko_ab12')
+        self.assertEqual(
+            [(card['hidden'], card['password'], card['button']) for card in seen['logins']],
+            [(True, None, 'Show login')] * 2,
+        )
+        self.assertEqual((seen['send'], seen['skipHidden'], seen['contextHidden']), ('Go on', True, True))
+        self.assertEqual(seen['posts'], [])
+        # Show login asks setup's own server for that one login and shows it.
+        seen = self.page([self.asked(question, page, login=login, showLogin=1)])
+        self.assertEqual(seen['posts'], [['api/login', {'app': 'jellyfin'}]])
+        shown = seen['logins'][0]
+        self.assertEqual(
+            (shown['hidden'], shown['password'], shown['qr'], shown['button']), (False, fetched, login['qr'], 'Hide')
+        )
+        self.assertEqual(seen['logins'][1]['hidden'], True)
+        # Pressed again it is hidden, and gone from the page.
+        seen = self.page([self.asked(question, page, login=login, showLogin=[1, 1])])
+        self.assertEqual(
+            (seen['logins'][0]['hidden'], seen['logins'][0]['password'], seen['logins'][0]['button']),
+            (True, None, 'Show login'),
+        )
+        # A login setup will not give (the step is over) is said, and nothing is shown.
+        refused = {'ok': False, 'reason': 'No sign-in step is asking for that login now.'}
+        seen = self.page([self.asked(question, page, login=refused, showLogin=2)])
+        self.assertEqual((seen['logins'][1]['hidden'], seen['logins'][1]['note']), (True, refused['reason']))
+        # Go on answers the terminal's question with Enter alone.
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'fields': {'answer': ''}}]])
+
     def test_a_menu_of_its_own_shows_its_name_and_the_terminals_words(self):
         """The recovery menu and the uninstaller in the window (0.50.0): no steps, no
         switches; what the terminal said, and the menu's questions."""

@@ -248,6 +248,18 @@
     note: () => 'A retry runs that step again, then the steps that waited for it. What is done stays done.'
   };
 
+  // A step that asks you to sign in to apps: each saved login, shown only when asked for.
+  PAGES.logins = {
+    prompt: () => 'Your login for this step is saved on this server.',
+    build: buildLogins,
+    values: () => ({ answer: '' }),
+    problem: () => '',
+    send: () => 'Go on',
+    skip: false,
+    note: () =>
+      'A login is fetched from this PC when you press Show login, and is in no log. Check that nobody else can see your screen.'
+  };
+
   function pageOf(q) {
     return q.page && Object.hasOwn(PAGES, q.page.form) ? q.page : null;
   }
@@ -429,6 +441,74 @@
     $('ask-page').replaceChildren(...cards);
   }
 
+  /* One card for each saved login: its name and username, and "Show login", which asks
+     setup's own server for the password (and a QR code of it) and shows it until Hide. */
+  function buildLogins(page) {
+    pageInputs = {};
+    pickInputs = [];
+    const cards = page.apps.map(app => {
+      const shown = el('div', { class: 'login-shown' });
+      shown.hidden = true;
+      const button = el('button', { type: 'button', class: 'secondary', text: 'Show login' });
+      const note = el('small', { class: 'muted' });
+      const hide = () => {
+        shown.replaceChildren();
+        shown.hidden = true;
+        button.textContent = 'Show login';
+      };
+      button.addEventListener('click', async () => {
+        if (!shown.hidden) return hide();
+        note.textContent = '';
+        let login = null;
+        try {
+          login = await post('api/login', { app: app.id });
+        } catch {
+          /* said below */
+        }
+        if (!login?.ok) {
+          note.textContent = login?.reason || 'Could not fetch the login; the terminal can show it too.';
+          return;
+        }
+        showLogin(shown, login);
+        button.textContent = 'Hide';
+      });
+      return el(
+        'div',
+        { class: 'retry login' },
+        el('div', { class: 'row-title', text: app.title }),
+        el('p', { class: 'retry-why', text: 'Username: ' + app.username }),
+        shown,
+        button,
+        note
+      );
+    });
+    $('ask-page').replaceChildren(...cards);
+  }
+
+  /* The password as text you can copy, and as a QR code for the phone's camera. */
+  function showLogin(target, login) {
+    const field = el('input', { type: 'text', readonly: '', 'aria-label': 'Password', class: 'login-password' });
+    field.value = login.password;
+    const copy = el('button', { type: 'button', class: 'secondary', text: 'Copy' });
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(login.password);
+        copy.textContent = 'Copied';
+      } catch {
+        field.select?.();
+        copy.textContent = 'Select and copy it';
+      }
+    });
+    const parts = [el('div', { class: 'row-inputs' }, field, copy)];
+    if (login.qr) {
+      const code = el('img', { class: 'login-qr', alt: 'The password as a QR code', width: '180', height: '180' });
+      code.src = login.qr;
+      parts.push(code, el('small', { text: 'Scan it with the phone camera: it shows the password as text to paste.' }));
+    }
+    target.replaceChildren(...parts);
+    target.hidden = false;
+  }
+
   async function answerPage(q) {
     const page = pageOf(q);
     const kind = PAGES[page.form];
@@ -531,7 +611,7 @@
     const page = pageOf(q);
     // A list to pick from shows every row itself (the terminal's last lines are its tail),
     // and the retry cards say what the terminal said.
-    context.hidden = !q.context.length || page?.form === 'pick' || page?.form === 'retry';
+    context.hidden = !q.context.length || ['pick', 'retry', 'logins'].includes(page?.form);
     context.scrollTop = context.scrollHeight; // the last lines matter most
     let prompt = q.text;
     if (page) prompt = PAGES[page.form].prompt(page);

@@ -196,7 +196,11 @@ If something still needs you, the finishing screen says what. Fix it, then run `
 
 ## Seeing an app's password
 
-Your app passwords are saved on the server, and only the administrator can read them. To see one app's login on the screen (with a QR code for your phone), run this in a terminal:
+Your app passwords are saved on the server, and only the administrator can read them.
+
+**During setup** (since 0.50.0), every step that asks you to sign in to an app offers its login right there. In the setup window the step has a **Show login** button for each app: press it and the username, the password (with **Copy**) and a QR code of the password appear; **Hide** takes them away again. In the terminal the step asks `Show a login now? Type its number (Enter alone: go on):`; the login is put on the screen, and the screen is cleared when you press Enter. Right after setup makes a login it says so, with its username. A login shown this way is written to no log, no report and not to the dashboard, and the window fetches it from setup on this PC only when you press the button.
+
+**Any time later**, to see one app's login on the screen (with a QR code for your phone), run this in a terminal:
 
 ```bash
 sudo python3 /srv/nekoserver/installer/releases/v0.50.0/account-setup.py show

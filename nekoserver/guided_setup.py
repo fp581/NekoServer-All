@@ -254,8 +254,125 @@ def check_passed(verify, output):
     return passed
 
 
-def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, prompt=None, output=None, keys=KEYS):
-    """No repeats instructions/opening; yes must also pass any supplied verifier.
+# Moves to the top, clears the screen and, in most terminals, the lines scrolled out of view too.
+CLEAR_SCREEN = '\033[H\033[2J\033[3J'
+
+
+def saved_logins(config, apps):
+    """[{'id', 'title', 'username'}] for the accounts among `apps` (account_store's names)
+    that have a saved login. Empty when the logins cannot be read (no SSD yet)."""
+    import account_store
+
+    found = []
+    for app in apps:
+        if app not in account_store.APPS:
+            continue  # an app with no login of its own here (the dashboard, say)
+        try:
+            entry = account_store.get(config, app)
+        except (OSError, RuntimeError, ValueError, KeyError):
+            return []
+        if entry:
+            found.append({'id': app, 'title': account_store.APPS[app][0], 'username': entry['username']})
+    return found
+
+
+def qr_image(text):
+    """`text` as a QR code the setup window can show (an SVG picture as a data: address),
+    or '' without qrencode. The text goes in on qrencode's input, never on its command
+    line, where other accounts on this PC could read it."""
+    import base64
+
+    if not shutil.which('qrencode'):
+        return ''
+    try:
+        made = subprocess.run(
+            ['qrencode', '-t', 'SVG', '-m', '2', '-o', '-'],
+            input=text,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    if made.returncode or '<svg' not in made.stdout:
+        return ''
+    picture = made.stdout[made.stdout.index('<svg') :]
+    return 'data:image/svg+xml;base64,' + base64.b64encode(picture.encode()).decode()
+
+
+def terminal_qr(text):
+    """`text` as a QR code drawn in the terminal, or '' without qrencode (its input, not
+    its command line, as qr_image)."""
+    if not shutil.which('qrencode'):
+        return ''
+    try:
+        made = subprocess.run(
+            ['qrencode', '-t', 'ANSIUTF8', '-m', '2'],
+            input=text,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    return made.stdout if made.returncode == 0 else ''
+
+
+def show_logins(config, apps, prompt=None, output=None, screen=None, wait=None, qr=terminal_qr):
+    """At a step that asks the person to sign in to apps whose logins setup made or saved
+    (0.50.0): says that they are saved, and offers to show one. In the terminal the
+    username, the password and a QR code of it go to the screen alone (`screen`), until
+    Enter, and the screen is cleared after; nothing of it reaches the log, a report or
+    the window's events. In the setup window the same step is a page with a "Show login"
+    button for each app, which fetches the login when pressed (setup_gui.Window.login).
+    Does nothing when none of the apps has a saved login."""
+    import account_store
+    import setup_progress
+
+    logins = saved_logins(config, apps)
+    if not logins:
+        return
+    prompt, output = prompt or input, output or print
+    screen, wait = screen or setup_progress.screen_only, wait or setup_progress.ask_terminal
+    output('Your login for this step is saved on this server (never in a log):')
+    for number, login in enumerate(logins, 1):
+        output(f"  {number}) {login['title']}: {login['username']}")
+    with setup_progress.page('logins', {'answer': ''}, apps=logins):
+        setup_progress.page_asks('answer')
+        while True:
+            answer = prompt('Show a login now? Type its number (Enter alone: go on): ').strip()
+            if not answer:
+                return
+            if not (answer.isdigit() and 1 <= int(answer) <= len(logins)):
+                output(f'Type a number from 1 to {len(logins)}, or press Enter alone to go on.')
+                continue
+            login = logins[int(answer) - 1]
+            entry = account_store.get(config, login['id'])
+            code = qr(entry['password'])
+            screen(
+                f"\n  {login['title']}\n  Username: {entry['username']}\n  Password: {entry['password']}\n"
+                + (
+                    f'\n  Or scan this code with the phone camera: it shows the password as text.\n{code}'
+                    if code
+                    else ''
+                )
+                + '  Capital letters matter: type it exactly as shown.\n'
+            )
+            try:
+                wait('  Press Enter to hide it (the screen is cleared): ')
+            finally:
+                screen(CLEAR_SCREEN)
+            output('The login is hidden again.')
+
+
+def checkpoint(
+    ctx, title, instructions, targets=(), verify=None, prepare=None, prompt=None, output=None, keys=KEYS, logins=()
+):
+    """No repeats instructions/opening; yes must also pass any supplied verifier. `logins`:
+    the saved logins (account_store's names) this step asks the person to sign in with,
+    offered to be shown before the question (show_logins).
 
     EOF (Ctrl+D) leaves this step pending; Ctrl+C stops setup. Background/read-only runs never launch or
     prompt. Callers retain machine and witnessed evidence as separate concepts.
@@ -268,6 +385,7 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, 
         while True:
             show_step(output, title, instructions, keys)
             open_targets(ctx, prepared_targets(targets, prepare, output), output)
+            show_logins(ctx.config, logins, prompt, output)
             answer = yes_no('Have you completed this step successfully?', prompt, output)
             if answer is None:
                 raise EOFError
@@ -803,4 +921,5 @@ def app_security(ctx, apps, ports):
         ],
         [('url', 'http://127.0.0.1:' + str(ports[app]) + '/') for app in apps],
         verify=verify,
+        logins=apps,
     )

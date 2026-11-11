@@ -103,7 +103,8 @@ def run(ctx):
             'Finish media provider setup',
             [
                 'Read the onboarding results above to identify the remaining configuration.',
-                'Sign into the relevant opened applications using their saved app accounts. '
+                'Sign into the relevant opened applications using their saved logins ("Show login" in the setup '
+                'window, or the question below this list in the terminal, shows them). '
                 'Finish selected provider/indexer credentials or any provider verification in its own page.',
                 'Run  sudo bash install.sh  again afterwards: it checks the configuration again.',
             ],
@@ -112,6 +113,7 @@ def run(ctx):
                 for a in ctx.config.get('media', {}).get('services', [])
                 if a in ports
             ],
+            logins=[a for a in media_services(ctx.config) if a in ports],
         )
         ctx.log('Media deployed; connecting the apps is not finished: ' + why)
         return {

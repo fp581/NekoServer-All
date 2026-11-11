@@ -241,6 +241,7 @@ def configure_indexers(root, apply, config=None):
                         ],
                         [('url', 'http://127.0.0.1:9696/')],
                         verify=present,
+                        logins=['prowlarr'],
                     )
                     if done:
                         failures.pop()

@@ -53,7 +53,10 @@ def phone_steps(ctx, result):
         if app not in links:
             continue
         if not guided_setup.checkpoint(
-            ctx, 'Phone: ' + phone_guide.APPS[app]['title'], phone_guide.instructions(ctx.config, app, links[app])
+            ctx,
+            'Phone: ' + phone_guide.APPS[app]['title'],
+            phone_guide.instructions(ctx.config, app, links[app]),
+            logins=[phone_guide.login_of(ctx.config, app)] if app in phone_guide.LOGIN else (),
         ):
             return False
     return guided_setup.checkpoint(

@@ -283,6 +283,18 @@ never their answers. Tests:
 `test_the_qr_code_gets_the_password_on_its_input_not_its_command_line` (tests/test_show_login.py:97),
 `test_questions_are_seen_while_they_wait_and_never_their_answers` (tests/test_setup_gui.py:86),
 `test_the_pin_is_asked_twice_and_only_passed_to_the_runtime` (tests/test_dashboard.py:505).
+A login shown at a sign-in step (0.50.0, "Show login") goes to the terminal's screen alone or to the window's own
+page on request, never into an event, the log or a report:
+`test_the_login_is_offered_and_shown_on_the_screen_alone`,
+`test_the_words_for_the_terminal_alone_are_in_no_event`,
+`test_show_login_gives_the_login_of_the_step_under_way`,
+`test_only_a_login_the_question_waiting_offers`,
+`test_only_the_windows_own_page_may_ask`,
+`test_the_qr_code_is_made_from_qrencodes_input_never_its_command_line` (tests/test_sign_in_logins.py);
+a password typed in the window (0.50.0, item 8) likewise:
+`test_a_program_of_setups_asks_its_questions_in_the_window_too`,
+`test_the_shared_folders_password_is_one_hidden_page_and_goes_to_samba_on_its_input`,
+`test_a_page_field_is_asked_once_and_the_windows_copy_is_never_reused` (tests/test_setup_gui.py).
 
 **S08 NekoServer works the same without the AI assistant.** The assistant (ASSISTANT.md) is
 optional and off unless chosen; with its model missing, unsupported, slow, out of memory or

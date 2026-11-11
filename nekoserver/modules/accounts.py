@@ -51,8 +51,8 @@ def finish_pending(ctx, pending):
             [
                 'Open the app and complete its remaining first-run or verification steps. '
                 'If data already exists, use its current account; do not reset it.',
-                'Use the saved username/email and password from the private '
-                'secrets/accounts/APP-CREDENTIALS.txt under your data SSD mount.',
+                'Use the saved username/email and password: "Show login" in the setup window, or the question '
+                'below this list in the terminal, shows them.',
                 'For an email verification explicitly requested by the app, open your email app '
                 'and approve the message. Local email-shaped logins usually do not need this.',
                 'If the saved credentials are wrong, leave this step pending with Ctrl+C, '
@@ -61,6 +61,7 @@ def finish_pending(ctx, pending):
             ],
             [('url', 'http://127.0.0.1:' + str(port) + '/')],
             verify=verify,
+            logins=[app],
         )
         if not done:
             remaining.append(app)

@@ -725,6 +725,31 @@ main > section {
 .retry-fix li {
   margin: 2px 0;
 }
+/* a saved login shown on request: the password to copy, and its QR code */
+.login-shown {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+.login-shown[hidden] {
+  display: none;
+}
+.login-password {
+  min-width: 22em;
+  max-width: 100%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, 'JetBrains Mono', Menlo, monospace;
+  font-size: 14px;
+}
+.login-qr {
+  background: #fff;
+  border-radius: 8px;
+  padding: 4px;
+}
 /* a long list to pick from: a search box, then rows that scroll */
 .pick-top {
   display: flex;
