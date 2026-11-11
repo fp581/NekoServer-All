@@ -1063,6 +1063,12 @@ pub fn stream(
             piece(text);
         }
         if part["done"] == true {
+            // Ollama ends an answer that reached its token limit (num_predict) with
+            // "done": true and "done_reason": "length": that answer stops in the middle
+            // of a sentence, so it is not whole either.
+            if part["done_reason"] == "length" {
+                return Err(LENGTH_LIMIT.into());
+            }
             return Ok(answer);
         }
     }
@@ -1070,6 +1076,11 @@ pub fn stream(
 
 /// Said when the answer stopped before Ollama marked it as finished.
 pub const CUT_OFF: &str = "the answer was cut off before it ended; ask again";
+
+/// Said when the answer reached the length an answer may have (ANSWER_TOKENS) before the
+/// model had finished it.
+pub const LENGTH_LIMIT: &str =
+    "the answer reached its length limit before it ended, so it is not whole; ask again about one thing at a time";
 
 /// Ollama's error in words a person can act on.
 fn plain_error(said: &str) -> String {
@@ -2002,6 +2013,55 @@ mod tests {
         assert!(progress("0123456789abcdef0123456789abcdef", "token:abc").is_none());
         // The slot is free again once the answer has ended.
         wait_until(|| Turn::take().is_some());
+    }
+
+    /// Review of the 0.50.0 fixes: an answer that Ollama ended at its token limit
+    /// ("done": true, "done_reason": "length") counted as whole: a repair was read from
+    /// it and a bug report made from half a report.
+    #[test]
+    fn an_answer_ended_by_the_length_limit_is_not_whole() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let ended = |reason: &str| {
+            let body = [
+                r#"{"message":{"content":"Look for updates.\nACTION: update_check\nBUG REPORT: the retention st"},"done":false}"#.to_string(),
+                format!(r#"{{"message":{{"content":""}},"done":true,"done_reason":"{reason}"}}"#),
+            ]
+            .join("\n");
+            let (address, _) = fake_ollama(Some(format!("HTTP/1.0 200 OK\r\n\r\n{body}\n")));
+            let id = begin(
+                Turn::take().unwrap(),
+                "local".into(),
+                address,
+                "m".into(),
+                2,
+                json!([]),
+                vec![("update_check".to_string(), String::new())],
+                LIMITS,
+            )
+            .unwrap();
+            wait_until(|| asks().get(&id).is_some_and(|a| a.ended.is_some()));
+            wait_until(|| Turn::take().is_some());
+            progress(&id, "local").unwrap()
+        };
+        // Ended by the limit: failed, said why, not done, and no repair read from it.
+        let cut = ended("length");
+        assert_eq!(cut["done"], false, "{cut}");
+        assert_eq!(cut["repair"], Value::Null, "{cut}");
+        assert_eq!(
+            cut["failed"],
+            format!("{NOT_AVAILABLE}: {LENGTH_LIMIT}"),
+            "{cut}"
+        );
+        // The page still gets what came, to show it marked as cut off.
+        assert!(
+            cut["text"].as_str().unwrap().ends_with("the retention st"),
+            "{cut}"
+        );
+        // The model's own end is a whole answer, and its repair is offered.
+        let whole = ended("stop");
+        assert_eq!(whole["done"], true, "{whole}");
+        assert_eq!(whole["repair"], "update_check", "{whole}");
+        assert_eq!(whole["failed"], Value::Null, "{whole}");
     }
 
     #[test]
