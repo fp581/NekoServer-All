@@ -662,7 +662,9 @@
       input.disabled = !!drive.why;
       // Only the ones that can be chosen are switched off and on again around an answer.
       if (!drive.why) pickInputs.push(input);
-      const facts = [drive.inside, drive.role, drive.why ? 'Not this one: ' + drive.why : ''].filter(Boolean);
+      const facts = [drive.inside, drive.role, drive.why ? 'Not this one: ' + drive.why : '', drive.caution].filter(
+        Boolean
+      );
       list.append(
         el(
           'label',
@@ -693,7 +695,7 @@
   /* What the chosen drive holds now, under its line (it changes with the choice). */
   function driveFacts(role, select, facts) {
     const drive = role.rows.find(row => String(row.number) === select.value);
-    facts.textContent = drive ? [drive.name, drive.inside].filter(Boolean).join(' · ') : '';
+    facts.textContent = drive ? [drive.name, drive.inside, drive.caution].filter(Boolean).join(' · ') : '';
   }
 
   /* The storage page: every line is a list to choose from. A drive is named by what it

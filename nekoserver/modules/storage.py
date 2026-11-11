@@ -478,6 +478,8 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
             # tried it out, and mounting it below shows whether it is still there.
             selected.add(uuid)
             continue
+        if system_folder(record, key):
+            continue  # a folder of the disk Linux runs from: checked when it is mounted
         if uuid:
             uuid = saved_choice(
                 record,
@@ -497,7 +499,11 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
                 raise RuntimeError(
                     f'No drive is chosen for {label} yet. Run  sudo bash install.sh  in a terminal on the server to choose it.'
                 )
-            device = whole(unlocked(choose_new(config, table, key, input_fn, out_fn)))
+            row = choose_new(config, table, key, input_fn, out_fn)
+            if row['system']:
+                on_system_disk(record, key)
+                continue
+            device = whole(unlocked(row['device']))
             local_ssd(key, device)
             new_drive(record, device)
             uuid = device['uuid']
@@ -509,6 +515,116 @@ def resolve_storage_identity(config, inventory, apply=False, interactive=False, 
         selected_disks |= own_disks(uuid, items, selected_disks, apply)
         selected.add(uuid)
     return configured
+
+
+# ---- a role kept on the disk Linux runs from (0.50.0) -----------------------------------
+# The person may choose that disk for the apps, for the media and backups, or for both (a
+# PC with one drive). The role is then a folder of that disk, mounted at the role's usual
+# place by a bind mount, so every path and every check stays what it is: findmnt shows
+# such a mount as /dev/sda2[/var/lib/nekoserver/apps], the way it shows a Btrfs
+# subvolume, and the record keeps that folder as its "subvolume", which every drive
+# check (here and in the runtime) already compares.
+# The folders are fixed, one for each role, and never one inside the other (the app
+# backup copies the app folder: the backups must not be in it).
+SYSTEM_FOLDERS = {'data_ssd': '/var/lib/nekoserver/apps', 'media_hdd': '/var/lib/nekoserver/media'}
+
+
+def system_folder(record, key):
+    """The folder of the system disk this role is kept in, or None for a drive of its
+    own. The settings name it ("folder"); only the role's own fixed folder is accepted,
+    and that constant is what is used."""
+    if not isinstance(record, dict) or record.get('folder') is None:
+        return None
+    if key not in SYSTEM_FOLDERS or record['folder'] != SYSTEM_FOLDERS[key]:
+        raise RuntimeError(
+            f'"folder" of "{key}" under "storage" in my-config.json must be {SYSTEM_FOLDERS.get(key, "left out")}: '
+            'it is set by setup when the disk Linux runs from is chosen. Take it out and run setup again to choose a drive.'
+        )
+    return SYSTEM_FOLDERS[key]
+
+
+def system_folders(config):
+    """{where a role is mounted: its folder on the system disk} for the roles kept there."""
+    found = {}
+    for key, mount_key in (('data_ssd', 'data_mount'), ('media_hdd', 'media_mount')):
+        folder = system_folder(config.get('storage', {}).get(key), key)
+        if folder:
+            found[str(mount_path(config[mount_key]))] = folder
+    return found
+
+
+def system_filesystem():
+    """(UUID, filesystem type) of the filesystem Linux runs from."""
+    found = (findmnt('UUID,FSTYPE', '/', '--target') or '').split()
+    if len(found) != 2:
+        raise RuntimeError('Setup cannot tell which filesystem Linux runs from (findmnt / gave no UUID)')
+    return found[0], found[1]
+
+
+def system_free_gb():
+    """The room left on the filesystem Linux runs from, in GB."""
+    return shutil.disk_usage('/').free // 10**9
+
+
+def on_system_disk(record, key):
+    """The settings of a role just placed on the disk Linux runs from."""
+    uuid, fstype = system_filesystem()
+    record.clear()
+    record.update(uuid=uuid, fstype=fstype, folder=SYSTEM_FOLDERS[key])
+
+
+def validate_system_folder(uuid, fstype):
+    """A role kept on the system disk names the filesystem Linux runs from now (a
+    reinstalled Linux has another: setup stops instead of using a folder of it unasked)."""
+    if system_filesystem() != (uuid, fstype):
+        raise RuntimeError(
+            f'The settings keep a part of NekoServer on the disk Linux runs from (UUID {uuid}), but Linux now runs '
+            'from another filesystem: it was reinstalled, or the settings are from another PC. Take that drive\'s '
+            'entry out of "storage" in my-config.json and run setup again to choose where it goes. Nothing was changed.'
+        )
+
+
+def bind_line(folder, mountpoint):
+    """The fstab line that mounts a folder of the system disk at a role's place."""
+    if any(c.isspace() for c in mountpoint):
+        raise RuntimeError('Mountpoint cannot contain whitespace')
+    return f'{folder} {mountpoint} none bind 0 0'
+
+
+def own_bind_line(found):
+    return len(found) == 6 and found[0] in SYSTEM_FOLDERS.values() and found[2:] == ['none', 'bind', '0', '0']
+
+
+def bind_line_index(lines, mountpoint, entry, connected=None, notes=None):
+    """The index of the fstab line to replace with `entry` (a role's folder on the system
+    disk), None when its place has no line yet. NekoServer's own line there is replaced:
+    its bind line, or its line for a drive that is not connected any more (the drive given
+    up for the system disk). Any other line for the place stops setup."""
+    connected = connected or drive_connected
+    folder = fstab_folder(mountpoint)
+    matches = [
+        (i, s.split())
+        for i, s in enumerate(lines)
+        if s.strip() and not s.lstrip().startswith('#') and len(s.split()) >= 2 and fstab_folder(s.split()[1]) == folder
+    ]
+    if not matches:
+        return None
+    index, found = matches[0]
+    if len(matches) == 1 and own_bind_line(found):
+        return index
+    if len(matches) == 1 and own_line(found) and not connected(found[0][len('UUID=') :]):
+        if notes is not None:
+            notes.append(
+                f'{mountpoint}: the earlier drive ({found[0]}) is not connected; its line in /etc/fstab '
+                f'is replaced by one for the folder {entry.split()[0]} on the disk Linux runs from'
+            )
+        return index
+    theirs = '\n'.join('    ' + lines[i].strip() for i, _ in matches)
+    raise RuntimeError(
+        f'/etc/fstab already has a line for {mountpoint}, which NekoServer did not write for the folder '
+        f'{entry.split()[0]}:\n{theirs}\nTake that line out of /etc/fstab, unmount what is mounted there '
+        '(sudo umount <folder>), and run  sudo bash install.sh  again.'
+    )
 
 
 def shared_folder(record, key):
@@ -547,7 +663,7 @@ def choose_new(config, table, key, input_fn, out_fn):
     if not drive_table.usable(table, key, config):
         raise RuntimeError(drive_table.none_usable(table, key, config))
     drive_table.show_once(table, config, out_fn)
-    return drive_table.ask(table, key, config, input_fn, out_fn)['device']
+    return drive_table.ask(table, key, config, input_fn, out_fn)
 
 
 def not_offered(inventory, uuid):
@@ -714,7 +830,10 @@ def mount_specs(config):
     specs += extra_specs(config)
     if Path(specs[0][3]) in Path(specs[1][3]).parents or Path(specs[1][3]) in Path(specs[0][3]).parents:
         raise RuntimeError('Data and media mountpoints must not be nested')
-    if len({s[1] for s in specs}) != len(specs) or len({s[3] for s in specs}) != len(specs):
+    # Two roles kept on the system disk are two folders of one filesystem: the same UUID,
+    # told apart by their folders. Two drives of their own are two filesystems.
+    drives = [s[1] for s in specs if s[3] not in system_folders(config)]
+    if len(set(drives)) != len(drives) or len({s[3] for s in specs}) != len(specs):
         raise RuntimeError('Data and media require different UUIDs and mountpoints')
     return specs
 
@@ -743,6 +862,13 @@ def subvolume_of(record):
     value = record.get('subvolume')
     if value in (None, '', '/'):
         return None
+    if record.get('folder'):
+        # A role on the system disk: the folder as findmnt shows it, learned when it was mounted.
+        if not isinstance(value, str) or not value.startswith('/') or any(c.isspace() for c in value):
+            raise RuntimeError(
+                'storage subvolume must be the folder findmnt shows for the role, such as /var/lib/nekoserver/apps'
+            )
+        return value.rstrip('/')
     if (
         record.get('fstype') != 'btrfs'
         or not isinstance(value, str)
@@ -770,7 +896,7 @@ def remember_subvolumes(config, run=subprocess.run):
     filesystem's default one (whose files the apps would find missing)."""
     for key, mount_key in [('data_ssd', 'data_mount'), ('media_hdd', 'media_mount')]:
         record = config.get('storage', {}).get(key, {})
-        if record.get('fstype') != 'btrfs' or record.get('subvolume'):
+        if record.get('subvolume') or (record.get('fstype') != 'btrfs' and not record.get('folder')):
             continue
         found = mounted_subvolume(config[mount_key], run)
         if found:
@@ -1030,21 +1156,26 @@ def shared_folder_line(lines, mountpoint, entry, connected=drive_connected, note
     )
 
 
-def install_fstab(specs, path=Path('/etc/fstab'), log=None, network=frozenset(), exports=None):
+def install_fstab(specs, path=Path('/etc/fstab'), log=None, network=frozenset(), exports=None, folders=None):
     """Add (or bring up to date) the lines that mount the SSD and HDD at boot: NekoServer's
     own line with older options, or for a drive that is gone (replaced), is rewritten. A
     line for the same drive or folder that NekoServer didn't write stops setup instead.
     `network`: the UUIDs of the drives on a NAS, mounted once it can be reached;
-    `exports`: {identity: address} of the drives that are folders a NAS shares (NFS)."""
+    `exports`: {identity: address} of the drives that are folders a NAS shares (NFS);
+    `folders`: {mountpoint: folder} of the roles kept on the disk Linux runs from."""
     import nfs_exports
 
     exports = exports or {}
+    folders = folders or {}
     path = safe_path(path)
     existing = path.read_text() if path.exists() else ''
     lines = existing.splitlines()
     additions, upgraded, notes = [], False, []
     for _, uuid, fstype, mountpoint, subvolume in specs:
-        if uuid in exports:
+        if mountpoint in folders:
+            entry = bind_line(folders[mountpoint], mountpoint)
+            index = bind_line_index(lines, mountpoint, entry, notes=notes)
+        elif uuid in exports:
             entry = nfs_exports.fstab_line(exports[uuid], mountpoint, fstype)
             index = shared_folder_line(lines, mountpoint, entry, notes=notes)
         else:
@@ -1114,8 +1245,11 @@ def place_drives(context, inventory):
     remember_subvolumes(context.config)
     specs = mount_specs(context.config)
     exports = shared_folders(context.config)
+    folders = system_folders(context.config)
     for _, uuid, fstype, target, _ in specs:
-        if uuid not in exports:
+        if target in folders:
+            validate_system_folder(uuid, fstype)
+        elif uuid not in exports:
             validate_device(uuid, fstype)  # raises if the drive identity is wrong
         if waits_for_first_use(target):
             continue  # a shared folder not opened since the start: mount_all opens and checks it
@@ -1124,7 +1258,8 @@ def place_drives(context, inventory):
             mounted = current.split('[')[0]
             if mounted_filesystem(target) != (uuid, fstype):
                 raise RuntimeError(f'Wrong filesystem already mounted at {target}: {mounted}')
-            only_a_folder(target, fstype, mounted_subvolume(target))
+            if target not in folders:
+                only_a_folder(target, fstype, mounted_subvolume(target))
         elif Path(target).exists() and any(Path(target).iterdir()):
             raise RuntimeError(
                 f'Refusing mount over nonempty directory {target}: something is already in that folder '
@@ -1251,23 +1386,28 @@ def mount_all(context, specs, fstab=Path('/etc/fstab')):
     drive's subvolume and its fstab line pinned to it, so a restart (or a later change of
     the default) mounts the same files, and the next run finds the line its own."""
     exports = shared_folders(context.config)
-    install_fstab(specs, fstab, context.log, network_uuids(context.config), exports)
+    folders = system_folders(context.config)
+    install_fstab(specs, fstab, context.log, network_uuids(context.config), exports, folders)
     call(['systemctl', 'daemon-reload'])
     pinned = []
     for key, uuid, fstype, target, subvolume in specs:
-        found = mount_and_check(uuid, target, subvolume, fstype, context.log)
+        found = mount_and_check(uuid, target, subvolume, fstype, context.log, folders.get(target))
         note = raid_note(target)
         if note:
             context.log(note)
         if found != subvolume:
             context.config['storage'][key]['subvolume'] = found
             pinned.append((key, uuid, fstype, target, found))
-            context.log(f'{target}: the drive\'s default Btrfs subvolume is {found}; saved, so it is always mounted')
-        named = exports.get(uuid) or f'UUID={uuid}'
+            context.log(
+                f'{target}: kept in the folder {found} of the disk Linux runs from; saved, so every check knows it'
+                if target in folders
+                else f'{target}: the drive\'s default Btrfs subvolume is {found}; saved, so it is always mounted'
+            )
+        named = folders.get(target) or exports.get(uuid) or f'UUID={uuid}'
         context.log(f'Mounted {named} on {target}; fstab configured for reboot')
     if pinned:
         save_storage(context)
-        install_fstab(mount_specs(context.config), fstab, context.log, network_uuids(context.config), exports)
+        install_fstab(mount_specs(context.config), fstab, context.log, network_uuids(context.config), exports, folders)
         call(['systemctl', 'daemon-reload'])
 
 
@@ -1329,12 +1469,16 @@ def mount_target(target, uuid, fstype, log=None):
             )
 
 
-def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None):
+def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None, folder=None):
     """Mount the drive (unless it is) and make sure what is mounted is the drive, and the
     Btrfs subvolume, the settings name. Returns the subvolume mounted: with none saved
     (the fstab line names none) that is the filesystem's default tree, whatever it is;
-    always None for a drive that is not Btrfs."""
+    always None for a drive that is not Btrfs. `folder`: the role is kept in this folder
+    of the disk Linux runs from (made when it is not there); what is returned is that
+    folder as findmnt shows it, and it must be that folder."""
     Path(target).mkdir(parents=True, exist_ok=True)
+    if folder:
+        Path(folder).mkdir(parents=True, exist_ok=True)
     if findmnt('TARGET', target) is None:
         try:
             # A big drive replaying its journal after a power cut can take minutes.
@@ -1350,7 +1494,14 @@ def mount_and_check(uuid, target, subvolume, fstype='btrfs', log=None):
     if mounted_filesystem(target) != (uuid, fstype):
         raise RuntimeError(f'Post-mount validation failed for {target}')
     found = mounted_subvolume(target)
-    only_a_folder(target, fstype, found)
+    if folder:
+        if not found or not found.endswith(folder):
+            raise RuntimeError(
+                f'{target} should be the folder {folder} of the disk Linux runs from, but something else is '
+                f'mounted there ({found or "a whole filesystem"}). Unmount it (sudo umount {target}) and run setup again'
+            )
+    else:
+        only_a_folder(target, fstype, found)
     if subvolume is not None and found != subvolume:
         raise RuntimeError(
             f'{target} is mounted with Btrfs subvolume {found or "(default)"}, but the settings say '

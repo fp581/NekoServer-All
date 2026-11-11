@@ -242,6 +242,25 @@ pub fn media_services(cfg: &Value) -> Vec<&str> {
         .filter(|app| app_wanted(cfg, app))
         .collect()
 }
+/// The app drive and the media drive are one filesystem by choice (setup's storage page,
+/// 0.50.0: both kept on the disk Linux runs from). Each is then a folder of it ("folder"
+/// in its record), mounted at the role's place and told apart by the folder findmnt
+/// shows there ("subvolume"), which every drive check compares. Only then may the two
+/// carry one UUID.
+pub fn share_system_disk(cfg: &Value) -> bool {
+    let storage = &cfg["storage"];
+    let folder = |key: &str| {
+        storage[key]["folder"]
+            .as_str()
+            .is_some_and(|f| !f.is_empty())
+    };
+    let kept = |key: &str| storage[key]["subvolume"].as_str().unwrap_or("");
+    folder("data_ssd")
+        && folder("media_hdd")
+        && !kept("data_ssd").is_empty()
+        && !kept("media_hdd").is_empty()
+        && kept("data_ssd") != kept("media_hdd")
+}
 /// Immich is set up: photos.deploy_immich, and the Photos group not left out.
 pub fn immich_wanted(cfg: &Value) -> bool {
     media_group(cfg, "photos") && cfg["photos"]["deploy_immich"] == true
@@ -1433,6 +1452,32 @@ mod media_answer_tests {
         let mut unknown = cfg.clone();
         unknown["locations"]["photos"] = json!("d9");
         assert!(files_root(&unknown, "photos").is_err());
+    }
+
+    /// One filesystem for the apps and the media only when both are folders of the system
+    /// disk by choice, each known by its own folder (modules/storage.py SYSTEM_FOLDERS).
+    #[test]
+    fn two_roles_share_a_filesystem_only_as_folders_of_the_system_disk() {
+        use super::share_system_disk;
+        let role = |folder: &str, kept: &str| json!({"uuid": "root-1", "fstype": "ext4", "folder": folder, "subvolume": kept});
+        let apps = role("/var/lib/nekoserver/apps", "/var/lib/nekoserver/apps");
+        let media = role("/var/lib/nekoserver/media", "/var/lib/nekoserver/media");
+        assert!(share_system_disk(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": media}})
+        ));
+        // One of them a drive of its own, the folder not learned yet, or both the same folder: no.
+        let drive = json!({"uuid": "root-1", "fstype": "ext4"});
+        assert!(!share_system_disk(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": drive}})
+        ));
+        let unknown = role("/var/lib/nekoserver/media", "");
+        assert!(!share_system_disk(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": unknown}})
+        ));
+        assert!(!share_system_disk(
+            &json!({"storage": {"data_ssd": apps, "media_hdd": apps}})
+        ));
+        assert!(!share_system_disk(&json!({})));
     }
 
     /// The three groups (neko_common.media_group and tests/test_media_groups.py): each

@@ -559,6 +559,15 @@ class DriveStepTests(unittest.TestCase):
         ]
     }  # fmt: skip
 
+    def setUp(self):
+        # The disk Linux runs from, the same on every machine these tests run on: ext4 and
+        # full, so it is in the list and cannot be chosen (tests/test_drive_table.py has
+        # the one with room).
+        for name, value in (('system_filesystem', ('root-fs-0001', 'ext4')), ('system_free_gb', 0)):
+            patch = mock.patch.object(storage, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def test_a_nas_disk_is_known_as_one_with_its_identity(self):
         found = {v['uuid']: v for v in storage.discover_filesystems(self.INVENTORY, sub_uuid=lambda n: None)}
         self.assertTrue(found['nas-1']['network'])

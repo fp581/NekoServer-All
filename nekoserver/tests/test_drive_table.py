@@ -94,6 +94,11 @@ class DriveListCase(unittest.TestCase):
             patch = mock.patch.object(target, name, stand_in)
             patch.start()
             self.addCleanup(patch.stop)
+        # The disk Linux runs from, the same on every machine: ext4 with 300 GB free.
+        for name, value in (('system_filesystem', ('root-0001', 'ext4')), ('system_free_gb', 300)):
+            patch = mock.patch.object(storage, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
 
     def table(self, config=None, inventory=None):
         return drive_table.rows(inventory or INVENTORY, config or dict(FOLDERS))
@@ -133,11 +138,13 @@ class TableTests(DriveListCase):
         def can(key):
             return [row['number'] for row in drive_table.usable(table, key, config)]
 
-        self.assertEqual(can('data_ssd'), [2, 3, 8])
-        self.assertEqual(can('media_hdd'), [2, 3, 7, 8])
+        # The disk Linux runs from (1) can hold the apps or the media, never the offline backup.
+        self.assertEqual(can('data_ssd'), [1, 2, 3, 8])
+        self.assertEqual(can('media_hdd'), [1, 2, 3, 7, 8])
         self.assertEqual(can('usb'), [2, 3, 4, 5, 7, 8])  # a disk on the NAS may hold the backup
+        self.assertEqual(drive_table.verdict(table[0], 'usb', config), drive_table.SYSTEM_NOT_OFFLINE)
         why = {row['number']: drive_table.verdict(row, 'data_ssd', config) for row in table}
-        self.assertEqual(why[1], 'it is the disk Linux runs from, which NekoServer never uses for your files')
+        self.assertEqual(why[1], '')
         self.assertTrue(why[4].startswith('it is formatted exFAT, which Linux apps can'), why[4])
         self.assertEqual(
             why[5], 'it is too small: the app SSD needs a drive of at least 22 GB (20 GB free once formatted)'
@@ -245,7 +252,7 @@ class QuestionTests(DriveListCase):
         return config
 
     def test_the_whole_conversation_is_the_golden_text(self):
-        talk = Conversation(['1', '5', '2', '2', '3', '9', '4'])
+        talk = Conversation(['5', '2', '2', '3', '9', '4', '1', '1'])
         talk.heading('A first run: the list, then the app SSD, the media HDD and the USB backup drive')
         config = self.first_run(talk)
         photo_backup.select_external(config, INVENTORY, talk.ask, talk.out)
@@ -254,9 +261,21 @@ class QuestionTests(DriveListCase):
         self.assertEqual(config['photos']['external_backup_uuid'], 'USB0-0001')
         talk.heading('Setup run again: the drives chosen last time')
         storage.resolve_storage_identity(config, INVENTORY, True, True, talk.ask, talk.out)
+        talk.heading('A PC with one drive: the disk Linux runs from holds the apps, the media and the backups')
+        alone = {'blockdevices': [INVENTORY['blockdevices'][2]]}
+        one = dict(FOLDERS)
+        with mock.patch('builtins.input', talk.ask):
+            storage.resolve_storage_identity(one, alone, True, True, talk.ask, talk.out)
+        self.assertEqual(
+            one['storage'],
+            {
+                'data_ssd': {'uuid': 'root-0001', 'fstype': 'ext4', 'folder': '/var/lib/nekoserver/apps'},
+                'media_hdd': {'uuid': 'root-0001', 'fstype': 'ext4', 'folder': '/var/lib/nekoserver/media'},
+            },
+        )
         talk.heading('A PC with no drive that can be used')
         bare = {'blockdevices': [INVENTORY['blockdevices'][2], INVENTORY['blockdevices'][7]]}
-        with self.assertRaises(RuntimeError) as caught:
+        with self.assertRaises(RuntimeError) as caught, mock.patch.object(storage, 'system_free_gb', return_value=5):
             storage.resolve_storage_identity(dict(FOLDERS), bare, True, True, talk.ask, talk.out)
         talk.out(caught.exception)
         said = '\n'.join(talk.lines).strip() + '\n'
@@ -349,9 +368,11 @@ class WindowFormTests(DriveListCase):
                 'inside': 'ext4, UUID ssd-0001; not open; about 1 % full',
                 'role': '',
                 'why': '',
+                'caution': '',
             },
         )
-        self.assertEqual(choose['rows'][0]['why'], drive_table.SYSTEM_DISK)
+        # The disk Linux runs from can be chosen, and says what that means before it is.
+        self.assertEqual((choose['rows'][0]['why'], choose['rows'][0]['caution']), ('', drive_table.SYSTEM_DISK))
         self.assertEqual(len(talk.pages), 2)  # two questions, no confirmation between them
         self.assertNotIn('confirm', choose)
         # The media HDD's page: the drive just chosen says its role and cannot be chosen.

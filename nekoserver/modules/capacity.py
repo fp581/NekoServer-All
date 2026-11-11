@@ -299,10 +299,23 @@ def assess(
     drives is the monthly checksum check's job."""
     data, media = Path(config['data_mount']), Path(config['media_mount'])
     stop, warn = [], []
-    for name, path, (minimum, recommended), purpose in (
+    checks = (
         ('SSD', data, SSD, 'apps, photos and music'),
         ('HDD', media, HDD, 'movies, shows, Nextcloud files and backups'),
-    ):
+    )
+    if same_filesystem(data, media):
+        # Both kept on one filesystem (the disk Linux runs from, 0.50.0): its room is
+        # counted once, against what both need together.
+        both = (SSD[0] + HDD[0], SSD[1] + HDD[1])
+        checks = (
+            (
+                'disk that holds both the apps and the media',
+                data,
+                both,
+                'the apps, your files and the backups together',
+            ),
+        )
+    for name, path, (minimum, recommended), purpose in checks:
         space = free(path)
         if space < minimum * GIB:
             stop.append(
@@ -339,6 +352,14 @@ def assess(
                 'Free up space on it or use a bigger one.'
             )
     return stop, warn
+
+
+def same_filesystem(first, second):
+    """The two folders are on one filesystem (two roles kept on the disk Linux runs from)."""
+    try:
+        return os.stat(first).st_dev == os.stat(second).st_dev
+    except OSError:
+        return False
 
 
 def ask(question, prompt=input, output=print):

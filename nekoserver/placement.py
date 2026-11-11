@@ -119,10 +119,10 @@ def derived_drives(config):
     for name, (key, _mount) in OLD_DRIVES.items():
         record = storage.get(key)
         if isinstance(record, dict) and record.get('uuid'):
-            drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume') if record.get(k)}
+            drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume', 'folder') if record.get(k)}
     # Every other drive listed under "storage" (0.50.0), by the name it has there.
     for name, record in extra_drives(config).items():
-        drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume') if record.get(k)}
+        drives[name] = {k: record[k] for k in ('uuid', 'fstype', 'network', 'subvolume', 'folder') if record.get(k)}
     photos = config.get('photos', {})
     if photos.get('external_backup_uuid'):
         drives[OFFLINE_DRIVE] = {

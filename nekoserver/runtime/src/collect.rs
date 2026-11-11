@@ -2736,7 +2736,8 @@ pub fn job_states(a: &Args) -> Result<()> {
         checked("data_ssd", "data_mount")?,
         checked("media_hdd", "media_mount")?,
     );
-    let apart = !matches!((&data, &media), (Some(a), Some(b)) if a == b);
+    let apart =
+        common::share_system_disk(&cfg) || !matches!((&data, &media), (Some(a), Some(b)) if a == b);
     let ok = data.is_some() && apart;
     let media_ok = media.is_some() && apart;
     let states = json!({

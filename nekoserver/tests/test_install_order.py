@@ -97,6 +97,13 @@ class DrivePickingTests(unittest.TestCase):
     }
 
     def setUp(self):
+        # The disk Linux runs from, the same on every machine these tests run on: ext4 and
+        # full, so it is in the list and cannot be chosen (tests/test_drive_table.py has
+        # the one with room).
+        for name, value in (('system_filesystem', ('root-fs-0001', 'ext4')), ('system_free_gb', 0)):
+            patch = mock.patch.object(storage, name, return_value=value)
+            patch.start()
+            self.addCleanup(patch.stop)
         # The list is shown afresh, and no drive of this computer is looked into.
         import drive_table
 
@@ -206,7 +213,10 @@ class DrivePickingTests(unittest.TestCase):
         self.assertIn('drive 4 (sdd1: drive): it is in use at /mnt/films', message)
         self.assertIn('sudo umount /mnt/films', message)
         self.assertIn('drive 2 (sdb1: drive): it is already the app SSD', message)
-        self.assertIn('drive 1 (nvme0n1: NVMe SSD): it is the disk Linux runs from', message)
+        self.assertIn(
+            'drive 1 (nvme0n1: NVMe SSD): it has too little room: 0 GB free, and the media HDD needs at least 50 GB there',
+            message,
+        )
         self.assertNotIn('nvme0n1p1', message)  # the system disk's boot partition
         self.assertNotIn('mkfs.ext4 /dev/nvme', message)
 
