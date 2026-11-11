@@ -38,14 +38,17 @@ class OptionalAssistantTests(unittest.TestCase):
             path = Path(d) / 'my-config.json'
             path.write_text(json.dumps({'data_mount': d, 'profiles': {'full': plan}}))
             checkup = mock.Mock(return_value=True)
+
+            def read(file):
+                """The steps' records, these settings, and nothing else."""
+                if 'state' in str(file):
+                    return states
+                if file == path:
+                    return json.loads(path.read_text())
+                return {}
+
             with (
-                mock.patch.object(
-                    wizard,
-                    'read_json',
-                    side_effect=lambda p: (
-                        states if 'state' in str(p) else json.loads(path.read_text()) if p == path else {}
-                    ),
-                ),
+                mock.patch.object(wizard, 'read_json', side_effect=read),
                 mock.patch.dict(sys.modules, {'first_checkup': mock.Mock(run=checkup)}),
             ):
                 # The installer's own code: 1 whenever a step is not "success".

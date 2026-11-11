@@ -1048,7 +1048,7 @@ pub fn progress(id: &str, owner: &str) -> Option<Value> {
         return None;
     }
     if a.ended.is_none() && a.started.elapsed() > a.total {
-        a.failed = Some("the answer took too long, so it was stopped".into());
+        a.failed = Some(TOO_LONG.into());
         a.ended = Some(Instant::now());
     }
     Some(json!({
@@ -1123,60 +1123,15 @@ pub fn stream(
     let body = json!({"model": model, "messages": messages, "stream": true, "think": false,
         "options": {"num_predict": ANSWER_TOKENS, "num_thread": threads}})
     .to_string();
-    let at = address
-        .parse::<SocketAddr>()
-        .map_err(|_| "its address is not one".to_string())?;
-    let mut ollama = TcpStream::connect_timeout(&at, Duration::from_secs(3)).map_err(|_| {
-        "the AI assistant does not answer (it may be stopped, or still starting)".to_string()
-    })?;
-    let _ = ollama.set_write_timeout(Some(Duration::from_secs(5)));
     let tick = Duration::from_secs(1).min(limits.next).min(limits.first);
-    let _ = ollama.set_read_timeout(Some(tick));
-    // HTTP/1.0: Ollama then sends the answer as it comes and closes, without chunks.
-    let request = format!("POST /api/chat HTTP/1.0\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
-    ollama
-        .write_all(request.as_bytes())
-        .map_err(|_| "the AI assistant did not take the question".to_string())?;
-    let mut reader = BufReader::new(ollama.take(4_000_000));
+    let mut reader = asked_ollama(address, &body, limits, tick, keep)?;
     let mut line = vec![];
-    let waited = |why: Waited, slow: &str| match why {
-        Waited::TooLong => slow.to_string(),
-        Waited::NotWanted => "the page stopped asking for the answer, so it was stopped".into(),
-        Waited::Broken => "the AI assistant stopped answering (out of memory, perhaps)".into(),
-    };
-    let slow_start = "the AI assistant took too long to start answering";
-    match next_line(&mut reader, &mut line, limits.first, keep) {
-        Ok(0) => return Err(slow_start.into()),
-        Ok(_) => {}
-        Err(why) => return Err(waited(why, slow_start)),
-    }
-    let status = String::from_utf8_lossy(&line).to_string();
-    let code = status.split_whitespace().nth(1).unwrap_or("").to_string();
-    loop {
-        line.clear();
-        match next_line(&mut reader, &mut line, limits.next, keep) {
-            Ok(0) => return Err("the AI assistant stopped answering".into()),
-            Ok(_) if line.iter().all(u8::is_ascii_whitespace) => break,
-            Ok(_) => {}
-            Err(why) => return Err(waited(why, "the AI assistant stopped answering")),
-        }
-    }
-    if code != "200" {
-        let mut text = String::new();
-        let _ = reader.read_to_string(&mut text);
-        let said = serde_json::from_str::<Value>(text.trim())
-            .ok()
-            .and_then(|v| v["error"].as_str().map(str::to_string))
-            .unwrap_or_else(|| format!("it answered {code}"));
-        return Err(plain_error(&said));
-    }
     let started = Instant::now();
     let mut asked = Instant::now();
     let mut answer = String::new();
-    let too_long = "the answer took too long, so it was stopped";
     loop {
         if started.elapsed() > limits.total {
-            return Err(too_long.into());
+            return Err(TOO_LONG.into());
         }
         // A model that keeps printing never lets a read time out, which is where
         // next_line asks `keep`: so it is asked here too, about once a second, and an
@@ -1184,7 +1139,7 @@ pub fn stream(
         if asked.elapsed() >= tick {
             asked = Instant::now();
             if !keep() {
-                return Err(waited(Waited::NotWanted, too_long));
+                return Err(why_none(Waited::NotWanted, TOO_LONG));
             }
         }
         line.clear();
@@ -1199,28 +1154,105 @@ pub fn stream(
             // ended, or the connection dropped). What came so far is not passed off as it.
             Ok(0) => return Err(CUT_OFF.into()),
             Ok(_) => {}
-            Err(why) => return Err(waited(why, too_long)),
+            Err(why) => return Err(why_none(why, TOO_LONG)),
         }
-        let Ok(part) = serde_json::from_slice::<Value>(line.trim_ascii()) else {
-            continue;
-        };
-        if let Some(why) = part["error"].as_str() {
-            return Err(plain_error(why));
-        }
-        if let Some(text) = part["message"]["content"].as_str() {
-            answer.push_str(text);
-            piece(text);
-        }
-        if part["done"] == true {
-            // Ollama ends an answer that reached its token limit (num_predict) with
-            // "done": true and "done_reason": "length": that answer stops in the middle
-            // of a sentence, so it is not whole either.
-            if part["done_reason"] == "length" {
-                return Err(LENGTH_LIMIT.into());
-            }
+        if answer_line(&line, &mut answer, piece)? {
             return Ok(answer);
         }
     }
+}
+
+/// Said when an answer passes its time limit (Limits.total, or a pause too long).
+const TOO_LONG: &str = "the answer took too long, so it was stopped";
+
+/// Why no line came, in words; `slow` is what to say when the wait was too long.
+fn why_none(why: Waited, slow: &str) -> String {
+    match why {
+        Waited::TooLong => slow.to_string(),
+        Waited::NotWanted => "the page stopped asking for the answer, so it was stopped".into(),
+        Waited::Broken => "the AI assistant stopped answering (out of memory, perhaps)".into(),
+    }
+}
+
+/// The question sent to Ollama and its answer's head read: what is left to read is the
+/// answer itself, line by line. An answer other than "200 OK" is why there is none.
+fn asked_ollama(
+    address: &str,
+    body: &str,
+    limits: &Limits,
+    tick: Duration,
+    keep: &dyn Fn() -> bool,
+) -> std::result::Result<BufReader<std::io::Take<TcpStream>>, String> {
+    let at = address
+        .parse::<SocketAddr>()
+        .map_err(|_| "its address is not one".to_string())?;
+    let mut ollama = TcpStream::connect_timeout(&at, Duration::from_secs(3)).map_err(|_| {
+        "the AI assistant does not answer (it may be stopped, or still starting)".to_string()
+    })?;
+    let _ = ollama.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = ollama.set_read_timeout(Some(tick));
+    // HTTP/1.0: Ollama then sends the answer as it comes and closes, without chunks.
+    let request = format!("POST /api/chat HTTP/1.0\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+    ollama
+        .write_all(request.as_bytes())
+        .map_err(|_| "the AI assistant did not take the question".to_string())?;
+    let mut reader = BufReader::new(ollama.take(4_000_000));
+    let mut line = vec![];
+    let slow_start = "the AI assistant took too long to start answering";
+    match next_line(&mut reader, &mut line, limits.first, keep) {
+        Ok(0) => return Err(slow_start.into()),
+        Ok(_) => {}
+        Err(why) => return Err(why_none(why, slow_start)),
+    }
+    let status = String::from_utf8_lossy(&line).to_string();
+    let code = status.split_whitespace().nth(1).unwrap_or("");
+    let stopped = "the AI assistant stopped answering";
+    loop {
+        line.clear();
+        match next_line(&mut reader, &mut line, limits.next, keep) {
+            Ok(0) => return Err(stopped.into()),
+            Ok(_) if line.iter().all(u8::is_ascii_whitespace) => break,
+            Ok(_) => {}
+            Err(why) => return Err(why_none(why, stopped)),
+        }
+    }
+    if code != "200" {
+        let mut text = String::new();
+        let _ = reader.read_to_string(&mut text);
+        let said = serde_json::from_str::<Value>(text.trim())
+            .ok()
+            .and_then(|v| v["error"].as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("it answered {code}"));
+        return Err(plain_error(&said));
+    }
+    Ok(reader)
+}
+
+/// One line of the answer taken in: its words are added to `answer` and handed to
+/// `piece`. True when it is the last line of a whole answer; an error line, or an
+/// answer ended by its length limit, is why there is no whole answer.
+fn answer_line(
+    line: &[u8],
+    answer: &mut String,
+    piece: &mut dyn FnMut(&str),
+) -> std::result::Result<bool, String> {
+    let Ok(part) = serde_json::from_slice::<Value>(line.trim_ascii()) else {
+        return Ok(false);
+    };
+    if let Some(why) = part["error"].as_str() {
+        return Err(plain_error(why));
+    }
+    if let Some(text) = part["message"]["content"].as_str() {
+        answer.push_str(text);
+        piece(text);
+    }
+    // Ollama ends an answer that reached its token limit (num_predict) with "done": true
+    // and "done_reason": "length": that answer stops in the middle of a sentence, so it
+    // is not whole either.
+    if part["done"] == true && part["done_reason"] == "length" {
+        return Err(LENGTH_LIMIT.into());
+    }
+    Ok(part["done"] == true)
 }
 
 /// Said when the answer stopped before Ollama marked it as finished.
