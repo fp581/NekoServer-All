@@ -953,11 +953,21 @@ pub fn stream(
         return Err(plain_error(&said));
     }
     let started = Instant::now();
+    let mut asked = Instant::now();
     let mut answer = String::new();
     let too_long = "the answer took too long, so it was stopped";
     loop {
         if started.elapsed() > limits.total {
             return Err(too_long.into());
+        }
+        // A model that keeps printing never lets a read time out, which is where
+        // next_line asks `keep`: so it is asked here too, about once a second, and an
+        // answer nobody waits for is stopped while it streams (the review of 0.49.0).
+        if asked.elapsed() >= tick {
+            asked = Instant::now();
+            if !keep() {
+                return Err(waited(Waited::NotWanted, too_long));
+            }
         }
         line.clear();
         // The first words may take a while (the model is loaded first), the next ones less.
@@ -1542,6 +1552,56 @@ mod tests {
         let ended = &source[source.find("match result {").unwrap()..];
         let failed = &ended[ended.find("Err(why) =>").unwrap()..][..120];
         assert!(!failed.contains("repair"), "{failed}");
+    }
+
+    /// Review of 0.49.0: `keep` was asked only when a read timed out, so an answer that
+    /// streamed steadily could not be stopped by the page leaving.
+    #[test]
+    fn a_steadily_streaming_answer_stops_when_the_page_leaves() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut got = vec![0u8; 65536];
+            let _ = s.read(&mut got);
+            let _ = s.write_all(b"HTTP/1.0 200 OK\r\n\r\n");
+            // A word every 20 ms for 6 seconds, unless the other side hangs up first.
+            for sent in 0..300 {
+                let line = "{\"message\":{\"content\":\"word \"},\"done\":false}\n";
+                if s.write_all(line.as_bytes()).is_err() {
+                    return sent;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            300
+        });
+        let limits = Limits {
+            first: Duration::from_secs(5),
+            next: Duration::from_secs(5),
+            total: Duration::from_secs(30),
+            abandon: Duration::from_secs(1),
+        };
+        let start = Instant::now();
+        let leaves = Duration::from_millis(400);
+        let mut pieces = 0;
+        let result = stream(
+            &address,
+            "qwen3.5:4b",
+            2,
+            &json!([{"role": "user", "content": "why"}]),
+            &limits,
+            &|| start.elapsed() < leaves,
+            &mut |_| pieces += 1,
+        );
+        let took = start.elapsed();
+        assert!(
+            result.unwrap_err().contains("stopped asking"),
+            "took {took:?}"
+        );
+        assert!(pieces > 5, "it was streaming: {pieces}");
+        // Within about a second of the page leaving, not after the whole answer.
+        assert!(took < leaves + Duration::from_millis(1800), "{took:?}");
+        assert!(server.join().unwrap() < 300, "Ollama's side was hung up on");
     }
 
     #[test]
