@@ -529,6 +529,61 @@ def settings_for_run(config, root, prompt, output):
     return prepare_settings(root, sudo_account())
 
 
+def unfinished(states, plan):
+    """The steps of the run a person can try again: the ones that failed or wait for
+    the person. A step that only waits for another one runs with that one."""
+    return [name for name in plan if (states.get(name) or {}).get('status') in ('failed', 'needs_setup')]
+
+
+def settled(states, plan):
+    """Every step of the run is done (or is not available on this PC)."""
+    return all((states.get(name) or {}).get('status') in ('success', 'unavailable') for name in plan)
+
+
+def retry_unfinished(execute, args, code, default_state, asked=None, output=print, most=3):
+    """After the run, while setup still holds its lock: every step that did not finish,
+    with its reason, the fix setup knows (known_fixes.py) and "Retry this step". A retry
+    runs that step and the steps that waited for it, nothing that is done; then the list
+    is shown again. Each step is retried at most `most` times here. Returns the run's exit
+    code: 0 once every step is done."""
+    import known_fixes
+
+    tried = {}
+    while code != 0:
+        states = read_json(state_file(read_json(args.config), default_state))
+        ran = setup_progress.last('plan')
+        plan = ran['steps'] if ran else list(states)
+        if settled(states, plan):
+            return 0
+        names = [name for name in unfinished(states, plan) if tried.get(name, 0) < most]
+        if not names:
+            break
+        output('\nThese steps did not finish. Each can be tried again now:')
+        rows = [
+            {
+                'answer': str(number),
+                'title': title(name),
+                'reason': states[name].get('reason', 'no reason recorded'),
+                'fix': known_fixes.fix_for(states[name].get('reason')),
+            }
+            for number, name in enumerate(names, 1)
+        ]
+        answer = (asked or guided_setup.retry_question)(rows)
+        if not answer:
+            break
+        name = names[int(answer) - 1]
+        tried[name] = tried.get(name, 0) + 1
+        # That step and the steps that waited for it; the run's code only says how those went.
+        code = execute(argparse.Namespace(**{**vars(args), 'profile': None, 'retry_step': name})) or 1
+        after = read_json(state_file(read_json(args.config), default_state))
+        if tried[name] >= most and (after.get(name) or {}).get('status') != 'success':
+            output(
+                f'\n{title(name)} was tried {most} times and still does not finish. Run  sudo bash install.sh  '
+                'again later for it; everything that is done stays done.'
+            )
+    return code
+
+
 def after_setup(code, path, default_state, output, window):
     """The first checkup when everything finished, then the finishing screen (in the
     window too). The exit code: 0 only when every step is done."""
@@ -606,6 +661,8 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
             )
             with setup_progress.watching_prompts():
                 code = execute(args)
+                if prompt is builtins.input:
+                    code = retry_unfinished(execute, args, code, default_state, output=output)
             exit_code = after_setup(code, path, default_state, output, window)
         else:
             output(

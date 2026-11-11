@@ -234,6 +234,20 @@
     }
   };
 
+  // Steps that did not finish: each with its reason, the fix setup knows and "Retry this step".
+  PAGES.retry = {
+    prompt: page =>
+      page.steps.length === 1
+        ? page.steps[0].title + ' did not finish.'
+        : 'These steps did not finish. Each can be tried again now.',
+    build: buildRetry,
+    values: page => ({ answer: page.leave }),
+    problem: () => '',
+    send: page => (page.leave === 'no' ? 'Not now' : 'Finish'),
+    skip: false,
+    note: () => 'A retry runs that step again, then the steps that waited for it. What is done stays done.'
+  };
+
   function pageOf(q) {
     return q.page && Object.hasOwn(PAGES, q.page.form) ? q.page : null;
   }
@@ -384,6 +398,37 @@
     return values.choice ? '' : 'Tick one in the list first, or press Skip for now.';
   }
 
+  /* One card for each step: why it stopped, what usually fixes it, and its Retry button
+     (the button under the cards leaves them as they are). */
+  function buildRetry(page) {
+    pageInputs = {};
+    pickInputs = [];
+    const cards = page.steps.map(step => {
+      const button = el('button', { type: 'button', class: 'primary', text: 'Retry this step' });
+      button.addEventListener('click', () => {
+        if (askedSeq != null) void answer(askedSeq, step.answer);
+      });
+      pickInputs.push(button); // off with the other controls while an answer is on its way
+      const fix = step.fix
+        ? el(
+            'div',
+            { class: 'retry-fix' },
+            el('b', { text: 'What usually fixes it: ' + step.fix.title }),
+            el('ol', {}, ...step.fix.steps.map(line => el('li', { text: line })))
+          )
+        : null;
+      return el(
+        'div',
+        { class: 'retry' },
+        el('div', { class: 'row-title', text: step.title }),
+        el('p', { class: 'retry-why', text: step.reason }),
+        fix,
+        button
+      );
+    });
+    $('ask-page').replaceChildren(...cards);
+  }
+
   async function answerPage(q) {
     const page = pageOf(q);
     const kind = PAGES[page.form];
@@ -484,14 +529,15 @@
     const context = $('ask-context');
     context.textContent = q.context.join('\n');
     const page = pageOf(q);
-    // A list to pick from shows every row itself: the terminal's last lines are its tail.
-    context.hidden = !q.context.length || page?.form === 'pick';
+    // A list to pick from shows every row itself (the terminal's last lines are its tail),
+    // and the retry cards say what the terminal said.
+    context.hidden = !q.context.length || page?.form === 'pick' || page?.form === 'retry';
     context.scrollTop = context.scrollHeight; // the last lines matter most
     let prompt = q.text;
     if (page) prompt = PAGES[page.form].prompt(page);
     else if (q.secret) prompt = q.text + ' (a hidden entry: type it here or in the terminal)';
     $('ask-prompt').textContent = prompt;
-    const yesno = q.kind === 'yesno';
+    const yesno = q.kind === 'yesno' && !page; // a page has its own buttons
     $('ask-answer').hidden = yesno || !!page;
     $('ask-yesno').hidden = !yesno;
     $('ask-skip').hidden = !canSkip(q);

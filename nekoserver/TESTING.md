@@ -310,7 +310,7 @@ by the runtime and approved with the PIN. Tests:
 `only_an_exact_action_line_from_the_list_counts` (runtime/src/assist.rs:959),
 `ollama_is_asked_on_this_pc_only` (runtime/src/assist.rs:1140).
 
-## The twelve controlled failures
+## The thirteen controlled failures
 
 Failures are introduced at named checkpoints, in a disposable VM or on test storage,
 never against anyone's only data.
@@ -329,6 +329,7 @@ never against anyone's only data.
 | F10 | The model is too slow | The answer is stopped with the reason; the page stays usable | `a_model_too_slow_to_start_is_stopped` (runtime/src/assist.rs:1100) |
 | F11 | The model answers garbage | It is only text: no repair runs from it | `a_garbage_answer_is_only_text` (runtime/src/assist.rs:1087), `only_an_exact_action_line_from_the_list_counts` (runtime/src/assist.rs:959) |
 | F12 | A NAS that shares the media folder (NFS) is off when the PC starts | The PC starts; the apps stay stopped, never writing to the empty folder; once the NAS answers, the folder is mounted and the apps start | `a_mounted_shared_folder_is_never_released_and_an_automount_is_no_mount` (runtime/src/drive_return.rs:547), `a_folder_the_nas_shares_is_checked_by_its_address` (runtime/src/backup.rs:4800: only the automount there is "not mounted"), `test_the_line_in_fstab_never_holds_up_the_start` (tests/test_nfs_storage.py:79), `test_a_nas_that_is_off_is_said_when_the_folder_is_opened` (tests/test_nfs_storage.py:634); on the gate machine, J11 (d) |
+| F13 | A setup step fails (a blocked download, Docker stopped) | The reason is shown with the fix setup knows; "Retry this step" runs that step and the steps that waited for it, nothing that is done; three tries at most; the dashboard gives the fix and the command and never runs setup | `test_every_entry_is_found_by_the_words_of_its_failure`, `test_a_retry_that_works_lets_the_run_go_on_as_if_nothing_failed`, `test_a_retry_that_fails_again_is_asked_again_up_to_three_times`, `test_a_retry_run_does_only_those_steps`, `test_a_step_is_retried_three_times_at_most_then_left_for_later`, `test_the_dashboard_never_runs_setup` (tests/test_known_fixes.py), `a_setup_step_that_failed_is_said_with_its_fix_and_the_command` (runtime/src/collect.rs), `test_a_step_that_failed_has_its_reason_its_fix_and_retry` (tests/test_setup_flow.py); on the gate machine: one step broken on purpose, fixed, and retried from the window |
 
 ## Compatibility fixtures
 
@@ -369,7 +370,7 @@ Evidence: Browser result and received API request
 Cleanup: Close fixture and remove temporary state
 ```
 
-IDs: `J01`..`J11` for journeys, `S01`..`S08` for safety rules, `F01`..`F12` for
+IDs: `J01`..`J11` for journeys, `S01`..`S08` for safety rules, `F01`..`F13` for
 controlled failures, `UI-SETUP-nnn`, `UI-DASH-nnn`, `REC-nnn` for single cases, and
 `B-<release>-<nn>` for bugs (below). The record says what is manual.
 

@@ -389,6 +389,62 @@ class SetupWindowTests(unittest.TestCase):
         for text in ('Listener username: ', 'Does the NAS ask for a CHAP user name and password? [y/N]: '):
             self.assertEqual(self.page([self.asked(text)])['placeholder'], '', text)
 
+    FIX = {
+        'id': 'docker_down',
+        'title': 'Docker, which runs the apps, is not running',
+        'steps': ['Start it:  sudo systemctl start docker', 'Then press Retry this step.'],
+    }
+
+    def retry_page(self, steps, leave):
+        return {'form': 'retry', 'fields': {'answer': ''}, 'asking': 'answer', 'steps': steps, 'leave': leave}
+
+    def test_a_step_that_failed_has_its_reason_its_fix_and_retry(self):
+        """0.50.0, item 7: a failed step said "did not finish" and its reason; trying again
+        meant running setup again."""
+        step = {'answer': 'yes', 'title': 'Docker', 'reason': 'Cannot connect to the Docker daemon', 'fix': self.FIX}
+        page = self.retry_page([step], 'no')
+        context = ['Docker did not finish: Cannot connect to the Docker daemon']
+        question = 'Retry this step now? [yes/no]: '
+        seen = self.page([self.asked(question, page, context, kind='yesno')])
+        self.assertEqual(seen['prompt'], 'Docker did not finish.')
+        self.assertEqual(
+            seen['retry'],
+            [
+                [
+                    'Docker',
+                    'Cannot connect to the Docker daemon',
+                    ['What usually fixes it: Docker, which runs the apps, is not running', self.FIX['steps']],
+                    'Retry this step',
+                ]
+            ],
+        )
+        # The cards say it all: not the terminal's lines again, nor plain Yes and No.
+        self.assertEqual(
+            (seen['contextHidden'], seen['yesnoHidden'], seen['send'], seen['skipHidden']),
+            (True, True, 'Not now', True),
+        )
+        seen = self.page([self.asked(question, page, context, kind='yesno', retry=1)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'yes'}]])
+        seen = self.page([self.asked(question, page, context, kind='yesno', leave=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'no', 'fields': {'answer': 'no'}}]])
+
+    def test_the_unfinished_steps_at_the_end_are_retried_one_at_a_time(self):
+        steps = [
+            {'answer': '1', 'title': 'Docker', 'reason': 'Cannot connect to the Docker daemon', 'fix': self.FIX},
+            {'answer': '2', 'title': 'Tailscale', 'reason': 'Sign in to Tailscale', 'fix': None},
+        ]
+        page = self.retry_page(steps, '')
+        question = 'Retry one now? Type its number (Enter alone: finish): '
+        seen = self.page([self.asked(question, page)])
+        self.assertEqual(seen['prompt'], 'These steps did not finish. Each can be tried again now.')
+        self.assertEqual([card[0] for card in seen['retry']], ['Docker', 'Tailscale'])
+        self.assertEqual(seen['retry'][1], ['Tailscale', 'Sign in to Tailscale', 'Retry this step'])  # no fix known
+        self.assertEqual(seen['send'], 'Finish')
+        seen = self.page([self.asked(question, page, retry=2)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '2'}]])
+        seen = self.page([self.asked(question, page, leave=True)])
+        self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': '', 'fields': {'answer': ''}}]])
+
     def test_a_menu_of_its_own_shows_its_name_and_the_terminals_words(self):
         """The recovery menu and the uninstaller in the window (0.50.0): no steps, no
         switches; what the terminal said, and the menu's questions."""

@@ -82,6 +82,13 @@ async function step(i) {
     elements['ask-pick'].fire('change');
     elements.ask.fire('submit');
   }
+  // Steps that did not finish: {"retry": 1} presses the first card's Retry this step;
+  // {"leave": true} the button under the cards.
+  if (states[i].retry) {
+    const card = elements['ask-page'].children[states[i].retry - 1];
+    card.children[card.children.length - 1].fire('click');
+  }
+  if (states[i].leave) elements.ask.fire('submit');
   // The terminal's numbered lines as buttons: {"choose": 2} presses the second, then Send.
   if (states[i].choose) {
     elements['ask-options'].children[states[i].choose - 1].fire('click');
@@ -108,6 +115,8 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   pickCount: elements['ask-pick-count']?.textContent ?? '',
   send: elements['ask-page-send']?.textContent ?? '', skipHidden: elements['ask-page-skip']?.hidden ?? null,
   placeholder: elements['ask-input']?.placeholder ?? '', yesnoHidden: elements['ask-yesno']?.hidden ?? null,
+  retry: (elements['ask-page']?.children ?? []).filter((card) => card.className === 'retry').map((card) => card.children.map((part) => part.children.length ? [part.children[0].textContent, part.children[1].children.map((li) => li.textContent)] : part.textContent)),
+  contextHidden: elements['ask-context']?.hidden ?? null,
   now: [elements['now-label']?.textContent ?? '', elements['now-title']?.textContent ?? '', elements['now-text']?.textContent ?? '', elements['now-text']?.className ?? ''],
   stepsHidden: elements.steps?.hidden ?? null, askLabel: elements['ask-label']?.textContent ?? '', running: elements.running?.className ?? '',
   prompt: elements['ask-prompt']?.textContent ?? '', note: elements['ask-note']?.textContent ?? '',

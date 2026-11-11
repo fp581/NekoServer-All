@@ -2186,11 +2186,72 @@ fn mark_held(s: &mut Value) {
         }
     }
 }
+/// The steps of setup that failed in its last run, as setup wrote them down
+/// (installer.py, reports/setup-unfinished.json): each with its reason and, when the
+/// reason is a kind setup knows a fix for (known_fixes.py), the fix. Only what the page
+/// shows is kept, cut to a sensible length; anything else in the file is dropped.
+fn setup_unfinished(report: &Value) -> Value {
+    let steps: Vec<Value> = report["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|step| !text(&step["id"]).is_empty() && !text(&step["title"]).is_empty())
+        .take(40)
+        .map(|step| {
+            let fix_steps: Vec<String> = step["fix"]["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .take(6)
+                .map(|line| chars(line, 600))
+                .collect();
+            json!({"id": chars(text(&step["id"]), 60), "title": chars(text(&step["title"]), 120),
+                "reason": chars(text(&step["reason"]), 1000),
+                "fix": chars(text(&step["fix"]["title"]), 200), "fix_steps": fix_steps})
+        })
+        .collect();
+    json!({ "unfinished": steps })
+}
+/// What Needs attention says of a setup step that failed: its reason, the fix when
+/// there is one, and the command to run. Setup itself is never started from the page:
+/// that would be root's setup run from a web page.
+fn setup_step_detail(step: &Value) -> String {
+    let mut said = text(&step["reason"]).trim().to_string();
+    if !said.is_empty() && !said.ends_with(['.', '!', '?']) {
+        said.push('.');
+    }
+    let fix = text(&step["fix"]);
+    if !fix.is_empty() {
+        said.push_str(&format!(" What usually fixes it: {fix}."));
+        for (number, line) in step["fix_steps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|line| !line.starts_with("Then press Retry"))
+            .enumerate()
+        {
+            said.push_str(&format!(" {}. {line}", number + 1));
+        }
+    }
+    said.push_str(" Then, in a terminal on the server, run  sudo bash install.sh  : it carries on with this step and leaves what is done as it is. (Setup is never started from this page.)");
+    said.trim().to_string()
+}
 pub(crate) fn alerts(s: &Value) -> Value {
     let mut out = vec![];
     let mut add = |id: String, level: &str, title: String, detail: &str| {
         out.push(json!({"id":id,"level":level,"title":title,"detail":detail}))
     };
+    // A step of setup that failed in its last run: said until a later run finishes it.
+    for step in s["setup"]["unfinished"].as_array().into_iter().flatten() {
+        add(
+            format!("setup:{}", text(&step["id"])),
+            "warning",
+            format!("Setup: {} did not finish", text(&step["title"])),
+            &setup_step_detail(step),
+        );
+    }
     // Alerts that fail to reach anyone are still said on the page.
     if s["notifications"]["status"] == "fail" {
         add(
@@ -2722,6 +2783,11 @@ pub fn run(a: &Args) -> Result<()> {
     let (apps, containers, services) = applications(&cfg, report.as_ref(), ok.then_some(data));
     let mut result = json!({"format":"neko-dashboard-v1","version":VERSION,"generated_at":now,"metrics":host,"history":history,"storage":disks,"applications":apps,"backups":backups(&cfg,now,ok,away),"media":media(report.as_ref()),"recovery":recovery(&cfg,ok,media_ok),"heartbeat":heartbeat(&cfg,now),"acceptance":acceptance(&if ok{common::json(&data.join("reports/acceptance/latest.json"),2_000_000)}else{empty()},&cfg,now)});
     result["notifications"] = notification_status(now);
+    result["setup"] = setup_unfinished(&if ok {
+        common::json(&data.join("reports/setup-unfinished.json"), 200_000)
+    } else {
+        empty()
+    });
     result["containers"] = containers;
     result["container_services"] = services;
     result["gpu_telemetry"] = gpu_telemetry();
@@ -2885,6 +2951,48 @@ mod os_tests {
         assert!(start.elapsed() < Duration::from_secs(1));
         // A drive that answers is shown as usual.
         assert!(usage(Path::new("/")).is_some());
+    }
+    #[test]
+    fn a_setup_step_that_failed_is_said_with_its_fix_and_the_command() {
+        // 0.50.0, item 7: the dashboard gives the fix and the command; it never runs setup.
+        let report = json!({"format": "neko-setup-unfinished-v1", "steps": [
+            {"id": "docker", "title": "Docker", "reason": "Cannot connect to the Docker daemon",
+             "fix": {"id": "docker_down", "title": "Docker, which runs the apps, is not running",
+                     "steps": ["Start it:  sudo systemctl start docker", "Then press Retry this step (or answer yes)."]}},
+            {"id": "media", "title": "Movie, TV and music apps", "reason": "something else", "fix": null},
+            {"id": "", "title": "no id"}, {"title": 7}]});
+        let setup = setup_unfinished(&report);
+        assert_eq!(setup["unfinished"].as_array().unwrap().len(), 2);
+        let shown = alerts(&json!({"setup": setup}));
+        assert_eq!(shown[0]["id"], "setup:docker");
+        assert_eq!(shown[0]["level"], "warning");
+        assert_eq!(shown[0]["title"], "Setup: Docker did not finish");
+        let detail = shown[0]["detail"].as_str().unwrap();
+        assert!(detail.starts_with("Cannot connect to the Docker daemon. What usually fixes it: Docker, which runs the apps, is not running. 1. Start it:  sudo systemctl start docker Then, in a terminal"), "{detail}");
+        assert!(detail.contains("sudo bash install.sh"));
+        assert!(detail.contains("Setup is never started from this page"));
+        assert!(
+            !detail.contains("Retry this step"),
+            "the page has no Retry: {detail}"
+        );
+        // No fix known: the reason and the command.
+        let plain = shown[1]["detail"].as_str().unwrap();
+        assert!(
+            plain.starts_with("something else. Then, in a terminal on the server"),
+            "{plain}"
+        );
+        // No report, an empty one or a broken one: nothing is said.
+        for none in [
+            json!({}),
+            json!({"steps": []}),
+            json!({"steps": "x"}),
+            json!(null),
+        ] {
+            assert_eq!(
+                alerts(&json!({"setup": setup_unfinished(&none)})),
+                json!([])
+            );
+        }
     }
     #[test]
     fn failing_alert_delivery_is_said_on_the_page() {

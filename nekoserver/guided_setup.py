@@ -280,6 +280,41 @@ def checkpoint(ctx, title, instructions, targets=(), verify=None, prepare=None, 
         return False
 
 
+def retry_question(rows, leave='', ask=None, output=None):
+    """Steps that did not finish, each with its reason, the fix setup knows for it
+    (known_fixes.py) and a way to try it again. `rows`: [{'answer', 'title', 'reason',
+    'fix'}], where 'answer' is what choosing that step returns: "yes" for the one step
+    that just failed, its number in the list at the end of a run. Returns the answer
+    chosen, or `leave` ("no", or '' for Enter alone) when none is; Ctrl+D leaves too.
+    In the setup window this is one page: each step with a "Retry this step" button."""
+    import known_fixes
+    import setup_progress
+
+    ask, output = ask or input, output or print
+    one = len(rows) == 1 and rows[0]['answer'] == 'yes'
+    for row in rows:
+        output(('' if one else f"  {row['answer']}) ") + f"{row['title']} did not finish: {row['reason']}")
+        for line in known_fixes.lines(row['fix']) if row.get('fix') else ():
+            output(line)
+    question = 'Retry this step now? [yes/no]: ' if one else 'Retry one now? Type its number (Enter alone: finish): '
+    answers = {row['answer'] for row in rows}
+    with setup_progress.page('retry', {'answer': ''}, steps=rows, leave=leave):
+        setup_progress.page_asks('answer')
+        for _ in range(3):
+            try:
+                answer = ask(question).strip().lower()
+            except EOFError:
+                return leave
+            if one and answer in ('y', 'yes'):
+                return 'yes'
+            if answer in answers and not one:
+                return answer
+            if answer in ('', 'n', 'no', leave):
+                return leave
+            output('Type yes or no.' if one else 'Type one of the numbers above, or press Enter alone to finish.')
+    return leave
+
+
 def new_password(what, ask=None, output=print, tries=3):
     """A password chosen now and typed twice, hidden. In the setup window the two are one
     page (two hidden fields that must match before they are sent); in the terminal they

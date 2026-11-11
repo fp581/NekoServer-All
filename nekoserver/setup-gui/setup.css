@@ -701,6 +701,30 @@ main > section {
   border-color: var(--purple);
   box-shadow: inset 0 0 0 1px var(--purple);
 }
+/* steps that did not finish: a card each, with why, the fix and its Retry button */
+.retry {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--raised);
+  justify-items: start;
+}
+.retry-why {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.retry-fix {
+  font-size: 13.5px;
+}
+.retry-fix ol {
+  margin: 4px 0 0;
+  padding-left: 1.4em;
+}
+.retry-fix li {
+  margin: 2px 0;
+}
 /* a long list to pick from: a search box, then rows that scroll */
 .pick-top {
   display: flex;

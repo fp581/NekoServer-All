@@ -20,6 +20,7 @@ setup_progress.own_prompts()
 import capabilities
 import guided_setup
 import host
+import known_fixes
 from neko_common import (
     atomic_json,
     mount_path,
@@ -389,6 +390,10 @@ def _execute(args, root=ROOT):
         selected = config['profiles'][args.profile]
     elif args.module:
         selected = [args.module]
+    elif getattr(args, 'retry_step', None):
+        # "Retry this step" at the end of a run: that step and the steps that waited for
+        # it, and nothing that is already done.
+        selected = retry_selection(args.retry_step, previous, modules)
     elif args.retry_failed:
         selected = [
             name
@@ -398,6 +403,8 @@ def _execute(args, root=ROOT):
     else:
         selected = enabled
     plan = ordered(modules, selected)
+    if getattr(args, 'retry_step', None):
+        plan = [name for name in plan if name in selected]
     from config_checks import validate
 
     validate(config, plan)
@@ -455,7 +462,7 @@ def _execute(args, root=ROOT):
         if not message.startswith(MARKERS):
             setup_progress.note(message)  # a step's own words, for the setup window
 
-    if args.apply and not (args.module or args.retry_failed):
+    if args.apply and not (args.module or args.retry_failed or getattr(args, 'retry_step', None)):
         record_profile(safe_path(state_dir / PROFILE_FILE), args.profile, plan, previous, log)
     ctx = Context(config, log, apply=args.apply, config_path=args.config)
     ctx.plan = plan  # the steps of this run (the drives step asks the backup times only when one writes a timer)
@@ -465,7 +472,8 @@ def _execute(args, root=ROOT):
     review_retention(ctx, args.apply)
     # The steps this run goes through (with the ones they need), for the setup window and
     # the finishing screen to count the same steps as the log.
-    setup_progress.event('plan', steps=list(plan))
+    if not getattr(args, 'retry_step', None):
+        setup_progress.event('plan', steps=list(plan))
     for name in plan:
         held = waiting_for(name, modules, states, complete_status)
         if held:
@@ -475,24 +483,33 @@ def _execute(args, root=ROOT):
             failures.append(name)
             atomic_json_write(state_path, states)
             continue
-        states[name] = {
-            'status': 'running',
-            'version': VERSION,
-            'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
-        }
-        atomic_json_write(state_path, states)
-        log(f'START {name}')
-        setup_progress.step(name, 'running')
-        try:
-            result = modules[name]['object'].run(ctx)
-        except KeyboardInterrupt:
-            stopped_by_hand(states, name, state_path, log)
-            raise
-        except Exception as exc:
-            reason = failure_reason(exc)
-            states[name] = {'status': 'failed', 'reason': reason}
-            log(f'FAILED {name}: {reason}')
-            # Avoid tracebacks from providers that may contain sensitive arguments.
+        tried = 0
+        while True:
+            states[name] = {
+                'status': 'running',
+                'version': VERSION,
+                'started_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+            }
+            atomic_json_write(state_path, states)
+            log(f'START {name}')
+            setup_progress.step(name, 'running')
+            try:
+                result = modules[name]['object'].run(ctx)
+            except KeyboardInterrupt:
+                stopped_by_hand(states, name, state_path, log)
+                raise
+            except Exception as exc:
+                reason = failure_reason(exc)
+                states[name] = {'status': 'failed', 'reason': reason}
+                log(f'FAILED {name}: {reason}')
+                # Avoid tracebacks from providers that may contain sensitive arguments.
+                # With a person at the terminal: the reason, the fix when it is a known
+                # one, and "Retry this step now?", up to MOST_RETRIES times.
+                if args.apply and retry_now(name, reason, tried, log):
+                    tried += 1
+                    continue
+            break
+        if states[name]['status'] == 'failed':
             failures.append(name)
             failed.append(name)
         else:
@@ -538,6 +555,7 @@ def _execute(args, root=ROOT):
             except (OSError, RuntimeError, ValueError) as exc:
                 log(f'{name}: settings not refreshed: {exc}')
     if args.apply:
+        note_unfinished(config, states, log)
         # Also after a run with a step still pending (Tailscale not signed in, say), or
         # earlier releases' files would pile up with every upgrade: only folders no service
         # or drop-in names any more go.
@@ -554,6 +572,79 @@ def _execute(args, root=ROOT):
     if failed:
         return STEP_FAILED
     return WAITING if failures else 0
+
+
+def note_unfinished(config, states, log):
+    """The steps that failed, written on the SSD for the dashboard (reports/setup-
+    unfinished.json): its Needs attention then says each one with its reason, the fix
+    setup knows (known_fixes.py) and the command to run. The dashboard never runs setup
+    itself. Written after every run, so a step finished since is no longer said; left
+    out while the SSD is not mounted (nowhere of NekoServer's to write)."""
+    from wizard import title
+
+    data = os.path.realpath(mount_path(config['data_mount']))
+    if not os.path.ismount(data):
+        return
+    # The SSD's path comes from the settings file: the report is written only once its
+    # folder is proved to lie on the SSD with every link followed.
+    reports = os.path.realpath(os.path.join(data, 'reports'))
+    if not reports.startswith(data + os.sep):
+        raise InstallerError(f'The reports folder must lie on the app SSD: {reports}')
+    steps = [
+        {
+            'id': name,
+            'title': title(name),
+            'reason': str(record.get('reason', ''))[:1000],
+            'fix': known_fixes.fix_for(record.get('reason')),
+        }
+        for name, record in states.items()
+        if record.get('status') == 'failed'
+    ]
+    try:
+        ensure_directory(Path(reports), 0o700)
+        atomic_json_write(
+            Path(reports) / 'setup-unfinished.json',
+            {'format': 'neko-setup-unfinished-v1', 'version': VERSION, 'steps': steps},
+        )
+    except (OSError, RuntimeError) as exc:
+        log(f'The dashboard was not told which steps failed ({exc}); the terminal and the log have them')
+
+
+# How often one step is tried again in one run before setup says to come back later.
+MOST_RETRIES = 3
+
+
+def retry_now(name, reason, tried, log, interactive=None, asked=None):
+    """A step just failed: with a person at the terminal, the fix setup knows for that
+    reason (known_fixes.py) and "Retry this step now?", in the setup window as a
+    button. True when the step is to run again. After MOST_RETRIES tries it is no
+    longer asked: the step stays failed, and setup says to run it again later."""
+    if not (sys.stdin.isatty() if interactive is None else interactive):
+        return False
+    if tried >= MOST_RETRIES:
+        log(
+            f'{name}: tried again {MOST_RETRIES} times and it still does not finish. Setup goes on with the '
+            'steps that do not need it; run  sudo bash install.sh  again later for this one.'
+        )
+        return False
+    from wizard import title
+
+    row = {'answer': 'yes', 'title': title(name), 'reason': reason, 'fix': known_fixes.fix_for(reason)}
+    return (asked or guided_setup.retry_question)([row], leave='no') == 'yes'
+
+
+def retry_selection(name, states, modules):
+    """What "Retry this step" runs at the end of a run: the step, then the steps that
+    waited for it (a waiting step names the steps it waits for). Steps already done
+    are not among them."""
+    if name not in modules:
+        raise InstallerError(f'Unknown step: {name}')
+    waited = [
+        other
+        for other, record in states.items()
+        if other in modules and record.get('status') == 'blocked' and name in (record.get('waiting_for') or [])
+    ]
+    return [name, *waited]
 
 
 def waiting_for(name, modules, states, complete_status):
