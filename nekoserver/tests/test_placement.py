@@ -98,9 +98,9 @@ class RowTests(unittest.TestCase):
     def test_what_each_rows_installation_drive_holds(self):
         self.assertEqual(placement.apps_of('photos'), ['immich'])
         self.assertEqual(
-            placement.apps_of('movies'), ['jellyfin', 'seerr', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'qbittorrent']
+            placement.apps_of('movies'), ['jellyfin', 'seerr', 'sonarr', 'radarr', 'prowlarr', 'qbittorrent']
         )
-        self.assertEqual(placement.apps_of('music'), ['navidrome'])
+        self.assertEqual(placement.apps_of('music'), ['navidrome', 'lidarr'])
         self.assertEqual(placement.apps_of('cloud'), ['nextcloud'])
         self.assertEqual(placement.install_folders('photos'), ['compose/immich', 'appdata/immich'])
         self.assertIn('docker-engine', placement.install_folders('core'))

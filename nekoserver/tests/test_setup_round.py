@@ -316,8 +316,14 @@ class WindowPackageTests(unittest.TestCase):
             saved,
             {
                 'tv': {'wanted': True},  # chosen before: kept
-                # A new server: the apps are offered on, the downloads and the extras off.
-                'media_apps': {'photos': True, 'movies': True, 'music': False, 'downloads': False},
+                # A new server: the apps are offered on, with finding and downloading; the extras off.
+                'media_apps': {
+                    'photos': True,
+                    'movies': True,
+                    'music': False,
+                    'movies_downloads': True,
+                    'music_downloads': True,
+                },
                 'nextcloud': {'enabled': True},
                 'notifications': {'wanted': False},
                 'heartbeat': {'wanted': False},

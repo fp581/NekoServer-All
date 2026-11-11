@@ -68,13 +68,13 @@ OLD_LOCATIONS = {'photos': 'photos', 'movies': 'movies', 'music': 'music', CLOUD
 
 
 def apps_of(row):
-    """The apps whose settings a row's installation drive holds. The download apps
-    (Lidarr among them) are installed with Movies and shows."""
+    """The apps whose settings a row's installation drive holds. Prowlarr and
+    qBittorrent, which both groups' finding uses, are installed with Movies and shows."""
     if row == CLOUD:
         return ['nextcloud']
     if row not in MEDIA_GROUPS:
         return []
-    home = {app: 'movies' if DOWNLOADS in groups else groups[0] for app, groups in APP_GROUPS.items() if groups}
+    home = {app: 'movies' if groups == (DOWNLOADS,) else groups[0] for app, groups in APP_GROUPS.items() if groups}
     return [app for app, group in home.items() if group == row]
 
 

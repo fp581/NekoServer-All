@@ -115,13 +115,14 @@ class QuestionTests(unittest.TestCase):
 
     def test_asked_once_explained_and_saved(self):
         config = settings(folder=self.tmp.name)
-        ctx, shown = self.ask(config, ['no', 'yes', 'no', 'no'])
-        self.assertEqual(config['media_apps'], {'photos': False, 'movies': True, 'music': False, 'downloads': False})
+        ctx, shown = self.ask(config, ['no', 'yes', 'no'])
+        self.assertEqual(config['media_apps'], {'photos': False, 'movies': True, 'music': False})
         ctx.persist_config.assert_called_once()
         said = '\n'.join(shown)
         for words in (
             'Jellyfin',
-            'Sonarr, Radarr and Seerr',
+            'Seerr',
+            'Sonarr, Radarr and Prowlarr',
             'Prowlarr',
             'qBittorrent',
             'Lidarr',

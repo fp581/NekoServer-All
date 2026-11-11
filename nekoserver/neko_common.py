@@ -1358,17 +1358,15 @@ GROUP_NAMES = {
     'movies': 'Movies and shows (Jellyfin)',
     'music': 'Music (Navidrome)',
 }
-# Finding and downloading films, shows and music is a switch of its own (the wizard of
-# 0.50.0: playing and downloading are different wishes), saved as "downloads" beside the
-# groups. It holds Prowlarr and qBittorrent; with Movies and shows also Sonarr, Radarr and
-# Seerr; with Music also Lidarr. It does nothing without one of those two.
-# - A new server: off until the person switches it on (setup's first page, or its
-#   question in the terminal).
-# - A server that has no answer for it: as Movies and shows is, because until this switch
-#   existed the download apps were set up with Movies and shows, and an upgrade must not
-#   stop them (or add them where they were left out).
+# Finding and downloading is part of its group (the user, on seeing the first page:
+# "isn't the seer sonar radar part of jellyfin?"): Movies and shows is Jellyfin with
+# Seerr, Sonarr and Radarr; Music is Navidrome with Lidarr; Prowlarr and qBittorrent,
+# which those need, come with either. Each of the two groups has one small switch, "Also
+# find and download new ones", saved as "movies_downloads" and "music_downloads" beside
+# the groups and on unless switched off: off leaves Jellyfin, or Navidrome, alone.
+# "downloads" is not saved: it says whether any finding and downloading is set up.
+FINDING = {'movies': 'movies_downloads', 'music': 'music_downloads'}
 DOWNLOADS = 'downloads'
-DOWNLOADS_NAME = 'Automatic media downloads (Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent, Seerr)'
 APP_GROUPS = {app['id']: tuple(app.get('groups', ())) for app in SHARED['apps']}
 
 
@@ -1396,10 +1394,10 @@ def media_group(config, group):
     """The group is part of this server: its own answer, else on unless "wanted" is false."""
     section = config.get(MEDIA_SECTION)
     if group == DOWNLOADS:
-        if isinstance(section, dict) and isinstance(section.get(group), bool):
-            # Its own answer, and something to download for.
-            return section[group] and (media_group(config, 'movies') or media_group(config, 'music'))
-        return media_group(config, 'movies')
+        return any(media_group(config, of) and media_group(config, switch) for of, switch in FINDING.items())
+    if group in FINDING.values():
+        # On unless switched off (its group decides the rest: an app needs both).
+        return not (isinstance(section, dict) and section.get(group) is False)
     if not isinstance(section, dict):
         return True
     if isinstance(section.get(group), bool):

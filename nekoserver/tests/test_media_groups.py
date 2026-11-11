@@ -38,6 +38,7 @@ from modules import (  # noqa: E402
 
 SERVICES = ['jellyfin', 'navidrome', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'seerr', 'qbittorrent']
 MOVIES = ['jellyfin', 'sonarr', 'radarr', 'prowlarr', 'seerr', 'qbittorrent']
+MUSIC = ['navidrome', 'lidarr', 'prowlarr', 'qbittorrent']
 GROUPS = neko_common.MEDIA_GROUPS
 
 
@@ -78,14 +79,14 @@ class MembershipTests(unittest.TestCase):
         self.assertEqual(by_group['photos'], ['immich'])
         self.assertEqual(by_group['movies'], ['jellyfin'])
         self.assertEqual(by_group['music'], ['navidrome'])
-        # The apps that find and download are a switch of their own: Prowlarr and
-        # qBittorrent with it alone; Sonarr, Radarr and Seerr need films and shows too,
-        # Lidarr music (and not films and shows).
+        # Finding and downloading is part of its group, behind the group's own small
+        # switch: Seerr, Sonarr and Radarr with films and shows, Lidarr with music, and
+        # Prowlarr and qBittorrent, which both use, with either.
         groups = neko_common.APP_GROUPS
         self.assertEqual((groups['prowlarr'], groups['qbittorrent']), (('downloads',), ('downloads',)))
         for app in ('sonarr', 'radarr', 'seerr'):
-            self.assertEqual(groups[app], ('movies', 'downloads'))
-        self.assertEqual(groups['lidarr'], ('downloads', 'music'))
+            self.assertEqual(groups[app], ('movies', 'movies_downloads'))
+        self.assertEqual(groups['lidarr'], ('music', 'music_downloads'))
         # Nextcloud is in no group: it has its own switch, as before.
         self.assertEqual(neko_common.APP_GROUPS['nextcloud'], ())
         # Every media app is in a group, and nothing else is.
@@ -100,9 +101,9 @@ class MembershipTests(unittest.TestCase):
                 expected = [
                     app
                     for app in SERVICES
-                    if (app in MOVIES and answers['movies'])
-                    or (app == 'navidrome' and answers['music'])
-                    or (app == 'lidarr' and answers['movies'] and answers['music'])
+                    if (app in MOVIES[:1] + ['sonarr', 'radarr', 'seerr'] and answers['movies'])
+                    or (app in ('navidrome', 'lidarr') and answers['music'])
+                    or (app in ('prowlarr', 'qbittorrent') and (answers['movies'] or answers['music']))
                 ]
                 self.assertEqual(neko_common.media_services(config), expected)
                 self.assertIs(neko_common.immich_wanted(config), answers['photos'])
@@ -110,36 +111,43 @@ class MembershipTests(unittest.TestCase):
                 # The settings themselves are never emptied: yes later brings back what was there.
                 self.assertEqual(config['media']['services'], SERVICES)
 
-    def test_the_downloads_are_a_switch_of_their_own(self):
+    def test_each_of_the_two_groups_has_its_own_finding_switch(self):
         apps = neko_common.media_services
-        # Playing without downloading: Jellyfin alone, Navidrome alone.
-        self.assertEqual(apps(settings(**only('movies'), downloads=False)), ['jellyfin'])
-        self.assertEqual(apps(settings(**only('movies', 'music'), downloads=False)), ['jellyfin', 'navidrome'])
-        # Music downloads do not need the film player.
-        self.assertEqual(
-            apps(settings(**only('music'), downloads=True)), ['navidrome', 'lidarr', 'prowlarr', 'qbittorrent']
-        )
-        self.assertEqual(apps(settings(**only('movies'), downloads=True)), MOVIES)
-        # Nothing to download for: the switch does nothing.
-        self.assertEqual(apps(settings(**only('photos'), downloads=True)), [])
-        self.assertFalse(neko_common.media_group(settings(**only('photos'), downloads=True), 'downloads'))
-        # With no answer of its own it is as Movies and shows is: what every server had before
-        # the switch existed, so an upgrade neither stops the download apps nor adds them.
+        # On unless switched off: every server before the switch existed has these apps.
         self.assertEqual(apps(settings()), SERVICES)
         self.assertEqual(apps(settings(**only('movies'))), MOVIES)
-        self.assertEqual(apps(settings(**only('music'))), ['navidrome'])
-        self.assertFalse(neko_common.media_group_chosen(settings(**only('movies')), 'downloads'))
+        self.assertEqual(apps(settings(**only('music'))), MUSIC)  # Lidarr does not need the film player
+        # Off: Jellyfin, or Navidrome, alone; the other group keeps its own.
+        self.assertEqual(apps(settings(**only('movies'), movies_downloads=False)), ['jellyfin'])
+        self.assertEqual(apps(settings(**only('music'), music_downloads=False)), ['navidrome'])
+        both = only('movies', 'music')
+        self.assertEqual(
+            apps(settings(**both, movies_downloads=False)),
+            ['jellyfin', 'navidrome', 'lidarr', 'prowlarr', 'qbittorrent'],
+        )
+        self.assertEqual(
+            apps(settings(**both, movies_downloads=False, music_downloads=False)), ['jellyfin', 'navidrome']
+        )
+        # A switch of a group that is off does nothing: nothing to download for.
+        self.assertEqual(apps(settings(**only('photos'), movies_downloads=True, music_downloads=True)), [])
+        self.assertFalse(neko_common.media_group(settings(**only('photos')), 'downloads'))
         # The connecting step and the hourly check have work with Jellyfin or the download apps.
         left = neko_common.media_steps_left_out
-        self.assertEqual(left(settings(**only('music'), downloads=True)) & {'onboarding', 'media_monitor'}, set())
-        self.assertEqual(left(settings(**only('movies'), downloads=False)) & {'onboarding', 'media_monitor'}, set())
+        self.assertEqual(left(settings(**only('music'))) & {'onboarding', 'media_monitor'}, set())
+        self.assertEqual(
+            left(settings(**only('movies'), movies_downloads=False)) & {'onboarding', 'media_monitor'}, set()
+        )
+        self.assertEqual(
+            left(settings(**only('music'), music_downloads=False)) & {'onboarding', 'media_monitor'},
+            {'onboarding', 'media_monitor'},
+        )
 
     def test_a_group_with_no_answer_is_on_and_the_old_yes_no_still_reads(self):
         self.assertEqual(neko_common.media_services(settings()), SERVICES)
         old_no = settings(wanted=False)
         self.assertEqual((neko_common.media_services(old_no), neko_common.immich_wanted(old_no)), ([], False))
         # A group's own answer wins over it, either way.
-        self.assertEqual(neko_common.media_services(settings(wanted=False, music=True)), ['navidrome'])
+        self.assertEqual(neko_common.media_services(settings(wanted=False, music=True)), MUSIC)
         self.assertTrue(neko_common.immich_wanted(settings(wanted=False, photos=True)))
         self.assertFalse(neko_common.immich_wanted(settings(wanted=True, photos=False)))
         self.assertTrue(neko_common.media_group_chosen(old_no, 'photos'))
@@ -149,7 +157,10 @@ class MembershipTests(unittest.TestCase):
         left = neko_common.media_steps_left_out
         self.assertEqual(left(settings()), set())
         self.assertEqual(left(settings(**only('movies', 'music'))), {'photos', 'photo_preservation'})
-        self.assertEqual(left(settings(**only('photos', 'music'))), {'onboarding', 'media_monitor', 'tv'})
+        self.assertEqual(left(settings(**only('photos', 'music'))), {'tv'})  # Lidarr is still connected
+        self.assertEqual(
+            left(settings(**only('photos', 'music'), music_downloads=False)), {'onboarding', 'media_monitor', 'tv'}
+        )
         self.assertEqual(left(settings(**only('photos', 'movies'))), {'music', 'music_backup'})
         self.assertEqual(left(settings(**only())), set(neko_common.MEDIA_STEPS))
 
@@ -180,22 +191,20 @@ class QuestionTests(unittest.TestCase):
         return ctx, asked, shown
 
     def test_each_group_is_asked_by_name_and_any_combination_is_saved(self):
-        # The downloads are asked after the three, when there is something to download for.
         cases = {
             ('yes', 'no', 'no'): only('photos'),  # photos alone
-            ('no', 'yes', 'no', 'no'): {**only('movies'), 'downloads': False},  # playing, no downloading
-            ('no', 'no', 'yes', 'yes'): {**only('music'), 'downloads': True},
+            ('no', 'yes', 'no'): only('movies'),
+            ('no', 'no', 'yes'): only('music'),
             ('no', 'no', 'no'): only(),  # none
-            ('yes', 'yes', 'yes', 'yes'): {**only(*GROUPS), 'downloads': True},  # all
+            ('yes', 'yes', 'yes'): only(*GROUPS),  # all
         }
-        names = [*neko_common.GROUP_NAMES.values(), neko_common.DOWNLOADS_NAME]
         for answers, expected in cases.items():
             with self.subTest(answers=answers):
                 config = settings(self.tmp.name)
                 ctx, asked, shown = self.ask(config, answers)
                 self.assertEqual(config['media_apps'], expected)
-                self.assertEqual(len(asked), len(answers))
-                for question, name in zip(asked, names):
+                self.assertEqual(len(asked), 3)
+                for question, name in zip(asked, neko_common.GROUP_NAMES.values()):
                     self.assertIn(f'Install {name}?', question)
                 ctx.persist_config.assert_called_once()
         said = '\n'.join(shown)
@@ -204,12 +213,11 @@ class QuestionTests(unittest.TestCase):
 
     def test_a_group_chosen_in_the_window_is_not_asked_again(self):
         config = settings(self.tmp.name, movies=False)
-        _, asked, _ = self.ask(config, ['yes', 'yes', 'no'])
+        _, asked, _ = self.ask(config, ['yes', 'yes'])
         self.assertEqual(
-            [q.strip().split('?')[0] for q in asked],
-            ['Install Photos (Immich)', 'Install Music (Navidrome)', 'Install ' + neko_common.DOWNLOADS_NAME],
+            [q.strip().split('?')[0] for q in asked], ['Install Photos (Immich)', 'Install Music (Navidrome)']
         )
-        self.assertEqual(config['media_apps'], {'movies': False, 'photos': True, 'music': True, 'downloads': False})
+        self.assertEqual(config['media_apps'], {'movies': False, 'photos': True, 'music': True})
         # All chosen: nothing is asked.
         self.assertEqual(self.ask(config, [])[1], [])
 
@@ -226,9 +234,8 @@ class QuestionTests(unittest.TestCase):
 
         ctx = context(config)
         guided_setup.choose_media_apps(ctx, prompt=prompt, output=lambda _: None)
-        # The downloads left alone on a new server are not set up: playing needs none of them.
-        self.assertEqual(config['media_apps'], {'photos': False, 'downloads': False})
-        self.assertEqual(neko_common.media_services(config), ['jellyfin', 'navidrome'])
+        self.assertEqual(config['media_apps'], {'photos': False})
+        self.assertEqual(neko_common.media_services(config), SERVICES)
         _, asked, _ = self.ask(config, ['yes', 'yes'])
         self.assertEqual(len(asked), 2)
 
@@ -328,7 +335,7 @@ class WindowTests(unittest.TestCase):
             self.assertTrue(explanations.extra_chosen(old, extra))
         # One switched back on wins over it.
         explanations.set_extra(old, explanations.EXTRAS[2], True)
-        self.assertEqual(neko_common.media_services({**settings(), **old}), ['navidrome'])
+        self.assertEqual(neko_common.media_services({**settings(), **old}), MUSIC)
 
 
 class StepTests(unittest.TestCase):
@@ -355,7 +362,7 @@ class StepTests(unittest.TestCase):
 
     def test_music_alone_asks_nothing_about_jellyfin(self):
         """S6: a music-only setup still asked for a playback test in Jellyfin."""
-        config = settings(**only('music'))
+        config = settings(**only('music'), music_downloads=False)  # Navidrome alone
         ctx = context(config)
         self.assertIsNone(onboarding.run(ctx))
         self.assertIn(
@@ -389,7 +396,7 @@ class StepTests(unittest.TestCase):
         # With music alone the music backup stays and the nightly app backup has Navidrome to keep.
         with mock.patch.object(app_backup.native_runtime, 'storage_config', return_value={}):
             kept = app_backup.guard_config({**settings(**only('music')), 'app_backup': {}})
-        self.assertEqual(kept['media'], {'services': ['navidrome']})
+        self.assertEqual(kept['media'], {'services': MUSIC})
 
     def test_no_place_is_asked_for_files_no_app_here_keeps(self):
         """S7: apps that are off still produced storage questions (photos, cloud storage)."""
@@ -418,7 +425,8 @@ class StepTests(unittest.TestCase):
         photos_only = settings(**only('photos'))
         self.assertEqual(account_store.selected(photos_only, plan), ['immich', 'nextcloud'])
         self.assertEqual(
-            account_store.selected(settings(**only('music')), plan), ['navidrome', 'navidrome_listener', 'nextcloud']
+            account_store.selected(settings(**only('music'), music_downloads=False), plan),
+            ['navidrome', 'navidrome_listener', 'nextcloud'],
         )
         with tempfile.TemporaryDirectory() as folder:
             for app in ('immich', 'nextcloud'):

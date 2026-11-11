@@ -270,14 +270,16 @@ def show_first_page(config, output):
     output(explanations.PAGE_HINT)
     now = explanations.states(config)
     part = None
-    for number, extra in enumerate(explanations.EXTRAS, 1):
+    for number, extra in enumerate(explanations.shown(), 1):
         if extra['part'] != part:
             part = extra['part']
             output('')
             output(dict(explanations.PARTS)[part])
         on = now[extra['id']] and explanations.offered(config, extra)
-        output(f" [{'x' if on else ' '}] {number:2d}. {extra['title']}")
-        output('        ' + extra['explanation'])
+        # A switch inside a card (finding and downloading) is listed under it, set in.
+        indent = '     ' if extra.get('under') else ''
+        output(f"{indent} [{'x' if on else ' '}] {number:2d}. {extra['title']}")
+        output(indent + '        ' + extra['explanation'])
     output('')
     output(
         '=== '
@@ -288,7 +290,7 @@ def show_first_page(config, output):
         output(heading + ':')
         for line in lines:
             output('  - ' + line)
-    return list(explanations.EXTRAS)
+    return explanations.shown()
 
 
 def switched(config, extras, answer, output):

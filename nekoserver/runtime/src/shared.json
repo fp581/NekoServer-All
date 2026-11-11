@@ -124,7 +124,7 @@
       "role": "Find something to watch",
       "port": 5055,
       "media": true,
-      "groups": ["movies", "downloads"],
+      "groups": ["movies", "movies_downloads"],
       "tailnet": 8444
     },
     {
@@ -142,7 +142,7 @@
       "role": "Manage your TV library",
       "port": 8989,
       "media": true,
-      "groups": ["movies", "downloads"]
+      "groups": ["movies", "movies_downloads"]
     },
     {
       "id": "radarr",
@@ -150,7 +150,7 @@
       "role": "Manage your movie library",
       "port": 7878,
       "media": true,
-      "groups": ["movies", "downloads"]
+      "groups": ["movies", "movies_downloads"]
     },
     {
       "id": "lidarr",
@@ -158,7 +158,7 @@
       "role": "Manage your music library",
       "port": 8686,
       "media": true,
-      "groups": ["downloads", "music"]
+      "groups": ["music", "music_downloads"]
     },
     {
       "id": "prowlarr",

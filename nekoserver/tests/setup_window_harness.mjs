@@ -77,6 +77,16 @@ async function step(i) {
       input.fire('change');
     }
   }
+  // {"pressInside": "a card's title"}: the switch inside that card.
+  if (states[i].phase === 'choose' && states[i].pressInside) {
+    for (const card of elements.extras.children) {
+      if (card.children[0]?.textContent !== states[i].pressInside) continue;
+      const sub = card.children.find((child) => (child.className ?? '').startsWith('sub-switch'));
+      const input = sub.children[2].children[0];
+      input.checked = !input.checked;
+      input.fire('change');
+    }
+  }
   // The first page's Continue ({"continue": true}) and the review's Back ({"back": true}).
   if (states[i].phase === 'choose' && states[i].continue) {
     elements.continue.fire('click');
@@ -144,6 +154,10 @@ const shown = ['choose', 'running', 'finished', 'gone', 'moved', 'finish-closed'
 const marks = (list) => (list?.children ?? []).map((li) => [li.className, li.children[0].textContent, li.children[1].children[0]]);
 const cards = (elements.extras?.children ?? []).filter((card) => card.className.startsWith('extra'))
   .map((card) => [card.className, card.children[1].children[0].textContent, card.children[1].children[1].children[0].disabled]);
+// The switches inside a card (finding and downloading): [the card's title, its class, yes or no, off].
+const subs = (elements.extras?.children ?? []).filter((card) => card.className.startsWith('extra'))
+  .flatMap((card) => card.children.filter((child) => (child.className ?? '').startsWith('sub-switch'))
+    .map((sub) => [card.children[0].textContent, sub.className, sub.children[1].textContent, sub.children[2].children[0].disabled]));
 const parts = (elements.extras?.children ?? []).filter((card) => card.className === 'part-title').map((title) => title.textContent);
 const review = { hidden: elements.review?.hidden ?? null, appsHidden: elements['choose-apps']?.hidden ?? null,
   title: elements['review-title']?.textContent ?? '', note: elements['review-note']?.textContent ?? '',
@@ -152,7 +166,7 @@ const storage = (elements['ask-page']?.children?.[0]?.className === 'storage' ? 
   .filter((row) => row.className === 'row').map((row) => { const select = row.children[1].children[0];
     return { key: select.id.replace('ask-page-', ''), title: row.children[0].textContent,
       options: select.children.map((option) => [option.value, option.textContent, !!option.disabled]) }; });
-console.log(JSON.stringify({ posts, parts, review, storage, title: elements['finish-title']?.textContent ?? '', shown,
+console.log(JSON.stringify({ posts, parts, subs, review, storage, title: elements['finish-title']?.textContent ?? '', shown,
   badge: elements['phase-badge']?.textContent ?? '', label: elements['finish-label']?.textContent ?? '', lines: elements['finish-lines']?.textContent ?? '',
   marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards,
   pageHidden: elements['ask-page']?.hidden ?? null, answerHidden: elements['ask-answer']?.hidden ?? null,

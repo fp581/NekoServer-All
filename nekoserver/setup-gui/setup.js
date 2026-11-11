@@ -111,7 +111,9 @@
       const on = switches[card.extra.id] && offered;
       card.input.checked = on;
       card.input.disabled = !offered;
-      card.node.className = 'extra' + (on ? ' on' : '') + (offered ? '' : ' unavailable');
+      card.node.className = card.extra.under
+        ? 'sub-switch' + (offered ? '' : ' unavailable')
+        : 'extra' + (on ? ' on' : '') + (offered ? '' : ' unavailable');
       card.caption.textContent = on ? 'yes' : 'no';
     }
   }
@@ -129,13 +131,24 @@
       }
       const input = el('input', { type: 'checkbox', 'aria-label': extra.title });
       const caption = el('span', { class: 'caption' });
-      const node = el(
-        'div',
-        { class: 'extra' },
-        el('h3', { text: extra.title }),
-        el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span'))),
-        el('p', { text: extra.explanation })
-      );
+      const parent = extra.under ? cards.find(card => card.extra.id === extra.under) : null;
+      // A switch inside a card (finding and downloading): a line of the card it belongs to.
+      const node = parent
+        ? el(
+            'div',
+            { class: 'sub-switch', title: extra.explanation },
+            el('span', { class: 'sub-title', text: extra.title }),
+            caption,
+            el('label', { class: 'switch' }, input, el('span'))
+          )
+        : el(
+            'div',
+            { class: 'extra' },
+            el('h3', { text: extra.title }),
+            el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span'))),
+            el('p', { text: extra.explanation }),
+            extra.small ? el('small', { class: 'card-small', text: extra.small }) : null
+          );
       input.addEventListener('change', () => {
         switches[extra.id] = input.checked;
         chosen[extra.id] = input.checked;
@@ -143,7 +156,8 @@
         saving = save({ [extra.id]: input.checked });
       });
       if (extra.installs.length) node.append(...installsOf(extra));
-      box.append(node);
+      if (parent) parent.node.append(node);
+      else box.append(node);
       cards.push({ extra, input, caption, node });
     }
     built = true;
