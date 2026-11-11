@@ -967,7 +967,9 @@ pub fn stream(
             limits.next
         };
         match next_line(&mut reader, &mut line, limit, keep) {
-            Ok(0) => break,
+            // Closed before Ollama said "done": the answer is not whole (its runner was
+            // ended, or the connection dropped). What came so far is not passed off as it.
+            Ok(0) => return Err(CUT_OFF.into()),
             Ok(_) => {}
             Err(why) => return Err(waited(why, too_long)),
         }
@@ -982,11 +984,13 @@ pub fn stream(
             piece(text);
         }
         if part["done"] == true {
-            break;
+            return Ok(answer);
         }
     }
-    Ok(answer)
 }
+
+/// Said when the answer stopped before Ollama marked it as finished.
+pub const CUT_OFF: &str = "the answer was cut off before it ended; ask again";
 
 /// Ollama's error in words a person can act on.
 fn plain_error(said: &str) -> String {
@@ -1512,6 +1516,32 @@ mod tests {
         assert!(asked.contains(r#""think":false"#), "{asked}");
         // With the threads of its processor share, never one per core (the 0.49.0 gate).
         assert!(asked.contains(r#""num_thread":2"#), "{asked}");
+    }
+
+    /// Review of 0.49.0: a connection closed before "done": true gave Ok(answer), so half
+    /// an answer was shown as a whole one, and a repair could be read from it.
+    #[test]
+    fn an_answer_that_closes_before_done_is_cut_off_not_complete() {
+        let body = [
+            r#"{"message":{"content":"Restart Jellyfin.\nACTION: restart_app:jellyfin"},"done":false}"#,
+            r#"{"message":{"content":" It has"},"done":false}"#,
+        ]
+        .join("\n");
+        let (address, _) = fake_ollama(Some(format!(
+            "HTTP/1.0 200 OK\r\nContent-Type: application/x-ndjson\r\n\r\n{body}\n"
+        )));
+        let (answer, pieces) = collect(&address, &LIMITS);
+        assert_eq!(answer.unwrap_err(), CUT_OFF);
+        // The page still gets what came, to show it marked as cut off.
+        assert_eq!(
+            pieces.concat(),
+            "Restart Jellyfin.\nACTION: restart_app:jellyfin It has"
+        );
+        // Only a whole answer is read for a repair: a failed one never sets it.
+        let source = include_str!("assist.rs");
+        let ended = &source[source.find("match result {").unwrap()..];
+        let failed = &ended[ended.find("Err(why) =>").unwrap()..][..120];
+        assert!(!failed.contains("repair"), "{failed}");
     }
 
     #[test]

@@ -1799,7 +1799,8 @@ function shownAnswer(answer) {
 }
 function bugReport(entry) {
   const at = entry.answer.indexOf('BUG REPORT:');
-  if (at < 0) {
+  // An answer that was cut off has no whole report to copy.
+  if (at < 0 || entry.error) {
     return null;
   }
   return [
@@ -1819,6 +1820,10 @@ function askEntry(entry) {
     box.append(longText('ask-answer', said || 'Thinking…'));
   }
   if (entry.error) {
+    if (said) {
+      // What came before it stopped stays, marked: it is not the whole answer.
+      box.append(el('p', 'hint', 'The answer stops here: it was cut off before it ended.'));
+    }
     box.append(el('p', 'ask-error', entry.error));
   }
   if (entry.repair) {

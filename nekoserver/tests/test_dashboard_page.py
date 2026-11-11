@@ -881,6 +881,12 @@ class AskNekoPageTests(unittest.TestCase):
             )
         # A repair runs only from its Approve button, after the server checked it.
         self.assertIn("button('Approve', () => approveRepair(entry)", app)
+        # Review of 0.49.0: an answer cut off part-way looked complete. What came stays,
+        # marked as cut off; no bug report is made from it, and no repair is offered.
+        entry = app[app.index('function askEntry(entry)') :][:900]
+        self.assertIn("'The answer stops here: it was cut off before it ended.'", entry)
+        self.assertIn('if (at < 0 || entry.error) {', app)
+        self.assertIn("if (now.done === true && typeof now.repair === 'string')", app)
         # Review of 0.49.0: Approve ran whatever version was newest when pressed. The card's
         # version goes back with the approval, and a changed one shows the card afresh.
         self.assertIn("postControl('assist-run', { action: r.id, sig: r.sig })", app)
