@@ -278,6 +278,13 @@ def backup_items(backups):
     return attention, pending
 
 
+def outcome(attention, pending):
+    """The page's heading: something needed failed; else something is still to do; else ready."""
+    if attention:
+        return ATTENTION
+    return PENDING if pending else READY
+
+
 def counted(rows):
     """How many rows are in each state."""
     return {state: sum(r['state'] == state for r in rows) for state in (DONE, FAILED, NOT_TESTED, WAITING)}
@@ -309,7 +316,7 @@ def summary(facts):
     tests += tv + restores
     machine = [app['states'][name] for app in apps for name in ('installed', 'login', 'address')] + backups
     return {
-        'outcome': ATTENTION if attention else (PENDING if pending else READY),
+        'outcome': outcome(attention, pending),
         'ready': not attention,
         'apps': apps,
         'server': {
