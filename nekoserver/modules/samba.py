@@ -4,7 +4,7 @@ import json, os, pwd, re, shutil, subprocess, sys
 import network_access
 from pathlib import Path
 import host
-from neko_common import safe_path, atomic_write, findmnt, immich_wanted, last_words, media_apps_wanted, SYSTEMD_UNITS
+from neko_common import safe_path, atomic_write, findmnt, immich_wanted, last_words, media_group, SYSTEMD_UNITS
 
 DEPENDENCIES = ['storage', 'system']
 DESCRIPTION = 'Set up explicit LAN or tailnet SMB shares with no guest access'
@@ -100,7 +100,8 @@ def wanted_shares(config):
     if not immich_wanted(config) and shares.get('Photos') == archive:
         del shares['Photos']
     if (
-        not media_apps_wanted(config)
+        # Neither group that makes the library (films and shows, music) is on.
+        not (media_group(config, 'movies') or media_group(config, 'music'))
         and shares.get('Media') == 'library'
         and not (Path(config['media_mount']) / 'library').is_dir()
     ):

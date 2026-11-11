@@ -20,7 +20,7 @@ from neko_common import (
     verify_storage,
     atomic_write,
     host_timezone,
-    media_apps_wanted,
+    media_services,
     music_downloads,
     music_library,
 )
@@ -228,7 +228,13 @@ def _run(context):
         return
     if os.geteuid() != 0:
         raise RuntimeError('Media deployment requires root (sudo)')
-    if not media_apps_wanted(context.config):
+    # The apps asked for (media.services), then those whose group is on: the list may
+    # be empty (photos alone, or no media group at all), and then nothing is set up.
+    asked = settings.get('services', list(SERVICES))
+    if not isinstance(asked, list) or any(x not in SERVICES for x in asked):
+        raise RuntimeError('media.services must be a list of known services')
+    selected = media_services({**context.config, 'media': {**settings, 'services': asked}})
+    if not selected:
         return left_out(context)
     data = Path(context.config['data_mount'])
     media = Path(context.config['media_mount'])
@@ -245,9 +251,6 @@ def _run(context):
     # seconds failed this whole step on a PC still busy right after building the runtime
     # (a small VM, the 0.47.10 round), and setup told the user to run it again.
     run_cmd(['docker', 'info', '--format', '{{.ServerVersion}}'], timeout=120)
-    selected = settings.get('services', list(SERVICES))
-    if not isinstance(selected, list) or not selected or any(x not in SERVICES for x in selected):
-        raise RuntimeError('media.services must be a nonempty list of known services')
     uid, gid = int(settings.get('uid', 1000)), int(settings.get('gid', 1000))
     tz, bind = host_timezone(context.config), settings.get('bind_ip', '127.0.0.1')
     if uid <= 0 or gid <= 0 or not re.fullmatch(r'[A-Za-z0-9_+./-]+', tz):
@@ -360,16 +363,19 @@ def left_out(context, run=None):
     compose_dir = Path(context.config['data_mount']) / 'compose'
     stopped = stop_unselected(compose_dir, [], context.log, run, LEFT_OUT)
     if not stopped:
-        context.log('Media apps: left out (you answered no to installing them); nothing was set up')
+        context.log('Media apps: left out (none of them is switched on); nothing was set up')
 
 
 # What the log says of an app stopped because the media apps were left out.
 LEFT_OUT = (
-    '{name}: stopped, as the media apps are left out; its settings, data and media stay. To start it again, '
-    'run  sudo bash install.sh , answer yes to asking the questions again and yes to the media apps'
+    '{name}: stopped, as its group is switched off; its settings, data and media stay. To start it again, '
+    'run  sudo bash install.sh , answer yes to asking the questions again and yes to its group'
 )
 # ... and of one taken out of media.services.
-TAKEN_OUT = '{name}: not in media.services any more, so it is stopped; its settings and data stay (add it back to start it again)'
+TAKEN_OUT = (
+    '{name}: not among your apps any more (its group is switched off, or it was taken out of media.services), '
+    'so it is stopped; its settings and data stay (switch it back on to start it again)'
+)
 
 
 def stop_unselected(compose_dir, selected, log, run=None, said=TAKEN_OUT):

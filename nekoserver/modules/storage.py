@@ -1246,6 +1246,19 @@ WHERE = (
 )
 
 
+def asked_where(config, what):
+    """Whether this server keeps such files at all: no question about where the photos go
+    without Immich, the music without the Music group, or Nextcloud's files with
+    Nextcloud switched off (the setup review, S7)."""
+    from neko_common import immich_wanted, media_group
+
+    if what == 'photos':
+        return immich_wanted(config)
+    if what == 'music':
+        return media_group(config, 'music')
+    return config.get('nextcloud', {}).get('enabled', True) is True
+
+
 def recommended(ssd_gb, threshold):
     """The better drive on this server: the SSD (faster) when it is big enough to hold it
     for years (`threshold` GB), else the media drive (bigger). No threshold (Nextcloud's
@@ -1293,11 +1306,9 @@ def choose_locations(context, input_fn=None, interactive=None):
     room = {'ssd': free_gb(config['data_mount']), 'media': free_gb(config['media_mount'])}
     on_nas = bool(config.get('storage', {}).get('media_hdd', {}).get('network'))
     changed = False
-    from neko_common import media_apps_wanted
-
     for what, words, threshold in WHERE:
-        if what in ('photos', 'music') and not media_apps_wanted(config):
-            continue  # left out with the media apps: asked if they are added later
+        if not asked_where(config, what):
+            continue  # its app is not part of this server: asked if it is added later
         kept = kept_location(config, what)
         if chosen.get(what) in DRIVE_WORDS:
             same_place(context, what, words, chosen[what], kept)
@@ -1310,7 +1321,7 @@ def choose_locations(context, input_fn=None, interactive=None):
             )
             context.log(f'{words.capitalize()}: on {DRIVE_WORDS[chosen[what]]}')
         changed = True
-    if chosen.get('photos') == 'media' and media_apps_wanted(config):
+    if chosen.get('photos') == 'media' and asked_where(config, 'photos'):
         context.log(PHOTOS_ON_MEDIA)
     if changed and hasattr(context, 'persist_config'):
         context.persist_config()

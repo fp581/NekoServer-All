@@ -18,7 +18,7 @@ from neko_common import (
     atomic_write,
     dashboard_port,
     find_program,
-    media_apps_wanted,
+    media_group,
     media_services,
     safe_path,
 )
@@ -68,7 +68,7 @@ def installed_apps(config):
             present = app in services
         else:  # Immich and Nextcloud have their own folder once set up.
             present = (data / 'compose' / app / 'compose.yaml').is_file()
-            present = present and (app != 'immich' or media_apps_wanted(config))
+            present = present and (app != 'immich' or media_group(config, 'photos'))
         if present:
             found.append(app)
     return found

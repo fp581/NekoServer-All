@@ -10,7 +10,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from neko_common import safe_path, atomic_write, atomic_json, ensure_directory, find_program, media_apps_wanted
+from neko_common import safe_path, atomic_write, atomic_json, ensure_directory, find_program, media_group
 import host
 
 DEPENDENCIES = ['system', 'recovery']
@@ -367,8 +367,8 @@ def run(ctx):
     if not ctx.apply:
         ctx.log('TV setup available through the tv/full profile with --apply')
         return
-    if not media_apps_wanted(ctx.config):
-        ctx.log('TV setup: left out with the media apps')
+    if not media_group(ctx.config, 'movies'):
+        ctx.log('TV setup: left out, as Movies and shows is switched off (the TV mode opens Jellyfin)')
         return
     impossible = not_possible(ctx)
     if impossible:

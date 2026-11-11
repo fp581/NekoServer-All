@@ -1186,7 +1186,15 @@ fn retired(cfg: &Value, key: &str) -> Option<&'static str> {
         "music" if cfg["music"]["backup_enabled"] == false => {
             Some("Switched off: the music backup is turned off in the settings")
         }
-        "music" | "applications" if !common::media_wanted(cfg) => {
+        "music" if !common::media_group(cfg, "music") => {
+            Some("Switched off: Music (Navidrome) is left out")
+        }
+        // The nightly app backup is of the media apps: off when none of them is set up
+        // (their groups off, or a list of apps that is empty).
+        "applications"
+            if cfg["media"]["services"].is_array() && common::media_services(cfg).is_empty()
+                || !(common::media_group(cfg, "movies") || common::media_group(cfg, "music")) =>
+        {
             Some("Switched off: the media apps are left out")
         }
         "archive" | "database" if !immich => Some("Switched off: Immich is not set up"),
@@ -3115,6 +3123,22 @@ mod os_tests {
         }
         for key in ["external", "host"] {
             assert_eq!(retired(&no_media, key), None, "{key}");
+        }
+        // One group off (0.50.0): only that group's backups are off.
+        let apps = json!(["jellyfin", "navidrome"]);
+        let no_music = json!({"media_apps":{"music":false},"media":{"services":apps},
+            "photos":{"deploy_immich":true}});
+        assert!(retired(&no_music, "music").is_some());
+        for key in ["applications", "archive", "database"] {
+            assert_eq!(retired(&no_music, key), None, "{key}");
+        }
+        let photos_only = json!({"media_apps":{"movies":false,"music":false},
+            "media":{"services":apps},"photos":{"deploy_immich":true}});
+        for key in ["music", "applications"] {
+            assert!(retired(&photos_only, key).is_some(), "{key}");
+        }
+        for key in ["archive", "database", "external"] {
+            assert_eq!(retired(&photos_only, key), None, "{key}");
         }
     }
     #[test]

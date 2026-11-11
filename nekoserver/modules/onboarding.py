@@ -14,7 +14,7 @@ from neko_common import (
     app_port,
     app_ports,
     atomic_json,
-    media_apps_wanted,
+    media_group,
     media_services,
     remember_answer,
     safe_path,
@@ -29,8 +29,10 @@ def run(ctx):
     if not ctx.apply or not settings.get('enabled', True):
         ctx.log('Guided media onboarding deferred')
         return
-    if not media_apps_wanted(ctx.config):
-        ctx.log('Connecting the apps: the media apps are left out, so there is nothing to connect')
+    if not media_group(ctx.config, 'movies'):
+        # Jellyfin, Seerr and the download apps are what this step connects (and asks
+        # about: the download sources, the indexers, the playback test).
+        ctx.log('Connecting the apps: Movies and shows is switched off, so there is nothing to connect')
         return
     if account_store.enabled(ctx.config) and 'accounts' in getattr(ctx, 'plan', ()):
         required = account_store.selected(ctx.config, ['media'])
@@ -226,7 +228,10 @@ def witness_playback(ctx, checkpoint=None):
     if isinstance(kept, list) and 'playback' in kept:  # a rerun that said no to asking again
         ctx.log('Playback test: skipped last time and not asked again (optional)')
         return
-    services = ctx.config.get('media', {}).get('services', [])
+    services = media_services(ctx.config)
+    if 'jellyfin' not in services:
+        # No Jellyfin on this server (a music-only one): nothing to play a film in.
+        return
     try:
         done = (checkpoint or guided_setup.checkpoint)(
             ctx,

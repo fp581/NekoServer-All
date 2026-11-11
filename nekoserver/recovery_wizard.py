@@ -31,7 +31,7 @@ from neko_common import (
     SHARED,
     hold_operation,
     cloud_files,
-    media_apps_wanted,
+    media_group,
     location,
     photo_library,
     FOLDER_FLAGS,
@@ -85,14 +85,19 @@ def menu(config):
     apps too?" answered no), the two items that only hold their backups (Immich's photo
     archive, the nightly app snapshots) are offered only while such a backup is there to
     restore: a server that had the apps keeps everything it had, its backups too."""
-    if media_apps_wanted(config):
+    # Whether the apps an item restores are part of this server (the groups of 0.50.0).
+    on = {
+        'photos': media_group(config, 'photos'),
+        'apps': media_group(config, 'movies') or media_group(config, 'music'),
+    }
+    if all(on.values()):
         return MENU
     media = Path(config['media_mount'])
     held = {
         'photos': media / config.get('photos', {}).get('archive_dir', ARCHIVE_DIR),
         'apps': media / 'backups/media-applications',
     }
-    return [(key, words) for key, words in MENU if key not in held or has_entries(held[key])]
+    return [(key, words) for key, words in MENU if key not in held or on[key] or has_entries(held[key])]
 
 
 def has_entries(folder):

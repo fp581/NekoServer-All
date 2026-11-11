@@ -545,21 +545,30 @@ def optional_kept(ctx, asked, prompt=None, output=None):
     return [] if again else shown
 
 
-# "Install the media apps too?": what they add and what they cost, in plain words. The
-# sizes are measured on a fresh install (TESTING.md, the 0.50.0 gate).
-MEDIA_QUESTION = 'Install the media apps too?'
+# The media apps, asked group by group (the user, 2026-11-11): what each adds, in plain
+# words. The sizes are measured on a fresh install with all three (TESTING.md, the 0.50.0 gate).
+MEDIA_QUESTION = 'Which media apps to install?'
 MEDIA_EXPLAINED = (
-    'Yes adds the apps for your films, shows, music and photos:',
-    '  - Jellyfin, to watch your films and shows, with Seerr to ask for new ones',
-    '  - Sonarr, Radarr, Lidarr and Prowlarr with qBittorrent, which find and download them',
-    '  - Immich, your own photo backup and gallery, and Navidrome for your music',
-    '  - video on the graphics chip, the hourly check that the apps still work together, and the TV mode',
-    'They take about 6 GB on the SSD (downloaded once), about 2 GB of memory when idle and more while',
-    'Immich looks at new photos or Jellyfin converts a video; your media and photos go on the HDD.',
-    'No leaves them out: Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts',
-    'and the AI assistant are set up either way. Answering no later never deletes anything: the apps',
-    'are stopped and their settings, data and media kept, and yes brings them back.',
+    'The media apps come in three groups, and each can be left out: answer yes or no for each one.',
+    'All three together take about 6 GB on the SSD (downloaded once) and about 2 GB of memory when idle.',
+    'Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts and the AI assistant',
+    'are set up either way. Answering no later never deletes anything: the apps of that group are stopped,',
+    'their settings, data and media are kept, and yes brings them back.',
 )
+GROUP_EXPLAINED = {
+    'photos': ('', 'Photos: Immich, your own photo backup and gallery, with its archive and its weekly USB copy.'),
+    'movies': (
+        '',
+        'Movies and shows: Jellyfin to watch them, Seerr to ask for new ones, and Sonarr, Radarr and Prowlarr',
+        'with qBittorrent, which find and download them; with video on the graphics chip, the hourly check',
+        'that these apps still work together, and the TV mode.',
+    ),
+    'music': (
+        '',
+        'Music: Navidrome, your music player, with the music backup. With Movies and shows on as well,',
+        'Lidarr finds and downloads music.',
+    ),
+}
 
 
 # "No" on a server that already has the media apps: what it means is decided in one
@@ -578,24 +587,26 @@ def settle_no_with_apps(ctx):
     With STOP the answer stands, and the media steps stop the apps and keep everything
     (media.left_out, the photo steps' switch_off). With KEEP the answer goes back to yes
     before any step reads it, so nothing is stopped. Returns the apps found."""
-    from neko_common import APPS, MEDIA_SECTION, media_apps_installed, media_apps_wanted
+    from neko_common import APPS, APP_GROUPS, MEDIA_GROUPS, MEDIA_SECTION, app_wanted, media_apps_installed
 
-    if media_apps_wanted(ctx.config):
-        return []
-    installed = media_apps_installed(ctx.config)
+    # The apps this server has whose group is now off (an app of two groups, Lidarr, as
+    # soon as one of them is).
+    installed = [app for app in media_apps_installed(ctx.config) if not app_wanted(ctx.config, app)]
     if not installed:
         return []
     names = ', '.join(APPS[app][0] for app in installed)
     if NO_WITH_APPS_INSTALLED == KEEP:
-        ctx.config[MEDIA_SECTION]['wanted'] = True
+        for group in MEDIA_GROUPS:
+            if any(group in APP_GROUPS[app] for app in installed):
+                ctx.config[MEDIA_SECTION][group] = True
         save_settings(ctx)
         ctx.log(
-            f'Media apps: this server already has them ({names}), so they stay as they are and keep '
+            f'Media apps: this server already has {names}, so they stay as they are and keep '
             'running; the answer no was not taken. Nothing was changed.'
         )
     else:
         ctx.log(
-            f'Media apps: you answered no, and this server already has them ({names}). They are stopped in '
+            f'Media apps: you switched off a group this server already has ({names}). They are stopped in '
             'this run; their settings, your photos, music and films and every backup stay where they are. '
             'Nothing is deleted, and answering yes at a later run brings them back.'
         )
@@ -610,50 +621,63 @@ def choose_media_apps(ctx, prompt=None, output=None):
 
 
 def asked_media_apps(ctx, prompt=None, output=None):
-    """Ask "Install the media apps too?" and save the answer as "wanted" under
-    "media_apps". Asked at the drives step, before the drives are chosen (the other
-    optional questions are asked there too): once, and on a later run only when the
-    person asks for the optional questions again (optional_kept). Left alone (Enter at
-    the window's switch, Ctrl+D here, or nobody at the terminal), the answer is yes and
-    nothing is saved, so the question comes again next time."""
-    from neko_common import MEDIA_SECTION, optional_answers
+    """Ask which media groups to install (Photos, Movies and shows, Music: a yes or no
+    each) and save the answers as "photos", "movies" and "music" under "media_apps".
+    Asked at the drives step, before the drives are chosen (the other optional questions
+    are asked there too): once, and on a later run only when the person asks for the
+    optional questions again (optional_kept). A group left alone (Enter at the window's
+    switch, Ctrl+D here, or nobody at the terminal) is on and not saved, so it is asked
+    again next time."""
+    from neko_common import GROUP_NAMES, MEDIA_GROUPS, MEDIA_SECTION, media_group_chosen, optional_answers
 
     options = ctx.config.setdefault(MEDIA_SECTION, {})
     if not isinstance(options, dict):
-        raise RuntimeError('"media_apps" in my-config.json must be an object, such as {"wanted": true}')
-    if 'wanted' in options and type(options['wanted']) is not bool:
-        raise RuntimeError('"wanted" under "media_apps" must be true or false')
+        raise RuntimeError('"media_apps" in my-config.json must be an object, such as {"photos": true}')
+    for key in ('wanted', *MEDIA_GROUPS):
+        if key in options and type(options[key]) is not bool:
+            raise RuntimeError(f'"{key}" under "media_apps" must be true or false')
     if not interactive(ctx):
         return
     kept = MEDIA_SECTION in optional_answers(ctx.config['data_mount'])
-    if isinstance(options.get('wanted'), bool) and (
-        not kept or MEDIA_SECTION in optional_kept(ctx, [MEDIA_SECTION], prompt, output)
-    ):
-        # Chosen already: in the setup window, by hand in the settings, or answered before
-        # and kept now.
+    again = kept and MEDIA_SECTION not in optional_kept(ctx, [MEDIA_SECTION], prompt, output)
+    # A group chosen already (in the setup window, by hand in the settings, or answered
+    # before and kept now) is not asked.
+    to_ask = [group for group in MEDIA_GROUPS if again or not media_group_chosen(ctx.config, group)]
+    if not to_ask:
         return
     prompt = prompt or input
     output = output or print
     output('\n=== Optional: ' + MEDIA_QUESTION + ' ===')
     for line in MEDIA_EXPLAINED:
         output(line)
-    answer = yes_no(MEDIA_QUESTION, prompt, output)
-    if answer is None:
-        output('Left for now: the media apps are set up (yes), and this is asked again next time.')
+    answered = {}
+    for group in to_ask:
+        for line in GROUP_EXPLAINED[group]:
+            output(line)
+        answer = yes_no(f'Install {GROUP_NAMES[group]}?', prompt, output)
+        if answer is None:
+            output('Left for now: it is set up (yes), and this is asked again next time.')
+            continue
+        answered[group] = answer
+    if not answered:
         return
-    options['wanted'] = answer
+    options.update(answered)
+    if all(isinstance(options.get(group), bool) for group in MEDIA_GROUPS):
+        options.pop('wanted', None)  # every group has its own answer: the one yes/no decides nothing more
     save_settings(ctx)
-    ctx.log('Media apps: ' + ('yes' if answer else 'no, left out'))
+    said = ', '.join(f"{GROUP_NAMES[group]}: {'yes' if on else 'no, left out'}" for group, on in answered.items())
+    ctx.log('Media apps: ' + said)
 
 
 def remember_media_apps(ctx):
     """The media answer kept with the other optional answers, once the SSD that keeps
     them is mounted (never before: a file written there first would sit on the system
     disk under the SSD's folder)."""
-    from neko_common import MEDIA_SECTION, media_apps_wanted, remember_answer
+    from neko_common import MEDIA_GROUPS, MEDIA_SECTION, media_group, media_group_chosen, remember_answer
 
-    if isinstance(ctx.config.get(MEDIA_SECTION, {}).get('wanted'), bool):
-        remember_answer(ctx.config['data_mount'], MEDIA_SECTION, 'yes' if media_apps_wanted(ctx.config) else 'no')
+    if any(media_group_chosen(ctx.config, group) for group in MEDIA_GROUPS):
+        on = [group for group in MEDIA_GROUPS if media_group(ctx.config, group)]
+        remember_answer(ctx.config['data_mount'], MEDIA_SECTION, ', '.join(on) if on else 'none')
 
 
 def answer_shown(ctx, question, kept):

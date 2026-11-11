@@ -24,7 +24,7 @@ def main(argv=None):
     config = json.loads(args.config.read_text())
     verify_storage(config)
     if 'navidrome' not in media_services(config):
-        parser.error('Select navidrome in media.services first (and the media apps: "wanted" under "media_apps")')
+        parser.error('Select navidrome in media.services first (and the Music group: "music" under "media_apps")')
     if args.configure:
         if not sys.stdin.isatty():
             parser.error('Credential setup requires an interactive local terminal')

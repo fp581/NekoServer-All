@@ -87,7 +87,7 @@ LARGEST_BODY = 40_000  # a page of fields, each up to setup_progress.LONGEST_ANS
 # The extras setup asks about when it gets to their step (the media apps at the drives
 # step), as long as nothing was chosen for them (Nextcloud is not asked: it is set up
 # unless switched off).
-ASKED_LATER = ('media_apps', 'tv', 'notifications', 'heartbeat', 'assistant')
+ASKED_LATER = ('media_photos', 'media_movies', 'media_music', 'tv', 'notifications', 'heartbeat', 'assistant')
 
 
 def step_title(name):
@@ -301,8 +301,7 @@ class Window:
                     'explanation': e['explanation'],
                     'installs': self._installs(e),
                     'on': explanations.extra_state(self.config, e),
-                    'asked': e['id'] in ASKED_LATER
-                    and not isinstance(self.config.get(e['section'], {}).get(e['key']), bool),
+                    'asked': e['id'] in ASKED_LATER and not explanations.extra_chosen(self.config, e),
                 }
                 for e in explanations.EXTRAS
             ]

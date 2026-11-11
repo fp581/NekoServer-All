@@ -1319,20 +1319,54 @@ def atomic_json(path, payload):
 # 0.50.0 has them. Every step that looks after these apps asks the two functions below,
 # never media.services or photos.deploy_immich alone.
 MEDIA_SECTION = 'media_apps'
+# The media apps come in three groups, each chosen on its own (the user, 2026-11-11):
+# any combination, none and photos alone included. Saved as "photos", "movies" and
+# "music" under "media_apps"; one not chosen yet is on. "wanted": false (the one yes/no
+# 0.50.0 first had, and a settings file written by hand) switches off every group that
+# has no answer of its own. Which apps a group holds is in shared.json ("groups"): an
+# app is set up when every group it names is on (Lidarr finds music with the download
+# apps, so it needs both Movies and shows, and Music).
+MEDIA_GROUPS = ('photos', 'movies', 'music')
+GROUP_NAMES = {
+    'photos': 'Photos (Immich)',
+    'movies': 'Movies and shows (Jellyfin, Seerr and the download apps)',
+    'music': 'Music (Navidrome)',
+}
+APP_GROUPS = {app['id']: tuple(app.get('groups', ())) for app in SHARED['apps']}
+
+
+def media_group_chosen(config, group):
+    """This group has an answer: its own, or the one yes/no for all of them."""
+    section = config.get(MEDIA_SECTION)
+    return isinstance(section, dict) and (
+        isinstance(section.get(group), bool) or isinstance(section.get('wanted'), bool)
+    )
+
+
+def media_group(config, group):
+    """The group is part of this server: its own answer, else on unless "wanted" is false."""
+    section = config.get(MEDIA_SECTION)
+    if not isinstance(section, dict):
+        return True
+    if isinstance(section.get(group), bool):
+        return section[group]
+    return section.get('wanted') is not False
 
 
 def media_apps_wanted(config):
-    """The media apps are part of this server: yes unless "wanted" is false."""
-    section = config.get(MEDIA_SECTION)
-    return not (isinstance(section, dict) and section.get('wanted') is False)
+    """Any of the media groups is part of this server."""
+    return any(media_group(config, group) for group in MEDIA_GROUPS)
+
+
+def app_wanted(config, app):
+    """Every group the app belongs to is on (an app in no group is not a media app)."""
+    return all(media_group(config, group) for group in APP_GROUPS.get(app, ()))
 
 
 def media_services(config):
-    """The media apps set up (media.services), or none when the media apps are left out.
-    Taken out, the media step stops the ones installed and keeps their data."""
-    if not media_apps_wanted(config):
-        return []
-    return list(config.get('media', {}).get('services', []))
+    """The media apps set up: those in media.services whose groups are on (none with
+    every group off). One left out is stopped by the media step, and its data kept."""
+    return [app for app in config.get('media', {}).get('services', []) if app_wanted(config, app)]
 
 
 # Which Navidrome login the person is given. Navidrome has two: the administrator, and a
@@ -1383,11 +1417,25 @@ MEDIA_STEPS = (
     'tv',
     'app_backup',
 )
+# ... and the ones that are about one group alone.
+GROUP_STEPS = {
+    'photos': ('photos', 'photo_preservation'),
+    'movies': ('onboarding', 'media_monitor', 'tv'),
+    'music': ('music', 'music_backup'),
+}
+
+
+def media_steps_left_out(config):
+    """The steps that set nothing up on this server because their group is off: a
+    group's own steps, and with every group off all the media steps."""
+    if not media_apps_wanted(config):
+        return set(MEDIA_STEPS)
+    return {step for group in MEDIA_GROUPS if not media_group(config, group) for step in GROUP_STEPS[group]}
 
 
 def immich_wanted(config):
-    """Immich is set up: photos.deploy_immich, and the media apps not left out."""
-    return media_apps_wanted(config) and config.get('photos', {}).get('deploy_immich') is True
+    """Immich is set up: photos.deploy_immich, and the Photos group not left out."""
+    return media_group(config, 'photos') and config.get('photos', {}).get('deploy_immich') is True
 
 
 # The optional questions setup asks (the media apps, the backup times, and when it

@@ -6,7 +6,7 @@ import sys
 
 import music_client
 import setup_progress
-from neko_common import VERSION, atomic_json, media_apps_wanted, media_services, music_library
+from neko_common import VERSION, atomic_json, media_group, media_services, music_library
 
 DEPENDENCIES = ['media', 'recovery', 'music_backup']
 DESCRIPTION = 'Music library, private listener checks and browser/phone/desktop client handoff'
@@ -22,8 +22,8 @@ def options(config):
 
 def run(ctx):
     options(ctx.config)
-    if not media_apps_wanted(ctx.config):
-        ctx.log('Music: left out with the media apps; no music player to set up')
+    if not media_group(ctx.config, 'music'):
+        ctx.log('Music: switched off (Music (Navidrome) in setup); no music player to set up')
         return
     if 'navidrome' not in media_services(ctx.config):
         # A server without the music player (taken out of media.services): nothing to do

@@ -23,7 +23,7 @@ It does **not** install Linux and it **never formats a drive**. You prepare thos
 
 Seerr, Sonarr, Radarr, Lidarr, Prowlarr and qBittorrent are set up with the media apps, but you never have to use them: Jellyfin, Immich and Navidrome play and show your own files without them.
 
-**Only want the cloud drive and the backups?** Setup asks `Install the media apps too?`. Answer `no` and Jellyfin, Seerr, the apps that find and download, Immich and Navidrome are left out; Nextcloud, the dashboard, the backups, Tailscale and the shared folders are set up the same. You can answer yes at a later run, and no later never deletes anything ([GUIDED-SETUP.md](GUIDED-SETUP.md#the-media-apps-yes-or-no)).
+**Only want some of it?** Setup asks about the media apps in three groups, a yes or no each: Photos (Immich), Movies and shows (Jellyfin, Seerr and the download apps) and Music (Navidrome). Any combination works, photos alone or none included; Nextcloud, the dashboard, the backups, Tailscale and the shared folders are set up the same. You can answer yes at a later run, and no later never deletes anything ([GUIDED-SETUP.md](GUIDED-SETUP.md#the-media-apps-three-groups-a-yes-or-no-each)).
 
 Also included: shared folders on your home network (Samba) and, if you want them, watching on a TV connected to the server (Steam Big Picture) and phone alerts when something fails (ntfy).
 

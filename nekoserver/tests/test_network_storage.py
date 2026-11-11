@@ -966,7 +966,11 @@ class LocationTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
-        self.config = {'data_mount': str(self.root / 'srv'), 'media_mount': str(self.root / 'mnt')}
+        self.config = {
+            'data_mount': str(self.root / 'srv'),
+            'media_mount': str(self.root / 'mnt'),
+            'photos': {'deploy_immich': True},  # each place is asked for only with its app (S7)
+        }
         for drive in ('srv', 'mnt'):
             (self.root / drive).mkdir()
 

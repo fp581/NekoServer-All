@@ -72,18 +72,44 @@ PACKAGES = {
 # The parts a person can leave out. `section`/`key` is where the choice is saved in
 # my-config.json; `on_default` is what setup assumes when nothing was chosen.
 EXTRAS = (
+    # The media apps, in three groups (neko_common.MEDIA_GROUPS): each a switch of its own,
+    # saved under "media_apps". `group` marks them: one not chosen yet follows the one
+    # yes/no of before ("wanted"), which extra_state reads through neko_common.media_group.
     {
-        'id': 'media_apps',
+        'id': 'media_photos',
         'section': 'media_apps',
-        'key': 'wanted',
+        'key': 'photos',
+        'group': True,
+        'on_default': True,
+        'step': 'photos',
+        'title': 'Photos (Immich)',
+        'explanation': 'Immich, your own photo backup and gallery, with its archive and its weekly USB copy. '
+        'Switched off later, it is stopped and your photos and its backups stay where they are.',
+        'installs': (),
+    },
+    {
+        'id': 'media_movies',
+        'section': 'media_apps',
+        'key': 'movies',
+        'group': True,
         'on_default': True,
         'step': 'media',
-        'title': 'The media apps: films, shows, music and photos',
-        'explanation': 'Jellyfin to watch your films and shows, with Seerr to ask for new ones; Sonarr, Radarr, Lidarr '
-        'and Prowlarr with qBittorrent, which find and download them; Immich for your photos; Navidrome for your music; '
-        'video on the graphics chip, the hourly app check and the TV mode. About 6 GB on the SSD, downloaded once, and '
-        'about 2 GB of memory when idle. Without them you still get Nextcloud, the dashboard, the backups and private '
-        'access; switching them off later stops them and keeps all their data.',
+        'title': 'Movies and shows (Jellyfin, Seerr and the download apps)',
+        'explanation': 'Jellyfin to watch your films and shows, Seerr to ask for new ones, and Sonarr, Radarr and '
+        'Prowlarr with qBittorrent, which find and download them; with video on the graphics chip, the hourly app '
+        'check and the TV mode. Switched off later, they are stopped and their settings and your films stay.',
+        'installs': (),
+    },
+    {
+        'id': 'media_music',
+        'section': 'media_apps',
+        'key': 'music',
+        'group': True,
+        'on_default': True,
+        'step': 'music',
+        'title': 'Music (Navidrome)',
+        'explanation': 'Navidrome, your music player, with the music backup. With Movies and shows on as well, '
+        'Lidarr finds and downloads music. Switched off later, it is stopped and your music stays.',
         'installs': (),
     },
     {
@@ -162,8 +188,22 @@ EXTRAS = (
 
 def extra_state(config, extra):
     """Whether this extra is on in the settings (its default when nothing was chosen)."""
+    if extra.get('group'):
+        from neko_common import media_group
+
+        return media_group(config, extra['key'])
     value = config.get(extra['section'], {}).get(extra['key'])
     return extra['on_default'] if not isinstance(value, bool) else value
+
+
+def extra_chosen(config, extra):
+    """Whether the person has decided this extra (in the window, at its question, or by
+    hand in the settings): one not decided is asked about when setup gets to it."""
+    if extra.get('group'):
+        from neko_common import media_group_chosen
+
+        return media_group_chosen(config, extra['key'])
+    return isinstance(config.get(extra['section'], {}).get(extra['key']), bool)
 
 
 def set_extra(config, extra, on):

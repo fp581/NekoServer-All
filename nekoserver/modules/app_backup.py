@@ -7,7 +7,6 @@ import subprocess
 import native_runtime
 from neko_common import (
     RESUME_TIMEOUT,
-    media_apps_wanted,
     media_services,
     VERSION,
     atomic_json,
@@ -98,14 +97,14 @@ def run(context):
     if os.geteuid() != 0:
         raise RuntimeError('Root required')
     config = context.config
-    if not media_apps_wanted(config):
-        # The media apps left out: this backup is theirs, so its schedule is retired
+    if not media_services(config):
+        # None of its apps on this server: this backup is theirs, so its schedule is retired
         # (the snapshots already on the HDD stay). The restart-after-an-interrupted-
         # snapshot service stays: with nothing interrupted it does nothing.
         from modules._schedules import retire
 
         retire([SYSTEMD_UNITS / f'nekoserver-app-backup.{suffix}' for suffix in ('timer', 'service')], subprocess.run)
-        context.log('Nightly app backup: off, as the media apps are left out; snapshots already made are kept')
+        context.log('Nightly app backup: off, as none of its apps is set up; snapshots already made are kept')
         return
     # Validate calendar and native payload before touching installed files.
     definitions(config, '/placeholder/runtime', '/placeholder/config')

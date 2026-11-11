@@ -1,8 +1,12 @@
-"""0.50.0: "Install the media apps too?" (guided_setup.choose_media_apps). Yes keeps what
+"""0.50.0: the media apps can be left out (guided_setup.choose_media_apps). Yes keeps what
 every server had; no leaves out Jellyfin with Seerr, the apps that find and download,
 Immich, Navidrome, hardware video, the media monitor and the TV mode, and every step
 that depends on them handles it. No on a server that already has them stops them and
-keeps all their data."""
+keeps all their data.
+
+These tests are of every group off together, as the one yes/no this began as still
+reads ("wanted": false in a settings file); tests/test_media_groups.py has each group
+on its own."""
 
 import json
 import sys
@@ -111,14 +115,16 @@ class QuestionTests(unittest.TestCase):
 
     def test_asked_once_explained_and_saved(self):
         config = settings(folder=self.tmp.name)
-        ctx, shown = self.ask(config, ['no'])
-        self.assertEqual(config['media_apps'], {'wanted': False})
+        ctx, shown = self.ask(config, ['no', 'no', 'no'])
+        self.assertEqual(config['media_apps'], {'photos': False, 'movies': False, 'music': False})
         ctx.persist_config.assert_called_once()
         said = '\n'.join(shown)
         for words in (
             'Jellyfin',
             'Seerr',
-            'Sonarr, Radarr, Lidarr and Prowlarr with qBittorrent',
+            'Sonarr, Radarr and Prowlarr',
+            'qBittorrent',
+            'Lidarr',
             'Immich',
             'Navidrome',
         ):
@@ -159,16 +165,16 @@ class QuestionTests(unittest.TestCase):
         self.assertIn('Last time, the optional questions were answered this way:', shown)
         self.assertIn('  Media apps: yes', shown)
         self.assertTrue(config['media_apps']['wanted'])
-        # yes: asked again, and no now leaves them out.
-        ctx, shown = self.ask(config, ['yes', 'no'])
-        self.assertFalse(config['media_apps']['wanted'])
+        # yes: asked again, and no to each now leaves them out.
+        ctx, shown = self.ask(config, ['yes', 'no', 'no', 'no'])
+        self.assertFalse(neko_common.media_apps_wanted(config))
         # The later optional questions of the run follow the same decision, asked once.
         self.assertTrue(ctx.ask_optional_again)
 
     def test_remembered_only_once_the_ssd_is_there(self):
         config = settings(False, folder=self.tmp.name)
         guided_setup.remember_media_apps(context(config))
-        self.assertEqual(neko_common.optional_answers(self.tmp.name), {'media_apps': 'no'})
+        self.assertEqual(neko_common.optional_answers(self.tmp.name), {'media_apps': 'none'})
         unanswered = settings(folder=self.tmp.name + '/never')
         guided_setup.remember_media_apps(context(unanswered))
         self.assertFalse(Path(self.tmp.name, 'never').exists())  # nothing written for no answer
@@ -238,7 +244,9 @@ class NoOnAServerWithTheAppsTests(unittest.TestCase):
         self.assertEqual(guided_setup.settle_no_with_apps(ctx), ['jellyfin', 'immich'])
         self.assertIs(ctx.config['media_apps']['wanted'], False)
         said = '\n'.join(ctx.logs)
-        self.assertIn('this server already has them (Jellyfin, Immich). They are stopped in this run', said)
+        self.assertIn(
+            'you switched off a group this server already has (Jellyfin, Immich). They are stopped in this run', said
+        )
         self.assertIn('Nothing is deleted', said)
         self.assertEqual(self.kept(folder), before)
 
@@ -247,8 +255,12 @@ class NoOnAServerWithTheAppsTests(unittest.TestCase):
         before = self.kept(folder)
         with mock.patch.object(guided_setup, 'NO_WITH_APPS_INSTALLED', guided_setup.KEEP):
             guided_setup.settle_no_with_apps(ctx)
-        self.assertTrue(neko_common.media_apps_wanted(ctx.config))
-        self.assertEqual(neko_common.media_services(ctx.config), SERVICES)
+        # The groups of the apps it has (Jellyfin's, Immich's) go back to yes; Music, of
+        # which it has nothing, stays as answered.
+        self.assertEqual(ctx.config['media_apps'], {'wanted': False, 'photos': True, 'movies': True})
+        self.assertIn('jellyfin', neko_common.media_services(ctx.config))
+        self.assertNotIn('navidrome', neko_common.media_services(ctx.config))
+        self.assertTrue(neko_common.immich_wanted(ctx.config))
         ctx.persist_config.assert_called_once()
         self.assertIn('they stay as they are and keep running; the answer no was not taken', '\n'.join(ctx.logs))
         self.assertEqual(self.kept(folder), before)
@@ -275,15 +287,21 @@ class NoOnAServerWithTheAppsTests(unittest.TestCase):
 
 class WindowTests(unittest.TestCase):
     def test_the_window_offers_it_first_and_asks_it_later_when_left_alone(self):
-        first = explanations.EXTRAS[0]
+        # Three switches, one for each group (tests/test_media_groups.py), first on the page.
+        first = explanations.EXTRAS[:3]
         self.assertEqual(
-            (first['id'], first['section'], first['key'], first['on_default']),
-            ('media_apps', 'media_apps', 'wanted', True),
+            [(e['id'], e['section'], e['key'], e['on_default']) for e in first],
+            [
+                ('media_photos', 'media_apps', 'photos', True),
+                ('media_movies', 'media_apps', 'movies', True),
+                ('media_music', 'media_apps', 'music', True),
+            ],
         )
-        self.assertIn('media_apps', setup_gui.ASKED_LATER)
         config = {}
-        explanations.set_extra(config, first, False)
-        self.assertEqual(config, {'media_apps': {'wanted': False}})
+        for extra in first:
+            self.assertIn(extra['id'], setup_gui.ASKED_LATER)
+            explanations.set_extra(config, extra, False)
+        self.assertEqual(config, {'media_apps': {'photos': False, 'movies': False, 'music': False}})
         self.assertFalse(neko_common.media_apps_wanted(config))
 
 
@@ -301,7 +319,7 @@ class StepTests(unittest.TestCase):
             run = mock.Mock()
             media.left_out(ctx, run=run)
         run.assert_not_called()
-        self.assertIn('Media apps: left out (you answered no to installing them); nothing was set up', ctx.logs)
+        self.assertIn('Media apps: left out (none of them is switched on); nothing was set up', ctx.logs)
 
     def test_media_stops_the_apps_a_server_had_and_keeps_their_data(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -317,7 +335,7 @@ class StepTests(unittest.TestCase):
         self.assertEqual([c[c.index('-p') + 1] for c in commands], ['neko-jellyfin', 'neko-sonarr'])
         self.assertTrue(all(c[-1] == 'down' and '-v' not in c and '--volumes' not in c for c in commands))
         self.assertEqual(sorted(kept), ['jellyfin', 'sonarr'])
-        self.assertTrue(any('stopped, as the media apps are left out' in line for line in ctx.logs))
+        self.assertTrue(any('stopped, as its group is switched off' in line for line in ctx.logs))
 
     def test_the_media_step_goes_there_before_anything_else(self):
         ctx = context(settings(False))
@@ -335,9 +353,9 @@ class StepTests(unittest.TestCase):
     def test_music_tv_onboarding_and_hardware_video_have_nothing_to_do(self):
         config = settings(False)
         for step, words in (
-            (music, 'Music: left out with the media apps; no music player to set up'),
-            (tv, 'TV setup: left out with the media apps'),
-            (onboarding, 'Connecting the apps: the media apps are left out, so there is nothing to connect'),
+            (music, 'Music: switched off (Music (Navidrome) in setup); no music player to set up'),
+            (tv, 'TV setup: left out, as Movies and shows is switched off (the TV mode opens Jellyfin)'),
+            (onboarding, 'Connecting the apps: Movies and shows is switched off, so there is nothing to connect'),
             (hardware_video, 'Hardware video: neither Jellyfin nor Immich runs on this server; nothing to switch over'),
         ):
             with self.subTest(step=step.__name__):

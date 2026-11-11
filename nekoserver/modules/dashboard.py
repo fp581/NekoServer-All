@@ -10,6 +10,8 @@ from neko_common import (
     SHARED,
     immich_wanted,
     media_apps_wanted,
+    media_group,
+    MEDIA_GROUPS,
     media_services,
     verify_storage,
     APP_PORTS,
@@ -517,7 +519,12 @@ def collector_settings(cfg, smart, interval=60):
     acceptance report must match."""
     clean = {k: cfg[k] for k in ('data_mount', 'media_mount', 'external_backup_mount', 'storage')}
     clean['media'] = {'services': media_services(cfg)}
+    # Whether any media group is on, and each group once one has an answer of its own (a
+    # server with none keeps the file it had: "wanted" alone says it all).
     clean['media_apps'] = {'wanted': media_apps_wanted(cfg)}
+    own = cfg.get('media_apps') if isinstance(cfg.get('media_apps'), dict) else {}
+    if any(isinstance(own.get(group), bool) for group in MEDIA_GROUPS):
+        clean['media_apps'].update({group: media_group(cfg, group) for group in MEDIA_GROUPS})
     clean['photos'] = {
         'deploy_immich': immich_wanted(cfg),
         'archive_interval_minutes': cfg.get('photos', {}).get('archive_interval_minutes', 60),

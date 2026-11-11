@@ -28,8 +28,7 @@ from neko_common import (
     checked_settings,
     default_settings,
     immich_wanted,
-    MEDIA_STEPS,
-    media_apps_wanted,
+    media_steps_left_out,
     media_services,
     verify_storage,
 )
@@ -771,10 +770,10 @@ def accepted_modules(config, modules):
     # and its client test would only ever fail or wait (the nextcloud step skips itself).
     if config.get('nextcloud', {}).get('enabled', True) is not True:
         skipped = skipped | {'nextcloud'}
-    # The media apps left out ("Install the media apps too?" answered no): their steps
-    # set nothing up, so there is nothing of theirs to accept.
-    if not media_apps_wanted(config):
-        skipped = skipped | set(MEDIA_STEPS)
+    # A media group switched off (Photos, Movies and shows, Music): its steps set
+    # nothing up, so there is nothing of theirs to accept; with every group off, none
+    # of the media steps does.
+    skipped = skipped | media_steps_left_out(config)
     return [
         m
         for m in modules

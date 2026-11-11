@@ -42,7 +42,7 @@ The window opens in the **Night** look, like the dashboard. The ☾ / ☀ button
 
 The window first lists the **optional extras**, each with a switch:
 
-- **The media apps**: films, shows, music and photos (installed unless you switch them off; see [the media question](#the-media-apps-yes-or-no) below).
+- **The media apps**, three switches: Photos (Immich), Movies and shows (Jellyfin, Seerr and the download apps), Music (Navidrome). Each is installed unless you switch it off; see [the media groups](#the-media-apps-three-groups-a-yes-or-no-each) below.
 - **A TV** connected to this PC (Steam Big Picture).
 - **Phone alerts** when something fails.
 - **Outage alerts** from outside, when the whole server goes quiet.
@@ -63,18 +63,17 @@ Answer `no` to see the step again and reopen the page.
 
 ### 4. Your drives
 
-#### The media apps: yes or no
+#### The media apps: three groups, a yes or no each
 
-Before the drives, setup asks `Install the media apps too? [yes/no]` (unless you already chose in the window). It says what they are and what they cost:
+Before the drives, setup asks which media apps to install (unless you already chose in the window, where they are the first three switches). There are three groups, and each can be left out:
 
-- **Jellyfin** to watch your films and shows, with **Seerr** to ask for new ones
-- **Sonarr, Radarr, Lidarr and Prowlarr** with **qBittorrent**, which find and download them
-- **Immich**, your own photo backup and gallery, and **Navidrome** for your music
-- video on the graphics chip, the hourly check that these apps still work together, and the TV mode
+- `Install Photos (Immich)? [yes/no]`: **Immich**, your own photo backup and gallery, with its archive and its weekly USB copy.
+- `Install Movies and shows (Jellyfin, Seerr and the download apps)? [yes/no]`: **Jellyfin** to watch your films and shows, **Seerr** to ask for new ones, and **Sonarr, Radarr and Prowlarr** with **qBittorrent**, which find and download them; with video on the graphics chip, the hourly check that these apps still work together, and the TV mode.
+- `Install Music (Navidrome)? [yes/no]`: **Navidrome**, your music player, with the music backup. With Movies and shows on as well, **Lidarr** finds and downloads music.
 
-They take about 6 GB on the SSD and about 2 GB of memory when idle. Answer `yes` when you want them (pressing Enter in the window keeps yes). Answer `no` for a smaller server: Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts and the AI assistant are set up either way, and nothing later asks about films, photos or music.
+All three together take about 6 GB on the SSD and about 2 GB of memory when idle. Any combination works: all of them, photos alone, music alone, or none for a smaller server. Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts and the AI assistant are set up either way. A group you leave out is not asked about again in that run: no place for its files, no sign-in, no test.
 
-You can change your mind. Run `sudo bash install.sh` again, answer `yes` to `Ask these questions again?`, and answer the media question the other way. **Yes later** installs the apps as on any server. **No later never deletes anything**: the apps are stopped, and their settings, your photos, music and films and every backup stay where they are, so yes brings them back as they were.
+You can change your mind. Run `sudo bash install.sh` again, answer `yes` to `Ask these questions again?`, and answer a group the other way. **Yes later** installs its apps as on any server. **No later never deletes anything**: the apps of that group are stopped, and their settings, your photos, music and films and every backup stay where they are, so yes brings them back as they were.
 
 #### Choosing the drives
 

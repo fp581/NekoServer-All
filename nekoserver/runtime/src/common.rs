@@ -200,27 +200,43 @@ pub static MEDIA_APPS: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new
         .filter_map(|app| app["id"].as_str())
         .collect()
 });
-/// The media apps are part of this server (setup's "Install the media apps too?", since
-/// 0.50.0): yes unless "wanted" under "media_apps" is false, as every server set up
-/// before 0.50.0 has them. The same rule as neko_common.media_apps_wanted.
-pub fn media_wanted(cfg: &Value) -> bool {
-    cfg["media_apps"]["wanted"] != false
-}
-/// The media apps set up (media.services), or none when they are left out.
-pub fn media_services(cfg: &Value) -> Vec<&str> {
-    if !media_wanted(cfg) {
-        return vec![];
+/// The media apps come in three groups, each chosen on its own in setup (0.50.0):
+/// "photos", "movies" and "music" under "media_apps". The same rules as neko_common
+/// (media_group, media_services, immich_wanted).
+/// A group is part of this server: its own answer, else on unless "wanted" is false
+/// (every server set up before 0.50.0 has all of them).
+pub fn media_group(cfg: &Value, group: &str) -> bool {
+    match cfg["media_apps"][group].as_bool() {
+        Some(chosen) => chosen,
+        None => cfg["media_apps"]["wanted"] != false,
     }
+}
+/// Every group the app belongs to is on (shared.json "groups").
+pub fn app_wanted(cfg: &Value, app: &str) -> bool {
+    SHARED["apps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|a| a["id"] == app)
+        .and_then(|a| a["groups"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .all(|group| media_group(cfg, group))
+}
+/// The media apps set up: those in media.services whose groups are on.
+pub fn media_services(cfg: &Value) -> Vec<&str> {
     cfg["media"]["services"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
+        .filter(|app| app_wanted(cfg, app))
         .collect()
 }
-/// Immich is set up: photos.deploy_immich, and the media apps not left out.
+/// Immich is set up: photos.deploy_immich, and the Photos group not left out.
 pub fn immich_wanted(cfg: &Value) -> bool {
-    media_wanted(cfg) && cfg["photos"]["deploy_immich"] == true
+    media_group(cfg, "photos") && cfg["photos"]["deploy_immich"] == true
 }
 /// The private Tailscale port the gateway publishes `app` on (shared.json "tailnet"),
 /// for the apps it can publish.
@@ -1276,7 +1292,15 @@ pub fn directory(path: &Path, mode: u32) -> Result<()> {
 }
 #[cfg(test)]
 mod media_answer_tests {
-    use super::{immich_wanted, media_services, media_wanted};
+    use super::{immich_wanted, media_group, media_services};
+    use serde_json::Value;
+
+    /// Any of the media groups is part of this server (neko_common.media_apps_wanted).
+    fn media_wanted(cfg: &Value) -> bool {
+        ["photos", "movies", "music"]
+            .iter()
+            .any(|group| media_group(cfg, group))
+    }
     use serde_json::json;
     /// Setup's "Install the media apps too?" (neko_common.media_apps_wanted): yes unless
     /// the answer is no, and no leaves the settings of the apps as they were.
@@ -1298,6 +1322,61 @@ mod media_answer_tests {
         let without = json!({"media_apps": {"wanted": true}, "photos": {"deploy_immich": false}});
         assert!(!immich_wanted(&without));
         assert!(media_services(&without).is_empty());
+    }
+
+    /// The three groups (neko_common.media_group and tests/test_media_groups.py): each
+    /// chosen on its own, any combination, an app set up when every group it names is on.
+    #[test]
+    fn each_media_group_is_chosen_on_its_own() {
+        use super::app_wanted;
+        let all = [
+            "jellyfin",
+            "navidrome",
+            "sonarr",
+            "radarr",
+            "lidarr",
+            "prowlarr",
+            "seerr",
+            "qbittorrent",
+        ];
+        let with = |groups: Value| json!({"media_apps": groups, "media": {"services": all}, "photos": {"deploy_immich": true}});
+        // Photos alone: Immich, and none of the others (an empty list is a server like any other).
+        let photos = with(json!({"photos": true, "movies": false, "music": false}));
+        assert!(immich_wanted(&photos) && media_wanted(&photos));
+        assert!(media_services(&photos).is_empty());
+        // Music alone: Navidrome; Lidarr needs the download apps of Movies and shows too.
+        let music = with(json!({"photos": false, "movies": false, "music": true}));
+        assert_eq!(media_services(&music), ["navidrome"]);
+        assert!(!immich_wanted(&music));
+        // Movies and shows alone: everything but Navidrome and Lidarr.
+        let movies = with(json!({"photos": false, "movies": true, "music": false}));
+        assert_eq!(
+            media_services(&movies),
+            [
+                "jellyfin",
+                "sonarr",
+                "radarr",
+                "prowlarr",
+                "seerr",
+                "qbittorrent"
+            ]
+        );
+        // None, and all.
+        let none = with(json!({"photos": false, "movies": false, "music": false}));
+        assert!(!media_wanted(&none) && media_services(&none).is_empty() && !immich_wanted(&none));
+        let every = with(json!({"photos": true, "movies": true, "music": true}));
+        assert_eq!(media_services(&every), all);
+        // A group with no answer is on; the one yes/no of before switches off the groups
+        // that have none of their own, and a group's own answer wins over it.
+        assert!(
+            media_wanted(&json!({})) && immich_wanted(&json!({"photos": {"deploy_immich": true}}))
+        );
+        let old_no = with(json!({"wanted": false, "music": true}));
+        assert_eq!(media_services(&old_no), ["navidrome"]);
+        assert!(!immich_wanted(&old_no));
+        // Nextcloud is in no group, and an app that is not in the list is in none either.
+        assert!(app_wanted(&none, "nextcloud") && app_wanted(&none, "unknown"));
+        assert!(!app_wanted(&none, "immich"));
     }
 }
 #[cfg(test)]

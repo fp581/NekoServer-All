@@ -307,7 +307,9 @@ class WindowPackageTests(unittest.TestCase):
         self.assertEqual(
             asked,
             {
-                'media_apps': True,
+                'media_photos': True,
+                'media_movies': True,
+                'media_music': True,
                 'network_storage': False,
                 'tv': False,
                 'notifications': True,

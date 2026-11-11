@@ -9,7 +9,7 @@ import native_runtime
 from neko_common import (
     VERSION,
     atomic_json,
-    media_apps_wanted,
+    media_group,
     refresh_settings,
     safe_path,
     check_units,
@@ -38,7 +38,8 @@ def run(context):
     enabled = context.config.get('monitoring', {}).get('enabled', True)
     if type(enabled) is not bool:
         raise RuntimeError('Schedule enable switch must be boolean')
-    if not enabled or not media_apps_wanted(context.config):
+    # The hourly check is of the film and show apps working together.
+    if not enabled or not media_group(context.config, 'movies'):
         if context.apply:
             if os.geteuid() != 0:
                 raise RuntimeError('Root required')
