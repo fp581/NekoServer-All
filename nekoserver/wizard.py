@@ -19,7 +19,7 @@ import termios
 import guided_setup
 import setup_gui
 import setup_progress
-from neko_common import VERSION, atomic_json, dashboard_port, mount_path, safe_path, settings_path
+from neko_common import ASSISTANT, VERSION, atomic_json, dashboard_port, mount_path, safe_path, settings_path
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
@@ -411,6 +411,39 @@ def show_checkup(checkup, output):
         output('\nFirst checkup and backup: something needs a look (listed above, under "First checkup and backup").')
 
 
+# Steps that never count against "every step finished": the optional AI assistant, whose
+# step turns anything that goes wrong (a download cut off, too little memory) into "needs
+# a look". It is still listed with its reason; the first checkup, the exit code and the
+# headline do not wait for it (as upgrade.works_on leaves it out).
+OPTIONAL = frozenset((ASSISTANT,))
+
+
+def planned(config, states, ran=()):
+    """(the steps this installation is meant to run, each one's record). Judged against
+    the template's full profile, not only the steps that left a state behind: missing or
+    unreadable state must never read as "ready". A settings file from an earlier release
+    may lack steps added since; the steps you took out stay out, your own stay in."""
+    from config_checks import expected_steps
+
+    expected = [n for n in expected_steps(config, read_json(ROOT / TEMPLATE)) if n in STEPS]
+    plan = list(dict.fromkeys([*ran, *expected])) or [name for name in STEPS if name in states]
+    records = {
+        n: states.get(n)
+        if isinstance(states.get(n), dict)
+        else {'status': 'missing', 'reason': 'did not run (no record of this step)'}
+        for n in plan
+    }
+    return plan, records
+
+
+def only_optional_left(config, states, ran=()):
+    """Every step is done (or not available here) except optional ones: the installer's
+    exit code says "not everything finished", yet nothing that matters is left."""
+    plan, records = planned(config, states, ran)
+    left = {n for n in plan if records[n].get('status') not in ('success', 'unavailable')}
+    return bool(plan) and bool(left) and left <= OPTIONAL
+
+
 def sorted_steps(plan, states):
     """The steps by how they ended: done, waiting for you, not available here, did not
     finish (failed, stopped, or never ran), and waiting for another step."""
@@ -434,22 +467,13 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
     steps the installer ran this time (its plan, with the steps the others need), so the
     count is the one the log and the window give."""
     data = data_folder(config)
-    # Judge against the steps the installation is meant to run, not only the ones that
-    # left a state behind: missing or unreadable state must never read as "ready".
-    # The template's full profile (a settings file from an earlier release may lack steps
-    # added since), without the steps you took out, plus your own.
-    from config_checks import expected_steps
-
-    expected = [n for n in expected_steps(config, read_json(ROOT / TEMPLATE)) if n in STEPS]
-    plan = list(dict.fromkeys([*ran, *expected])) or [name for name in STEPS if name in states]
-    states = {
-        n: states.get(n)
-        if isinstance(states.get(n), dict)
-        else {'status': 'missing', 'reason': 'did not run (no record of this step)'}
-        for n in plan
-    }
+    plan, states = planned(config, states, ran)
     by_status = sorted_steps(plan, states)
     by_status['waiting'] += [n for n in by_status['blocked'] if causes(n, states) == [n]]  # waits for nothing known
+    # An optional step that did not finish is listed on its own and stops nothing.
+    optional = [n for n in by_status['broken'] + by_status['waiting'] if n in OPTIONAL]
+    for group in ('broken', 'waiting'):
+        by_status[group] = [n for n in by_status[group] if n not in OPTIONAL]
     blocked = [n for n in by_status['blocked'] if n not in by_status['waiting']]
     complete = finished(plan, {'waiting': by_status['waiting'], 'broken': by_status['broken'] + blocked}, checkup)
     total = len(plan) - len(by_status['unavailable'])
@@ -468,6 +492,7 @@ def finishing_screen(config, states, page=None, output=print, checkup=None, ran=
         output,
     )
     show_waiting(blocked, states, output)
+    show_steps('Needs a look (optional: everything else works without it):', optional, states, 'did not finish', output)
     show_steps('Not available on this system:', by_status['unavailable'], states, 'not available', output)
     show_checkup(checkup, output)
     show_end(config, data, plan, states, page, output)
@@ -589,8 +614,12 @@ def after_setup(code, path, default_state, output, window):
     window too). The exit code: 0 only when every step is done."""
     config = read_json(path)
     states = read_json(state_file(config, default_state))
+    ran = setup_progress.last('plan')
+    steps = ran['steps'] if ran else ()
+    # The optional assistant needing a look is not "a step did not finish".
+    finished_all = code == 0 or (bool(config) and only_optional_left(config, states, steps))
     checkup = None
-    if code == 0 and config:
+    if finished_all and config:
         # Every step finished: back up and check now rather than waiting for the night.
         import first_checkup
 
@@ -614,14 +643,13 @@ def after_setup(code, path, default_state, output, window):
         lines.append(str(line))
         output(line)
 
-    ran = setup_progress.last('plan')
-    complete = finishing_screen(config, states, page, shown, checkup, ran['steps'] if ran else ())
+    complete = finishing_screen(config, states, page, shown, checkup, steps)
     if window is not None:
         # The window shows the same summary; give it a moment to fetch it.
         heading = next((text.strip() for text in lines[1:2]), '')  # under the first ruled line
         setup_progress.event('finished', lines=lines, complete=complete, title=heading)
         window.delivered.wait(3)
-    return 0 if complete and code == 0 else 1
+    return 0 if complete and finished_all else 1
 
 
 def run(execute, default_state, prompt=input, output=print, root=ROOT, config=None):
