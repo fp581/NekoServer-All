@@ -32,14 +32,15 @@ def browser():
     return None
 
 
-def extra(ident, title, on=True, asked=False, installs=0):
+def extra(ident, title, on=True, part='Apps', installs=0):
     return {
         'id': ident,
         'title': title,
         'explanation': 'What this part does, in a sentence or two long enough to wrap onto a second line.',
         'installs': [{'name': f'package-{n}', 'explanation': 'what it is for'} for n in range(installs)],
         'on': on,
-        'asked': asked,
+        'part': part,
+        'needs': [],
     }
 
 
@@ -47,11 +48,17 @@ CHOOSE = {
     'version': '0.50.0',
     'phase': 'choose',
     'extras': [
-        extra('media_apps', 'The media apps: movies, shows, music and photos', installs=0),
-        extra('network_storage', 'My media and backup drives are in a network storage box (NAS)', on=False, installs=2),
-        extra('tv', 'A TV connected to this PC', asked=True, installs=6),
-        extra('notifications', 'Phone alerts when something fails', asked=True),
-        extra('nextcloud', 'Nextcloud, your private cloud drive'),
+        extra('media_movies', 'Movies and TV shows - Jellyfin', installs=0),
+        extra('nextcloud', 'Personal files - Nextcloud'),
+        extra('tv', 'Use this PC with a TV', part='Optional extras', installs=6),
+        extra('notifications', 'Send alerts to my phone', part='Optional extras'),
+        extra(
+            'network_storage',
+            'My media and backup drives are in a network storage box (NAS)',
+            on=False,
+            part='Storage',
+            installs=2,
+        ),
     ],
     'steps': [],
     'current': None,
@@ -92,7 +99,13 @@ QUESTION = {
 # Before setup.js: answers its polls with window.nextState (set by the measuring script).
 STUB = """window.nextState = %s;
 window.fetch = async (route, options) => {
-  if (options && options.method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  if (options && options.method === 'POST') {
+    // A switch pressed is saved: setup's server shows it that way from then on.
+    if (route === 'api/choose')
+      for (const [id, on] of Object.entries(JSON.parse(options.body)))
+        for (const extra of window.nextState.extras) if (extra.id === id) extra.on = on;
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  }
   return { ok: true, status: 200, json: async () => window.nextState };
 };"""
 
@@ -106,7 +119,7 @@ MEASURE = """(async () => {
   const result = { presses: [], states: [] };
   await pause(1500);
   // Every switch pressed, then every switch pressed back: each press is measured
-  // against the page as it was just before it (on to off, off to on, "asked later" to yes).
+  // against the page as it was just before it (on to off, off to on).
   for (const pass of [1, 2]) {
     for (const input of document.querySelectorAll('.extra input, .part-step input:not(:disabled)')) {
       const before = JSON.stringify(cards());
@@ -197,7 +210,7 @@ class NothingMovesTests(unittest.TestCase):
                 self.assertEqual(len(measured['presses']), 2 * len(CHOOSE['extras']))
                 self.assertTrue(all(measured['presses']), measured['presses'])
                 # The captions did change under the measuring (it measured a real toggle).
-                self.assertEqual(measured['captions'], ['yes', 'no', 'yes', 'yes', 'yes'])
+                self.assertEqual(measured['captions'], ['yes', 'yes', 'yes', 'yes', 'no'])
 
     def test_sliding_a_steps_yes_moves_nothing_and_works_from_the_keyboard(self):
         """0.50.0, item 13: the phone part's steps each have a sliding yes."""

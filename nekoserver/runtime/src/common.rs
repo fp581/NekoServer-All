@@ -204,8 +204,16 @@ pub static MEDIA_APPS: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new
 /// "photos", "movies" and "music" under "media_apps". The same rules as neko_common
 /// (media_group, media_services, immich_wanted).
 /// A group is part of this server: its own answer, else on unless "wanted" is false
-/// (every server set up before 0.50.0 has all of them).
+/// (every server set up before 0.50.0 has all of them). "downloads" (the apps that find
+/// and download) is a switch beside the three: its own answer counts with films or music
+/// on; without one it is as "movies" is (the download apps were set up with it before).
 pub fn media_group(cfg: &Value, group: &str) -> bool {
+    if group == "downloads" {
+        return match cfg["media_apps"][group].as_bool() {
+            Some(chosen) => chosen && (media_group(cfg, "movies") || media_group(cfg, "music")),
+            None => media_group(cfg, "movies"),
+        };
+    }
     match cfg["media_apps"][group].as_bool() {
         Some(chosen) => chosen,
         None => cfg["media_apps"]["wanted"] != false,
@@ -1447,7 +1455,7 @@ mod media_answer_tests {
         let photos = with(json!({"photos": true, "movies": false, "music": false}));
         assert!(immich_wanted(&photos) && media_wanted(&photos));
         assert!(media_services(&photos).is_empty());
-        // Music alone: Navidrome; Lidarr needs the download apps of Movies and shows too.
+        // Music alone: Navidrome (the downloads, with no answer, are as Movies and TV is: off).
         let music = with(json!({"photos": false, "movies": false, "music": true}));
         assert_eq!(media_services(&music), ["navidrome"]);
         assert!(!immich_wanted(&music));
@@ -1464,6 +1472,21 @@ mod media_answer_tests {
                 "qbittorrent"
             ]
         );
+        // The downloads are a switch of their own (neko_common.DOWNLOADS): playing without
+        // downloading, music downloads without the film player, and nothing to download
+        // for with neither. Without an answer they are as Movies and TV is (above).
+        let playing =
+            with(json!({"photos": false, "movies": true, "music": true, "downloads": false}));
+        assert_eq!(media_services(&playing), ["jellyfin", "navidrome"]);
+        let music_found =
+            with(json!({"photos": false, "movies": false, "music": true, "downloads": true}));
+        assert_eq!(
+            media_services(&music_found),
+            ["navidrome", "lidarr", "prowlarr", "qbittorrent"]
+        );
+        let nothing_for =
+            with(json!({"photos": true, "movies": false, "music": false, "downloads": true}));
+        assert!(media_services(&nothing_for).is_empty() && !media_group(&nothing_for, "downloads"));
         // None, and all.
         let none = with(json!({"photos": false, "movies": false, "music": false}));
         assert!(!media_wanted(&none) && media_services(&none).is_empty() && !immich_wanted(&none));

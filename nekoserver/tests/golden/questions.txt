@@ -69,5 +69,3 @@ uninstaller.py
     Type exactly {phrase} to go on:
 wizard.py
     earlier_settings
-    Ready to start?
-    Ready to start?

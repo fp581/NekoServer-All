@@ -633,7 +633,7 @@ def optional_kept(ctx, asked, prompt=None, output=None):
 # words. The sizes are measured on a fresh install with all three (TESTING.md, the 0.50.0 gate).
 MEDIA_QUESTION = 'Which media apps to install?'
 MEDIA_EXPLAINED = (
-    'The media apps come in three groups, and each can be left out: answer yes or no for each one.',
+    'The media apps come in groups, and each can be left out: answer yes or no for each one.',
     'All three together take about 6 GB on the SSD (downloaded once) and about 2 GB of memory when idle.',
     'Nextcloud, the dashboard, the backups, Tailscale, the shared folders, the alerts and the AI assistant',
     'are set up either way. Answering no later never deletes anything: the apps of that group are stopped,',
@@ -641,16 +641,12 @@ MEDIA_EXPLAINED = (
 )
 GROUP_EXPLAINED = {
     'photos': ('', 'Photos: Immich, your own photo backup and gallery, with its archive and its weekly USB copy.'),
-    'movies': (
+    'movies': ('', 'Movies and TV: Jellyfin, to watch the films and shows you have; with video on the graphics chip.'),
+    'music': ('', 'Music: Navidrome, your music player, with the music backup.'),
+    'downloads': (
         '',
-        'Movies and shows: Jellyfin to watch them, Seerr to ask for new ones, and Sonarr, Radarr and Prowlarr',
-        'with qBittorrent, which find and download them; with video on the graphics chip, the hourly check',
-        'that these apps still work together, and the TV mode.',
-    ),
-    'music': (
-        '',
-        'Music: Navidrome, your music player, with the music backup. With Movies and shows on as well,',
-        'Lidarr finds and downloads music.',
+        'Automatic downloads: tools that find and download media you are entitled to access. Prowlarr and',
+        'qBittorrent; with Movies and TV also Sonarr, Radarr and Seerr; with Music also Lidarr.',
     ),
 }
 
@@ -705,28 +701,38 @@ def choose_media_apps(ctx, prompt=None, output=None):
 
 
 def asked_media_apps(ctx, prompt=None, output=None):
-    """Ask which media groups to install (Photos, Movies and shows, Music: a yes or no
-    each) and save the answers as "photos", "movies" and "music" under "media_apps".
-    Asked at the drives step, before the drives are chosen (the other optional questions
-    are asked there too): once, and on a later run only when the person asks for the
-    optional questions again (optional_kept). A group left alone (Enter at the window's
-    switch, Ctrl+D here, or nobody at the terminal) is on and not saved, so it is asked
-    again next time."""
-    from neko_common import GROUP_NAMES, MEDIA_GROUPS, MEDIA_SECTION, media_group_chosen, optional_answers
+    """Ask which media groups to install (Photos, Movies and TV, Music, and the automatic
+    downloads: a yes or no each) and save the answers under "media_apps". Setup's first
+    page (wizard.wait_to_start, the setup window) saves every one of them, so this asks
+    only when setup runs without that page (installer.py itself), at the drives step,
+    before the drives are chosen. A group left alone (Ctrl+D, or nobody at the
+    terminal) is on and not saved, so it is asked again next time; the downloads left
+    alone on a new server are not set up."""
+    from neko_common import (
+        DOWNLOADS,
+        DOWNLOADS_NAME,
+        GROUP_NAMES,
+        MEDIA_GROUPS,
+        MEDIA_SECTION,
+        media_group,
+        media_group_chosen,
+        server_exists,
+    )
 
     options = ctx.config.setdefault(MEDIA_SECTION, {})
     if not isinstance(options, dict):
         raise RuntimeError('"media_apps" in my-config.json must be an object, such as {"photos": true}')
-    for key in ('wanted', *MEDIA_GROUPS):
+    for key in ('wanted', *MEDIA_GROUPS, DOWNLOADS):
         if key in options and type(options[key]) is not bool:
             raise RuntimeError(f'"{key}" under "media_apps" must be true or false')
     if not interactive(ctx):
         return
-    kept = MEDIA_SECTION in optional_answers(ctx.config['data_mount'])
-    again = kept and MEDIA_SECTION not in optional_kept(ctx, [MEDIA_SECTION], prompt, output)
-    # A group chosen already (in the setup window, by hand in the settings, or answered
-    # before and kept now) is not asked.
-    to_ask = [group for group in MEDIA_GROUPS if again or not media_group_chosen(ctx.config, group)]
+    # A group chosen already (on setup's first page, or by hand in the settings) is not
+    # asked: only setup run without that page (installer.py itself) gets here with one
+    # open. The downloads are asked with films and shows, or music.
+    to_ask = [group for group in MEDIA_GROUPS if not media_group_chosen(ctx.config, group)]
+    if not media_group_chosen(ctx.config, DOWNLOADS):
+        to_ask.append(DOWNLOADS)
     if not to_ask:
         return
     prompt = prompt or input
@@ -735,11 +741,21 @@ def asked_media_apps(ctx, prompt=None, output=None):
     for line in MEDIA_EXPLAINED:
         output(line)
     answered = {}
+    names = {**GROUP_NAMES, DOWNLOADS: DOWNLOADS_NAME}
     for group in to_ask:
         import questions
 
+        if group == DOWNLOADS and not (
+            answered.get('movies', media_group(ctx.config, 'movies'))
+            or answered.get('music', media_group(ctx.config, 'music'))
+        ):
+            continue  # nothing to download for
         about = ' '.join(line for line in GROUP_EXPLAINED[group] if line)
-        answer = questions.yes_no('install_group', prompt, output, group=GROUP_NAMES[group], about=about)
+        answer = questions.yes_no('install_group', prompt, output, group=names[group], about=about)
+        if answer is None and group == DOWNLOADS and not server_exists(ctx.config):
+            output('Left out: the download apps are not set up. Setup\'s first page switches them on later.')
+            answered[group] = False
+            continue
         if answer is None:
             output('Left for now: it is set up (yes), and this is asked again next time.')
             continue
@@ -750,7 +766,7 @@ def asked_media_apps(ctx, prompt=None, output=None):
     if all(isinstance(options.get(group), bool) for group in MEDIA_GROUPS):
         options.pop('wanted', None)  # every group has its own answer: the one yes/no decides nothing more
     save_settings(ctx)
-    said = ', '.join(f"{GROUP_NAMES[group]}: {'yes' if on else 'no, left out'}" for group, on in answered.items())
+    said = ', '.join(f"{names[group]}: {'yes' if on else 'no, left out'}" for group, on in answered.items())
     ctx.log('Media apps: ' + said)
 
 

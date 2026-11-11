@@ -55,21 +55,33 @@
     <main id="main">
       <!-- Before setup starts -->
       <section id="choose" hidden>
-        <div class="intro">
-          <h1>Choose what to set up</h1>
-          <p>
-            Backups, the dashboard and private access from anywhere are always set up; the rest is up to you. A switch
-            you leave alone that says <b>asked later</b> is asked about when setup gets there, and you can change your
-            mind later in <code>my-config.json</code>.
-          </p>
+        <div class="choose-page" id="choose-apps">
+          <div class="intro">
+            <h1>What would you like this server to do?</h1>
+            <p>
+              Backups, the dashboard and private access from your own devices are always set up. Switching something off
+              later stops it and keeps its data.
+            </p>
+          </div>
+          <div class="extras" id="extras"></div>
+          <p class="muted note"><output id="choose-note"></output></p>
+          <div class="actions">
+            <button class="primary" id="continue" type="button">Continue</button>
+            <span class="muted">Nothing is installed yet. The next page shows what will be.</span>
+          </div>
         </div>
-        <div class="extras" id="extras"></div>
-        <p class="muted note"><output id="choose-note"></output></p>
-        <div class="actions">
-          <button class="primary" id="start" type="button">Start setup</button>
-          <span class="muted"
-            >…or type <b>yes</b> in the terminal. Setup takes about an hour and pauses when it needs you.</span
-          >
+        <div class="choose-page" id="review" hidden>
+          <div class="intro">
+            <h1 id="review-title">Ready to install NekoServer</h1>
+            <p>Nothing has been installed yet. Read what setup will do, then press the button.</p>
+          </div>
+          <div class="review" id="review-sections"></div>
+          <p class="muted note"><output id="review-note"></output></p>
+          <div class="actions">
+            <button class="primary" id="start" type="button">Install selected apps</button>
+            <button class="secondary" id="back" type="button">Back</button>
+            <span class="muted">…or type <b>yes</b> in the terminal.</span>
+          </div>
         </div>
       </section>
 

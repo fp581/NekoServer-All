@@ -26,7 +26,6 @@ import gateway_tools  # noqa: E402
 import guided_setup  # noqa: E402
 import neko_common  # noqa: E402
 import recovery_wizard  # noqa: E402
-import setup_gui  # noqa: E402
 from modules import (  # noqa: E402
     app_backup,
     desktop,
@@ -116,14 +115,14 @@ class QuestionTests(unittest.TestCase):
 
     def test_asked_once_explained_and_saved(self):
         config = settings(folder=self.tmp.name)
-        ctx, shown = self.ask(config, ['no', 'no', 'no'])
-        self.assertEqual(config['media_apps'], {'photos': False, 'movies': False, 'music': False})
+        ctx, shown = self.ask(config, ['no', 'yes', 'no', 'no'])
+        self.assertEqual(config['media_apps'], {'photos': False, 'movies': True, 'music': False, 'downloads': False})
         ctx.persist_config.assert_called_once()
         said = '\n'.join(shown)
         for words in (
             'Jellyfin',
-            'Seerr',
-            'Sonarr, Radarr and Prowlarr',
+            'Sonarr, Radarr and Seerr',
+            'Prowlarr',
             'qBittorrent',
             'Lidarr',
             'Immich',
@@ -158,19 +157,14 @@ class QuestionTests(unittest.TestCase):
         self.ask(config, [])  # no answer typed: a question would raise StopIteration
         self.assertFalse(config['media_apps']['wanted'])
 
-    def test_a_rerun_keeps_the_answer_unless_asked_again(self):
+    def test_a_rerun_asks_nothing_about_them(self):
         config = settings(True, folder=self.tmp.name)
         neko_common.remember_answer(self.tmp.name, neko_common.MEDIA_SECTION, 'yes')
-        # "Ask these questions again?" no: kept, the media question is not put.
-        ctx, shown = self.ask(config, ['no'])
-        self.assertIn('Last time, the optional questions were answered this way:', shown)
-        self.assertIn('  Media apps: yes', shown)
+        # Answered before: nothing is asked and nothing is said (setup's first page, which
+        # every run shows, is where an app is switched on or off).
+        ctx, shown = self.ask(config, [])
+        self.assertEqual(shown, [])
         self.assertTrue(config['media_apps']['wanted'])
-        # yes: asked again, and no to each now leaves them out.
-        ctx, shown = self.ask(config, ['yes', 'no', 'no', 'no'])
-        self.assertFalse(neko_common.media_apps_wanted(config))
-        # The later optional questions of the run follow the same decision, asked once.
-        self.assertTrue(ctx.ask_optional_again)
 
     def test_remembered_only_once_the_ssd_is_there(self):
         config = settings(False, folder=self.tmp.name)
@@ -287,7 +281,7 @@ class NoOnAServerWithTheAppsTests(unittest.TestCase):
 
 
 class WindowTests(unittest.TestCase):
-    def test_the_window_offers_it_first_and_asks_it_later_when_left_alone(self):
+    def test_the_window_offers_it_first(self):
         # Three switches, one for each group (tests/test_media_groups.py), first on the page.
         first = explanations.EXTRAS[:3]
         self.assertEqual(
@@ -300,7 +294,6 @@ class WindowTests(unittest.TestCase):
         )
         config = {}
         for extra in first:
-            self.assertIn(extra['id'], setup_gui.ASKED_LATER)
             explanations.set_extra(config, extra, False)
         self.assertEqual(config, {'media_apps': {'photos': False, 'movies': False, 'music': False}})
         self.assertFalse(neko_common.media_apps_wanted(config))
@@ -356,7 +349,10 @@ class StepTests(unittest.TestCase):
         for step, words in (
             (music, 'Music: switched off (Music (Navidrome) in setup); no music player to set up'),
             (tv, 'TV setup: left out, as Movies and shows is switched off (the TV mode opens Jellyfin)'),
-            (onboarding, 'Connecting the apps: Movies and shows is switched off, so there is nothing to connect'),
+            (
+                onboarding,
+                'Connecting the apps: Movies and TV and the downloads are switched off, so there is nothing to connect',
+            ),
             (hardware_video, 'Hardware video: neither Jellyfin nor Immich runs on this server; nothing to switch over'),
         ):
             with self.subTest(step=step.__name__):

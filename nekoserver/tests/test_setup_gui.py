@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 import explanations  # noqa: E402
 import host  # noqa: E402
+import neko_common  # noqa: E402
 import setup_gui  # noqa: E402
 import setup_progress  # noqa: E402
 import wizard  # noqa: E402
@@ -55,7 +56,12 @@ class ExplanationTests(unittest.TestCase):
     def test_extras_read_and_write_the_settings(self):
         config = {}
         extra = next(e for e in explanations.EXTRAS if e['id'] == 'tv')
-        self.assertTrue(explanations.extra_state(config, extra))  # assumed on until chosen
+        # Nothing saved: a server set up before has it, a new one is offered it off (an opt-in).
+        with mock.patch.object(neko_common, 'server_exists', return_value=True):
+            self.assertTrue(explanations.extra_state(config, extra))
+        with mock.patch.object(neko_common, 'server_exists', return_value=False):
+            self.assertFalse(explanations.extra_state(config, extra))
+            self.assertTrue(explanations.extra_state({'tv': {'wanted': True}}, extra))
         explanations.set_extra(config, extra, False)
         self.assertEqual(config, {'tv': {'wanted': False}})
         self.assertFalse(explanations.extra_state(config, extra))
@@ -531,6 +537,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(state['phase'], 'choose')
         self.assertEqual([s['id'] for s in state['steps']], ['system', 'docker', 'tv', 'maintenance'])
         self.assertEqual(state['steps'][1]['title'], 'Docker')
+        self.assertEqual(self.post('api/choose', {'tv': True}), {'ok': True})
+        state = self.state()
         self.assertTrue(next(e for e in state['extras'] if e['id'] == 'tv')['on'])
         self.assertEqual(next(e for e in state['extras'] if e['id'] == 'tv')['installs'][0]['name'], 'steam')
         self.assertEqual(self.post('api/choose', {'tv': False, 'nonsense': True, 'heartbeat': 'yes'}), {'ok': True})
@@ -1100,7 +1108,16 @@ class WindowPlacementTests(unittest.TestCase):
 
 
 class ReadyToStartTests(unittest.TestCase):
-    """The terminal's "Ready to start?" and the window's Start answer the same question."""
+    """The terminal's one approval and the window's Install button answer the same question."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name) / 'my-config.json'
+        self.path.write_text('{}')
+        new = mock.patch.object(neko_common, 'server_exists', return_value=False)
+        new.start()
+        self.addCleanup(new.stop)
 
     def pipe(self, text=''):
         read_end, write_end = os.pipe()
@@ -1110,28 +1127,57 @@ class ReadyToStartTests(unittest.TestCase):
         self.addCleanup(lambda: None)
         return os.fdopen(read_end)
 
-    def test_start_in_the_window_counts_as_yes(self):
+    def window(self):
         window = mock.Mock(started=threading.Event())
+        window.choose.return_value = True
+        return window
+
+    def test_install_in_the_window_counts_as_yes(self):
+        window = self.window()
         window.started.set()
         said = []
         with self.pipe() as stdin, mock.patch('sys.stdout'):
-            self.assertTrue(wizard.wait_to_start(builtins.input, said.append, window, stdin))
-        self.assertIn('Start pressed', said[0])
+            self.assertTrue(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
+        self.assertIn('pressed in the setup window', said[-1])
+        window.choose.assert_not_called()  # the window saved the switches itself
 
     def test_the_terminal_still_answers(self):
-        window = mock.Mock(started=threading.Event())
+        window = self.window()
+        said = []
         with self.pipe('maybe\nno\n') as stdin, mock.patch('sys.stdout'):
-            self.assertFalse(wizard.wait_to_start(builtins.input, lambda line: None, window, stdin))
+            self.assertFalse(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
+        self.assertIn('Type yes, no, or the number of a line (1 to 10).', said)
+        window.choose.assert_not_called()
         with self.pipe('y\n') as stdin, mock.patch('sys.stdout'):
-            self.assertTrue(wizard.wait_to_start(builtins.input, lambda line: None, window, stdin))
+            self.assertTrue(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
+        # Yes saves every switch as it stands and fixes them, through the window.
+        window.choose.assert_called_once_with({}, start=True)
         with self.pipe('') as stdin, mock.patch('sys.stdout'):  # Ctrl+D
-            self.assertFalse(wizard.wait_to_start(builtins.input, lambda line: None, window, stdin))
+            self.assertFalse(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
+        # Enter alone approves nothing.
+        with self.pipe('\nno\n') as stdin, mock.patch('sys.stdout'):
+            self.assertFalse(wizard.wait_to_start(self.path, builtins.input, said.append, window, stdin))
+        self.assertIn('Enter alone does nothing here.', said[-1])
+
+    def test_a_number_switches_that_line_through_the_window(self):
+        window = self.window()
+        with self.pipe('2 6\nno\n') as stdin, mock.patch('sys.stdout'):
+            self.assertFalse(wizard.wait_to_start(self.path, builtins.input, lambda line: None, window, stdin))
+        # Line 2 (Movies and TV shows) was on, line 6 (a TV) off on a new server.
+        window.choose.assert_called_once_with({'media_movies': False, 'tv': True}, start=False)
 
     def test_without_a_window_or_in_tests_the_plain_question_is_asked(self):
         answers = iter(['yes'])
-        self.assertTrue(wizard.wait_to_start(lambda question: next(answers), lambda line: None, None))
+        asked = []
+        self.assertTrue(
+            wizard.wait_to_start(self.path, lambda question: asked.append(question) or next(answers), print, None)
+        )
+        self.assertIn('Install selected apps? Type yes to go on, no to stop, or the number of a line', asked[0])
+        self.assertNotIn('setup window', asked[0])
         answers = iter(['no'])
-        self.assertFalse(wizard.wait_to_start(lambda question: next(answers), lambda line: None, mock.Mock()))
+        self.assertFalse(
+            wizard.wait_to_start(self.path, lambda question: next(answers), lambda line: None, mock.Mock())
+        )
 
 
 if __name__ == '__main__':

@@ -124,7 +124,7 @@
       "role": "Find something to watch",
       "port": 5055,
       "media": true,
-      "groups": ["movies"],
+      "groups": ["movies", "downloads"],
       "tailnet": 8444
     },
     {
@@ -142,7 +142,7 @@
       "role": "Manage your TV library",
       "port": 8989,
       "media": true,
-      "groups": ["movies"]
+      "groups": ["movies", "downloads"]
     },
     {
       "id": "radarr",
@@ -150,7 +150,7 @@
       "role": "Manage your movie library",
       "port": 7878,
       "media": true,
-      "groups": ["movies"]
+      "groups": ["movies", "downloads"]
     },
     {
       "id": "lidarr",
@@ -158,7 +158,7 @@
       "role": "Manage your music library",
       "port": 8686,
       "media": true,
-      "groups": ["movies", "music"]
+      "groups": ["downloads", "music"]
     },
     {
       "id": "prowlarr",
@@ -166,7 +166,7 @@
       "role": "Manage search providers",
       "port": 9696,
       "media": true,
-      "groups": ["movies"]
+      "groups": ["downloads"]
     },
     {
       "id": "qbittorrent",
@@ -174,7 +174,7 @@
       "role": "Check your downloads",
       "port": 8080,
       "media": true,
-      "groups": ["movies"]
+      "groups": ["downloads"]
     },
     {
       "id": "nextcloud",

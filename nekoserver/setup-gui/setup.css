@@ -292,9 +292,7 @@ main > section {
 
 /* choose */
 #choose {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
-  gap: 10px;
+  display: block;
 }
 .intro p {
   max-width: 96ch;
@@ -302,7 +300,7 @@ main > section {
 }
 .extras {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(256px, 1fr));
   gap: 12px;
   overflow: auto;
   scrollbar-gutter: stable;
@@ -358,7 +356,7 @@ main > section {
   gap: 8px;
   align-self: end;
 }
-/* Wide enough for "asked later", so it turning into "yes" or "no" never moves the title. */
+/* A fixed width, so "yes" turning into "no" never moves the title. */
 .caption {
   display: inline-block;
   font-size: 12px;
@@ -369,14 +367,57 @@ main > section {
   text-align: right;
   white-space: nowrap;
 }
-/* Left alone, a switch setup asks about later sits in the middle: neither yes nor no. */
-.extra.undecided .switch input + span {
-  background: var(--raised);
-  border-color: var(--line);
+/* A card that needs another one first (the downloads: films and shows, or music). */
+.extra.unavailable {
+  opacity: 0.55;
 }
-.extra.undecided .switch input + span::after {
-  transform: translateX(9px);
-  background: var(--muted);
+/* The heading of a kind of card, across the whole row. */
+.part-title {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.part-title:first-child {
+  margin-top: 0;
+}
+/* The first page and the review after it: one shown at a time, each filling the window. */
+.choose-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  height: 100%;
+}
+.choose-page[hidden] {
+  display: none;
+}
+.review {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(256px, 1fr));
+  gap: 12px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  align-content: start;
+}
+.review-part {
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.review-part h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 620;
+}
+.review-part ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .packages-toggle {
   grid-area: packages;
@@ -901,10 +942,14 @@ main > section {
   .running {
     grid-template-columns: 1fr;
   }
-  .extras {
+  .extras,
+  .review {
     overflow: visible;
   }
-  /* Start setup stays in view at the bottom while the cards scroll under it. */
+  .choose-page {
+    height: auto;
+  }
+  /* The page's button stays in view at the bottom while the cards scroll under it. */
   .actions {
     position: sticky;
     bottom: -16px;

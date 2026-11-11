@@ -1367,15 +1367,37 @@ MEDIA_SECTION = 'media_apps'
 # "music" under "media_apps"; one not chosen yet is on. "wanted": false (the one yes/no
 # 0.50.0 first had, and a settings file written by hand) switches off every group that
 # has no answer of its own. Which apps a group holds is in shared.json ("groups"): an
-# app is set up when every group it names is on (Lidarr finds music with the download
-# apps, so it needs both Movies and shows, and Music).
+# app is set up when every group it names is on.
 MEDIA_GROUPS = ('photos', 'movies', 'music')
 GROUP_NAMES = {
     'photos': 'Photos (Immich)',
-    'movies': 'Movies and shows (Jellyfin, Seerr and the download apps)',
+    'movies': 'Movies and TV (Jellyfin)',
     'music': 'Music (Navidrome)',
 }
+# Finding and downloading films, shows and music is a switch of its own (the wizard of
+# 0.50.0: playing and downloading are different wishes), saved as "downloads" beside the
+# groups. It holds Prowlarr and qBittorrent; with Movies and TV also Sonarr, Radarr and
+# Seerr; with Music also Lidarr. It does nothing without one of those two.
+# - A new server: off until the person switches it on (setup's first page, or its
+#   question in the terminal).
+# - A server that has no answer for it: as Movies and TV is, because until this switch
+#   existed the download apps were set up with Movies and TV, and an upgrade must not
+#   stop them (or add them where they were left out).
+DOWNLOADS = 'downloads'
+DOWNLOADS_NAME = 'Automatic media downloads (Sonarr, Radarr, Lidarr, Prowlarr, qBittorrent, Seerr)'
 APP_GROUPS = {app['id']: tuple(app.get('groups', ())) for app in SHARED['apps']}
+
+
+def server_exists(config):
+    """This PC has a NekoServer server already: one of its schedules is installed (on the
+    system disk, so it is seen with the app drive unplugged too), or Docker's folder is
+    on the app drive. Not so on a PC setup runs on for the first time."""
+    try:
+        if any(SYSTEMD_UNITS.glob('nekoserver-*')):
+            return True
+    except OSError:
+        pass
+    return (Path(config.get('data_mount') or '/srv/nekoserver') / 'docker-engine').is_dir()
 
 
 def media_group_chosen(config, group):
@@ -1389,6 +1411,11 @@ def media_group_chosen(config, group):
 def media_group(config, group):
     """The group is part of this server: its own answer, else on unless "wanted" is false."""
     section = config.get(MEDIA_SECTION)
+    if group == DOWNLOADS:
+        if isinstance(section, dict) and isinstance(section.get(group), bool):
+            # Its own answer, and something to download for.
+            return section[group] and (media_group(config, 'movies') or media_group(config, 'music'))
+        return media_group(config, 'movies')
     if not isinstance(section, dict):
         return True
     if isinstance(section.get(group), bool):
@@ -1463,9 +1490,15 @@ MEDIA_STEPS = (
 # ... and the ones that are about one group alone.
 GROUP_STEPS = {
     'photos': ('photos', 'photo_preservation'),
-    'movies': ('onboarding', 'media_monitor', 'tv'),
+    'movies': ('tv',),
     'music': ('music', 'music_backup'),
 }
+
+
+def apps_to_connect(config):
+    """There are apps for the connecting step (onboarding) and the hourly check of them
+    (media_monitor) to work on: Jellyfin and its libraries, or the download apps."""
+    return media_group(config, 'movies') or media_group(config, DOWNLOADS)
 
 
 def media_steps_left_out(config):
@@ -1473,7 +1506,8 @@ def media_steps_left_out(config):
     group's own steps, and with every group off all the media steps."""
     if not media_apps_wanted(config):
         return set(MEDIA_STEPS)
-    return {step for group in MEDIA_GROUPS if not media_group(config, group) for step in GROUP_STEPS[group]}
+    left = {step for group in MEDIA_GROUPS if not media_group(config, group) for step in GROUP_STEPS[group]}
+    return left if apps_to_connect(config) else left | {'onboarding', 'media_monitor'}
 
 
 def immich_wanted(config):

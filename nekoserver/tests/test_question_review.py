@@ -100,9 +100,9 @@ def switches_block():
     """The first screen: a switch for each part that can be left out."""
     rows = ''.join(f'<h3>{esc(extra["title"])}</h3><p>{esc(extra["explanation"])}</p>' for extra in explanations.EXTRAS)
     window = (
-        '<div class="window"><div class="label">THE SETUP WINDOW · a switch for each, then Start setup</div>'
+        '<div class="window"><div class="label">THE SETUP WINDOW · a switch for each, then Continue and the review</div>'
         + rows
-        + '<span class="button main">Start setup</span></div>'
+        + '<span class="button main">Continue</span></div>'
     )
     return (
         '<div class="block">'

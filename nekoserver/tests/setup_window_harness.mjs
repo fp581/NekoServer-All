@@ -70,8 +70,21 @@ async function step(i) {
   await settle();
   if (states[i].phase === 'choose' && pressStart) elements.start.fire('click');
   if (states[i].phase === 'choose' && states[i].press) {
-    for (const card of elements.extras.children) if (card.children[0].textContent === states[i].press) card.children[1].children[1].children[0].fire('change');
+    for (const card of elements.extras.children) {
+      if (card.children[0]?.textContent !== states[i].press) continue;
+      const input = card.children[1].children[1].children[0];
+      input.checked = !input.checked;
+      input.fire('change');
+    }
   }
+  // The first page's Continue ({"continue": true}) and the review's Back ({"back": true}).
+  if (states[i].phase === 'choose' && states[i].continue) {
+    elements.continue.fire('click');
+    await settle();
+    await settle();
+    await settle();
+  }
+  if (states[i].phase === 'choose' && states[i].back) elements.back.fire('click');
   // A page of fields (the backup times): {"fill": {"ask-page-daily": "23:30"}} types into
   // its rows and presses Save; {"skipPage": true} presses its Skip for now.
   if (states[i].fill) {
@@ -129,8 +142,13 @@ await states.reduce((done, _state, i) => done.then(() => step(i)), Promise.resol
 await settle();
 const shown = ['choose', 'running', 'finished', 'gone', 'moved', 'finish-closed'].filter((id) => elements[id] && !elements[id].hidden);
 const marks = (list) => (list?.children ?? []).map((li) => [li.className, li.children[0].textContent, li.children[1].children[0]]);
-const cards = (elements.extras?.children ?? []).map((card) => [card.className, card.children[1].children[0].textContent]);
-console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent ?? '', shown,
+const cards = (elements.extras?.children ?? []).filter((card) => card.className.startsWith('extra'))
+  .map((card) => [card.className, card.children[1].children[0].textContent, card.children[1].children[1].children[0].disabled]);
+const parts = (elements.extras?.children ?? []).filter((card) => card.className === 'part-title').map((title) => title.textContent);
+const review = { hidden: elements.review?.hidden ?? null, appsHidden: elements['choose-apps']?.hidden ?? null,
+  title: elements['review-title']?.textContent ?? '', note: elements['review-note']?.textContent ?? '',
+  sections: (elements['review-sections']?.children ?? []).map((part) => [part.children[0].textContent, part.children[1].children.map((li) => li.textContent)]) };
+console.log(JSON.stringify({ posts, parts, review, title: elements['finish-title']?.textContent ?? '', shown,
   badge: elements['phase-badge']?.textContent ?? '', label: elements['finish-label']?.textContent ?? '', lines: elements['finish-lines']?.textContent ?? '',
   marks: marks(elements['steps-final']), progressHidden: elements.progress?.hidden ?? null, cards,
   pageHidden: elements['ask-page']?.hidden ?? null, answerHidden: elements['ask-answer']?.hidden ?? null,

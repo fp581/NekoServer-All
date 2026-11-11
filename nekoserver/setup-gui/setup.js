@@ -23,7 +23,12 @@
     pending: ''
   };
   const HEADERS = { 'Content-Type': 'application/json' };
-  let chosen = {}; // only the switches the person pressed: one left alone is asked about by setup
+  const chosen = {}; // the switches pressed here that are not saved yet
+  let switches = {}; // every switch as it stands: {id: on}
+  let cards = []; // the cards of the first page
+  let reviewing = false; // the review is shown, not the switches
+  let startLabel = 'Install selected apps';
+  let lastState = null;
   let built = false;
   let misses = 0;
   let shownCurrent = null; // the running step the list was last scrolled to
@@ -49,23 +54,19 @@
     return response.json();
   }
 
-  /* ---- before setup starts: the optional parts */
+  /* ---- before setup starts: what this server is to do, then the review of it */
+
+  let saving = Promise.resolve(); // the last switch on its way to setup's server
 
   async function save(changes) {
     try {
       const answer = await post('api/choose', changes);
       $('choose-note').textContent = answer.ok === false && answer.reason ? answer.reason : '';
+      // Saved: from now on the switch follows setup's server again.
+      if (answer.ok !== false) for (const id of Object.keys(changes)) if (chosen[id] === changes[id]) delete chosen[id];
     } catch {
       /* the next poll shows what the server has; the switch stays as pressed */
     }
-  }
-
-  /* A card's look: on or off, or undecided (a switch setup asks about later, as long as
-     it is left alone). The caption under the switch has a fixed width (setup.css), so
-     "asked later" turning into "yes" never moves the card's title. */
-  function cardClass(extra, on, undecided) {
-    if (undecided) return 'extra undecided';
-    return on ? 'extra on' : 'extra';
   }
 
   /* What an extra installs, folded so the cards stay short: a button at the bottom of the
@@ -100,38 +101,82 @@
     return [toggle, list];
   }
 
+  /* Every card as it stands now. One that needs another (the downloads: films and
+     shows, or music) is off and cannot be pressed while none of those is on. The
+     caption always says yes or no, in a fixed width, so nothing moves. */
+  function showCards() {
+    for (const card of cards) {
+      const needs = card.extra.needs || [];
+      const offered = !needs.length || needs.some(id => switches[id]);
+      const on = switches[card.extra.id] && offered;
+      card.input.checked = on;
+      card.input.disabled = !offered;
+      card.node.className = 'extra' + (on ? ' on' : '') + (offered ? '' : ' unavailable');
+      card.caption.textContent = on ? 'yes' : 'no';
+    }
+  }
+
+  /* One card for each part a person can leave out, under the heading of its kind. */
   function buildChoices(extras) {
     const box = $('extras');
     box.replaceChildren();
+    cards = [];
+    let part = '';
     for (const extra of extras) {
+      if (extra.part && extra.part !== part) {
+        part = extra.part;
+        box.append(el('h2', { class: 'part-title', text: part }));
+      }
       const input = el('input', { type: 'checkbox', 'aria-label': extra.title });
-      input.checked = extra.on;
-      const caption = el('span', { class: 'caption', text: extra.asked ? 'asked later' : '' });
-      const card = el(
+      const caption = el('span', { class: 'caption' });
+      const node = el(
         'div',
-        { class: cardClass(extra, extra.on, extra.asked) },
+        { class: 'extra' },
         el('h3', { text: extra.title }),
         el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span'))),
         el('p', { text: extra.explanation })
       );
       input.addEventListener('change', () => {
+        switches[extra.id] = input.checked;
         chosen[extra.id] = input.checked;
-        card.className = cardClass(extra, input.checked, false);
-        caption.textContent = input.checked ? 'yes' : 'no';
-        void save({ [extra.id]: input.checked });
+        showCards();
+        saving = save({ [extra.id]: input.checked });
       });
-      if (extra.installs.length) card.append(...installsOf(extra));
-      box.append(card);
+      if (extra.installs.length) node.append(...installsOf(extra));
+      box.append(node);
+      cards.push({ extra, input, caption, node });
     }
     built = true;
+  }
+
+  /* The review: what Install will do, as setup's server says it from the settings. */
+  function showReview(review) {
+    $('review-title').textContent = review.title;
+    if (!$('start').disabled) $('start').textContent = review.button;
+    startLabel = review.button;
+    $('review-sections').replaceChildren(
+      ...review.sections.map(section =>
+        el(
+          'div',
+          { class: 'review-part' },
+          el('h2', { text: section.title }),
+          el('ul', {}, ...section.lines.map(line => el('li', { text: line })))
+        )
+      )
+    );
+  }
+
+  function showStage() {
+    $('choose-apps').hidden = reviewing;
+    $('review').hidden = !reviewing;
   }
 
   /* Setup did not start (the settings file cannot be read right now, or setup has
      started already, said in `reason`): the button is itself again, to press once more. */
   function startAgain(reason) {
-    if (reason) $('choose-note').textContent = reason;
+    if (reason) $('review-note').textContent = reason;
     $('start').disabled = false;
-    $('start').textContent = 'Start setup';
+    $('start').textContent = startLabel;
   }
 
   async function start() {
@@ -146,6 +191,25 @@
   }
   $('start').addEventListener('click', () => {
     void start();
+  });
+  /* Continue: the review of what was chosen, read once the last switch has been saved. */
+  $('continue').addEventListener('click', () => {
+    void (async () => {
+      await saving;
+      try {
+        const response = await fetch('api/state', { cache: 'no-store' });
+        if (response.ok) lastState = await response.json();
+      } catch {
+        /* the next poll brings it */
+      }
+      reviewing = true;
+      if (lastState && lastState.review) showReview(lastState.review);
+      showStage();
+    })();
+  });
+  $('back').addEventListener('click', () => {
+    reviewing = false;
+    showStage();
   });
 
   /* ---- a question, answered here or in the terminal */
@@ -937,9 +1001,16 @@
     node.className = 'badge' + (kind ? ' ' + kind : '');
   }
 
+  /* The switches follow setup's server (one switched in the terminal shows here too),
+     except one pressed here that is still on its way. */
   function renderChoose(state) {
     badge('Ready when you are', '');
+    lastState = state;
     if (!built) buildChoices(state.extras);
+    for (const extra of state.extras) if (!(extra.id in chosen)) switches[extra.id] = extra.on;
+    showCards();
+    if (state.review) showReview(state.review);
+    showStage();
   }
 
   function renderRunning(state) {

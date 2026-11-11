@@ -25,6 +25,7 @@ from pathlib import Path
 import explanations
 import guided_setup
 import setup_progress
+import neko_common
 from neko_common import VERSION, atomic_json, find_program, settings_path
 
 ROOT = Path(__file__).resolve().parent
@@ -84,10 +85,22 @@ APP_BROWSERS = (
 )
 WINDOW = ('1180', '480')  # the small window's size; it is placed low on the screen
 LARGEST_BODY = 40_000  # a page of fields, each up to setup_progress.LONGEST_ANSWER
-# The extras setup asks about when it gets to their step (the media apps at the drives
-# step), as long as nothing was chosen for them (Nextcloud is not asked: it is set up
-# unless switched off).
-ASKED_LATER = ('media_photos', 'media_movies', 'media_music', 'tv', 'notifications', 'heartbeat', 'assistant')
+
+
+def save_choices(path, config, changes, settle=False):
+    """The first page's switches written to the settings file (its owner kept): the ones
+    in `changes` ({id: on}), and with `settle` every one as it stands, so that no step
+    asks about it (explanations.settle). `config` is the file as it is now."""
+    by_id = {e['id']: e for e in explanations.EXTRAS}
+    for key, value in changes.items():
+        explanations.set_extra(config, by_id[key], value)
+    if settle:
+        explanations.settle(config)
+    path = Path(path)
+    owner = (path.stat().st_uid, path.stat().st_gid) if path.exists() else None
+    atomic_json(path, config)
+    if owner is not None and os.geteuid() == 0:
+        os.chown(path, *owner, follow_symlinks=False)
 
 
 def step_title(name):
@@ -301,10 +314,22 @@ class Window:
                     'explanation': e['explanation'],
                     'installs': self._installs(e),
                     'on': explanations.extra_state(self.config, e),
-                    'asked': e['id'] in ASKED_LATER and not explanations.extra_chosen(self.config, e),
+                    'part': dict(explanations.PARTS)[e['part']],
+                    'needs': list(e.get('needs', ())),
                 }
                 for e in explanations.EXTRAS
             ]
+
+    def _review(self):
+        """The page after the switches: what Install will do, and what its button says
+        (a server that exists is changed, not installed)."""
+        with self.lock:
+            again = neko_common.server_exists(self.config)
+            return {
+                'title': explanations.REVIEW_TITLE_AGAIN if again else explanations.REVIEW_TITLE,
+                'button': explanations.APPLY if again else explanations.INSTALL,
+                'sections': [{'title': title, 'lines': lines} for title, lines in explanations.review(self.config)],
+            }
 
     def _installs(self, extra):
         """What an extra installs, as this Linux names the packages (Ubuntu's
@@ -357,6 +382,7 @@ class Window:
             'version': self.version,
             'phase': phase,
             'extras': self._extras(),
+            'review': self._review() if phase == 'choose' else None,
             'steps': steps,
             'current': current['id'] if current else None,
             'done': sum(1 for s in here if s['status'] == 'success'),
@@ -393,26 +419,19 @@ class Window:
     def choose(self, changes, start=False):
         """Switch extras on or off, saved to the settings file at once (owner kept):
         only the switches change, on the file as it is now. False once setup has
-        started; with start, the choices are saved and setup starts in one step."""
+        started; with start, every extra is saved as it stands (explanations.settle: the
+        first page was gone through, so no step asks about one again) and setup starts
+        in one step."""
         by_id = {e['id']: e for e in explanations.EXTRAS}
         chosen = {k: v for k, v in changes.items() if k in by_id and isinstance(v, bool)}
         with self.lock:
             if self.frozen:
                 return False
-            if chosen:
+            if chosen or start:
                 config = self._saved()
                 if config is None:
                     return UNREADABLE
-                for key, value in chosen.items():
-                    explanations.set_extra(config, by_id[key], value)
-                owner = (
-                    (self.config_path.stat().st_uid, self.config_path.stat().st_gid)
-                    if self.config_path.exists()
-                    else None
-                )
-                atomic_json(self.config_path, config)
-                if owner is not None and os.geteuid() == 0:
-                    os.chown(self.config_path, *owner, follow_symlinks=False)
+                save_choices(self.config_path, config, chosen, settle=start)
                 self.config = config
             if start:
                 self.frozen = True

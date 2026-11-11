@@ -165,8 +165,9 @@ class SetupWindowTests(unittest.TestCase):
         }
 
     def test_start_without_touching_a_switch_decides_nothing(self):
-        # It sent every switch as it was drawn (all on): TV, alerts, heartbeat and
-        # Nextcloud were all saved as wanted, never asked about.
+        # The page sends only a switch pressed here that is not saved yet; setup's own
+        # server saves every switch as it stands when the button is pressed
+        # (tests/test_first_page.py).
         seen = self.page([self.choose()], 'start')
         self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
 
@@ -177,8 +178,58 @@ class SetupWindowTests(unittest.TestCase):
         reason = "my-config.json can't be read right now: check it for a typo."
         seen = self.page([{**self.choose(), 'refuseStart': reason}], 'start')
         self.assertEqual(seen['posts'], [['api/start', {'choices': {}}]])
-        self.assertEqual(seen['start'], [False, 'Start setup'])
-        self.assertEqual(seen['chooseNote'], reason)
+        self.assertEqual(seen['start'], [False, 'Install selected apps'])
+        self.assertEqual(seen['review']['note'], reason)
+
+    def test_the_first_page_then_the_review_then_one_button(self):
+        """0.50.0, the wizard: the switches under their headings, Continue, the review of
+        what will be installed with Back, and one button that starts it."""
+        extras = [
+            {'id': 'media_movies', 'title': 'Movies and TV shows - Jellyfin', 'part': 'Apps', 'needs': [], 'on': False},
+            {'id': 'media_music', 'title': 'Music - Navidrome', 'part': 'Apps', 'needs': [], 'on': False},
+            {
+                'id': 'media_downloads',
+                'title': 'Set up automatic media downloads',
+                'part': 'Downloads',
+                'needs': ['media_movies', 'media_music'],
+                'on': False,
+            },
+            {'id': 'tv', 'title': 'Use this PC with a TV', 'part': 'Optional extras', 'needs': [], 'on': False},
+        ]
+        extras = [{'explanation': '', 'installs': [], **extra} for extra in extras]
+        review = {
+            'title': 'Ready to install NekoServer',
+            'button': 'Install selected apps',
+            'sections': [{'title': 'Apps to install', 'lines': ['Jellyfin: movies & TV shows']}],
+        }
+        state = {**self.choose(), 'extras': extras, 'review': review}
+        seen = self.page([state])
+        self.assertEqual(seen['parts'], ['Apps', 'Downloads', 'Optional extras'])
+        # The downloads cannot be pressed while there is nothing to download for; every
+        # card says yes or no (nothing is "asked later").
+        self.assertEqual(
+            seen['cards'],
+            [['extra', 'no', False], ['extra', 'no', False], ['extra unavailable', 'no', True], ['extra', 'no', False]],
+        )
+        self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (False, True))
+        # Music on: the downloads are offered.
+        seen = self.page([{**state, 'press': 'Music - Navidrome'}])
+        self.assertEqual(seen['cards'][1:3], [['extra on', 'yes', False], ['extra', 'no', False]])
+        self.assertEqual(seen['posts'], [['api/choose', {'media_music': True}]])
+        # Continue: the review, with what the button will do; nothing has started.
+        seen = self.page([{**state, 'continue': True}])
+        self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (True, False))
+        self.assertEqual(seen['review']['title'], 'Ready to install NekoServer')
+        self.assertEqual(seen['review']['sections'], [['Apps to install', ['Jellyfin: movies & TV shows']]])
+        self.assertEqual(seen['start'], [False, 'Install selected apps'])
+        self.assertEqual(seen['posts'], [])
+        # Back: the switches again.
+        seen = self.page([{**state, 'continue': True}, {**state, 'back': True}])
+        self.assertEqual((seen['review']['appsHidden'], seen['review']['hidden']), (False, True))
+        # A server that exists is changed, not installed.
+        again = {**state, 'review': {**review, 'title': 'Review your changes', 'button': 'Apply these changes'}}
+        seen = self.page([{**again, 'continue': True}])
+        self.assertEqual((seen['review']['title'], seen['start'][1]), ('Review your changes', 'Apply these changes'))
 
     def backup_times_question(self, **changes):
         step = {'id': 'storage', 'title': 'Drives', 'status': 'running', 'explanation': '', 'packages': [], 'notes': []}

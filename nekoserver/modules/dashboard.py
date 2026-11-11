@@ -11,6 +11,7 @@ from neko_common import (
     immich_wanted,
     media_apps_wanted,
     media_group,
+    DOWNLOADS,
     MEDIA_GROUPS,
     media_services,
     verify_storage,
@@ -525,6 +526,8 @@ def collector_settings(cfg, smart, interval=60):
     own = cfg.get('media_apps') if isinstance(cfg.get('media_apps'), dict) else {}
     if any(isinstance(own.get(group), bool) for group in MEDIA_GROUPS):
         clean['media_apps'].update({group: media_group(cfg, group) for group in MEDIA_GROUPS})
+    if isinstance(own.get(DOWNLOADS), bool):
+        clean['media_apps'][DOWNLOADS] = media_group(cfg, DOWNLOADS)
     clean['photos'] = {
         'deploy_immich': immich_wanted(cfg),
         'archive_interval_minutes': cfg.get('photos', {}).get('archive_interval_minutes', 60),

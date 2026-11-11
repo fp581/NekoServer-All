@@ -41,8 +41,9 @@ Second run (`sudo bash install.sh`):
   (`test_the_list_of_last_answers_shows_the_times_the_settings_hold`, tests/test_backup_times.py:539).
 - The phone step and the playback test are asked; after them the first checkup runs and
   the screen says `NekoServer is ready!`, `Done: 32 of 32 steps.`; exit code 0.
-- A switch left alone in the window is asked later, not lost
-  (`test_a_switch_left_alone_is_asked_later`, tests/test_setup_round.py:299).
+- A switch left alone on the first page is saved as it stands when the button is pressed, so
+  nothing is asked about it later (`test_the_button_saves_every_switch_so_nothing_is_asked_later`,
+  tests/test_setup_round.py).
 
 ## Manual parts
 

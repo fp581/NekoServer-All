@@ -296,26 +296,33 @@ class WindowPackageTests(unittest.TestCase):
         self.assertNotIn('vulkan-intel', names)
         self.assertIn('Vulkan', tv['installs'][2]['explanation'] + 'Vulkan')  # with what it is for
 
-    def test_a_switch_left_alone_is_asked_later(self):
+    def test_the_button_saves_every_switch_so_nothing_is_asked_later(self):
+        """Until the wizard of 0.50.0 a switch left alone was "asked later", by its step.
+        Now the first page is where each is chosen: pressing the button saves every one
+        as it stands, and a step that finds its answer does not ask."""
         with (
             tempfile.TemporaryDirectory() as d,
             mock.patch.object(setup_gui, 'family_packages', return_value={'names': lambda n: [n], 'vulkan': []}),
+            mock.patch.object(setup_gui.neko_common, 'server_exists', return_value=False),
         ):
-            window = setup_gui.Window(Path(d) / SETTINGS_NAME, {'tv': {'wanted': False}}, wizard.STEPS, [])
+            path = Path(d) / SETTINGS_NAME
+            path.write_text(json.dumps({'tv': {'wanted': True}}))
+            window = setup_gui.Window(path, {'tv': {'wanted': True}}, wizard.STEPS, [])
             self.addCleanup(window.stop)
-            asked = {e['id']: e['asked'] for e in window._extras()}
+            self.assertTrue(all('asked' not in extra for extra in window._extras()))
+            self.assertTrue(window.choose({'media_music': False}, start=True))
+            saved = json.loads(path.read_text())
         self.assertEqual(
-            asked,
+            saved,
             {
-                'media_photos': True,
-                'media_movies': True,
-                'media_music': True,
-                'network_storage': False,
-                'tv': False,
-                'notifications': True,
-                'heartbeat': True,
-                'nextcloud': False,
-                'assistant': True,
+                'tv': {'wanted': True},  # chosen before: kept
+                # A new server: the apps are offered on, the downloads and the extras off.
+                'media_apps': {'photos': True, 'movies': True, 'music': False, 'downloads': False},
+                'nextcloud': {'enabled': True},
+                'notifications': {'wanted': False},
+                'heartbeat': {'wanted': False},
+                'assistant': {'wanted': False},
+                'network_storage': {'wanted': False},
             },
         )
 
@@ -409,16 +416,17 @@ class WindowPageTests(unittest.TestCase):
         seen = self.page([self.state('finished', **self.FINISHED)])
         self.assertEqual(seen['label'], 'FINISHED')
 
-    def test_a_switch_left_alone_shows_asked_later_until_pressed(self):
+    def test_every_switch_says_yes_or_no_and_a_press_is_saved_at_once(self):
         extras = [
-            {'id': i, 'title': i, 'explanation': '', 'installs': [], 'on': True, 'asked': i != 'nextcloud'}
+            {'id': i, 'title': i, 'explanation': '', 'installs': [], 'on': i == 'nextcloud'}
             for i in ('tv', 'nextcloud')
         ]
         seen = self.page([self.state('choose', extras=extras)])
-        # (A card that is on shows it, since 0.50.0: a ring inside its border.)
-        self.assertEqual(seen['cards'], [['extra undecided', 'asked later'], ['extra on', '']])
+        # Nothing is "asked later" since the wizard of 0.50.0: every switch is a choice made
+        # here. (A card that is on shows it: a ring inside its border.)
+        self.assertEqual(seen['cards'], [['extra', 'no', False], ['extra on', 'yes', False]])
         seen = self.page([self.state('choose', extras=extras, press='tv')])
-        self.assertEqual(seen['cards'][0], ['extra on', 'yes'])  # (the stand-in switch keeps its state: on)
+        self.assertEqual(seen['cards'][0], ['extra on', 'yes', False])
         self.assertEqual(seen['posts'], [['api/choose', {'tv': True}]])
 
 

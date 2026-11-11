@@ -16,11 +16,21 @@ import select
 import sys
 import termios
 
+import explanations
 import guided_setup
+import neko_common
 import questions
 import setup_gui
 import setup_progress
-from neko_common import ASSISTANT, VERSION, atomic_json, dashboard_port, mount_path, safe_path, settings_path
+from neko_common import (
+    ASSISTANT,
+    VERSION,
+    atomic_json,
+    dashboard_port,
+    mount_path,
+    safe_path,
+    settings_path,
+)
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = 'my-config.json'
@@ -69,8 +79,7 @@ WELCOME = [
     'Next, this sets up your home media server. It will:',
     '  1. Connect this server to Tailscale, so you can use your apps from anywhere, privately.',
     '  2. Ask you to pick your SSD, HDD and USB drive, and check they have enough space.',
-    '  3. Ask whether to install the media apps too (films, shows, music and photos), then install',
-    '     the apps and create an account for each one.',
+    '  3. Install the apps you choose below and create an account for each one.',
     '  4. Connect the apps to each other.',
     '  5. Give each app a private Tailscale address and walk you through it on your phone.',
     '  6. Schedule backups and monthly updates, then run a first checkup and backup.',
@@ -214,49 +223,141 @@ def setup_window(path, output):
     return window
 
 
-def _typed(stdin, output):
-    """One line typed at "Ready to start?": True, False, or None when it was neither yes
-    nor no (the question is put again)."""
-    line = stdin.readline()
-    if not line:  # Ctrl+D
-        output('')
-        return False
-    answer = line.strip().lower()
-    if answer in ('yes', 'y'):
-        return True
-    if answer in ('no', 'n'):
-        return False
-    sys.stdout.write('Please type yes or no.\nReady to start? [yes/no]: ')
-    sys.stdout.flush()
-    return None
+STARTED = object()  # the window's button was pressed while the terminal waited for a line
 
 
-def wait_to_start(prompt, output, window, stdin=None):
-    """ "Ready to start?": yes in the terminal, or Start pressed in the setup window."""
+def line_or_start(question, prompt, output, window, stdin=None):
+    """One line typed in the terminal; STARTED when the setup window's Install button was
+    pressed meanwhile; None for Ctrl+D or Ctrl+C."""
     if window is None or prompt is not builtins.input:
-        return ask('\nReady to start?', prompt, output)
+        try:
+            return prompt(question)
+        except (EOFError, KeyboardInterrupt):
+            output('')
+            return None
     stdin = sys.stdin if stdin is None else stdin
-    sys.stdout.write('\nReady to start? [yes/no] (or press Start in the setup window): ')
+    sys.stdout.write(question)
     sys.stdout.flush()
     while not window.started.is_set():
         try:
             readable, _, _ = select.select([stdin], [], [], 0.5)
         except KeyboardInterrupt:
             output('')
-            return False
+            return None
         except (OSError, ValueError):
-            return ask('\nReady to start?', prompt, output)
+            return line_or_start('', prompt, output, None)
         if readable:
-            answer = _typed(stdin, output)
-            if answer is not None:
-                return answer
+            line = stdin.readline()
+            if not line:  # Ctrl+D
+                output('')
+                return None
+            return line
     # A line half-typed in the terminal meanwhile would be read as the next answer.
     try:
         termios.tcflush(stdin, termios.TCIFLUSH)
     except (termios.error, OSError, ValueError):
         pass
-    output('yes (Start pressed in the setup window)')
+    output('yes (pressed in the setup window)')
+    return STARTED
+
+
+def show_first_page(config, output):
+    """Setup's first page and the review after it, as the terminal shows them: every
+    part that can be left out on a numbered line with its mark, then what will be
+    installed. Returns the extras in the order of their numbers."""
+    output('')
+    output('=== ' + explanations.PAGE_TITLE + ' ===')
+    output(explanations.PAGE_HINT)
+    now = explanations.states(config)
+    part = None
+    for number, extra in enumerate(explanations.EXTRAS, 1):
+        if extra['part'] != part:
+            part = extra['part']
+            output('')
+            output(dict(explanations.PARTS)[part])
+        on = now[extra['id']] and explanations.offered(config, extra)
+        output(f" [{'x' if on else ' '}] {number:2d}. {extra['title']}")
+        output('        ' + extra['explanation'])
+    output('')
+    output(
+        '=== '
+        + (explanations.REVIEW_TITLE_AGAIN if neko_common.server_exists(config) else explanations.REVIEW_TITLE)
+        + ' ==='
+    )
+    for heading, lines in explanations.review(config):
+        output(heading + ':')
+        for line in lines:
+            output('  - ' + line)
+    return list(explanations.EXTRAS)
+
+
+def switched(config, extras, answer, output):
+    """The switches a typed line changes: {id: on} for its numbers ("2", "2 5"), or None
+    when it is not numbers of the list (said)."""
+    changes = {}
+    now = explanations.states(config)
+    for token in answer.replace(',', ' ').split():
+        if not token.isdecimal() or not 1 <= int(token) <= len(extras):
+            output(f'Type yes, no, or the number of a line (1 to {len(extras)}).')
+            return None
+        extra = extras[int(token) - 1]
+        if not explanations.offered(config, extra):
+            names = ' or '.join(e['title'] for e in extras if e['id'] in extra['needs'])
+            output(f'"{extra["title"]}" needs one of these switched on first: {names}.')
+            return None
+        changes[extra['id']] = not now[extra['id']]
+    return changes
+
+
+def save_choices(path, window, changes, settle=False):
+    """The switches saved: through the setup window when there is one (it holds the
+    settings and shows them), else straight to the settings file."""
+    if window is not None:
+        return window.choose(changes, start=settle) is True
+    config = read_json(path)
+    if not config:
+        return False
+    setup_gui.save_choices(path, config, changes, settle)
     return True
+
+
+def wait_to_start(path, prompt, output, window, stdin=None):
+    """The first page and its review, then the one approval: yes in the terminal, or
+    Install pressed in the setup window. A number switches that line on or off and
+    shows the page again. True when setup is to start; the switches are then saved as
+    they stand, each with an answer, so no step asks about one again."""
+    while True:
+        config = read_json(path) or {}
+        extras = show_first_page(config, output)
+        install = explanations.APPLY if neko_common.server_exists(config) else explanations.INSTALL
+        question = (
+            f'\n{install}? Type yes to go on, no to stop, or the number of a line to switch it on or off'
+            + (' (or use the setup window)' if window is not None else '')
+            + ': '
+        )
+        changes = None
+        while changes is None:
+            line = line_or_start(question, prompt, output, window, stdin)
+            if line is STARTED:
+                return True
+            answer = '' if line is None else line.strip().lower()
+            if line is None or answer in ('no', 'n'):
+                return False
+            if answer in ('yes', 'y'):
+                if explanations.states(read_json(path) or {}) != explanations.states(config):
+                    # Approved is what was read: a switch pressed in the setup window
+                    # since then is shown first.
+                    output('A choice was changed in the setup window meanwhile. Here they are as they stand now.')
+                    changes = {}
+                    continue
+                # False when the window's button was pressed in the same moment: it saved them.
+                save_choices(path, window, {}, settle=True)
+                return True
+            changes = switched(config, extras, answer, output) if answer else None
+            if not answer:
+                output('Type yes, no, or the number of a line. Enter alone does nothing here.')
+        if changes and not save_choices(path, window, changes):
+            output('That could not be saved: the settings file cannot be read right now.')
 
 
 def checked_path(value):
@@ -673,7 +774,7 @@ def run(execute, default_state, prompt=input, output=print, root=ROOT, config=No
     setup_progress.enable()
     window = setup_window(path, output) if prompt is builtins.input else None
     try:
-        if wait_to_start(prompt, output, window):
+        if wait_to_start(path, prompt, output, window):
             if window is not None:
                 window.freeze()
             default_state = checked_path(default_state)

@@ -20,7 +20,7 @@ settings on whatever drive the table names. This module says which drive that is
 folders belong to a row, and which rows share a drive; it changes nothing by itself.
 """
 
-from neko_common import APP_GROUPS, LOCATIONS, MEDIA_GROUPS, extra_drives, media_group
+from neko_common import APP_GROUPS, DOWNLOADS, LOCATIONS, MEDIA_GROUPS, extra_drives, media_group
 
 # The two drives every server before 0.50.0 has, by the names the table uses for them,
 # and where each is in the settings ("storage") and mounted.
@@ -68,13 +68,14 @@ OLD_LOCATIONS = {'photos': 'photos', 'movies': 'movies', 'music': 'music', CLOUD
 
 
 def apps_of(row):
-    """The apps whose settings a row's installation drive holds. An app of two groups
-    (Lidarr) is installed with Movies and shows, the group its download apps are in."""
+    """The apps whose settings a row's installation drive holds. The download apps
+    (Lidarr among them) are installed with Movies and TV."""
     if row == CLOUD:
         return ['nextcloud']
     if row not in MEDIA_GROUPS:
         return []
-    return [app for app, groups in APP_GROUPS.items() if groups and groups[0] == row]
+    home = {app: 'movies' if DOWNLOADS in groups else groups[0] for app, groups in APP_GROUPS.items() if groups}
+    return [app for app, group in home.items() if group == row]
 
 
 def install_folders(row):
@@ -86,6 +87,9 @@ def install_folders(row):
 
 def applies(config, row):
     """The row is part of this server: its group is on (Nextcloud: switched on)."""
+    if row == 'movies':
+        # The download apps live in this row too (music found by Lidarr, with Movies and TV off).
+        return media_group(config, row) or media_group(config, DOWNLOADS)
     if row in MEDIA_GROUPS:
         return media_group(config, row)
     if row == CLOUD:
