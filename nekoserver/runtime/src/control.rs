@@ -956,13 +956,16 @@ fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -
     };
     let status = common::json(Path::new(assist::STATUS), 2_000_000);
     if op == "app_ask" {
+        // One time limit for making the question ready, well inside the web service's
+        // wait for this answer.
+        let until = Instant::now() + assist::PREPARE;
         // Downloaded during setup, never shipped with NekoServer: when it is not there
         // (yet), say so rather than ask Ollama for it.
         let have = assist::ollama_models(assist::OLLAMA);
         if let Some(why) = assist::model_missing(&data, &model, have.as_deref()) {
             return refuse("E21", &format!("{}: {why}", assist::NOT_AVAILABLE));
         }
-        return ask(&cfg, &data, &status, &model, request);
+        return ask(&cfg, &data, &status, &model, request, until);
     }
     let id = request["action"].as_str().unwrap_or("");
     let checked = match assist::repair(&cfg, &status, &data, id) {
@@ -989,13 +992,24 @@ fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -
 /// The question, made ready for the model: the messages (the readings summary, and the
 /// attention item asked about with its log lines, every secret taken out), the repairs
 /// it may suggest, and the excerpt the page may put in a bug report.
-fn ask(cfg: &Value, data: &Path, status: &Value, model: &str, request: &Value) -> Value {
+fn ask(
+    cfg: &Value,
+    data: &Path,
+    status: &Value,
+    model: &str,
+    request: &Value,
+    until: Instant,
+) -> Value {
     let Some(question) = assist::question(&request["question"]) else {
         return refuse("E42", "What would you like to ask Neko?");
     };
     let about = assist::item_id(&request["item"])
         .and_then(|id| assist::item(status, id))
-        .map(|(words, source)| (words, assist::log_lines(&source)));
+        .map(|(words, source)| match assist::log_lines(&source, until) {
+            Some(log) => (words, log),
+            // Not read in time: left out, and said so, rather than keeping the page waiting.
+            None => (format!("{words}\n{}", assist::LOG_LATE), String::new()),
+        });
     let known = assist::known_secrets(cfg, data);
     let repairs = assist::offered(cfg, status, data);
     let messages = assist::messages(
@@ -1658,6 +1672,7 @@ mod tests {
             &json!({"generated_at": common::now()}),
             "qwen3.5:4b",
             &json!({"question": typed}),
+            Instant::now() + assist::PREPARE,
         );
         assert_eq!(ready["ok"], true, "{ready}");
         let back = ready["question"].as_str().unwrap();

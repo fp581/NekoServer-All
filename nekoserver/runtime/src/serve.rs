@@ -227,7 +227,7 @@ fn allowed(port: u16, public: Option<&str>) -> (Vec<String>, Vec<String>) {
 }
 
 /// How long the web server waits for the control service's answer.
-const CONTROL_WAIT: Duration = Duration::from_secs(15);
+pub(crate) const CONTROL_WAIT: Duration = Duration::from_secs(15);
 /// Largest request body accepted (fan curves and colours are small).
 const MAX_BODY: usize = 4096;
 

@@ -222,9 +222,12 @@ const DOWNLOAD_QUIET: Duration = Duration::from_secs(120);
 /// answer.
 pub fn ollama_models(address: &str) -> Option<Vec<String>> {
     let at = address.parse::<SocketAddr>().ok()?;
-    let mut ollama = TcpStream::connect_timeout(&at, Duration::from_secs(3)).ok()?;
-    let _ = ollama.set_read_timeout(Some(Duration::from_secs(10)));
-    let _ = ollama.set_write_timeout(Some(Duration::from_secs(5)));
+    // Short waits (MODELS_WAIT in all): this is part of making a question ready, which
+    // must end well inside the web service's wait for it (PREPARE).
+    let step = MODELS_WAIT / 3; // to connect, to send the request, to read the answer
+    let mut ollama = TcpStream::connect_timeout(&at, step).ok()?;
+    let _ = ollama.set_read_timeout(Some(step));
+    let _ = ollama.set_write_timeout(Some(step));
     // The whole request at once: write! would send it in pieces.
     let request = format!("GET /api/tags HTTP/1.0\r\nHost: {address}\r\n\r\n");
     ollama.write_all(request.as_bytes()).ok()?;
@@ -435,11 +438,33 @@ pub enum Source {
     None,
 }
 
+/// Making a question ready (is the model there, the log lines of what is asked about)
+/// takes at most this long in all. The web service waits 15 seconds for it
+/// (serve::CONTROL_WAIT): three commands of 15 seconds each could pass that, and the
+/// page then said "unavailable" for a question that was ready a second later (the review
+/// of 0.49.0). What is not in by then is left out, and the model is told so (LOG_LATE).
+pub const PREPARE: Duration = Duration::from_secs(8);
+/// The longest ollama_models may take (its connection, its request, its answer).
+pub const MODELS_WAIT: Duration = Duration::from_secs(5);
+/// Said to the model in place of a log that was not read in time.
+pub const LOG_LATE: &str = "(Its log could not be read in time, so it is not shown here.)";
+
 /// The last LOG_LINES lines of that log, as the system has them (journalctl for a
-/// service, docker logs for an app's main container).
-pub fn log_lines(source: &Source) -> String {
+/// service, docker logs for an app's main container): "" when there is none, None when
+/// it could not be read by `until`. Each command gets only the time that is left.
+pub fn log_lines(source: &Source, until: Instant) -> Option<String> {
+    log_lines_with(source, until, &common::probe)
+}
+
+/// A command run with a time limit in seconds: (its exit code, what it printed).
+type Probe<'a> = &'a dyn Fn(&[&str], u64) -> (i32, String);
+
+fn log_lines_with(source: &Source, until: Instant, probe: Probe) -> Option<String> {
+    // Whole seconds left (a command's time limit is in seconds); none left: not run.
+    let left =
+        || Some(until.saturating_duration_since(Instant::now()).as_secs()).filter(|s| *s > 0);
     let (code, text) = match source {
-        Source::Unit(unit) => common::probe(
+        Source::Unit(unit) => probe(
             &[
                 "journalctl",
                 "-u",
@@ -450,11 +475,11 @@ pub fn log_lines(source: &Source) -> String {
                 "cat",
                 "--no-pager",
             ],
-            15,
+            left()?,
         ),
         Source::App(app) => {
             let service = apps::restart_plan(app).first().copied().unwrap_or("");
-            let (_, id) = common::probe(
+            let (_, id) = probe(
                 &[
                     "docker",
                     "ps",
@@ -464,19 +489,20 @@ pub fn log_lines(source: &Source) -> String {
                     "--filter",
                     &format!("label=com.docker.compose.service={service}"),
                 ],
-                15,
+                left()?,
             );
             match id.split_whitespace().next() {
-                Some(id) => common::probe(&["docker", "logs", "--tail", LOG_LINES, id], 15),
+                Some(id) => probe(&["docker", "logs", "--tail", LOG_LINES, id], left()?),
                 None => (1, String::new()),
             }
         }
         Source::None => (1, String::new()),
     };
     if code != 0 {
-        return String::new();
+        // A command that ran out of its time is "not in time", not "no log".
+        return (Instant::now() < until).then(String::new);
     }
-    plain_log(&text)
+    Some(plain_log(&text))
 }
 
 /// A log's last LOG_CHARS characters, without the terminal's colour codes.
@@ -1636,6 +1662,87 @@ mod tests {
         assert!(asked.contains(r#""think":false"#), "{asked}");
         // With the threads of its processor share, never one per core (the 0.49.0 gate).
         assert!(asked.contains(r#""num_thread":2"#), "{asked}");
+    }
+
+    /// Review of 0.49.0: making a question ready ran up to three commands of 15 seconds
+    /// each, past the web service's 15-second wait: "unavailable" at 15 s, ready at 16 s.
+    #[test]
+    fn making_a_question_ready_ends_inside_the_web_services_wait() {
+        // Everything it may take, with room to spare under the web service's wait.
+        assert!(PREPARE + MODELS_WAIT + Duration::from_secs(1) < crate::serve::CONTROL_WAIT);
+        let app = Source::App("jellyfin".into());
+        let given = std::cell::RefCell::new(vec![]);
+        // docker answers after `slow`; each call notes the time limit it was given.
+        let docker = |slow: Duration| {
+            let given = &given;
+            move |args: &[&str], limit: u64| {
+                given.borrow_mut().push(limit);
+                std::thread::sleep(slow);
+                match args[1] {
+                    "ps" => (0, "abc123\n".to_string()),
+                    _ => (0, "line one\nline two\n".to_string()),
+                }
+            }
+        };
+        // In time: both commands run, each with no more than what is left.
+        let until = Instant::now() + PREPARE;
+        let read = log_lines_with(&app, until, &docker(Duration::ZERO));
+        assert_eq!(
+            read.as_deref().map(str::trim_end),
+            Some("line one\nline two")
+        );
+        assert!(
+            given
+                .borrow()
+                .iter()
+                .all(|limit| *limit <= PREPARE.as_secs()),
+            "{given:?}"
+        );
+        assert_eq!(given.borrow().len(), 2);
+        // A slow first command uses the time up: the second is not started at all, and
+        // the log is "not in time" (None), never an empty log passed off as one.
+        given.borrow_mut().clear();
+        let until = Instant::now() + Duration::from_millis(2500);
+        let started = Instant::now();
+        let read = log_lines_with(&app, until, &docker(Duration::from_millis(1700)));
+        assert_eq!(read, None);
+        assert_eq!(
+            *given.borrow(),
+            [2],
+            "one command, given the 2 whole seconds left"
+        );
+        assert!(started.elapsed() < Duration::from_millis(2500));
+        // No time left: nothing is run.
+        given.borrow_mut().clear();
+        assert_eq!(
+            log_lines_with(&app, Instant::now(), &docker(Duration::ZERO)),
+            None
+        );
+        assert_eq!(
+            log_lines_with(
+                &Source::Unit("x.service".into()),
+                Instant::now(),
+                &docker(Duration::ZERO)
+            ),
+            None
+        );
+        assert!(given.borrow().is_empty());
+        // A command that failed in time is "no log", as before.
+        let failed = |_: &[&str], _: u64| (1, String::new());
+        let later = Instant::now() + PREPARE;
+        assert_eq!(
+            log_lines_with(&Source::Unit("x.service".into()), later, &failed).as_deref(),
+            Some("")
+        );
+        // The control service starts the clock before it asks Ollama for its models, and
+        // tells the model when the log is missing for that reason.
+        let control = include_str!("control.rs");
+        let asks = &control[control.find("fn assistant(").unwrap()..];
+        assert!(
+            asks.find("Instant::now() + assist::PREPARE").unwrap()
+                < asks.find("assist::ollama_models").unwrap()
+        );
+        assert!(control.contains("assist::LOG_LATE"));
     }
 
     /// Review of 0.49.0: a connection closed before "done": true gave Ok(answer), so half
