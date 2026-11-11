@@ -654,7 +654,7 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
     let mut media_ok = false;
     for (key, name, path, expected, fs) in rows {
         let info = app_drive(cfg, key, &path, expected, fs);
-        let mut r = json!({"id":key,"name":name,"mount":path,"status":info["status"],"total":null,"used":null,"used_percent":null,"smart":{"status":"unknown","checked_at":null}});
+        let mut r = drive_row(key, name, &path, &info["status"]);
         if info["status"] == "mounted" {
             let source = text(&info["source"]);
             mounted_details(&mut r, cfg, cache, now, (key, &path, source, fs, expected));
@@ -672,6 +672,12 @@ fn storage(cfg: &Value, cache: &mut Value, now: f64) -> Result<(Value, Vec<Value
         disks.push(r)
     }
     Ok((json!(disks), mounted, data_ok, media_ok))
+}
+/// One drive's row in the readings before its details are known: its space ("total"
+/// and "used", in bytes) is filled in once it is mounted (mounted_details). Whatever
+/// reads a drive's row (the page, the alerts, Ask Neko's summary) reads this shape.
+pub(crate) fn drive_row(key: &str, name: &str, path: &Path, status: &Value) -> Value {
+    json!({"id":key,"name":name,"mount":path,"status":status,"total":null,"used":null,"used_percent":null,"smart":{"status":"unknown","checked_at":null}})
 }
 /// The NekoServer drives (by their ids and names) an array holds: the SSD mounted from
 /// /dev/md0 belongs to the RAID1 row md0, so its alerts can say which drive is at risk.

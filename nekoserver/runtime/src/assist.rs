@@ -333,14 +333,16 @@ pub fn summary(status: &Value) -> String {
         ));
     }
     for s in rows("storage") {
+        // The collector gives a drive's size and what is used (collect::drive_row);
+        // what is free is the difference. "?" only when either is not known.
+        let free = match (s["total"].as_f64(), s["used"].as_f64()) {
+            (Some(total), Some(used)) => format!("{:.1} GB", (total - used).max(0.0) / 1e9),
+            _ => "?".into(),
+        };
         lines.push(format!(
-            "Drive {}: {}, {} free",
+            "Drive {}: {}, {free} free",
             text(&s["name"]),
             text(&s["status"]),
-            s["free"]
-                .as_f64()
-                .map(|f| format!("{:.1} GB", f / 1e9))
-                .unwrap_or_else(|| "?".into())
         ));
     }
     for a in rows("applications") {
@@ -1237,7 +1239,7 @@ mod tests {
         let status = json!({"version": "0.49.0",
             "alerts": [{"id": "backup:host", "title": "Host and user snapshot failed", "level": "critical"}],
             "backups": [{"id": "host", "name": "Host and user snapshot", "status": "fail", "reason": "No space left"}],
-            "storage": [{"name": "Media HDD", "status": "mounted", "free": 12_000_000_000u64}],
+            "storage": [{"name": "Media HDD", "status": "mounted", "total": 20_000_000_000u64, "used": 8_000_000_000u64}],
             "applications": [{"name": "Jellyfin", "state": "running", "health": "unhealthy"}]});
         let s = summary(&status);
         assert!(s.contains("NekoServer 0.49.0"));
@@ -1246,6 +1248,34 @@ mod tests {
         assert!(s.contains("Drive Media HDD: mounted, 12.0 GB free"));
         assert!(s.contains("App Jellyfin: running, unhealthy"));
         assert!(summary(&json!({})).contains("Nothing needs attention"));
+    }
+
+    /// Review of 0.49.0: the summary read a drive's "free", which the collector never
+    /// gives (it gives "total" and "used"), so every drive was "? free".
+    #[test]
+    fn a_drives_free_space_is_worked_out_from_the_collectors_own_row() {
+        // The row as the collector makes it, filled in as it fills a mounted drive.
+        let mut row = collect::drive_row(
+            "media_hdd",
+            "Media HDD",
+            Path::new("/mnt/nekoserver-media"),
+            &json!("mounted"),
+        );
+        assert!(row.get("total").is_some() && row.get("used").is_some());
+        assert!(row.get("free").is_none(), "the collector gives no \"free\"");
+        let not_mounted = summary(&json!({"storage": [row.clone()]}));
+        assert!(
+            not_mounted.contains("Drive Media HDD: mounted, ? free"),
+            "{not_mounted}"
+        );
+        row["total"] = json!(2_000_000_000_000u64);
+        row["used"] = json!(1_487_500_000_000u64);
+        let s = summary(&json!({"storage": [row]}));
+        assert!(s.contains("Drive Media HDD: mounted, 512.5 GB free"), "{s}");
+        // A reading that makes no sense (more used than there is) is never a negative.
+        let odd =
+            json!({"storage": [{"name": "SSD", "status": "mounted", "total": 10, "used": 20}]});
+        assert!(summary(&odd).contains("Drive SSD: mounted, 0.0 GB free"));
     }
 
     #[test]
