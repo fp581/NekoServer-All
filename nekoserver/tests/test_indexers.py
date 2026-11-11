@@ -95,7 +95,7 @@ class ChoosingTests(unittest.TestCase):
         self.assertIn('   1. Alpha  (public, en-US, torrent. Open films)', said)
         self.assertIn('   2. Beta  (private: needs an account, en-US, torrent)', said)
         self.assertIn('   4. Delta  (needs a free account, usenet)', said)
-        self.assertIn('Numbers to add, such as 1 4 7 or 1-5 (blank to skip): ', said)
+        self.assertIn('Numbers to add, such as 1 4 7 or 1-5 (Enter alone skips): ', said)
         self.assertIn(connect.INDEXER_ADVICE, said)
         # A wrong answer is asked again; Enter alone, or Ctrl+D, adds none.
         names, _, said = self.chosen(['', '9', '2'])
@@ -125,7 +125,7 @@ class ChoosingTests(unittest.TestCase):
         self.assertEqual(names, ['Alpha', 'Gamma'])  # the one Prowlarr no longer has is left out
         self.assertEqual(pages[1]['recommended'], [1, 3])
         self.assertIn('Recommended (r): Alpha, Gamma', said)
-        self.assertIn('Numbers to add, such as 1 4 7 or 1-5, or r for the recommended ones (blank to skip): ', said)
+        self.assertIn('Numbers to add, such as 1 4 7 or 1-5, or r for the recommended ones (Enter alone skips): ', said)
         # Without a list there is no such choice.
         names, _, said = self.chosen(['', 'r', ''])
         self.assertEqual(names, [])

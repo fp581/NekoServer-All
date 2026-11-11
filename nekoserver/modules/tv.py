@@ -500,14 +500,24 @@ def run(ctx):
             [
                 'On the connected TV, check the intended HDMI resolution and refresh rate in display settings.',
                 'Play a permitted sample in the browser, check TV audio, and use the controller to navigate.',
-                'Confirm yes only after testing this real display/audio/controller combination.',
+                'It counts only once tested on this real TV, sound and controller together.',
             ],
             [('settings', ''), ('url', 'https://www.youtube.com/')],
         ),
     ]
-    confirmed = previous_checks(root)
-    for key, title, instructions, targets in handoffs:
-        done = ('tv:' + key) in confirmed or guided_setup.checkpoint(ctx, title, instructions, targets)
+    # One part with one question (in the window, a sliding yes for each): the tests
+    # confirmed in an earlier run are not asked for again.
+    before = [key for key, *_ in handoffs if ('tv:' + key) in previous_checks(root)]
+    confirmed = guided_setup.part(
+        ctx,
+        'Try the TV: Steam, the controller, picture and sound',
+        [{'id': key, 'title': title, 'lines': instructions} for key, title, instructions, _ in handoffs],
+        'Did Steam, the controller, and the TV picture and sound all work?',
+        done=before,
+        targets=[('steam', '')],
+    )
+    for key, _title, _instructions, _targets in handoffs:
+        done = key in confirmed
         results.append(
             {
                 'check': 'tv:' + key,

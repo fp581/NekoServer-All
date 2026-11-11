@@ -275,6 +275,19 @@
       'Leave a field empty to keep its default. Skip for now leaves this one out; the others are not affected.'
   };
 
+  // Several steps about one thing (the phone, the TV): each with a sliding yes of its
+  // own, and one Continue. All on yes confirms the part; with some still off, those stay
+  // for the next run of setup and the ones marked are kept.
+  PAGES.part = {
+    prompt: page => page.title,
+    build: buildPart,
+    values: partValues,
+    problem: () => '',
+    send: () => 'Continue',
+    skip: false,
+    note: page => page.question + ' Slide each step to yes once it is done. Steps left off are kept for the next run.'
+  };
+
   // The drives connected to this PC: one is chosen by clicking it (its number is what the
   // terminal takes), then confirmed by typing its name, as the terminal asks.
   PAGES.drives = {
@@ -457,6 +470,65 @@
     return values.choice ? '' : 'Tick one in the list first, or press Skip for now.';
   }
 
+  /* What the person marked on a part's page, kept for a reload of the window (only
+     where the browser allows it; without it the switches simply start off). */
+  function marked(page, step, value) {
+    const key = 'neko-part:' + page.title + ':' + step.id;
+    try {
+      if (value === undefined) return sessionStorage.getItem(key) === 'yes';
+      sessionStorage.setItem(key, value ? 'yes' : 'no');
+    } catch {
+      /* no storage here: nothing is remembered */
+    }
+    return value === true;
+  }
+
+  /* One card for each step of a part: its title, what to do, and its switch. The caption
+     beside the switch has a fixed box (setup.css), so sliding it moves nothing. */
+  let partSwitches = [];
+  function buildPart(page) {
+    pageInputs = {};
+    pickInputs = [];
+    partSwitches = [];
+    const cards = page.steps.map((step, index) => {
+      const input = el('input', {
+        type: 'checkbox',
+        role: 'switch',
+        id: 'part-' + step.id,
+        'aria-label': 'Done: ' + step.title
+      });
+      input.value = step.id;
+      input.checked = step.done || marked(page, step);
+      const caption = el('span', { class: 'caption', text: input.checked ? 'yes' : 'not yet' });
+      input.addEventListener('change', () => {
+        caption.textContent = input.checked ? 'yes' : 'not yet';
+        marked(page, step, input.checked);
+      });
+      if (step.done) input.disabled = true;
+      else pickInputs.push(input); // off with the other controls while the answer is on its way
+      partSwitches.push(input);
+      return el(
+        'div',
+        { class: 'retry part-step' },
+        el('div', { class: 'row-title', text: index + 1 + '. ' + step.title + (step.done ? ' (done last time)' : '') }),
+        step.done ? null : el('ul', {}, ...step.lines.map(line => el('li', { text: line }))),
+        el('div', { class: 'choice' }, caption, el('label', { class: 'switch' }, input, el('span')))
+      );
+    });
+    $('ask-page').replaceChildren(...cards);
+  }
+
+  /* Yes when every switch is on; the steps marked go along either way. */
+  function partValues() {
+    return {
+      answer: partSwitches.every(input => input.checked) ? 'yes' : 'no',
+      done: partSwitches
+        .filter(input => input.checked)
+        .map(input => input.value)
+        .join(' ')
+    };
+  }
+
   /* One card for each drive: what it is, what is on it, the role it has already, and why
      it cannot be the one asked for (such a card cannot be chosen). Asked to confirm, the
      page shows the chosen drive alone, with a field for its name. */
@@ -627,9 +699,8 @@
 
   /* A step you confirm yourself (the phone, a TV test) can be left for later: the
      window's "Skip for now" does what Ctrl+D in the terminal does. */
-  const CONFIRM_STEP = 'Have you completed this step successfully?';
   function canSkip(q) {
-    return q.kind === 'yesno' && q.text.startsWith(CONFIRM_STEP);
+    return q.kind === 'yesno' && q.page?.form === 'confirm_step';
   }
 
   function askNote(q, yesno) {
@@ -714,7 +785,7 @@
     const page = pageOf(q);
     // A list to pick from shows every row itself (the terminal's last lines are its tail),
     // and the retry cards say what the terminal said.
-    context.hidden = !q.context.length || ['pick', 'retry', 'logins', 'drives'].includes(page?.form);
+    context.hidden = !q.context.length || ['pick', 'retry', 'logins', 'drives', 'part'].includes(page?.form);
     context.scrollTop = context.scrollHeight; // the last lines matter most
     let prompt = q.text;
     if (page) prompt = PAGES[page.form].prompt(page);

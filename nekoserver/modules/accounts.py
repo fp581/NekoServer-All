@@ -76,6 +76,7 @@ def finish_pending(ctx, pending):
             [('url', 'http://127.0.0.1:' + str(port) + '/')],
             verify=verify,
             logins=[app],
+            question=f'Could you sign in to {title}?',
         )
         if not done:
             remaining.append(app)

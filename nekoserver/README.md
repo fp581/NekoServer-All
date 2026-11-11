@@ -112,7 +112,7 @@ Then the setup wizard explains what will happen and asks `Ready to start? [yes/n
 11. **Runs the first checkup and backup**, once every step is done: an app health check, then each backup you set up, straight away instead of the first night, then a check of the whole server. It says which ones finished and names anything that needs a look. This takes a few minutes to an hour, depending on how much is on the drives.
 12. **Shows a finishing screen**: what's done, what needs you first and what waits for it, your app addresses, whether a dashboard PIN is set, and how to see your passwords.
 
-Whenever it needs you, it shows numbered instructions, opens the right page, and asks `Have you completed this step successfully? [yes/no]`. Answer `no` to see the step again.
+Whenever it needs you, it shows numbered instructions, opens the right page, and asks in the step's own words, such as `Did the Tailscale page say this server is connected? [yes/no]`. Answer `no` to see the step again. Steps that belong together (setting up the phone, trying the TV) are listed as one part with one question at the end.
 
 ### Two ways to follow the installation: the terminal and the setup window
 

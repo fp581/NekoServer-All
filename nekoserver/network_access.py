@@ -159,7 +159,7 @@ def pick(rows, ask, attempts=3, output=print):
     """The row whose number is typed; None after three wrong numbers or Ctrl+D."""
     for _ in range(attempts):
         try:
-            choice = ask('Choose your home-network interface number: ').strip()
+            choice = ask('Number of the connection that is your home network (from the list above): ').strip()
         except EOFError:
             return None
         if choice.isdigit() and 1 <= int(choice) <= len(rows):

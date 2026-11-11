@@ -120,13 +120,14 @@ def run(context):
                 'Later verify pings in the provider and actual missed-ping/recovery alerts.',
             ],
             [('url', 'https://healthchecks.io/docs/')],
+            question='Is the check created at your monitor, with its ping address copied?',
         ):
             return {'status': 'needs_setup', 'reason': 'Independent monitor setup pending'}
         context.log(
             'Create an independent missing-ping monitor, set its period/grace and alert recipient, then enter its private success-ping HTTPS URL.'
         )
         address = guided_setup.private_entry(
-            'Private monitor ping URL (blank defers): ',
+            'The check\'s ping address, such as https://hc-ping.com/your-code (not shown as you type; Enter alone leaves it for later): ',
             endpoint,
             'That is not a ping URL. It starts with https:// and looks like '
             'https://hc-ping.com/1a2b3c4d-... Copy it again from the monitor and paste it.',

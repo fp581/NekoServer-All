@@ -92,6 +92,15 @@ async function step(i) {
     elements['ask-pick'].fire('change');
     elements.ask.fire('submit');
   }
+  // A part of several steps: {"slide": ["tailscale", "jellyfin"]} slides those to yes;
+  // {"continue": true} presses Continue.
+  if (states[i].slide) {
+    for (const id of states[i].slide) {
+      elements['part-' + id].checked = true;
+      elements['part-' + id].fire('change');
+    }
+  }
+  if (states[i].continue) elements.ask.fire('submit');
   // A sign-in step: {"showLogin": 1} presses the first card's Show login (twice: {"showLogin": [1, 1]}).
   for (const n of [states[i].showLogin ?? []].flat()) {
     elements['ask-page'].children[n - 1].children[3].fire('click');
@@ -129,6 +138,8 @@ console.log(JSON.stringify({ posts, title: elements['finish-title']?.textContent
   optionsHidden: elements['ask-options']?.hidden ?? null,
   pick: (elements['ask-pick']?.children ?? []).map((label) => [label.children[0].type, label.children[1].textContent, label.hidden]),
   pickCount: elements['ask-pick-count']?.textContent ?? '',
+  part: (elements['ask-page']?.children ?? []).filter((card) => (card.className ?? '').includes('part-step')).map((card) => { const choice = card.children[card.children.length - 1]; const input = choice.children[1].children[0]; return { title: card.children[0].textContent, lines: card.children.length === 3 ? card.children[1].children.map((line) => line.textContent) : [], caption: choice.children[0].textContent, on: input.checked, off: input.disabled, role: input.role, label: input['aria-label'] }; }),
+  skipShown: elements['ask-skip'] ? !elements['ask-skip'].hidden : null,
   askOff: ['ask-send', 'ask-page-send', 'ask-page-skip', 'ask-yes', 'ask-no'].filter((id) => elements[id]?.disabled),
   drives: (elements['ask-pick']?.children ?? []).filter((card) => (card.className ?? '').includes('drive')).map((card) => ({ name: card.children[1].textContent, facts: card.children.slice(2).map((fact) => fact.textContent), off: card.children[0].disabled, radioHidden: card.children[0].hidden })),
   pickNotes: (elements['ask-pick']?.children ?? []).map((label) => label.children[2]?.textContent ?? ''),

@@ -43,7 +43,7 @@ def choose(values, label, prompt):
     print(label + ':')
     for index, item in enumerate(values, 1):
         print(f"  {index}. {item['name']}")
-    answer = prompt('Choose a number (blank to skip): ').strip()
+    answer = prompt('Choose a number (Enter alone skips): ').strip()
     if not answer:
         raise SetupRequired(
             'No quality profile was chosen for requests (Enter skips it). Run  sudo bash install.sh  again and choose one'

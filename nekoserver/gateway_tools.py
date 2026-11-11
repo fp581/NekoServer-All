@@ -239,7 +239,12 @@ def configure(ctx, kind):
                 'Create administrator accounts, disable unwanted public signup and verify login/access permissions for: '
                 + ', '.join(apps)
             )
-            if input('After verifying those settings, type SECURED to enable access: ').strip() != 'SECURED':
+            if (
+                input(
+                    'Once you have checked those settings, type SECURED to switch on access from your other devices (anything else leaves it off for now): '
+                ).strip()
+                != 'SECURED'
+            ):
                 return False
         opts['confirmed_services'] = list(apps)
         changed = True

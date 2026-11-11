@@ -811,7 +811,8 @@ class WindowTests(unittest.TestCase):
         setup_progress.answered()
         # The page offers the button for that question alone.
         page = (ROOT / 'setup-gui/setup.js').read_text()
-        self.assertIn("'Have you completed this step successfully?'", page)
+        self.assertIn("q.page?.form === 'confirm_step'", page)
+        self.assertNotIn('Have you completed this step successfully?', page)  # each step asks its own (0.50.0)
         self.assertIn('Skip for now', (ROOT / 'setup-gui/index.html').read_text())
         setup_progress.step('docker', 'needs_setup', 'Docker is installed as a snap')
         setup_progress.step('tv', 'unavailable', 'no Steam package')

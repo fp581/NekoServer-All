@@ -47,7 +47,7 @@ def valid_token(token):
 
 def ask_token(ask=None):
     return guided_setup.private_entry(
-        'ntfy access token (blank for no token): ',
+        'The topic\'s access token (not shown as you type; Enter alone when it has none): ',
         valid_token,
         'That is not an access token: it has only letters, digits, ".", "_" and "-" '
         '(such as tk_abc123...). Copy it again from ntfy and paste it.',
@@ -109,13 +109,14 @@ def first_destination(context):
             'No notification is sent by this browser step. Actual phone receipt must still be tested.',
         ],
         [('url', 'https://ntfy.sh/docs/subscribe/phone/')],
+        question='Is your phone subscribed to the topic, with its address and access token at hand?',
     ):
         return {'status': 'needs_setup', 'reason': 'Notification subscription setup pending'}
     context.log(
         'Subscribe your phone to an access-controlled ntfy topic. Enter its full HTTPS URL; the access token stays outside your installer config.'
     )
     address = guided_setup.private_entry(
-        'Private ntfy topic URL (blank defers): ',
+        'The topic\'s full address, such as https://ntfy.example.org/my-topic (not shown as you type; Enter alone leaves it for later): ',
         endpoint,
         'That is not a topic URL. It starts with https:// and ends with the topic name, '
         'such as https://ntfy.example.com/my-server-alerts. Copy it again and paste it.',

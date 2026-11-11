@@ -176,8 +176,9 @@ def with_login(steps, login):
     return [*steps[:at], *login, *steps[at:]]
 
 
-def instructions(config, app, url):
-    """Numbered console steps for one app on the phone."""
+def instructions(config, app, url, asks=True):
+    """Console steps for one app on the phone. `asks`: the step ends in a question of its
+    own (it does not when the phone steps are one part with one question at the end)."""
     info = APPS[app]
     steps = [step.replace('the server address below', 'this server address: ' + url) for step in steps_of(config, app)]
     lines = [
@@ -185,7 +186,7 @@ def instructions(config, app, url):
         'Make sure Tailscale is ON on the phone.',
         *with_login(steps, login_lines(config, app)),
     ]
-    return lines + ['Return here and answer yes once it works on the phone.']
+    return lines + (['Return here and answer yes once it works on the phone.'] if asks else [])
 
 
 def qr_svg(text):

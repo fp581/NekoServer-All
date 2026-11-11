@@ -17,8 +17,15 @@ def refresh(config, log):
     return gateway_tools.refresh_dashboard_route(config, log)
 
 
-def phone_steps(ctx, result):
-    """Guide the phone, one app at a time, using the QR page for every address."""
+PHONE_QUESTION = 'Is your phone set up, and did an app open on mobile data?'
+
+
+def phone_steps(ctx, result, done=()):
+    """The phone, as one part: Tailscale, then each app (the QR page has every address),
+    then a check away from home, listed in order with one question at the end. In the
+    setup window each step has its own sliding yes. `done`: the steps confirmed in an
+    earlier run for these same addresses, which are not asked for again. Returns the ids
+    of the steps confirmed; the phone is set up when that is all of them (phone_ids)."""
     links = result['links']
     try:
         page = phone_guide.write_page(ctx.config, links)
@@ -34,42 +41,72 @@ def phone_steps(ctx, result):
             'The addresses to type into the phone are shown below, app by app '
             '(the QR-code page could not be made on this PC).'
         )
-    if not guided_setup.checkpoint(
-        ctx,
-        'Phone: install and connect Tailscale',
-        [
-            first,
-            'On your PHONE install "Tailscale" from the App Store or Google Play '
-            '(or scan the first QR code on the page).',
-            'Open Tailscale on the phone, allow it to add a VPN, and sign in with the SAME '
-            'account you just used for this server.',
-            'Turn Tailscale on. It must be on whenever you use your apps, at home or away.',
-            'Answer yes once the Tailscale app on the phone shows "Connected".',
-        ],
-        [*page_target, ('url', phone_guide.TAILSCALE_DOWNLOAD)],
-    ):
-        return False
+    steps = [
+        {
+            'id': 'tailscale',
+            'title': 'Tailscale on the phone',
+            'lines': [
+                'On your PHONE install "Tailscale" from the App Store or Google Play '
+                '(or scan the first QR code on the page).',
+                'Open Tailscale on the phone, allow it to add a VPN, and sign in with the SAME '
+                'account you just used for this server.',
+                'Turn Tailscale on. It must be on whenever you use your apps, at home or away.',
+                'Done when the Tailscale app on the phone shows "Connected".',
+            ],
+        }
+    ]
     for app in phone_guide.APPS:
-        if app not in links:
-            continue
-        if not guided_setup.checkpoint(
-            ctx,
-            'Phone: ' + phone_guide.APPS[app]['title'],
-            phone_guide.instructions(ctx.config, app, links[app]),
-            logins=[phone_guide.login_of(ctx.config, app)] if app in phone_guide.LOGIN else (),
-        ):
-            return False
-    return guided_setup.checkpoint(
-        ctx,
-        'Phone: check it works away from home',
-        [
-            'Turn OFF Wi-Fi on the phone so it uses mobile data. Keep Tailscale on.',
-            'Open one or two of the apps and load something new: a photo, a song or a video.',
-            'If that works, your apps work anywhere. Turn Wi-Fi back on.',
-            'Answer yes once it worked on mobile data.',
-        ],
-        page_target,
+        if app in links:
+            steps.append(
+                {
+                    'id': app,
+                    'title': phone_guide.APPS[app]['title'],
+                    'lines': phone_guide.instructions(ctx.config, app, links[app], asks=False),
+                    'logins': [phone_guide.login_of(ctx.config, app)] if app in phone_guide.LOGIN else [],
+                }
+            )
+    steps.append(
+        {
+            'id': AWAY,
+            'title': 'Check it works away from home',
+            'lines': [
+                'Turn OFF Wi-Fi on the phone so it uses mobile data. Keep Tailscale on.',
+                'Open one or two of the apps and load something new: a photo, a song or a video.',
+                'If that works, your apps work anywhere. Turn Wi-Fi back on.',
+            ],
+        }
     )
+    return guided_setup.part(
+        ctx,
+        'Set up your phone',
+        steps,
+        PHONE_QUESTION,
+        done=done,
+        intro=[first],
+        targets=[*page_target, ('url', phone_guide.TAILSCALE_DOWNLOAD)],
+    )
+
+
+AWAY = 'away_from_home'
+
+
+def phone_ids(links):
+    """Every step of the phone part for these addresses, in order."""
+    return ['tailscale', *[app for app in phone_guide.APPS if app in links], AWAY]
+
+
+def steps_done_before(config, links):
+    """The phone steps confirmed in an earlier run that was left part-way (the window's
+    switches), for these same addresses: they are not asked for again (the setup review,
+    S5: leaving one app for later made every confirmed step come round again)."""
+    try:
+        old = json.loads(report_path(config).read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(old, dict) or old.get('links') != links:
+        return []
+    kept = old.get('phone_steps_done')
+    return [step for step in kept if step in phone_ids(links)] if isinstance(kept, list) else []
 
 
 def report_path(config):
@@ -157,6 +194,7 @@ def secure_addresses(ctx):
         ],
         [('url', 'https://console.tailscale.com/admin/dns')],
         verify=configure_routes,
+        question='Are MagicDNS and HTTPS both switched on in Tailscale?',
     ):
         return answering(result)
     return {'status': 'needs_setup', 'reason': 'Private HTTPS configuration pending; reapply to resume'}
@@ -193,7 +231,12 @@ def run(ctx):
         ctx.log('Phone: already set up for these addresses; not asking again')
         confirmed = True
     else:
-        confirmed = phone_steps(ctx, result)
+        links = result.get('links') or {}
+        done = phone_steps(ctx, result, steps_done_before(ctx.config, links))
+        confirmed = all(step in done for step in phone_ids(links))
+        if not confirmed:
+            # Kept for the next run, with what is done already.
+            result['phone_steps_done'] = [step for step in phone_ids(links) if step in done]
     result['client_acceptance'] = 'user_confirmed' if confirmed else 'needs_setup'
     result['client_acceptance_evidence'] = 'Confirmed by you in the terminal; no independent phone probe'
     atomic_json(report_path(ctx.config), result)

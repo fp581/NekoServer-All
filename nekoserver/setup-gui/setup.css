@@ -725,6 +725,21 @@ main > section {
 .retry-fix li {
   margin: 2px 0;
 }
+/* a part of several steps: a card each, its sliding yes at the bottom right */
+.part-step {
+  justify-items: stretch;
+}
+.part-step ul {
+  margin: 0;
+  padding-left: 1.3em;
+  font-size: 13.5px;
+}
+.part-step li {
+  margin: 2px 0;
+}
+.part-step .choice {
+  justify-self: end;
+}
 /* the drives connected to this PC: a card each; one that cannot be chosen is quieter */
 .pick.drives {
   max-height: 46vh;

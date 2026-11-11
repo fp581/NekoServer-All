@@ -368,15 +368,30 @@ def show_logins(config, apps, prompt=None, output=None, screen=None, wait=None, 
 
 
 def checkpoint(
-    ctx, title, instructions, targets=(), verify=None, prepare=None, prompt=None, output=None, keys=KEYS, logins=()
+    ctx,
+    title,
+    instructions,
+    targets=(),
+    verify=None,
+    prepare=None,
+    prompt=None,
+    output=None,
+    keys=KEYS,
+    logins=(),
+    question=None,
 ):
     """No repeats instructions/opening; yes must also pass any supplied verifier. `logins`:
     the saved logins (account_store's names) this step asks the person to sign in with,
-    offered to be shown before the question (show_logins).
+    offered to be shown before the question (show_logins). `question`: what yes means
+    here, in the step's own words ("Does the Tailscale app on the phone show
+    Connected?"); every step says its own, so no step ends in a question that could be
+    any step's.
 
     EOF (Ctrl+D) leaves this step pending; Ctrl+C stops setup. Background/read-only runs never launch or
     prompt. Callers retain machine and witnessed evidence as separate concepts.
     """
+    import setup_progress
+
     if not interactive(ctx):
         return False
     prompt = prompt or input
@@ -386,7 +401,10 @@ def checkpoint(
             show_step(output, title, instructions, keys)
             open_targets(ctx, prepared_targets(targets, prepare, output), output)
             show_logins(ctx.config, logins, prompt, output)
-            answer = yes_no('Have you completed this step successfully?', prompt, output)
+            # The window can leave such a step for later ("Skip for now", as Ctrl+D here).
+            with setup_progress.page(CONFIRM_STEP, {'answer': ''}):
+                setup_progress.page_asks('answer')
+                answer = yes_no(question or f'Is this done: {title}?', prompt, output)
             if answer is None:
                 raise EOFError
             if not answer:
@@ -396,6 +414,58 @@ def checkpoint(
     except EOFError:
         output('\nStep remains pending. Reapply this profile to resume; saved choices are kept.')
         return False
+
+
+# The page a step's own yes/no is asked on (the window: a question that can be left).
+CONFIRM_STEP = 'confirm_step'
+
+
+def part(ctx, title, steps, question, done=(), intro=(), targets=(), prompt=None, output=None):
+    """Several steps about one thing (setting up the phone, the TV), shown as one part
+    with ONE question at the end, instead of a yes/no after every step.
+    `steps`: [{'id', 'title', 'lines', 'logins'}]; `done`: the ids confirmed in an
+    earlier run, which are listed as done and not asked for again.
+    The terminal lists every step in order and asks `question` once: yes confirms all of
+    them. The setup window gives each step a sliding "yes" of its own and one Continue:
+    with every one on yes the part is confirmed; with some still off, those stay for the
+    next run and the ones marked are remembered. No (or Ctrl+D) keeps the part for the
+    next run. Returns the ids confirmed, `done` among them."""
+    import setup_progress
+
+    confirmed = {step['id'] for step in steps if step['id'] in done}
+    todo = [step for step in steps if step['id'] not in confirmed]
+    if not todo or not interactive(ctx):
+        return confirmed
+    prompt = prompt or input
+    output = output or print
+    output('\n=== ' + title + ' ===')
+    for line in intro:
+        output(line)
+    for number, step in enumerate(steps, 1):
+        mark = '  (done last time)' if step['id'] in confirmed else ''
+        output(f"\nStep {number} of {len(steps)}: {step['title']}{mark}")
+        if not mark:
+            for line in step['lines']:
+                output('  - ' + line)
+    output('\nDo the steps in order, then come back here. ' + KEYS)
+    open_targets(ctx, list(targets), output)
+    show_logins(ctx.config, [login for step in todo for login in step.get('logins', ())], prompt, output)
+    shown = [
+        {'id': step['id'], 'title': step['title'], 'lines': list(step['lines']), 'done': step['id'] in confirmed}
+        for step in steps
+    ]
+    with setup_progress.page('part', {'answer': '', 'done': ''}, title=title, question=question, steps=shown):
+        setup_progress.page_asks('answer')
+        answer = yes_no(question, prompt, output)
+        marked = setup_progress.page_answer('done')  # the window's switches, when it answered
+    if answer:
+        confirmed |= {step['id'] for step in todo}
+    elif marked and marked[0] == 'answer':
+        confirmed |= {step['id'] for step in todo if step['id'] in str(marked[1]).split()}
+    left = [step['title'] for step in steps if step['id'] not in confirmed]
+    if left:
+        output('Kept for the next run of setup. Still to do: ' + '; '.join(left) + '.')
+    return confirmed
 
 
 def retry_question(rows, leave='', ask=None, output=None):
@@ -946,4 +1016,5 @@ def app_security(ctx, apps, ports):
         [('url', 'http://127.0.0.1:' + str(ports[app]) + '/') for app in apps],
         verify=verify,
         logins=apps,
+        question='Could you sign in to every app that opened?',
     )

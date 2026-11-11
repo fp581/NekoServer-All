@@ -330,7 +330,7 @@ class SetupWindowTests(unittest.TestCase):
             'what': 'Select an indexer',
             'items': items,
         }
-        question = 'Select an indexer (number, blank to skip): '
+        question = 'Select an indexer (its number; Enter alone skips): '
         seen = self.page([self.asked(question, page, search='ra')])
         self.assertEqual([row[1] for row in seen['pick']], [item['label'] for item in items])
         self.assertEqual({row[0] for row in seen['pick']}, {'radio'})  # one of them
@@ -367,7 +367,7 @@ class SetupWindowTests(unittest.TestCase):
             ['[1] generate random login', '[2] enter username/password'],
             ['1 = NekoServer makes them', '2 = you choose them'],
         ):
-            seen = self.page([self.asked('Choose a number (blank to skip): ', context=lines)])
+            seen = self.page([self.asked('Choose a number (Enter alone skips): ', context=lines)])
             self.assertEqual([option[0] for option in seen['options']], ['1', '2'], lines)
         # Not for a question that asks for words, a hidden entry or a yes or no.
         for text, extra in (
@@ -501,7 +501,7 @@ class SetupWindowTests(unittest.TestCase):
             'form': 'pick', 'fields': {'choice': ''}, 'asking': 'choice', 'what': 'Download sources (indexers) to add',
             'items': items, 'multiple': True, 'recommended': [1, 3], 'advice': advice,
         }  # fmt: skip
-        question = 'Numbers to add, such as 1 4 7 or 1-5, or r for the recommended ones (blank to skip): '
+        question = 'Numbers to add, such as 1 4 7 or 1-5, or r for the recommended ones (Enter alone skips): '
         seen = self.page([self.asked(question, page)])
         self.assertEqual(
             seen['pickNotes'],
@@ -532,7 +532,7 @@ class SetupWindowTests(unittest.TestCase):
             'what': 'Beta needs these',
             'rows': rows,
         }
-        question = 'Site address (leave blank for default): '
+        question = 'Site address (Enter alone keeps its default): '
         typed = 'typed-' + 'k' * 12
         seen = self.page([self.asked(question, page)])
         self.assertEqual(seen['prompt'], 'Beta needs these')
@@ -623,6 +623,66 @@ class SetupWindowTests(unittest.TestCase):
         self.assertEqual((seen['posts'], seen['note']), ([], 'Type the name shown, sda1, to be sure of the drive.'))
         seen = self.page([self.asked(asks, confirm, fill={'ask-page-confirm': 'sda1'})])
         self.assertEqual(seen['posts'], [['api/answer', {'seq': 9, 'text': 'sda1', 'fields': {'confirm': 'sda1'}}]])
+
+    PART = {
+        'form': 'part', 'fields': {'answer': '', 'done': ''}, 'asking': 'answer', 'title': 'Set up your phone',
+        'question': 'Is your phone set up, and did an app open on mobile data?',
+        'steps': [
+            {'id': 'tailscale', 'title': 'Tailscale on the phone', 'lines': ['Install it.', 'Turn it on.'], 'done': False},
+            {'id': 'jellyfin', 'title': 'Jellyfin: movies and TV', 'lines': ['Open the app.'], 'done': True},
+            {'id': 'away_from_home', 'title': 'Check it works away from home', 'lines': ['Turn off Wi-Fi.'], 'done': False},
+        ],
+    }  # fmt: skip
+
+    def test_a_part_is_one_page_with_a_sliding_yes_for_each_step(self):
+        """0.50.0, item 13: the phone was up to eight questions in a row, each a yes/no."""
+        question = self.PART['question'] + ' [yes/no]: '
+        seen = self.page([self.asked(question, self.PART, kind='yesno')])
+        self.assertEqual((seen['prompt'], seen['send'], seen['skipHidden']), ('Set up your phone', 'Continue', True))
+        self.assertEqual((seen['yesnoHidden'], seen['contextHidden']), (True, True))  # no second yes/no beside it
+        self.assertTrue(seen['note'].startswith(self.PART['question']))
+        self.assertEqual(
+            seen['part'],
+            [
+                {
+                    'title': '1. Tailscale on the phone', 'lines': ['Install it.', 'Turn it on.'], 'caption': 'not yet',
+                    'on': False, 'off': False, 'role': 'switch', 'label': 'Done: Tailscale on the phone',
+                },
+                {
+                    'title': '2. Jellyfin: movies and TV (done last time)', 'lines': [], 'caption': 'yes',
+                    'on': True, 'off': True, 'role': 'switch', 'label': 'Done: Jellyfin: movies and TV',
+                },
+                {
+                    'title': '3. Check it works away from home', 'lines': ['Turn off Wi-Fi.'], 'caption': 'not yet',
+                    'on': False, 'off': False, 'role': 'switch', 'label': 'Done: Check it works away from home',
+                },
+            ],
+        )  # fmt: skip
+        # Every switch on yes: Continue confirms the part.
+        slid = self.asked(
+            question, self.PART, kind='yesno', slide=['tailscale', 'away_from_home'], **{'continue': True}
+        )
+        seen = self.page([slid])
+        done = 'tailscale jellyfin away_from_home'
+        self.assertEqual(
+            seen['posts'], [['api/answer', {'seq': 9, 'text': 'yes', 'fields': {'answer': 'yes', 'done': done}}]]
+        )
+        self.assertEqual([step['caption'] for step in seen['part']], ['yes', 'yes', 'yes'])
+        # One still off: Continue is there all the same, answers no, and says which are done.
+        seen = self.page([self.asked(question, self.PART, kind='yesno', slide=['tailscale'], **{'continue': True})])
+        self.assertEqual(
+            seen['posts'],
+            [['api/answer', {'seq': 9, 'text': 'no', 'fields': {'answer': 'no', 'done': 'tailscale jellyfin'}}]],
+        )
+
+    def test_a_steps_own_question_can_be_left_for_later_and_no_other_yes_no_can(self):
+        step = {'form': 'confirm_step', 'fields': {'answer': ''}, 'asking': 'answer'}
+        seen = self.page(
+            [self.asked('Did the Tailscale page say this server is connected? [yes/no]: ', step, kind='yesno')]
+        )
+        self.assertEqual((seen['skipShown'], seen['yesnoHidden'], seen['pageHidden']), (True, False, True))
+        seen = self.page([self.asked('Continue with these drives anyway? [yes/no]: ', kind='yesno')])
+        self.assertEqual(seen['skipShown'], False)
 
     def test_an_answer_that_was_not_delivered_can_be_sent_again(self):
         """The setup review (S8): when sending an answer failed, the window's buttons and

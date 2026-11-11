@@ -269,7 +269,13 @@ class StepTests(unittest.TestCase):
             return True
 
         ctx = SimpleNamespace(config={'data_mount': '/srv/nekoserver'}, apply=True, log=lambda line: None)
-        with mock.patch.object(guided_setup, 'checkpoint', checkpoint):
+        parts = []
+
+        def part(ctx, title, steps, question, **more):
+            parts.append((title, steps))
+            return set()
+
+        with mock.patch.object(guided_setup, 'checkpoint', checkpoint), mock.patch.object(guided_setup, 'part', part):
             accounts.finish_pending(ctx, ['jellyfin'])
             with mock.patch.object(account_store, 'enabled', return_value=False):
                 guided_setup.app_security(ctx, ['jellyfin', 'immich'], {'jellyfin': 8096, 'immich': 2283})
@@ -284,10 +290,14 @@ class StepTests(unittest.TestCase):
         self.assertIn('"Show login" in the setup window', by_title['Finish Jellyfin administrator'][1])
         self.assertNotIn('APP-CREDENTIALS.txt', by_title['Finish Jellyfin administrator'][1])
         self.assertEqual(by_title['Check application logins and access permissions'][0], ['jellyfin', 'immich'])
-        self.assertEqual(by_title['Phone: Jellyfin: movies and TV'][0], ['jellyfin'])
+        # The phone is one part (0.50.0): each of its steps names the login it means.
+        [(title, steps)] = parts
+        self.assertEqual(title, 'Set up your phone')
+        logins = {step['title']: step.get('logins', []) for step in steps}
+        self.assertEqual(logins['Jellyfin: movies and TV'], ['jellyfin'])
         # Navidrome's login on the phone is the one this server gives the person (item 11).
-        self.assertEqual(by_title['Phone: Navidrome: music'][0], ['navidrome_listener'])
-        self.assertEqual(by_title['Phone: install and connect Tailscale'][0], [])
+        self.assertEqual(logins['Navidrome: music'], ['navidrome_listener'])
+        self.assertEqual(logins['Tailscale on the phone'], [])
 
     def test_a_login_setup_makes_is_said_with_how_to_see_it(self):
         with tempfile.TemporaryDirectory() as folder:

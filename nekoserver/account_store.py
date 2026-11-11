@@ -262,8 +262,10 @@ def ask_login(app, existing, value, prompt, password_prompt, output):
         username = prompt('  Email login: ' if app in EMAIL_LOGINS else '  Username: ').strip()
         # In the setup window the password and its second entry are one page.
         with setup_progress.password_page(APPS[app][0] + ': password'):
-            password = setup_progress.page_field('password', password_prompt, '  Password (hidden): ')
-            confirmation = setup_progress.page_field('again', password_prompt, '  Confirm password (hidden): ')
+            password = setup_progress.page_field('password', password_prompt, '  Password (not shown as you type): ')
+            confirmation = setup_progress.page_field(
+                'again', password_prompt, '  The same password again (not shown): '
+            )
         try:
             validate_login(app, username, password, existing=existing)
             if app == 'navidrome_listener' and value['apps'].get('navidrome', {}).get('username') == username:
@@ -293,10 +295,16 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
                     '(the account in the app is not changed or reset).'
                 )
             while True:
-                answer = prompt('  ENTER to retry saved login, or c to enter the current login: ').strip().lower()
+                answer = (
+                    prompt(
+                        '  Press Enter to try the saved login again, or type c to enter the login this app has now: '
+                    )
+                    .strip()
+                    .lower()
+                )
                 if answer in ('', 'c'):
                     break
-                output('Choose ENTER or c.')
+                output('Press Enter alone, or type c.')
             if answer == 'c':
                 username, password = ask_login(app, True, value, prompt, password_prompt, output)
                 entry.update(
@@ -315,7 +323,7 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
             if answer in ('1', '2'):
                 value['mode'] = 'generate' if answer == '1' else 'per-app'
                 break
-            output('Choose 1 or 2.')
+            output('Type 1 or 2.')
     for app in missing:
         output(APPS[app][0])
         actual_app = 'navidrome' if app == 'navidrome_listener' else app
@@ -330,11 +338,13 @@ def collect(config, apps, prompt=input, password_prompt=getpass.getpass, output=
             mode = 'custom'
         if mode == 'per-app':
             while True:
-                answer = prompt('  [1] generate random login/password [2] enter username/password: ').strip()
+                answer = prompt(
+                    '  For this app: 1 = NekoServer makes a strong username and password, 2 = you type your own. Type 1 or 2: '
+                ).strip()
                 if answer in ('1', '2'):
                     mode = 'generate' if answer == '1' else 'custom'
                     break
-                output('Choose 1 or 2.')
+                output('Type 1 or 2.')
         if mode == 'generate':
             username, password = generate(app)
             output(

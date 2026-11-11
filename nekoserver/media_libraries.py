@@ -135,7 +135,7 @@ def jellyfin(client, media, apply, username, password):
         raise RuntimeError('Unsupported Jellyfin system response')
     if info.get('StartupWizardCompleted') is not True:
         raise SetupRequired('Complete the first administrator wizard at http://127.0.0.1:8096, then rerun --libraries')
-    user = username('Jellyfin administrator username (blank to skip): ').strip()
+    user = username('Jellyfin administrator username (Enter alone skips): ').strip()
     if not user:
         raise SetupRequired('Administrator authentication skipped')
     sign_in(client, user, password('Jellyfin administrator password: '))

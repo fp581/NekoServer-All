@@ -100,15 +100,15 @@ window.fetch = async (route, options) => {
 MEASURE = """(async () => {
   const pause = ms => new Promise(r => setTimeout(r, ms));
   const box = n => { const r = n.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round); };
-  const cards = () => [...document.querySelectorAll('.extra')].map(card =>
-    [...card.querySelectorAll('h3, p, .caption, .switch, .packages-toggle')].map(box));
+  const cards = () => [...document.querySelectorAll('.extra, .part-step')].map(card =>
+    [...card.querySelectorAll('h3, p, .caption, .switch, .packages-toggle, .row-title, li')].map(box));
   const page = () => ['main', '.track', '#phase-badge', '#steps', '#notices'].map(s => box(document.querySelector(s)));
   const result = { presses: [], states: [] };
   await pause(1500);
   // Every switch pressed, then every switch pressed back: each press is measured
   // against the page as it was just before it (on to off, off to on, "asked later" to yes).
   for (const pass of [1, 2]) {
-    for (const input of document.querySelectorAll('.extra input')) {
+    for (const input of document.querySelectorAll('.extra input, .part-step input:not(:disabled)')) {
       const before = JSON.stringify(cards());
       input.click();
       await pause(300);
@@ -116,6 +116,20 @@ MEASURE = """(async () => {
     }
   }
   result.captions = [...document.querySelectorAll('.extra .caption')].map(c => c.textContent);
+  // A part's switches: reached with the keyboard, saying what they are, and remembered.
+  result.switches = [...document.querySelectorAll('.part-step input')].map(input => {
+    input.focus();
+    return [input.type, input.getAttribute('role'), input.getAttribute('aria-label'), document.activeElement === input];
+  });
+  const first = document.querySelector('.part-step input:not(:disabled)');
+  if (first) {
+    first.click();
+    await pause(100);
+    let kept = null;
+    try { kept = Object.keys(sessionStorage).filter(k => k.startsWith('neko-part:')).map(k => [k, sessionStorage.getItem(k)]); } catch { kept = 'no storage'; }
+    result.kept = kept;
+    result.partCaptions = [...document.querySelectorAll('.part-step .caption')].map(c => c.textContent);
+  }
   for (const state of %s) {
     window.nextState = state;
     await pause(1500);
@@ -184,6 +198,40 @@ class NothingMovesTests(unittest.TestCase):
                 self.assertTrue(all(measured['presses']), measured['presses'])
                 # The captions did change under the measuring (it measured a real toggle).
                 self.assertEqual(measured['captions'], ['yes', 'no', 'yes', 'yes', 'yes'])
+
+    def test_sliding_a_steps_yes_moves_nothing_and_works_from_the_keyboard(self):
+        """0.50.0, item 13: the phone part's steps each have a sliding yes."""
+        part = {
+            'form': 'part', 'fields': {'answer': '', 'done': ''}, 'asking': 'answer', 'title': 'Set up your phone',
+            'question': 'Is your phone set up, and did an app open on mobile data?',
+            'steps': [
+                {'id': 'tailscale', 'title': 'Tailscale on the phone', 'done': False,
+                 'lines': ['Install Tailscale on the phone from the App Store or Google Play, long enough to wrap.']},
+                {'id': 'jellyfin', 'title': 'Jellyfin: movies and TV', 'lines': ['Open the app.'], 'done': False},
+                {'id': 'immich', 'title': 'Immich: photos', 'lines': ['Open the app.'], 'done': True},
+            ],
+        }  # fmt: skip
+        asked = {
+            **QUESTION,
+            'question': {**QUESTION['question'], 'text': part['question'] + ' [yes/no]: ', 'page': part},
+        }
+        for size in ('1180,480', '700,620'):
+            with self.subTest(size=size):
+                measured = self.measure(asked, [], size)
+                # Two switches that can be slid, each pressed and pressed back: nothing moved.
+                self.assertEqual(measured['presses'], [True, True, True, True])
+                self.assertEqual(
+                    measured['switches'],
+                    [
+                        ['checkbox', 'switch', 'Done: Tailscale on the phone', True],
+                        ['checkbox', 'switch', 'Done: Jellyfin: movies and TV', True],
+                        ['checkbox', 'switch', 'Done: Immich: photos', False],  # done last time: not to be changed
+                    ],
+                )
+                self.assertEqual(measured['partCaptions'], ['yes', 'not yet', 'yes'])
+                # What was slid is kept for a reload of the window, where the browser allows it.
+                if measured['kept'] != 'no storage':
+                    self.assertIn(['neko-part:Set up your phone:tailscale', 'yes'], measured['kept'])
 
     def test_a_question_coming_and_going_moves_nothing(self):
         # 0.49.0: the "needs an answer" strip pushed the page down when a question came, and

@@ -61,6 +61,11 @@ desktop account for host snapshots, `systemd-escape`'s answers for the drive dev
 mount units, systemd's socket proxy at `/usr/lib/systemd/systemd-socket-proxyd`, and the
 Tailscale name of the `media-drive` dashboard.
 
+`questions.txt` is not a file setup writes either: it lists every question setup, the recovery
+menu and the uninstaller ask, read from the source by `tests/test_question_texts.py` (0.50.0), so
+a change to a question shows in review. Write it again with
+`NEKO_UPDATE_GOLDEN=1 python3 -m unittest tests.test_question_texts`.
+
 `drive-questions.txt` is not a file setup writes: it is the whole conversation of the drive
 questions (0.50.0: the list of everything connected, each question, the refusals, the
 confirmation, a rerun's "Last time ...", a PC with no drive to use), held so that a change
