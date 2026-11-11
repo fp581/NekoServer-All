@@ -977,9 +977,14 @@ fn assistant(service: &Arc<Service>, config: &Path, op: &str, request: &Value) -
         }
     };
     if op == "app_assist_check" {
-        return json!({"ok": true, "id": checked.id, "does": checked.does, "warning": checked.warning});
+        return json!({"ok": true, "id": checked.id, "does": checked.does, "warning": checked.warning, "sig": checked.sig});
     }
-    run_repair(service, config, &data, &checked.id)
+    run_repair(
+        service,
+        config,
+        &checked,
+        request["sig"].as_str().unwrap_or(""),
+    )
 }
 /// The question, made ready for the model: the messages (the readings summary, and the
 /// attention item asked about with its log lines, every secret taken out), the repairs
@@ -1007,8 +1012,14 @@ fn ask(cfg: &Value, data: &Path, status: &Value, model: &str, request: &Value) -
         "repairs": repairs.iter().map(|(id, _)| id).collect::<Vec<_>>()})
 }
 /// An approved repair (checked again just before): each one an operation the dashboard
-/// already has.
-fn run_repair(service: &Arc<Service>, config: &Path, data: &Path, id: &str) -> Value {
+/// already has. `shown`: the version the card named, for an update (its signature).
+fn run_repair(
+    service: &Arc<Service>,
+    config: &Path,
+    checked: &assist::Repair,
+    shown: &str,
+) -> Value {
+    let id = checked.id.as_str();
     let (kind, name) = id.split_once(':').unwrap_or((id, ""));
     eprintln!("Ask Neko: running the approved repair {id}");
     match kind {
@@ -1019,9 +1030,14 @@ fn run_repair(service: &Arc<Service>, config: &Path, data: &Path, id: &str) -> V
         }
         .start(),
         "update_check" => start_update_job(config, "app_update_check", "", ""),
-        "update_app" => match assist::update_signature(data, name) {
-            Some(sig) => start_update_job(config, "app_update_run", name, &sig),
-            None => refuse("E42", "No new version of that app is waiting any more"),
+        "update_app" => match assist::approved_update(checked, shown) {
+            Ok(sig) => start_update_job(config, "app_update_run", name, &sig),
+            Err(why) => {
+                // The page shows the card afresh, with the version waiting now.
+                let mut answer = refuse("E42", why);
+                answer["changed"] = json!(true);
+                answer
+            }
         },
         "run_job" => {
             let Some((job, unit, _)) = assist::JOBS.iter().find(|j| j.0 == name) else {

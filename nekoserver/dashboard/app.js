@@ -1841,6 +1841,9 @@ function repairCard(entry) {
   if (r.warning) {
     card.append(el('p', 'ask-warning', r.warning));
   }
+  if (r.note) {
+    card.append(el('p', 'ask-warning', r.note));
+  }
   if (r.state === 'offered') {
     card.append(
       button('Approve', () => approveRepair(entry), 'button small'),
@@ -1955,7 +1958,7 @@ function askProgress(entry, now) {
 async function offerRepair(entry, id) {
   const answer = await postControl('assist-check', { action: id });
   entry.repair = answer.ok
-    ? { id, does: text(answer.does), warning: text(answer.warning), state: 'offered' }
+    ? { id, does: text(answer.does), warning: text(answer.warning), sig: text(answer.sig), state: 'offered' }
     : { id, state: 'refused', message: controlMessage(answer) };
   renderAskLog();
 }
@@ -1963,10 +1966,20 @@ async function approveRepair(entry) {
   const r = entry.repair;
   r.state = 'running';
   renderAskLog();
-  const answer = await postControl('assist-run', { action: r.id });
+  // The version the card named goes back with the approval: only that one is installed.
+  const answer = await postControl('assist-run', { action: r.id, sig: r.sig });
   if (answer.error === 'E43') {
     r.state = 'offered';
     askUnlock(() => approveRepair(entry), 'Approving a fix needs your PIN on every device, the server too.');
+    return;
+  }
+  if (answer.changed === true) {
+    // A newer version arrived since the card was shown: the card is made again for it.
+    await offerRepair(entry, r.id);
+    if (entry.repair.state === 'offered') {
+      entry.repair.note = controlMessage(answer);
+    }
+    renderAskLog();
     return;
   }
   if (!answer.ok) {

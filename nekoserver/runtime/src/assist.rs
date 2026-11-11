@@ -530,6 +530,9 @@ pub struct Repair {
     pub id: String,
     pub does: String,
     pub warning: String,
+    /// For "update_app": the signature of the version the card names ("" otherwise).
+    /// Approve sends it back, and only that version is installed (approved_update).
+    pub sig: String,
 }
 
 /// The repair `id` names, checked: one of REPAIRS, for an app installed here (and, to
@@ -550,6 +553,7 @@ pub fn repair(
         id: id.to_string(),
         does,
         warning: warning.to_string(),
+        sig: String::new(),
     };
     match kind {
         "update_check" if name.is_empty() => Ok(made(
@@ -566,12 +570,15 @@ pub fn repair(
             .ok_or_else(|| "That app is not installed on this server".to_string()),
         "update_app" => {
             let app = installed().ok_or("That app is not installed on this server")?;
-            let (version, _) = waiting_update(data, app)
+            let (version, sig) = waiting_update(data, app)
                 .ok_or("No new version of that app is waiting; Check for updates looks again")?;
-            Ok(made(
-                format!("Updates {} to {version} now: a snapshot first, then the update, then a check; if the check fails, it is undone.", app_name(app)),
-                "The app is unavailable for a few minutes while it updates.",
-            ))
+            Ok(Repair {
+                sig,
+                ..made(
+                    format!("Updates {} to {version} now: a snapshot first, then the update, then a check; if the check fails, it is undone.", app_name(app)),
+                    "The app is unavailable for a few minutes while it updates.",
+                )
+            })
         }
         "run_job" => {
             let (job, _, warning) = JOBS
@@ -650,9 +657,20 @@ fn waiting_update(data: &Path, app: &str) -> Option<(String, String)> {
     ))
 }
 
-/// The signature "update_app" passes to "Update now".
-pub fn update_signature(data: &Path, app: &str) -> Option<String> {
-    waiting_update(data, app).map(|(_, sig)| sig)
+/// Said when the version waiting is no longer the one the card described.
+pub const NEWER_ARRIVED: &str =
+    "A newer version arrived meanwhile, so nothing was installed; ask again";
+
+/// The signature "update_app" passes to "Update now": the one the card showed (`shown`,
+/// sent back with Approve), and only while that is still the version waiting (`now`,
+/// checked again at Approve). The daily check can find a newer version between the card
+/// and the press; that one was never described to the person, so it is not installed.
+pub fn approved_update(now: &Repair, shown: &str) -> std::result::Result<String, &'static str> {
+    if crate::updates::valid_signature(shown) && now.sig == shown {
+        Ok(now.sig.clone())
+    } else {
+        Err(NEWER_ARRIVED)
+    }
 }
 
 fn app_name(app: &str) -> &'static str {
@@ -1310,6 +1328,52 @@ mod tests {
         ] {
             assert!(ok(refused).is_err(), "{refused}");
         }
+    }
+
+    /// Review of 0.49.0: Approve took the newest version waiting when it was pressed,
+    /// not the one the card had named.
+    #[test]
+    fn approve_installs_only_the_version_the_card_showed() {
+        let (cfg, status) = installed();
+        let data = std::env::temp_dir().join(format!("neko-assist-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let waiting = |versions: &[(&str, &str)]| {
+            let list: Vec<Value> = versions
+                .iter()
+                .map(|(version, sig)| json!({"version": version, "sig": sig}))
+                .collect();
+            crate::updates::save_pending(
+                &data,
+                &json!({"format": "neko-pending-updates-v1", "apps": {"jellyfin": list}}),
+            )
+            .unwrap();
+        };
+        let (first, second) = ("a".repeat(16), "b".repeat(16));
+        waiting(&[("10.9.1", &first)]);
+        let card = repair(&cfg, &status, &data, "update_app:jellyfin").unwrap();
+        assert!(card.does.contains("to 10.9.1 now"), "{card:?}");
+        assert_eq!(card.sig, first);
+        // Unchanged between the card and Approve: that version is installed.
+        let now = repair(&cfg, &status, &data, "update_app:jellyfin").unwrap();
+        assert_eq!(approved_update(&now, &card.sig), Ok(first.clone()));
+        // The daily check found a newer one meanwhile: refused, nothing is installed.
+        waiting(&[("10.9.1", &first), ("10.9.2", &second)]);
+        let now = repair(&cfg, &status, &data, "update_app:jellyfin").unwrap();
+        assert_eq!(now.sig, second);
+        assert_eq!(approved_update(&now, &card.sig), Err(NEWER_ARRIVED));
+        // A press that names no version (an older page) installs nothing either.
+        assert_eq!(approved_update(&now, ""), Err(NEWER_ARRIVED));
+        // The other repairs have no target that can change, and carry no signature.
+        assert_eq!(
+            repair(&cfg, &status, &data, "restart_app:jellyfin")
+                .unwrap()
+                .sig,
+            ""
+        );
+        let source = include_str!("control.rs");
+        assert!(source.contains("assist::approved_update(checked, shown)"));
+        assert!(!source.contains("update_signature"));
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]

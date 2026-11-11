@@ -881,6 +881,13 @@ class AskNekoPageTests(unittest.TestCase):
             )
         # A repair runs only from its Approve button, after the server checked it.
         self.assertIn("button('Approve', () => approveRepair(entry)", app)
+        # Review of 0.49.0: Approve ran whatever version was newest when pressed. The card's
+        # version goes back with the approval, and a changed one shows the card afresh.
+        self.assertIn("postControl('assist-run', { action: r.id, sig: r.sig })", app)
+        self.assertIn("sig: text(answer.sig)", app)
+        changed = app[app.index('if (answer.changed === true)') :][:400]
+        self.assertIn('await offerRepair(entry, r.id)', changed)
+        self.assertIn('entry.repair.note = controlMessage(answer)', changed)
         self.assertIn("postControl('assist-check', { action: id })", app)
 
 
