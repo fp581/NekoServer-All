@@ -460,47 +460,53 @@ pub fn log_lines(source: &Source, until: Instant) -> Option<String> {
 type Probe<'a> = &'a dyn Fn(&[&str], u64) -> (i32, String);
 
 fn log_lines_with(source: &Source, until: Instant, probe: Probe) -> Option<String> {
-    // Whole seconds left (a command's time limit is in seconds); none left: not run.
-    let left =
-        || Some(until.saturating_duration_since(Instant::now()).as_secs()).filter(|s| *s > 0);
+    // One command, given the whole seconds left (a command's time limit is in seconds).
+    // None when it is not in time: none left, so it is not run; or it ran until its time
+    // limit ended it. That is told apart from a command that failed or printed nothing,
+    // because a limit of whole seconds ends a moment before `until`, where a look at the
+    // clock alone would call it "no log" (the review of the 0.50.0 fixes).
+    let timed = |args: &[&str]| -> Option<(i32, String)> {
+        let limit = until.saturating_duration_since(Instant::now()).as_secs();
+        if limit == 0 {
+            return None;
+        }
+        let started = Instant::now();
+        let (code, text) = probe(args, limit);
+        let ran_out = code != 0 && started.elapsed() >= Duration::from_secs(limit);
+        (!ran_out).then_some((code, text))
+    };
     let (code, text) = match source {
-        Source::Unit(unit) => probe(
-            &[
-                "journalctl",
-                "-u",
-                unit,
-                "-n",
-                LOG_LINES,
-                "-o",
-                "cat",
-                "--no-pager",
-            ],
-            left()?,
-        ),
+        Source::Unit(unit) => timed(&[
+            "journalctl",
+            "-u",
+            unit,
+            "-n",
+            LOG_LINES,
+            "-o",
+            "cat",
+            "--no-pager",
+        ])?,
         Source::App(app) => {
             let service = apps::restart_plan(app).first().copied().unwrap_or("");
-            let (_, id) = probe(
-                &[
-                    "docker",
-                    "ps",
-                    "-aq",
-                    "--filter",
-                    &format!("label=com.docker.compose.project=neko-{app}"),
-                    "--filter",
-                    &format!("label=com.docker.compose.service={service}"),
-                ],
-                left()?,
-            );
+            let (_, id) = timed(&[
+                "docker",
+                "ps",
+                "-aq",
+                "--filter",
+                &format!("label=com.docker.compose.project=neko-{app}"),
+                "--filter",
+                &format!("label=com.docker.compose.service={service}"),
+            ])?;
             match id.split_whitespace().next() {
-                Some(id) => probe(&["docker", "logs", "--tail", LOG_LINES, id], left()?),
+                Some(id) => timed(&["docker", "logs", "--tail", LOG_LINES, id])?,
                 None => (1, String::new()),
             }
         }
         Source::None => (1, String::new()),
     };
     if code != 0 {
-        // A command that ran out of its time is "not in time", not "no log".
-        return (Instant::now() < until).then(String::new);
+        // It failed in time, or there is no such container: no log.
+        return Some(String::new());
     }
     Some(plain_log(&text))
 }
@@ -1734,6 +1740,9 @@ mod tests {
             log_lines_with(&Source::Unit("x.service".into()), later, &failed).as_deref(),
             Some("")
         );
+        // No such container (docker ps prints nothing) is "no log" too.
+        let none = |_: &[&str], _: u64| (0, String::new());
+        assert_eq!(log_lines_with(&app, later, &none).as_deref(), Some(""));
         // The control service starts the clock before it asks Ollama for its models, and
         // tells the model when the log is missing for that reason.
         let control = include_str!("control.rs");
@@ -1743,6 +1752,40 @@ mod tests {
                 < asks.find("assist::ollama_models").unwrap()
         );
         assert!(control.contains("assist::LOG_LATE"));
+    }
+
+    /// Review of the 0.50.0 fixes: a command ended by its time limit (whole seconds, so
+    /// a moment before the deadline) was passed off as "no log", and the model was not
+    /// told that the log is missing.
+    #[test]
+    fn a_log_command_that_runs_out_of_time_is_late_not_empty() {
+        // As common::probe ends a command: after its limit, with a failure and no output.
+        let hangs = |_: &[&str], limit: u64| {
+            std::thread::sleep(Duration::from_secs(limit));
+            (-1, String::new())
+        };
+        // 1.6 s left: the command gets 1 s and is ended 0.6 s before the deadline.
+        let soon = || Instant::now() + Duration::from_millis(1600);
+        let until = soon();
+        assert_eq!(
+            log_lines_with(&Source::Unit("x.service".into()), until, &hangs),
+            None
+        );
+        assert!(Instant::now() < until, "ended before the deadline");
+        // docker ps hanging is the same: not "no such container".
+        assert_eq!(
+            log_lines_with(&Source::App("jellyfin".into()), soon(), &hangs),
+            None
+        );
+        // docker ps answers, docker logs hangs: late as well.
+        let logs_hang = |args: &[&str], limit: u64| match args[1] {
+            "ps" => (0, "abc123\n".to_string()),
+            _ => hangs(args, limit),
+        };
+        assert_eq!(
+            log_lines_with(&Source::App("jellyfin".into()), soon(), &logs_hang),
+            None
+        );
     }
 
     /// Review of 0.49.0: a connection closed before "done": true gave Ok(answer), so half
